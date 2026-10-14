@@ -753,3 +753,51 @@ def test_bridge_safe_default_aims_removal_at_a_creature_it_kills(monkeypatch):
     )
     assert engine._try_interactive_safe_default(state, "decision_required") is True
     assert submitted == [[f"tgt:{PIA}"]]
+
+
+def _no_target_request(min_targets: int, can_cancel: bool = False) -> dict:
+    return {
+        "has_pending": True,
+        "request_type": "SelectTargets",
+        "can_cancel": can_cancel,
+        "target_selections": [
+            {"targetIdx": 1, "minTargets": min_targets, "maxTargets": 1, "selectedTargets": 0, "targets": []}
+        ],
+        "target_candidates": [],
+    }
+
+
+class _TargetBridge(_Bridge):
+    def __init__(self, pending):
+        super().__init__(pending)
+        self.target_calls: list = []
+        self.cancelled = False
+
+    def submit_targets(self, ids):
+        self.target_calls.append(list(ids))
+        return True
+
+    def cancel_action(self):
+        self.cancelled = True
+        return True
+
+
+def test_up_to_one_target_with_no_legal_target_commits_with_none(monkeypatch):
+    # bug_20261013_202204: Tam's Resistance ("up to one target creature") cast with
+    # no creature on the battlefield; the request offered no candidates and the
+    # safe default went MANUAL REQUIRED instead of committing with none.
+    state, _decision = _removal_targets("Put a +1/+1 counter on up to one target creature.")
+    state["_bridge_request_type"] = "SelectTargets"
+    bridge = _TargetBridge(_no_target_request(min_targets=0))
+    engine = _engine(monkeypatch, _planner(_Backend(available=False)), bridge, state)
+    assert engine._try_interactive_safe_default(state, "decision_required") is True
+    assert bridge.target_calls == [[]] and not bridge.cancelled
+
+
+def test_a_required_target_with_none_legal_backs_out_when_it_can(monkeypatch):
+    state, _decision = _removal_targets("Destroy target creature.")
+    state["_bridge_request_type"] = "SelectTargets"
+    bridge = _TargetBridge(_no_target_request(min_targets=1, can_cancel=True))
+    engine = _engine(monkeypatch, _planner(_Backend(available=False)), bridge, state)
+    assert engine._try_interactive_safe_default(state, "decision_required") is True
+    assert bridge.target_calls == [] and bridge.cancelled

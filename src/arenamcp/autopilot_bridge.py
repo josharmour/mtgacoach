@@ -18,6 +18,19 @@ from arenamcp.mana import mana_cost_to_cmc
 logger = logging.getLogger(__name__)
 
 
+def _targets_optional(pending: dict[str, Any]) -> bool:
+    """Every target slot of a SelectTargets request can be left empty ("up to N")."""
+    slots = pending.get("target_selections") or []
+    if not slots:
+        return False
+    for slot in slots:
+        slot = slot or {}
+        needed = int(slot.get("minTargets", 1) or 0) - int(slot.get("selectedTargets") or 0)
+        if needed > 0:
+            return False
+    return True
+
+
 def _progress_bridge_for(engine, game_state=None):
     factory = getattr(engine, "_progress_bridge", None)
     return factory(game_state) if callable(factory) else engine._gre_bridge
@@ -2239,6 +2252,15 @@ class _BridgeSubmitMixin:
 
             decision = build_pending_decision(pending)
             if decision is None:
+                # No legal target at all (bug_20261013_202204: Tam's Resistance,
+                # "up to one target creature", cast with no creature on the
+                # battlefield went MANUAL REQUIRED). An "up to N" spell resolves
+                # with none: commit the targets as they are. A required target
+                # with none legal cannot resolve: back out if Arena allows it.
+                if _targets_optional(pending) and bridge.submit_targets([]):
+                    return _ok("no legal targets; committed with none")
+                if pending.get("can_cancel") and bridge.cancel_action():
+                    return _ok("cancelled: no legal target")
                 return False
             target_planner = ActionPlanner.__new__(ActionPlanner)
             # Aimed so removal kills (or kept), and away from unpayable ward.
@@ -2249,6 +2271,8 @@ class _BridgeSubmitMixin:
                 return False
             if selected and submit_option(bridge, decision, selected):
                 return _ok("controller-aware target selection")
+            if not selected and decision.selection_is_valid([]) and submit_option(bridge, decision, []):
+                return _ok("up to N targets: none chosen")
             return False
 
         # SelectReplacement: first replacement.

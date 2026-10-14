@@ -358,7 +358,12 @@ def _mana_value(cost: str) -> int:
 
 def _activated_costs(card: dict) -> list[str]:
     """Costs of non-mana, non-loyalty activated abilities."""
-    costs = []
+    return [cost for cost, _effect in _activated_abilities(card)]
+
+
+def _activated_abilities(card: dict) -> list[tuple[str, str]]:
+    """(cost, effect) of non-mana, non-loyalty activated abilities without a sorcery-speed limit."""
+    abilities = []
     for line in _rules_text(card).splitlines():
         line = line.strip()
         if ":" not in line or re.match(r"(?:when|whenever|at the beginning|if|as long as)\b", line):
@@ -368,8 +373,44 @@ def _activated_costs(card: dict) -> list[str]:
             continue  # planeswalker loyalty ability: sorcery speed
         if re.search(r"\badd\b[^.]*?(?:\{|\bmana\b)", effect):
             continue  # mana ability
-        costs.append(cost)
-    return costs
+        if re.search(r"activate only as a sorcery", effect):
+            continue
+        abilities.append((cost, effect))
+    return abilities
+
+
+# What an affordable instant-speed play can do to OUR attack (2026-10-13
+# bug_20261013_201811: a 1/1 attacked into four untapped blockers because the
+# guard counted Divining Duelist -- a flash tapper that removes one blocker --
+# and Heartwood Crafter's prepared SORCERY as tricks that could save it).
+_SAVES_ATTACKER = re.compile(
+    r"\bgets? \+\d+/\+\d+|\bindestructible\b|\bhexproof\b|\bfirst strike\b|\bprotection from\b"
+    r"|can't be blocked|prevent all (?:combat )?damage|\bphases? out\b|\+\d+/\+\d+ counter"
+    # Shrinking the blocker saves the attacker; a sacrifice outlet cashes it in.
+    r"|\bgets? [-−]\d+/[-−+]?\d+|\bsacrifice (?:a|an|another|this) creature"
+)
+_REMOVES_BLOCKER = re.compile(
+    r"\btap target creature|\bstun counter|\b(?:destroy|exile) target (?:[a-z]+ )*?creature"
+    r"|deals? (?:\d+|x) damage to (?:any target|target (?:[a-z]+ )*?creature)"
+    r"|target creature can't block|return target (?:[a-z]+ )*?creature to its owner's hand"
+)
+
+
+def _prepared_spell(card: dict) -> dict | None:
+    """The spell a prepared creature can copy: its linked face, or None when unknown."""
+    faces = card.get("related_faces")
+    if faces is None and card.get("grp_id"):
+        try:
+            from arenamcp.match_context import _local_card
+
+            faces = _local_card(int(card["grp_id"]), int(time.monotonic() // 30)).get("related_faces")
+        except Exception:
+            faces = None
+    for face in faces or []:
+        kind = str(face.get("type_line") or "").lower()
+        if "instant" in kind or "sorcery" in kind:
+            return face
+    return None
 
 
 def _untapped_mana(state: dict, local: dict) -> int:
@@ -390,8 +431,12 @@ def _untapped_mana(state: dict, local: dict) -> int:
     return total
 
 
-def _possible_tricks(state: dict, local: dict) -> list[tuple[str, int]]:
-    """Instant-speed plays visible to us now, as (source, mana value); 0 means free."""
+def _possible_tricks(state: dict, local: dict) -> list[tuple[str, int, str | None]]:
+    """Instant-speed plays visible to us now, as (source, mana value, effect text).
+
+    0 means free; the text is None when the effect is unknown (treated as a
+    trick that could matter).
+    """
     seat = local.get("seat_id")
     tricks = []
     for card in state.get("hand") or []:
@@ -403,7 +448,7 @@ def _possible_tricks(state: dict, local: dict) -> list[tuple[str, int]]:
             continue
         alternative = re.search(r"rather than pay|without paying|\bconvoke\b|\bdelve\b|\bimprovise\b", text)
         cost = 0 if alternative else _mana_value(card.get("mana_cost") or "")
-        tricks.append((card.get("name") or "an instant", cost))
+        tricks.append((card.get("name") or "an instant", cost, text))
     for card in state.get("graveyard") or []:
         if card.get("owner_seat_id", seat) != seat or "instant" not in _types(card):
             continue
@@ -411,18 +456,40 @@ def _possible_tricks(state: dict, local: dict) -> list[tuple[str, int]]:
         if re.search(r"\b(?:flashback|jump-start|retrace|escape)\b", text):
             flashback = re.search(r"flashback\s*\S?\s*((?:\{[^}]*\})+)", text)
             cost = flashback.group(1) if flashback else card.get("mana_cost") or "{1}"
-            tricks.append((card.get("name") or "a graveyard instant", max(1, _mana_value(cost))))
+            tricks.append((card.get("name") or "a graveyard instant", max(1, _mana_value(cost)), text))
     for card in state.get("battlefield") or []:
         if _controller(card) != seat or "planeswalker" in _types(card):
             continue
         name = card.get("name") or "a permanent"
         if re.search(r"\bprepared\b", _rules_text(card)):
-            tricks.append((name, 1))  # the prepared spell's cost is not on the creature
-        for cost in _activated_costs(card):
+            spell = _prepared_spell(card)
+            if spell is None:
+                tricks.append((name, 1, None))  # unknown spell: assume it could matter
+            elif "instant" in str(spell.get("type_line") or "").lower():
+                text = str(spell.get("oracle_text") or "").lower()
+                tricks.append((name, max(1, _mana_value(spell.get("mana_cost") or "{1}")), text))
+            # A prepared sorcery cannot be cast in combat.
+        for cost, effect in _activated_abilities(card):
             if "t" in _mana_symbols(cost) and card.get("is_tapped"):
                 continue
-            tricks.append((name, _mana_value(cost)))
+            tricks.append((name, _mana_value(cost), f"{cost}: {effect}".lower()))
     return tricks
+
+
+def _trick_changes_combat(text: str | None, attackers: list[dict], blockers: list[dict]) -> bool:
+    """Whether a play could keep the planned attack from simply feeding a blocker.
+
+    Unknown effects and anything that saves an attacker count; removing or
+    tapping one blocker counts only when the rest can no longer answer every
+    attacker; anything else (card draw, untap, surveil) does not.
+    """
+    if text is None or _SAVES_ATTACKER.search(text):
+        return True
+    if _REMOVES_BLOCKER.search(text):
+        return any(
+            _full_answer(attackers, [b for b in blockers if b is not removed]) is None for removed in blockers
+        )
+    return False
 
 
 def _resolved_this_turn(state: dict) -> list[dict]:
@@ -573,12 +640,14 @@ def losing_attackers(state: dict, attacker_ids: list[int], pending: dict | None 
     if any("block" in _rules_text(card) for card in _resolved_this_turn(state)):
         return {}
     mana = _untapped_mana(state, local)
-    if any(cost <= mana for _source, cost in _possible_tricks(state, local)):
-        return {}
-
     blockers = _eligible_blockers(state, opponent.get("seat_id"))
     answer = _full_answer(attackers, blockers)
     if answer is None:
+        return {}
+    if any(
+        cost <= mana and _trick_changes_combat(text, attackers, blockers)
+        for _source, cost, text in _possible_tricks(state, local)
+    ):
         return {}
     forced = {
         int(entry.get("attackerInstanceId") or 0)
@@ -600,7 +669,7 @@ def losing_attackers(state: dict, attacker_ids: list[int], pending: dict | None 
         reason = (
             f"{blocked_by} can block {attacker.get('name') or identity} "
             f"{attacker['power']}/{attacker['toughness']}, kill it and survive; nothing gets through, "
-            "it has no attack or death payoff, and no trick is affordable with our untapped mana"
+            "it has no attack or death payoff, and no affordable trick could change that combat"
         )
         if len(attackers) > 1:
             reason += "; the opponent can block every planned attacker this way"

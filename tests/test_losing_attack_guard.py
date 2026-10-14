@@ -317,9 +317,13 @@ def test_one_open_land_cannot_pay_the_three_mana_flashback():
     state = incident()
     next(card for card in state["battlefield"] if card["instance_id"] == 287)["is_tapped"] = False
     assert set(losing_attackers(state, [288])) == {288}
-    # With three open lands the flashback instant is castable: keep the attack.
+    # With three open lands the flashback instant is castable, but drawing cards
+    # cannot change this combat (2026-10-13: tricks are judged by what they do).
     state["battlefield"].append(land(420, "Island", 2, tapped=False))
     state["battlefield"].append(land(421, "Island", 2, tapped=False))
+    assert set(losing_attackers(state, [288])) == {288}
+    # A castable flashback pump could: keep the attack.
+    state["graveyard"][0]["oracle_text"] = "Target creature gets +2/+2 until end of turn.\nFlashback {2}{U}"
     assert losing_attackers(state, [288]) == {}
 
 
@@ -517,3 +521,91 @@ def test_mac_snapshot_reports_the_loyalty_counter_not_the_boxed_zero():
     assert "loyalty" not in _card_entry({**node, "counterDatas_": listing()})
     with_value = {**zero, "value": 4}
     assert _card_entry({**node, "loyalty": with_value, "counterDatas_": listing()})["loyalty"] == 4
+
+
+# ---------------------------------------------------------------------------
+# bug_20261013_201811 (FRA Contender, turn 11): Emergency Phytomedic 1/1 attacked
+# into four untapped blockers ("chip in with the unblockable 1/1" -- the
+# opponent's Tetsuko only helps the opponent's creatures). The guard stepped
+# aside because Divining Duelist (flash: tap target creature) and Heartwood
+# Crafter's prepared Soul Tether (a sorcery) counted as tricks.
+# ---------------------------------------------------------------------------
+
+DUELIST = {
+    "instance_id": 400,
+    "name": "Divining Duelist",
+    "oracle_text": "Flash\nWhen this creature enters, choose one —\n• Tap target creature.\n"
+    "• Untap target creature.\n• Draw a card, then discard a card.",
+    "type_line": "Creature — Merfolk Wizard",
+    "mana_cost": "{2}{U}",
+    "owner_seat_id": 2,
+    "controller_seat_id": 2,
+}
+CRAFTER = creature(
+    401,
+    "Heartwood Crafter",
+    2,
+    3,
+    3,
+    "This creature enters prepared.\n{T}: Add {C}. This mana can't be spent to cast spells from your hand.",
+    is_tapped=True,
+    related_faces=[
+        {
+            "name": "Soul Tether",
+            "type_line": "Sorcery",
+            "mana_cost": "{2}{R/G}",
+            "oracle_text": "Create a Heartwood token.",
+        }
+    ],
+)
+
+
+def tetsuko_board(blockers):
+    phytomedic = creature(221, "Emergency Phytomedic", 2, 1, 1)
+    state = incident([phytomedic], blockers)
+    for card in state["battlefield"]:
+        if card.get("controller_seat_id") == 2 and "Land" in card.get("type_line", ""):
+            card["is_tapped"] = False
+    state["battlefield"] += [land(410 + i, "Island", 2, tapped=False) for i in range(3)] + [
+        copy.deepcopy(CRAFTER)
+    ]
+    state["hand"] = [copy.deepcopy(DUELIST)]
+    return state
+
+
+def test_a_one_blocker_tapper_and_a_prepared_sorcery_do_not_excuse_a_hopeless_attack():
+    blockers = [
+        creature(500, "Lyra, Tolarian Archangel", 1, 3, 3, "Flying"),
+        creature(501, "Angel", 1, 3, 3, "Flying"),
+        creature(
+            502,
+            "Tetsuko Umezawa, Fugitive",
+            1,
+            1,
+            3,
+            "Creatures you control with power or toughness 1 or less can't be blocked.",
+        ),
+    ]
+    losing = losing_attackers(tetsuko_board(blockers), [221])
+    assert 221 in losing and "no affordable trick could change that combat" in losing[221]
+
+
+def test_a_tapper_still_counts_when_it_removes_the_only_blocker():
+    losing = losing_attackers(tetsuko_board([creature(501, "Angel", 1, 3, 3, "Flying")]), [221])
+    assert losing == {}
+
+
+def test_an_affordable_pump_still_counts_as_a_trick():
+    state = tetsuko_board([creature(501, "Angel", 1, 3, 3, "Flying"), creature(502, "Bear", 1, 2, 2)])
+    state["hand"].append(
+        {
+            "instance_id": 402,
+            "name": "Giant Growth",
+            "oracle_text": "Target creature gets +3/+3 until end of turn.",
+            "type_line": "Instant",
+            "mana_cost": "{G}",
+            "owner_seat_id": 2,
+            "controller_seat_id": 2,
+        }
+    )
+    assert losing_attackers(state, [221]) == {}
