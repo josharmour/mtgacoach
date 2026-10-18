@@ -43,6 +43,26 @@ def _import_pil():
     return Image, ImageGrab
 
 
+# Exact window titles only, like window_tracking's locator: a substring match
+# on "MTGA" would also find the coach's own "mtgacoach" window.
+_MTGA_TITLES = ("MTGA", "Magic: The Gathering Arena")
+
+
+def find_mtga_hwnd() -> int | None:
+    """Arena's top-level window handle for PrintWindow, or None (not Windows / not running)."""
+    if not _IS_WINDOWS:
+        return None
+    try:
+        user32 = ctypes.windll.user32
+        for title in _MTGA_TITLES:
+            hwnd = user32.FindWindowW(None, title)
+            if hwnd and user32.IsWindow(hwnd):
+                return int(hwnd)
+    except Exception as e:
+        logger.debug(f"MTGA window lookup failed: {e}")
+    return None
+
+
 def capture_window_via_printwindow(hwnd: int) -> Image.Image | None:
     """Return a PIL.Image of the window contents using PrintWindow.
 

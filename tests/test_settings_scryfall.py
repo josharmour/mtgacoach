@@ -92,33 +92,35 @@ def test_scryfall_cache_invokes_api_fallback_when_not_in_bulk(
     assert api_called
 
 
-def test_screen_capture_bbox_validation(monkeypatch: pytest.MonkeyPatch) -> None:
-    from PIL import ImageGrab
+@pytest.mark.parametrize(
+    "bbox",
+    [(10, 10, 10, 20), (20, 10, 10, 20), (None, 10, 20, 20)],
+    ids=["zero-width", "left-past-right", "missing-edge"],
+)
+def test_screen_capture_bbox_validation(monkeypatch: pytest.MonkeyPatch, bbox) -> None:
+    """An invalid bbox is never handed to ImageGrab; the full-screen grab runs instead."""
+    from PIL import Image, ImageGrab
 
-    from arenamcp.screen_capture import capture_mtga_png
+    from arenamcp import screen_capture
 
-    grab_called = False
+    # The kill switch is module-global: never let this test (or an earlier
+    # one) leave capture disabled for the rest of the worker.
+    monkeypatch.setattr(screen_capture, "_CAPTURE_DEAD", False)
+    calls: list[dict] = []
 
     def mock_grab(*args, **kwargs):
-        nonlocal grab_called
-        grab_called = True
-        raise RuntimeError("ImageGrab.grab should not be called!")
+        calls.append({"args": args, **kwargs})
+        if args or "bbox" in kwargs:
+            raise AssertionError(f"ImageGrab.grab got the invalid bbox {bbox}")
+        return Image.new("RGB", (8, 8), (200, 120, 40))
 
     monkeypatch.setattr(ImageGrab, "grab", mock_grab)
 
-    # 1. Check zero width/height (should skip ImageGrab.grab)
-    res = capture_mtga_png(hwnd=None, bbox=(10, 10, 10, 20))
-    assert res is None or not grab_called
+    res = screen_capture.capture_mtga_png(hwnd=None, bbox=bbox)
 
-    # 2. Check left >= right (should skip ImageGrab.grab)
-    grab_called = False
-    res = capture_mtga_png(hwnd=None, bbox=(20, 10, 10, 20))
-    assert res is None or not grab_called
-
-    # 3. Check None values (should skip ImageGrab.grab)
-    grab_called = False
-    res = capture_mtga_png(hwnd=None, bbox=(None, 10, 20, 20))
-    assert res is None or not grab_called
+    assert calls == [{"args": ()}]
+    assert res is not None and res.startswith(b"\x89PNG")
+    assert screen_capture._CAPTURE_DEAD is False
 
 
 def test_find_mtga_database_checks_settings_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
