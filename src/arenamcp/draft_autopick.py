@@ -685,7 +685,7 @@ def rank_pack(
     still to come and adds scarcity: removal or a payoff with few comparable
     substitutes left is worth taking now.
     """
-    from arenamcp.draft_deck_plan import engine_gain, future_supply, pool_edges, scarcity
+    from arenamcp.draft_deck_plan import engine_gain, future_supply, payoff_support, pool_edges, scarcity
 
     names = names or {}
     mana_costs = mana_costs or {}
@@ -907,7 +907,9 @@ def rank_pack(
                         "colorless",
                         "fixing",
                     )
-                    value, why = book.fit(grp_id, hypothesis.plan, castable, roles=False)
+                    # A payoff fits only as far as this pool can trigger it.
+                    support = payoff_support(tags, hypothesis, supply) if tags is not None else {}
+                    value, why = book.fit(grp_id, hypothesis.plan, castable, roles=False, support=support)
                     parts["archetype"] += hypothesis.weight * value
                     if why and value > FIT_NOTE_MIN and hypothesis.weight * value > fit_best:
                         fit_best = hypothesis.weight * value
@@ -925,6 +927,9 @@ def rank_pack(
                             ledger.payoffs.get(e, 0) >= PAYOFF_ENOUGH for e in tags.engine_payoffs()
                         ):
                             rare *= 0.3
+                        if support and "removal" not in tags.roles:
+                            # A scarce payoff the pool cannot feed is not worth hoarding.
+                            rare *= max(support.values())
                         parts["scarcity"] += hypothesis.weight * SCARCITY_GAIN * rare
                         if why and hypothesis.weight * rare > scarce_best:
                             scarce_best, scarce_note = hypothesis.weight * rare, why

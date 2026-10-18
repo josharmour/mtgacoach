@@ -142,6 +142,8 @@ class CardTags:
     # How much a payoff gives per trigger: 1.0, or WEAK_PAYOFF when its only
     # reward is a temporary pump (prowess, "+1/+1 until end of turn").
     payoff_strength: float = 1.0
+    # A planeswalker card (not a card that only makes or empowers a Jace token).
+    planeswalker: bool = False
 
     def engine_payoffs(self) -> set[str]:
         return {family(m) for m in self.payoffs}
@@ -226,6 +228,7 @@ def card_tags(card: SetCard) -> CardTags:
         indirect=frozenset(profile.get("indirect") or ()),
         land=land,
         payoff_strength=WEAK_PAYOFF if weak else 1.0,
+        planeswalker="planeswalker" in front,
     )
 
 
@@ -282,8 +285,12 @@ class Playbook:
         *,
         roles: bool = True,
         key_lists: bool = True,
+        support: dict[str, float] | None = None,
     ) -> tuple[float, str]:
         """How much this archetype wants the card (0-1), and the reason in words.
+
+        ``support`` (engine -> 0-1) scales a payoff's fit by how well the pool
+        can feed that engine (``draft_deck_plan.payoff_support``).
 
         Rules text decides: an engine payoff or enabler, a card the pre-draft
         synthesis lists for the archetype, or (with ``roles``) a role every
@@ -308,7 +315,8 @@ class Playbook:
                 label = engine_label(engine)
                 factor = BROAD_MECHANICS.get(engine, (0, 1.0))[1]
                 if engine in payoffs:
-                    candidate = (FIT_ENGINE_PAYOFF * tags.payoff_strength, f"a payoff for {label}")
+                    share = (support or {}).get(engine, 1.0)
+                    candidate = (FIT_ENGINE_PAYOFF * tags.payoff_strength * share, f"a payoff for {label}")
                 elif engine in enables:
                     candidate = (FIT_ENGINE_ENABLER * factor, f"an enabler for {label}")
                 elif engine in indirect:
