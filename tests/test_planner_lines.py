@@ -821,14 +821,6 @@ def test_the_typed_lines_say_our_pending_choice_resolves_first():
     assert lines.endswith(" — before our pending Archive Arbiter (choose one) resolves") and len(lines) <= 320
 
 
-def test_a_plan_source_without_the_keyword_is_called_as_before():
-    planner, backend = _planner([ISLAND], "Island first.")
-    seen = []
-    planner.set_game_plan_source(lambda state: seen.append(state) or "STRATEGIC ROLE: from a custom source")
-    planner.plan_decision_options(actions_decision(G1_T12_MENU), deepcopy(G1_T12))
-    assert seen and "STRATEGIC ROLE: from a custom source" in backend.prompts[-1]
-
-
 # Recorded boards (tests/strategic_states.py) and the review's synthetic ones, our turn
 # (LINES above OPTIONS) and theirs (the block's LINES only), with the bridge's phase names too.
 _GROWTH_BOARDS = (

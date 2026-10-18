@@ -665,11 +665,11 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         self._decision_cancel_event = event
 
-    def set_game_plan_source(self, source: Callable[[dict], str] | None) -> None:
+    def set_game_plan_source(self, source: Callable[..., str] | None) -> None:
         """Render the strategy block per decision from the live snapshot.
 
-        ``source(state)`` returns ROLE + this turn's plan + board facts, then
-        the game plan. Without a source the static plan text from
+        ``source(state, with_lines=...)`` (``GamePlanManager.strategy_block``)
+        returns ROLE + this turn's plan + board facts, then the game plan. Without a source the static plan text from
         :meth:`set_game_plan` follows freshly computed board facts.
         """
         self._game_plan_source = source
@@ -724,16 +724,12 @@ class ActionPlanner(_ActionLegalityMixin):
         """ROLE + this turn + clocks/lethal facts for ``state``, then the game plan.
 
         ``with_lines=False`` asks for the block without the search's LINES line
-        (``GamePlanManager.strategy_block`` / ``grounded_facts_block``); a
-        source that takes no ``with_lines`` keyword renders its block as is.
+        (``GamePlanManager.strategy_block`` / ``grounded_facts_block``).
         """
         source = getattr(self, "_game_plan_source", None)
         if state is not None and callable(source):
             try:
-                if not with_lines and _accepts_keyword(source, "with_lines"):
-                    block = source(state, with_lines=False)
-                else:
-                    block = source(state)
+                block = source(state, with_lines=with_lines)
                 if isinstance(block, str) and block.strip():
                     return block.strip()
             except Exception as error:  # the strategic layer never blocks a decision
@@ -5025,18 +5021,6 @@ def _option_grp_ids(decision: Any) -> list[int]:
             if isinstance(value, int) and value > 0 and value not in out:
                 out.append(value)
     return out
-
-
-def _accepts_keyword(fn: Callable, name: str) -> bool:
-    """``fn`` takes the keyword argument ``name`` (or any keyword); False when it can't be inspected."""
-    try:
-        parameters = inspect.signature(fn).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    return any(
-        (p.name == name and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)) or p.kind == p.VAR_KEYWORD
-        for p in parameters
-    )
 
 
 def _local_seat(state: dict[str, Any]) -> Any:
