@@ -508,23 +508,6 @@ SCHEMA:
 )
 
 
-# P0-8 (2026-07-05): plan_turn used to reuse AUTOPILOT_SYSTEM_PROMPT, whose
-# "Output ONLY JSON matching the schema" hard-demanded the actions envelope
-# while the user message asked for turn_plan — a model-dependent coin flip
-# that yielded ZERO turn plans for match 1 (the 12B obeyed the system prompt
-# all 3 times, perfectly valid JSON in the wrong shape).
-TURN_PLAN_SYSTEM_PROMPT = """You are an MTG Arena turn planner. Given the game state, output the ordered list of user-visible plays for this whole turn.
-
-RULES:
-- TRUST [OK] tags: MTGA's mana solver already verified those costs are payable.
-- Payable does not mean useful: budget X beyond the fixed cost and identify an eligible remaining tutor target before casting. Do not spend removal or sacrifice an ability source when its only targets are your own permanents.
-- LAND PLAY PRIORITY: On Precombat Main (Main1), if you hold an unplayed land in hand, playing your land MUST be Step 1 of your turn plan before casting spells.
-- Skip mana abilities, casting-time sub-decisions, and search prompts — list only user-visible plays (Play Land, Cast X, Activate X, Attack).
-- Output ONLY a JSON object of this exact shape (no prose, no markdown):
-{"turn_plan": {"steps": [{"action_type": "play_land|cast_spell|activate_ability|declare_attackers", "card_name": "string", "target_names": [], "rationale": "string (max 10 words)"}]}}
-"""
-
-
 def _strip_attacker_annotations(tail: str) -> str:
     """Drop trailing annotations from a "Attack with: X" / "Block with: X" tail.
 
@@ -639,15 +622,15 @@ class ActionPlanner(_ActionLegalityMixin):
         # detection and the game-plan reform's action feed (decision_memory.py).
         self._decision_memory: DecisionMemory | None = DecisionMemory()
         # Active multi-step turn plan: the ordered list of user-visible plays
-        # we intend to make this turn. Built once on the first non-trivial
-        # own-turn LLM call (an additional `plan_turn` LLM call), then
-        # advanced as actions execute and replaced wholesale on divergence.
+        # we intend to make this turn. Parsed from a "turn_plan" key requested
+        # on the first own-turn action call (one merged LLM call), then
+        # advanced as actions execute and dropped on divergence.
         # Cleared on turn change.
         self._active_turn_plan: TurnPlan | None = None
-        # Turn number we last attempted plan_turn on. Used to suppress
-        # repeated plan_turn calls within the same turn after a failure
-        # — without this, every priority window in a turn where plan_turn
-        # fails would burn an extra LLM call.
+        # Turn number we last requested a turn plan on. Used to suppress
+        # repeated requests within the same turn after a failure — without
+        # this, every priority window in a turn whose turn plan failed to
+        # parse would ask for it again.
         self._turn_plan_attempted_for_turn: int = -1
         # Persistent GAME PLAN block (strategic spine) injected into every
         # per-decision prompt. Owned externally by a GamePlanManager and set via
@@ -965,7 +948,7 @@ class ActionPlanner(_ActionLegalityMixin):
             # fresh plan, computed lazily the next time we make an LLM
             # call from our own active turn.
             self._active_turn_plan = None
-            # Reset the per-turn plan_turn attempt guard so the new turn
+            # Reset the per-turn turn-plan attempt guard so the new turn
             # gets one attempt to build a fresh plan.
             self._turn_plan_attempted_for_turn = -1
         # P1-7: _turn_executed is now appended ONLY from the autopilot's
@@ -1781,97 +1764,16 @@ class ActionPlanner(_ActionLegalityMixin):
         active_player = (game_state.get("turn") or {}).get("active_player")
         return active_player == local_seat
 
-    def plan_turn(
-        self,
-        game_state: dict[str, Any],
-        effective_legal_actions: list[str],
-        decision_context: dict[str, Any] | None = None,
-    ) -> TurnPlan | None:
-        """One-shot LLM call that lays out the user-visible plays for the turn.
-
-        Stores the result on `self._active_turn_plan`. Returns the plan or
-        None if the call failed / produced no useful steps.
-        """
-        if llm_circuit_open(self._backend):
-            logger.info("plan_turn skipped: model server unavailable (circuit open)")
-            return None
-        game_state = prepare_match_context(game_state)
-        current_turn = (game_state.get("turn") or {}).get("turn_number", 0) or 0
-
-        # Build a lightweight prompt: reuse the same context formatter as
-        # the per-window planner, but ask for an ordered turn plan in JSON
-        # rather than a single action.
-        try:
-            from arenamcp.coach import CoachEngine
-
-            formatter = CoachEngine.__new__(CoachEngine)
-            context = formatter._format_game_context(game_state, for_planner=True)
-        except Exception as e:
-            logger.warning(f"plan_turn: context formatter failed: {e}")
-            context = self._fallback_format(game_state)
-
-        instructions = (
-            "Output the FULL ordered list of plays for this turn (3-7 items). "
-            "Skip mana abilities, casting-time sub-decisions, and search-prompts — "
-            "list only the user-visible plays (Play Land, Cast X, Activate X, Attack)."
-        )
-        schema_example = (
-            '{"turn_plan": {"steps": ['
-            '{"action_type": "play_land", "card_name": "Forest", "rationale": "fix mana"},'
-            '{"action_type": "cast_spell", "card_name": "Optimistic Scavenger", '
-            '"target_names": [], "rationale": "early pressure"}'
-            "]}}"
-        )
-        game_plan_block = self._strategy_context(game_state) + "\n\n"
-        user_message = (
-            f"TRIGGER: turn_plan (turn {current_turn})\n\n"
-            f"{context}\n\n"
-            f"{game_plan_block}"
-            f"INSTRUCTIONS: {instructions}\n"
-            f"Order the plays so they ADVANCE the game plan above.\n"
-            f"Output ONLY a JSON object matching this shape (no prose, no markdown):\n"
-            f"{schema_example}"
-        )
-        user_message = with_deck_reference(user_message, game_state)
-
-        def _complete() -> str:
-            return self._call_llm(
-                TURN_PLAN_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY,
-                user_message,
-                4096,
-                timeout_s=self._timeout,
-                call_class="decision.turn_plan",
-            )
-
-        try:
-            response = self._bounded_call(_complete)
-        except concurrent.futures.TimeoutError:
-            logger.warning("plan_turn LLM call timed out — leaving turn plan unset")
-            return None
-        except Exception as e:
-            logger.warning(f"plan_turn LLM call failed: {e}")
-            return None
-
-        plan = self._parse_turn_plan_response(response, current_turn)
-        if plan is None or not plan.steps:
-            logger.info(f"plan_turn: no steps parsed from response={(response or '')[:200]!r}")
-            return None
-
-        self._active_turn_plan = plan
-        logger.info(
-            f"Turn plan locked (turn {current_turn}): "
-            + ", ".join(
-                (f"{s.action_type}:{s.card_name}" if s.card_name else s.action_type) for s in plan.steps
-            )
-        )
-        return plan
-
     def _parse_turn_plan_response(
         self,
         response: str,
         current_turn: int,
     ) -> TurnPlan | None:
-        """Defensively parse the JSON {"turn_plan": {"steps": [...]}} shape."""
+        """Defensively parse the JSON {"turn_plan": {"steps": [...]}} shape.
+
+        The turn plan rides along on the first own-turn action call (R2,
+        2026-07-06), so ``response`` is that merged action response.
+        """
         if not response:
             return None
         text = response.strip()
@@ -1883,7 +1785,7 @@ class ActionPlanner(_ActionLegalityMixin):
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            logger.debug("plan_turn: response was not valid JSON")
+            logger.debug("turn plan: response was not valid JSON")
             return None
 
         if not isinstance(data, dict):
@@ -1896,8 +1798,8 @@ class ActionPlanner(_ActionLegalityMixin):
         else:
             steps_data = data.get("steps", [])
 
-        # P0-8 belt-and-braces: a model that obeyed the actions envelope
-        # anyway still described the turn — map actions→steps
+        # P0-8 belt-and-braces: a response without a turn_plan block still
+        # describes the turn through its actions — map actions→steps
         # (reasoning→rationale) instead of discarding the whole response.
         if (not isinstance(steps_data, list) or not steps_data) and isinstance(data.get("actions"), list):
             steps_data = [
@@ -2023,7 +1925,7 @@ class ActionPlanner(_ActionLegalityMixin):
         # last event with the explanation before the panel hides / replans.
         logger.info(f"Turn plan invalidated: {reason or '<no reason>'}")
         plan.last_replanned_reason = reason or "diverged"
-        # Clear; a future plan_turn call will rebuild it.
+        # Clear; the next turn's first own-turn call requests a fresh one.
         self._active_turn_plan = None
 
     def _format_turn_plan_for_prompt(self, plan: TurnPlan) -> str:

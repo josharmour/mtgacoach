@@ -56,8 +56,8 @@ def _pass_response(strategy: str) -> str:
 
 
 # R2 (2026-07-06): the turn plan rides along on the FIRST own-turn action
-# call as a "turn_plan" key in the same JSON response — there is no separate
-# plan_turn LLM call anymore. One scripted response per planning window.
+# call as a "turn_plan" key in the same JSON response (no separate turn-plan
+# LLM call). One scripted response per planning window.
 
 
 def test_turn_intent_locked_on_first_non_trivial_plan():
@@ -85,7 +85,7 @@ def test_turn_intent_not_locked_on_pass_only_plan():
 
 
 def test_turn_intent_not_locked_on_opponent_turn():
-    # Opponent turn: plan_turn shouldn't even be invoked, so just one response.
+    # Opponent turn: no turn plan is requested; one response.
     backend = _ScriptedBackend([_cast_response("Bolt", "Bolt their face")])
     p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
     legal = ["Cast Bolt [OK]", "Pass"]
@@ -133,7 +133,7 @@ def test_turn_intent_persists_across_same_turn_calls():
     assert locked == "Burn out their threat then deploy creatures"
 
     # Second call same turn — intent must NOT be re-captured, and
-    # plan_turn must NOT be re-invoked (attempt guard).
+    # the turn plan must NOT be re-requested (attempt guard).
     p.plan_actions(state, "decision_required", legal, {"type": "actions_available"})
     assert p._turn_intent == locked
 

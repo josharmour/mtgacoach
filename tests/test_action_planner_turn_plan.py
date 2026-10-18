@@ -1,9 +1,10 @@
 """Regression tests for the multi-step turn plan in ActionPlanner.
 
-The turn plan is built once on the first non-trivial own-turn LLM call
-via an additional `plan_turn` LLM call. Subsequent same-turn prompts see
-it injected as a structured `TURN PLAN` block. It advances as actions
-execute and is cleared on turn change or divergence.
+The turn plan rides along on the first own-turn action call: the prompt asks
+for a top-level "turn_plan" key in the same JSON response (R2, 2026-07-06), and
+``_parse_turn_plan_response`` extracts it. Subsequent same-turn prompts see it
+injected as a structured `TURN PLAN` block. It advances as actions execute and
+is cleared on turn change or divergence.
 """
 
 import json
@@ -15,6 +16,11 @@ from arenamcp.action_planner import (
     GameAction,
     TurnPlan,
 )
+
+# The prompt text that asks the merged call for a turn plan.
+_TURN_PLAN_REQUEST = "ADDITIONALLY: this is the first decision of your turn"
+_LEGAL = ["Cast Optimistic Scavenger [OK]", "Play Land: Forest", "Pass"]
+_OWN_WINDOW = {"type": "actions_available"}
 
 
 class _ScriptedBackend:
@@ -83,14 +89,23 @@ def _cast_response(card: str, strategy: str = "stub") -> str:
     )
 
 
-# ── plan_turn parsing ───────────────────────────────────────────────
+# ── turn-plan parsing ───────────────────────────────────────────────
 
 
-def test_plan_turn_parses_multistep_response():
-    backend = _ScriptedBackend([_turn_plan_response()])
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
+def _parse(response: str, turn: int = 4) -> TurnPlan | None:
+    p = ActionPlanner(_ScriptedBackend([]), timeout=1.0, land_drop_first=False)
+    return p._parse_turn_plan_response(response, turn)
 
-    plan = p.plan_turn(_state(), ["Cast Optimistic Scavenger [OK]", "Pass"], None)
+
+def _planner_with_plan() -> ActionPlanner:
+    """A planner holding the three-step plan for turn 4."""
+    p = ActionPlanner(_ScriptedBackend([]), timeout=1.0, land_drop_first=False)
+    p._active_turn_plan = p._parse_turn_plan_response(_turn_plan_response(), 4)
+    return p
+
+
+def test_turn_plan_parses_multistep_response():
+    plan = _parse(_turn_plan_response())
 
     assert isinstance(plan, TurnPlan)
     assert plan.turn_number == 4
@@ -102,82 +117,132 @@ def test_plan_turn_parses_multistep_response():
     # First step is auto-marked "current" by TurnPlan.__post_init__.
     assert plan.steps[0].status == "current"
     assert plan.steps[1].status == "pending"
-    # Plan is cached on the planner.
-    assert p._active_turn_plan is plan
 
 
-def test_plan_turn_handles_steps_at_top_level():
+def test_turn_plan_handles_steps_at_top_level():
     """{"steps": [...]} shape (without the outer turn_plan wrapper) is also accepted."""
-    backend = _ScriptedBackend(
-        [
-            json.dumps(
-                {
-                    "steps": [
-                        {"action_type": "play_land", "card_name": "Forest"},
-                        {"action_type": "cast_spell", "card_name": "Bolt"},
-                    ]
-                }
-            )
-        ]
+    plan = _parse(
+        json.dumps(
+            {
+                "steps": [
+                    {"action_type": "play_land", "card_name": "Forest"},
+                    {"action_type": "cast_spell", "card_name": "Bolt"},
+                ]
+            }
+        )
     )
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
-    plan = p.plan_turn(_state(), [], None)
     assert plan is not None
     assert [s.action_type for s in plan.steps] == ["play_land", "cast_spell"]
 
 
-def test_plan_turn_filters_non_user_visible_steps():
-    backend = _ScriptedBackend(
-        [
-            json.dumps(
-                {
-                    "turn_plan": {
-                        "steps": [
-                            {"action_type": "pay_costs", "card_name": ""},
-                            {"action_type": "search_library", "card_name": ""},
-                            {"action_type": "play_land", "card_name": "Forest"},
-                        ]
-                    }
+def test_turn_plan_filters_non_user_visible_steps():
+    plan = _parse(
+        json.dumps(
+            {
+                "turn_plan": {
+                    "steps": [
+                        {"action_type": "pay_costs", "card_name": ""},
+                        {"action_type": "search_library", "card_name": ""},
+                        {"action_type": "play_land", "card_name": "Forest"},
+                    ]
                 }
-            )
-        ]
+            }
+        )
     )
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
-    plan = p.plan_turn(_state(), [], None)
     assert plan is not None
     assert len(plan.steps) == 1
     assert plan.steps[0].action_type == "play_land"
 
 
-def test_plan_turn_defensive_parsing_invalid_json_returns_none():
-    backend = _ScriptedBackend(["not json at all"])
+def test_turn_plan_tolerates_fences_and_trailing_commas():
+    fenced = (
+        '```json\n{"turn_plan": {"steps": '
+        '[{"action_type": "play_land", "card_name": "Forest"},]}}\n```'
+    )
+    plan = _parse(fenced)
+    assert plan is not None
+    assert [(s.action_type, s.card_name) for s in plan.steps] == [("play_land", "Forest")]
+
+
+def test_turn_plan_defensive_parsing_invalid_json_returns_none():
+    assert _parse("not json at all") is None
+    assert _parse("") is None
+    assert _parse("[1, 2]") is None
+
+
+def test_turn_plan_defensive_parsing_empty_steps_returns_none():
+    assert _parse(json.dumps({"turn_plan": {"steps": []}})) is None
+
+
+def test_actions_without_a_turn_plan_become_the_steps():
+    """P0-8 belt-and-braces: with no turn_plan block, the actions describe the turn.
+
+    On the merged call this means a response that omits "turn_plan" still locks
+    a plan made of its own user-visible actions (reasoning becomes the rationale).
+    """
+    plan = _parse(
+        json.dumps(
+            {
+                "actions": [
+                    {"action_type": "cast_spell", "card_name": "Bolt", "reasoning": "clear the blocker"},
+                    {"action_type": "pass_priority"},
+                ]
+            }
+        )
+    )
+    assert plan is not None
+    assert [(s.action_type, s.card_name, s.rationale) for s in plan.steps] == [
+        ("cast_spell", "Bolt", "clear the blocker")
+    ]
+
+
+# ── turn-plan extraction from the merged action call ────────────────
+
+
+def test_merged_call_locks_the_turn_plan_and_still_returns_the_action():
+    merged = json.loads(_turn_plan_response())
+    merged["actions"] = [{"action_type": "play_land", "card_name": "Forest"}]
+    backend = _ScriptedBackend([json.dumps(merged)])
     p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
-    plan = p.plan_turn(_state(), [], None)
-    assert plan is None
+
+    plan = p.plan_actions(_state(), "decision_required", _LEGAL, _OWN_WINDOW)
+
+    assert len(backend.calls) == 1
+    assert _TURN_PLAN_REQUEST in backend.calls[0][1]
+    assert [a.card_name for a in plan.actions] == ["Forest"]
+    assert [s.card_name for s in p._active_turn_plan.steps] == [
+        "Forest",
+        "Optimistic Scavenger",
+        "Ezrim",
+    ]
+
+
+def test_a_failed_turn_plan_is_not_requested_again_until_the_next_turn():
+    """The attempt guard: one turn-plan request per turn, even when it fails."""
+    no_steps = '{"actions": [{"action_type": "pass_priority"}]}'  # nothing user-visible
+    backend = _ScriptedBackend([no_steps, no_steps, no_steps])
+    p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
+
+    p.plan_actions(_state(), "decision_required", ["Cast Bolt [OK]", "Pass"], _OWN_WINDOW)
+    assert _TURN_PLAN_REQUEST in backend.calls[0][1]
     assert p._active_turn_plan is None
 
+    p.plan_actions(_state(), "decision_required", ["Cast Bolt [OK]", "Pass"], _OWN_WINDOW)
+    assert _TURN_PLAN_REQUEST not in backend.calls[1][1]
 
-def test_plan_turn_defensive_parsing_empty_steps_returns_none():
-    backend = _ScriptedBackend([json.dumps({"turn_plan": {"steps": []}})])
+    p.plan_actions(_state(turn_number=6), "decision_required", ["Cast Bolt [OK]", "Pass"], _OWN_WINDOW)
+    assert _TURN_PLAN_REQUEST in backend.calls[2][1]
+
+
+def test_no_turn_plan_is_requested_on_the_opponents_turn_or_over_a_locked_plan():
+    backend = _ScriptedBackend([_cast_response("Bolt"), _cast_response("Bolt")])
     p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
-    plan = p.plan_turn(_state(), [], None)
-    assert plan is None
+    p.plan_actions(_state(active=2), "decision_required", ["Cast Bolt [OK]", "Pass"], _OWN_WINDOW)
+    assert _TURN_PLAN_REQUEST not in backend.calls[0][1]
 
-
-def test_plan_turn_defensive_parsing_garbage_does_not_clobber_existing():
-    """A failed parse must NOT erase an already-cached turn plan."""
-    from arenamcp.action_planner import TurnPlanStep
-
-    p = ActionPlanner(_ScriptedBackend([]), timeout=1.0, land_drop_first=False)
-    p._active_turn_plan = TurnPlan(
-        turn_number=4,
-        steps=[TurnPlanStep(action_type="play_land", card_name="Forest")],
-    )
-    p._backend = _ScriptedBackend(["completely invalid"])
-    plan = p.plan_turn(_state(), [], None)
-    # plan_turn returned None, but the cache was preserved.
-    assert plan is None
-    assert p._active_turn_plan is not None
+    p._active_turn_plan = p._parse_turn_plan_response(_turn_plan_response(), 4)
+    p.plan_actions(_state(), "decision_required", _LEGAL, _OWN_WINDOW)
+    assert _TURN_PLAN_REQUEST not in backend.calls[1][1]
     assert p._active_turn_plan.steps[0].card_name == "Forest"
 
 
@@ -185,9 +250,7 @@ def test_plan_turn_defensive_parsing_garbage_does_not_clobber_existing():
 
 
 def test_advance_turn_plan_matches_executed_action():
-    backend = _ScriptedBackend([_turn_plan_response()])
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
-    p.plan_turn(_state(), [], None)
+    p = _planner_with_plan()
 
     executed = GameAction(action_type=ActionType.PLAY_LAND, card_name="Forest")
     advanced = p.advance_turn_plan(executed)
@@ -198,10 +261,8 @@ def test_advance_turn_plan_matches_executed_action():
     assert p._active_turn_plan.steps[1].status == "current"
 
 
-def test_advance_turn_plan_returns_false_on_mismatch():
-    backend = _ScriptedBackend([_turn_plan_response()])
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
-    p.plan_turn(_state(), [], None)
+def test_advance_turn_plan_reports_divergence_on_mismatch():
+    p = _planner_with_plan()
 
     # Player cast something different than any remaining planned step.
     executed = GameAction(action_type=ActionType.CAST_SPELL, card_name="Random Bolt")
@@ -215,9 +276,7 @@ def test_advance_turn_plan_returns_false_on_mismatch():
 
 def test_advance_turn_plan_ignores_non_user_visible_actions():
     """Pay-costs, sub-decisions, etc. don't advance the plan, but also don't fail."""
-    backend = _ScriptedBackend([_turn_plan_response()])
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
-    p.plan_turn(_state(), [], None)
+    p = _planner_with_plan()
 
     executed = GameAction(action_type=ActionType.PAY_COSTS)
     advanced = p.advance_turn_plan(executed)
@@ -228,7 +287,7 @@ def test_advance_turn_plan_ignores_non_user_visible_actions():
     assert p._active_turn_plan.current_idx == 0
 
 
-def test_advance_turn_plan_with_no_active_plan_returns_false():
+def test_advance_turn_plan_with_no_active_plan_is_neutral():
     p = ActionPlanner(_ScriptedBackend([]), timeout=1.0, land_drop_first=False)
     executed = GameAction(action_type=ActionType.PLAY_LAND, card_name="Forest")
     assert p.advance_turn_plan(executed) == "neutral"
@@ -236,9 +295,7 @@ def test_advance_turn_plan_with_no_active_plan_returns_false():
 
 def test_advance_turn_plan_card_name_decoration_is_stripped():
     """Trailing tags like `[OK]` shouldn't block the match."""
-    backend = _ScriptedBackend([_turn_plan_response()])
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
-    p.plan_turn(_state(), [], None)
+    p = _planner_with_plan()
 
     # First step: Forest. Advance past it.
     p.advance_turn_plan(GameAction(action_type=ActionType.PLAY_LAND, card_name="Forest"))
@@ -254,9 +311,7 @@ def test_advance_turn_plan_card_name_decoration_is_stripped():
 
 
 def test_invalidate_turn_plan_clears_and_records_reason():
-    backend = _ScriptedBackend([_turn_plan_response()])
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
-    p.plan_turn(_state(), [], None)
+    p = _planner_with_plan()
     assert p._active_turn_plan is not None
 
     p.invalidate_turn_plan("opponent counter")
@@ -277,8 +332,8 @@ def test_turn_plan_block_injected_into_subsequent_prompts():
     """A cached turn plan must appear in subsequent same-turn prompts.
 
     R2 (2026-07-06): the turn plan arrives as a "turn_plan" key on the FIRST
-    own-turn action response (one merged LLM call, not a separate plan_turn
-    call); the block is injected into the next window's prompt.
+    own-turn action response (one merged LLM call); the block is injected
+    into the next window's prompt.
     """
     merged = json.loads(_turn_plan_response())
     merged["actions"] = [{"action_type": "play_land", "card_name": "Forest"}]
@@ -312,9 +367,7 @@ def test_turn_plan_block_injected_into_subsequent_prompts():
 
 
 def test_active_turn_plan_clears_on_turn_change():
-    backend = _ScriptedBackend([_turn_plan_response()])
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
-    p.plan_turn(_state(turn_number=4), [], None)
+    p = _planner_with_plan()
     assert p._active_turn_plan is not None
 
     # Bump the turn — the next plan_actions call should clear the cache.
@@ -324,9 +377,8 @@ def test_active_turn_plan_clears_on_turn_change():
         ["Pass"],
         {"type": "actions_available"},
     )
-    # Note: plan_actions on turn 5 will also run plan_turn (no active plan
-    # yet on turn 5, our turn, ActionsAvailable). Backend has no responses
-    # left so plan_turn returns None and the cache stays None.
+    # Turn 5's merged call also asks for a fresh turn plan, but the scripted
+    # backend answers "{}", so nothing is parsed and the cache stays None.
     assert p._active_turn_plan is None
 
 
@@ -334,9 +386,7 @@ def test_active_turn_plan_clears_on_turn_change():
 
 
 def test_get_turn_plan_payload_serializes_active_plan():
-    backend = _ScriptedBackend([_turn_plan_response()])
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
-    p.plan_turn(_state(), [], None)
+    p = _planner_with_plan()
 
     payload = p.get_turn_plan_payload()
 
@@ -362,9 +412,7 @@ def test_get_turn_plan_payload_returns_none_when_no_plan():
 def test_advance_turn_plan_lookahead_skips_stepped_over(monkeypatch):
     # P2-8: a later step executing early (preflight already made the land
     # drop) marks intermediate steps "skipped" instead of diverging.
-    backend = _ScriptedBackend([_turn_plan_response()])
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
-    p.plan_turn(_state(), [], None)
+    p = _planner_with_plan()
     # Plan: [play_land Forest, cast Optimistic Scavenger, ...]. Execute the
     # CAST first — Forest step should be skipped, not divergence.
     outcome = p.advance_turn_plan(
