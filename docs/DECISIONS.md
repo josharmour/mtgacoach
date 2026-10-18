@@ -7,6 +7,47 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-10-18 — Learning from a pro's two Alchemy drafts; decision latency; bridge restart
+
+- **Evidence:** a professional player hand-drafted two PremierDraft_YFRA_20261013
+  events on the Mac (GW Emrakul/Garruk/lifegain, 4-1; WU planeswalkers). His first
+  draft, 40 and five matches are decoded in `tests/fra_alchemy_draft_2026_10_18.py`
+  and `tests/pro_yfra_states.py`; the second draft's picks and games were lost to
+  log rotation (only pool + 40 survive: `tests/fra_alchemy_draft2_2026_10_18.py`).
+  Every match from ~13:45 on was played by our autopilot, not him.
+- **Draft:** hate-picks are their own score component (deny an off-lane bomb when the
+  best in-lane pick adds little; fires only at P3p3 Jace in his draft). Planeswalker
+  payoffs scale with the walkers a pool fields; restricted "not from hand" mana links
+  to cards cast from exile/prepared.
+- **Deck build:** ramp earns a top end (2+ ramp supports up to 3 six-drops), twobrid
+  costs priced per colour, a prepared utility land may take a basic's slot. His WU 40
+  is reproduced exactly; GW matches colours/engine/top end. Strict xfails: Ghalta's
+  slot, basics split.
+- **Play:** flash creatures are instant-speed plays ("flashback" ≠ flash); a RESPOND
+  NOW note when opponent removal targets our permanent and we hold a protection
+  answer; our planeswalkers count in crackback and blocks; loyalty minus vs open burn;
+  double strike / lifelink in the combat solver; trample damage split from
+  `_damage_order`; life gained this turn/game tracked from the log (Germinate
+  Recruits); printed cost reductions (Ghalta); restricted mana kept off hand casts;
+  power-scaled mana (Loot); top/bottom and perpetual-buff choice rules; cast
+  non-combat creatures after combat. The planner's explicit "Done" with attackers
+  offered is honoured (live 13:56:23: the solver attacked Diviner after the plan said
+  hold); only all-in / lethal overrides it.
+- **Latency (2026-10-11 audit, re-verified):** kqueue watcher on macOS + event-driven
+  coaching loop and 50 ms bridge prefetch; stale model calls cancelled on request
+  change; engine-busy gate and fixed sleeps replaced by condition polls; replanning
+  deferred to the opponent's turn; ms log timestamps. Critical decisions are hedged:
+  high and low effort in parallel, high used if on time (live 14:31-14:33: 4/5
+  high-effort calls hit the 15 s budget under shared-GPU load; server delivers
+  ~125-165 tok/s, low-effort decisions p50 2.5 s). Background planning effort unchanged.
+- **Bridge restart:** stdin EOF now releases 127.0.0.1:44222 first (live 14:54: the old
+  coach held it ~70 s); tests bind ephemeral ports (a hung suite held 44222 for 2 h).
+- **Verify:** full suite 4889 passed, 2 xfailed; the only failure is the CPU-timing
+  `test_the_slowest_real_boards_stay_within_the_latency_target`, which also fails on
+  bcb59a1 under load. Kill switches unchanged (`ARENAMCP_LINE_SEARCH=0`).
+
+---
+
 ## 2026-10-11 — Limited autoplay submits one deck; the deck model needs a full point to overrule
 
 - **User decision:** autoplay "should just pick the right deck and not give the
