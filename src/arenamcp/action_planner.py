@@ -9,6 +9,7 @@ import inspect
 import json
 import logging
 import re
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -742,6 +743,16 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         self._background_yield = fn
 
+    def set_decision_cancel_event(self, event: threading.Event | None) -> None:
+        """Cancel the decision calls made while ``event`` is installed once it is set.
+
+        The autopilot installs one around a typed decision and sets it when
+        the bridge shows a different request: the answer could only be
+        discarded ("request changed during planning", 95 calls on
+        2026-10-10), so the call stops and frees the model server.
+        """
+        self._decision_cancel_event = event
+
     def set_game_plan_source(self, source: Callable[[dict], str] | None) -> None:
         """Render the strategy block per decision from the live snapshot.
 
@@ -895,6 +906,9 @@ class ActionPlanner(_ActionLegalityMixin):
             extras["first_token_timeout_s"] = min(first_token_timeout_s, timeout_s)
         if reasoning_effort:
             extras["reasoning_effort"] = reasoning_effort
+        cancel_event = getattr(self, "_decision_cancel_event", None)
+        if cancel_event is not None and call_class.startswith("decision."):
+            extras["cancel_event"] = cancel_event
         extras = _accepted_extras(complete, extras)
         try:
             response = complete(
@@ -3210,6 +3224,9 @@ class ActionPlanner(_ActionLegalityMixin):
         and the background game-plan reform both read.
         """
         chosen = self._plan_decision_options(decision, game_state)
+        cancel_event = getattr(self, "_decision_cancel_event", None)
+        if cancel_event is not None and cancel_event.is_set():
+            return chosen  # superseded: the caller discards it, memory must not keep it
         try:
             self._memory().record(game_state, decision, chosen, self._last_decision_reasoning)
         except Exception as error:  # memory never blocks a decision

@@ -1072,6 +1072,11 @@ class StandaloneCoach(
             self._autopilot._advice_recorder = self._record_advice
             self._autopilot._stuck_report_fn = self._auto_capture_autopilot_stuck
             self._autopilot._oops_fn = self._oops_report
+            # A typed decision's model call is cancelled when the bridge
+            # prefetch thread sees a different request (BridgeDecisionPoller).
+            _watch = getattr(getattr(self, "_bridge_poller", None), "watch_requests", None)
+            if callable(_watch):
+                self._autopilot._request_watch_fn = _watch
             if self._coach:
                 self._autopilot._game_plan_mgr = self._coach._ensure_game_plan_mgr()
                 if self._autopilot._game_plan_mgr:

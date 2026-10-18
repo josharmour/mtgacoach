@@ -4221,6 +4221,42 @@ class AutopilotEngine(
         }
     )
 
+    # Set by the coaching runtime to BridgeDecisionPoller.watch_requests:
+    # listener(response) runs on the bridge prefetch thread whenever the
+    # pending request changes. None (tests, no bridge) = no early cancel.
+    _request_watch_fn: Callable[[Callable[[dict[str, Any]], None]], Callable[[], None]] | None = None
+
+    def _cancel_on_request_change(self, decision: Any, fp: Any, cancel: threading.Event) -> Callable[[], None]:
+        """Set ``cancel`` once the bridge shows a different request than ``decision``.
+
+        Only a different *pending* request counts: a momentarily empty poll
+        between GRE messages is not proof the request is gone, and the
+        post-planning revalidation still rejects a consumed one. Runs the
+        comparison on the prefetch thread; touches only ``cancel``.
+        """
+        watch = self._request_watch_fn
+        if not callable(watch):
+            return lambda: None
+        from arenamcp.decisions import build_pending_decision
+        from arenamcp.request_tracker import decision_fingerprint
+
+        def listener(resp: dict[str, Any]) -> None:
+            if cancel.is_set() or resp.get("ok") is False or not resp.get("has_pending"):
+                return
+            try:
+                live = build_pending_decision(resp, resolve_instance=lambda _iid: "")
+            except Exception:
+                return
+            live_fp = decision_fingerprint(live) if live else None
+            if live_fp != fp or (live is not None and live.request_id != decision.request_id):
+                cancel.set()
+
+        try:
+            return watch(listener) or (lambda: None)
+        except Exception as error:
+            logger.debug("request watch unavailable: %s", error)
+            return lambda: None
+
     _LOG_CATCH_UP_TIMEOUT_S = 3.0
     _SEARCH_IDENTITY_WAIT_S = 10.0
     # A SelectN over our own hand (a loot's discard) only waits for the log to
@@ -4470,7 +4506,21 @@ class AutopilotEngine(
         # strategic model request off the tactical deadline.
         self._refresh_game_plan(game_state)
 
-        option_ids = self._planner.plan_decision_options(decision, game_state)
+        cancel = threading.Event()
+        unwatch = self._cancel_on_request_change(decision, fp, cancel)
+        set_cancel = getattr(self._planner, "set_decision_cancel_event", None)
+        if callable(set_cancel):
+            set_cancel(cancel)
+        try:
+            option_ids = self._planner.plan_decision_options(decision, game_state)
+        finally:
+            if callable(set_cancel):
+                set_cancel(None)
+            unwatch()
+        if cancel.is_set():
+            logger.info("typed-decision: request changed during planning; model call cancelled, yielding")
+            self._state = AutopilotState.IDLE
+            return True
         self._note_typed_fallback()
         if decision.request_type == "Group" and (
             len(option_ids) != decision.min_select or not decision.selection_is_valid(option_ids)
