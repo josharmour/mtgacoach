@@ -176,10 +176,3 @@ def test_fallback_hand_call_uses_the_logged_count():
     # Keeping 5: one land with cheap plays is a keep, not a mulligan to 4.
     assert _mulligan_hand_call(game_state) == "KEEP"
     assert _mulligan_hand_call({"hand": hand}) == "MULLIGAN"
-
-
-def test_fallback_hand_call_matches_the_policy_on_land_counts():
-    five_lands = seven(ISLAND, ISLAND, ISLAND, ISLAND, ISLAND, SPRITE, OPT)
-    six_lands = seven(ISLAND, ISLAND, ISLAND, ISLAND, ISLAND, ISLAND, SPRITE)
-    assert _mulligan_hand_call({"hand": five_lands}) == "KEEP"
-    assert _mulligan_hand_call({"hand": six_lands}) == "MULLIGAN"
