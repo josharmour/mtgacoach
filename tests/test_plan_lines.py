@@ -46,6 +46,9 @@ def _offline_service() -> ot.TrickTableService:
     )
 
 
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
+
+
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch):
     """Deck lookups from the fixture catalog; no real trick tables; fresh caches."""

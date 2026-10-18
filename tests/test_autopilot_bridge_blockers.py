@@ -61,6 +61,7 @@ def combat(monkeypatch, request):
     return engine, action, pending
 
 
+@pytest.mark.usefixtures("instant_combat_acks")
 def test_same_named_creatures_submit_distinct_blockers(combat):
     engine, action, _pending = combat
 

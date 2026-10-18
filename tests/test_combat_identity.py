@@ -54,6 +54,7 @@ def parse(action, menu, state, context):
     return planner._parse_response(json.dumps(action), menu, context, game_state=state)
 
 
+@pytest.mark.usefixtures("instant_combat_acks")
 def test_live_token_label_binds_board_copy_even_when_only_one_is_eligible(monkeypatch):
     monkeypatch.setattr("arenamcp.autopilot_bridge.time.sleep", lambda _: None)
     state = board()

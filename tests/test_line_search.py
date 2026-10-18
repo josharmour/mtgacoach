@@ -515,10 +515,9 @@ def test_proxy_outcome_replays_the_line_with_a_trick():
 
 def test_posture_compares_attacking_and_holding_lines():
     assert _search(G1_T12).posture == "either"  # nothing of ours can attack
+    # Theorix Metamage into their untapped Cadet: attacking and holding end alike.
     result = _search(_two_creatures())
-    assert result.posture in ("attack", "hold", "either")
-    if result.posture != "either":
-        assert result.posture_reason.startswith("attack with Theorix Metamage")
+    assert (result.posture, result.posture_reason) == ("either", "attacking and holding end alike")
 
 
 # --- deadlines and latency ------------------------------------------------------------
@@ -562,34 +561,24 @@ def _worst_case() -> dict:
     return source
 
 
-@pytest.mark.parametrize("name", list(FIXTURES))
-def test_real_boards_search_within_50_ms(name):
-    # Production limits; the fastest of three runs in CPU time (a wall-clock 50 ms bound
-    # once failed at 50.2 ms while other tests ran in parallel).
-    survival, lethal_now = _hints(FIXTURES[name])
-    model = build_board_model(deepcopy(FIXTURES[name]))
-    results = []
-    elapsed = _fastest_ms(
-        lambda: results.append(search_lines(model, survival=survival, lethal_now=lethal_now))
-    )
-    assert elapsed < 50, [r.stats() for r in results]
-
-
-def test_crowded_board_searches_within_250_ms():
-    survival, lethal_now = _hints(_crowded())
-    model = build_board_model(_crowded())
-    results = []
-    elapsed = _fastest_ms(
-        lambda: results.append(search_lines(model, survival=survival, lethal_now=lethal_now))
-    )
-    assert elapsed < 250 and any(not r.truncated for r in results)
+@pytest.mark.parametrize("name", [*FIXTURES, "crowded"])
+def test_real_and_crowded_boards_finish_inside_the_work_budget(name):
+    # The deterministic form of "real boards search in ~15 ms": none exhausts the work
+    # budget (2-154 nodes against WORK_BUDGET); the CPU-time target is checked on the
+    # slowest real boards (test_the_slowest_real_boards_stay_within_the_latency_target).
+    result = _search(_crowded() if name == "crowded" else FIXTURES[name])
+    assert not result.bounded and not result.truncated, result.stats()
 
 
 def test_worst_case_is_cut_off_by_the_deadlines():
+    # One run at production limits: the work budget (or, on a loaded machine, the
+    # 350 ms wall-clock cap) stops the search, and CPU time never exceeds wall time.
+    from tests.strategic_states import latency_bound
+
     model = build_board_model(_worst_case())
     results = []
-    elapsed = _fastest_ms(lambda: results.append(search_lines(model, survival=True, lethal_now=False)))
-    assert elapsed < 400
+    elapsed = _fastest_ms(lambda: results.append(search_lines(model, survival=True, lethal_now=False)), 1)
+    assert elapsed < latency_bound(400)
     assert all(result.bounded or result.truncated for result in results)
     json.dumps([line.as_payload() for line in results[-1].lines])
 
@@ -859,48 +848,34 @@ def test_any_target_burn_can_go_face_for_lethal():
     assert result.first_action[("cast", 30, None)].cls == WIN
 
 
-def test_restricted_search_is_deterministic_and_bounded_by_work_not_time():
-    import threading
+def test_restricted_search_is_deterministic_and_bounded_by_work_not_time(monkeypatch):
+    from types import SimpleNamespace
 
+    from arenamcp import line_search_moves
     from tests.strategic_states import SLOW_212608
 
     model = build_board_model(deepcopy(SLOW_212608))
-    first = search_lines(model, survival=False, lethal_now=False, hard_ms=5000.0)
+    first = search_lines(model, survival=False, lethal_now=False, hard_ms=1e9)
     assert first.bounded and not first.truncated
-    stop = threading.Event()
-
-    def spin():
-        while not stop.is_set():
-            sum(range(1000))
-
-    busy = [threading.Thread(target=spin, daemon=True) for _ in range(3)]
-    for thread in busy:
-        thread.start()
-    try:  # three busy threads slow the search down; only the hard cap is a clock
-        second = search_lines(model, survival=False, lethal_now=False, hard_ms=5000.0)
-    finally:
-        stop.set()
-    assert second.bounded and not second.truncated
+    # A machine 1000x slower: every clock read is 50 ms later. Only the hard cap is a
+    # clock, so the soft limit (the work budget) stops the search in the same place.
+    ticks = iter(range(10**9))
+    slow = SimpleNamespace(perf_counter=lambda: next(ticks) * 0.05)
+    monkeypatch.setattr(line_search_moves, "time", slow)
+    monkeypatch.setattr("arenamcp.line_search.time", slow)
+    second = search_lines(model, survival=False, lethal_now=False, hard_ms=1e9)
+    assert second.bounded and not second.truncated and second.elapsed_ms > first.elapsed_ms
     assert (second.nodes, second.combats) == (first.nodes, first.combats)
     assert [line.summary() for line in second.lines] == [line.summary() for line in first.lines]
 
 
-def _untruncated(source: dict):
-    """A search the wall-clock hard cap didn't cut (a loaded test machine can hit it)."""
-    for _attempt in range(3):
-        result = _search(source)
-        if not result.truncated:
-            break
-    return result
-
-
 def test_hand_order_never_changes_the_pick():
     source = _plus(G1_T12, lands=("Island", "Island", "Forest"), hand=("Theorix Metamage", "Unsummon"))
-    reference = _untruncated(source)
+    reference = _search(source)
     for order in (list(reversed(source["hand"])), source["hand"][2:] + source["hand"][:2]):
         permuted = deepcopy(source)
         permuted["hand"] = deepcopy(order)
-        result = _untruncated(permuted)
+        result = _search(permuted)
         assert result.best.summary() == reference.best.summary()
         assert result.baseline.summary() == reference.baseline.summary()
     content = [(line.block, line.steps[0].sig) for line in reference.lines if line.steps]

@@ -649,11 +649,14 @@ def test_latency(table):
     states = [deepcopy(S.G3_T10_BLOCKS), deepcopy(S.BUG_180436)]
     for state in states:
         ot.trick_risk(state, table)
-    started = time.perf_counter()
-    for _ in range(20):
-        for state in states:
-            ot.trick_risk(state, table)
-    assert (time.perf_counter() - started) / 40 < 0.010
+
+    def run() -> None:
+        for _ in range(10):
+            for state in states:
+                ot.trick_risk(state, table)
+
+    # Process CPU time, best of three, with headroom while the machine is busy.
+    assert S.cpu_ms(run, 3) / 20 < S.latency_bound(10)
 
 
 # --- set code, telemetry, service --------------------------------------------------------------
@@ -703,10 +706,10 @@ def test_service_builds_off_thread_and_caches(tmp_path):
         card_lookup=LOOKUP.get,
         cache_dir=tmp_path,
     )
-    started = time.perf_counter()
+    # ensure() returns while the build waits on `release` (a blocking ensure would
+    # have built the table by now), and a second call starts no second build.
     service.ensure("fra")
-    service.ensure("FRA")  # already building: no second thread
-    assert time.perf_counter() - started < 0.5
+    service.ensure("FRA")
     assert service.get("FRA") is None
     release.set()
     built = service.wait("FRA", 10)

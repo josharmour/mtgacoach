@@ -35,6 +35,29 @@ LOCAL, OPPONENT = 2, 1
 NAMES = pytest.mark.parametrize("log_names", [False, True], ids=["bridge-names", "log-names"])
 
 
+class _FakeTime:
+    """autopilot's ``time`` module where sleeping advances the clock instead of waiting."""
+
+    def __init__(self) -> None:
+        self.now = time.time()
+
+    def time(self) -> float:
+        return self.now
+
+    monotonic = perf_counter = time
+
+    def sleep(self, seconds: float) -> None:
+        self.now += max(0.0, seconds)
+
+
+@pytest.fixture
+def fake_time(monkeypatch) -> _FakeTime:
+    """The post-plan settle loop (500 ms) and the verification polls run on a fake clock."""
+    clock = _FakeTime()
+    monkeypatch.setattr(autopilot_module, "time", clock)
+    return clock
+
+
 def _state(step: str, *, log_names: bool, active: int = LOCAL, context: bool = False) -> dict[str, Any]:
     """The recorded board in combat at ``step`` ("DeclareBlock"), bridge or log names."""
     state = json.loads(FIXTURE.read_text())
@@ -233,7 +256,7 @@ def _cast_plan() -> ActionPlan:
 
 
 @pytest.mark.parametrize("fresh_log_names", [False, True], ids=["fresh-bridge", "fresh-log"])
-def test_staleness_check_ignores_a_naming_change(monkeypatch, fresh_log_names):
+def test_staleness_check_ignores_a_naming_change(monkeypatch, fake_time, fresh_log_names):
     """The re-polled state may come from the other source; the phase did not change."""
     pre = _state("DeclareBlock", log_names=not fresh_log_names, active=OPPONENT)
     fresh = _state("DeclareBlock", log_names=fresh_log_names, active=OPPONENT)
@@ -265,7 +288,7 @@ def _verify(monkeypatch, pre: dict[str, Any], post: dict[str, Any]) -> bool:
 
 
 @NAMES
-def test_verification_does_not_count_a_naming_change_as_progress(monkeypatch, log_names):
+def test_verification_does_not_count_a_naming_change_as_progress(monkeypatch, fake_time, log_names):
     pre = _state("DeclareBlock", log_names=log_names, active=OPPONENT)
     post = _state("DeclareBlock", log_names=not log_names, active=OPPONENT)
     assert _verify(monkeypatch, pre, post) is False
