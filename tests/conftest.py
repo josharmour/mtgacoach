@@ -89,6 +89,7 @@ _LOG_DIR_COPIES = (
     ("arenamcp.standalone_diagnostics", "LOG_DIR", ""),
     ("arenamcp.standalone_postmatch", "LOG_DIR", ""),
     ("arenamcp.standalone_autopilot_capture", "LOG_DIR", ""),
+    ("arenamcp.match_bundle", "BUNDLE_DIR", "match_bundles"),
 )
 
 
@@ -146,13 +147,13 @@ with contextlib.suppress(Exception):
 # connect(). On 2026-10-18 a hung `pytest tests` held 127.0.0.1:44222 for two
 # hours and the user's real coach could not start its bridge ("[Errno 48]
 # Address already in use"). Tests bind ephemeral ports, and any bind of a live
-# port fails loudly instead of competing with a running coach.
+# port fails loudly instead of competing with a running coach. 44223 is the
+# native Mac probe's own listener (spikes/mac-il2cpp/probe.cpp).
 _LIVE_BRIDGE_PORTS = frozenset({44222, 44223})
 with contextlib.suppress(Exception):
     from arenamcp import gre_bridge as _gre_bridge
 
     _gre_bridge.BRIDGE_PORT = 0
-    _gre_bridge.BOT_BATTLE_PORT = 0
 
 _original_socket_bind = socket.socket.bind
 
