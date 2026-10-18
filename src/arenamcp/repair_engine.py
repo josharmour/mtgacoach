@@ -125,9 +125,10 @@ class RepairEngine:
     def _is_native_mac(install) -> bool:
         """True for the native macOS MTGA client (IL2CPP build).
 
-        The native client has no CLR, so BepInEx/the bridge can NEVER load
-        into it — only a Wine/CrossOver bottle running the Windows Mono
-        build can host the plugin (docs/PLATFORM_PARITY.md §B1). Written
+        The native client has no CLR, so BepInEx and its plugin can NEVER
+        load into it — only a Wine/CrossOver bottle running the Windows Mono
+        build can host the plugin (docs/PLATFORM_PARITY.md §B1); the native
+        client gets the injected IL2CPP bridge library instead. Written
         defensively against the exact platform tag: anything darwin that
         is not explicitly a wine-style bottle counts as native.
         """
@@ -142,9 +143,10 @@ class RepairEngine:
             key,
             label,
             "ok",
-            "Not applicable: native Mac client cannot host the bridge "
-            "(coaching uses the log; native Mac autoplay uses screenshots "
-            "and macOS input — see NATIVE_MAC_AUTOPLAY.md).",
+            "Not applicable: the native Mac client cannot load BepInEx. "
+            "Coaching uses the log; autoplay needs MTGA launched with the "
+            "coach's native macOS bridge library (reopen MTGA through the "
+            "coach, or set its Steam launch option to load the library).",
         )
 
     # ------------------------------------------------------------------

@@ -156,8 +156,6 @@ class MainWindow(QMainWindow):
         restart_act.triggered.connect(self._restart_coach)
         if is_mac:
             tools_menu.addSeparator()
-            vision_act = tools_menu.addAction("Autoplay Vision Model…")
-            vision_act.triggered.connect(self._choose_autoplay_vision_model)
             permissions_act = tools_menu.addAction("Autoplay Permissions…")
             permissions_act.triggered.connect(self._check_autoplay_permissions)
             stop_autoplay_act = tools_menu.addAction("Stop Autoplay\tF11")
@@ -259,17 +257,6 @@ class MainWindow(QMainWindow):
         box.setTextFormat(Qt.RichText)
         box.setText(f"<table>{rows}</table>")
         box.exec()
-
-    def _choose_autoplay_vision_model(self) -> None:
-        model, accepted = QInputDialog.getText(
-            self,
-            "Native Mac Autoplay",
-            "Image-capable model ID served by your endpoint (blank uses the coach model).\n"
-            "Autoplay sends Arena window screenshots to this model. Restart the coach after changing it.",
-            text=str(self._settings.get("autopilot_vision_model") or ""),
-        )
-        if accepted:
-            self._settings.set("autopilot_vision_model", model.strip() or None)
 
     def _check_autoplay_permissions(self) -> None:
         from arenamcp.native_mac_input import NativeMacInput

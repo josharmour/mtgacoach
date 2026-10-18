@@ -6,9 +6,9 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from tests.mac_fakes import make_frame
 
 from arenamcp.auto_queue import AutoQueueNavigator, parse_queue_action
-from test_native_mac_autopilot import make_frame
 
 
 def proposal(action="start_queue", screen="deck", **changes):

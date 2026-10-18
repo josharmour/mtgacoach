@@ -51,8 +51,10 @@ Alternatively, each [release](https://github.com/josharmour/mtgacoach/releases/l
 2. Open the **Repair** tab — it automatically verifies your MTGA installation, Python runtime, license key, and game logging setup.
 3. Ensure **Detailed Logs (Plugin Support)** is enabled in MTGA's Account Options menu.
 
-Native macOS Steam installs have an experimental autoplay path that uses screenshots
-and macOS input, without Wine or BepInEx. See [native Mac autoplay setup and limits](NATIVE_MAC_AUTOPLAY.md).
+On native macOS Steam installs the coach works from `Player.log` alone. Autoplay
+acts only through the experimental native macOS bridge library (no Wine or BepInEx):
+open MTGA through the coach, or set MTGA's Steam launch option to load the library.
+Without the bridge, autoplay hands every decision back to you and the coach keeps advising.
 
 ---
 

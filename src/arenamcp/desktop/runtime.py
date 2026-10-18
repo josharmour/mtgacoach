@@ -1216,12 +1216,16 @@ def launch_native_mac_session(*, on_status: Callable[[str], None] | None = None)
             on_status(
                 "Arena is already running. Connecting to its bridge; your match stays open."
                 if installed
-                else "Arena is already running. Native bridge not installed: using screen-based autoplay mode."
+                else "Arena is already running. Native bridge not installed: coaching from the log only; "
+                "autoplay needs the bridge."
             )
         return None
     if not installed:
         if on_status:
-            on_status("Native bridge not installed: using screen-based autoplay mode. Start Arena normally.")
+            on_status(
+                "Native bridge not installed: coaching from the log only; autoplay needs the bridge. "
+                "Start Arena normally."
+            )
         return None
     mtga_dir, _source = find_mtga_install_dir()
     if not mtga_dir or _find_mac_app_bundle(mtga_dir) is None:

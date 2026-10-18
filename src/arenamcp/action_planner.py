@@ -237,23 +237,6 @@ def llm_circuit_open(backend: Any) -> bool:
     return state is False
 
 
-def model_unreachable(plan: Any, backend: Any = None) -> bool:
-    """``plan`` is empty because the model server can't be reached now, not merely slow.
-
-    True for a FALLBACK_LLM_UNAVAILABLE plan while ``backend``'s circuit
-    breaker is open, or when the call failed with the circuit open, the
-    proxy's 'model server unavailable' skip, or a connection error. A timeout
-    or any other error is not: a slow planner says nothing about the separate
-    vision model (2026-10-06 18:53: 30 s planning timeouts with vision fine).
-    """
-    if getattr(plan, "fallback_reason", "") != FALLBACK_LLM_UNAVAILABLE:
-        return False
-    if llm_circuit_open(backend):
-        return True
-    detail = str(getattr(plan, "fallback_detail", "") or "").lower()
-    return any(mark in detail for mark in ("circuit open", "model server unavailable", "connect"))
-
-
 def is_time_budget_error(error: BaseException) -> bool:
     """The call ran out of its own time budget (the model was too slow), not a dead server.
 

@@ -88,9 +88,6 @@ DEFAULTS = {
     # Autopilot persistent toggle state
     "autopilot_enabled": False,
     "auto_queue_enabled": False,  # Opt in to repeating the most recent queue/deck after matches.
-    "autopilot_vision_model": None,
-    "autopilot_vision_url": None,
-    "autopilot_vision_api_key": None,
     # Where MTGA runs: "desktop" (this computer) or "android" (a phone tethered
     # over adb with the mtgacoach probe injected; see arenamcp.android_link).
     # MTGACOACH_GAME_DEVICE overrides it.
