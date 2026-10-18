@@ -24,8 +24,11 @@ LOG_DIR = Path.home() / ".arenamcp"
 _env_log_file = os.getenv("ARENAMCP_LOG_FILE")
 LOG_FILE = Path(_env_log_file) if _env_log_file else LOG_DIR / "standalone.log"
 
-# Shared format used by every handler
-LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+# Shared format used by every handler. Milliseconds (".123") because decision
+# latency is measured from these lines and one-second stamps hid sub-second
+# gaps (2026-10-11 latency audit). Parsers of standalone.log accept both forms
+# (match_bundle._COACH_TS_RE, match_review._LOG_TS_RE).
+LOG_FORMAT = "%(asctime)s.%(msecs)03d | %(levelname)-8s | %(name)s | %(message)s"
 LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 # Third-party loggers that are excessively noisy at INFO level

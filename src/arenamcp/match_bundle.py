@@ -146,8 +146,10 @@ def begin_match(
 # Log slicing (byte ranges only — never the whole file)
 # ---------------------------------------------------------------------------
 
-_COACH_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \| ")
-_COACH_DEBUG_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \| DEBUG")
+# Records start "2026-10-18 12:00:00.123 | LEVEL"; lines written before
+# logging_config added milliseconds have no ".123".
+_COACH_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[.,]\d{3})? \| ")
+_COACH_DEBUG_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[.,]\d{3})? \| DEBUG")
 
 
 def _read_range(path: Path, start: int, end: int | None) -> str:
