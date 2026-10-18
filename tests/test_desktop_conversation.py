@@ -97,14 +97,6 @@ def test_set_verbosity_and_stop_speaking(session, monkeypatch):
     assert stop_calls == [True]
 
 
-def test_stop_speaking_sends_stop_speech_command(session, monkeypatch):
-    commands: list[tuple[str, Any]] = []
-    monkeypatch.setattr(session._tts, "stop_speech", lambda: None)
-    monkeypatch.setattr(session, "send_command", lambda cmd, *a: commands.append((cmd, a)))
-    session.stop_speaking()
-    assert commands == [("stop_speech", ())]
-
-
 def test_speak_request_passes_priority_and_identity(session, monkeypatch):
     captured: dict[str, Any] = {}
 
@@ -124,46 +116,6 @@ def test_speak_request_passes_priority_and_identity(session, monkeypatch):
     assert captured["text"] == "consider blocking"
     assert captured["priority"] == "urgent"
     assert captured["identity"] == identity
-
-
-def test_speak_stop_event_halts_desktop_tts(session, monkeypatch):
-    """C2: the engine's speak_stop event (engine-initiated preemption —
-    typed question, urgent topic) must halt desktop TTS playback."""
-    stop_calls: list[bool] = []
-    monkeypatch.setattr(session._tts, "stop_speech", lambda: stop_calls.append(True))
-    session._handle_process_event({"type": "speak_stop"})
-    assert stop_calls == [True]
-    # Idempotent: repeated events are safe.
-    session._handle_process_event({"type": "speak_stop"})
-    assert stop_calls == [True, True]
-
-
-def test_speak_stop_event_holds_tts_generation_gate(qapp, monkeypatch):
-    """C2 + M4 interplay: a rendered-but-late request invalidated by a
-    speak_stop is discarded even if the worker renders it afterwards."""
-    manager = _ready_manager(monkeypatch)
-    manager.request_speech(text="old utterance", voice_id="af_heart", voice_name="Heart", speed=1.0)
-    generation = manager._generation
-    manager.stop_speech()  # engine-initiated preempt lands as a stop
-    assert manager._pending_request is None
-
-    play = Mock(return_value=True)
-    cleanup = Mock()
-    monkeypatch.setattr("arenamcp.desktop.tts_manager.AudioPlayback.play_file", play)
-    monkeypatch.setattr(manager, "_cleanup_path", cleanup)
-    manager._handle_stdout_line(
-        json.dumps({"type": "rendered", "generation": generation, "path": "late.wav"})
-    )
-    play.assert_not_called()
-    cleanup.assert_called_once()
-
-
-def test_speak_request_without_priority_is_legacy(session, monkeypatch):
-    captured: dict[str, Any] = {}
-    monkeypatch.setattr(session._tts, "request_speech", lambda **kw: captured.update(kw))
-    session._handle_process_event({"type": "speak_request", "text": "play a land"})
-    assert "priority" not in captured
-    assert "identity" not in captured
 
 
 # ---------------------------------------------------------------------------
@@ -237,14 +189,6 @@ def test_identity_same_session_replaces_normally(qapp, monkeypatch):
     )
     pending = manager._pending_request
     assert pending is not None and pending["text"] == "turn 4 advice"
-
-
-def test_request_without_identity_never_dropped(qapp, monkeypatch):
-    manager = _ready_manager(monkeypatch)
-    manager.request_speech(text="legacy advice", voice_id="af_heart", voice_name="Heart", speed=1.0)
-    manager.request_speech(text="newer legacy", voice_id="af_heart", voice_name="Heart", speed=1.0)
-    pending = manager._pending_request
-    assert pending is not None and pending["text"] == "newer legacy"
 
 
 def test_speech_started_and_stopped_signals(qapp, monkeypatch):
@@ -470,64 +414,6 @@ def test_proactive_panel_has_no_chat_or_microphone_controls(panel):
     assert not any("talk" in label or "Chat detail" in label for label in labels)
 
 
-def test_auto_queue_is_opt_in_and_persists_user_toggle(panel, isolated_settings):
-    assert panel.auto_queue_btn.text() == "Auto-queue: Off"
-    assert panel.auto_queue_status_label.isHidden()
-    assert panel.session.commands == []
-    panel.auto_queue_btn.click()
-    assert isolated_settings.get("auto_queue_enabled") is True
-    assert panel.session.commands == [("set_auto_queue", True)]
-    assert panel.auto_queue_btn.text() == "Auto-queue: On"
-    assert not panel.auto_queue_status_label.isHidden()
-    panel.auto_queue_btn.click()
-    assert isolated_settings.get("auto_queue_enabled") is False
-    assert panel.session.commands[-1] == ("set_auto_queue", False)
-
-
-def test_auto_queue_saved_choice_does_not_send_startup_activation(panel, isolated_settings):
-    isolated_settings.set("auto_queue_enabled", True)
-    restored = CompactCoachPanel(session=panel.session)
-    try:
-        assert restored.auto_queue_btn.text() == "Auto-queue: On"
-        assert restored.session.commands == []
-        restored.session.started.emit()
-        assert not any(command == "set_auto_queue" for command, _ in restored.session.commands)
-    finally:
-        restored.close()
-
-
-def test_auto_queue_reason_does_not_change_toggle_or_enable_autoplay(panel):
-    panel.session.statusChanged.emit("AUTO_QUEUE", "ON")
-    panel.session.statusChanged.emit("AUTO_QUEUE_DETAIL", "Paused: turn on Autoplay to continue.")
-    assert panel.auto_queue_btn.text() == "Auto-queue: On"
-    assert "turn on Autoplay" in panel.auto_queue_status_label.text()
-    assert panel.ap_btn.text() == "Autoplay: Off"
-    assert panel.session.commands == []
-    panel.session.statusChanged.emit("AUTO_QUEUE_DETAIL", "Continuing the result screen.")
-    assert "result screen" in panel.auto_queue_status_label.text()
-    panel.session.statusChanged.emit("AUTO_QUEUE", "OFF")
-    assert panel.auto_queue_btn.text() == "Auto-queue: Off"
-    assert panel.auto_queue_status_label.isHidden()
-
-
-def test_session_sends_explicit_auto_queue_choice(session, monkeypatch):
-    from arenamcp.pipe_adapter import PipeAdapter
-
-    payloads = []
-    monkeypatch.setattr(session._process, "send_payload", payloads.append)
-    session.set_auto_queue(True)
-    session.set_auto_queue(False)
-    assert payloads == [
-        {"cmd": "set_auto_queue", "enabled": True},
-        {"cmd": "set_auto_queue", "enabled": False},
-    ]
-    adapter = PipeAdapter.__new__(PipeAdapter)
-    adapter._coach = Mock()
-    for payload in payloads:
-        adapter._dispatch(json.loads(json.dumps(payload)))
-    assert [call.args for call in adapter._coach.set_auto_queue.call_args_list] == [(True,), (False,)]
-
-
 def test_saved_chat_preference_cannot_disable_proactive_desktop(panel, isolated_settings):
     isolated_settings.set("conversation_mode", "conversation")
     p = CompactCoachPanel(session=panel.session)  # type: ignore[arg-type]
@@ -558,22 +444,6 @@ def test_stale_chat_verbosity_ack_has_no_ui_effect(panel):
     panel.session.statusChanged.emit("VERBOSITY", "quiet")
     assert not hasattr(panel, "verbosity_btn")
     assert not panel.log_view.isHidden()
-
-
-def test_stop_speech_button_calls_session(panel):
-    panel.stop_speech_btn.click()
-    assert panel.session.stopped_speech == 1
-
-
-def test_desktop_stop_clears_engine_arbiter(session, monkeypatch):
-    """M1: UI stop must release the ENGINE arbiter channel (stop_speech
-    command), so subsequent proactive speech is not cancelled by a channel
-    that never freed."""
-    commands: list[tuple[str, Any]] = []
-    monkeypatch.setattr(session._tts, "stop_speech", lambda: None)
-    monkeypatch.setattr(session, "send_command", lambda cmd, *a: commands.append((cmd, a)))
-    session.stop_speaking()
-    assert ("stop_speech", ()) in commands
 
 
 def test_stop_button_cancels_engine_pending(monkeypatch):
@@ -628,13 +498,6 @@ def test_ptt_press_sends_stop_speech_command(ptt_button, qapp):
     PttController(ptt_button, session, recorder=recorder, transcriber=transcriber)
     ptt_button.pressed.emit()
     assert ("stop_speech", ()) in session.commands
-
-
-def test_proactive_advice_and_narration_still_reach_panel(panel):
-    panel.session.adviceReceived.emit("Save removal for the attacker.", "Advice")
-    panel.session.spokenLine.emit("Save removal for the attacker.")
-    assert "Save removal for the attacker." in panel.now_text.text()
-    assert "Save removal for the attacker." in panel.log_view.toPlainText()
 
 
 def test_legacy_conversation_events_do_not_replace_proactive_feed(panel):

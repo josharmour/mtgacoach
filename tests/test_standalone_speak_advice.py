@@ -36,8 +36,10 @@ def test_speak_advice_filtering(default_conversation_settings):
     # 2. Verify active decision phrases are NOT silenced
     coach._voice_output.reset_mock()
     coach.speak_advice("Decline the optional action and pass priority.")
-    assert coach._voice_output.speak.call_count == 1
-    assert coach._voice_output.speak.call_args[0][0] == "Decline the optional action and pass priority."
+    # Straight to the voice output, blocking by default.
+    coach._voice_output.speak.assert_called_once_with(
+        "Decline the optional action and pass priority.", blocking=True
+    )
 
     coach._voice_output.reset_mock()
     coach.speak_advice("Accept the optional trigger.")
