@@ -10,6 +10,8 @@ present in the game state.
 
 from __future__ import annotations
 
+import pytest
+
 from arenamcp.coach import CoachEngine
 
 
@@ -134,19 +136,21 @@ def test_keeps_play_recommendation_when_land_actually_in_hand():
     assert "Play Forest" in out
 
 
-def test_strips_generic_a_land_phrase():
+@pytest.mark.parametrize(
+    ("advice", "expected"),
+    [
+        ("Play a land then cast Lightning Bolt.", "Cast Lightning Bolt"),
+        ("Play a land, then cast Lightning Bolt.", "Cast Lightning Bolt"),
+        ("Play a land and then cast Lightning Bolt at their face.", "Cast Lightning Bolt at their face."),
+        ("Cast Lightning Bolt at their face, then play a land.", "Cast Lightning Bolt at their face"),
+    ],
+)
+def test_strips_generic_a_land_phrase_with_its_joiner(advice, expected):
+    """The stripped land play used to leave "then cast Lightning Bolt" (or
+    "..., then") behind, shown and spoken as the advice."""
     coach = _make_coach()
-    state = _state_no_lands_in_hand()
 
-    out = coach._postprocess_advice(
-        "Play a land then cast Lightning Bolt.",
-        state,
-    )
-
-    assert "Play a land" not in out
-    # Don't assert on the rest of the prose — the legal-action filter can
-    # replace it when nothing legal is mentioned. The point of this test is
-    # that the generic "a land" phrase is recognized and stripped.
+    assert coach._postprocess_advice(advice, _state_no_lands_in_hand()) == expected
 
 
 def test_no_typo_dict_means_typoed_card_passes_through_unchanged():

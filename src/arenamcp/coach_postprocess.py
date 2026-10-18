@@ -334,13 +334,25 @@ class _AdvicePostprocessMixin:
             if removable_land_names:
                 # Sort longest first so multi-word names match before substrings
                 land_alternatives = sorted(removable_land_names, key=len, reverse=True)
+                # The joiner goes with the land: stripping "Play a land" must
+                # not leave "then cast X" (or "Cast X, then") to be shown and
+                # spoken.
                 land_pattern = re.compile(
-                    r"Play\s+(?:" + "|".join(re.escape(n) for n in land_alternatives) + r")[.,]?\s*",
+                    r"Play\s+(?:"
+                    + "|".join(re.escape(n) for n in land_alternatives)
+                    + r")[.,]?\s*(?:(?:and\s+)?then\b[,]?\s*)?",
                     flags=re.IGNORECASE,
                 )
-                advice = land_pattern.sub("", advice)
+                stripped, removed = land_pattern.subn("", advice)
                 # Clean up any resulting double spaces or leading/trailing spaces
-                advice = re.sub(r"\s+", " ", advice).strip()
+                stripped = re.sub(r"\s+", " ", stripped).strip()
+                if removed:
+                    stripped = re.sub(
+                        r"[\s,;]*\b(?:and\s+)?then[.,]?$", "", stripped, flags=re.IGNORECASE
+                    ).strip()
+                    if stripped[:1].islower():
+                        stripped = stripped[0].upper() + stripped[1:]
+                advice = stripped
 
         # 2. Fix typos in card names by fuzzy-matching against the actual
         # card names in this game's state. The previous hardcoded
