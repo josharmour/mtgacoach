@@ -10,13 +10,13 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from tests.mac_world import Obj, World
 
 from arenamcp.concede import ConcedeController, estimate_loss, normalize_phases
 from arenamcp.gre_bridge import GREBridge, GREBridgeError
 from arenamcp.mac_bridge_adapter import MacBridgeAdapter
 from arenamcp.pipe_adapter import PipeAdapter
 from test_all_in import BOARD
-from test_draft_autoplay import Obj, World
 
 # Our lands tapped during our turn 21, as in the report.
 TAPPED = frozenset({255, 264, 279, 294, 305, 329})

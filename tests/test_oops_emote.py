@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from tests.mac_world import Obj, World
 
 from arenamcp.gre_bridge import EMOTE_EXPIRES_MS, GREBridge, GREBridgeError
 from arenamcp.mac_bridge_adapter import MacBridgeAdapter
@@ -43,7 +44,6 @@ from arenamcp.oops import (
 )
 from arenamcp.pipe_adapter import PipeAdapter
 from arenamcp.standalone_oops import _OopsMixin
-from test_draft_autoplay import Obj, World
 
 LOCAL, OPP = 2, 1
 MATCH = "91e054ef-6006-49bc-8c36-f1ee36cc738d"

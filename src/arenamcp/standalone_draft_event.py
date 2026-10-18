@@ -178,7 +178,15 @@ class _DraftEventMixin:
         """
         return self._narrate_until_heard(text, cancelled, "draft pick")
 
-    def _narrate_until_heard(self, text: str, cancelled: Any, label: str) -> bool:
+    def _narrate_until_heard(
+        self,
+        text: str,
+        cancelled: Any,
+        label: str,
+        *,
+        clock: Any = time.monotonic,
+        sleep: Any = time.sleep,
+    ) -> bool:
         from arenamcp.speech_completion import narrate_and_wait, speaking_seconds
 
         ui = getattr(self, "ui", None)
@@ -187,7 +195,7 @@ class _DraftEventMixin:
         emit = getattr(ui, "emit_speech_request", None)
         logger.info("SPEAK (%s): %r", label, text[:160])
         if voice is None:
-            return narrate_and_wait(text, send=None, completion=None, cancelled=cancelled)
+            return narrate_and_wait(text, send=None, completion=None, cancelled=cancelled, sleep=sleep)
         muted = bool(getattr(voice, "muted", False))
         if completion is not None and callable(emit):
             voice_id, voice_name = voice.current_voice
@@ -203,15 +211,24 @@ class _DraftEventMixin:
                 )
 
             return narrate_and_wait(
-                text, send=send, completion=completion, cancelled=cancelled, speed=speed, muted=muted
+                text,
+                send=send,
+                completion=completion,
+                cancelled=cancelled,
+                speed=speed,
+                muted=muted,
+                clock=clock,
+                sleep=sleep,
             )
         if muted:
-            return narrate_and_wait(text, send=None, completion=None, cancelled=cancelled, muted=True)
+            return narrate_and_wait(
+                text, send=None, completion=None, cancelled=cancelled, muted=True, sleep=sleep
+            )
         # A pick must stay interruptible: play in the background, hold for its length.
         voice.speak(text, blocking=False)
-        end = time.monotonic() + speaking_seconds(text, float(getattr(voice, "speed", 1.0) or 1.0))
-        while time.monotonic() < end and not cancelled():
-            time.sleep(0.25)
+        end = clock() + speaking_seconds(text, float(getattr(voice, "speed", 1.0) or 1.0))
+        while clock() < end and not cancelled():
+            sleep(0.25)
         return not cancelled()
 
     @staticmethod

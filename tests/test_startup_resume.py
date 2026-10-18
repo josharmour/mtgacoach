@@ -6,11 +6,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from tests.deck_fakes import deck_case, playbook_for
 
 from arenamcp.game_plan import GamePlanManager
 from arenamcp.pipe_adapter import PipeAdapter
 from arenamcp.standalone_startup import _StartupMixin
-from test_deck_strategy import deck_case, playbook_for
 
 
 def state(match="match-one", turn=4):

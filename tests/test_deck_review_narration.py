@@ -1,12 +1,8 @@
-"""Spoken deck explanations grounded in the built cards, and waiting for narration to be heard."""
+"""Spoken deck explanations: two sentences grounded in the cards each counted build plays."""
 
 from __future__ import annotations
 
 import re
-import threading
-import time
-
-import pytest
 
 from arenamcp.limited_deck import (
     _deck_cards,
@@ -14,7 +10,6 @@ from arenamcp.limited_deck import (
     fallback_deck,
     validate_deck,
 )
-from arenamcp.speech_completion import SpeechCompletion, narrate_and_wait, speaking_seconds
 
 
 def card(grp_id, name, cost, *, gih, type_line="Creature — Wizard", text="Vigilance", rarity="common"):
@@ -102,146 +97,3 @@ def test_interaction_is_split_into_removal_and_tempo_from_rules_text():
     izzet = next(o for o in build["deck_options"] if set(o["basic_lands"]) >= {"U", "R"})
     text = deck_choice_summary(izzet, pool)
     assert "4 removal spells and 1 bounce, tap, or counter spell." in text
-
-
-def test_model_plan_is_reduced_to_one_clause_so_the_option_stays_two_sentences():
-    pool = izzet_pool()
-    counted = fallback_deck(pool)
-    payload = {
-        "main_deck": [{"grp_id": e["grp_id"], "count": e["count"]} for e in counted["main_deck"]],
-        "basic_lands": counted["basic_lands"],
-        "plan": "Fly over the top with drakes. Burn blockers early; bounce their best threat. Then race.",
-        "cuts": [{"grp_id": c["grp_id"], "reason": "weaker"} for c in counted["cuts"]],
-    }
-    model = validate_deck(payload, pool, source="card_rules")
-    text = deck_choice_summary(model, pool)
-    assert len(sentences(text)) == 2
-    assert "Its plan: Fly over the top with drakes, " in text
-
-
-# ---------------------------------------------------------------------------
-# Speech completion handshake
-# ---------------------------------------------------------------------------
-
-FAST = {"accept_timeout": 0.2, "render_timeout": 0.5, "poll": 0.01}
-
-
-def desktop(completion, script, delay=0.02):
-    """A fake desktop that acknowledges each utterance with the scripted states."""
-    sent = []
-    scripts = list(script)
-
-    def send(text, speech_id):
-        sent.append(speech_id)
-        states = scripts.pop(0) if scripts else []
-
-        def play():
-            for state in states:
-                time.sleep(delay)
-                completion.update(speech_id, state)
-
-        threading.Thread(target=play, daemon=True).start()
-
-    return send, sent
-
-
-def test_narration_returns_only_after_playback_finishes():
-    completion = SpeechCompletion()
-    send, sent = desktop(completion, [["accepted", "started", "finished"]], delay=0.1)
-    began = time.monotonic()
-    assert narrate_and_wait(
-        "Two decks.", send=send, completion=completion, cancelled=lambda: False, wait_options=FAST
-    )
-    assert time.monotonic() - began >= 0.3  # not on acceptance or playback start
-    assert len(sent) == 1
-
-
-@pytest.mark.parametrize("ending", ["stopped", "cancelled"])
-def test_stopped_or_cancelled_narration_never_reports_heard(ending):
-    completion = SpeechCompletion()
-    stop = threading.Event()
-    states = [["accepted", "started", "stopped"]] if ending == "stopped" else [["accepted", "started"]]
-    send, _ = desktop(completion, states)
-    if ending == "cancelled":
-        threading.Timer(0.1, stop.set).start()
-    assert not narrate_and_wait(
-        "Two decks.", send=send, completion=completion, cancelled=stop.is_set, wait_options=FAST
-    )
-
-
-def test_superseded_narration_is_spoken_again_once():
-    completion = SpeechCompletion()
-    send, sent = desktop(completion, [["accepted", "superseded"], ["accepted", "started", "finished"]])
-    assert narrate_and_wait(
-        "Two decks.", send=send, completion=completion, cancelled=lambda: False, wait_options=FAST
-    )
-    assert len(sent) == 2
-
-    completion = SpeechCompletion()
-    send, sent = desktop(completion, [["accepted", "superseded"], ["accepted", "superseded"]])
-    assert not narrate_and_wait(
-        "Two decks.", send=send, completion=completion, cancelled=lambda: False, wait_options=FAST
-    )
-
-
-@pytest.mark.parametrize("states", [[], ["accepted", "muted"], ["accepted", "failed"], ["accepted"]])
-def test_unheard_narration_holds_for_its_full_speaking_time(states):
-    """No ack (older desktop), muted, failed or a stuck renderer: never continue early."""
-    completion = SpeechCompletion()
-    send, _ = desktop(completion, [states])
-    held = []
-    text = " ".join(["word"] * 60)
-    began = time.monotonic()
-    assert narrate_and_wait(
-        text, send=send, completion=completion, cancelled=lambda: False, sleep=held.append, wait_options=FAST
-    )
-    waited = time.monotonic() - began + sum(held)
-    assert waited >= speaking_seconds(text) - 0.05
-
-
-def test_stale_and_late_acknowledgments_are_ignored():
-    completion = SpeechCompletion()
-    speech_id = completion.begin()
-    assert not completion.update("someone-else", "finished")
-    assert completion.update(speech_id, "accepted")
-    assert completion.update(speech_id, "stopped")
-    assert not completion.update(speech_id, "finished")  # after a terminal state
-    assert completion.wait(speech_id, seconds_to_speak=1, **FAST) == "stopped"
-    assert not completion.update(speech_id, "finished")  # after the wait is over
-
-
-def test_muted_voice_holds_for_reading_time_and_honors_cancel():
-    held = []
-    assert narrate_and_wait(
-        "a b c d e f g h i j",
-        send=None,
-        completion=None,
-        cancelled=lambda: False,
-        muted=True,
-        sleep=held.append,
-    )
-    assert sum(held) >= speaking_seconds("a b c d e f g h i j") - 1e-6
-    calls = iter([False, False, True, True, True])
-    assert not narrate_and_wait(
-        "a b c", send=None, completion=None, cancelled=lambda: next(calls), muted=True, sleep=lambda s: None
-    )
-
-
-def test_engine_sends_pick_narration_with_a_speech_id_and_waits_for_the_desktop():
-    from types import SimpleNamespace
-
-    from arenamcp.standalone_draft_event import _DraftEventMixin
-
-    completion = SpeechCompletion()
-    emitted = []
-
-    def emit(**kwargs):
-        emitted.append(kwargs)
-        for state in ("accepted", "started", "finished"):
-            completion.update(kwargs["speech_id"], state)
-
-    coach = _DraftEventMixin()
-    coach.ui = SimpleNamespace(speech_completion=completion, emit_speech_request=emit)
-    coach._voice_output = SimpleNamespace(current_voice=("am_eric", "Eric"), speed=1.2, muted=False)
-    assert coach._narrate_draft_pick("Taking the removal spell.", lambda: False)
-    assert emitted[0]["speech_id"] and emitted[0]["voice_id"] == "am_eric" and emitted[0]["speed"] == 1.2

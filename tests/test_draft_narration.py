@@ -1,4 +1,4 @@
-"""Spoken draft commentary: grounded reasons per pick, story beats, and the on/off toggle."""
+"""Spoken draft commentary: grounded reasons per pick, story beats and the plan's lane."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+from tests.draft_fakes import PICK_STATE, FakeBridge, driver_for, make_primer
 
 from arenamcp.draft_autopick import Lane, PickScore
 from arenamcp.draft_narration import DraftNarrator
@@ -122,32 +123,7 @@ def test_end_of_pack_summary_names_best_cards_and_needs():
 
 @pytest.fixture
 def primer():
-    from tests.test_draft_autoplay import PAIRS, RATINGS
-
-    from arenamcp.set_primer import data_primer
-
-    return data_primer("TST", RATINGS, PAIRS, lambda grp, name: {"oracle_text": f"{name} text", "cmc": 3.0})
-
-
-def test_driver_commentary_toggle(primer):
-    from tests.test_draft_autoplay import PICK_STATE, FakeBridge, driver_for
-
-    for enabled in (False, True):
-        bridge = FakeBridge(
-            {
-                "get_screen": {"ok": True, "draft": True},
-                "get_draft_state": dict(PICK_STATE),
-                "submit_draft_pick": {"ok": True},
-            }
-        )
-        spoken: list[str] = []
-        driver = driver_for(bridge, primer, speak_fn=spoken.append, commentary_fn=lambda e=enabled: e)
-        driver._step()
-        assert len(spoken) == 1
-        if enabled:
-            assert spoken[0].startswith("Taking ") and ":" in spoken[0]
-        else:
-            assert spoken[0] == "Taking Blue Ace."
+    return make_primer()
 
 
 # ---------------------------------------------------------------------------
@@ -292,8 +268,6 @@ def test_model_plan_without_colors_falls_back_to_the_pool_estimate():
 
 
 def test_driver_passes_the_models_plan_to_the_narrator(primer):
-    from tests.test_draft_autoplay import PICK_STATE, FakeBridge, driver_for
-
     driver = driver_for(FakeBridge({"get_draft_state": PICK_STATE}), primer)
     seen = {}
 
@@ -562,8 +536,6 @@ def test_one_color_plan_keeps_the_second_color_open():
 
 
 def test_driver_logs_the_plans_lane_beside_the_pool_estimate(primer, caplog):
-    from tests.test_draft_autoplay import PICK_STATE, FakeBridge, driver_for
-
     def recommend(details, fallback):
         return {
             "reasoning_source": "card_rules",
