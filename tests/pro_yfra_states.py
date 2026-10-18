@@ -262,3 +262,17 @@ M1_T15 = board(
     ],
     hand=[(274, "Emergency Phytomedic"), (336, "Seed Suture"), (286, "Ghalta the Unstoppable")],
 )  # fmt: skip
+
+# Match 1 turn 7 after the land drop: three lands, the Heartwood token and
+# Heartwood Crafter. Garruk ({3}{G}{G}) needs the Crafter's {C}, which "can't be
+# spent to cast spells from your hand": the pro started the cast and cancelled.
+M1_T7 = board(
+    turn=7, phase="Phase_Main1", life={1: 20, 2: 17}, lands_played=1,
+    battlefield=[
+        (199, "Forest", 2, False, 1), (206, "Plains", 2, False, 3), (236, "Plains", 2, False, 7),
+        (200, "Heartwood Crafter", 2, False, 1), (211, "Heartwood", 2, False, 3),
+        (204, "Mountain", 1, False, 2), (214, "Island", 1, False, 4), (224, "Island", 1, False, 6),
+        (215, "Cryotheory Adept", 1, False, 4),
+    ],
+    hand=[(159, "Garruk, Curse Breaker"), (163, "Refute Destiny")],
+)  # fmt: skip

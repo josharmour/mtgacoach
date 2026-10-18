@@ -922,6 +922,8 @@ def _handle_actions_available(game_state: "GameState", msg: dict) -> bool:
 
     legal_list = []
     rules_mana_pool = None
+    off_hand_pool = None  # with mana that "can't be spent to cast spells from your hand"
+    hand_ids = None
     for action_idx, action in enumerate(raw_actions):
         atype = action.get("actionType", "")
         if atype == "ActionType_Pass":
@@ -959,12 +961,24 @@ def _handle_actions_available(game_state: "GameState", msg: dict) -> bool:
                 try:
                     from arenamcp.rules_engine import RulesEngine
 
-                    if rules_mana_pool is None:
-                        rules_mana_pool = RulesEngine._get_mana_pool(
-                            _build_rules_engine_snapshot(game_state),
-                            game_state.local_seat_id,
-                        )
-                    if RulesEngine._can_afford(info.get("mana_cost", ""), rules_mana_pool):
+                    if hand_ids is None:
+                        hand_ids = {obj.instance_id for obj in game_state.hand}
+                    if action.get("instanceId") in hand_ids or not action.get("instanceId"):
+                        if rules_mana_pool is None:
+                            rules_mana_pool = RulesEngine._get_mana_pool(
+                                _build_rules_engine_snapshot(game_state),
+                                game_state.local_seat_id,
+                            )
+                        pool = rules_mana_pool
+                    else:  # cast from exile (a prepared copy), a graveyard or the command zone
+                        if off_hand_pool is None:
+                            off_hand_pool = RulesEngine._get_mana_pool(
+                                _build_rules_engine_snapshot(game_state),
+                                game_state.local_seat_id,
+                                from_hand=False,
+                            )
+                        pool = off_hand_pool
+                    if RulesEngine._can_afford(info.get("mana_cost", ""), pool):
                         castable = True
                 except Exception:
                     logger.debug("RulesEngine affordability fallback failed", exc_info=True)
