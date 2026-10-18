@@ -104,9 +104,118 @@ def test_log_files_are_read_newest_last_so_current_names_win(tmp_path):
     )
     decks = load_log_decks([current, previous])
     red = decks["b7eda012-97b0-495e-beb9-41fd976eb679"]
-    assert red.name == "Mono Red" or red.name == "Mono Red v2"
+    assert red.name == "Mono Red v2"
+    assert red.format == "Standard"  # the newer summary has none, so the older one's is kept
     assert red.complete  # the card list from the older file is kept
     assert load_log_decks([tmp_path / "missing.log"]) == {}
+
+
+def summaries_line(*summaries: dict) -> str:
+    return "<== DeckGetDeckSummariesV3(z)\n" + json.dumps({"Summaries": list(summaries)})
+
+
+def queue_line(deck_id: str, name: str, cards: list[dict], event: str = "Ladder") -> str:
+    request = {"EventName": event, "Summary": {"DeckId": deck_id, "Name": name}, "Deck": {"MainDeck": cards}}
+    return "[UnityCrossThreadLogger]==> EventSetDeckV3 " + json.dumps(
+        {"id": "q", "request": json.dumps(request)}
+    )
+
+
+def test_a_deck_renamed_and_rebuilt_shows_its_newest_name_format_and_cards(tmp_path):
+    deck_id = "b7eda012-97b0-495e-beb9-41fd976eb679"
+    previous = tmp_path / "Player-prev.log"
+    previous.write_text(log_text(), encoding="utf-8")
+    current = tmp_path / "Player.log"
+    current.write_text(
+        summaries_line(
+            {
+                "DeckId": deck_id,
+                "Name": "Mono Red v2",
+                "Attributes": [
+                    {"name": "Format", "value": "Explorer"},
+                    {"name": "LastPlayed", "value": '"2026-10-17T20:00:00-07:00"'},
+                ],
+            }
+        )
+        + "\n"
+        + queue_line(deck_id, "Mono Red v2", [{"cardId": 400, "quantity": 60}]),
+        encoding="utf-8",
+    )
+    red = load_log_decks([current, previous])[deck_id]
+    assert (red.name, red.format) == ("Mono Red v2", "Explorer")
+    assert red.last_played.startswith("2026-10-17")
+    assert red.main == [(400, 60)] and red.source == "queue"
+
+
+def test_a_rename_later_in_the_same_log_wins():
+    deck_id = "b7eda012-97b0-495e-beb9-41fd976eb679"
+    text = log_text() + "\n" + queue_line(deck_id, "Mono Red v2", [{"cardId": 400, "quantity": 60}])
+    red = parse_player_log(text)[deck_id]
+    assert red.name == "Mono Red v2" and red.main == [(400, 60)]
+    assert red.format == "Standard"  # the deck summary's, not the queued event's name
+
+
+def test_an_event_courses_stale_copy_never_overrides_the_deck(tmp_path):
+    """EventGetCoursesV2 follows the deck summaries and lists every course, each
+    with the copy of the deck last submitted to it (Player.log 2026-10-18)."""
+    deck_id = "b7eda012-97b0-495e-beb9-41fd976eb679"
+    stale = dict(COURSES["Courses"][0])
+    stale["CourseDeckSummary"] = {
+        "DeckId": deck_id,
+        "Name": "Mono Red",
+        "Attributes": [{"name": "Format", "value": "Historic"}],
+    }
+    stale["CourseDeck"] = {"MainDeck": [{"cardId": 111, "quantity": 60}]}
+    current = tmp_path / "Player.log"
+    current.write_text(
+        "<== EventGetCoursesV2(a)\n"
+        + json.dumps({"Courses": [stale]})
+        + "\n"
+        + summaries_line(
+            {
+                "DeckId": deck_id,
+                "Name": "Mono Red v2",
+                "Attributes": [{"name": "Format", "value": "Explorer"}],
+            }
+        )
+        + "\n"
+        + queue_line(deck_id, "Mono Red v2", [{"cardId": 400, "quantity": 60}])
+        + "\n<== EventGetCoursesV2(b)\n"
+        + json.dumps({"Courses": [stale]}),
+        encoding="utf-8",
+    )
+    red = parse_player_log(current.read_text(encoding="utf-8"))[deck_id]
+    assert (red.name, red.format, red.main) == ("Mono Red v2", "Explorer", [(400, 60)])
+    # A newer log that so far holds only the course listing (it precedes the
+    # summaries at login) does not undo the rename either.
+    newer_only_courses = tmp_path / "Player-courses.log"
+    newer_only_courses.write_text(
+        "<== EventGetCoursesV2(a)\n" + json.dumps({"Courses": [stale]}), encoding="utf-8"
+    )
+    red = load_log_decks([newer_only_courses, current])[deck_id]
+    assert (red.name, red.format, red.main) == ("Mono Red v2", "Explorer", [(400, 60)])
+
+
+def test_the_bridges_live_name_beats_the_logs_and_the_log_fills_its_gaps():
+    deck_id = "07ef9d14-c112-4cf4-b4e5-49e735d7d101"
+    bridge = records_from_bridge(
+        {
+            "ok": True,
+            "decks": [{"deck_id": deck_id, "name": "Hei Bai v3", "main": [{"grp_id": 600, "count": 60}]}],
+        }
+    )
+    brawl = merge_libraries(bridge, parse_player_log(log_text()))[deck_id]
+    assert brawl.name == "Hei Bai v3" and brawl.main == [(600, 60)] and brawl.source == "bridge"
+    assert brawl.format == "HistoricBrawl" and brawl.last_played.startswith("2026-10-04")
+
+
+def test_a_nameless_newer_summary_does_not_erase_the_name(tmp_path):
+    deck_id = "b7eda012-97b0-495e-beb9-41fd976eb679"
+    previous = tmp_path / "Player-prev.log"
+    previous.write_text(log_text(), encoding="utf-8")
+    current = tmp_path / "Player.log"
+    current.write_text(summaries_line({"DeckId": deck_id}), encoding="utf-8")
+    assert load_log_decks([current, previous])[deck_id].name == "Mono Red"
 
 
 def test_bridge_records_take_precedence_and_fill_log_gaps():
