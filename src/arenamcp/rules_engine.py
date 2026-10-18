@@ -49,11 +49,70 @@ def card_has_haste(card: dict) -> bool:
     return False
 
 
+class _CardDbView:
+    """Dict-shaped read-only view of the unified card database.
+
+    ``RulesEngine._card_db`` was referenced by the target-selection path and
+    by ``coach_postprocess`` but never defined, so every fallback lookup
+    raised AttributeError (2026-10-11 duplication audit). This view resolves
+    against ``card_db.get_card_database()`` and returns plain dicts
+    (``name``/``oracle_text``/``mana_cost``/``type_line``) so the existing
+    ``.get(grp_id)`` call sites keep their shape. Lookups never raise.
+    """
+
+    @staticmethod
+    def _db() -> Any:
+        try:
+            from arenamcp.card_db import get_card_database
+
+            return get_card_database()
+        except Exception:  # noqa: BLE001 - lookups are best-effort enrichment
+            return None
+
+    @staticmethod
+    def _as_dict(info: Any) -> dict[str, Any] | None:
+        if info is None:
+            return None
+        return {
+            "name": getattr(info, "name", "") or "",
+            "oracle_text": getattr(info, "oracle_text", "") or "",
+            "mana_cost": getattr(info, "mana_cost", "") or "",
+            "type_line": getattr(info, "type_line", "") or "",
+        }
+
+    def get(self, grp_id: Any, default: Any = None) -> Any:
+        try:
+            key = int(grp_id)
+        except (TypeError, ValueError):
+            return default
+        db = self._db()
+        if db is None:
+            return default
+        try:
+            found = self._as_dict(db.get_card_by_arena_id(key))
+        except Exception:  # noqa: BLE001
+            found = None
+        return found if found is not None else default
+
+    def find_by_name(self, name: str) -> dict[str, Any] | None:
+        if not name:
+            return None
+        db = self._db()
+        if db is None:
+            return None
+        try:
+            return self._as_dict(db.get_card_by_name(name))
+        except Exception:  # noqa: BLE001
+            return None
+
+
 class RulesEngine:
     """
     A deterministic rules engine to calculate legal game actions.
     Serves as a 'Grounding' layer for the AI.
     """
+
+    _card_db = _CardDbView()
 
     @staticmethod
     def _count_available_mana(game_state: dict[str, Any], local_seat: int) -> int:
@@ -822,14 +881,8 @@ class RulesEngine:
                 break
 
         if not source_oracle and source_card and source_card != "spell":
-            for card_info in RulesEngine._card_db.values():
-                if (
-                    isinstance(card_info, dict)
-                    and (card_info.get("name") or "").lower() == source_card.lower()
-                ):
-                    source_oracle = card_info.get("oracle_text", "")
-                    if source_oracle:
-                        break
+            card_info = RulesEngine._card_db.find_by_name(source_card) or {}
+            source_oracle = card_info.get("oracle_text", "") or ""
 
         req = RulesEngine._infer_target_requirements(source_oracle)
 

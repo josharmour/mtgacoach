@@ -747,14 +747,8 @@ class _AdvicePostprocessMixin:
                         if source_card:
                             from arenamcp.rules_engine import RulesEngine
 
-                            for card_info in RulesEngine._card_db.values():
-                                if (
-                                    isinstance(card_info, dict)
-                                    and (card_info.get("name") or "").lower() == source_card.lower()
-                                ):
-                                    source_oracle = (card_info.get("oracle_text") or "").lower()
-                                    if source_oracle:
-                                        break
+                            card_info = RulesEngine._card_db.find_by_name(source_card) or {}
+                            source_oracle = (card_info.get("oracle_text") or "").lower()
 
                     harmful_keywords = (
                         "deal",
