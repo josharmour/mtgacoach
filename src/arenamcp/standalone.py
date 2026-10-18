@@ -75,10 +75,10 @@ from arenamcp.standalone_postmatch import _PostMatchMixin
 from arenamcp.standalone_startup import _StartupMixin
 from arenamcp.standalone_tempo import _TempoTracker
 from arenamcp.standalone_ui import CLIAdapter, UIAdapter
-from arenamcp.standalone_voice import _PipeVoiceOutput, _probe_sounddevice_import, _SAPIVoice
+from arenamcp.standalone_voice import _PipeVoiceOutput, _probe_sounddevice_import
 from arenamcp.standalone_windows import _StandaloneWindowsMixin
 
-__all__ = ["StandaloneCoach", "_SAPIVoice", "_PipeVoiceOutput"]
+__all__ = ["StandaloneCoach", "_PipeVoiceOutput"]
 
 # Configure logging (shared with server.py via logging_config)
 # Console handler disabled -- GUI/pipe adapter handles user-facing output.
@@ -1219,30 +1219,6 @@ class StandaloneCoach(
             return
 
         self._voice_input = None
-
-    def _init_voice_background(self) -> None:
-        """Initialize voice in a background thread (pipe mode only).
-
-        No probe — just import VoiceOutput directly. If PortAudio hangs during
-        device enumeration, this daemon thread hangs forever but the coaching
-        loop keeps running unaffected.
-        """
-        try:
-            from arenamcp.tts import VoiceOutput
-
-            logger.info("Initializing TTS (pipe mode)...")
-            self.ui.log("Initializing TTS...")
-            self._voice_output = VoiceOutput()
-            voice_id, voice_desc = self._voice_output.current_voice
-            logger.info(f"TTS voice: {voice_desc}")
-            self.ui.status("VOICE", f"{voice_desc}")
-            self.ui.log(f"TTS ready: {voice_desc}")
-            # Warm up ONNX model in background so first speak() is fast
-            threading.Thread(target=self._voice_output.warmup, daemon=True, name="tts-warmup").start()
-        except Exception as e:
-            logger.error(f"Voice init failed: {e}")
-            self.ui.status("VOICE", "TTS init failed")
-            self.ui.log(f"TTS unavailable: {e}")
 
     def _emit_control_status_snapshot(self, actual_model: str | None) -> None:
         """Emit the current control-state snapshot for GUI frontends."""

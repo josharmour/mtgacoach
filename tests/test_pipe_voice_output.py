@@ -1,6 +1,12 @@
+"""_PipeVoiceOutput: the coach process's voice in pipe mode; the desktop app speaks."""
+
 from __future__ import annotations
 
-from arenamcp.standalone import _PipeVoiceOutput
+from types import SimpleNamespace
+
+import pytest
+
+from arenamcp.standalone_voice import _PipeVoiceOutput
 
 
 class _DummyUI:
@@ -15,49 +21,51 @@ class _DummyUI:
         self.stops += 1
 
 
-class _DummyInner:
-    def __init__(self, muted: bool = False) -> None:
-        self.muted = muted
-        self.current_voice = ("af_sarah", "Sarah")
-        self.speed = 1.2
-        self.stop_calls = 0
-        self.speak_calls: list[tuple[str, bool]] = []
-
-    def _clean_text(self, text: str) -> str:
-        return text.strip().replace("**", "")
-
-    def stop(self) -> None:
-        self.stop_calls += 1
-
-    def speak(self, text: str, blocking: bool = True) -> None:
-        self.speak_calls.append((text, blocking))
+@pytest.fixture
+def store(monkeypatch):
+    store = {"voice": "bm_george", "voice_speed": 1.4}
+    fake = SimpleNamespace(get=lambda k, d=None: store.get(k, d), set=lambda k, v: store.__setitem__(k, v))
+    monkeypatch.setattr("arenamcp.settings.get_settings", lambda: fake)
+    return store
 
 
-def test_pipe_voice_output_emits_desktop_speech_request() -> None:
+def test_speech_goes_to_the_desktop_cleaned_with_the_saved_voice(store) -> None:
     ui = _DummyUI()
-    inner = _DummyInner()
-    voice = _PipeVoiceOutput(ui, inner)
+    voice = _PipeVoiceOutput(ui)
 
-    voice.speak("  **hello**  ", blocking=False)
+    voice.speak("  **Attack** with `Bear` [TAG] now...  ")
+    voice.speak("**[TAG]**")  # nothing left to say once cleaned
 
-    assert inner.stop_calls == 1
-    assert inner.speak_calls == []
     assert ui.requests == [
         {
-            "text": "hello",
-            "voice_id": "af_sarah",
-            "voice_name": "Sarah",
-            "speed": 1.2,
+            "text": "Attack with Bear  now",
+            "voice_id": "bm_george",
+            "voice_name": "George (UK Male)",
+            "speed": 1.4,
         }
     ]
+    voice.stop()
+    assert ui.stops == 1
 
 
-def test_pipe_voice_output_skips_muted_requests() -> None:
+def test_muted_voice_sends_nothing(store) -> None:
     ui = _DummyUI()
-    inner = _DummyInner(muted=True)
-    voice = _PipeVoiceOutput(ui, inner)
+    voice = _PipeVoiceOutput(ui)
 
+    assert voice.toggle_mute() is True and voice.muted
     voice.speak("hello")
-
-    assert inner.stop_calls == 0
     assert ui.requests == []
+    assert voice.toggle_mute() is False
+
+
+def test_starts_from_the_saved_voice_and_saves_changes(store) -> None:
+    voice = _PipeVoiceOutput(ui=SimpleNamespace())
+    assert voice.current_voice == ("bm_george", "George (UK Male)") and voice.speed == 1.4
+    assert voice.set_voice("am_adam") == ("am_adam", "Adam (US Male)") and store["voice"] == "am_adam"
+    voice.next_voice()
+    assert store["voice"] == voice.current_voice[0] != "am_adam"
+    with pytest.raises(ValueError):
+        voice.set_voice("zz_nobody")
+    assert voice.set_speed(9.0) == 2.0 and store["voice_speed"] == 2.0
+    assert voice.cycle_speed() == 1.0 and store["voice_speed"] == 1.0  # off-preset speed restarts at 1.0
+    assert voice.cycle_speed() == 1.2

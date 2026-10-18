@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from arenamcp.desktop import audio
 
 
@@ -41,3 +43,79 @@ def test_play_file_stops_then_plays_without_deadlock(tmp_path, monkeypatch) -> N
             FakeWinsound.SND_FILENAME | FakeWinsound.SND_ASYNC | FakeWinsound.SND_NODEFAULT,
         ),
     ]
+
+
+# ---------------------------------------------------------------------------
+# CLI player fallback (no winsound / sounddevice)
+# ---------------------------------------------------------------------------
+
+
+class _FakeProc:
+    def poll(self):
+        return None
+
+
+@pytest.fixture
+def cli_fallback_env(monkeypatch, tmp_path):
+    """Force the CLI-player fallback branch of AudioPlayback.play_file."""
+    wav = tmp_path / "sample.wav"
+    wav.write_bytes(b"RIFFtest")
+    monkeypatch.setattr(audio, "winsound", None)
+    monkeypatch.setattr(audio, "sd", None)
+    monkeypatch.setattr(audio, "sf", None)
+
+    popen: list[tuple[list, dict]] = []
+
+    def fake_popen(cmd, **kwargs):
+        popen.append((cmd, kwargs))
+        return _FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    return wav, popen
+
+
+def test_audio_darwin_uses_afplay(monkeypatch, cli_fallback_env) -> None:
+    wav, popen = cli_fallback_env
+    monkeypatch.setattr(audio.sys, "platform", "darwin")
+
+    which_queries: list[str] = []
+
+    def fake_which(name):
+        which_queries.append(name)
+        return "/usr/bin/afplay" if name == "afplay" else None
+
+    monkeypatch.setattr("shutil.which", fake_which)
+
+    assert audio.AudioPlayback.play_file(str(wav)) is True
+    assert which_queries == ["afplay"]  # linux players never probed on darwin
+    assert len(popen) == 1
+    cmd, _ = popen[0]
+    assert cmd == ["afplay", str(wav.resolve())]
+
+
+def test_audio_darwin_no_player_returns_false(monkeypatch, cli_fallback_env) -> None:
+    wav, popen = cli_fallback_env
+    monkeypatch.setattr(audio.sys, "platform", "darwin")
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    assert audio.AudioPlayback.play_file(str(wav)) is False
+    assert popen == []
+
+
+def test_audio_linux_chain_untouched(monkeypatch, cli_fallback_env) -> None:
+    wav, popen = cli_fallback_env
+    monkeypatch.setattr(audio.sys, "platform", "linux")
+
+    which_queries: list[str] = []
+
+    def fake_which(name):
+        which_queries.append(name)
+        return "/usr/bin/paplay" if name == "paplay" else None
+
+    monkeypatch.setattr("shutil.which", fake_which)
+
+    assert audio.AudioPlayback.play_file(str(wav)) is True
+    assert "afplay" not in which_queries
+    assert which_queries[0] == "paplay"
+    cmd, _ = popen[0]
+    assert cmd == ["paplay", str(wav.resolve())]
