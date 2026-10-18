@@ -237,6 +237,15 @@ def get_trial(machine_id: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def get_trial_by_key(litellm_key: str) -> Optional[dict]:
+    """Look up the trial record that owns a LiteLLM trial key. Returns None if absent."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM trials WHERE litellm_key = ?", (litellm_key,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def create_trial(machine_id: str, litellm_key: str, created_at: str, expires_at: str) -> None:
     """Record a newly-minted trial key for a machine (one trial per machine, ever)."""
     with get_db() as conn:
