@@ -7,7 +7,15 @@ pytest.importorskip("PySide6")
 from arenamcp.desktop.main_window import MainWindow
 
 
-def test_main_window_init(qapp):
+def test_main_window_init(qapp, monkeypatch):
+    from unittest.mock import Mock
+
+    from arenamcp.desktop.repair_tab import RepairTab
+
+    # Showing Setup & Repair auto-runs the real RepairEngine on a thread,
+    # which repairs the real install (BepInEx into the MTGA folder).
+    run_checks = Mock()
+    monkeypatch.setattr(RepairTab, "run_checks", run_checks)
     win = MainWindow()
     win.show()
     assert win.coach_panel is not None
@@ -17,6 +25,7 @@ def test_main_window_init(qapp):
     # Test navigation
     win._show_repair_view()
     assert win._stack.currentIndex() == 1
+    run_checks.assert_called_once()  # the tab's auto-run, into the stub
     win._show_performance_view()
     assert win._stack.currentIndex() == 2
     win._show_coach_view()
