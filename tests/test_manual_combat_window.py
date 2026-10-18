@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-from tests.fra_quickdraft_states import state
+from tests.boards_fra_quickdraft_2026_10_08 import state
 
 import arenamcp.autopilot as autopilot_module
 from arenamcp.autopilot import AutopilotConfig, AutopilotEngine, AutopilotState

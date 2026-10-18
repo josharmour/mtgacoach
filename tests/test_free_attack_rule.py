@@ -17,7 +17,7 @@ import json
 import logging
 
 import pytest
-from tests.fra_quickdraft_states import state
+from tests.boards_fra_quickdraft_2026_10_08 import state
 
 from arenamcp.action_planner import ActionPlan, ActionPlanner, ActionType, GameAction
 from arenamcp.board_assessment import _CACHE, ROLE_DEFENDER, ROLE_RACE, assess

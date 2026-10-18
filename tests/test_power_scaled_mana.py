@@ -8,7 +8,7 @@ recovery forecast never counted it.
 
 from __future__ import annotations
 
-from tests.pro_yfra_states import card
+from tests.boards_pro_yfra_2026_10_18 import card
 
 from arenamcp.combat_recovery import mana_options
 

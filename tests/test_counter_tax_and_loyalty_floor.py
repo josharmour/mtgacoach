@@ -14,14 +14,14 @@ that leaves the walker at or below the evasive power they can attack it with
 next turn; the plus stays, as does the minus when the walker is moot (dead to
 their next attack whatever we do).
 
-Boards: ``tests/fra_quickdraft_states`` (replayed from Player.log).
+Boards: ``tests/boards_fra_quickdraft_2026_10_08`` (replayed from Player.log).
 """
 
 from __future__ import annotations
 
 import logging
 
-from tests.fra_quickdraft_states import state
+from tests.boards_fra_quickdraft_2026_10_08 import state
 
 from arenamcp.decisions import DecisionOption, PendingDecision
 from arenamcp.play_safety import (

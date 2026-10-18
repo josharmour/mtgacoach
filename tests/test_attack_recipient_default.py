@@ -8,7 +8,7 @@ went MANUAL REQUIRED, an Oops emote was sent and the user attacked by hand.
 from __future__ import annotations
 
 import pytest
-from tests.fra_quickdraft_states import state
+from tests.boards_fra_quickdraft_2026_10_08 import state
 
 from arenamcp.combat_targets import attack_target_prompt, choose_recipient, default_recipient, recipient_key
 

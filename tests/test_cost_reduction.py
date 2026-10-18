@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from tests.pro_yfra_states import CARDS, M1_T15
+from tests.boards_pro_yfra_2026_10_18 import CARDS, M1_T15
 
 from arenamcp.board_model import build_board_model
 from arenamcp.cost_reduction import parse_cost_reduction, reduced_mana_value, reduction_amount

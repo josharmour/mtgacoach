@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from tests.pro_yfra_states import M3_T7, card
+from tests.boards_pro_yfra_2026_10_18 import M3_T7, card
 
 from arenamcp.board_model import build_board_model
 from arenamcp.line_search import _Search

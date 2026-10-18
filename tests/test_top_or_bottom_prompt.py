@@ -10,7 +10,7 @@ accepted (top, 2 damage) and redrew and recast Garruk on turn 13. On turn 14
 
 from __future__ import annotations
 
-from tests.pro_yfra_states import CARDS, M1_T11, card
+from tests.boards_pro_yfra_2026_10_18 import CARDS, M1_T11, card
 
 from arenamcp.decisions import DecisionOption, PendingDecision
 from arenamcp.optional_prompts import top_or_bottom_choice
