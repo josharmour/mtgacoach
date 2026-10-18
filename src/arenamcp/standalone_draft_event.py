@@ -78,6 +78,9 @@ class _DraftEventMixin:
             tracker = server.get_course_tracker()
             course = tracker.active_limited() if tracker else None
             if course is not None:
+                from arenamcp.limited_formats import use_event_expansion
+
+                use_event_expansion(course.event_name)
                 return extract_set_code(course.event_name).upper()
         except Exception as exc:
             logger.debug("upcoming draft set unavailable: %s", exc)

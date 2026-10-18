@@ -10,6 +10,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from arenamcp.limited_formats import alchemy_expansion, use_event_expansion
+
 logger = logging.getLogger(__name__)
 
 
@@ -160,6 +162,7 @@ def extract_set_code(event_name: str) -> str:
     - PremierDraft_MH3_20240101
     - QuickDraft_BLB_20240815
     - Trad_Sealed_DSK_20241001
+    - PremierDraft_YFRA_20261013 (Alchemy: base set FRA)
 
     Args:
         event_name: The full event name string
@@ -173,7 +176,11 @@ def extract_set_code(event_name: str) -> str:
         # Set codes are typically 3 uppercase letters
         if len(part) == 3 and part.isupper():
             return part
-    return ""
+    # Alchemy events ("PremierDraft_YFRA_20261013") draft the base set plus
+    # digital cards; the base set keys primers and research. 17lands ratings
+    # follow the event through draftstats.use_event_expansion.
+    alchemy = alchemy_expansion(event_name)
+    return alchemy[0] if alchemy else ""
 
 
 def create_draft_handler(draft_state: DraftState) -> Callable[[str, dict], None]:
@@ -357,6 +364,7 @@ def _handle_event_start(draft_state: DraftState, payload: dict) -> None:
         draft_state.event_name = event_name
         draft_state.draft_type = dtype
         draft_state.set_code = extract_set_code(event_name)
+        use_event_expansion(event_name)
         draft_state.is_active = True
         draft_state.is_sealed = dtype in (DRAFT_TYPE_SEALED, DRAFT_TYPE_SEALED_TRAD)
         draft_state.picks_per_pack = 2 if dtype in _PICK_TWO_TYPES else 1
@@ -416,6 +424,7 @@ def _handle_sealed_pool(draft_state: DraftState, payload: dict) -> None:
             return
         draft_state.event_name = event_name
         draft_state.set_code = extract_set_code(event_name)
+        use_event_expansion(event_name)
         draft_state.draft_type = detect_draft_type(event_name)
         draft_state.picked_cards = [int(grp_id) for grp_id in card_pool if grp_id]
         draft_state.last_completed_pool = list(draft_state.picked_cards)
@@ -431,6 +440,7 @@ def _handle_sealed_pool(draft_state: DraftState, payload: dict) -> None:
     # Set up sealed state
     draft_state.event_name = event_name
     draft_state.set_code = extract_set_code(event_name)
+    use_event_expansion(event_name)
     draft_state.is_active = True
     draft_state.is_sealed = True
     draft_state.sealed_pool = [int(c) for c in card_pool if c]

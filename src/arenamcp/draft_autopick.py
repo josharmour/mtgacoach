@@ -224,7 +224,7 @@ def _set_stats(primer: SetPrimer | None) -> _SetStats:
     rated = [card for card in primer.cards.values() if card.baseline is not None]
     median_games = {}
     for rarity in {card.rarity for card in rated}:
-        games = [card.games for card in rated if card.rarity == rarity and card.games > 0]
+        games = [_format_games(card) for card in rated if card.rarity == rarity and _format_games(card) > 0]
         if len(games) >= 3:
             median_games[rarity] = float(statistics.median(games))
     fit = _alsa_fit(rated)
@@ -241,9 +241,16 @@ def _rarely_played(card: Any, stats: _SetStats) -> str | None:
             return f"{card.play_rate:.0%} of drafted copies played"
         return None
     median = stats.median_games.get(card.rarity)
-    if median and card.games / median < RARELY_PLAYED_SHARE:
-        return f"{card.games / median:.0%} of a typical card's games"
+    games = _format_games(card)
+    if median and games / median < RARELY_PLAYED_SHARE:
+        return f"{games / median:.0%} of a typical card's games"
     return None
+
+
+def _format_games(card: Any) -> int:
+    """Games in the event's own format (an Alchemy draft's paper cards borrow ``games``)."""
+    own = getattr(card, "format_games", None)
+    return card.games if own is None else own
 
 
 def card_value(card: Any, stats: _SetStats) -> tuple[float, str, bool]:

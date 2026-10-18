@@ -282,7 +282,7 @@ class MTGADatabase:
                 cursor = self._conn.execute(
                     f"""
                     SELECT Loc FROM Localizations_enUS
-                    WHERE LocId IN ({placeholders})
+                    WHERE LocId IN ({placeholders}) AND Formatted = 1
                     ORDER BY CASE LocId
                         {case_whens}
                     END
@@ -290,7 +290,14 @@ class MTGADatabase:
                     text_ids,
                 )
 
-                texts = [row["Loc"] for row in cursor.fetchall() if row["Loc"]]
+                # Each text has three Formatted variants (0, 1, 2); without the
+                # filter above every ability came back three times (2026-10-18).
+                # <nobr> keeps "+1/+1" on one line in Arena's UI; it is not rules text.
+                texts = [
+                    row["Loc"].replace("<nobr>", "").replace("</nobr>", "")
+                    for row in cursor.fetchall()
+                    if row["Loc"]
+                ]
                 return "\n".join(texts)
 
             except Exception as e:
@@ -670,12 +677,15 @@ class MTGADatabase:
                 text_id = row["TextId"]
 
                 # Then get text from Localizations
-                cursor = self._conn.execute("SELECT Loc FROM Localizations_enUS WHERE LocId = ?", (text_id,))
+                cursor = self._conn.execute(
+                    "SELECT Loc FROM Localizations_enUS WHERE LocId = ? ORDER BY Formatted = 1 DESC",
+                    (text_id,),
+                )
                 loc_row = cursor.fetchone()
 
                 if loc_row:
                     self._error_count = 0
-                    return loc_row["Loc"]
+                    return (loc_row["Loc"] or "").replace("<nobr>", "").replace("</nobr>", "")
 
             except Exception as e:
                 self._error_count += 1

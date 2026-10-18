@@ -9,6 +9,11 @@ from typing import Any
 import requests
 
 from arenamcp.cache_utils import FileCache
+from arenamcp.limited_formats import (  # noqa: F401  (re-exported)
+    alchemy_expansion,
+    ratings_expansion,
+    use_event_expansion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +27,47 @@ SEVENTEEN_LANDS_COLOR_URL = "https://www.17lands.com/color_ratings/data"
 # 17lands formats names like "Mono-White (W)", "Azorius (WU)", "Bant (WUG)".
 # We parse on the parenthesized letters instead of the archetype name.
 COLOR_LETTERS = ("W", "U", "B", "R", "G")
+
+# Alchemy pair rates replace the base set's once this many two-color games exist.
+MIN_ALCHEMY_PAIR_GAMES = 1000
+
+
+_WIN_RATE_FIELDS = (
+    "ever_drawn_win_rate",
+    "ever_drawn_game_count",
+    "drawn_improvement_win_rate",
+    "win_rate",
+    "game_count",
+    "opening_hand_win_rate",
+    "drawn_win_rate",
+    "never_drawn_win_rate",
+)
+
+
+def merge_alchemy_rows(alchemy: list[dict[str, Any]], base: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Alchemy rows, with base-set win rates for paper cards the Alchemy data hides.
+
+    Pick order (ALSA/ATA) always comes from the Alchemy format; only rows whose
+    win rates are hidden take the base set's win rates and sample sizes.
+    """
+    base_by_name = {str(row.get("name") or "").lower(): row for row in base}
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in alchemy:
+        name = str(row.get("name") or "").lower()
+        seen.add(name)
+        paper = base_by_name.get(name)
+        if row.get("ever_drawn_win_rate") is None and paper and paper.get("ever_drawn_win_rate") is not None:
+            # The sample sizes travel with the rates they belong to; the format's own
+            # count stays, so a 6-day-old Alchemy card is not "rarely played" next
+            # to paper cards carrying weeks of base-set games.
+            own_games = row.get("ever_drawn_game_count") or 0
+            row = dict(row) | {key: paper.get(key) for key in _WIN_RATE_FIELDS}
+            row["format_game_count"] = own_games
+            row["win_rates_from"] = "base"
+        merged.append(row)
+    merged.extend(row for name, row in base_by_name.items() if name and name not in seen)
+    return merged
 
 
 def _parse_color_key(color_name: str) -> str | None:
@@ -154,33 +200,41 @@ class DraftStatsCache:
     def _load_set(self, set_code: str) -> dict[str, DraftStats]:
         """Load set data from cache or download if needed."""
         set_code = set_code.upper()
+        expansion = ratings_expansion(set_code)
 
         # Check in-memory cache first
-        if set_code in self._stats_cache:
-            return self._stats_cache[set_code]
-
-        # Check file cache
-        cache_path = self._get_cache_path(set_code)
-        if cache_path.exists() and not self._is_cache_stale(set_code):
-            logger.info(f"Loading cached 17lands data from {cache_path}")
-            with open(cache_path, encoding="utf-8") as f:
-                cards_data = json.load(f)
-        else:
-            # Download fresh data
-            cards_data = self._download_set_data(set_code)
+        if expansion in self._stats_cache:
+            return self._stats_cache[expansion]
 
         # Parse and cache in memory
-        self._stats_cache[set_code] = self._parse_json(cards_data, set_code)
-        return self._stats_cache[set_code]
+        self._stats_cache[expansion] = self._parse_json(self.get_raw_ratings(set_code), set_code)
+        return self._stats_cache[expansion]
 
-    def get_raw_ratings(self, set_code: str) -> list[dict[str, Any]]:
-        """The cached 17lands rows as downloaded (mtga_id, ATA, ALSA, GIH, IWD...)."""
-        set_code = set_code.upper()
-        cache_path = self._get_cache_path(set_code)
-        if cache_path.exists() and not self._is_cache_stale(set_code):
+    def _expansion_rows(self, expansion: str) -> list[dict[str, Any]]:
+        cache_path = self._get_cache_path(expansion)
+        if cache_path.exists() and not self._is_cache_stale(expansion):
+            logger.info(f"Loading cached 17lands data from {cache_path}")
             with open(cache_path, encoding="utf-8") as f:
                 return json.load(f)
-        return self._download_set_data(set_code)
+        return self._download_set_data(expansion)
+
+    def get_raw_ratings(self, set_code: str) -> list[dict[str, Any]]:
+        """The 17lands rows for the current event's format (mtga_id, ATA, ALSA, GIH, IWD...).
+
+        For an Alchemy event the rows are the Alchemy expansion's, with base-set win
+        rates filled in where 17lands still hides them.
+        """
+        set_code = set_code.upper()
+        expansion = ratings_expansion(set_code)
+        rows = self._expansion_rows(expansion)
+        if expansion == set_code:
+            return rows
+        try:
+            base = self._expansion_rows(set_code)
+        except requests.RequestException as e:
+            logger.warning(f"Base-set 17lands data for {set_code} unavailable: {e}")
+            return rows
+        return merge_alchemy_rows(rows, base)
 
     def load_set(self, set_code: str) -> None:
         """Pre-load a set's data into memory.
@@ -266,9 +320,19 @@ class DraftStatsCache:
 
     def _load_color_data(self, set_code: str) -> dict[str, ColorPairStats]:
         set_code = set_code.upper()
-        if set_code in self._color_cache:
-            return self._color_cache[set_code]
+        expansion = ratings_expansion(set_code)
+        if expansion in self._color_cache:
+            return self._color_cache[expansion]
+        parsed = self._load_expansion_colors(expansion)
+        if expansion != set_code and sum(p.games for p in parsed.values() if len(p.color_key) == 2) < (
+            MIN_ALCHEMY_PAIR_GAMES
+        ):
+            logger.info(f"{expansion} has too few games for pair win rates; using {set_code}")
+            parsed = self._load_expansion_colors(set_code)
+        self._color_cache[expansion] = parsed
+        return parsed
 
+    def _load_expansion_colors(self, set_code: str) -> dict[str, ColorPairStats]:
         cache_path = self._get_color_cache_path(set_code)
         if cache_path.exists() and self._file_cache.is_cache_valid(cache_path):
             try:
@@ -281,12 +345,12 @@ class DraftStatsCache:
             raw = self._download_color_data(set_code)
 
         parsed = self._parse_color_data(raw)
-        self._color_cache[set_code] = parsed
         logger.info(f"Loaded {len(parsed)} color-pair entries for {set_code}")
         return parsed
 
     def get_color_rows(self, set_code: str, combine_splash: bool = False) -> list[dict[str, Any]] | None:
         """17lands color-rating rows as served (split rows by default), cached on disk."""
+        set_code = ratings_expansion(set_code)
         path = self._get_color_cache_path(set_code, combine_splash)
         try:
             if path.exists() and self._file_cache.is_cache_valid(path):

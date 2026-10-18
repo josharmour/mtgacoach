@@ -46,6 +46,7 @@ from arenamcp.draft_autopick import (
 )
 from arenamcp.draft_narration import DraftNarrator
 from arenamcp.event_course import LIMITED_MARKERS
+from arenamcp.limited_formats import use_event_expansion
 from arenamcp.set_primer import SetPrimer
 
 logger = logging.getLogger(__name__)
@@ -297,6 +298,8 @@ class DraftEventDriver:
             self.run = DraftRun()
         if event_name and not self.run.event_name:
             self.run.event_name = event_name
+            # Alchemy events ("PremierDraft_YFRA_...") rate and prime from 17lands' Y26FRA.
+            use_event_expansion(event_name)
 
     # -- the step -------------------------------------------------------------
 

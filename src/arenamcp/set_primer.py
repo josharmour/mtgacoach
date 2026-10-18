@@ -29,6 +29,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from arenamcp.limited_formats import ratings_expansion
+
 logger = logging.getLogger(__name__)
 
 PRIMER_DIR = Path.home() / ".arenamcp" / "cache" / "set_primers"
@@ -146,6 +148,10 @@ class SetCard:
     # tell a rarely played card from a strong rare that is simply scarce.
     game_wr: float | None = None
     play_rate: float | None = None
+    # Games in the event's own format when the win rates (and ``games``) are borrowed
+    # from the base set: an Alchemy draft's paper cards (draftstats.merge_alchemy_rows).
+    # How often a card is played is judged against this, not the borrowed sample.
+    format_games: int | None = None
 
 
 @dataclass
@@ -355,6 +361,7 @@ def collect_set_cards(
             games=int(row.get("ever_drawn_game_count") or 0),
             game_wr=row.get("win_rate"),
             play_rate=row.get("play_rate"),
+            format_games=row.get("format_game_count"),
         )
     rated = [c.gih_wr for c in cards.values() if c.gih_wr is not None and c.games >= MIN_RATED_GAMES]
     if len(rated) >= 10:
@@ -826,6 +833,13 @@ class SetPrimerService:
         self._quick: dict[str, SetPrimer] = {}
         # Primers built with pieces skipped: set code -> when to rebuild (monotonic).
         self._partial: dict[str, float] = {}
+        # Primer key -> the set code whose ratings build it ("Y26FRA" -> "FRA").
+        self._base: dict[str, str] = {}
+
+    @staticmethod
+    def _key(set_code: str) -> str:
+        """Primers follow the event's format: an Alchemy FRA draft is "Y26FRA", not "FRA"."""
+        return ratings_expansion(set_code)
 
     def _path(self, set_code: str) -> Path:
         return self._dir / f"{set_code.upper()}.json"
@@ -850,7 +864,7 @@ class SetPrimerService:
         """ "ready", "refreshing" (stale, served while rebuilding), "building", or "missing"."""
         if not set_code:
             return "missing"
-        key = set_code.upper()
+        key = self._key(set_code)
         primer = self.get(key)
         with self._lock:
             worker = self._building.get(key)
@@ -864,7 +878,7 @@ class SetPrimerService:
     def get(self, set_code: str | None) -> SetPrimer | None:
         if not set_code:
             return None
-        key = set_code.upper()
+        key = self._key(set_code)
         with self._lock:
             if key not in self._primers:
                 primer = self._load(key)
@@ -876,8 +890,8 @@ class SetPrimerService:
         """Start building a missing or stale primer (or a partial one, after PARTIAL_RETRY_S); returns at once."""
         if not set_code:
             return
-        key = set_code.upper()
-        primer = self.get(key)
+        key = self._key(set_code)
+        primer = self.get(set_code)
         if primer is not None and not self.is_stale(primer):
             with self._lock:
                 retry_at = self._partial.get(key)
@@ -887,6 +901,7 @@ class SetPrimerService:
             worker = self._building.get(key)
             if worker is not None and worker.is_alive():
                 return
+            self._base[key] = set_code.upper()
             worker = threading.Thread(target=self._build, args=(key,), daemon=True, name=f"primer-{key}")
             self._building[key] = worker
             worker.start()
@@ -895,13 +910,14 @@ class SetPrimerService:
         """Data-only primer, built synchronously, while the full one is still building."""
         if not set_code:
             return None
-        key = set_code.upper()
+        key = self._key(set_code)
+        base = set_code.upper()
         with self._lock:
             cached = self._quick.get(key)
         if cached is not None:
             return cached
         try:
-            primer = data_primer(key, self._ratings_fn(key), self._color_stats_fn(key), self._rules_lookup)
+            primer = data_primer(key, self._ratings_fn(base), self._color_stats_fn(base), self._rules_lookup)
         except Exception as exc:
             logger.info("Quick set primer for %s unavailable: %s", key, exc)
             return None
@@ -910,14 +926,18 @@ class SetPrimerService:
         return primer
 
     def build_now(self, set_code: str) -> SetPrimer | None:
-        self._build(set_code.upper())
+        key = self._key(set_code)
+        self._base[key] = set_code.upper()
+        self._build(key)
         return self.get(set_code)
 
     def _build(self, key: str) -> None:
+        """Build primer ``key`` from the ratings of the set code the event names."""
+        base = self._base.get(key, key)
         started = time.monotonic()
         try:
-            raw = self._ratings_fn(key)
-            primer = data_primer(key, raw, self._color_stats_fn(key), self._rules_lookup)
+            raw = self._ratings_fn(base)
+            primer = data_primer(key, raw, self._color_stats_fn(base), self._rules_lookup)
             if len([c for c in primer.cards.values() if c.baseline is not None]) < 20:
                 logger.warning("Set primer for %s skipped: too little 17lands data", key)
                 return
@@ -927,7 +947,7 @@ class SetPrimerService:
                 research: dict = {}
                 if self._research_fn is not None:
                     try:
-                        research = self._research_fn(key) or {}
+                        research = self._research_fn(base) or {}
                     except Exception as exc:  # online research is optional
                         logger.info("Set research for %s unavailable: %s", key, exc)
                 primer.research = list(research.get("sources") or [])
