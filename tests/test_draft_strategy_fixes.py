@@ -706,8 +706,16 @@ def answer(**pick) -> str:
     )
 
 
-@pytest.mark.parametrize("claimed", [[20], [999], ["Card 20"], 20])
-def test_unsupported_synergy_is_stripped_and_logged_but_the_pick_stands(claimed, caplog):
+@pytest.mark.parametrize(
+    ("claimed", "flagged"),
+    [
+        ([20], ["Card 20"]),  # an owned card with no rules-text link is still stripped
+        ([999], [999]),
+        (["Card 20"], ["Card 20"]),
+        (20, ["Card 20"]),
+    ],
+)
+def test_unsupported_synergy_is_stripped_and_logged_but_the_pick_stands(claimed, flagged, caplog):
     backend = Mock()
     backend.complete.return_value = answer(synergy_with=claimed)
     with caplog.at_level(logging.WARNING, logger="arenamcp.draft_advisor"):
@@ -715,6 +723,7 @@ def test_unsupported_synergy_is_stripped_and_logged_but_the_pick_stands(claimed,
     assert result["reasoning_source"] == "card_rules"
     pick = result["recommendations"][0]
     assert pick["grp_id"] == 10 and pick["synergy_with"] == [] and pick["synergy_evidence"] == []
+    assert pick["unsupported_synergy"] == flagged
     assert pick["reason"].endswith("(synergy unverified)")
     assert any("Draft synergy claim stripped: Card 10" in message for message in caplog.messages)
 

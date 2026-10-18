@@ -1,7 +1,4 @@
-import json
-from unittest.mock import Mock
 
-from arenamcp.draft_advisor import DraftAdvisor
 from arenamcp.draftstate import DraftState, create_draft_handler
 from arenamcp.limited_deck import fallback_deck, reconcile_logged_deck
 from arenamcp.limited_rules import rules_profile, synergy_evidence
@@ -40,26 +37,6 @@ def test_opponent_actions_and_restricted_entries_are_not_generic_synergies():
         synergy_evidence(source, card(3, "Whenever a red creature enters under your control, draw a card."))
         == []
     )
-
-
-def test_unsubstantiated_named_synergy_is_stripped_even_for_owned_cards():
-    backend = Mock()
-    backend.complete.return_value = json.dumps(
-        {
-            "picks": [{"grp_id": 1, "reason": "Drawing triggers the scry payoff.", "synergy_with": [2]}],
-            "plan": "Scry tokens.",
-        }
-    )
-    pack = {
-        "cards": [card(1, "Draw a card.")],
-        "picked_cards": [card(2, "Whenever you scry, create a Thopter.")],
-        "picks_per_pack": 1,
-    }
-    result = DraftAdvisor(backend).recommend(pack, {"spoken_advice": "Use grounded fallback"})
-    # 2026-10-06: the claim is dropped and flagged; the pick itself is still judged.
-    pick = result["recommendations"][0]
-    assert pick["synergy_with"] == [] and pick["unsupported_synergy"] == ["Card 2"]
-    assert pick["reason"].endswith("(synergy unverified)")
 
 
 def test_token_producers_keep_slots_over_excess_empty_board_buffs():
