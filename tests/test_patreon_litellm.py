@@ -16,7 +16,6 @@ pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
 from tests.fakes import FakeLiteLLM
 from tests.website_app import isolate_website_modules, load_website_module
 

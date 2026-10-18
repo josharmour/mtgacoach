@@ -11,14 +11,8 @@ from __future__ import annotations
 
 import threading
 import time
-from types import SimpleNamespace as NS
 
 import pytest
-
-from arenamcp.backend_health import BackendHealth, HealthState, is_backend_error_text
-from arenamcp.backends import health, proxy
-from arenamcp.backends.health import CircuitBreaker
-from arenamcp.backends.proxy import BackendError, BackendUnavailable
 from tests.proxy_fakes import (
     MODEL,
     PROBE_OK,
@@ -31,6 +25,11 @@ from tests.proxy_fakes import (
     make_backend,
     ok_stream,
 )
+
+from arenamcp.backend_health import BackendHealth, HealthState, is_backend_error_text
+from arenamcp.backends import health, proxy
+from arenamcp.backends.health import CircuitBreaker
+from arenamcp.backends.proxy import BackendError, BackendUnavailable
 
 
 class Clock:
@@ -296,10 +295,10 @@ def test_open_breaker_fails_fast_without_network_or_health_noise():
     assert len(be._client.calls) == 3, "LiteLLM already retried: no client retry"
     failures = BackendHealth.instance().snapshot()["total_failures"]
 
-    started = time.perf_counter()
+    # Fast = no request at all (asserted on the call count below); a
+    # wall-clock bound flaked under xdist load.
     with pytest.raises(BackendUnavailable) as exc:
         be.complete("s", "u", call_class="decision.typed", raise_on_error=True)
-    assert time.perf_counter() - started < 0.05
     assert exc.value.circuit_open is True
     assert exc.value.retryable is False
     assert exc.value.reason == "circuit_open"
@@ -330,8 +329,8 @@ def test_breaker_is_shared_across_backend_instances_per_endpoint():
     second = make_backend()
     assert proxy.is_backend_unavailable(second.complete("s", "u"))
     assert second._client.calls == []
-    other_model = make_backend(model="gemma-4-12b-it")
-    assert other_model.complete("s", "u") == "ok"
+    other_model = make_backend(model="other-model")
+    assert other_model.complete("s", "u") == "ok", "breakers are per (base_url, model)"
 
 
 def test_background_calls_are_skipped_while_the_endpoint_is_down():

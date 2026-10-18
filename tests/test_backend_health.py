@@ -5,7 +5,7 @@ outage 2026-07-05, license-key 401s 2026-07-16) must be announced via the
 BackendHealth tracker and [BACKEND ERROR]/[LOCAL FALLBACK] tags.
 """
 
-import pytest
+from tests.proxy_fakes import FakeAPIError, make_backend
 
 from arenamcp.backend_health import (
     BACKEND_ERROR_PREFIX,
@@ -16,16 +16,7 @@ from arenamcp.backend_health import (
     is_local_fallback_text,
     strip_health_tags,
 )
-from arenamcp.backends.proxy import ProxyBackend
 from arenamcp.coach import CoachEngine, _fallback_non_action_advice
-
-
-@pytest.fixture(autouse=True)
-def _reset_singleton():
-    BackendHealth.reset_instance()
-    yield
-    BackendHealth.reset_instance()
-
 
 # ── Tracker state transitions ────────────────────────────────────────
 
@@ -173,53 +164,12 @@ def test_build_threat_fallback_tagged():
     assert "Sheoldred" in out
 
 
-# ── Proxy error returns carry the tag ────────────────────────────────
-
-
-class _FakeAPIError(Exception):
-    def __init__(self, msg, status_code=None, body=None):
-        super().__init__(msg)
-        self.status_code = status_code
-        self.body = body
-
-
-class _Completions:
-    """Scriptable completions endpoint: pops one behavior per call."""
-
-    def __init__(self, script):
-        self.script = list(script)
-
-    def create(self, **params):
-        behavior = self.script.pop(0)
-        if isinstance(behavior, Exception):
-            raise behavior
-        return behavior
-
-
-class _Client:
-    def __init__(self, script):
-        self.chat = type("chat", (), {})()
-        self.chat.completions = _Completions(script)
-
-    def with_options(self, **kw):
-        return self
-
-
-def _proxy_backend(script) -> ProxyBackend:
-    be = ProxyBackend(model="nemotron-3-super", base_url="http://test.invalid/v1")
-    be._client = _Client(script)
-    return be
-
-
-def test_proxy_error_return_tagged_and_detectable():
-    be = _proxy_backend([_FakeAPIError("auth", status_code=401)])
-    out = be.complete("sys", "user", 16)
-    assert out.startswith(BACKEND_ERROR_PREFIX)
-    assert is_backend_error_text(out)
+# ── Proxy failures reach the tracker ─────────────────────────────────
 
 
 def test_proxy_failure_feeds_tracker():
-    be = _proxy_backend([_FakeAPIError("auth", status_code=401)])
+    """The [BACKEND ERROR] sentinel itself is covered in test_proxy_backend_errors."""
+    be = make_backend([FakeAPIError("auth", status_code=401)])
     be.complete("sys", "user", 16)
     snap = BackendHealth.instance().snapshot()
     assert snap["total_failures"] >= 1
