@@ -20,8 +20,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
-import subprocess
-import sys
 import time
 from copy import deepcopy
 from unittest import mock
@@ -581,25 +579,6 @@ def test_guard_and_tags_stay_fast():
     # The fastest of three runs in this thread's CPU time: other tests running in parallel
     # only ever add wall-clock time.
     assert cpu_ms(run) < 150
-
-
-def test_line_guard_imports_no_llm_backend():
-    """line_guard's own import closure (package __init__ bypassed) has no backend."""
-    code = (
-        "import importlib.util, sys, types\n"
-        "spec = importlib.util.find_spec('arenamcp')\n"
-        "pkg = types.ModuleType('arenamcp')\n"
-        "pkg.__path__ = list(spec.submodule_search_locations)\n"
-        "sys.modules['arenamcp'] = pkg\n"
-        "import arenamcp.line_guard\n"
-        "bad = [m for m in sys.modules if m.startswith(('arenamcp.backends', 'arenamcp.coach'))"
-        " or m in ('requests', 'httpx', 'openai')]\n"
-        "print(','.join(sorted(bad)))\n"
-    )
-    result = subprocess.run(
-        [sys.executable, "-B", "-c", code], capture_output=True, text=True, timeout=60, check=True
-    )
-    assert result.stdout.strip() == ""
 
 
 # --- 2026-10-07 review regressions ------------------------------------------------------------

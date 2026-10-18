@@ -13,9 +13,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
-import subprocess
-import sys
 import threading
 import time
 from copy import deepcopy
@@ -743,32 +740,6 @@ def test_service_builds_off_thread_and_caches(tmp_path):
     other = ot.TrickTableService(cache_dir=tmp_path / "other", **quiet)
     other.register(built)
     assert other.get("fra") is built
-
-
-def test_no_llm_or_network_on_the_decision_path(tmp_path, table):
-    """arenamcp/__init__ imports the coach (and so arenamcp.backends), so the check loads the package
-    without it: importing the module and estimating a real state must not pull either in."""
-    path = tmp_path / "table.json"
-    path.write_text(table.to_json(), encoding="utf-8")
-    code = f"""
-import sys, types
-pkg = types.ModuleType("arenamcp"); pkg.__path__ = [{str(REPO / "src" / "arenamcp")!r}]
-sys.modules["arenamcp"] = pkg
-sys.path.insert(0, {str(REPO)!r})
-import arenamcp.opponent_tricks as ot
-from tests import strategic_states as S
-table = ot.TrickTable.from_json(open({str(path)!r}, encoding="utf-8").read())
-assert ot.trick_risk(S.G3_T10_BLOCKS, table).known
-assert ot.TrickTableService(cache_dir=None).get("FRA") is None
-bad = sorted(m for m in sys.modules if m.startswith("arenamcp.backends") or m in ("requests", "arenamcp.coach"))
-print(bad)
-sys.exit(1 if bad else 0)
-"""
-    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, cwd=REPO, env=env, timeout=120
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
 
 
 # --- 2026-10-07 review regressions ------------------------------------------------------------

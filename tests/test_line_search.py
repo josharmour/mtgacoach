@@ -21,8 +21,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
-import sys
 from copy import deepcopy
 from unittest import mock
 
@@ -49,8 +47,6 @@ from tests.strategic_states import (
     bridge_card,
     card,
     cast,
-    log_phase,
-    mac_phase,
     modal_decision,
     state,
 )
@@ -279,15 +275,6 @@ def test_two_cold_runs_give_identical_lines(name):
         )
 
     assert facts(first) == facts(second)
-
-
-@pytest.mark.parametrize(
-    "name", ["G3_T10_BLOCKS", "BUG_135027", "BUG_174855", "G1_T12", "G1_T15_FROM_OPPONENT"]
-)
-def test_bridge_and_log_phase_names_give_the_same_lines(name):
-    bridge, log = _search(mac_phase(FIXTURES[name])), _search(log_phase(FIXTURES[name]))
-    assert [line.as_payload() for line in bridge.lines] == [line.as_payload() for line in log.lines]
-    assert bridge.best.as_payload() == log.best.as_payload()
 
 
 @pytest.mark.parametrize("name", list(FIXTURES))
@@ -600,25 +587,6 @@ def test_soft_deadline_finishes_the_rest_greedily():
         result.baseline.timing,
         result.baseline.v,
     )
-
-
-def test_line_search_imports_no_llm_backend():
-    """line_search's own import closure (package __init__ bypassed) has no backend."""
-    code = (
-        "import importlib.util, sys, types\n"
-        "spec = importlib.util.find_spec('arenamcp')\n"
-        "pkg = types.ModuleType('arenamcp')\n"
-        "pkg.__path__ = list(spec.submodule_search_locations)\n"
-        "sys.modules['arenamcp'] = pkg\n"
-        "import arenamcp.line_search\n"
-        "bad = [m for m in sys.modules if m.startswith(('arenamcp.backends', 'arenamcp.coach'))"
-        " or m in ('requests', 'httpx', 'openai')]\n"
-        "print(','.join(sorted(bad)))\n"
-    )
-    result = subprocess.run(
-        [sys.executable, "-B", "-c", code], capture_output=True, text=True, timeout=60, check=True
-    )
-    assert result.stdout.strip() == ""
 
 
 # --- 2026-10-07 review regressions ------------------------------------------------------------

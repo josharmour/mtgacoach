@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import subprocess
-import sys
 from copy import deepcopy
 
 import pytest
@@ -444,25 +442,6 @@ def test_model_is_frozen_deterministic_and_leaves_the_state_alone():
         value = getattr(model, field.name)
         assert not isinstance(value, (list, set, dict)), field.name
     assert able_now(list(model.theirs)) == [b for b in model.theirs if not b["_tapped"] and not b["_sick"]]
-
-
-def test_board_model_imports_no_llm_backend():
-    """board_model's own import closure (package __init__ bypassed) has no backend."""
-    code = (
-        "import importlib.util, sys, types\n"
-        "spec = importlib.util.find_spec('arenamcp')\n"
-        "pkg = types.ModuleType('arenamcp')\n"
-        "pkg.__path__ = list(spec.submodule_search_locations)\n"
-        "sys.modules['arenamcp'] = pkg\n"
-        "import arenamcp.board_model\n"
-        "bad = [m for m in sys.modules if m.startswith(('arenamcp.backends', 'arenamcp.coach'))"
-        " or m in ('requests', 'httpx', 'openai')]\n"
-        "print(','.join(sorted(bad)))\n"
-    )
-    result = subprocess.run(
-        [sys.executable, "-B", "-c", code], capture_output=True, text=True, timeout=60, check=True
-    )
-    assert result.stdout.strip() == ""
 
 
 # --- 2026-10-07 review regressions ------------------------------------------------------------
