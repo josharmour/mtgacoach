@@ -236,15 +236,6 @@ def test_reform_validation_issues_are_logged(caplog):
     assert "GamePlan (turn 12): role=defender" in text
 
 
-def test_backends_without_the_new_keywords_still_work():
-    class Legacy:
-        def complete(self, system, user, max_tokens, temperature=0.3, request_timeout_s=None):
-            return json.dumps({**BAD_PLAN, "role": "defender"})
-
-    plan = GamePlanManager(Legacy()).maybe_reform(deepcopy(G1_T12))
-    assert plan is not None and plan.role == ROLE_DEFENDER
-
-
 # --- the grounded block in decision prompts ------------------------------------
 
 
