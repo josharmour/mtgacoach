@@ -72,14 +72,11 @@ class _StartupMixin:
     def _startup_complete(self) -> None:
         self._startup_finished = True
         error = getattr(self, "_startup_connection_error", "")
-        warning = getattr(self, "_startup_connection_warning", "")
         if error:
             self._startup_status(
                 "error",
                 f"Coach loaded. {error}. Advice requests will retry automatically.",
             )
-        elif warning:
-            self._startup_status("connection_warning", warning, ready=True)
         else:
             self._startup_status(
                 "ready", "Coach ready — waiting for an actionable game decision.", ready=True

@@ -1,11 +1,9 @@
-"""Backend health architecture: tracker transitions, tags, gateway probe.
+"""Backend health architecture: tracker transitions and output tags.
 
 Covers the 2026-07-23 backend-health build: silent LLM failures (gateway
 outage 2026-07-05, license-key 401s 2026-07-16) must be announced via the
 BackendHealth tracker and [BACKEND ERROR]/[LOCAL FALLBACK] tags.
 """
-
-import urllib.error
 
 import pytest
 
@@ -14,7 +12,6 @@ from arenamcp.backend_health import (
     LOCAL_FALLBACK_PREFIX,
     BackendHealth,
     HealthState,
-    check_gateway_health,
     is_backend_error_text,
     is_local_fallback_text,
     strip_health_tags,
@@ -227,78 +224,3 @@ def test_proxy_failure_feeds_tracker():
     snap = BackendHealth.instance().snapshot()
     assert snap["total_failures"] >= 1
     assert snap["state"] == HealthState.DEGRADED.value
-
-
-# ── Gateway probe ────────────────────────────────────────────────────
-
-
-class _ProbeBackend:
-    _base_url = "http://gateway.test/v1"
-    _api_key = "test-key"
-    model = "probe-model"
-
-
-class _FakeResponse:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-    def read(self):
-        return b'{"data": []}'
-
-
-def test_probe_ok_on_200(monkeypatch):
-    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _FakeResponse())
-    state, detail = check_gateway_health(_ProbeBackend())
-    assert state is HealthState.OK
-    assert "reachable" in detail
-    assert BackendHealth.instance().state is HealthState.OK
-
-
-@pytest.mark.parametrize("code", [401, 403, 404, 405])
-def test_model_list_permissions_do_not_establish_inference_failure(monkeypatch, code):
-    def _raise_http(req, timeout=None):
-        raise urllib.error.HTTPError(req.full_url, code, "Rejected", {}, None)
-
-    monkeypatch.setattr("urllib.request.urlopen", _raise_http)
-    state, detail = check_gateway_health(_ProbeBackend())
-    assert state is HealthState.UNKNOWN
-    assert str(code) in detail
-    tracker = BackendHealth.instance()
-    assert tracker.snapshot()["total_failures"] == 0
-    assert tracker.state is HealthState.UNKNOWN
-    assert tracker.record_success()  # Next real response clears provisional warning.
-    assert tracker.state is HealthState.OK
-
-
-def test_probe_uses_inference_transport_without_completing(monkeypatch):
-    from unittest.mock import Mock
-
-    backend = ProxyBackend(model="model", base_url="http://gateway.test/v1")
-    backend._client = Mock()
-    backend._client.with_options.return_value = backend._client
-    monkeypatch.setattr("urllib.request.urlopen", Mock(side_effect=AssertionError("wrong transport")))
-    assert check_gateway_health(backend, timeout=2)[0] is HealthState.OK
-    backend._client.with_options.assert_called_once_with(timeout=2, max_retries=0)
-    backend._client.models.list.assert_called_once_with()
-    backend._client.chat.completions.create.assert_not_called()
-
-
-def test_probe_warning_does_not_overwrite_actual_inference_health():
-    tracker = BackendHealth.instance()
-    tracker.record_failure("inference failed")
-    tracker.record_probe_warning("model list forbidden")
-    assert tracker.state is HealthState.DEGRADED
-    assert tracker.snapshot()["last_error"] == "inference failed"
-
-
-def test_probe_down_on_unreachable(monkeypatch):
-    def _raise_url(req, timeout=None):
-        raise urllib.error.URLError("connection refused")
-
-    monkeypatch.setattr("urllib.request.urlopen", _raise_url)
-    state, detail = check_gateway_health(_ProbeBackend())
-    assert state is HealthState.DOWN
-    assert "unreachable" in detail

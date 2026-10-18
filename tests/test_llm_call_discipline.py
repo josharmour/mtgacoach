@@ -670,10 +670,6 @@ def test_startup_check_uses_an_inference_probe_not_the_model_list(monkeypatch, r
                 BackendHealth.instance().record_failure("Connection error")
             return False, "fake-glm: inference probe failed after 5000ms: Connection error"
 
-    monkeypatch.setattr(
-        "arenamcp.standalone.check_gateway_health",
-        Mock(side_effect=AssertionError("model list is not a probe")),
-    )
     coach = standalone.StandaloneCoach.__new__(standalone.StandaloneCoach)
     coach.ui = Mock()
     coach._coach = SimpleNamespace(_backend=ProbeBackend())

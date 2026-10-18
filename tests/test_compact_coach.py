@@ -357,25 +357,6 @@ def test_child_startup_clock_cannot_move_elapsed_backwards(panel, monkeypatch):
     assert "20s" in panel.startup_label.text()
 
 
-def test_inconclusive_connection_check_keeps_coaching_available(panel):
-    panel._on_startup_status(
-        {
-            "phase": "connection_warning",
-            "ready": True,
-            "message": "Gateway model listing is restricted; inference remains available.",
-        }
-    )
-    assert not panel.startup_banner.isHidden()
-    assert "Connection check incomplete" in panel.startup_label.text()
-    assert "no reload required" in panel.startup_label.text()
-    assert "waiting for startup" not in panel.startup_label.text()
-    assert not panel._startup_timer.isActive()
-    assert "next game decision" in panel.model_chip.toolTip()
-    assert panel.autopilot_bug_btn.isEnabled()
-    panel._on_startup_status({"phase": "ready", "ready": True})
-    assert panel.startup_banner.isHidden()
-
-
 def test_arena_connection_notice_is_separate_from_model_startup(panel):
     panel._on_startup_status({"phase": "ready", "ready": True})
     panel.session.statusChanged.emit("ARENA", "Connecting to Arena bridge…")

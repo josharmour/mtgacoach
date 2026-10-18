@@ -15,7 +15,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from arenamcp.backend_health import BackendHealth, HealthState, check_gateway_health, is_backend_error_text
+from arenamcp.backend_health import BackendHealth, HealthState, is_backend_error_text
 from arenamcp.backends import health, proxy
 from arenamcp.backends.health import CircuitBreaker, add_circuit_listener, remove_circuit_listener
 from arenamcp.backends.proxy import BackendError, BackendUnavailable, ProxyBackend
@@ -579,16 +579,6 @@ def test_probe_inference_failure_is_reported_and_counted():
     assert "inference probe failed" in detail
     assert breaker.snapshot()["consecutive_failures"] == 1
     assert BackendHealth.instance().state is HealthState.DEGRADED
-
-
-def test_model_listing_never_closes_the_breaker():
-    """LiteLLM answers GET /models with vLLM dead ("OK (208ms)" at 18:50:46)."""
-    clock = Clock()
-    breaker = install_breaker(clock)
-    trip(breaker, clock)
-    be = make_backend()
-    check_gateway_health(be, timeout=2)
-    assert breaker.snapshot()["state"] == "open"
 
 
 def test_breaker_probe_treats_an_auth_error_as_an_answer():

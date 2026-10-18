@@ -790,16 +790,13 @@ class CompactCoachPanel(QWidget):
 
     def _render_startup_status(self) -> None:
         status = self._startup_status
-        if not status or (status.get("ready") and status.get("phase") != "connection_warning"):
+        if not status or status.get("ready"):
             self.startup_banner.hide()
             return
         phase = str(status.get("phase", "starting"))
         failed = phase in ("error", "stopped")
         tone = "bad" if failed else "warn"
-        if phase == "connection_warning":
-            heading = "Connection check incomplete"
-            explanation = "Coaching will try the next game decision; no reload required."
-        elif failed:
+        if failed:
             heading = "Coach stopped" if phase == "stopped" else "Startup needs attention"
             explanation = (
                 "Reload engine to resume coaching."
@@ -1412,7 +1409,7 @@ class CompactCoachPanel(QWidget):
             "bad"
             if startup_phase in ("error", "stopped")
             else "warn"
-            if preparing or startup_phase == "connection_warning"
+            if preparing
             else "good"
             if self._dot_values.get("MODEL")
             else "muted"
@@ -1421,8 +1418,6 @@ class CompactCoachPanel(QWidget):
         self.model_chip.setToolTip(
             "Coaching is not ready yet; see the startup status below."
             if preparing
-            else "Connection check incomplete. Coaching will try the next game decision."
-            if startup_phase == "connection_warning"
             else "Coach ready. Model used for advice."
             if self._startup_status.get("ready")
             else "Model configured for advice"

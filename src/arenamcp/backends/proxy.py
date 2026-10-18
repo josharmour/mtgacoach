@@ -990,15 +990,6 @@ class ProxyBackend:
         """
         self._get_client()
 
-    def probe_connection(self, timeout: float = 5.0) -> None:
-        """Check model discovery using the same auth/headers as inference.
-
-        This is a single GET, never a completion or a model warmup. It does
-        not prove inference works (LiteLLM answers it with vLLM dead) and
-        never touches the circuit breaker; use probe_inference() for that.
-        """
-        self._get_client().with_options(timeout=timeout, max_retries=0).models.list()
-
     def _local_warmup(self) -> None:
         """Send a minimal warmup request to a local backend in a background thread.
 
@@ -1542,8 +1533,7 @@ class ProxyBackend:
 
         Sends one 1-token completion. Records the outcome in BackendHealth
         and the shared breaker (a success closes it). Returns (ok, detail).
-        Use this instead of check_gateway_health(): LiteLLM answers
-        GET /models while vLLM is dead.
+        Never GET /models: LiteLLM answers it while vLLM is dead.
         """
         breaker = self._circuit()
         started = time.perf_counter()
