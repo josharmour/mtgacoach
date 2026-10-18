@@ -1,5 +1,6 @@
 import pytest
 
+from arenamcp.backend_health import BACKEND_ERROR_PREFIX
 from arenamcp.coach import CoachEngine
 from arenamcp.game_plan import GamePlanManager
 
@@ -118,7 +119,7 @@ def test_threat_prompt_uses_specific_card_and_available_answers(monkeypatch):
 
 
 def test_threat_fallback_is_specific_when_backend_errors(monkeypatch):
-    backend = _DummyBackend("Error: LLM timed out")
+    backend = _DummyBackend(f"{BACKEND_ERROR_PREFIX} LLM timed out")
     coach = CoachEngine(backend=backend)
     coach._rules_db = type("RulesStub", (), {"get_rules_for_situation": lambda *args, **kwargs: []})()
     monkeypatch.setattr(coach, "_format_game_context", lambda state: "CTX")

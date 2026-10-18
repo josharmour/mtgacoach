@@ -1386,9 +1386,6 @@ class _AdvicePostprocessMixin:
                     if act.lower().startswith("cast ")
                 )
                 then_lines = [l for l in legal_actions if l.startswith("THEN:")]
-                if not then_lines and isinstance(game_state, dict):
-                    prompt_lines = game_state.get("_last_prompt_lines", [])
-                    then_lines = [l for l in prompt_lines if l.startswith("THEN:")]
 
                 spell_in_then = any(spell_short in tl.lower() for tl in then_lines)
 

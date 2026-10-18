@@ -98,10 +98,11 @@ def test_snapshot_shape():
 # ── Tag predicates ───────────────────────────────────────────────────
 
 
-def test_is_backend_error_text_matches_new_and_legacy():
+def test_is_backend_error_text_matches_only_the_tag():
     assert is_backend_error_text(f"{BACKEND_ERROR_PREFIX} auth failed")
-    assert is_backend_error_text("Error getting advice: auth failed")
-    assert is_backend_error_text("  Error: LLM timed out after 30s")
+    assert is_backend_error_text(f"  {BACKEND_ERROR_PREFIX} LLM timed out after 30s")
+    # Model text that merely starts with "Error" is advice, not a failure.
+    assert not is_backend_error_text("Error-proof line: hold up Negate.")
     assert not is_backend_error_text("Attack with the 3/3 first.")
     assert not is_backend_error_text("")
     assert not is_backend_error_text(None)

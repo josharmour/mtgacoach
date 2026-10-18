@@ -24,7 +24,7 @@ from tests.test_deck_strategy import deck_case
 
 from arenamcp import game_plan as game_plan_module
 from arenamcp import standalone
-from arenamcp.backend_health import LOCAL_FALLBACK_PREFIX, BackendHealth, HealthState
+from arenamcp.backend_health import BACKEND_ERROR_PREFIX, LOCAL_FALLBACK_PREFIX, BackendHealth, HealthState
 from arenamcp.coach import CoachEngine
 from arenamcp.conversation import TURN_ADVICE, ConversationController
 from arenamcp.deck_strategy import deck_identity
@@ -576,7 +576,7 @@ def test_threat_fallback_follows_the_block_solver_and_survives_the_legal_filter(
         decision_context={"type": "declare_blockers"},
         legal_actions=["Block with: Diviner of Victory"],
     )
-    advice = _coach_with(BreakerBackend(["Error: LLM timed out"])).get_advice(
+    advice = _coach_with(BreakerBackend([f"{BACKEND_ERROR_PREFIX} LLM timed out"])).get_advice(
         state, trigger="threat_detected", threat={"name": "Pia", "warning": "grows"}
     )
     assert "No blocks: 2 damage at 20 life" in advice

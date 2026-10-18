@@ -46,14 +46,13 @@ class HealthState(Enum):
 def is_backend_error_text(text: str | None) -> bool:
     """True for strings that represent a backend failure, not real content.
 
-    Matches the ``[BACKEND ERROR]`` tag and legacy ``Error ...`` sentinels
-    (older backends, the coach timeout path, third-party wrappers) so all
-    pre-existing detection sites keep working through the sentinel rename.
+    Matches the ``[BACKEND ERROR]`` tag, the only sentinel ProxyBackend and
+    the coach timeout path produce. (A bare ``Error ...`` prefix used to count
+    too, which could misread model advice that happens to start with "Error".)
     """
     if not text or not isinstance(text, str):
         return False
-    stripped = text.lstrip()
-    return stripped.startswith(BACKEND_ERROR_PREFIX) or stripped.startswith("Error")
+    return text.lstrip().startswith(BACKEND_ERROR_PREFIX)
 
 
 def is_local_fallback_text(text: str | None) -> bool:

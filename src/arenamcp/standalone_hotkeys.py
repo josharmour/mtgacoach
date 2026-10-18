@@ -397,7 +397,7 @@ class _StandaloneHotkeysMixin:
 
         from arenamcp.backend_detect import is_query_failure_retriable
 
-        # Detect backend errors — either prefixed "Error …" from the backend wrapper,
+        # Detect backend errors — either tagged "[BACKEND ERROR] …" by the backend,
         # or raw short error text (e.g. "Credit balance is too low") that the CLI
         # returns as normal assistant text.  The len<200 guard prevents false
         # positives on real advice that incidentally contains words like "account".

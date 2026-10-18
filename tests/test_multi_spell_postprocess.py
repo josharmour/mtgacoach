@@ -88,9 +88,6 @@ def test_postprocess_strips_multi_spell_when_over_mana_budget():
             {"name": "Forest", "type_line": "Basic Land — Forest", "owner_seat_id": 1, "is_tapped": False},
         ],
         "stack": [],
-        "_last_prompt_lines": [
-            "THEN: Play Forest → Cast (choose one: Michelangelo, Mutant BFF or Solid Ground)"
-        ],
     }
 
     advice = "Play Forest then cast Michelangelo, and Solid Ground to double counters."
