@@ -128,7 +128,6 @@ class CircuitBreaker:
         self._probe_thread_enabled = probe_thread
         self._probe_thread: threading.Thread | None = None
         self._stop = threading.Event()
-        self._listeners: list[Callable[[dict[str, Any]], None]] = []
 
     # ── probe registration ────────────────────────────────────────────
 
@@ -249,14 +248,12 @@ class CircuitBreaker:
             self._probation_until = now + self.PROBATION_S
             self._next_probe_at = None
             self._probe_interval = self.PROBE_INTERVAL_S
-            snap = self._snapshot_locked(now)
         logger.info(
             "[PROXY] Circuit CLOSED for %s%s; probation %.0fs",
             self.key,
             f" ({detail})" if detail else "",
             self.PROBATION_S,
         )
-        self._notify("closed", snap)
         return True
 
     def record_failure(self, error: str = "", *, token: int | None = None) -> bool:
@@ -305,7 +302,6 @@ class CircuitBreaker:
             consecutive = self._consecutive
             last_error = self._last_error
             interval = self._probe_interval
-            snap = self._snapshot_locked(now)
             self._start_probe_thread_locked()
         logger.warning(
             "[PROXY] Circuit OPEN for %s: %d consecutive failures over %.1fs (last: %s); "
@@ -316,7 +312,6 @@ class CircuitBreaker:
             last_error[:160] or "?",
             interval,
         )
-        self._notify("opened", snap)
         return True
 
     # ── probing ───────────────────────────────────────────────────────
@@ -389,10 +384,6 @@ class CircuitBreaker:
 
     # ── observation ───────────────────────────────────────────────────
 
-    def add_listener(self, listener: Callable[[str, dict[str, Any]], None]) -> None:
-        with self._lock:
-            self._listeners.append(listener)  # type: ignore[arg-type]
-
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return self._snapshot_locked(self._clock())
@@ -416,17 +407,6 @@ class CircuitBreaker:
             "timestamp": time.time(),
         }
 
-    def _notify(self, event: str, snap: dict[str, Any]) -> None:
-        with self._lock:
-            listeners = list(self._listeners)
-        with _REGISTRY_LOCK:
-            listeners += list(_GLOBAL_LISTENERS)
-        for listener in listeners:
-            try:
-                listener(event, dict(snap))
-            except Exception as e:  # a broken listener must never break the breaker
-                logger.debug("circuit listener failed: %s", e)
-
     def _streak_stale_locked(self, now: float) -> bool:
         return self._last_failure_at is not None and now - self._last_failure_at > self.STREAK_STALE_S
 
@@ -438,7 +418,6 @@ class CircuitBreaker:
 
 _REGISTRY: dict[tuple[str, str], CircuitBreaker] = {}
 _REGISTRY_LOCK = threading.Lock()
-_GLOBAL_LISTENERS: list[Callable[[str, dict[str, Any]], None]] = []
 
 
 def get_circuit(base_url: str, model: str) -> CircuitBreaker:
@@ -450,31 +429,6 @@ def get_circuit(base_url: str, model: str) -> CircuitBreaker:
             breaker = CircuitBreaker(f"{key[1]} @ {key[0]}")
             _REGISTRY[key] = breaker
         return breaker
-
-
-def circuit_snapshots() -> list[dict[str, Any]]:
-    """Snapshots of every breaker created in this process."""
-    with _REGISTRY_LOCK:
-        breakers = list(_REGISTRY.values())
-    return [b.snapshot() for b in breakers]
-
-
-def add_circuit_listener(listener: Callable[[str, dict[str, Any]], None]) -> None:
-    """Call ``listener(event, snapshot)`` on every open/close of any breaker.
-
-    ``event`` is ``"opened"`` or ``"closed"``. Listeners run on the thread
-    that caused the transition (a request thread or the probe thread) and
-    must not block.
-    """
-    with _REGISTRY_LOCK:
-        if listener not in _GLOBAL_LISTENERS:
-            _GLOBAL_LISTENERS.append(listener)
-
-
-def remove_circuit_listener(listener: Callable[[str, dict[str, Any]], None]) -> None:
-    with _REGISTRY_LOCK:
-        if listener in _GLOBAL_LISTENERS:
-            _GLOBAL_LISTENERS.remove(listener)
 
 
 def reset_circuit_breakers() -> None:

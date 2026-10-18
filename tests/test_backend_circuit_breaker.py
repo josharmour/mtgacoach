@@ -17,7 +17,7 @@ import pytest
 
 from arenamcp.backend_health import BackendHealth, HealthState, is_backend_error_text
 from arenamcp.backends import health, proxy
-from arenamcp.backends.health import CircuitBreaker, add_circuit_listener, remove_circuit_listener
+from arenamcp.backends.health import CircuitBreaker
 from arenamcp.backends.proxy import BackendError, BackendUnavailable, ProxyBackend
 
 URL = "http://test.invalid/v1"
@@ -329,23 +329,6 @@ def test_background_work_stops_at_three_fresh_failures_before_the_breaker_opens(
     assert breaker.background_blocked()
     clock.advance(61)
     assert not breaker.background_blocked(), "a stale streak no longer blocks background work"
-
-
-def test_listeners_hear_open_and_close():
-    clock = Clock()
-    breaker = CircuitBreaker("k", clock=clock, probe_thread=False)
-    events = []
-
-    def listener(event, snap):
-        events.append((event, snap["state"]))
-
-    add_circuit_listener(listener)
-    try:
-        trip(breaker, clock)
-        breaker.record_success()
-    finally:
-        remove_circuit_listener(listener)
-    assert events == [("opened", "open"), ("closed", "closed")]
 
 
 def test_env_switch_keeps_it_closed(monkeypatch):
