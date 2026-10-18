@@ -158,3 +158,84 @@ def life_payment_decline(decision: Any, state: dict) -> str:
                 f"would leave us at {after}, {reason}."
             )
     return ""
+
+
+# "Its owner may put it on top of their library. If they do, Clash of Elements deals 2
+# damage to them. If they didn't ..., they put it on the bottom."
+_TOP_OR_BOTTOM = re.compile(
+    r"\bowner may put it on (?:the )?top of (?:their|his or her) library\b.*?\bif they do\b[^.]*?"
+    r"\bdeals? (\d+) damage to them\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_COST_SYMBOL = re.compile(r"\{([^}]+)\}")
+
+
+def _mana_value(card: dict) -> int:
+    total = 0
+    for symbol in _COST_SYMBOL.findall(str(card.get("mana_cost") or "")):
+        symbol = symbol.lstrip("oO")
+        total += int(symbol) if symbol.isdigit() else (0 if symbol.upper() == "X" else 1)
+    return total
+
+
+def _is_token(card: dict) -> bool:
+    kind = str(card.get("object_kind") or "").upper()
+    return kind == "TOKEN" or "token" in str(card.get("type_line") or "").lower().split("—")[0]
+
+
+def top_or_bottom_choice(decision: Any, state: dict) -> tuple[str, str]:
+    """(option id, reason) for "put your permanent on top of your library and take N damage,
+    or on the bottom"; ("", "") when no rule applies.
+
+    Pro YFRA game 2026-10-18, match 1: Clash of Elements on Garruk (turn 12) -
+    top, take 2, redraw and recast him; on the Beast token (turn 14) - bottom,
+    since a token leaves the library at once. Top is taken only for a nontoken
+    planeswalker or a permanent of mana value 3 or more, and only when the
+    damage leaves us out of reach of their board.
+    """
+    if getattr(decision, "request_type", "") != "OptionalAction" or not hasattr(decision, "find"):
+        return "", ""
+    accept, decline = decision.find("optional:accept"), decision.find("optional:decline")
+    if accept is None or decline is None:
+        return "", ""
+    local = _local_seat(state)
+    cards = prompt_cards(decision, state)
+    damage = None
+    for card in cards:
+        match = _TOP_OR_BOTTOM.search(str(card.get("oracle_text") or ""))
+        if match:
+            damage = int(match.group(1))
+            break
+    if damage is None:
+        return "", ""
+    recipients = {_int(i) for i in (getattr(accept, "meta", None) or {}).get("recipients") or []}
+    ours = []
+    for card in cards:
+        iid = _int(card.get("instance_id"))
+        full = _find_card(state, iid or 0) or card
+        if (recipients and iid not in recipients) or _TOP_OR_BOTTOM.search(str(full.get("oracle_text") or "")):
+            continue
+        controller = _int(full.get("controller_seat_id") or full.get("owner_seat_id"))
+        if local is not None and controller == local:
+            ours.append(full)
+    if len(ours) != 1:
+        return "", ""
+    target = ours[0]
+    name = target.get("name") or "our permanent"
+    if _is_token(target):
+        return "optional:decline", (
+            f"Put {name} on the bottom: a token leaves the library at once, so the top only costs "
+            f"{damage} life."
+        )
+    types = " ".join(str(t) for t in target.get("card_types") or []) + " " + str(target.get("type_line") or "")
+    valuable = "planeswalker" in types.lower() or _mana_value(target) >= 3
+    life = _our_life(state, local)
+    if not valuable or life is None:
+        return "", ""
+    after = life - damage
+    if after <= max(LOW_LIFE_FLOOR, _their_power(state, local)):
+        return "", ""
+    return "optional:accept", (
+        f"Put {name} on top of the library and take {damage}: we redraw it next turn (at {life} life, "
+        f"{after} after) instead of losing it to the bottom."
+    )

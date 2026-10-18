@@ -395,6 +395,15 @@ class AbilitySynthesizer:
         if "~'s power is equal to" in text.lower():
             return StaticAbility(pt_rule=text, text=original_line)
 
+        from arenamcp.cost_reduction import parse_cost_reduction
+
+        reduction = parse_cost_reduction(original_line)
+        if reduction is not None:
+            per = "greatest power among creatures you control" if reduction.per == "greatest_power" else (
+                f"each {reduction.per} you control"
+            )
+            return StaticAbility(cost_reduction=f"{{{reduction.amount}}} less per {per}", text=original_line)
+
         return None
 
     @classmethod

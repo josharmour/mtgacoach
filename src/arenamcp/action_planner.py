@@ -3389,6 +3389,15 @@ class ActionPlanner(_ActionLegalityMixin):
                 self._last_decision_trace = {"policy": "low_life_payment", "validated_ids": ["optional:decline"]}
                 logger.info("typed-decision: %s — no LLM choice", declined)
                 return ["optional:decline"]
+            from arenamcp.optional_prompts import top_or_bottom_choice
+
+            chosen, why = top_or_bottom_choice(decision, game_state)
+            if chosen:
+                self._last_decision_option_ids = [chosen]
+                self._last_decision_reasoning = why
+                self._last_decision_trace = {"policy": "top_or_bottom", "validated_ids": [chosen]}
+                logger.info("typed-decision: %s — no LLM choice", why)
+                return [chosen]
         if decision.request_type == "OptionalAction" and accept is not None:
             # An opposing ward trigger asking us to pay: we aimed at that
             # permanent on purpose, and declining counters our whole effect.
@@ -3404,6 +3413,16 @@ class ActionPlanner(_ActionLegalityMixin):
                 self._last_decision_trace = {"policy": "ward_payment", "validated_ids": ["optional:accept"]}
                 logger.info("typed-decision: paying %s for %s without an LLM choice", ward.label, name)
                 return ["optional:accept"]
+        if decision.request_type == "SelectN":
+            from arenamcp.decisions import best_hand_creature_choice
+
+            picked, why = best_hand_creature_choice(decision, game_state)
+            if picked:
+                self._last_decision_option_ids = picked
+                self._last_decision_reasoning = why
+                self._last_decision_trace = {"policy": "hand_creature_buff", "validated_ids": picked}
+                logger.info("typed-decision: %s — no LLM choice", why)
+                return picked
         if decision.request_type == "Mulligan" and {"mull:keep", "mull:mull"} <= decision.option_ids():
             return self._plan_mulligan(decision, game_state)
         if decision.request_type == "Group" and "LondonMulligan" in str(decision.source_label or ""):
@@ -5278,6 +5297,12 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
         logger.debug("board-math fallback: no assessment: %s", error)
         assessment = None
     options = [option for option in decision.options if option.payable is not False]
+    # Creatures that change nothing about this turn's attack wait for main 2 (pro YFRA game
+    # 2026-10-18, match 3 turn 7: attack first, then cast). Main 1 only; main 2 casts them.
+    deferred: set[str] = set()
+    phase = str((game_state.get("turn") or {}).get("phase") or "")
+    if step is not None and getattr(step, "attack", None) and "main1" in phase.lower().replace("_", ""):
+        deferred = set(getattr(step, "post_combat", None) or ())
 
     def name_of(option: Any) -> str:
         return str(find_source(game_state, option.meta or {}).get("name") or "")
@@ -5312,7 +5337,7 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
             role = option_role(option, game_state) if option_role is not None else "other"
         except Exception:
             role = "other"
-        if role in _REACTIVE_CAST_ROLES:
+        if role in _REACTIVE_CAST_ROLES or name in deferred:
             continue
         if step is not None:
             if name not in scheduled and name not in greedy:
@@ -5332,6 +5357,9 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
             )
         return [option.option_id], plan_text or "no board assessment, so the biggest payable creature"
     if any(option.option_id == "pass" for option in options):
+        if deferred:
+            later = ", ".join(sorted(deferred))
+            return ["pass"], f"{plan_text}; attack first, {later} after combat"
         return ["pass"], plan_text or "nothing safe to cast"
     return fallback, "no pass option, so the first legal option"
 

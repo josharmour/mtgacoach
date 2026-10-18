@@ -759,6 +759,8 @@ class TurnProjection:
     held: str = ""  # instants used on their following turn
     posture: str = ""  # T only: lethal / attack / hold / either
     cycles: list[str] = field(default_factory=list)  # landcycled cards
+    # Casts that change nothing about this turn's attack: after combat (line search only).
+    post_combat: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -864,13 +866,20 @@ class BoardAssessment:
         if step.land:
             bits.append(f"play {step.land}")
         modes = step.modes or {}
-        casts = [f"{name} (choose: {modes[name]})" if modes.get(name) else name for name in step.casts]
-        if casts or not step.cycles:
+        later = [name for name in step.casts if name in step.post_combat] if step.attack else []
+        casts = [
+            f"{name} (choose: {modes[name]})" if modes.get(name) else name
+            for name in step.casts
+            if name not in later
+        ]
+        if casts or not (step.cycles or later):
             bits.append("cast " + " + ".join(casts) if casts else "no castable board play")
         bits += [f"landcycle {name}" for name in step.cycles]
         # Attack or hold only when the line had attackers to choose from.
         if step.attack and not lethal:
             bits.append("attack with " + ", ".join(step.attack))
+        if later:
+            bits.append("then cast " + " + ".join(later) + " after combat (nothing gained casting first)")
         elif index == 0 and self.posture == "hold":
             bits.append("hold back (no attack)")
         text = "; ".join(bits)
