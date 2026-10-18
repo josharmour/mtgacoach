@@ -147,6 +147,36 @@ def test_threat_fallback_is_specific_when_backend_errors(monkeypatch):
     assert "The Wandering Emperor is the problem. Attack it this turn" in advice
 
 
+_SHEOLDRED = {
+    "name": "Sheoldred, the Apocalypse",
+    "warning": "Drains 2 on your draws, heals on theirs!",
+    "card": {"name": "Sheoldred, the Apocalypse", "type_line": "Legendary Creature — Phyrexian Praetor"},
+}
+_ANTHEM = {
+    "name": "Glorious Anthem",
+    "warning": "Pumps their whole team.",
+    "card": {"name": "Glorious Anthem", "type_line": "Enchantment"},
+}
+
+
+@pytest.mark.parametrize(
+    ("threat", "empty_hand", "line"),
+    [
+        (_SHEOLDRED, False, "Sheoldred, the Apocalypse is the key threat. Best line: use Go for the Throat on it now"),
+        (_SHEOLDRED, True, "Sheoldred, the Apocalypse is the threat to plan around. You do not have clean instant"),
+        (_ANTHEM, True, "Glorious Anthem is the card to answer. Pumps their whole team. If you cannot remove it"),
+    ],
+    ids=["answer-in-hand", "creature-no-answer", "other-permanent"],
+)
+def test_threat_fallback_names_the_answer_or_how_to_contain_it(threat, empty_hand, line):
+    coach = CoachEngine(backend=_DummyBackend(""))
+    state = _sample_game_state()
+    if empty_hand:
+        state["hand"] = []
+    advice = coach._build_threat_fallback(state, threat)
+    assert advice.startswith(f"{LOCAL_FALLBACK_PREFIX} {line}")
+
+
 def test_system_prompts_warn_against_pointless_protective_abilities():
     """Regression for the Adanto Vanguard report: the coach told the user to
     activate a 'Pay 4 life: indestructible' ability with no blockers and no
