@@ -2628,8 +2628,7 @@ class AutopilotEngine(
                 # The bridge plugin polls Unity's main thread, which can lag
                 # behind GRE log messages by hundreds of milliseconds.  Retry
                 # once after a short delay before giving up on the trigger.
-                time.sleep(0.35)
-                retry_pending = self._gre_bridge.get_pending_actions()
+                retry_pending = self._poll_bridge_for_pending(self._BRIDGE_CATCH_UP_WAIT_S)
                 if retry_pending and retry_pending.get("has_pending"):
                     bridge_has_pending = True
                     enrich_snapshot_from_pending_response(
@@ -3976,11 +3975,15 @@ class AutopilotEngine(
 
                 # Delay between actions
                 if i < len(plan.actions) - 1:
-                    # Bridge-only engines (macOS) have no input controller.
-                    if self._controller is not None:
+                    via_bridge = "GRE bridge" in str(getattr(click_result, "error", "") or "")
+                    if self._controller is not None and not via_bridge:
+                        # Clicks need the UI to settle; keep the fixed wait.
                         self._controller.wait(self._config.action_delay, "between actions")
                     else:
-                        time.sleep(self._config.action_delay)
+                        # Bridge submissions (and bridge-only macOS engines):
+                        # the next action can go as soon as MTGA shows the
+                        # next request; action_delay is only the upper bound.
+                        self._poll_bridge_for_pending(self._config.action_delay)
 
             if self._abort_event.is_set() or self._state == AutopilotState.PAUSED:
                 return False
@@ -4258,6 +4261,33 @@ class AutopilotEngine(
             return lambda: None
 
     _LOG_CATCH_UP_TIMEOUT_S = 3.0
+    # Condition polls that replaced fixed sleeps (2026-10-11 audit): poll
+    # interval, and the old 0.35 s "bridge lags the log" retry as the bound.
+    _BRIDGE_POLL_S = 0.03
+    _BRIDGE_CATCH_UP_WAIT_S = 0.35
+    _VERIFY_FAST_POLL_S = 0.03
+
+    def _poll_bridge_for_pending(self, max_wait: float) -> dict[str, Any] | None:
+        """Poll the bridge every 30 ms until it shows a pending request, up to ``max_wait``.
+
+        Returns the last response (the pending one, or the poll at the
+        deadline). Replaces fixed sleeps that waited out the whole bound even
+        when MTGA answered in ~25 ms.
+        """
+        deadline = time.monotonic() + max(0.0, float(max_wait))
+        resp = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or self._abort_event.is_set():
+                return resp
+            time.sleep(min(self._BRIDGE_POLL_S, remaining))
+            try:
+                resp = self._gre_bridge.get_pending_actions()
+            except Exception as error:
+                logger.debug("bridge pending poll failed: %s", error)
+                resp = None
+            if resp and resp.get("has_pending"):
+                return resp
     _LOG_CATCH_UP_POLL_S = 0.03
     # Set by the coaching runtime to the MCP poll_log(): reads Player.log now.
     # The wait below used to re-read only the parsed state, so when nothing
@@ -4785,17 +4815,23 @@ class AutopilotEngine(
         Returns:
             True if state changed as expected.
         """
-        # Initial delay to give MTGA time to process the click and update logs
-        time.sleep(self._config.post_action_delay)
-
-        deadline = time.time() + self._config.verification_timeout
-        poll_interval = 0.15
-
         card_name = action.card_name.lower() if action.card_name else ""
         pre_pending = pre_state.get("pending_decision")
         pre_bridge_state_id = int(pre_state.get("_bridge_game_state_id", 0) or 0)
         bridge_state_authoritative = pre_bridge_state_id > 0
         last_post_state: dict[str, Any] | None = None
+
+        # MTGA needs a moment to process the action and update the log: a
+        # fixed post_action_delay sleep. With a bridge game_state_id to watch
+        # (the only proof the bridge path accepts), the advance is polled for
+        # every 30 ms during that window instead (it shows up in ~25 ms), then
+        # every 150 ms; the overall deadline is unchanged. Log-diff checks
+        # keep the initial sleep: the log trails the action.
+        fast_until = time.time() + self._config.post_action_delay
+        if not bridge_state_authoritative:
+            time.sleep(self._config.post_action_delay)
+        deadline = fast_until + self._config.verification_timeout
+        poll_interval = 0.15
 
         while time.time() < deadline:
             try:
@@ -4816,7 +4852,7 @@ class AutopilotEngine(
                     return True
 
                 if bridge_state_authoritative:
-                    time.sleep(poll_interval)
+                    time.sleep(self._VERIFY_FAST_POLL_S if time.time() < fast_until else poll_interval)
                     continue
 
                 # 0. New pending decision appeared (ETB choices, mana payments, etc.)

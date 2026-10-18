@@ -55,6 +55,45 @@ def bridge_shows_pending(game_state: dict[str, Any]) -> bool:
     )
 
 
+# Combat acknowledgment polling (attackers and blockers are two-step GRE
+# round-trips): poll interval, the minimum wait before a verdict read from an
+# absent request, and the old fixed waits as upper bounds.
+_COMBAT_ACK_POLL_S = 0.03
+_COMBAT_ACK_SETTLE_S = 0.4
+_ATTACK_ACK_MAX_WAIT_S = 1.4
+_BLOCK_ACK_MAX_WAIT_S = 0.8
+
+
+def _await_blockers_refresh(bridge: Any, pending: dict[str, Any]) -> dict[str, Any] | None:
+    """The DeclareBlockers request after our update, as soon as the GRE re-issues it.
+
+    Was a fixed 0.8 s sleep, then one poll. Polls every 30 ms and returns
+    early only on positive evidence: a DeclareBlockers request with a new
+    (game_state_id, msg_id). Otherwise it waits the full 0.8 s and returns
+    the poll taken then, as before.
+    """
+    original = (pending.get("game_state_id"), pending.get("msg_id"))
+    known = any(value is not None for value in original)
+    deadline = time.monotonic() + _BLOCK_ACK_MAX_WAIT_S
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return bridge.get_pending_actions()
+        time.sleep(min(_COMBAT_ACK_POLL_S, remaining))
+        if time.monotonic() >= deadline:
+            return bridge.get_pending_actions()
+        if not known:
+            continue
+        still = bridge.get_pending_actions()
+        if (
+            still
+            and still.get("has_pending")
+            and "DeclareBlockers" in str(still.get("request_class", ""))
+            and (still.get("game_state_id"), still.get("msg_id")) != original
+        ):
+            return still
+
+
 class _BridgeSubmitMixin:
     def _try_gre_bridge(
         self,
@@ -1001,11 +1040,21 @@ class _BridgeSubmitMixin:
         expected = {
             int(entry["attackerInstanceId"]): recipient_key(entry["damageRecipient"]) for entry in entries
         }
-        for attempt in range(6):
+        # Poll every 30 ms instead of sleeping 0.4 s first (the GRE answers an
+        # UpdateAttacker in ~24 ms). Only positive evidence - a re-issued
+        # request carrying our selection - ends the wait early; the verdicts
+        # read from absence ("advanced": no attacker request, or a non-native
+        # client's "acknowledged") still need the old 0.4 s, because the
+        # request is briefly gone between the GRE's messages. 1.4 s total, as
+        # before (0.4 + 5 x 0.2).
+        started = time.monotonic()
+        deadline = started + _ATTACK_ACK_MAX_WAIT_S
+        while time.monotonic() < deadline:
             abort = getattr(self, "_abort_event", None)
             if abort is not None and abort.is_set():
                 return "aborted", request_key
-            time.sleep(0.4 if attempt == 0 else 0.2)
+            time.sleep(_COMBAT_ACK_POLL_S)
+            settled = time.monotonic() - started >= _COMBAT_ACK_SETTLE_S
             try:
                 refreshed = bridge.get_pending_actions()
             except Exception:
@@ -1016,9 +1065,13 @@ class _BridgeSubmitMixin:
             if not (
                 refreshed.get("has_pending") and "DeclareAttacker" in str(refreshed.get("request_class", ""))
             ):
-                return "advanced", request_key
+                if settled:
+                    return "advanced", request_key
+                continue
             if not native:
-                return "acknowledged", request_key
+                if settled:
+                    return "acknowledged", request_key
+                continue
             refreshed_key = (refreshed.get("game_state_id"), refreshed.get("msg_id"))
             try:
                 selected = {
@@ -1353,9 +1406,8 @@ class _BridgeSubmitMixin:
             # manual-required). Finalize here against the refreshed request —
             # empty assignments make the plugin call SubmitBlockers() on it,
             # confirming the pending selection.
-            time.sleep(0.8)
             try:
-                still = bridge.get_pending_actions()
+                still = _await_blockers_refresh(bridge, pending)
                 if (
                     still
                     and still.get("has_pending")
