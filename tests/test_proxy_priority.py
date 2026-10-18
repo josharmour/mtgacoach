@@ -161,9 +161,9 @@ def test_env_switch_on_or_unset_keeps_priority(monkeypatch, value):
     assert sent_priority(be) == 10
 
 
-@pytest.mark.parametrize("model", ["gemma-4-12b-it", "gemma4:e2b", "claude-sonnet-4", "gpt-5-mini"])
-def test_priority_only_sent_on_the_glm_vllm_path(model):
-    be = make_backend(model=model)
+def test_priority_only_sent_on_the_glm_vllm_path():
+    """A user-configured vision endpoint may serve anything; only GLM's vLLM schedules by priority."""
+    be = make_backend(model="custom-vision-model")
     be.complete("s", "u", call_class="background.game_plan", priority=None)
     be.complete("s", "u", call_class="decision.typed", priority=-10)
     assert all("priority" not in call["extra_body"] for call in be._client.calls)

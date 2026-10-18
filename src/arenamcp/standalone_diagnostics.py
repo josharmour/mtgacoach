@@ -692,8 +692,6 @@ class _DiagnosticsMixin:
             "requests": "requests",
             "faster_whisper": "faster-whisper",
             "kokoro-onnx": "kokoro-onnx",
-            "anthropic": "anthropic",
-            "google.genai": "google-genai",
         }
         for display_name, package_name in package_names.items():
             try:

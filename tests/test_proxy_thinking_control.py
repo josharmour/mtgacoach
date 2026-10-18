@@ -1,8 +1,7 @@
 """The real-time coach path must control GLM-5.3's thinking explicitly.
 
-The engine now behind the dsv4/deepseek-v4-flash aliases is GLM-5.3-Flash
-(serve-glm53-blackwell.sh), launched with
-``--default-chat-template-kwargs.thinking=true`` and
+The gateway's one model is glm-5.3-flash (serve-glm53-blackwell.sh),
+launched with ``--default-chat-template-kwargs.thinking=true`` and
 ``.reasoning_effort=high``. GLM ALWAYS deliberates: with ``thinking:false``
 the reasoning is NOT separated into ``reasoning_content`` and leaks inline
 into the spoken advice (observed live 2026-08-28/29 as the model echoing the
@@ -45,7 +44,7 @@ def captured(monkeypatch):
     return seen
 
 
-def _run(thinking: bool, model: str = "deepseek-v4-flash") -> None:
+def _run(thinking: bool, model: str = "glm-5.3-flash") -> None:
     be = ProxyBackend(
         model=model,
         enable_thinking=thinking,
@@ -81,38 +80,14 @@ def test_text_json_format_is_opt_in_and_keeps_the_requested_output_budget(captur
         assert "response_format" not in captured
 
 
-def test_thinking_enabled_is_sent_explicitly(captured):
-    """The win-plan path must not depend on the server default either."""
-    _run(thinking=True)
+@pytest.mark.parametrize("thinking", [False, True])
+def test_thinking_is_always_sent_explicitly_and_only_as_a_template_kwarg(captured, thinking):
+    """Neither path may depend on the server default. The old Ollama ``think``
+    flag is never sent: ``think:false`` would contradict thinking=true on GLM."""
+    _run(thinking=thinking)
     extra = captured.get("extra_body") or {}
-    assert extra.get("chat_template_kwargs", {}).get("thinking") is True
-
-
-def test_ollama_think_flag_no_longer_sent(captured):
-    """No alias routes to Ollama anymore; `think:false` would contradict
-    chat_template_kwargs.thinking=true on GLM."""
-    _run(thinking=False)
-    extra = captured.get("extra_body") or {}
-    assert "think" not in extra
-
-
-@pytest.mark.parametrize("model", ["deepseek-v4-flash", "gemma-4-12b-it", "qwen-uncensored"])
-def test_disable_applies_across_gateway_models(captured, model):
-    """Every model served by the gateway goes through the same vLLM template."""
-    _run(thinking=False, model=model)
-    extra = captured.get("extra_body") or {}
-    ctk = extra["chat_template_kwargs"]
-    assert ctk["thinking"] is True
-    assert ctk["reasoning_effort"] == "low"
-
-
-def test_claude_thinking_config_unaffected(captured):
-    """Anthropic's native field must still be set when thinking is enabled."""
-    _run(thinking=True, model="claude-sonnet-4")
-    extra = captured.get("extra_body") or {}
-    assert extra.get("thinking") == {"type": "enabled", "budget_tokens": 8000}
-    # ...and the vLLM key rides along harmlessly for gateway-routed Claude.
     assert extra["chat_template_kwargs"]["thinking"] is True
+    assert set(extra) == {"chat_template_kwargs"}
 
 
 @pytest.mark.parametrize("json_mode", [False, True])

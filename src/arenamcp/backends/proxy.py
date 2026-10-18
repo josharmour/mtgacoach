@@ -1303,22 +1303,12 @@ class ProxyBackend:
                 {"role": "user", "content": user_message},
             ],
             "temperature": temperature,
+            "max_tokens": max_tokens,
         }
         if response_format is not None:
             params["response_format"] = response_format
 
-        model_lower = self.model.lower()
-        is_gpt5 = (
-            "gpt-5" in model_lower or "gpt5" in model_lower or "o1" in model_lower or "o3" in model_lower
-        )
-        is_gemini = "gemini" in model_lower
-
-        if is_gpt5:
-            params["max_completion_tokens"] = max_tokens
-        else:
-            params["max_tokens"] = max_tokens
-
-        extra = {}
+        # The gateway serves one model, glm-5.3-flash, to every customer.
         # GLM-5.3 (the engine now behind the dsv4/deepseek-v4-flash
         # aliases via serve-glm53-blackwell.sh) ALWAYS deliberates: with
         # `thinking:false` the reasoning is not separated into
@@ -1337,42 +1327,12 @@ class ProxyBackend:
         # thinking=true — the 2026-07-29 p50 6134ms bug); re-gate on the
         # served engine then.
         if reasoning_effort:
-            extra["chat_template_kwargs"] = {"thinking": True, "reasoning_effort": reasoning_effort}
+            ctk = {"thinking": True, "reasoning_effort": reasoning_effort}
         elif thinking_enabled:
-            extra["chat_template_kwargs"] = {"thinking": True}
+            ctk = {"thinking": True}
         else:
-            extra["chat_template_kwargs"] = {"thinking": True, "reasoning_effort": "low"}
-        if thinking_enabled:
-            if "claude" in model_lower:
-                extra["thinking"] = {"type": "enabled", "budget_tokens": 8000}
-                if "max_completion_tokens" in params:
-                    params["max_completion_tokens"] = max_tokens + 8000
-                else:
-                    params["max_tokens"] = max_tokens + 8000
-            elif is_gemini:
-                # Gemini's OpenAI-compat endpoint rejects native fields
-                # like thinking_config. Use reasoning_effort instead.
-                params["reasoning_effort"] = "medium"
-            elif is_gpt5:
-                params["reasoning_effort"] = "medium"
-                params["verbosity"] = "medium"
-        else:
-            # (legacy `think: false` Ollama spelling removed — no alias
-            # routes to Ollama anymore, and `think: false` would
-            # contradict chat_template_kwargs.thinking=true on GLM)
-            if "claude" in model_lower:
-                extra["thinking"] = {"type": "disabled"}
-            if is_gemini:
-                params["reasoning_effort"] = "none"
-            if is_gpt5:
-                params["reasoning_effort"] = "minimal"
-                params["verbosity"] = "low"
-        # GPT-5 reasoning models reject any temperature other than 1.0 when
-        # reasoning_effort is set. Drop the param so Azure uses the default.
-        if is_gpt5:
-            params.pop("temperature", None)
-        if extra:
-            params["extra_body"] = extra
+            ctk = {"thinking": True, "reasoning_effort": "low"}
+        params["extra_body"] = {"chat_template_kwargs": ctk}
         return params
 
     def _priority_supported(self) -> bool:
@@ -1918,25 +1878,8 @@ class ProxyBackend:
             if json_mode:
                 params["response_format"] = {"type": "json_object"}
 
-            model_lower = self.model.lower()
-            extra = {}
-            is_gpt5 = "gpt-5" in model_lower or "gpt5" in model_lower
-            is_gemini = "gemini" in model_lower
-            if "glm" in model_lower:
-                extra["chat_template_kwargs"] = {"thinking": True, "reasoning_effort": "low"}
-            if "claude" in model_lower:
-                extra["thinking"] = {"type": "disabled"}
-            if is_gemini:
-                # OpenAI-compat path: use reasoning_effort, not thinking_config.
-                params["reasoning_effort"] = "none"
-            if is_gpt5:
-                params["reasoning_effort"] = "minimal"
-                params["verbosity"] = "low"
-                # GPT-5 reasoning models reject temperature != 1.0 when
-                # reasoning_effort is set. Drop it so Azure uses the default.
-                params.pop("temperature", None)
-            if extra:
-                params["extra_body"] = extra
+            if "glm" in self.model.lower():
+                params["extra_body"] = {"chat_template_kwargs": {"thinking": True, "reasoning_effort": "low"}}
 
             request_start = time.perf_counter()
             response = client.chat.completions.create(**params)

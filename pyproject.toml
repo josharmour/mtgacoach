@@ -61,11 +61,6 @@ desktop = [
 ]
 voice = [
 ]
-llm = [
-    "google-genai>=1.0.0",
-    "anthropic>=0.18.0",
-    "ollama>=0.1.0",
-]
 autopilot = [
     "pyautogui>=0.9.54",
     "pydirectinput-rgx>=1.0.0; sys_platform == 'win32'",
@@ -76,7 +71,7 @@ scraping = [
     "networkx>=3.0",
 ]
 full = [
-    "arenamcp[llm,autopilot,scraping]",
+    "arenamcp[autopilot,scraping]",
     "websocket-client>=1.6.0",
     "scipy>=1.10.0",
 ]
