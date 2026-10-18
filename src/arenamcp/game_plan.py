@@ -38,6 +38,7 @@ instant-speed interaction risk
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
 import logging
@@ -1605,6 +1606,31 @@ def _round(x: Any, default: int = 0) -> int:
         return default
 
 
+_CRITICAL_LOCK = threading.Lock()
+_critical_inflight = 0
+
+
+@contextlib.contextmanager
+def critical_decision_call(active: bool = True):
+    """Mark a high-effort decision call in flight; no new game-plan reform starts meanwhile."""
+    global _critical_inflight
+    if not active:
+        yield
+        return
+    with _CRITICAL_LOCK:
+        _critical_inflight += 1
+    try:
+        yield
+    finally:
+        with _CRITICAL_LOCK:
+            _critical_inflight -= 1
+
+
+def critical_decision_call_inflight() -> bool:
+    with _CRITICAL_LOCK:
+        return _critical_inflight > 0
+
+
 def _decision_pending(game_state: dict[str, Any]) -> bool:
     """A decision (log or bridge) is waiting on us in this snapshot."""
     return bool(
@@ -2147,6 +2173,10 @@ class GamePlanManager:
                     return False
             suspended = getattr(self, "background_suspended_fn", None)
             if callable(suspended) and suspended():
+                return False
+            if critical_decision_call_inflight():
+                # Re-requested at the next window: nothing was attempted.
+                logger.debug("Game plan reform waits: a critical decision call is in flight")
                 return False
             if game_state.get("stack") or game_state.get("game_over"):
                 return False
