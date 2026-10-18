@@ -588,6 +588,7 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
 
     # --- turn plan ------------------------------------------------------------
     plan.turn_plan = _validate_turns(plan.turn_plan, assessment, state, issues)
+    _strip_unmet_modified_plan_attacks(plan, state, issues)
     _check_plan_line(plan, assessment, state, issues)
     plan.issues = issues
     return plan
@@ -916,6 +917,52 @@ def _without_sick_attackers(
     for name in cast_now:
         issues.append(f"{label}: {name} can't attack the turn it is cast")
     return ", ".join(name for name in named if name not in sick)
+
+
+def _strip_unmet_modified_plan_attacks(plan: GamePlan, state: dict, issues: list[str]) -> None:
+    """Strip planned attacks with unmodified creatures whose evasion condition is unmet and fatal."""
+    from arenamcp.combat_keywords import unmet_modified_flag
+    from arenamcp.combat_strategy import losing_attackers
+
+    battlefield = [c for c in state.get("battlefield") or [] if isinstance(c, dict)]
+    local = _local_seat(state)
+    unmet_creatures: dict[str, tuple[int, str]] = {}
+    for card in battlefield:
+        if (card.get("controller_seat_id") or card.get("owner_seat_id")) != local:
+            continue
+        if not _is_creature_card(card) or not card.get("name") or card.get("instance_id") is None:
+            continue
+        flag = unmet_modified_flag(card, battlefield=battlefield)
+        if flag:
+            unmet_creatures[str(card["name"])] = (int(card["instance_id"]), flag)
+    if not unmet_creatures:
+        return
+
+    plan_text = " ".join([*(plan.win_conditions or []), plan.path or "", plan.role_reason or ""]).strip()
+    losing_by_name: dict[str, str] = {}
+    for name, (inst_id, _flag) in unmet_creatures.items():
+        losing = losing_attackers(state, [inst_id], strategy_text=plan_text)
+        if inst_id in losing:
+            losing_by_name[name] = losing[inst_id]
+    if not losing_by_name:
+        return
+
+    creatures = _our_creature_names(state)
+    for step in plan.turn_plan:
+        if step.get("cast"):
+            break
+        attack = str(step.get("attack") or "").strip()
+        plain = _plain(attack)
+        if not plain or _NO_ATTACK.match(plain):
+            continue
+        named = list(creatures) if _ALL_ATTACK.search(plain) else _named_creatures(attack, creatures)
+        dropped = [name for name in named if name in losing_by_name]
+        if not dropped:
+            continue
+        kept = [name for name in named if name not in losing_by_name]
+        step["attack"] = ", ".join(kept)
+        for name in dropped:
+            issues.append(f"{step.get('label')}: held back {name} ({losing_by_name[name]})")
 
 
 def _cast_entries(value: Any) -> list[str]:

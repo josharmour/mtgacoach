@@ -8,7 +8,12 @@ from collections import Counter
 from dataclasses import dataclass, field
 from itertools import product
 
-from arenamcp.combat_keywords import annotate_cant_be_blocked
+from arenamcp.combat_keywords import (
+    annotate_cant_be_blocked,
+    is_creature_modified,
+    modified_conditional_keywords,
+    unmet_modified_flag,
+)
 from arenamcp.combat_solver import _can_block, _has, _material, _memoized, _resolve_attacker, optimal_blocks
 from arenamcp.combat_targets import attack_candidates, recipient_key, recipient_label
 
@@ -469,10 +474,16 @@ def _possible_tricks(state: dict, local: dict) -> list[tuple[str, int, str | Non
                 text = str(spell.get("oracle_text") or "").lower()
                 tricks.append((name, max(1, _mana_value(spell.get("mana_cost") or "{1}")), text))
             # A prepared sorcery cannot be cast in combat.
+        raw = (card.get("oracle_text") or "").lower()
+        is_mana_source = not card.get("is_tapped") and (
+            "land" in _types(card) or bool(re.search(r"\badd\b[^.]*?(?:\{|\bmana\b)", raw))
+        )
         for cost, effect in _activated_abilities(card):
-            if "t" in _mana_symbols(cost) and card.get("is_tapped"):
+            symbols = _mana_symbols(cost)
+            if "t" in symbols and card.get("is_tapped"):
                 continue
-            tricks.append((name, _mana_value(cost), f"{cost}: {effect}".lower()))
+            tap_self_mana = 1 if ("t" in symbols and is_mana_source) else 0
+            tricks.append((name, _mana_value(cost) + tap_self_mana, f"{cost}: {effect}".lower()))
     return tricks
 
 
@@ -538,17 +549,71 @@ def _eligible_blockers(state: dict, opponent_seat: int) -> list[dict]:
     return blockers
 
 
-def _answers(attacker: dict, group: list[dict]) -> bool:
-    """The group can block the attacker, kill it, lose nothing, and let nothing through."""
+_EVASION_CLAIM_RE = re.compile(
+    r"\b(?:evasive|flying|flyer|flier|unblockable|uncontested|free attack|in the air"
+    r"|can(?:'|no)t be blocked|can(?:'|no)t block|swings? uncontested)\b",
+    re.I,
+)
+_TRADE_INTENT_RE = re.compile(r"\btrad(?:e|es|ing)\b", re.I)
+
+
+def _group_can_block(attacker: dict, group: list[dict]) -> bool:
     if not group or (_has(attacker, "menace") and len(group) < 2):
         return False
-    if not all(_can_block(attacker, blocker) for blocker in group):
+    return all(_can_block(attacker, blocker) for blocker in group)
+
+
+def _modified_would_change_block(
+    attacker: dict, group: list[dict], battlefield: list[dict] | None
+) -> bool:
+    """True when an unmodified creature's conditional keywords would stop or survive this block."""
+    oracle = str(attacker.get("oracle_text") or "")
+    cond_kws = modified_conditional_keywords(oracle)
+    if not cond_kws:
+        return False
+    if is_creature_modified(attacker, battlefield=battlefield):
+        return False
+    hypothetical = {
+        **attacker,
+        "keywords": list({*(attacker.get("keywords") or ()), *cond_kws}),
+    }
+    if not _group_can_block(hypothetical, group):
+        return True
+    hyp_outcome = _resolve_attacker(hypothetical, group)
+    return not hyp_outcome.attacker_died or hyp_outcome.damage_through > 0
+
+
+def _answers(
+    attacker: dict,
+    group: list[dict],
+    *,
+    battlefield: list[dict] | None = None,
+    strategy_text: str = "",
+) -> bool:
+    """The group can block the attacker, kill it, lose nothing (or foil false evasion), and let nothing through."""
+    if not _group_can_block(attacker, group):
         return False
     outcome = _resolve_attacker(attacker, group)
-    return outcome.attacker_died and not outcome.blockers_died and outcome.damage_through == 0
+    if not outcome.attacker_died or outcome.damage_through != 0:
+        return False
+    if not outcome.blockers_died:
+        return True
+    if _TRADE_INTENT_RE.search(strategy_text or ""):
+        return False
+    if _modified_would_change_block(attacker, group, battlefield):
+        return True
+    if strategy_text and _EVASION_CLAIM_RE.search(strategy_text):
+        return True
+    return False
 
 
-def _full_answer(attackers: list[dict], blockers: list[dict]) -> dict[int, list[dict]] | None:
+def _full_answer(
+    attackers: list[dict],
+    blockers: list[dict],
+    *,
+    battlefield: list[dict] | None = None,
+    strategy_text: str = "",
+) -> dict[int, list[dict]] | None:
     """Blocks answering EVERY planned attacker at once, or None.
 
     One blocker blocks one attacker. When some attacker cannot be answered
@@ -570,7 +635,13 @@ def _full_answer(attackers: list[dict], blockers: list[dict]) -> dict[int, list[
             if index is not None:
                 groups.setdefault(index, []).append(blocker)
         if len(groups) == len(attackers) and all(
-            _answers(attacker, groups.get(index, [])) for index, attacker in enumerate(attackers)
+            _answers(
+                attacker,
+                groups.get(index, []),
+                battlefield=battlefield,
+                strategy_text=strategy_text,
+            )
+            for index, attacker in enumerate(attackers)
         ):
             return groups
     return None
@@ -587,15 +658,22 @@ def _all_in(state: dict) -> bool:
     return bool(assessment is not None and getattr(assessment, "all_in", False))
 
 
-def losing_attackers(state: dict, attacker_ids: list[int], pending: dict | None = None) -> dict[int, str]:
+def losing_attackers(
+    state: dict,
+    attacker_ids: list[int],
+    pending: dict | None = None,
+    *,
+    strategy_text: str = "",
+) -> dict[int, str]:
     """Planned attackers that only feed an untapped blocker, with the reason.
 
     An attacker is dropped only when ALL of these hold:
       - the opponent's untapped creatures can block every planned attacker at
-        once so that each attacker dies, no blocker dies and no damage gets
-        through (so the attack cannot be lethal and is not pressure the
-        opponent must absorb), with flying/reach, menace, first strike,
-        deathtouch, trample and indestructible modelled by the combat solver;
+        once so that each attacker dies, no blocker dies (or the attack relies
+        on unmet 'modified' evasion / false evasion claims and dies for 0
+        damage) and no damage gets through, with flying/reach, menace, first
+        strike, deathtouch, trample and indestructible modelled by the combat
+        solver;
       - it is not required to attack (GRE ``mustAttack`` in the state or the
         live ``pending`` bridge request);
       - its rules text names no attack/block/death payoff, evasion, or
@@ -615,10 +693,11 @@ def losing_attackers(state: dict, attacker_ids: list[int], pending: dict | None 
         return {}
     if _all_in(state):
         return {}  # nothing to lose: a chump attack still might matter
+    battlefield = state.get("battlefield") or []
     # bug_20261006_184540: "Cadet 2/2 can block Yuriko" held back a creature
     # that Tetsuko Umezawa made unblockable. Mark board grants for _can_block.
-    annotate_cant_be_blocked(state.get("battlefield"))
-    cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
+    annotate_cant_be_blocked(battlefield)
+    cards = {card.get("instance_id"): card for card in battlefield}
     attackers = [cards.get(identity) for identity in attacker_ids]
     if any(
         card is None
@@ -628,7 +707,7 @@ def losing_attackers(state: dict, attacker_ids: list[int], pending: dict | None 
         for card in attackers
     ):
         return {}
-    for card in state.get("battlefield") or []:
+    for card in battlefield:
         if (
             _controller(card) == local.get("seat_id")
             and card.get("instance_id") not in attacker_ids
@@ -641,7 +720,12 @@ def losing_attackers(state: dict, attacker_ids: list[int], pending: dict | None 
         return {}
     mana = _untapped_mana(state, local)
     blockers = _eligible_blockers(state, opponent.get("seat_id"))
-    answer = _full_answer(attackers, blockers)
+    answer = _full_answer(
+        attackers,
+        blockers,
+        battlefield=battlefield,
+        strategy_text=strategy_text,
+    )
     if answer is None:
         return {}
     if any(
@@ -663,14 +747,28 @@ def losing_attackers(state: dict, attacker_ids: list[int], pending: dict | None 
         if identity in forced or _ATTACKER_PAYOFF.search(_rules_text(attacker)):
             continue
         group = answer[index]
+        outcome = _resolve_attacker(attacker, group)
         blocked_by = " and ".join(
             f"{card.get('name') or 'a creature'} {card['power']}/{card['toughness']}" for card in group
         )
-        reason = (
-            f"{blocked_by} can block {attacker.get('name') or identity} "
-            f"{attacker['power']}/{attacker['toughness']}, kill it and survive; nothing gets through, "
-            "it has no attack or death payoff, and no affordable trick could change that combat"
-        )
+        unmet_mod = unmet_modified_flag(attacker, battlefield=battlefield)
+        if outcome.blockers_died and unmet_mod:
+            reason = (
+                f"{attacker.get('name') or identity} {attacker['power']}/{attacker['toughness']} is "
+                f"{unmet_mod}, so {blocked_by} can legally block and kill it with 0 damage through"
+            )
+        elif outcome.blockers_died:
+            reason = (
+                f"{blocked_by} can legally block and kill {attacker.get('name') or identity} "
+                f"{attacker['power']}/{attacker['toughness']} with 0 damage through "
+                "(not evasive against untapped blockers)"
+            )
+        else:
+            reason = (
+                f"{blocked_by} can block {attacker.get('name') or identity} "
+                f"{attacker['power']}/{attacker['toughness']}, kill it and survive; nothing gets through, "
+                "it has no attack or death payoff, and no affordable trick could change that combat"
+            )
         if len(attackers) > 1:
             reason += "; the opponent can block every planned attacker this way"
         losing[identity] = reason

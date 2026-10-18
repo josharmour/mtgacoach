@@ -28,7 +28,6 @@ from arenamcp.action_planner import (
     ActionType,
     GameAction,
     board_math_legacy_plan,
-    is_llm_unavailable_error,
 )
 from arenamcp.autopilot_bridge import _BridgeSubmitMixin
 from arenamcp.autopilot_exec import _ActionExecMixin
@@ -4471,32 +4470,12 @@ class AutopilotEngine(
         # strategic model request off the tactical deadline.
         self._refresh_game_plan(game_state)
 
-        if decision.request_type == "Group":
-            # Only take Group windows when the LLM gives a valid pick — the
-            # legacy safe-default has a smarter worst-card bottoming ranking
-            # than a blind deterministic fallback, so it keeps that job.
-            self.last_plan_fallback_reason = ""
-            try:
-                llm_ids = self._planner._llm_decision_options(decision, game_state)
-            except Exception as error:
-                if is_llm_unavailable_error(error):
-                    self.last_plan_fallback_reason = FALLBACK_LLM_UNAVAILABLE
-                llm_ids = []
-            valid = decision.option_ids()
-            option_ids = [o for o in llm_ids if o in valid][: decision.max_select]
-            if len(option_ids) != decision.min_select or not decision.selection_is_valid(option_ids):
-                if "LondonMulligan" in str(decision.source_label or ""):
-                    return None  # legacy group-default path ranks the worst cards to bottom
-                # Scry/surveil: a bad model answer gets the safe default
-                # (2026-10-06 14:01:15 fell through to MANUAL REQUIRED).
-                from arenamcp.decisions import default_group_choice
-
-                option_ids = default_group_choice(decision, game_state)
-                if not option_ids:
-                    return None
-        else:
-            option_ids = self._planner.plan_decision_options(decision, game_state)
-            self._note_typed_fallback()
+        option_ids = self._planner.plan_decision_options(decision, game_state)
+        self._note_typed_fallback()
+        if decision.request_type == "Group" and (
+            len(option_ids) != decision.min_select or not decision.selection_is_valid(option_ids)
+        ):
+            return None
         from arenamcp.action_planner import DECLINE_DECISION
 
         if self._abort_event.is_set():

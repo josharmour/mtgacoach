@@ -73,6 +73,113 @@ def ability_keywords(ability_ids) -> list[str]:
     return found
 
 
+_MODIFIED_KW_RE = re.compile(
+    r"(?:^(?:this creature|~|cardname) (?:gets [+-]\d+/[+-]\d+ and )?has (?P<kws>[a-z, ]+) "
+    r"(?:as long as|while) (?:it's|it is|this creature is) modified\.?$|"
+    r"^(?:as long as|while) (?:this creature|~|cardname|it) is modified,\s*"
+    r"(?:it|this creature|~|cardname) (?:gets [+-]\d+/[+-]\d+ and )?has (?P<kws2>[a-z, ]+)\.?$)"
+)
+_MODIFIED_COND_RE = re.compile(
+    r"\b(?:as long as|while) (?:it's|it is|this creature is|~ is|cardname is) modified\b"
+)
+
+
+@lru_cache(maxsize=2048)
+def modified_conditional_keywords(oracle: str) -> frozenset[str]:
+    """Combat keywords this creature has only while it is modified."""
+    found: set[str] = set()
+    for line in _text_lines(oracle):
+        match = _MODIFIED_KW_RE.match(line)
+        if not match:
+            continue
+        raw_kws = match.group("kws") or match.group("kws2") or ""
+        for phrase in re.split(r",|\band\b", raw_kws):
+            kw = phrase.strip()
+            if kw in _KEYWORDS:
+                found.add(kw)
+    return frozenset(found)
+
+
+@lru_cache(maxsize=2048)
+def has_modified_condition(oracle: str) -> bool:
+    """Whether this creature's rules text has a 'while/as long as it's modified' condition."""
+    return any(_MODIFIED_COND_RE.search(line) for line in _text_lines(oracle))
+
+
+def is_creature_modified(
+    card: dict,
+    attached: list[dict] | tuple[dict, ...] | None = None,
+    battlefield: list[dict] | None = None,
+    controller_seat: int | None = None,
+) -> bool:
+    """MTG CR 700.9: A creature is modified if it has counters, is equipped,
+    or is enchanted by an Aura its controller also controls.
+    """
+    counters = card.get("counters") or {}
+    if isinstance(counters, dict):
+        for count in counters.values():
+            if not isinstance(count, bool) and isinstance(count, (int, float)) and count > 0:
+                return True
+    elif isinstance(counters, (list, tuple)) and len(counters) > 0:
+        return True
+
+    seat = controller_seat if controller_seat is not None else _controller(card)
+    inst_id = _int_stat(card, "instance_id")
+    attachments = list(attached or ())
+    if not attachments and battlefield and inst_id is not None:
+        for perm in battlefield:
+            if not isinstance(perm, dict) or perm is card or perm.get("is_phased_out"):
+                continue
+            att_id = _int_stat(perm, "attached_to_id")
+            if att_id is None:
+                att_id = _int_stat(perm, "parent_instance_id")
+            if att_id == inst_id:
+                attachments.append(perm)
+
+    for att in attachments:
+        if not isinstance(att, dict) or att.get("is_phased_out"):
+            continue
+        types = f"{att.get('type_line') or ''} {att.get('card_types') or ''} {att.get('subtypes') or ''}".lower()
+        if "equipment" in types:
+            return True
+        if "aura" in types:
+            att_ctrl = _controller(att)
+            if seat is None or att_ctrl is None or att_ctrl == seat:
+                return True
+    return False
+
+
+def unmet_modified_flag(
+    card: dict,
+    attached: list[dict] | tuple[dict, ...] | None = None,
+    battlefield: list[dict] | None = None,
+    controller_seat: int | None = None,
+) -> str:
+    """Explicit prompt flag when a creature's 'modified' condition is NOT met.
+
+    Returns e.g. 'NOT MODIFIED — NO FLYING' for an unmodified Skyward Spider
+    ('This creature has flying as long as it\\'s modified.'), or '' when the
+    creature has no modified condition or is currently modified.
+    """
+    oracle = str(card.get("oracle_text") or "")
+    if not oracle:
+        return ""
+    cond_kws = modified_conditional_keywords(oracle)
+    if not cond_kws and not has_modified_condition(oracle):
+        return ""
+    if is_creature_modified(card, attached=attached, battlefield=battlefield, controller_seat=controller_seat):
+        return ""
+    active_kws = {str(k).lower() for k in (card.get("keywords") or ())} | set(
+        printed_combat_keywords(oracle)
+    )
+    missing = sorted(k.upper() for k in (cond_kws - active_kws))
+    if missing:
+        return f"NOT MODIFIED — NO {'/'.join(missing)}"
+    if not cond_kws:
+        return "NOT MODIFIED"
+    return ""
+
+
 def has_combat_keyword(card: dict, keyword: str) -> bool:
     """Printed keywords, plus keywords the game object currently has.
 
@@ -81,9 +188,12 @@ def has_combat_keyword(card: dict, keyword: str) -> bool:
     and sent both of our flyers into a lethal crackback.
     """
     keyword = keyword.lower()
-    return keyword in (card.get("keywords") or ()) or keyword in printed_combat_keywords(
-        card.get("oracle_text") or ""
-    )
+    oracle = card.get("oracle_text") or ""
+    if keyword in (card.get("keywords") or ()) or keyword in printed_combat_keywords(oracle):
+        return True
+    if keyword in modified_conditional_keywords(oracle) and is_creature_modified(card):
+        return True
+    return False
 
 
 # --- "Can't be blocked" -------------------------------------------------------

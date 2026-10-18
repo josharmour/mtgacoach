@@ -1412,7 +1412,8 @@ class ActionPlanner(_ActionLegalityMixin):
                     ]
                 except (ValueError, TypeError, KeyError):
                     continue  # cannot tell which creatures attack: keep the plan
-            losing = losing_attackers(state, identities)
+            strategy_text = f"{plan.overall_strategy or ''} {action.reasoning or ''}".strip()
+            losing = losing_attackers(state, identities, strategy_text=strategy_text)
             if not losing:
                 continue
             kept = [
@@ -3484,6 +3485,11 @@ class ActionPlanner(_ActionLegalityMixin):
                     return []
                 if not expand_target_selection(decision, chosen):
                     return [DECLINE_DECISION]
+            if decision.request_type == "Group":
+                chosen = [c for c in chosen if c in valid][: decision.max_select]
+                if len(chosen) == decision.min_select and decision.selection_is_valid(chosen):
+                    return chosen
+                chosen = []
             if chosen:
                 limit = max(decision.min_select or 1, 1)
                 limit = max(limit, min(len(chosen), decision.max_select or 1))
@@ -3523,6 +3529,12 @@ class ActionPlanner(_ActionLegalityMixin):
                 self._last_decision_reasoning = color.reason
                 logger.info("plan_decision_options: colour fallback picked %s", color.reason)
                 return [color.option_id]
+        if decision.request_type == "Group":
+            if "LondonMulligan" in str(decision.source_label or ""):
+                return []
+            from arenamcp.decisions import default_group_choice
+
+            return default_group_choice(decision, game_state)
         return self.deterministic_option_pick(decision)
 
     def _board_math_fallback(self, decision: Any, game_state: dict[str, Any]) -> list[str]:

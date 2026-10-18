@@ -61,7 +61,14 @@ from arenamcp.coach_structured import (
 )
 from arenamcp.coach_tracker import WordUsageTracker
 from arenamcp.coach_triggers import GameStateTrigger
-from arenamcp.combat_keywords import annotate_cant_be_blocked, can_be_blocked_by, printed_combat_keywords
+from arenamcp.combat_keywords import (
+    annotate_cant_be_blocked,
+    can_be_blocked_by,
+    is_creature_modified,
+    modified_conditional_keywords,
+    printed_combat_keywords,
+    unmet_modified_flag,
+)
 from arenamcp.game_plan import (
     BACKGROUND_PRIORITY,
     STRATEGIC_LANE,
@@ -1957,7 +1964,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         elif current_types and not is_creature and card.get("power") is not None:
             flags.append("NOT A CREATURE")
 
-        keywords = printed_combat_keywords(card.get("oracle_text") or "")
+        inst_id = card.get("instance_id")
+        attached = attachments.get(inst_id, [])
+        raw_oracle_for_kw = card.get("oracle_text") or ""
+        keywords = set(printed_combat_keywords(raw_oracle_for_kw))
+        if is_creature and is_creature_modified(card, attached=attached):
+            keywords |= set(modified_conditional_keywords(raw_oracle_for_kw))
         if "flying" in keywords:
             flags.append("FLY")
         if "reach" in keywords:
@@ -1993,11 +2005,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             flags.append("BLK")
         if card.get("is_phased_out"):
             flags.append("PHASED OUT")
-
-        inst_id = card.get("instance_id")
-        attached = attachments.get(inst_id, [])
         if any("doesn't untap" in (a.get("oracle_text") or "").lower() for a in attached):
             flags.append("LOCKED")
+        if is_creature:
+            unmet_mod = unmet_modified_flag(card, attached=attached)
+            if unmet_mod:
+                flags.append(unmet_mod)
 
         obj_kind = card.get("object_kind", "")
         if obj_kind == "TOKEN":

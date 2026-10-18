@@ -54,7 +54,11 @@ from itertools import combinations
 from types import SimpleNamespace
 from typing import Any
 
-from arenamcp.combat_keywords import has_combat_keyword
+from arenamcp.combat_keywords import (
+    has_combat_keyword,
+    is_creature_modified,
+    modified_conditional_keywords,
+)
 from arenamcp.combat_solver import _resolve_attacker, _search_blocks, combat_resource_roles
 from arenamcp.combat_strategy import _CANT_BLOCK, _rules_text, loyalty
 from arenamcp.limited_rules import rules_profile
@@ -534,7 +538,8 @@ def _body(
     sick = entered is not None and entered >= 0 and entered >= turn and not haste
     can_attack = not has_combat_keyword(card, "defender") and not _CANT_ATTACK.search(text)
     can_block = not _CANT_BLOCK.search(text)
-    for aura in (attached or {}).get(_int(card.get("instance_id")) or -1, []):
+    card_attached = (attached or {}).get(_int(card.get("instance_id")) or -1, [])
+    for aura in card_attached:
         aura_text = _text(aura)
         if "enchanted creature can't attack" in aura_text:
             can_attack = False
@@ -550,13 +555,18 @@ def _body(
     limit = rules.get("unblockable_max")
     if limit is not None and (power <= limit or toughness <= limit):
         unblockable = True
+    body_keywords = list(card.get("keywords") or [])
+    if is_creature_modified(card, attached=card_attached):
+        for mod_kw in modified_conditional_keywords(card.get("oracle_text") or ""):
+            if mod_kw not in body_keywords:
+                body_keywords.append(mod_kw)
     return {
         "instance_id": _int(card.get("instance_id")) or id(card),
         "name": _name(card),
         "power": max(0, power),
         "toughness": max(0, toughness),
         "oracle_text": card.get("oracle_text") or "",
-        "keywords": list(card.get("keywords") or []),
+        "keywords": body_keywords,
         "type_line": card.get("type_line") or "",
         "is_token": "token" in str(card.get("object_kind") or "").lower() or "token" in _types(card),
         "_tapped": bool(card.get("is_tapped")),
