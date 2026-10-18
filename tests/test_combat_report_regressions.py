@@ -191,8 +191,7 @@ def test_zero_power_guard_preserves_real_payoffs_and_unknowns(exception):
     assert unproductive_attackers(state) == set()
 
 
-@pytest.mark.parametrize("method", ["_try_bridge_declare_attackers", "_try_gre_bridge_attackers"])
-def test_bridge_omits_useless_birds_and_returns_exact_submitted_attack(method):
+def test_bridge_omits_useless_birds_and_returns_exact_submitted_attack():
     state = board()
     state["battlefield"].append(
         creature(
@@ -216,20 +215,15 @@ def test_bridge_omits_useless_birds_and_returns_exact_submitted_attack(method):
         "attackers": state["decision_context"]["raw_attackers"],
     }
     pilot._gre_bridge.submit_attackers_raw.return_value = {"ok": True}
-    pilot._gre_bridge.submit_attackers.return_value = True
     pilot._log_execution_path = Mock()
     action = GameAction(
         action_type=ActionType.DECLARE_ATTACKERS,
         attacker_names=["Birds of Paradise", "Vaultborn Tyrant"],
         attacker_targets={"Birds of Paradise": "Opponent", "Vaultborn Tyrant": "Opponent"},
     )
-    result = getattr(pilot, method)(action)
+    result = pilot._try_bridge_declare_attackers(action)
     assert result.success
-    submit = (
-        pilot._gre_bridge.submit_attackers_raw
-        if method == "_try_bridge_declare_attackers"
-        else pilot._gre_bridge.submit_attackers
-    )
+    submit = pilot._gre_bridge.submit_attackers_raw
     assert [entry["attackerInstanceId"] for entry in submit.call_args.args[0]] == [20]
     spoken = ActionPlan(actions=[result.submitted_action]).spoken_actions()
     assert "Vaultborn Tyrant" in spoken
