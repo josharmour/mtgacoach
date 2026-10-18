@@ -3358,6 +3358,15 @@ class ActionPlanner(_ActionLegalityMixin):
                 self._last_decision_trace = {"policy": "low_life_payment", "validated_ids": ["optional:decline"]}
                 logger.info("typed-decision: %s — no LLM choice", declined)
                 return ["optional:decline"]
+            from arenamcp.optional_prompts import top_or_bottom_choice
+
+            chosen, why = top_or_bottom_choice(decision, game_state)
+            if chosen:
+                self._last_decision_option_ids = [chosen]
+                self._last_decision_reasoning = why
+                self._last_decision_trace = {"policy": "top_or_bottom", "validated_ids": [chosen]}
+                logger.info("typed-decision: %s — no LLM choice", why)
+                return [chosen]
         if decision.request_type == "OptionalAction" and accept is not None:
             # An opposing ward trigger asking us to pay: we aimed at that
             # permanent on purpose, and declining counters our whole effect.
@@ -3373,6 +3382,16 @@ class ActionPlanner(_ActionLegalityMixin):
                 self._last_decision_trace = {"policy": "ward_payment", "validated_ids": ["optional:accept"]}
                 logger.info("typed-decision: paying %s for %s without an LLM choice", ward.label, name)
                 return ["optional:accept"]
+        if decision.request_type == "SelectN":
+            from arenamcp.decisions import best_hand_creature_choice
+
+            picked, why = best_hand_creature_choice(decision, game_state)
+            if picked:
+                self._last_decision_option_ids = picked
+                self._last_decision_reasoning = why
+                self._last_decision_trace = {"policy": "hand_creature_buff", "validated_ids": picked}
+                logger.info("typed-decision: %s — no LLM choice", why)
+                return picked
         if decision.request_type == "Mulligan" and {"mull:keep", "mull:mull"} <= decision.option_ids():
             return self._plan_mulligan(decision, game_state)
         if decision.request_type == "Group" and "LondonMulligan" in str(decision.source_label or ""):

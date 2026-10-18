@@ -1735,3 +1735,72 @@ def select_n_discard_note(decision: Any, state: dict[str, Any]) -> str:
         "planeswalkers, bombs and any land you still need for your colours; discard extra lands or the "
         "weakest spell. The card's value is a reason NOT to pick it."
     )
+
+
+# "When Dina dies, choose a creature card in your hand. It perpetually gains trample and gets
+# +X/+X": a lasting buff for one of our hand creatures.
+_HAND_CREATURE_BUFF = re.compile(
+    r"\bchoose a creature card in your hand\b[^.]*\.\s*(?:it|that card) perpetually\b[^.]*\bgets? \+",
+    re.IGNORECASE,
+)
+
+
+def _source_oracle(decision: PendingDecision, game_state: dict[str, Any]) -> str:
+    context = game_state.get("decision_context") or {}
+    text = str(context.get("source_oracle_text") or "")
+    if text:
+        return text
+    label = str(decision.source_label or "").strip().lower()
+    if not label:
+        return ""
+    for zone in ("graveyard", "battlefield", "stack", "exile", "hand"):
+        for card in game_state.get(zone) or []:
+            if isinstance(card, dict) and str(card.get("name") or "").strip().lower() == label:
+                return str(card.get("oracle_text") or "")
+    return ""
+
+
+def best_hand_creature_choice(
+    decision: PendingDecision | None, game_state: dict[str, Any] | None
+) -> tuple[list[str], str]:
+    """A lasting buff onto one creature card in our hand: the biggest one, no model call.
+
+    Pro YFRA game 2026-10-18 (match 5 turn 10): Dina, Flesh Sower died and
+    "choose a creature card in your hand. It perpetually gains trample and gets
+    +X/+X" went onto Ghalta (8/8) over Ruric Thar, Rescue Girl and Loot. Picks
+    the highest power + toughness, then the lower mana value; ([], "") when an
+    option is not a known creature card in our hand or the source isn't such a buff.
+    """
+    if decision is None or decision.request_type != "SelectN" or not game_state:
+        return [], ""
+    if decision.max_select != 1 or len(decision.options) < 2:
+        return [], ""
+    if not _HAND_CREATURE_BUFF.search(_source_oracle(decision, game_state)):
+        return [], ""
+    hand = {}
+    for card in game_state.get("hand") or []:
+        if isinstance(card, dict):
+            try:
+                hand[int(card.get("instance_id"))] = card
+            except (TypeError, ValueError):
+                continue
+    scored = []
+    for option in decision.options:
+        try:
+            iid = int(option.option_id.split(":", 1)[1])
+        except (IndexError, ValueError):
+            return [], ""
+        card = hand.get(iid)
+        if card is None or "creature" not in str(card.get("type_line") or "").lower():
+            return [], ""
+        try:
+            size = int(card.get("power")) + int(card.get("toughness"))
+        except (TypeError, ValueError):
+            return [], ""
+        cost = sum(
+            int(s) if s.isdigit() else (0 if s.upper() == "X" else 1)
+            for s in re.findall(r"\{([^}]+)\}", str(card.get("mana_cost") or ""))
+        )
+        scored.append((-size, cost, str(card.get("name") or ""), option.option_id))
+    best = min(scored)
+    return [best[3]], f"Give the lasting buff to {best[2]}, our biggest creature card in hand."
