@@ -304,16 +304,32 @@ class _BridgeSubmitMixin:
                     # solver first for beneficial attackers, matching the
                     # preflight pattern in autopilot.py:2295-2331.
                     # Cluster: issues #398-#402 (5x bridge_submit_failed).
+                    # The model's own "Done" while attackers are offered and no
+                    # attack is planned is a decision not to attack (2026-10-18
+                    # 13:56:23: the solver swapped it for Diviner of Victory,
+                    # which died): only the authoritative overrides replace it.
+                    hold = self._explicit_no_attack(action)
                     if game_state.get("_bridge_connected"):
-                        solver_action = self._solver_attack_action(game_state)
+                        solver_action = (
+                            self._authoritative_attack_action(game_state)
+                            if hold
+                            else self._solver_attack_action(game_state)
+                        )
                         if solver_action is not None and solver_action.attacker_names:
                             solver_names = solver_action.attacker_names
+                            solver_action.override_note = solver_action.override_note or (
+                                "Done named no attackers, so the combat solver picked them"
+                            )
                             logger.info(
                                 "click_button(done) on DeclareAttacker with "
-                                f"solver-picked attackers: {solver_names}; "
+                                f"{'authoritative' if hold else 'solver-picked'} attackers: {solver_names}; "
                                 "routing through declare_attackers instead of empty submit"
                             )
                             return self._try_bridge_declare_attackers(solver_action)
+                    if hold:
+                        logger.info(
+                            "click_button(done) on DeclareAttacker: honouring the plan's choice not to attack"
+                        )
                     if bridge.submit_attackers([]):
                         self._log_execution_path(
                             ExecutionPath.GRE_AWARE,
@@ -325,7 +341,11 @@ class _BridgeSubmitMixin:
                             0,
                             "no attacks",
                             "GRE bridge",
-                            submitted_action=GameAction(action_type=ActionType.DECLARE_ATTACKERS),
+                            submitted_action=GameAction(
+                                action_type=ActionType.DECLARE_ATTACKERS,
+                                reasoning=action.reasoning,
+                                model_choice=action.model_choice,
+                            ),
                         )
                     self._gre_bridge_failed_methods.add(method)
                     return None
@@ -688,6 +708,41 @@ class _BridgeSubmitMixin:
             else None
         )
 
+    def _explicit_no_attack(self, action: GameAction) -> bool:
+        """The model chose not to attack: its own Done / empty declaration, no attack step pending.
+
+        An auto-confirm, AFK default or fallback is not a choice (issues #398-#402:
+        an empty submit cleared attackers MTGA had selected), nor is a Done while
+        this turn's plan still has an attack step to run.
+        """
+        if not getattr(action, "model_choice", False) or action.attacker_names:
+            return False
+        planner = getattr(self, "_planner", None)
+        pending = getattr(planner, "has_pending_attack_intent", None)
+        try:
+            return not (callable(pending) and pending())
+        except Exception:
+            return True
+
+    def _authoritative_attack_action(self, game_state: dict[str, Any]) -> GameAction | None:
+        """The overrides that beat a decision not to attack: all in, or lethal on board."""
+        all_in = self._all_in_attack_action(game_state, [])
+        if all_in is not None:
+            all_in.override_note = all_in.reasoning
+            return all_in
+        try:
+            from arenamcp.board_assessment import assess
+
+            assessment = assess(game_state)
+        except Exception:
+            return None
+        if assessment is None or not getattr(assessment, "lethal_now", False):
+            return None
+        lethal = self._solver_attack_action(game_state)
+        if lethal is not None:
+            lethal.override_note = "lethal on board, so the solver's attack goes ahead"
+        return lethal
+
     def _all_in_attack_action(self, game_state: dict[str, Any], planned: list[str]) -> GameAction | None:
         """Every legal attacker at the opponent when no defensive line survives.
 
@@ -790,6 +845,15 @@ class _BridgeSubmitMixin:
         opp_blockers = [c for c in theirs if not c.get("is_tapped")]
         remaining_blockers = [c for c in yours if c not in candidates and not c.get("is_tapped")]
         try:
+            from arenamcp.combat_strategy import loyalty
+
+            walkers = tuple(
+                value
+                for card in game_state.get("battlefield", []) or []
+                if card.get("controller_seat_id") == local_seat
+                and "planeswalker" in str(card.get("type_line") or "").lower()
+                and (value := loyalty(card) or 0) > 0
+            )
             plan = optimal_attacks(
                 candidates,
                 opp_blockers,
@@ -797,6 +861,7 @@ class _BridgeSubmitMixin:
                 your_life,
                 theirs,
                 remaining_blockers,
+                our_walker_loyalties=walkers,
             )
         except Exception as e:
             logger.debug(f"combat solver attack fallback failed: {e}")
@@ -1117,7 +1182,7 @@ class _BridgeSubmitMixin:
             if all_in is not None:
                 action = all_in
                 attacker_names = list(action.attacker_names)
-            elif not attacker_names:
+            elif not attacker_names and not self._explicit_no_attack(action):
                 from arenamcp.combat_strategy import combat_choice
 
                 if combat_choice(game_state) is not None:
@@ -1723,13 +1788,18 @@ class _BridgeSubmitMixin:
                                 break
                         except (TypeError, ValueError):
                             continue
-                    dmg = int(dist_map.get(rname, 0))
+                    dmg = min(int(dist_map.get(rname, 0)), remaining)
                     if dmg <= 0:
                         continue
-                    built.append({"instanceId": receiver_id, "damage": min(dmg, remaining)})
+                    built.append({"instanceId": receiver_id, "damage": dmg})
                     remaining -= dmg
                     if remaining <= 0:
                         break
+            if not built:
+                # No usable split from the model: kill the most blockers we can
+                # (combat_solver._damage_order on Arena's lethal amounts).
+                built = _solver_damage_split(assignments_in, battlefield, total)
+                remaining = total - sum(int(b["damage"]) for b in built)
             if not built:
                 # Default: dump all damage on the first listed assignment
                 # (bridge-supplied default order matches MTGA's blocker ordering).
@@ -2717,3 +2787,60 @@ class _BridgeSubmitMixin:
     def _parse_mana_value(mana_cost: str) -> int:
         """Convert a mana-cost string like '{2}{G}{G}' to a CMC integer."""
         return mana_cost_to_cmc(mana_cost)
+
+
+def _solver_damage_split(
+    assignments: list[dict], battlefield: list[dict], total: int
+) -> list[dict[str, int]]:
+    """Split ``total`` damage over Arena's receivers to kill the most (and biggest) blockers.
+
+    2026-10-18 pro game, match 2 turn 13: Ruric Thar (7/7 trample) into Tetsuko
+    (lethal 5), Voxmancer (2) and Heckler (3): 5 + 2 kills two. Each entry's
+    ``minDamage`` is Arena's lethal amount (marked damage and deathtouch
+    included); without it, the receiver's toughness. Leftover damage goes to a
+    receiver that is not a creature (the player or planeswalker trample reaches),
+    else onto the last blocker it kills. [] when no entry can be read.
+    """
+    from arenamcp.combat_solver import _damage_order, _has
+
+    cards: dict[int, dict] = {}
+    for card in battlefield:
+        try:
+            cards[int(card.get("instance_id") or 0)] = card
+        except (TypeError, ValueError):
+            continue
+    blockers: list[dict] = []
+    others: list[int] = []
+    for entry in assignments:
+        try:
+            receiver = int(entry.get("instanceId") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not receiver:
+            continue
+        card = cards.get(receiver)
+        if card is None or "creature" not in str(card.get("type_line") or "").lower():
+            others.append(receiver)
+            continue
+        try:
+            lethal = int(entry.get("minDamage") or card.get("toughness") or 0)
+        except (TypeError, ValueError):
+            continue
+        blockers.append({**card, "toughness": max(1, lethal), "_receiver": receiver})
+    if not blockers:
+        return [{"instanceId": others[0], "damage": total}] if others else []
+    built: list[dict[str, int]] = []
+    remaining = total
+    for blocker in _damage_order(total, blockers, deathtouch=False):
+        if remaining < blocker["toughness"] or _has(blocker, "indestructible"):
+            break
+        built.append({"instanceId": blocker["_receiver"], "damage": blocker["toughness"]})
+        remaining -= blocker["toughness"]
+    if remaining > 0:
+        if others:
+            built.append({"instanceId": others[0], "damage": remaining})
+        elif built:
+            built[-1]["damage"] += remaining
+        else:
+            built.append({"instanceId": blockers[0]["_receiver"], "damage": remaining})
+    return built

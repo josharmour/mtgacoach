@@ -80,12 +80,12 @@ class GameStateTrigger:
     def _has_castable_instants(self, state: dict[str, Any]) -> bool:
         """Check if player has any instant-speed cards they can cast.
 
-        Returns True if hand contains instants or flash cards that can be
-        cast with the current available mana.
+        Returns True if hand contains an instant or a card with the Flash
+        keyword (not Flashback) whose mana value and coloured pips our
+        untapped lands can pay (``stack_responses``).
         """
-        import re
+        from arenamcp.stack_responses import affordable_at_instant_speed, untapped_sources
 
-        # Count untapped lands for mana
         local_seat = None
         for p in state.get("players", []):
             if p.get("is_local"):
@@ -95,41 +95,9 @@ class GameStateTrigger:
         if local_seat is None:
             return False
 
-        battlefield = state.get("battlefield", [])
-        untapped_lands = sum(
-            1
-            for c in battlefield
-            if c.get("owner_seat_id") == local_seat
-            and "land" in c.get("type_line", "").lower()
-            and not c.get("is_tapped")
-        )
-
-        # Check hand for castable instants/flash
-        hand = state.get("hand", [])
-        for card in hand:
-            type_line = card.get("type_line", "").lower()
-            oracle_text = card.get("oracle_text", "").lower()
-
-            # Check if instant speed
-            is_instant_speed = "instant" in type_line or "flash" in oracle_text
-            if not is_instant_speed:
-                continue
-
-            # Calculate CMC
-            cost = card.get("mana_cost", "")
-            cmc = 0
-            if cost:
-                generic = re.findall(r"\{(\d+)\}", cost)
-                cmc += sum(int(g) for g in generic)
-                colored = re.findall(r"\{[WUBRGC]\}", cost)
-                cmc += len(colored)
-                hybrid = re.findall(r"\{[^}]+/[^}]+\}", cost)
-                cmc += len(hybrid)
-
-            if untapped_lands >= cmc:
-                return True
-
-        return False
+        sources = untapped_sources(state, local_seat)
+        hand = [card for card in state.get("hand", []) if isinstance(card, dict)]
+        return any(affordable_at_instant_speed(card, sources) for card in hand)
 
     def check_triggers(self, prev_state: dict[str, Any], curr_state: dict[str, Any]) -> list[str]:
         """Compare two game states and return triggered condition names.
