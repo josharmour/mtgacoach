@@ -1077,6 +1077,8 @@ class StandaloneCoach(
             _watch = getattr(getattr(self, "_bridge_poller", None), "watch_requests", None)
             if callable(_watch):
                 self._autopilot._request_watch_fn = _watch
+            # The log catch-up wait reads Player.log itself (not just the parsed state).
+            self._autopilot._poll_log_fn = self._mcp.poll_log if self._mcp else None
             if self._coach:
                 self._autopilot._game_plan_mgr = self._coach._ensure_game_plan_mgr()
                 if self._autopilot._game_plan_mgr:

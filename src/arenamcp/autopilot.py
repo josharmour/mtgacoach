@@ -4258,6 +4258,12 @@ class AutopilotEngine(
             return lambda: None
 
     _LOG_CATCH_UP_TIMEOUT_S = 3.0
+    _LOG_CATCH_UP_POLL_S = 0.03
+    # Set by the coaching runtime to the MCP poll_log(): reads Player.log now.
+    # The wait below used to re-read only the parsed state, so when nothing
+    # else read the log (macOS before kqueue; the coaching loop is the caller
+    # here) it timed out (31x/day, p50 4.3 s on 2026-10-10).
+    _poll_log_fn: Callable[[], None] | None = None
     _SEARCH_IDENTITY_WAIT_S = 10.0
     # A SelectN over our own hand (a loot's discard) only waits for the log to
     # name the card just drawn; it is never handed to the user over a name.
@@ -4353,7 +4359,13 @@ class AutopilotEngine(
         while time.monotonic() < deadline:
             if self._abort_event.is_set():
                 return None
-            time.sleep(0.1)
+            time.sleep(self._LOG_CATCH_UP_POLL_S)
+            poll_log = self._poll_log_fn
+            if callable(poll_log):
+                try:
+                    poll_log()
+                except Exception as error:
+                    logger.debug("poll_log during log catch-up failed: %s", error)
             fresh = self._get_game_state()
             have = int(fresh.get("_log_game_state_id", 0) or 0)
             if have >= want:
