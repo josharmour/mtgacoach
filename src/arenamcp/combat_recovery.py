@@ -97,12 +97,37 @@ def _has_type(card: dict, kind: str) -> bool:
     return kind.lower() in re.findall(r"[\w]+", str(card.get("type_line", "")).lower())
 
 
+_CHOSEN_COLOR = re.compile(r"^\{T\}: Choose a colou?r\. Add one mana of that colou?r\b", re.I)
+
+
+def _power(card: dict) -> int | None:
+    try:
+        return int(card.get("power"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _power_factor(kind: str, card: dict, survivors: list[dict]) -> int:
+    """Mana scaled by our creatures' powers: "for each different power among creatures you
+    control" (Loot, the Nexus) or "equal to the greatest power among creatures you control"."""
+    powers = [p for c in survivors if _creature(c) and (p := _power(c)) is not None]
+    if card not in survivors and _creature(card) and _power(card) is not None:
+        powers.append(_power(card))
+    if kind == "different":
+        return len(set(powers))
+    return max([p for p in powers if p > 0], default=0)
+
+
 def mana_options(card: dict, survivors: list[dict]) -> tuple[tuple[int, ...], ...]:
     """One activation per surviving source after the next ordinary untap.
 
     Fixed multimana and per-type scaling retain their quantities. Alternatives
     on one source are exclusive. Costly/restricted/conditional activations are
     omitted, so this is a supported lower bound, not total possible mana.
+    Mana scaled by our creatures' powers counts the bodies in ``survivors``:
+    "Choose a color. Add one mana of that color for each different power among
+    creatures you control" (Loot, the Nexus; pro YFRA game 2026-10-18) and
+    "Add an amount of {G} equal to the greatest power among creatures you control".
     """
     oracle = _text(card)
     if (
@@ -115,12 +140,28 @@ def mana_options(card: dict, survivors: list[dict]) -> tuple[tuple[int, ...], ..
     outputs = set()
     for line in oracle.splitlines():
         line = line.strip().strip("()")
+        line = _CHOSEN_COLOR.sub("{T}: Add one mana of any color", line)
         match = re.fullmatch(r"\{T\}: Add (.+?)\.?", line, re.I)
         if not match:
             continue
         output = match[1].rstrip(".")
         factor = 1
-        scaling = re.fullmatch(r"(.+) for each (other )?(\w+) you control", output, re.I)
+        by_power = re.fullmatch(
+            r"(.+?) for each different power among creatures you control", output, re.I
+        ) or re.fullmatch(
+            r"an amount of ((?:\{[WUBRGC]\})) equal to the greatest power among creatures you control",
+            output,
+            re.I,
+        )
+        scaling = None
+        if not by_power:
+            scaling = re.fullmatch(r"(.+) for each (other )?(\w+) you control", output, re.I)
+        if by_power:
+            output = by_power[1]
+            kind = "different" if "different" in match[1].lower() else "greatest"
+            factor = _power_factor(kind, card, survivors)
+            if not factor:
+                continue
         if scaling:
             output = scaling[1]
             factor = sum(
