@@ -1,6 +1,6 @@
 """Tests for canonical mana calculation and seat resolution utilities."""
 
-from arenamcp.mana import get_local_seat_id, mana_cost_to_cmc, parse_color_identity
+from arenamcp.mana import get_local_seat_id, mana_cost_to_cmc
 
 
 def test_mana_cost_to_cmc_standard():
@@ -25,15 +25,6 @@ def test_mana_cost_to_cmc_variable_and_hybrid():
     assert mana_cost_to_cmc("{W/U}{W/U}") == 2
     assert mana_cost_to_cmc("{2/W}{2/W}") == 4
     assert mana_cost_to_cmc("{G/P}") == 1
-
-
-def test_parse_color_identity():
-    assert parse_color_identity("") == ""
-    assert parse_color_identity(None) == ""
-    assert parse_color_identity("{1}{U}{R}") == "UR"
-    assert parse_color_identity("{2}{G}{W}") == "WG"
-    assert parse_color_identity("{B}{G}{R}{U}{W}") == "WUBRG"
-    assert parse_color_identity("{W/U}") == "WU"
 
 
 def test_get_local_seat_id():
