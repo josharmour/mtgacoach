@@ -2746,7 +2746,22 @@ class BridgeDecisionPoller:
 
     _MAX_CONSECUTIVE_ERRORS = 30  # High tolerance — commands may time out when Update() is dead
 
+    # Prefetch thread (start_prefetch). The coaching loop used to fetch the
+    # pending request only between its 0.15-2.5 s sleeps, and not at all while
+    # it was inside an autopilot LLM call. A ~50 ms thread fetches it instead,
+    # wakes the loop when the request changes, and tells request watchers
+    # (autopilot planning) so a superseded model call can be cancelled.
+    _PREFETCH_INTERVAL_S = 0.05
+    _PREFETCH_IDLE_S = 0.25  # bridge not connected: just wait for it
+    # poll() answers from a prefetched response at most this old, else asks.
+    _PREFETCH_MAX_AGE_S = 0.1
+
     def __init__(self, bridge: GREBridge):
+        # Thread ownership: the _last_* diff state, _consecutive_errors,
+        # _fallback_mode and _was_connected belong to the coaching thread
+        # (poll/enrich_snapshot/reset). The prefetch thread only writes
+        # _prefetched / _prefetch_fp and reads the listener list, all under
+        # _prefetch_lock; listeners run on the prefetch thread.
         self._bridge = bridge
         self._last_request_type: str | None = None
         self._last_action_sig: str | None = None
@@ -2755,6 +2770,104 @@ class BridgeDecisionPoller:
         self._consecutive_errors: int = 0
         self._fallback_mode: bool = False
         self._was_connected: bool = False
+        self._prefetch_lock = threading.Lock()
+        self._prefetched: tuple[float, dict[str, Any]] | None = None
+        self._prefetch_fp: tuple | None = None
+        self._prefetch_thread: threading.Thread | None = None
+        self._prefetch_stop = threading.Event()
+        self._prefetch_wake: threading.Event | None = None
+        self._request_listeners: list[Any] = []
+
+    # ----- prefetch thread --------------------------------------------------
+    def start_prefetch(self, wake_event: threading.Event | None = None) -> None:
+        """Start the background request fetcher (idempotent).
+
+        ``wake_event`` is set whenever the pending request changes.
+        """
+        self._prefetch_wake = wake_event
+        thread = self._prefetch_thread
+        if thread is not None and thread.is_alive():
+            return
+        self._prefetch_stop.clear()
+        self._prefetch_thread = threading.Thread(
+            target=self._prefetch_loop, daemon=True, name="bridge-decision-prefetch"
+        )
+        self._prefetch_thread.start()
+
+    def stop_prefetch(self) -> None:
+        self._prefetch_stop.set()
+        thread = self._prefetch_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        self._prefetch_thread = None
+
+    def watch_requests(self, listener: Any) -> Any:
+        """Call ``listener(response)`` on each changed pending request; returns an unsubscribe."""
+        with self._prefetch_lock:
+            self._request_listeners.append(listener)
+
+        def unsubscribe() -> None:
+            with self._prefetch_lock:
+                with contextlib.suppress(ValueError):
+                    self._request_listeners.remove(listener)
+
+        return unsubscribe
+
+    @classmethod
+    def _response_fingerprint(cls, resp: dict[str, Any]) -> tuple:
+        actions = resp.get("actions") or []
+        return (
+            bool(resp.get("has_pending")),
+            resp.get("request_type"),
+            resp.get("request_class"),
+            resp.get("game_state_id"),
+            resp.get("msg_id"),
+            cls._compute_action_sig(actions) if actions else None,
+        )
+
+    def _prefetch_once(self) -> bool:
+        """One fetch; True when the pending request changed. Prefetch thread only."""
+        if self._fallback_mode or not self._bridge.connected:
+            return False
+        resp = self._bridge.get_pending_actions()
+        if not isinstance(resp, dict):
+            return False
+        fp = self._response_fingerprint(resp)
+        with self._prefetch_lock:
+            self._prefetched = (time.monotonic(), resp)
+            changed = fp != self._prefetch_fp
+            self._prefetch_fp = fp
+            listeners = list(self._request_listeners) if changed else []
+        if not changed:
+            return False
+        wake = self._prefetch_wake
+        if wake is not None:
+            wake.set()
+        for listener in listeners:
+            try:
+                listener(resp)
+            except Exception as e:
+                logger.debug(f"bridge request listener failed: {e}")
+        return True
+
+    def _prefetch_loop(self) -> None:
+        while not self._prefetch_stop.is_set():
+            connected = False
+            try:
+                connected = bool(self._bridge.connected) and not self._fallback_mode
+                if connected:
+                    self._prefetch_once()
+            except Exception as e:
+                logger.debug(f"bridge prefetch tick failed: {e}")
+            self._prefetch_stop.wait(self._PREFETCH_INTERVAL_S if connected else self._PREFETCH_IDLE_S)
+
+    def _fresh_prefetched(self) -> dict[str, Any] | None:
+        """The prefetched response when it is recent enough to stand in for a fetch."""
+        with self._prefetch_lock:
+            entry = self._prefetched
+        if entry is None or time.monotonic() - entry[0] > self._PREFETCH_MAX_AGE_S:
+            return None
+        return entry[1]
 
     @property
     def connected(self) -> bool:
@@ -2808,8 +2921,8 @@ class BridgeDecisionPoller:
         except Exception as e:
             logger.debug(f"dynamic card resolve failed: {e}")
 
-        # Poll
-        resp = self._bridge.get_pending_actions()
+        # Poll (the prefetch thread's answer when it is fresh)
+        resp = self._fresh_prefetched() or self._bridge.get_pending_actions()
         if resp is None:
             self._consecutive_errors += 1
             # Only enter fallback if we WERE connected and lost the connection.

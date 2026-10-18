@@ -35,6 +35,11 @@ class MCPClient:
         """Clear pending combat steps after trigger processing."""
         self._server.clear_pending_combat_steps()
 
+    @property
+    def wake_event(self) -> Any:
+        """The event that wakes the coaching loop early (server.loop_wake)."""
+        return getattr(self._server, "loop_wake", None)
+
     def poll_log(self) -> None:
         """Manually poll for new log content (backup for missed watchdog events)."""
         self._server.poll_log()

@@ -8,6 +8,8 @@ import glob
 import logging
 import os
 import re
+import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -16,6 +18,25 @@ from watchdog.events import FileCreatedEvent, FileModifiedEvent, FileSystemEvent
 from watchdog.observers import Observer
 
 logger = logging.getLogger(__name__)
+
+
+def _make_observer() -> Observer:
+    """The watchdog observer that actually sees Player.log appends on this OS.
+
+    macOS: the default FSEventsObserver never fires while Unity keeps
+    Player.log open (verified live 2026-10-11: 0 events in 8 minutes), so the
+    log was read only by the coaching loop's poll_log() and lagged behind
+    whenever that loop was busy. kqueue watches the open file itself and
+    fires within ~1 ms. Windows and Linux keep the platform default.
+    """
+    if sys.platform == "darwin":
+        try:
+            from watchdog.observers.kqueue import KqueueObserver
+
+            return KqueueObserver()
+        except Exception as error:  # an unusual watchdog build: fall back
+            logger.warning("kqueue observer unavailable (%s); using the default observer", error)
+    return Observer()
 
 MATCH_START_TOKENS = (
     "MatchCreated",
@@ -296,6 +317,10 @@ class MTGALogHandler(FileSystemEventHandler):
         self.log_path = _normalize_log_path(log_path)
         self.callback = callback
         self.file_position: int = 0
+        # The observer thread (file events) and the coaching thread (poll())
+        # both read: one reader at a time, so no chunk is delivered twice or
+        # parsed concurrently. The callback runs under this lock.
+        self._read_lock = threading.Lock()
 
         # Initialize position to end of file if it exists
         if self.log_path.exists():
@@ -329,11 +354,16 @@ class MTGALogHandler(FileSystemEventHandler):
 
         # Reset position when file is recreated
         logger.info("Log file recreated, resetting position to 0")
-        self.file_position = 0
-        self._read_new_content()
+        with self._read_lock:
+            self.file_position = 0
+            self._read_new_content_locked()
 
     def _read_new_content(self) -> None:
         """Read new content from the log file and invoke callback."""
+        with self._read_lock:
+            self._read_new_content_locked()
+
+    def _read_new_content_locked(self) -> None:
         try:
             with open(self.log_path, encoding="utf-8", errors="replace") as f:
                 # Check if file was truncated (position beyond file size)
@@ -372,6 +402,10 @@ class MTGALogHandler(FileSystemEventHandler):
         Args:
             start_position: Byte position to start reading from.
         """
+        with self._read_lock:
+            self._read_from_position_locked(start_position)
+
+    def _read_from_position_locked(self, start_position: int) -> None:
         try:
             with open(self.log_path, encoding="utf-8", errors="replace") as f:
                 f.seek(start_position)
@@ -581,7 +615,7 @@ class MTGALogWatcher:
                 logger.info("Startup mode: readahead (%s)", relevant_mode)
                 self._handler.read_from_position(relevant_start)
 
-        self._observer = Observer()
+        self._observer = _make_observer()
 
         # Watch the parent directory (watchdog requires watching directories)
         self._observer.schedule(self._handler, str(watch_dir), recursive=False)
