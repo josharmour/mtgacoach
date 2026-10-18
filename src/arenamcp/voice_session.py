@@ -240,7 +240,7 @@ class VoiceSession:
             token = self._channel_token + 1
             self._channel_token = token
             notify = self._transition_locked(SpeechState.SPEAKING)
-        self._sink_speak(request.text)
+        self._sink_speak(request.text, priority=request.priority, identity=request.identity)
         self._notify(notify)
         # Release the channel when the sink finishes (or is proven done); the
         # arbiter must return to IDLE so lower-priority speech can speak again.
@@ -472,7 +472,7 @@ class VoiceSession:
                 with contextlib.suppress(Exception):
                     callback(state)
 
-    def _sink_speak(self, text: str) -> None:
+    def _sink_speak(self, text: str, *, priority: SpeechPriority | None = None, identity: Any = None) -> None:
         output = self._output
         if output is None:
             return
@@ -484,17 +484,24 @@ class VoiceSession:
         on_complete: Callable[[], None] | None = None
         try:
             params = inspect.signature(speak).parameters
-            if "blocking" in params and params["blocking"].kind in (
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            ):
+
+            def accepts(name: str) -> bool:
+                return name in params and params[name].kind in (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+
+            if accepts("blocking"):
                 kwargs["blocking"] = False
-            if "on_complete" in params and params["on_complete"].kind in (
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            ):
+            if accepts("on_complete"):
                 on_complete = self._make_sink_completion_callback()
                 kwargs["on_complete"] = on_complete
+            # A sink that arbitrates too (the desktop's TTS, through the pipe
+            # voice output) needs the request's priority and identity.
+            if accepts("priority") and priority is not None:
+                kwargs["priority"] = priority.value
+            if accepts("identity") and identity is not None:
+                kwargs["identity"] = identity
         except (TypeError, ValueError):
             pass  # builtins/C sinks — call bare
         try:

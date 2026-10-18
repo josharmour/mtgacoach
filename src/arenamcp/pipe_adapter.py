@@ -8,6 +8,7 @@ from the UI process.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import logging
 import os
@@ -70,6 +71,21 @@ def health_tag_of(text: str) -> str:
     if is_local_fallback_text(text):
         return "local_fallback"
     return ""
+
+
+def speech_identity_payload(identity: Any) -> dict[str, Any] | None:
+    """A speech identity as the JSON object the desktop's TTS arbitration reads.
+
+    The engine's identities are dataclasses (``ResponseIdentity``,
+    ``SpeechIdentity``); ``json.dumps(default=str)`` would turn them into a
+    repr string, which the desktop cannot read (it calls ``.get``).
+    """
+    to_payload = getattr(identity, "to_payload", None)
+    if callable(to_payload):
+        identity = to_payload()
+    elif dataclasses.is_dataclass(identity) and not isinstance(identity, type):
+        identity = dataclasses.asdict(identity)
+    return dict(identity) if isinstance(identity, dict) else None
 
 
 class PipeAdapter:
@@ -223,7 +239,8 @@ class PipeAdapter:
         }
         # Backward compatible: legacy consumers never see the new keys.
         if priority is not None:
-            payload["priority"] = priority
+            payload["priority"] = str(getattr(priority, "value", priority))
+        identity = speech_identity_payload(identity)
         if identity is not None:
             payload["identity"] = identity
         if speech_id:
