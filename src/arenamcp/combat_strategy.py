@@ -14,7 +14,15 @@ from arenamcp.combat_keywords import (
     modified_conditional_keywords,
     unmet_modified_flag,
 )
-from arenamcp.combat_solver import _can_block, _has, _material, _memoized, _resolve_attacker, optimal_blocks
+from arenamcp.combat_solver import (
+    _can_block,
+    _has,
+    _material,
+    _memoized,
+    _resolve_attacker,
+    optimal_blocks,
+    walker_crackback_cost,
+)
 from arenamcp.combat_targets import attack_candidates, recipient_key, recipient_label
 
 
@@ -125,6 +133,15 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
         card for card in creatures if card.get("controller_seat_id", card.get("owner_seat_id")) == opponent_id
     ]
     blockers = [card for card in theirs if not card.get("is_tapped")]
+    # Our planeswalkers: their crackback may finish one instead of hitting us.
+    our_walkers = tuple(
+        value
+        for card in battlefield
+        if card.get("controller_seat_id", card.get("owner_seat_id")) == local_id
+        and "planeswalker" in str(card.get("type_line", "")).lower()
+        and (value := loyalty(card)) is not None
+        and value > 0
+    )
     candidates, choices = [], []
     for entry in raw:
         identity = int(entry.get("attackerInstanceId") or 0)
@@ -251,6 +268,7 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
                 + walker_value
                 + material
                 - crackback * 5 / max(1, your_life - crackback)
+                - walker_crackback_cost(crackback, your_life, our_walkers)
             )
             if player_damage >= opponent_life:
                 score = 10000
@@ -1106,6 +1124,65 @@ def _may_guard_planeswalker(attacker: dict, damage_with_block: int, cards: dict,
     return False
 
 
+def walker_saving_blocks(
+    attackers: list[dict],
+    blockers: list[dict],
+    assignments: dict[int, int],
+    legal: dict[int, set[int]],
+    cards: dict,
+    local_seat,
+) -> dict[int, int]:
+    """Extra blocks that keep one of our attacked planeswalkers alive, as blocker id -> attacker id.
+
+    The block solver only weighs our life, so an attack on our walker was
+    never blocked unless the planner proposed it (2026-10-18 pro game, match 1
+    turn 10: Teyo chump-blocked a 5/5 Saheeli to keep Garruk, Curse Breaker
+    alive). For each walker the attackers aimed at it would finish, the
+    unassigned blocker that brings that damage below its loyalty is added,
+    the cheapest body first, and only when the body is worth less than the
+    walker (``walker_value``). Attackers whose target is unknown are left alone.
+    """
+    from arenamcp.combat_solver import walker_value
+
+    added: dict[int, int] = {}
+    used = set(assignments)
+    by_id = {card.get("instance_id"): card for card in blockers}
+    for walker in cards.values():
+        if _controller(walker) != local_seat or "planeswalker" not in _types(walker):
+            continue
+        remaining = loyalty(walker)
+        if remaining is None or remaining <= 0:
+            continue
+        aimed = [a for a in attackers if a.get("attack_target_id") == walker.get("instance_id")]
+
+        def damage(plan: dict[int, int], aimed=aimed) -> int:
+            return sum(
+                _resolve_attacker(
+                    a, [by_id[b] for b, t in plan.items() if t == a["instance_id"]]
+                ).damage_through
+                for a in aimed
+            )
+
+        plan = {**assignments, **added}
+        if not aimed or damage(plan) < remaining:
+            continue
+        options = []
+        for blocker_id, allowed in legal.items():
+            blocker = by_id.get(blocker_id)
+            if blocker is None or blocker_id in used or _material(blocker) >= walker_value(remaining):
+                continue
+            for attacker in aimed:
+                if attacker["instance_id"] in allowed:
+                    trial = {**plan, blocker_id: attacker["instance_id"]}
+                    if damage(trial) < remaining:
+                        options.append((_material(blocker), blocker_id, attacker["instance_id"]))
+        if options:
+            _cost, blocker_id, attacker_id = min(options)
+            added[blocker_id] = attacker_id
+            used.add(blocker_id)
+    return added
+
+
 def wasteful_chump_blocks(
     state: dict, assignments: dict[int, int], pending: dict | None = None
 ) -> dict[int, str]:
@@ -1220,6 +1297,9 @@ def safe_default_blocks(state: dict, pending: dict | None = None) -> tuple[dict[
     assignments = dict(plan.assignments) if plan is not None else {}
     for blocker in wasteful_chump_blocks(state, assignments, pending):
         assignments.pop(blocker, None)
+    assignments.update(
+        walker_saving_blocks(attackers, blockers, assignments, legal, cards, local.get("seat_id"))
+    )
     through = _damage_through(attackers, assignments, cards, factors)
     if not assignments:
         return {}, f"no blocks: {through} damage at {life} life"

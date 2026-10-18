@@ -664,6 +664,7 @@ class AttackPlan:
     explanation: str = ""
     score: float = 0.0
     life_gained: int = 0  # our lifelink attackers' gain under their best blocks
+    walker_crackback_cost: float = 0.0  # crackback that finishes one of our planeswalkers
 
 
 def optimal_attacks(
@@ -675,6 +676,8 @@ def optimal_attacks(
     your_remaining_blockers: list[dict],
     budget: int = 200_000,
     deadline_s: float = 2.0,
+    *,
+    our_walker_loyalties: tuple[int, ...] = (),
 ) -> AttackPlan | None:
     """Best attack (memoized; see `_search_attacks`)."""
     key = (
@@ -686,6 +689,7 @@ def optimal_attacks(
         _cards_key(opponent_attackers_next_turn),
         _cards_key(your_remaining_blockers),
         budget,
+        tuple(our_walker_loyalties),
     )
     return _memoized(
         key,
@@ -698,6 +702,7 @@ def optimal_attacks(
             your_remaining_blockers,
             budget,
             deadline_s,
+            **({"our_walker_loyalties": tuple(our_walker_loyalties)} if our_walker_loyalties else {}),
         ),
     )
 
@@ -711,6 +716,8 @@ def _search_attacks(
     your_remaining_blockers: list[dict],
     budget: int,
     deadline_s: float,
+    *,
+    our_walker_loyalties: tuple[int, ...] = (),
 ) -> AttackPlan | None:
     """Pick the attacker subset that maximizes damage while surviving crackback.
 
@@ -763,6 +770,7 @@ def _search_attacks(
             opponent_life,
             your_life,
             opponent_attackers_next_turn,
+            **({"our_walker_loyalties": our_walker_loyalties} if our_walker_loyalties else {}),
         )
         # Ties go to the lowest bitmask (no attack first), whatever order
         # the subsets were searched in.
@@ -781,8 +789,14 @@ def evaluate_attack(
     opponent_life: int,
     your_life: int,
     opponent_attackers_next_turn: list[dict],
+    *,
+    our_walker_loyalties: tuple[int, ...] = (),
 ) -> AttackPlan:
-    """Score one attack: `our_defenders` are the creatures left home to block."""
+    """Score one attack: `our_defenders` are the creatures left home to block.
+
+    ``our_walker_loyalties``: our planeswalkers' loyalty. Their crackback may
+    finish one instead of hitting us (``walker_crackback_cost``).
+    """
     # Opponent blocks optimally — from THEIR perspective, lower
     # "damage_through" is good; we invert by using their life.
     opp_block = _search_blocks(attacking, opponent_blockers, opponent_life)
@@ -821,6 +835,10 @@ def evaluate_attack(
         life_gained=life_gained,
     )
     plan.score = _score_attack_plan(plan, your_life, opponent_life)
+    walker_cost = walker_crackback_cost(crackback, your_life + life_gained, our_walker_loyalties)
+    if walker_cost and plan.score > -1_000.0:
+        plan.score -= walker_cost
+        plan.walker_crackback_cost = walker_cost
     plan.explanation = (
         f"attack with {', '.join(plan.attacker_names) or 'nobody'}; "
         f"{damage_through} through, crackback {crackback} "
@@ -854,6 +872,31 @@ def _attack_subsets(n: int) -> Iterable[tuple[int, ...]]:
         subset = tuple(i for i in range(n) if mask & (1 << i))
         if subset not in seen:
             yield subset
+
+
+def walker_value(loyalty: int) -> float:
+    """A planeswalker on the battlefield, on combat_strategy's scale for removing theirs."""
+    return 9.0 + min(loyalty, 6)
+
+
+def walker_crackback_cost(crackback: int, your_life: int, loyalties: Iterable[int]) -> float:
+    """How much worse ``crackback`` is when it can finish one of our planeswalkers.
+
+    The opponent sends what kills the walker at it and the rest at us, when
+    that costs us more than all of it at our face (2026-10-18 pro game, match 1
+    turn 13: the Beast stayed home to keep Garruk, Curse Breaker alive).
+    0 when no walker of ours is within reach.
+    """
+
+    def face(damage: int) -> float:
+        return damage * 5.0 / max(1, your_life - damage)
+
+    base = face(crackback)
+    worst = base
+    for loyalty in loyalties:
+        if 0 < loyalty <= crackback:
+            worst = max(worst, walker_value(loyalty) + face(crackback - loyalty))
+    return worst - base
 
 
 def _score_attack_plan(plan: AttackPlan, your_life: int, opponent_life: int) -> float:

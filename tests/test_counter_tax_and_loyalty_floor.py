@@ -30,6 +30,8 @@ from arenamcp.play_safety import (
     evasive_power_next_turn,
     filter_play_options,
     loyalty_minus_exposes_walker,
+    loyalty_minus_value,
+    open_burn_reach,
     opponent_open_mana,
     unsafe_play_reason,
 )
@@ -175,6 +177,14 @@ def _jace(window: dict) -> dict:
     return next(card for card in window["battlefield"] if card["name"] == "Jace")
 
 
+def _evasive_only(window: dict) -> dict:
+    """The board with their lands tapped: no open red mana, so only evasive power threatens Jace."""
+    for card in window["battlefield"]:
+        if card.get("controller_seat_id") == 2 and "Land" in str(card.get("type_line")):
+            card["is_tapped"] = True
+    return window
+
+
 def _jace_window(window: dict) -> PendingDecision:
     """The 17:08:38 request after autopilot labelled Jace's two abilities."""
     return PendingDecision(
@@ -216,7 +226,7 @@ def test_tetsuko_makes_their_three_one_power_creatures_unblockable():
 
 
 def test_jace_minus_three_to_two_loyalty_is_withheld_the_plus_stays(caplog):
-    window = state("G1_T9_MAIN1")
+    window = _evasive_only(state("G1_T9_MAIN1"))
     jace = _jace(window)
     assert jace["counters"]["Loyalty"] == 5
     reason = loyalty_minus_exposes_walker("Activate: Jace [-3: Draw a card.]", jace, window)
@@ -229,13 +239,13 @@ def test_jace_minus_three_to_two_loyalty_is_withheld_the_plus_stays(caplog):
 
 
 def test_the_minus_stays_when_loyalty_stays_above_their_evasive_power():
-    window = state("G1_T9_MAIN1")
+    window = _evasive_only(state("G1_T9_MAIN1"))
     _jace(window)["counters"]["Loyalty"] = 7  # -3 leaves 4 > 3
     assert loyalty_minus_exposes_walker("Activate: Jace [-3: Draw a card.]", _jace(window), window) == ""
 
 
 def test_the_minus_stays_when_their_power_can_be_blocked():
-    window = state("G1_T9_MAIN1")
+    window = _evasive_only(state("G1_T9_MAIN1"))
     window["battlefield"] = [c for c in window["battlefield"] if c["name"] != "Tetsuko Umezawa, Fugitive"]
     # Without Tetsuko only Geist and Traxos fly, and our Fatehold Chronologist-less board has no
     # flyer: two evasive power, so 5 - 3 = 2 is still within reach ...
@@ -267,3 +277,42 @@ def test_the_minus_stays_on_their_turn_and_when_we_are_dead_anyway():
     window = state("G1_T9_MAIN1")
     next(p for p in window["players"] if p["seat_id"] == 1)["life_total"] = 2  # dead to the three unblockable
     assert loyalty_minus_exposes_walker("Activate: Jace [-3: Draw a card.]", _jace(window), window) == ""
+
+
+GARRUK = {
+    "instance_id": 251,
+    "name": "Garruk, Curse Breaker",
+    "type_line": "Legendary Planeswalker — Garruk",
+    "controller_seat_id": 1,
+    "owner_seat_id": 1,
+    "counters": {"Loyalty": 5},
+    "oracle_text": "Whenever a creature you control with power 4 or greater enters, draw a card.\n"
+    "+2: Untap up to two target lands.\n-3: Create a 4/4 green Beast creature token with trample.\n"
+    "-4: Until your next turn, whenever one or more creatures attack one of your opponents, those creatures "
+    "get +2/+2 and gain trample until end of turn.",
+}
+
+
+def test_open_red_mana_counts_as_burn_at_the_walker():
+    """2026-10-18 pro game, match 4 turn 9: Garruk -3 to 2 with red open; Sparks Ablaze exiled him."""
+    window = _evasive_only(state("G1_T9_MAIN1"))
+    window["battlefield"] = [c for c in window["battlefield"] if c["controller_seat_id"] == 1 or "Land" in
+                             str(c.get("type_line"))]  # fmt: skip
+    assert open_burn_reach(window) == 0
+    jace = _jace(window)
+    assert loyalty_minus_exposes_walker("Activate: Jace [-3: Draw a card.]", jace, window) == ""
+    mountain = next(c for c in window["battlefield"] if c["controller_seat_id"] == 2 and "Mountain" in
+                    str(c.get("type_line")))  # fmt: skip
+    mountain["is_tapped"] = False
+    assert open_burn_reach(window) == 2
+    reason = loyalty_minus_exposes_walker("Activate: Jace [-3: Draw a card.]", jace, window)
+    assert "burn from open red mana" in reason  # a card for a walker left at 2: withheld
+
+
+def test_a_minus_worth_more_than_the_walker_left_is_not_withheld():
+    """Garruk's -3 is a 4/4 trampler plus his own draw: worth more than 2 loyalty left (match 1 turn 11)."""
+    window = state("G1_T9_MAIN1")  # open red mana and evasive attackers
+    window["battlefield"] = [c for c in window["battlefield"] if c["name"] != "Jace"] + [dict(GARRUK)]
+    label = "Activate: Garruk, Curse Breaker [-3: Create a 4/4 green Beast creature token with trample.]"
+    assert loyalty_minus_value(label, window) == 4 + 2 + 2
+    assert loyalty_minus_exposes_walker(label, window["battlefield"][-1], window) == ""

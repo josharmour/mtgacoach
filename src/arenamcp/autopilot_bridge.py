@@ -787,6 +787,15 @@ class _BridgeSubmitMixin:
         opp_blockers = [c for c in theirs if not c.get("is_tapped")]
         remaining_blockers = [c for c in yours if c not in candidates and not c.get("is_tapped")]
         try:
+            from arenamcp.combat_strategy import loyalty
+
+            walkers = tuple(
+                value
+                for card in game_state.get("battlefield", []) or []
+                if card.get("controller_seat_id") == local_seat
+                and "planeswalker" in str(card.get("type_line") or "").lower()
+                and (value := loyalty(card) or 0) > 0
+            )
             plan = optimal_attacks(
                 candidates,
                 opp_blockers,
@@ -794,6 +803,7 @@ class _BridgeSubmitMixin:
                 your_life,
                 theirs,
                 remaining_blockers,
+                our_walker_loyalties=walkers,
             )
         except Exception as e:
             logger.debug(f"combat solver attack fallback failed: {e}")

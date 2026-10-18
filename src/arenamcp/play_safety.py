@@ -1302,6 +1302,62 @@ def evasive_power_next_turn(state: dict) -> tuple[int, list[str]]:
     return total, names
 
 
+# Cheap instant burn at a planeswalker (Sparks Ablaze: 2 to a creature or planeswalker).
+OPEN_BURN = 2
+
+
+def open_burn_reach(state: dict) -> int:
+    """Burn the opponent can point at our walker before our next turn: OPEN_BURN while they have
+    an untapped red source and a card in hand (2026-10-18 pro game, match 4 turn 9: Garruk -3 to 2
+    with red open; Sparks Ablaze exiled him at end of turn), else 0."""
+    from arenamcp.mulligan_policy import _land_colors
+
+    local = _local_seat(state)
+    hand = (state.get("zones") or {}).get("opponent_hand_count")
+    if local is None or (isinstance(hand, int) and not isinstance(hand, bool) and hand <= 0):
+        return 0
+    for card in state.get("battlefield") or []:
+        if not isinstance(card, dict) or card.get("is_tapped"):
+            continue
+        if (card.get("controller_seat_id") or card.get("owner_seat_id")) == local:
+            continue
+        if "land" in str(card.get("type_line") or "").lower() and "R" in _land_colors(card):
+            return OPEN_BURN
+    return 0
+
+
+_ABILITY_TEXT = re.compile(r"\[(?:from [^\]:]+: )?[-\u2212]\d+: (?P<text>[^\]]*)\]")
+_DRAWS = re.compile(r"\bdraws? (a|one|two|three) cards?\b")
+_DRAW_ON_ENTER = re.compile(
+    r"whenever a creature you control with power (\d+) or greater enters[^.]*, draw a card"
+)
+
+
+def loyalty_minus_value(label: str, state: dict) -> float:
+    """What a loyalty-minus ability gives, on the line search's material scale: each creature
+    token's power + toughness / 2, and 2 per card drawn (its own text, or a "whenever a creature you
+    control with power N or greater enters, draw a card" of ours the token meets)."""
+    from arenamcp.line_search_moves import token_specs
+
+    match = _ABILITY_TEXT.search(str(label or ""))
+    if not match:
+        return 0.0
+    text = match.group("text").lower()
+    words = {"a": 1, "one": 1, "two": 2, "three": 3}
+    value = sum(2.0 * words[m.group(1)] for m in _DRAWS.finditer(text))
+    local = _local_seat(state)
+    thresholds = [
+        int(m.group(1))
+        for card in state.get("battlefield") or []
+        if isinstance(card, dict) and (card.get("controller_seat_id") or card.get("owner_seat_id")) == local
+        for m in _DRAW_ON_ENTER.finditer(re.sub(r"<[^>]*>", "", str(card.get("oracle_text") or "")).lower())
+    ]
+    for count, power, toughness, _keywords, _name in token_specs(text) or []:
+        value += count * (power + toughness / 2)
+        value += count * 2.0 * sum(1 for n in thresholds if power >= n)
+    return value
+
+
 def loyalty_minus_exposes_walker(label: str, source: dict, state: dict) -> str:
     """Withhold a loyalty-minus ability that leaves the planeswalker at or below the evasive power
     the opponent can attack it with next turn (``evasive_power_next_turn``).
@@ -1328,8 +1384,23 @@ def loyalty_minus_exposes_walker(label: str, source: dict, state: dict) -> str:
     if local is None or turn.get("active_player") != local:
         return ""
     threat, names = evasive_power_next_turn(state)
+    burn = open_burn_reach(state)
+    if burn:
+        threat += burn
+        names = [*names, f"{burn} burn from open red mana"]
     after = current - cost
     if threat <= 0 or after > threat:
+        return ""
+    gained = loyalty_minus_value(label, state)
+    if gained > 2.0 * max(0, after):
+        # A 4/4 and a card for a walker left at 2 (Garruk, Curse Breaker -3, the pro's
+        # match 1 turn 11): the minus is worth more than what remains of the walker.
+        logger.info(
+            "Loyalty floor: %s's minus is worth %.1f, more than %d loyalty left",
+            source.get("name"),
+            gained,
+            after,
+        )
         return ""
     try:
         from arenamcp.board_assessment import assess
