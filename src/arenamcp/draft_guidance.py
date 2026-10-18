@@ -35,7 +35,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 __all__ = [
-    "ArchStats",
     "CardData",
     "FormatContext",
     "PickGuidance",
@@ -45,7 +44,6 @@ __all__ = [
     "format_context_from_pair_stats",
     "compute_lane",
     "analyze_pool",
-    "compute_pack_signals",
     "evaluate_pack",
 ]
 
@@ -80,10 +78,6 @@ HEAVY_DROP_CAP = 4
 # IWD here is in percentage points (17lands serves a fraction; we scale by 100).
 BOMB_Z_SCORE = 1.5
 IWD_PREMIUM_PCT = 4.5
-
-# Bayesian archetype-blend knobs — unrealities engine.py _calculate_weighted_score.
-ARCH_SAMPLE_FULL_CONFIDENCE = 1000  # games at which pair stats are fully trusted
-ARCH_SAMPLE_MIN = 10  # below this, ignore pair stats entirely
 
 # Wheel-probability cubic polynomials, one per pick 1..6 (index pick-1,
 # clamped), evaluated at ALSA. Ported verbatim from unrealities
@@ -123,22 +117,6 @@ def get_tier(score: float) -> str:
 
 
 @dataclass(frozen=True)
-class ArchStats:
-    """Per-archetype (color pair) 17lands stats for one card.
-
-    Our current ``draftstats.py`` only fetches global ("All Decks") card
-    ratings; per-pair card stats need the filtered ``/api/card_data`` route
-    (the old ``/card_ratings/data`` route silently ignores filters — see
-    docs/DECISIONS.md). The engine blends these in when present and degrades
-    to global-only when absent, so the fetch can land later without engine
-    changes.
-    """
-
-    gih_wr_pct: float  # GIH win rate in percentage points (e.g. 57.2)
-    games: int = 0  # sample size backing that win rate
-
-
-@dataclass(frozen=True)
 class CardData:
     """Normalized card input — the only shape the engine understands."""
 
@@ -154,7 +132,6 @@ class CardData:
     alsa: float | None = None  # average last seen at
     iwd_pct: float | None = None  # improvement-when-drawn, pct points
     games: int = 0  # GIH sample size
-    arch_stats: Mapping[str, ArchStats] = field(default_factory=dict)  # "WU" -> stats
 
     @property
     def is_creature(self) -> bool:
@@ -322,12 +299,7 @@ def _get(source: Any, key: str, default: Any = None) -> Any:
     return getattr(source, key, default)
 
 
-def normalize_card(
-    source: Any,
-    stats: Any = None,
-    *,
-    arch_stats: Mapping[str, ArchStats] | None = None,
-) -> CardData:
+def normalize_card(source: Any, stats: Any = None) -> CardData:
     """Adapt any of our card shapes into :class:`CardData`.
 
     Accepts:
@@ -339,8 +311,6 @@ def normalize_card(
     - any mapping/object with a compatible subset — everything is optional.
 
     ``stats`` (a ``DraftStats``-like) overrides win-rate fields when given.
-    ``arch_stats`` attaches per-pair stats ("WU" → :class:`ArchStats`) for
-    the Bayesian archetype blend.
     """
     grp_id = int(_get(source, "grp_id", None) or _get(source, "arena_id", 0) or 0)
     name = str(_get(source, "name", "") or f"Unknown ({grp_id})")
@@ -412,7 +382,6 @@ def normalize_card(
         alsa=alsa,
         iwd_pct=iwd,
         games=int(games or 0),
-        arch_stats=dict(arch_stats or {}),
     )
 
 
@@ -522,30 +491,6 @@ def analyze_pool(pool: Sequence[CardData], fmt: FormatContext, lane: LaneState) 
     return needs
 
 
-def compute_pack_signals(pack: Sequence[CardData], pick_number: int, fmt: FormatContext) -> dict[str, float]:
-    """Open-lane lateness signal per color from the current pack.
-
-    Port of unrealities signals.py ``calculate_pack_signals``: an
-    above-baseline card still in the pack later than its ALSA says it should
-    be scores ``lateness * quality`` for its colors. Callers may accumulate
-    these across picks and pass the running total to :func:`evaluate_pack`.
-    """
-    signals = {c: 0.0 for c in COLOR_LETTERS}
-    for card in pack:
-        wr, alsa = card.gih_wr_pct, card.alsa
-        if wr is None or alsa is None or alsa <= 0:
-            continue
-        if wr <= fmt.mean_gih_wr_pct:
-            continue
-        lateness = pick_number - alsa
-        if lateness <= 0:
-            continue
-        score = lateness * (wr - fmt.mean_gih_wr_pct)
-        for c in card.colors or ():
-            signals[c] += score
-    return signals
-
-
 # ---------------------------------------------------------------------------
 # Scoring factors (each returns value + optional reason string)
 # ---------------------------------------------------------------------------
@@ -559,17 +504,9 @@ def _polyval(coeffs: Sequence[float], x: float) -> float:
     return result
 
 
-def _blended_base_score(
-    card: CardData, lane_pair: str, overall_pick: int, total_picks: int, fmt: FormatContext
-) -> tuple[float, str | None]:
-    """Base 0-100ish score from Bayesian-smoothed global/archetype blend.
-
-    Port of unrealities engine.py ``_calculate_weighted_score``: the weight
-    on pair-specific stats slides from 0.2 (P1P1 — trust the format) to 0.9
-    (last picks — trust your lane) across the draft, and the pair win rate is
-    itself shrunk toward the global rate when its sample is small
-    (confidence = games/1000, capped at 1).
-    """
+def _base_score(card: CardData, fmt: FormatContext) -> tuple[float, str | None]:
+    """Base 0-100ish score: the card's global GIH win rate against the format
+    baseline, or a card-quality estimate when 17lands has no data yet."""
     global_wr = card.gih_wr_pct
     if global_wr is None:
         # Full 0-90+ heuristic power scale for Cube & custom formats
@@ -608,23 +545,8 @@ def _blended_base_score(
 
         return max(0.0, min(100.0, est)), "No 17lands data yet (estimated by card quality)"
 
-    reason = None
-    blended = global_wr
-    arch = card.arch_stats.get(lane_pair) if lane_pair else None
-    if arch is not None and arch.games >= ARCH_SAMPLE_MIN and arch.gih_wr_pct > 0:
-        progress = overall_pick / max(1, total_picks)
-        arch_weight = min(0.9, 0.2 + progress * 0.7)
-        confidence = min(1.0, arch.games / ARCH_SAMPLE_FULL_CONFIDENCE)
-        trusted = arch.gih_wr_pct * confidence + global_wr * (1.0 - confidence)
-        blended = global_wr * (1.0 - arch_weight) + trusted * arch_weight
-        delta = trusted - global_wr
-        if delta >= 1.0:
-            reason = f"Overperforms in {lane_pair} decks (+{delta:.1f} points over its global rate)"
-        elif delta <= -1.0:
-            reason = f"Weaker in {lane_pair} decks than its global rate suggests"
-
-    score = 50.0 + ((blended - fmt.mean_gih_wr_pct) / max(0.1, fmt.std_gih_wr_pct)) * 15.0
-    return max(0.0, score), reason
+    score = 50.0 + ((global_wr - fmt.mean_gih_wr_pct) / max(0.1, fmt.std_gih_wr_pct)) * 15.0
+    return max(0.0, score), None
 
 
 def _bomb_bonus(card: CardData, pack_mean: float, pack_std: float) -> tuple[float, float, bool, list[str]]:
@@ -840,7 +762,6 @@ def evaluate_pack(
     *,
     picks_per_pack: int = DEFAULT_PICKS_PER_PACK,
     fmt: FormatContext | None = None,
-    color_signals: Mapping[str, float] | None = None,
 ) -> list[PickGuidance]:
     """Rank the pack. Pure function — safe to call on every pack update.
 
@@ -852,9 +773,6 @@ def evaluate_pack(
         pack_number: 1-3.
         picks_per_pack: pack size (MTGA Premier = 14).
         fmt: format context (baselines + pair win rates); defaults applied.
-        color_signals: optional accumulated open-lane signals (e.g. summed
-            :func:`compute_pack_signals` across previous picks). Used as a
-            small tie-breaker toward open colors.
 
     Returns:
         :class:`PickGuidance` list sorted best-first, scores clamped 0-100.
@@ -865,7 +783,6 @@ def evaluate_pack(
     pick_number = max(1, min(picks_per_pack + 1, pick_number))
     pack_number = max(1, min(PACKS_PER_DRAFT, pack_number))
     total_picks = picks_per_pack * PACKS_PER_DRAFT
-    overall_pick = (pack_number - 1) * picks_per_pack + pick_number
 
     lane = compute_lane(pool, fmt)
     needs = analyze_pool(pool, fmt, lane)
@@ -890,8 +807,6 @@ def evaluate_pack(
     by_wr = sorted(pack, key=lambda c: c.gih_wr_pct or 0.0, reverse=True)
     pack_rank = {c.grp_id: i for i, c in enumerate(by_wr)}
 
-    signals = dict(color_signals or {})
-
     results: list[PickGuidance] = []
     for card in pack:
         reasons: list[str] = []
@@ -913,8 +828,8 @@ def evaluate_pack(
             )
             continue
 
-        # 1. Bayesian-blended base (global → pair archetype across the draft)
-        base, base_reason = _blended_base_score(card, lane_pair, overall_pick, total_picks, fmt)
+        # 1. Base score from the global win rate
+        base, base_reason = _base_score(card, fmt)
         if base_reason:
             reasons.append(base_reason)
 
@@ -927,17 +842,6 @@ def evaluate_pack(
         bonus += late_bonus
         if late_reason:
             reasons.append(late_reason)
-
-        # 3b. Accumulated cross-pick signal tie-breaker (signals.py port)
-        if signals and card.colors:
-            strength = sum(signals.get(c, 0.0) for c in card.colors)
-            if strength > 10.0:
-                base *= 1.05
-                open_colors = (
-                    " and ".join(COLOR_NAMES.get(c, c) for c in card.colors if signals.get(c, 0.0) > 5.0)
-                    or "its colors"
-                )
-                reasons.append(f"{open_colors.capitalize()} keeps coming late — that seat looks open")
 
         # 4. Lane fit multiplier
         lane_mult, on_lane, lane_reason = _lane_fit(card, lane, pack_number, on_color_pool)

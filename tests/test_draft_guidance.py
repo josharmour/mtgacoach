@@ -10,13 +10,10 @@ import itertools
 import pytest
 
 from arenamcp.draft_guidance import (
-    ArchStats,
     FormatContext,
-    _polyval,
     _wheel_probability,
     analyze_pool,
     compute_lane,
-    compute_pack_signals,
     evaluate_pack,
     format_context_from_pair_stats,
     get_tier,
@@ -38,7 +35,6 @@ def mk(
     rarity="common",
     mana_cost=None,
     games=5000,
-    arch_stats=None,
     grp_id=None,
 ):
     """Build a normalized synthetic card from 17lands-style values.
@@ -63,8 +59,7 @@ def mk(
             "alsa": alsa,
             "iwd": iwd,
             "games_in_hand": games,
-        },
-        arch_stats=arch_stats,
+        }
     )
 
 
@@ -402,9 +397,6 @@ class TestComposition:
 
 
 class TestWheel:
-    def test_polyval_horner(self):
-        assert _polyval((1, 2, 3), 2) == pytest.approx(11.0)
-
     def test_high_alsa_low_rank_card_likely_wheels(self):
         card = mk("Late Card", wr=0.52, alsa=9.0)
         mult, prob, reason = _wheel_probability(card, pick_number=2, rank_in_pack=5)
@@ -433,84 +425,11 @@ class TestWheel:
 
 
 # ---------------------------------------------------------------------------
-# Bayesian archetype blending
-# ---------------------------------------------------------------------------
-
-
-class TestArchetypeBlend:
-    def test_pair_overperformer_scores_higher_late_when_committed(self):
-        pool = committed_pool(("W", "U"), n=25)
-        plain = mk("Glue Card", wr=0.54, colors="U", grp_id=1)
-        gluey = mk(
-            "Glue Card",
-            wr=0.54,
-            colors="U",
-            grp_id=2,
-            arch_stats={"WU": ArchStats(gih_wr_pct=60.0, games=5000)},
-        )
-        pack = [plain, gluey] + filler_pack(4, wr=0.53)
-        result = evaluate_pack(pack, pool, pick_number=5, pack_number=3, fmt=FMT)
-        by_id = {g.grp_id: g for g in result}
-        assert by_id[2].score > by_id[1].score
-        assert any("overperforms in wu" in r.lower() for r in by_id[2].reasons)
-
-    def test_tiny_sample_pair_stats_are_ignored(self):
-        pool = committed_pool(("W", "U"), n=25)
-        plain = mk("Glue Card", wr=0.54, colors="U", grp_id=1)
-        noisy = mk(
-            "Glue Card", wr=0.54, colors="U", grp_id=2, arch_stats={"WU": ArchStats(gih_wr_pct=65.0, games=5)}
-        )
-        pack = [plain, noisy] + filler_pack(4, wr=0.53)
-        result = evaluate_pack(pack, pool, pick_number=5, pack_number=3, fmt=FMT)
-        by_id = {g.grp_id: g for g in result}
-        assert by_id[1].score == pytest.approx(by_id[2].score)
-
-    def test_blend_weight_slides_with_pick_number(self):
-        """The same overperformer gets a bigger arch boost late than early."""
-        pool = committed_pool(("W", "U"), n=16)
-        arch = {"WU": ArchStats(gih_wr_pct=60.0, games=5000)}
-
-        def score_at(pick, pack_num):
-            plain = mk("Plain", wr=0.54, colors="U", grp_id=1)
-            gluey = mk("Gluey", wr=0.54, colors="U", grp_id=2, arch_stats=arch)
-            res = evaluate_pack(
-                [plain, gluey] + filler_pack(4, wr=0.53),
-                pool,
-                pick_number=pick,
-                pack_number=pack_num,
-                fmt=FMT,
-            )
-            by_id = {g.grp_id: g for g in res}
-            return by_id[2].score - by_id[1].score
-
-        early_gap = score_at(2, 1)
-        late_gap = score_at(10, 3)
-        assert late_gap > early_gap
-
-
-# ---------------------------------------------------------------------------
 # Open-lane signals
 # ---------------------------------------------------------------------------
 
 
 class TestSignals:
-    def test_pack_signals_accumulate_for_late_quality(self):
-        pack = [
-            mk("Late Blue", wr=0.58, colors="U", alsa=3.0),
-            mk("On-time White", wr=0.58, colors="W", alsa=7.0),
-        ]
-        signals = compute_pack_signals(pack, pick_number=6, fmt=FMT)
-        assert signals["U"] > 0
-        assert signals["W"] == 0.0  # not late (alsa >= pick)
-
-    def test_signal_tie_breaker_reason_appears(self):
-        pack = [mk("Blue Pick", wr=0.56, colors="U", grp_id=1)] + filler_pack(4, wr=0.53, colors="G")
-        result = evaluate_pack(
-            pack, pool=[], pick_number=6, pack_number=1, fmt=FMT, color_signals={"U": 15.0}
-        )
-        blue = {g.grp_id: g for g in result}[1]
-        assert any("open" in r.lower() for r in blue.reasons)
-
     def test_late_signal_bonus_in_pack_one(self):
         # Strong card at pick 7 with ALSA 3: the lane is being passed to us.
         pack = [mk("Passed Bomb", wr=0.61, colors="U", alsa=3.0, grp_id=1)] + filler_pack(5, wr=0.53)
