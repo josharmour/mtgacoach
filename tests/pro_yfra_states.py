@@ -167,6 +167,26 @@ CARDS: dict[str, dict[str, Any]] = {
         "keywords": ["flying"],
         "card_types": ["CardType_Artifact", "CardType_Creature"],
     },
+    "Konstrari Improviser": {
+        "type_line": "Creature — Human Artificer",
+        "mana_cost": "{1}{R/G}",
+        "oracle_text": "This creature enters prepared. (While it's prepared, you may cast a copy of its "
+        "spell. Doing so unprepares it.)",
+        "power": 2,
+        "toughness": 2,
+        "card_types": ["CardType_Creature"],
+    },
+    "Enlightened Confidant": {
+        "type_line": "Creature — Kor Cleric",
+        "mana_cost": "{1}{W}",
+        "oracle_text": "Lifelink\nAt the beginning of your end step, if you gained life this turn, surveil 1. If "
+        "you put a card with mana value less than or equal to the amount of life you gained this turn into "
+        "your graveyard this way, put that card into your hand.",
+        "power": 2,
+        "toughness": 2,
+        "keywords": ["lifelink"],
+        "card_types": ["CardType_Creature"],
+    },
     "Cryotheory Adept": {
         "type_line": "Creature — Human Wizard",
         "mana_cost": "{2}{U}",
@@ -275,4 +295,16 @@ M1_T7 = board(
         (215, "Cryotheory Adept", 1, False, 4),
     ],
     hand=[(159, "Garruk, Curse Breaker"), (163, "Refute Destiny")],
+)  # fmt: skip
+
+# Match 3 turn 7 (reduced): the Improviser can attack; the pro attacked first and
+# cast Enlightened Confidant after combat.
+M3_T7 = board(
+    turn=7, phase="Phase_Main1", life={1: 20, 2: 20}, lands_played=1,
+    battlefield=[
+        (180, "Forest", 2, False, 1), (181, "Plains", 2, False, 3), (182, "Forest", 2, False, 5),
+        (183, "Plains", 2, False, 7), (190, "Konstrari Improviser", 2, False, 3),
+        (300, "Island", 1, False, 2), (301, "Island", 1, False, 4), (302, "Island", 1, False, 6),
+    ],
+    hand=[(195, "Enlightened Confidant")],
 )  # fmt: skip

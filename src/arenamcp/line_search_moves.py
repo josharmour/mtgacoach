@@ -112,6 +112,11 @@ _LIFE_SCALED_TOKENS = re.compile(
 _COUNTER_ON_TARGET = re.compile(
     r"\bput (?P<n>a|an|one|two|three|\d+) \+1/\+1 counters? on (?:another )?target creature\b"
 )
+# A creature whose text matters to this turn's attack even while it is summoning sick.
+_ATTACK_RELEVANT = re.compile(
+    r"\bflash\b|\bhaste\b|\bcreatures? you control (?:get|gets|have|has|gain)\b|\battacks?\b"
+    r"|\bcan't block\b|\btarget creature\b|\bcombat\b|\btap target\b"
+)
 # Ids of countered bodies (a fresh id per body and count, below the token ids).
 _COUNTER_IDS = 800_000_000
 # "For every 3 life you gained this game, create an additional one of those tokens."
@@ -225,6 +230,8 @@ class Step:
     their_creatures_after: int | None = None
     policy: str = ""  # their attack policy
     greedy: bool = False
+    # Casts that change nothing about this turn's attack: cast them after combat (main 2).
+    post_combat: tuple[str, ...] = ()
     keys: frozenset = frozenset()
     plays: tuple = field(
         default=(), repr=False, compare=False
@@ -247,9 +254,14 @@ class Step:
             )
             parts.append(f"{name} ({extra})" if extra else name)
         parts += [f"landcycle {name}" for name in self.cycles]
+        later = [p for p in parts[1 if self.land else 0 :] if p in self.post_combat]
+        if self.attack and later:
+            parts = [p for p in parts if p not in later]
         text = " + ".join(parts)
         if self.attack:
             text += f"{', ' if text else ''}attack with {', '.join(self.attack)}"
+            if later:
+                text += f", then cast {' + '.join(later)} after combat"
         text = text or "no play"
         if self.held:
             text += f", hold {', '.join(self.held)}"
@@ -723,6 +735,7 @@ class Moves:
         self._token_id = _TOKEN_IDS  # the next token body's instance id (deterministic)
         self._life_token_memo: dict = {}
         self._counter_memo: dict = {}
+        self._neutral_memo: dict = {}
         # Hushbringer / Torpor Orb on the battlefield: a creature we cast triggers nothing on entering.
         self.enters_triggers = not any(_NO_ENTERS_TRIGGERS.search(_text(c)) for c in model.battlefield)
         self._prepare()
@@ -1408,6 +1421,11 @@ class Moves:
             mid.theirs = [b for b in mid.theirs if b["instance_id"] not in dead_theirs]
             # Non-vigilance attackers stay tapped through their turn.
             mid.our_tapped |= {b["instance_id"] for b in attackers if not has_combat_keyword(b, "vigilance")}
+        post_combat: tuple[str, ...] = ()
+        if attackers and not mid.attack_first:
+            post_combat = tuple(
+                self.spells[var.spell].name for var, _target in mid.casts if self._attack_neutral(var)
+            )
         if not mid.applied:
             self._apply_casts(mid)
         step = {
@@ -1428,6 +1446,7 @@ class Moves:
             "greedy": greedy,
             "keys": frozenset(mid.keys | {("attack", frozenset(ids)) if ids else ("noattack",)}),
             "plays": (mid.land, tuple(mid.casts), ids),
+            "post_combat": post_combat,
         }
         carry = {
             "our_life": mid.our_life,
@@ -1489,6 +1508,24 @@ class Moves:
             history=history,
             attacks=attacks,
         )
+
+    def _attack_neutral(self, var: Variant) -> bool:
+        """A creature cast that changes nothing about our attack this turn: a summoning-sick
+        body (no haste, no flash to hold) with no removal, damage, counters or hasty tokens and
+        no static or attack ability for our team. Pro YFRA game 2026-10-18 (match 3 turn 7):
+        attack first, then Enlightened Confidant and Valgavoth after combat."""
+        if var.kind != "cast" or var.body is None or self.haste:
+            return False
+        if var.reach is not None or var.face or var.counter or var.life_tokens:
+            return False
+        found = self._neutral_memo.get(id(var))
+        if found is None:
+            found = self._neutral_memo[id(var)] = not (
+                has_combat_keyword(var.body, "haste")
+                or any(has_combat_keyword(t, "haste") for t in var.tokens)
+                or _ATTACK_RELEVANT.search(_text(self.spells[var.spell].spell.card))
+            )
+        return found
 
     def castable(self, sources, ours=()) -> tuple[str, ...]:
         """Every hand spell castable alone with these sources (as ``_schedule`` lists them),

@@ -334,6 +334,7 @@ class LineSearchResult:
                 "modes": dict(step.modes),
                 "held": ", ".join(step.held),
                 "posture": self.posture if index == 0 else "",
+                "post_combat": list(step.post_combat),
             }
             rows.append(TurnProjection(**{k: v for k, v in values.items() if k in names}))
         return rows
