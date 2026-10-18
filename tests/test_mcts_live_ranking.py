@@ -1,7 +1,8 @@
 """Regressions for the tactical search's live rankings (real bug-report states).
 
-The prompt tells the LLM to follow the search's BEST LINE, and autopilot acts
-on it, so a wrong ranking directly produces wrong plays:
+The top-ranked branch is the heuristic hints' "Suggested line" (one opinion
+the LLM weighs when the line search has no lines; coach_prompts.py), so a
+wrong ranking still steers advice toward wrong plays:
 - bug_20260905_220901: 5-mana commander ranked BEST with 1 mana open because
   any GRE "Cast X" listing (not just "[OK]") counted as payable;
 - bug_20260813_233045: Pass outranked "Play Forest" because the land drop was

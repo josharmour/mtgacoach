@@ -9,8 +9,7 @@ change, controller change, different match) must recompute.
 
 from __future__ import annotations
 
-import time
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -68,6 +67,116 @@ def _clean_cache():
     MCTSEvaluator.reset_cache()
 
 
+def _spell(name: str, iid: int) -> dict[str, Any]:
+    return {"instance_id": iid, "name": name, "controller_seat_id": 2, "owner_seat_id": 2, "type_line": "Instant"}
+
+
+def _nothing(state: dict[str, Any]) -> None:
+    pass
+
+
+def _set(path: str, value: Any) -> Callable[[dict[str, Any]], None]:
+    """Mutator that sets ``state[a][b]...`` (list indexes as ints) in place."""
+    keys = [int(k) if k.isdigit() else k for k in path.split(".")]
+
+    def apply(state: dict[str, Any]) -> None:
+        target = state
+        for key in keys[:-1]:
+            target = target[key]
+        target[keys[-1]] = value
+
+    return apply
+
+
+def _swap_forest_for_island(state: dict[str, Any]) -> None:
+    state["battlefield"][0].update(name="Island", type_line="Basic Land — Island")
+
+
+def _swap_hand_spell(state: dict[str, Any]) -> None:
+    state["hand"][0].update(name="Lightning Bolt", type_line="Instant", mana_cost="{R}")
+
+
+def _two_spells_on_stack(state: dict[str, Any]) -> None:
+    state["stack"] = [_spell("Spell Pierce", 9), _spell("Fading Hope", 10)]
+
+
+def _forest_without_id(state: dict[str, Any]) -> None:
+    state["hand"].append({"name": "Forest", "type_line": "Basic Land — Forest"})
+
+
+# (setup applied before the first evaluation, in-place change before the second)
+SEMANTIC_CHANGES = {
+    # Same zone sizes, different cards: the original failure mode.
+    "battlefield_card_swap": (_nothing, _swap_forest_for_island),
+    "hand_card_swap": (_nothing, _swap_hand_spell),
+    "stack_card_identity": (
+        _set("stack", [_spell("Spell Pierce", 9)]),
+        _set("stack.0.name", "Fading Hope"),
+    ),
+    "graveyard_card_identity": (
+        _set("graveyard", [{"instance_id": 7, "name": "Fading Hope", "type_line": "Instant"}]),
+        _set("graveyard.0.name", "Make Disappear"),
+    ),
+    # The stack is the one order-sensitive zone.
+    "stack_order": (_two_spells_on_stack, lambda state: state["stack"].reverse()),
+    # Mana and board facts.
+    "floating_mana": (_nothing, _set("players.0.mana_pool", {"U": 3, "G": 1})),
+    "tapped_elves": (_nothing, _set("battlefield.1.is_tapped", True)),
+    "stolen_elves": (_nothing, _set("battlefield.1.controller_seat_id", 2)),
+    "attacking_flag": (_nothing, _set("battlefield.1.is_attacking", True)),
+    "summoning_sickness": (_nothing, _set("battlefield.1.is_summoning_sick", True)),
+    "oracle_text": (_nothing, _set("battlefield.1.oracle_text", "Flying. Haste.")),
+    "hero_life": (_nothing, _set("players.0.life_total", 19)),
+    # Turn and match identity.
+    "turn_number": (_nothing, _set("turn.turn_number", 4)),
+    "phase": (_nothing, _set("turn.phase", "Phase_Main2")),
+    "different_match": (_nothing, _set("match_id", "match-B")),
+    # Opponent information: the top-level count wins over the player row, and
+    # 0 is a real count, distinct from missing.
+    "opponent_hand_count": (_nothing, _set("players.1.cards_in_hand", 2)),
+    "top_level_opponent_hand_count": (_set("opponent_hand_count", 4), _set("opponent_hand_count", 1)),
+    "opponent_hand_count_zero_vs_missing": (_nothing, _set("opponent_hand_count", 0)),
+    # pending_decision is deep-frozen, so an in-place edit of the same object counts.
+    "pending_decision_in_place": (
+        _set("pending_decision", {"type": "choose", "options": ["A"]}),
+        lambda state: state["pending_decision"]["options"].append("B"),
+    ),
+    # Same-name cards with mixed/missing instance ids keep their multiplicity
+    # (the old sorted raw tuples raised TypeError comparing None with int).
+    "mixed_missing_instance_ids": (
+        _forest_without_id,
+        lambda state: state["hand"].append(
+            {"name": "Forest", "instance_id": 7, "type_line": "Basic Land — Forest", "is_tapped": False}
+        ),
+    ),
+}
+
+
+@pytest.mark.parametrize("setup, change", SEMANTIC_CHANGES.values(), ids=SEMANTIC_CHANGES.keys())
+def test_semantic_change_recomputes(setup, change):
+    state = _base_state()
+    setup(state)
+    first = MCTSEvaluator.evaluate(state)
+    change(state)
+    second = MCTSEvaluator.evaluate(state)
+    assert second is not first
+    assert second.eval_source == first.eval_source  # still a real evaluation
+
+
+@pytest.mark.parametrize(
+    "odd_entry",
+    [
+        {"name": "Forest", "type_line": "Basic Land — Forest"},  # no instance_id
+        "Forest",  # a bare name instead of a card dict
+    ],
+    ids=["missing_instance_id", "bare_string"],
+)
+def test_odd_card_entries_do_not_crash(odd_entry):
+    state = _base_state()
+    state["hand"].append(odd_entry)
+    assert MCTSEvaluator.evaluate(state).branches
+
+
 def test_equal_snapshot_reuses_cached_payload_object():
     """The same snapshot must reuse the cached payload object (not a copy)."""
     state = _base_state()
@@ -76,157 +185,7 @@ def test_equal_snapshot_reuses_cached_payload_object():
     assert first is second
 
 
-def test_same_size_card_swap_recomputes():
-    """Forest->Island battlefield swap at identical zone sizes must recompute."""
-    state = _base_state()
-    first = MCTSEvaluator.evaluate(state)
-
-    swapped = _base_state()
-    swapped["battlefield"][0]["name"] = "Island"
-    swapped["battlefield"][0]["type_line"] = "Basic Land — Island"
-
-    second = MCTSEvaluator.evaluate(swapped)
-    assert second is not first
-    assert second.eval_source == first.eval_source  # still a real evaluation
-
-
-def test_same_size_hand_change_recomputes():
-    """Hand content change at identical hand size must recompute."""
-    state = _base_state()
-    first = MCTSEvaluator.evaluate(state)
-
-    changed = _base_state()
-    changed["hand"][0]["name"] = "Lightning Bolt"
-    changed["hand"][0]["type_line"] = "Instant"
-    changed["hand"][0]["mana_cost"] = "{R}"
-
-    second = MCTSEvaluator.evaluate(changed)
-    assert second is not first
-
-
-def test_mana_change_recomputes():
-    """Floated mana change must invalidate the cached payload."""
-    state = _base_state()
-    first = MCTSEvaluator.evaluate(state)
-
-    more_mana = _base_state()
-    more_mana["players"][0]["mana_pool"] = {"U": 3, "G": 1}
-
-    second = MCTSEvaluator.evaluate(more_mana)
-    assert second is not first
-
-
-def test_tap_change_recomputes():
-    """Tapping the Elves changes mana availability and must recompute."""
-    state = _base_state()
-    first = MCTSEvaluator.evaluate(state)
-
-    tapped = _base_state()
-    tapped["battlefield"][1]["is_tapped"] = True
-
-    second = MCTSEvaluator.evaluate(tapped)
-    assert second is not first
-
-
-def test_controller_change_recomputes():
-    """Stolen permanent (controller flip) must recompute."""
-    state = _base_state()
-    first = MCTSEvaluator.evaluate(state)
-
-    stolen = _base_state()
-    stolen["battlefield"][1]["controller_seat_id"] = 2
-
-    second = MCTSEvaluator.evaluate(stolen)
-    assert second is not first
-
-
-def test_turn_change_recomputes():
-    state = _base_state()
-    first = MCTSEvaluator.evaluate(state)
-
-    later = _base_state()
-    later["turn"] = dict(later["turn"], turn_number=4)
-
-    second = MCTSEvaluator.evaluate(later)
-    assert second is not first
-
-
-def test_phase_change_recomputes():
-    state = _base_state()
-    first = MCTSEvaluator.evaluate(state)
-
-    combat = _base_state()
-    combat["turn"] = dict(combat["turn"], phase="Phase_DeclareAttack")
-
-    second = MCTSEvaluator.evaluate(combat)
-    assert second is not first
-
-
-def test_different_match_recomputes():
-    """A new match must not inherit the previous match's cached payload."""
-    state = _base_state()
-    first = MCTSEvaluator.evaluate(state)
-
-    next_match = _base_state()
-    next_match["match_id"] = "match-B"
-
-    second = MCTSEvaluator.evaluate(next_match)
-    assert second is not first
-
-
-def test_stack_card_identity_recomputes():
-    """Stack content change (not just size) must recompute."""
-    state = _base_state()
-    state["stack"] = [
-        {
-            "instance_id": 9,
-            "name": "Spell Pierce",
-            "controller_seat_id": 2,
-            "owner_seat_id": 2,
-            "type_line": "Instant",
-        }
-    ]
-    first = MCTSEvaluator.evaluate(state)
-
-    other_spell = _base_state()
-    other_spell["stack"] = [
-        {
-            "instance_id": 9,
-            "name": "Fading Hope",
-            "controller_seat_id": 2,
-            "owner_seat_id": 2,
-            "type_line": "Instant",
-        }
-    ]
-    second = MCTSEvaluator.evaluate(other_spell)
-    assert second is not first
-
-
-def test_opp_hand_count_change_recomputes():
-    """Opponent information change must recompute."""
-    state = _base_state()
-    first = MCTSEvaluator.evaluate(state)
-
-    fewer = _base_state()
-    fewer["players"][1]["cards_in_hand"] = 2
-
-    second = MCTSEvaluator.evaluate(fewer)
-    assert second is not first
-
-
-def test_graveyard_identity_counts():
-    """Graveyard card identity participates (cards drive gating/encoding)."""
-    state = _base_state()
-    state["graveyard"] = [{"instance_id": 7, "name": "Fading Hope", "type_line": "Instant"}]
-    first = MCTSEvaluator.evaluate(state)
-
-    changed = _base_state()
-    changed["graveyard"] = [{"instance_id": 7, "name": "Make Disappear", "type_line": "Instant"}]
-    second = MCTSEvaluator.evaluate(changed)
-    assert second is not first
-
-
-def test_tap_change_same_state_unchanged_reuses():
+def test_unknown_fields_do_not_invalidate():
     """Non-semantic metadata changes must NOT invalidate (no phony misses)."""
     state = _base_state()
     first = MCTSEvaluator.evaluate(state)
@@ -239,22 +198,43 @@ def test_tap_change_same_state_unchanged_reuses():
     assert second is first
 
 
-def test_ttl_expiry_recomputes(monkeypatch: pytest.MonkeyPatch):
+def test_cached_result_matches_a_recompute_after_a_format_change():
+    state = _base_state()
+    state["format_profile"] = {"family": "constructed", "variant": "standard"}
+    first = MCTSEvaluator.evaluate(state)
+    state["format_profile"] = {"family": "limited", "variant": "draft"}
+    cached = MCTSEvaluator.evaluate(state)
+    forced = MCTSEvaluator.evaluate(state, force=True)
+    assert first.format_summary != forced.format_summary
+    assert cached.format_summary == forced.format_summary
+
+
+def test_cached_result_matches_a_recompute_when_the_hand_count_falls_back():
+    """A null hand_count falls back to cards_in_hand, and the signature follows."""
+    state = _base_state()
+    state["players"][1]["hand_count"] = None
+    first = MCTSEvaluator.evaluate(state)
+    state["players"][1]["cards_in_hand"] = 1
+    cached = MCTSEvaluator.evaluate(state)
+    forced = MCTSEvaluator.evaluate(state, force=True)
+    assert first.root_win_probability != forced.root_win_probability
+    assert cached.root_win_probability == forced.root_win_probability
+
+
+def test_ttl_expiry_recomputes():
     """After TTL expiry, equal snapshots recompute rather than reuse forever."""
-    monkeypatch.setattr(MCTSEvaluator, "CACHE_TTL_SECONDS", 0.05)
-    MCTSEvaluator.reset_cache()
     state = _base_state()
     first = MCTSEvaluator.evaluate(state)
-    time.sleep(0.08)
+    MCTSEvaluator._last_payload_at -= MCTSEvaluator.CACHE_TTL_SECONDS + 1.0
     second = MCTSEvaluator.evaluate(state)
     assert second is not first
 
 
 def test_ttl_disabled_reuses(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(MCTSEvaluator, "CACHE_TTL_SECONDS", 0.0)
-    MCTSEvaluator.reset_cache()
     state = _base_state()
     first = MCTSEvaluator.evaluate(state)
+    MCTSEvaluator._last_payload_at -= 3600.0
     second = MCTSEvaluator.evaluate(state)
     assert first is second
 
@@ -276,101 +256,3 @@ def test_force_bypasses_cache():
     first = MCTSEvaluator.evaluate(state)
     second = MCTSEvaluator.evaluate(state, force=True)
     assert second is not first
-
-
-def test_semantic_changes_are_not_phony_hits():
-    """Multiple semantic changes back-to-back each produce fresh payloads."""
-    a = MCTSEvaluator.evaluate(_base_state())
-    b = MCTSEvaluator.evaluate({**_base_state(), "match_id": "match-Z"})
-    c = MCTSEvaluator.evaluate(
-        {
-            **_base_state(),
-            "players": [
-                {
-                    "seat_id": 1,
-                    "is_local": True,
-                    "life_total": 19,
-                    "lands_played": 0,
-                    "mana_pool": {"U": 1, "G": 1},
-                },
-                {"seat_id": 2, "is_local": False, "life_total": 20, "cards_in_hand": 4},
-            ],
-        }
-    )
-    assert len({id(a), id(b), id(c)}) == 3
-
-
-# ----- Checkpoint-1 review remediation -----
-
-
-def test_mixed_missing_instance_ids_do_not_crash():
-    """Same-name cards with mixed/missing instance IDs must evaluate cleanly.
-
-    Regression: the old sorted raw tuples raised TypeError comparing
-    NoneType/int when one Forest carried an instance_id and another did not.
-    Multiplicity must be preserved (three Forests remain three).
-    """
-    state = _base_state()
-    state["hand"].append({"name": "Forest", "type_line": "Basic Land — Forest"})
-    first = MCTSEvaluator.evaluate(state)  # must not raise
-    state["hand"].append(
-        {"name": "Forest", "instance_id": 7, "type_line": "Basic Land — Forest", "is_tapped": False}
-    )
-    second = MCTSEvaluator.evaluate(state)
-    assert second is not first
-
-
-def test_pending_decision_in_place_mutation_invalidates():
-    """The signature snapshots pending_decision, so in-place edits invalidate."""
-    state = _base_state()
-    state["pending_decision"] = {"type": "choose", "options": ["A"]}
-    first = MCTSEvaluator.evaluate(state)
-    state["pending_decision"]["options"].append("B")  # in-place, same object
-    second = MCTSEvaluator.evaluate(state)
-    assert second is not first
-
-
-def test_attacking_flag_invalidates():
-    state = _base_state()
-    first = MCTSEvaluator.evaluate(state)
-    state["battlefield"][1]["is_attacking"] = True
-    assert MCTSEvaluator.evaluate(state) is not first
-
-
-def test_oracle_text_invalidates():
-    state = _base_state()
-    first = MCTSEvaluator.evaluate(state)
-    state["battlefield"][1]["oracle_text"] = "Flying. Haste."
-    assert MCTSEvaluator.evaluate(state) is not first
-
-
-def test_stack_order_invalidates():
-    """Stack is order-semantic: reversing it must invalidate the cache."""
-    state = _base_state()
-    state["stack"] = [
-        {"name": "Spell Pierce", "instance_id": 9, "type_line": "Instant"},
-        {"name": "Fading Hope", "instance_id": 10, "type_line": "Instant"},
-    ]
-    first = MCTSEvaluator.evaluate(state)
-    state["stack"].reverse()
-    assert MCTSEvaluator.evaluate(state) is not first
-
-
-def test_top_level_opponent_hand_count_takes_precedence():
-    """Signature mirrors evaluation precedence: top-level count wins over the
-    player row, and changing it recomputes even when both fields are present."""
-    state = _base_state()
-    state["opponent_hand_count"] = 4  # agrees with player row cards_in_hand=4
-    first = MCTSEvaluator.evaluate(state)
-    state["opponent_hand_count"] = 1
-    second = MCTSEvaluator.evaluate(state)
-    assert second is not first
-
-
-def test_opponent_hand_count_zero_vs_missing_distinct():
-    """0 is a real count and must differ from missing/unknown."""
-    zero = {**_base_state(), "opponent_hand_count": 0}
-    missing = _base_state()
-    a = MCTSEvaluator.evaluate(zero)
-    b = MCTSEvaluator.evaluate(missing)
-    assert a is not b

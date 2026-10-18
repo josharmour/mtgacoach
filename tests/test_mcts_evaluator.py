@@ -2,8 +2,18 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from arenamcp.mcts_evaluator import MCTSEvaluator, MCTSTreePayload
 from arenamcp.opponent_model import OpponentModel, OpponentProfile
+
+
+@pytest.fixture(autouse=True)
+def _reset_cache():
+    """The evaluator caches its last payload class-wide; keep tests order-independent."""
+    MCTSEvaluator.reset_cache()
+    yield
+    MCTSEvaluator.reset_cache()
 
 
 def test_mcts_evaluator_basic():
@@ -51,14 +61,14 @@ def test_mcts_evaluator_basic():
     assert tree.phase == "Main1"
     assert tree.hero_life == 20
     assert tree.opp_life == 18
-    assert len(tree.branches) > 0
-
-    # Top line should be one of our valid actions
-    assert any(b.action_type in ("cast", "attack", "pass", "sequence") for b in tree.branches)
-    best = tree.branches[0]
-    assert best.win_probability >= 0.0
-    assert best.simulated_visits >= 0
-    assert best.tag in ("⭐ BEST LINE", "⚡ TEMPO", "🛡️ SAFE", "⚠️ BLUNDER TRAP", "NORMAL")
+    # One hint per kind of play: cast the instant, hold the mana, or attack.
+    assert {b.action_type for b in tree.branches} == {"cast", "pass", "attack"}
+    scores = [b.win_probability for b in tree.branches]
+    assert scores == sorted(scores, reverse=True)
+    assert all(0.0 <= score <= 1.0 for score in scores)
+    assert tree.branches[0].tag == "⭐ BEST LINE"
+    hold = next(b for b in tree.branches if b.action_type == "pass")
+    assert "Hold 2 Open Mana" in hold.action
 
 
 def test_mcts_evaluator_combat_attack():
@@ -326,26 +336,12 @@ def test_opponent_model_uw_control_sweeper():
 
 
 def test_mcts_evaluator_empty_state_graceful():
-    MCTSEvaluator.reset_cache()
     tree = MCTSEvaluator.evaluate({})
     assert isinstance(tree, MCTSTreePayload)
-    assert tree.total_simulations >= 0
-    assert len(tree.branches) >= 1
-    assert tree.branches[0].action_type == "pass"
+    assert [(b.action_type, b.action, b.tag) for b in tree.branches] == [
+        ("pass", "Pass Priority", "⭐ BEST LINE")
+    ]
     assert tree.eval_source == "Tactical Heuristic Lookahead"
-
-
-def test_mcts_evaluator_state_signature_caching():
-    MCTSEvaluator.reset_cache()
-    state = {
-        "turn": {"turn_number": 2, "phase": "Phase_Main1"},
-        "players": [{"seat_id": 1, "life_total": 20, "is_local": True}],
-        "hand": [],
-        "battlefield": [],
-    }
-    tree1 = MCTSEvaluator.evaluate(state)
-    tree2 = MCTSEvaluator.evaluate(state)
-    assert tree1 is tree2  # Must return identical cached object
 
 
 def _real_attack_board(phase: str, step: str = "", pending=None, active: int = 2) -> dict:
@@ -394,7 +390,6 @@ def _real_attack_board(phase: str, step: str = "", pending=None, active: int = 2
 def test_no_hints_outside_our_open_main_phase_windows():
     # At the real declare-attackers decision the block's best line was
     # "Pass Priority" (the attack branch never ran in Phase_Combat).
-    MCTSEvaluator.reset_cache()
     for state in (
         _real_attack_board("Phase_Combat", "Step_DeclareAttack", "Declare Attackers"),
         _real_attack_board("Phase_Main1", pending="Select Targets"),
@@ -405,7 +400,6 @@ def test_no_hints_outside_our_open_main_phase_windows():
 
 
 def test_precombat_hint_plans_the_attack():
-    MCTSEvaluator.reset_cache()
     tree = MCTSEvaluator.evaluate(_real_attack_board("Phase_Main1", pending="Action Required"), force=True)
     assert tree.branches
     assert tree.branches[0].action_type == "attack"
