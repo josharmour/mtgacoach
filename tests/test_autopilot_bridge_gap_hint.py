@@ -9,33 +9,14 @@ useful next step. The hint surfaces which of those it is.
 
 from __future__ import annotations
 
-# We bypass module-level PIL imports (autopilot.py imports PIL.ImageGrab at
-# top, which isn't installed in CI). Pull the helper off the class via a
-# trick: import autopilot.AutopilotEngine and call the unbound method.
-import importlib
-import sys
 from unittest.mock import MagicMock
+
+from arenamcp.autopilot import AutopilotEngine
 
 
 def _engine_with_format_hint():
-    """Construct just enough of AutopilotEngine to call _format_bridge_gap_hint.
-
-    Avoid the full __init__ — that spins up bridge / config / notifier wiring
-    we don't need. The hint method only reads game_state.
-    """
-    try:
-        autopilot = importlib.import_module("arenamcp.autopilot")
-    except ImportError as e:
-        if "PIL" in str(e):
-            # Stub PIL so the import succeeds in CI environments without it
-            sys.modules["PIL"] = MagicMock()
-            sys.modules["PIL.ImageGrab"] = MagicMock()
-            autopilot = importlib.import_module("arenamcp.autopilot")
-        else:
-            raise
-
-    engine = autopilot.AutopilotEngine.__new__(autopilot.AutopilotEngine)
-    return engine
+    """Just enough of AutopilotEngine to call _format_bridge_gap_hint (it only reads game_state)."""
+    return AutopilotEngine.__new__(AutopilotEngine)
 
 
 def test_hint_for_bridge_gap_request_type():

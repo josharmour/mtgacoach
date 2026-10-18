@@ -16,21 +16,10 @@ These tests pin that:
 
 from __future__ import annotations
 
-import importlib
-import sys
 import threading
 from unittest.mock import MagicMock
 
-
-def _load_autopilot():
-    try:
-        return importlib.import_module("arenamcp.autopilot")
-    except ImportError as e:
-        if "PIL" in str(e):
-            sys.modules["PIL"] = MagicMock()
-            sys.modules["PIL.ImageGrab"] = MagicMock()
-            return importlib.import_module("arenamcp.autopilot")
-        raise
+import arenamcp.autopilot as ap
 
 
 class _FakeBridge:
@@ -61,7 +50,6 @@ class _FakeBridge:
 
 
 def _engine(bridge):
-    ap = _load_autopilot()
     engine = ap.AutopilotEngine.__new__(ap.AutopilotEngine)
     engine._gre_bridge = bridge
     engine._abort_event = threading.Event()
@@ -165,7 +153,6 @@ def test_is_non_passable_interactive_excludes_actions_available():
 
 
 def test_plan_cannot_legally_submit():
-    ap = _load_autopilot()
     Engine = ap.AutopilotEngine
     pass_plan = ap.ActionPlan(actions=[ap.GameAction(action_type=ap.ActionType.PASS_PRIORITY)])
     real_plan = ap.ActionPlan(
