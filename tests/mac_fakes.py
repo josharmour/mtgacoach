@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -31,15 +32,17 @@ def command(kind="click", **kwargs) -> dict:
     }
 
 
+class InstantEvent(threading.Event):
+    """An abort flag whose waits return at once: no real hover/press settle delays."""
+
+    def wait(self, timeout=None) -> bool:
+        return self.is_set()
+
+
 def fake_native_controller() -> NativeMacInput:
     """A NativeMacInput whose Quartz events, focus and hit tests are recorded mocks."""
     controller = NativeMacInput.__new__(NativeMacInput)
-    controller._quartz = SimpleNamespace(
-        kCGEventMouseMoved=5,
-        kCGEventLeftMouseDown=1,
-        kCGEventLeftMouseUp=2,
-        kCGEventLeftMouseDragged=6,
-    )
+    controller._quartz = SimpleNamespace(kCGEventMouseMoved=5, kCGEventLeftMouseDown=1, kCGEventLeftMouseUp=2)
     controller.check_permissions = Mock()
     controller._check_focus = Mock()
     controller._check_point = Mock()

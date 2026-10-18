@@ -39,7 +39,9 @@ records *why* and *how we know*). Newest entries first.
 - **Kept, because other features click the screen on the Mac:**
   `native_mac_input.py` (window capture, Quartz clicks, focus and hit-test
   guards) for auto-queue's post-match navigation (`auto_queue.py`,
-  `standalone_auto_queue.py`); `ProxyBackend.complete_with_image` and its vision
+  `standalone_auto_queue.py`), trimmed to the single left click auto-queue sends
+  (the double-click, drag, hover, key, text and scroll inputs served only the
+  gameplay engine); `ProxyBackend.complete_with_image` and its vision
   breaker; Tools → Autoplay Permissions… (Accessibility and Screen Recording,
   which auto-queue needs); F11 / Stop Autoplay. Draft-event autoplay
   (`draft_event.py`) acts through the Mac bridge's draft commands, not the
@@ -53,7 +55,7 @@ records *why* and *how we know*). Newest entries first.
   test_mac_autoplay_bridge_only.py pins GRE-engine selection, the MANUAL REQUIRED
   hint and that the coach keeps advising.
 - **Verify:** `git grep -n -e NativeMacAutopilot -e requires_desktop_poll -- src`
-  is empty; `pytest tests/test_mac_autoplay_bridge_only.py`; full suite 4881
+  is empty; `pytest tests/test_mac_autoplay_bridge_only.py`; full suite 4877
   passed, 2 skipped, 2 xfailed.
 - **Open:** when the library is not staged at all, the hint's "reopen the coach"
   advice cannot help; only `spikes/mac-il2cpp/build.sh` stages it.

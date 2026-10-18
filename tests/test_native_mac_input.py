@@ -1,11 +1,10 @@
 """Native macOS screen input (auto-queue's clicks) refuses stale, covered or unverifiable input."""
 
 import ctypes
-import threading
 from unittest.mock import Mock
 
 import pytest
-from tests.mac_fakes import command, fake_native_controller, make_frame
+from tests.mac_fakes import InstantEvent, command, fake_native_controller, make_frame
 
 from arenamcp.native_mac_input import (
     DesktopAction,
@@ -24,13 +23,13 @@ from arenamcp.native_mac_input import (
         command(point=[1.1, 0.5]),
         command(point=[float("nan"), 0.5]),
         command(point=[True, 0.5]),
+        command(point=None),
         command(confidence=float("inf")),
         command(confidence=True),
-        command("key", key="cmd+q"),
-        command("text", text="hello"),
-        command("text", text="1000"),
-        command("scroll", amount=100),
-        command("drag", end=[0, 1]),
+        command(reason=" "),
+        # Only auto-queue's click is left (bridge-only autoplay, 2026-10-18).
+        command("double_click"),
+        command("key", key="space"),
         command("shell"),
     ],
 )
@@ -81,65 +80,46 @@ def test_failed_foreground_query_refuses_input(failed_call):
         foreground.pid()
 
 
-def test_cancelled_drag_always_releases_mouse():
+def test_stop_during_the_press_still_releases_mouse():
     controller = fake_native_controller()
-    aborted = threading.Event()
+    aborted = InstantEvent()
 
     def mouse(event_type, *args):
         if event_type == 1:
             aborted.set()
 
     controller._mouse.side_effect = mouse
-    action = DesktopAction.from_dict(command("drag", end=[0.5, 0.2]))
-    assert not controller.execute(make_frame(), action, aborted)
+    assert not controller.execute(make_frame(), DesktopAction.from_dict(command()), aborted)
     assert [call.args[0] for call in controller._mouse.call_args_list] == [5, 1, 2]
 
 
-def test_double_click_posts_two_complete_clicks_with_click_counts():
+def test_click_hovers_then_posts_one_complete_click_at_the_window_point():
     controller = fake_native_controller()
-    action = DesktopAction.from_dict(command("double_click"))
-    assert controller.execute(make_frame(), action, threading.Event())
+    assert controller.execute(make_frame(), DesktopAction.from_dict(command()), InstantEvent())
     events = [call.args for call in controller._mouse.call_args_list]
-    assert [event[0] for event in events] == [5, 1, 2, 1, 2]
-    assert [event[2] for event in events[1:]] == [1, 1, 2, 2]
+    assert [event[0] for event in events] == [5, 1, 2]
     assert all(event[1] == (460, 320) for event in events)
 
 
-@pytest.mark.parametrize("kind", ["click", "double_click", "drag"])
-def test_hover_reflow_is_observed_before_pressing_mouse(kind):
+def test_hover_reflow_is_observed_before_pressing_mouse():
     controller = fake_native_controller()
     controller.capture.side_effect = lambda: make_frame(color="red")
-    action = DesktopAction.from_dict(command(kind, **({"end": [0.5, 0.2]} if kind == "drag" else {})))
     with pytest.raises(DesktopUnavailable, match="changed on hover"):
-        controller.execute(make_frame(), action, threading.Event())
+        controller.execute(make_frame(), DesktopAction.from_dict(command()), InstantEvent())
     assert [call.args[0] for call in controller._mouse.call_args_list] == [5]
 
 
 def test_stop_during_hover_capture_never_presses_mouse():
     controller = fake_native_controller()
-    aborted = threading.Event()
+    aborted = InstantEvent()
 
     def capture():
         aborted.set()
         return make_frame()
 
     controller.capture.side_effect = capture
-    assert not controller.execute(make_frame(), DesktopAction.from_dict(command("double_click")), aborted)
+    assert not controller.execute(make_frame(), DesktopAction.from_dict(command()), aborted)
     assert [call.args[0] for call in controller._mouse.call_args_list] == [5]
-
-
-def test_stop_after_first_click_prevents_second_click():
-    controller = fake_native_controller()
-    aborted = threading.Event()
-
-    def mouse(event_type, *args):
-        if event_type == 2:
-            aborted.set()
-
-    controller._mouse.side_effect = mouse
-    action = DesktopAction.from_dict(command("double_click"))
-    assert not controller.execute(make_frame(), action, aborted)
-    assert [call.args[0] for call in controller._mouse.call_args_list] == [5, 1, 2]
 
 
 def test_stale_capture_is_not_clicked():
@@ -147,7 +127,7 @@ def test_stale_capture_is_not_clicked():
     frame = make_frame()
     frame.captured_at -= 5
     with pytest.raises(DesktopUnavailable, match="expired"):
-        controller.execute(frame, DesktopAction.from_dict(command()), threading.Event())
+        controller.execute(frame, DesktopAction.from_dict(command()), InstantEvent())
     controller._mouse.assert_not_called()
 
 
