@@ -115,10 +115,6 @@ def test_false_lethal_claim_is_corrected_and_blockers_stay_home_at_four_life(cap
     planner = ActionPlanner(backend=None)
     with caplog.at_level(logging.WARNING, logger="arenamcp.action_planner"):
         planner._check_attack_crackback(plan, state, state["decision_context"])
-    assert (
-        "lethal this turn" not in plan.overall_strategy.lower()
-        or "not lethal" in plan.overall_strategy.lower()
-    )
     assert "Board math: not lethal this turn" in plan.overall_strategy
     assert "Attack plan claims lethal this turn but the board math does not" in caplog.text
     declared = plan.actions[0]
