@@ -64,18 +64,6 @@ def _expand_codes(text: str) -> str:
     return PAIR_CODE.sub(expand, text)
 
 
-def plan_colors(plan: str, primer: Any = None) -> str:
-    """The color pair a deck plan names, or "" when it names none or only one.
-
-    "Izzet spells with Jace", "the Dimir Threshold Mill deck", "blue-red tempo"
-    and "UR spells" all give "UR"/"UB"; a splash is not a lane color and a
-    plan that is still open ("Izzet or Azorius", "staying open to Dimir") does
-    not commit to the alternatives. See ``arenamcp.draft_plan``.
-    """
-    main = plan_reading(plan, primer).main
-    return main if len(main) == 2 else ""
-
-
 def plan_reading(plan: str, primer: Any = None) -> PlanColors:
     """Main colors, splash and archetype a plan names (``main`` may be one color)."""
     return _plan_colors(plan, getattr(primer, "archetypes", None) or [])

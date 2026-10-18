@@ -20,7 +20,6 @@ from arenamcp.set_primer import (
     SetPrimerService,
     data_primer,
     mana_value,
-    merge_synthesis,
     synthesize,
 )
 
@@ -81,41 +80,6 @@ def test_mana_value_reads_arena_and_scryfall_costs():
     assert mana_value("") is None
 
 
-def test_model_synthesis_is_validated_against_the_set(primer):
-    merged = merge_synthesis(
-        primer,
-        {
-            "overview": "Tempo format.",
-            "speed": "fast",
-            "archetypes": [
-                {
-                    "colors": "UR",
-                    "name": "Spells",
-                    "plan": "Cast spells.",
-                    "tier": 1,
-                    "payoffs": ["Izzet Signpost", "Invented Card"],
-                    "enablers": ["Blue Common"],
-                },
-                {"colors": "WB", "name": "Drain", "plan": "Drain.", "payoffs": ["Filler 0"]},
-                {"colors": "BG", "name": "Grind", "plan": "Grind.", "payoffs": ["Filler 2"]},
-                {"colors": "XX", "name": "Bogus"},
-            ],
-            "synergy_notes": [
-                {"cards": ["Blue Common", "Izzet Signpost"], "why": "cheap spells"},
-                {"cards": ["Invented Card", "Blue Ace"], "why": "made up"},
-            ],
-            "pick_principles": ["Removal early"],
-            "traps": [{"card": "Shiny Trap", "why": "slow"}, {"card": "Nope", "why": "x"}],
-        },
-    )
-    izzet = merged.archetype("UR")
-    assert izzet["payoffs"] == ["Izzet Signpost"] and izzet["enablers"] == ["Blue Common"]
-    assert len(merged.synergy_notes) == 1 and merged.source == "model" and merged.speed == "fast"
-    assert [trap["card"] for trap in merged.traps] == ["Shiny Trap"]
-    with pytest.raises(ValueError):
-        merge_synthesis(primer, {"archetypes": [{"colors": "UR", "payoffs": []}]})
-
-
 class FakeBackend:
     def __init__(self, answers):
         self.answers = answers
@@ -135,7 +99,7 @@ def test_per_archetype_synthesis_merges_valid_pieces_and_keeps_data_for_the_rest
             "name": "Izzet Spells",
             "plan": "Cheap spells.",
             "tier": 1,
-            "payoffs": ["Izzet Signpost"],
+            "payoffs": ["Izzet Signpost", "Invented Card"],
             "enablers": ["Blue Common", "Red Common"],
             "synergy_notes": [{"cards": ["Blue Common", "Izzet Signpost"], "why": "spells"}],
         }
@@ -145,12 +109,15 @@ def test_per_archetype_synthesis_merges_valid_pieces_and_keeps_data_for_the_rest
             "overview": "Fast.",
             "speed": "fast",
             "pick_principles": ["Two drops"],
-            "traps": [{"card": "Shiny Trap", "why": "bad"}],
+            "traps": [{"card": "Shiny Trap", "why": "bad"}, {"card": "Nope", "why": "x"}],
         }
     )
     backend = FakeBackend({"Archetype Izzet (UR)": izzet, "Two-color win rates": fmt})
     result = synthesize(primer, backend, workers=1)
     assert result.archetype("UR")["plan"] == "Cheap spells."
+    # Names the model invented are dropped: cards and traps must exist in the set.
+    assert result.archetype("UR")["payoffs"] == ["Izzet Signpost"]
+    assert [trap["card"] for trap in result.traps] == ["Shiny Trap"]
     assert result.archetype("WB")["plan"] == ""  # failed piece keeps the data version
     assert result.overview == "Fast." and result.synergy_notes and result.source == "model"
 

@@ -237,19 +237,6 @@ def score_in(primer, grp_id, *reasons):
     return PickScore(grp_id=grp_id, name=primer.card(grp_id).name, score=0.0, reasons=list(reasons))
 
 
-def test_plan_colors_reads_guilds_archetypes_words_and_codes():
-    from arenamcp.draft_narration import plan_colors
-
-    assert plan_colors("Izzet spells built around Jace", PRIMER) == "UR"
-    assert plan_colors("Settle into the Dimir Control deck with mill", PRIMER) == "UB"
-    assert plan_colors("A blue-red tempo deck with cheap spells", PRIMER) == "UR"
-    assert plan_colors("red and green stompy", PRIMER) == "RG"
-    assert plan_colors("UB tempo with evasive threats", PRIMER) == "UB"
-    assert plan_colors("Aggressive tempo deck with cheap creatures", PRIMER) == ""
-    assert plan_colors("blue, black and red goodstuff", PRIMER) == ""
-    assert plan_colors("", PRIMER) == ""
-
-
 def test_model_plan_holds_the_lane_when_the_pool_estimate_flips():
     narrator = DraftNarrator()
     first = line(narrator, score(1), [score(1)], before="U", after="UR", reason="Izzet spells with Jace")
@@ -330,13 +317,6 @@ def test_driver_passes_the_models_plan_to_the_narrator(primer):
         == "spoken"
     )
     assert seen.get("model_plan") == "Izzet spells with Jace"
-
-
-def test_plan_colors_ignores_a_splash():
-    from arenamcp.draft_narration import plan_colors
-
-    assert plan_colors("Blue-red spells splashing black for Garruk", PRIMER) == "UR"
-    assert plan_colors("blue-red tempo with a black splash", PRIMER) == "UR"
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +426,18 @@ REAL_PLANS = [
         "",
     ),
     ("Open toward Dimir Threshold Mill, starting with a cheap self-milling threat.", "", ""),
+    # Guild names, archetype names, color words and codes; no pair named; three colors.
+    ("Izzet spells built around Jace", "UR", ""),
+    ("Settle into the Dimir Control deck with mill", "UB", ""),
+    ("A blue-red tempo deck with cheap spells", "UR", ""),
+    ("red and green stompy", "RG", ""),
+    ("UB tempo with evasive threats", "UB", ""),
+    ("Aggressive tempo deck with cheap creatures", "", ""),
+    ("blue, black and red goodstuff", "", ""),
+    ("", "", ""),
+    # A splash is not a lane color.
+    ("Blue-red spells splashing black for Garruk", "UR", "B"),
+    ("blue-red tempo with a black splash", "UR", "B"),
 ]
 
 

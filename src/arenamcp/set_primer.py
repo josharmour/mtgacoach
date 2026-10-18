@@ -509,17 +509,6 @@ def format_prompt(primer: SetPrimer, research: str = "") -> str:
     )
 
 
-def synthesis_prompt(primer: SetPrimer, max_oracle: int = 220) -> str:
-    """Whole-set table (kept for diagnostics and tests)."""
-    return "\n".join(
-        [
-            f"SET {primer.set_code}. Two-color win rates: {_pair_line(primer)}",
-            "",
-            *_card_rows(list(primer.cards.values()), max_oracle),
-        ]
-    )
-
-
 def _name_index(primer: SetPrimer) -> dict[str, str]:
     names = {card.name.lower(): card.name for card in primer.cards.values()}
     for card in primer.cards.values():
@@ -592,36 +581,6 @@ def _merge_format(primer: SetPrimer, payload: dict, names: dict[str, str]) -> No
     ]
     if traps:
         primer.traps = traps[:12]
-
-
-def merge_synthesis(primer: SetPrimer, payload: Any) -> SetPrimer:
-    """Merge a whole-set synthesis (archetypes + format fields) into the data primer."""
-    if not isinstance(payload, dict):
-        raise ValueError("Primer synthesis must be an object")
-    names = _name_index(primer)
-    merged = []
-    for entry in payload.get("archetypes") or []:
-        if not isinstance(entry, dict):
-            continue
-        colors = normalize_colors(entry.get("colors"))
-        if colors not in TWO_COLOR_PAIRS or any(a["colors"] == colors for a in merged):
-            continue
-        merged.append(_clean_archetype(entry, colors, names, primer))
-    if len(merged) < 3:
-        raise ValueError("Primer synthesis named too few valid archetypes")
-    by_colors = {a["colors"]: a for a in merged}
-    primer.archetypes = [by_colors.get(a["colors"], a) for a in primer.archetypes]
-    for entry in merged:
-        primer.synergy_notes += entry.pop("synergy_notes", [])
-    primer.synergy_notes += [
-        {"cards": _known(names, note.get("cards"), 4), "why": str(note.get("why") or "")[:300]}
-        for note in payload.get("synergy_notes") or []
-        if isinstance(note, dict) and len(_known(names, note.get("cards"), 4)) >= 2
-    ]
-    primer.synergy_notes = primer.synergy_notes[:40]
-    _merge_format(primer, payload, names)
-    primer.source = "model"
-    return primer
 
 
 def _call_labels(backend: Any) -> dict[str, Any]:
