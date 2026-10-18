@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 from arenamcp.desktop import theme
 from arenamcp.desktop.runtime import RuntimeState, detect_runtime_state
 from arenamcp.repair_engine import RepairEngine, RepairReport, set_license_key
+from arenamcp.subscription import open_subscribe_page
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class RepairTab(QWidget):
     restart_requested = Signal(bool, bool, bool)
     provisioning_changed = Signal(bool)
     guided_setup_finished = Signal(bool, str)
+    license_changed = Signal()  # a key was applied or (re)provisioned; the access badge re-checks
 
     _report_ready = Signal(object)  # RepairReport, marshaled to the UI thread
     _progress = Signal(str)
@@ -104,20 +106,48 @@ class RepairTab(QWidget):
         self._rows.setSpacing(6)
         root.addLayout(self._rows)
 
-        # License entry — hidden until the license check demands it.
+        # License entry — shown when the license check demands it, or on request (a trial user
+        # who just subscribed needs somewhere to paste the new key).
         self._license_box = QWidget()
-        lb = QHBoxLayout(self._license_box)
-        lb.setContentsMargins(0, 6, 0, 0)
-        lb.addWidget(QLabel("License key:"))
+        lv = QVBoxLayout(self._license_box)
+        lv.setContentsMargins(0, 6, 0, 0)
+        lv.setSpacing(6)
+        help_text = QLabel(
+            "Subscribe on Patreon to keep coaching after the 7-day free trial. Your subscriber key is "
+            "emailed to you; patrons can also sign in with Patreon on the subscribe page to see it. "
+            "Paste it below."
+        )
+        help_text.setWordWrap(True)
+        help_text.setProperty("role", "muted")
+        lv.addWidget(help_text)
+        links = QHBoxLayout()
+        subscribe_btn = QPushButton("Subscribe on Patreon…")
+        subscribe_btn.setProperty("variant", "primary")
+        subscribe_btn.clicked.connect(open_subscribe_page)
+        links.addWidget(subscribe_btn)
+        get_key_btn = QPushButton("Already a patron? Get my key…")
+        get_key_btn.clicked.connect(open_subscribe_page)
+        links.addWidget(get_key_btn)
+        links.addStretch(1)
+        lv.addLayout(links)
+        lb = QHBoxLayout()
+        lb.addWidget(QLabel("Subscriber key:"))
         self._license_edit = QLineEdit()
         self._license_edit.setEchoMode(QLineEdit.Password)
         self._license_edit.setPlaceholderText("sk-…")
+        self._license_edit.returnPressed.connect(self._apply_license)
         lb.addWidget(self._license_edit, 1)
         apply_btn = QPushButton("Apply")
         apply_btn.clicked.connect(self._apply_license)
         lb.addWidget(apply_btn)
+        lv.addLayout(lb)
         self._license_box.hide()
         root.addWidget(self._license_box)
+
+        self._enter_key_btn = QPushButton("Enter a subscriber key…")
+        self._enter_key_btn.setProperty("variant", "flat")
+        self._enter_key_btn.clicked.connect(self._show_license_box)
+        root.addWidget(self._enter_key_btn, alignment=Qt.AlignLeft)
 
         self._details_btn = QPushButton("Show details")
         self._details_btn.setProperty("variant", "flat")
@@ -195,7 +225,9 @@ class RepairTab(QWidget):
 
         self._summary.setText(report.summary())
         self._license_box.setVisible(needs_license)
+        self._enter_key_btn.setVisible(not needs_license)
         self._restart_btn.setVisible(fixed_anything)
+        self.license_changed.emit()
 
         ready = report.healthy
         self.provisioning_changed.emit(ready)
@@ -210,8 +242,14 @@ class RepairTab(QWidget):
         result = set_license_key(key)
         self._license_edit.clear()
         self._summary.setText(f"{result.label}: {result.detail}")
+        self.license_changed.emit()
         # Re-run so the checklist and provisioning signal reflect reality.
         self.run_checks()
+
+    def _show_license_box(self) -> None:
+        self._license_box.show()
+        self._enter_key_btn.hide()
+        self._license_edit.setFocus()
 
     def _render_rows(self, report: RepairReport) -> None:
         self._clear_rows()

@@ -21,6 +21,10 @@ API_BASE = "https://api.mtgacoach.com"
 # Website base URL (trial provisioning, signup)
 WEBSITE_BASE = "https://mtgacoach.com"
 
+# Subscription check + service messages are served by the website app. api.mtgacoach.com is the
+# LiteLLM gateway itself and 404s these routes, which left every status "unknown".
+SUBSCRIPTION_BASE = WEBSITE_BASE
+
 # Subscription page URL (opened in browser when user needs to subscribe)
 SUBSCRIBE_URL = "https://mtgacoach.com/subscribe"
 
@@ -45,13 +49,17 @@ class SubscriptionStatus:
         self,
         status: str = "unknown",
         message: str = "",
-        expires_at: str | None = None,
+        expires_at: str | float | None = None,
         messages: list[dict] | None = None,
+        kind: str = "",
+        name: str = "",
     ):
         self.status = status
         self.message = message
         self.expires_at = expires_at
         self.messages = messages or []
+        self.kind = kind  # "subscriber" | "trial" | "" (older servers)
+        self.name = name
 
     @property
     def is_valid(self) -> bool:
@@ -99,7 +107,7 @@ def check_subscription(license_key: str, force: bool = False) -> SubscriptionSta
         }
         headers.update(get_client_headers())
         req = urllib.request.Request(
-            f"{API_BASE}/v1/subscription/check",
+            f"{SUBSCRIPTION_BASE}/v1/subscription/check",
             data=payload,
             headers=headers,
             method="POST",
@@ -112,11 +120,17 @@ def check_subscription(license_key: str, force: bool = False) -> SubscriptionSta
             message=data.get("message", ""),
             expires_at=data.get("expires_at"),
             messages=data.get("messages", []),
+            kind=data.get("kind", ""),
+            name=data.get("name", ""),
         )
         _save_cache(license_key, result)
         return result
 
     except urllib.error.HTTPError as e:
+        try:
+            data = json.loads(e.read() or b"{}")
+        except Exception:
+            data = {}
         if e.code == 401:
             result = SubscriptionStatus(
                 status=SubscriptionStatus.INVALID,
@@ -125,7 +139,9 @@ def check_subscription(license_key: str, force: bool = False) -> SubscriptionSta
         elif e.code == 402:
             result = SubscriptionStatus(
                 status=SubscriptionStatus.EXPIRED,
-                message="Subscription expired. Renew at mtgacoach.com/subscribe",
+                message=data.get("message") or "Subscription expired. Renew at mtgacoach.com/subscribe",
+                expires_at=data.get("expires_at"),
+                kind=data.get("kind", ""),
             )
         else:
             result = SubscriptionStatus(
@@ -163,7 +179,7 @@ def get_service_messages(license_key: str) -> list[dict]:
         }
         headers.update(get_client_headers())
         req = urllib.request.Request(
-            f"{API_BASE}/v1/subscription/messages",
+            f"{SUBSCRIPTION_BASE}/v1/subscription/messages",
             headers=headers,
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -179,6 +195,74 @@ def open_subscribe_page() -> None:
     import webbrowser
 
     webbrowser.open(SUBSCRIBE_URL)
+
+
+def _to_epoch(value) -> float | None:
+    """expires_at arrives as epoch seconds (subscription check) or ISO8601 (trial provisioning)."""
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        from datetime import datetime, timezone
+
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()
+    except ValueError:
+        return None
+
+
+def _remaining(seconds: float) -> str:
+    days, rest = divmod(int(seconds), 86400)
+    hours, rest = divmod(rest, 3600)
+    if days:
+        return f"{days}d {hours}h left"
+    if hours:
+        return f"{hours}h {rest // 60}m left"
+    return f"{max(rest // 60, 1)}m left"
+
+
+def describe_access(
+    license_key: str,
+    status: SubscriptionStatus | None,
+    trial_expires_at=None,
+    now: float | None = None,
+) -> tuple[str, str, str, bool]:
+    """Badge for the user's access level: (text, tone, tooltip, needs_subscription).
+
+    tone is a theme tone name ("good", "warn", "bad", "muted"). Trial countdowns come from the
+    server's expires_at when known, else the expiry saved when the trial key was provisioned.
+    """
+    now = time.time() if now is None else now
+    if not license_key:
+        return "No key", "warn", "No license key yet — open Setup & Repair to start a free trial.", True
+    st = status.status if status else SubscriptionStatus.UNKNOWN
+    kind = status.kind if status else ""
+    is_trial = kind == "trial" or st == SubscriptionStatus.TRIAL or (not kind and bool(trial_expires_at))
+    expires = _to_epoch(status.expires_at if status and status.expires_at else None) or _to_epoch(trial_expires_at)
+
+    if is_trial:
+        if st in (SubscriptionStatus.EXPIRED, SubscriptionStatus.INVALID) or (expires and expires <= now):
+            return ("Trial ended — Subscribe", "bad",
+                    f"Your 7-day free trial has ended. Subscribe at {SUBSCRIBE_URL} and paste your key in Setup & Repair.",
+                    True)
+        if expires:
+            tone = "warn" if expires - now < 86400 else "good"
+            return (f"Trial · {_remaining(expires - now)}", tone,
+                    f"Free trial — ends {time.strftime('%b %d %H:%M', time.localtime(expires))}. "
+                    f"Click to subscribe on Patreon.", False)
+        return "Trial", "good", "Free trial. Click to subscribe on Patreon.", False
+    if st == SubscriptionStatus.ACTIVE:
+        who = f" — {status.name}" if status and status.name else ""
+        return "★ Subscriber", "good", f"mtgacoach subscriber{who}. Thank you!", False
+    if st == SubscriptionStatus.EXPIRED:
+        return "Subscription expired", "bad", status.message or f"Renew at {SUBSCRIBE_URL}", True
+    if st == SubscriptionStatus.INVALID:
+        return "Key invalid", "bad", "This license key isn't recognised. Fix it in Setup & Repair.", True
+    return "Status unknown", "muted", (status.message if status and status.message else
+                                       "Couldn't reach mtgacoach.com to check your subscription."), False
 
 
 def _load_cache(license_key: str, ignore_ttl: bool = False) -> SubscriptionStatus | None:
@@ -198,6 +282,8 @@ def _load_cache(license_key: str, ignore_ttl: bool = False) -> SubscriptionStatu
             status=data.get("status", SubscriptionStatus.UNKNOWN),
             message=data.get("message", ""),
             expires_at=data.get("expires_at"),
+            kind=data.get("kind", ""),
+            name=data.get("name", ""),
         )
     except Exception:
         return None
@@ -212,6 +298,8 @@ def _save_cache(license_key: str, result: SubscriptionStatus) -> None:
             "status": result.status,
             "message": result.message,
             "expires_at": result.expires_at,
+            "kind": result.kind,
+            "name": result.name,
             "checked_at": time.time(),
         }
         with open(_SUB_CACHE_FILE, "w") as f:

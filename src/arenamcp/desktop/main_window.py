@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from arenamcp.settings import get_settings
 
+from .access_badge import AccessBadge
 from .coach_session import CoachSession
 from .compact_coach import CompactCoachPanel
 from .decks_tab import DecksTab
@@ -86,6 +87,7 @@ class MainWindow(QMainWindow):
 
         self._build_central_widget()
         self._build_menus()
+        self._build_access_badge()
         self._apply_window_geometry()
         self._setup_hotkeys()
 
@@ -121,6 +123,13 @@ class MainWindow(QMainWindow):
         self.decks_tab = DecksTab(session=self._session)
         self._stack.addWidget(_build_page("Decks", self.decks_tab, self._show_coach_view))  # 3
         self.setCentralWidget(self._stack)
+
+    def _build_access_badge(self) -> None:
+        """Subscriber badge / trial countdown, pinned to the right of the status bar."""
+        self.access_badge = AccessBadge(self)
+        self.access_badge.setup_requested.connect(self._show_repair_view)
+        self.repair_tab.license_changed.connect(lambda: self.access_badge.refresh(force=True))
+        self.statusBar().addPermanentWidget(self.access_badge)
 
     def _build_menus(self) -> None:
         menu_bar = self.menuBar()
@@ -474,4 +483,5 @@ class MainWindow(QMainWindow):
 
         self._session.shutdown()
         self._hotkeys.unregister_all()
+        self.access_badge.shutdown()
         super().closeEvent(event)
