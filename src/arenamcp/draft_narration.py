@@ -315,6 +315,10 @@ class DraftNarrator:
             if rank == 1:
                 return _Reason(f"the best card here on 17Lands data, in our {splash} splash", "splash")
             return _Reason(f"a card for our {splash} splash", "splash")
+        hate = next((r for r in pick.reasons if r.startswith("hate-pick: ")), "")
+        if hate and (getattr(pick, "components", None) or {}).get("hate", 0.0) > 0:
+            # The ranking took it to deny it, not for our deck: say so.
+            return _Reason(f"a hate-pick that {hate.removeprefix('hate-pick: ')}", "hate")
         if fit == "off":
             # Never claim deck fit for a card outside our colors.
             if rank == 1:

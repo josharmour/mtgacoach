@@ -113,6 +113,9 @@ _PAYOFF_LINE = re.compile(
 _TEMPORARY_PUMP = re.compile(r"\bgets? \+\d+/\+\d+ until end of turn\b")
 _LASTING_REWARD = re.compile(r"\bcreate\b|\bdraw\b|\bdamage\b|\bcounters?\b|\breturn\b|\bcan attack\b")
 WEAK_PAYOFF = 0.6
+# A planeswalker payoff that only guards them (see ``card_tags``).
+GUARD_PAYOFF = 0.4
+_LOYALTY_ABILITY = re.compile(r"\[[+\-−]?(?:\d+|x)\]:")
 
 
 def family(mechanic: str) -> str:
@@ -142,6 +145,8 @@ class CardTags:
     # How much a payoff gives per trigger: 1.0, or WEAK_PAYOFF when its only
     # reward is a temporary pump (prowess, "+1/+1 until end of turn").
     payoff_strength: float = 1.0
+    # A planeswalker card (not a card that only makes or empowers a Jace token).
+    planeswalker: bool = False
 
     def engine_payoffs(self) -> set[str]:
         return {family(m) for m in self.payoffs}
@@ -215,6 +220,15 @@ def card_tags(card: SetCard) -> CardTags:
         line.startswith("prowess") or (_TEMPORARY_PUMP.search(line) and not _LASTING_REWARD.search(line))
         for line in payoff_lines
     )
+    strength = WEAK_PAYOFF if weak else 1.0
+    granted = [line for line in lines if line.startswith("planeswalkers you control have")]
+    if granted and not payoff_lines and not any(_LOYALTY_ABILITY.search(line) for line in granted):
+        # Granting planeswalkers a loyalty ability gives each one a new use; a
+        # granted static only guards them (2026-10-18 P3p7: Tomik, Orzhov
+        # Lawmage's "no more than one creature can attack this planeswalker"
+        # outranked the Heartwood Crafter that casts the pool's Emrakul). A
+        # guard adds no card, body or damage, so it counts below a pump.
+        strength = GUARD_PAYOFF
     return CardTags(
         grp_id=card.grp_id,
         name=card.name,
@@ -225,7 +239,8 @@ def card_tags(card: SetCard) -> CardTags:
         payoffs=frozenset(profile["payoffs"]),
         indirect=frozenset(profile.get("indirect") or ()),
         land=land,
-        payoff_strength=WEAK_PAYOFF if weak else 1.0,
+        payoff_strength=strength,
+        planeswalker="planeswalker" in front,
     )
 
 
@@ -282,8 +297,12 @@ class Playbook:
         *,
         roles: bool = True,
         key_lists: bool = True,
+        support: dict[str, float] | None = None,
     ) -> tuple[float, str]:
         """How much this archetype wants the card (0-1), and the reason in words.
+
+        ``support`` (engine -> 0-1) scales a payoff's fit by how well the pool
+        can feed that engine (``draft_deck_plan.payoff_support``).
 
         Rules text decides: an engine payoff or enabler, a card the pre-draft
         synthesis lists for the archetype, or (with ``roles``) a role every
@@ -308,7 +327,8 @@ class Playbook:
                 label = engine_label(engine)
                 factor = BROAD_MECHANICS.get(engine, (0, 1.0))[1]
                 if engine in payoffs:
-                    candidate = (FIT_ENGINE_PAYOFF * tags.payoff_strength, f"a payoff for {label}")
+                    share = (support or {}).get(engine, 1.0)
+                    candidate = (FIT_ENGINE_PAYOFF * tags.payoff_strength * share, f"a payoff for {label}")
                 elif engine in enables:
                     candidate = (FIT_ENGINE_ENABLER * factor, f"an enabler for {label}")
                 elif engine in indirect:

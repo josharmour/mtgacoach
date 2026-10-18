@@ -26,7 +26,9 @@ from arenamcp.draft_autopick import (
     card_value,
     color_openness,
     color_signals,
+    hate_threat,
     note_openness,
+    pool_lane,
     rank_pack,
 )
 from arenamcp.draftstate import DraftState, _handle_event_start, extract_set_code
@@ -283,6 +285,68 @@ def test_the_ranker_agrees_with_the_pro(key, name):
     assert position(key, name) == 0
 
 
+def test_the_pro_hate_picks_jace_over_a_replaceable_in_lane_common():
+    # P3p3, 32 picks in: a full Selesnya creature deck, and the packs still to come
+    # offer more commons like Keeper of the Quiet Hour and Arcane Amphisbaena. Jace, a
+    # blue rare whose static ability takes 5 power off every attacker, is the card
+    # that hurts this deck most in a neighbour's hands.
+    picks = ranked("P3p3")
+    names = [pick.name for pick in picks]
+    assert fx.NAMES[fx.PICKS["P3p3"]] == "Jace, Reality Sculptor"
+    assert names[0] == "Jace, Reality Sculptor"
+    assert names.index("Jace, Reality Sculptor") < names.index("Arcane Amphisbaena")
+    jace = picks[0]
+    # Denial is its own component; the card's own deck fit still says off lane.
+    assert jace.components["hate"] > 0 and jace.components["lane"] < 0
+    assert jace.reasons[1].startswith("hate-pick: denies it to the blue drafter")
+    assert "blanks our attackers" in jace.reasons[1]
+
+
+def test_no_hate_pick_while_our_deck_still_has_open_slots():
+    # Early on every playable fills a slot: our own picks decide. In this draft the
+    # only pick denial wins is P3p3.
+    hated = [key for key in fx.ORDER if any(pick.components.get("hate", 0) > 0 for pick in ranked(key))]
+    assert hated == ["P3p3"]
+
+
+def test_the_hate_pick_is_spoken_as_one():
+    from arenamcp.draft_narration import DraftNarrator
+
+    picks = ranked("P3p3")
+    pool = fx.pool_before("P3p3")
+    lane = pool_lane(pool, PRIMER, fx.COSTS)
+    text = DraftNarrator().pick_line(
+        names=["Jace, Reality Sculptor"],
+        chosen=[picks[0]],
+        ranking=picks,
+        pool=pool + [picks[0].grp_id],
+        lane_before=lane,
+        lane_after=lane,
+        primer=PRIMER,
+        pack_number=3,
+        pick_number=3,
+        pack_size=13,
+        mana_costs=fx.COSTS,
+    )
+    assert text.startswith(
+        "Taking Jace, Reality Sculptor: a hate-pick that denies it to the blue drafter next to us"
+    ), text
+
+
+def test_a_common_is_worth_less_denied_than_a_rare_and_removal_more_against_creatures():
+    from types import SimpleNamespace
+
+    def threat(rarity, oracle, share=0.8):
+        card = SimpleNamespace(name="X", colors="B", rarity=rarity, oracle=oracle, types="Instant")
+        return hate_threat(card, 1.0, -1.0, creature_share=share, lifegain=False, signals={"B": 0.0})[0]
+
+    plain = "Draw two cards."
+    kill = "Destroy target creature."
+    assert threat("C", plain) == pytest.approx(threat("R", plain) / 4)
+    assert threat("R", kill) > threat("R", plain)
+    assert threat("R", kill, share=0.2) < threat("R", kill, share=0.8)
+
+
 @pytest.mark.parametrize(
     "key, name",
     [
@@ -330,20 +394,67 @@ def test_life_gained_this_turn_or_game_is_a_lifegain_payoff():
     assert "lifegain" in profile("Dina, Flesh Sower")["enables"]
 
 
-@pytest.mark.xfail(
-    strict=True, reason="planeswalker-payoff credit outweighs the lifegain engine the pool is built on"
-)
 def test_the_lifegain_payoff_beats_a_planeswalker_payoff_for_this_pool():
     # The pro took Flourishing Forces over Way of the Healer (60.1% GIH, earned in Jace
     # decks). The pool does make Jace tokens (Way of the Wildspeaker, Academic Ascent,
-    # Campus Crier), but its engine is lifegain: Dina, Confidant, Germinate Recruits.
+    # Campus Crier), but those field one Jace between them, beside one Garruk; its
+    # engine is lifegain: Dina, Confidant, Germinate Recruits.
     assert position("P3p1", "Flourishing Forces") < position("P3p1", "Way of the Healer")
 
 
-@pytest.mark.xfail(
-    strict=True, reason="Heartwood Crafter's mana casting Emrakul from exile is not a known link"
-)
+# The same pro's second draft that day (pick order lost to a log rotation): Azorius
+# around real planeswalkers (Ajani Resolute, Chandra, Chill of Compliance) plus the
+# empower cards, 5-1. Its pool, as 17lands and Arena list it.
+SECOND_DRAFT_POOL = [
+    106226, 106227, 106229, 106231, 106231, 106233, 106234, 106237, 106241, 106241, 106242,
+    106244, 106253, 106262, 106262, 106267, 106272, 106303, 106327, 106332, 106344, 106350,
+    106358, 106367, 106379, 106384, 106389, 106405, 106418, 106418, 106429, 106439, 106440,
+    106443, 106448, 106457, 106460, 106465, 106467, 106471, 106476, 106502, 106517, 106524,
+    106525,
+]
+
+
+def _walker_support(pool, colors, engine):
+    from dataclasses import replace
+
+    from arenamcp.draft_deck_plan import Hypothesis, _ledger, future_supply, payoff_support
+    from arenamcp.draft_playbook import playbook_for
+
+    book = playbook_for(PRIMER)
+    plan = replace(book.archetype(colors), engine=engine)
+    hypothesis = Hypothesis(plan, 1.0, 0.0, _ledger(book, pool, colors, fx.COSTS))
+    healer = book.tag(fx.ID["Way of the Healer"])
+    return payoff_support(healer, hypothesis, future_supply(book, 3, 1)).get("planeswalker")
+
+
+def test_a_planeswalker_payoff_keeps_full_credit_in_a_walker_rich_pool():
+    # The fix scales planeswalker payoffs by the planeswalkers a pool fields; it does
+    # not call them weak. Two planeswalker cards and a Jace token back Way of the Healer
+    # fully; the first draft's one Garruk and Jace token, already serving Way of the
+    # Wildspeaker, back it about half.
+    rich = _walker_support(SECOND_DRAFT_POOL, "WU", ("surveil", "planeswalker"))
+    thin = _walker_support(fx.pool_before("P3p1"), "WG", ("lifegain", "planeswalker"))
+    assert rich == 1.0
+    assert thin < 0.6
+
+
 def test_heartwood_crafter_beats_tomik_for_the_ramp_pool():
     # Crafter's mana "can't be spent to cast spells from your hand", but Emrakul is cast
-    # from exile through its own {3} ability; Tomik's credit is a planeswalker payoff.
+    # from exile through its own {3} ability, and prepared spells and flashback are not
+    # cast from the hand either. Tomik's credit was a planeswalker payoff that only
+    # guards the pool's one Garruk and one Jace token.
     assert position("P3p7", "Heartwood Crafter") < position("P3p7", "Tomik, Orzhov Lawmage")
+    crafter = next(pick for pick in ranked("P3p7") if pick.name == "Heartwood Crafter")
+    assert "Emrakul, the Exigent Doom" in crafter.partners
+
+
+def test_restricted_mana_links_to_spells_cast_from_outside_the_hand():
+    from arenamcp.limited_rules import rules_profile
+
+    def profile(name):
+        card = PRIMER.by_name()[name.lower()]
+        return rules_profile({"type_line": card.types, "oracle_text": card.oracle})
+
+    assert "off_hand" in profile("Heartwood Crafter")["enables"]
+    for name in ("Emrakul, the Exigent Doom", "Generous Revival", "Blossom-Blessed Angel"):
+        assert "off_hand" in profile(name)["payoffs"], name

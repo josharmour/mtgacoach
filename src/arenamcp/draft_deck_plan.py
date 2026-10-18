@@ -62,6 +62,11 @@ PAYOFF_GAIN = 0.5
 ENABLER_TAKE_RATE = 0.35
 PAYOFF_TAKE_RATE = 0.25
 PAYOFF_FULL_ENABLERS = 8.0
+# A planeswalker activates one loyalty ability a turn, so payoffs that grant
+# planeswalkers abilities share them: each wants this many of its own.
+WALKERS_PER_PAYOFF = 2.0
+# Jace token makers together field this many planeswalkers (``engine_enablers``).
+TOKEN_WALKERS = 1.0
 PAYOFF_SATURATION = 6
 ENABLER_GAIN = 0.4
 EDGE_GAIN = 0.6
@@ -95,6 +100,9 @@ class Ledger:
     finishers: int = 0
     enablers: dict[str, float] = field(default_factory=dict)
     payoffs: dict[str, int] = field(default_factory=dict)
+    # Planeswalker cards, and cards that only make or empower a Jace token.
+    walkers: int = 0
+    walker_makers: int = 0
 
     def as_prompt(self, plan: ArchetypePlan) -> dict[str, Any]:
         return {
@@ -188,6 +196,10 @@ def _ledger(book: Playbook, pool: list[int], colors: str, mana_costs: dict[int, 
             ledger.payoffs[engine] = ledger.payoffs.get(engine, 0) + 1
         for engine in tags.engine_enables():
             ledger.enablers[engine] = ledger.enablers.get(engine, 0.0) + 1.0
+        if tags.planeswalker:
+            ledger.walkers += 1
+        elif "planeswalker" in tags.engine_enables():
+            ledger.walker_makers += 1
         for engine in tags.engine_indirect():
             ledger.enablers[engine] = ledger.enablers.get(engine, 0.0) + EDGE_INDIRECT
     return ledger
@@ -392,6 +404,7 @@ def engine_gain(
         if engine in payoffs:
             # A payoff is worth the triggers already drafted plus those the
             # remaining packs will realistically give us.
+            have_enablers = engine_enablers(tags, ledger, engine)
             coming = ENABLER_TAKE_RATE * _engine_supply(supply, hypothesis.plan, engine, "enables")
             value = PAYOFF_GAIN * min(1.0, (have_enablers + coming) / PAYOFF_FULL_ENABLERS)
             value *= tags.payoff_strength
@@ -425,8 +438,51 @@ def engine_gain(
     return round(best, 4), why
 
 
+def engine_enablers(tags: CardTags, ledger: Ledger, engine: str) -> float:
+    """The pool's enablers for this payoff's engine.
+
+    "Empower Jace" creates a Jace token only when we have none and otherwise
+    adds loyalty, so all the token makers together field one planeswalker
+    (TOKEN_WALKERS): a payoff for planeswalkers we control counts real
+    planeswalker cards (2026-10-18 pro draft: Way of the Healer over the
+    pool's lifegain engine on four empower cards and one Garruk). A
+    loyalty-counter payoff gains from every empower, so it counts them all.
+    A payoff that empowers Jace itself fields the token too.
+    """
+    if engine != "planeswalker" or "loyalty" in tags.payoffs:
+        return ledger.enablers.get(engine, 0.0)
+    makers = ledger.walker_makers + (not tags.planeswalker and engine in tags.engine_enables())
+    return ledger.walkers + tags.planeswalker + min(TOKEN_WALKERS, makers)
+
+
+def payoff_support(tags: CardTags, hypothesis: Hypothesis, supply: FutureSupply | None) -> dict[str, float]:
+    """engine -> 0-1: how well the pool and the packs to come feed this card's payoffs.
+
+    Only planeswalker payoffs are scaled: "planeswalkers you control have ..."
+    pays off only the planeswalkers we field (``engine_enablers``, plus the
+    planeswalkers the remaining packs will realistically give), and payoffs
+    already held share them (WALKERS_PER_PAYOFF each). A walker-rich pool
+    (2026-10-18, the pro's second draft: Ajani Resolute and Chandra beside
+    the empower cards) backs them in full; four empower cards and one Garruk
+    back the first such payoff, not a second. Other engines' triggers feed every
+    payoff at once, and their payoff value already follows the enablers
+    (``engine_gain``).
+    """
+    if "planeswalker" not in hypothesis.plan.engine or "planeswalker" not in tags.engine_payoffs():
+        return {}
+    if "loyalty" in tags.payoffs:
+        return {}  # every empower triggers it
+    ledger = hypothesis.ledger
+    have = engine_enablers(tags, ledger, "planeswalker")
+    coming = ENABLER_TAKE_RATE * _engine_supply(supply, hypothesis.plan, "planeswalker", "walkers")
+    if have - ledger.walkers - tags.planeswalker < TOKEN_WALKERS:
+        coming += TOKEN_WALKERS  # empower cards are common: the token will come
+    held = ledger.payoffs.get("planeswalker", 0)
+    return {"planeswalker": min(1.0, (have + coming) / (WALKERS_PER_PAYOFF * (held + 1)))}
+
+
 def _engine_supply(supply: FutureSupply | None, plan: ArchetypePlan, engine: str, side: str) -> float:
-    """Future looks offering an enabler (side="enables") or payoff for this engine in these colors.
+    """Future looks offering an enabler (side="enables"), payoff or planeswalker card ("walkers") in these colors.
 
     Without a supply model: a couple of enablers, no payoffs (the old assumption).
     """
@@ -440,7 +496,11 @@ def _engine_supply(supply: FutureSupply | None, plan: ArchetypePlan, engine: str
             for grp_id, tags in supply.book.tags.items()
             if not tags.land
             and (not tags.colors or set(tags.colors) <= set(plan.colors))
-            and engine in (tags.engine_enables() if side == "enables" else tags.engine_payoffs())
+            and (
+                tags.planeswalker
+                if side == "walkers"
+                else engine in (tags.engine_enables() if side == "enables" else tags.engine_payoffs())
+            )
         ]
         cache[key] = supply.expected(cards)
     return cache[key]
@@ -459,12 +519,24 @@ def pool_edges(
     if card is None:
         return 0.0, []
     weight_total = 0.0
+    # Jace token makers feeding this card's planeswalker payoff field one Jace
+    # between them (``engine_enablers``): their links count as one. A land that
+    # enters untapped beside a planeswalker only asks that one is out when it
+    # is played, which every token maker makes likelier, so it keeps them all.
+    own = book.tag(grp_id) if book is not None else None
+    walker_payoff = (
+        own is not None
+        and not own.land
+        and "planeswalker" in own.engine_payoffs()
+        and "loyalty" not in own.payoffs
+    )
+    token_link = 0.0
     named: list[tuple[float, str]] = []
     for partner_id in dict.fromkeys(partners):
         partner = _card_dict(primer, partner_id)
         if partner is None or partner_id == grp_id:
             continue
-        best = 0.0
+        best, via_token = 0.0, False
         for edge in synergy_evidence(card, partner):
             strength = BROAD_MECHANICS.get(family(edge["mechanic"]), (0, 1.0))[1]
             if edge.get("indirect"):
@@ -472,11 +544,23 @@ def pool_edges(
             payoff = book.tag(edge["payoff_id"]) if book is not None else None
             if payoff is not None:
                 strength *= payoff.payoff_strength
-            best = max(best, strength)
+            if strength > best:
+                source = book.tag(edge["source_id"]) if book is not None else None
+                via_token = (
+                    walker_payoff
+                    and edge["payoff_id"] == grp_id
+                    and family(edge["mechanic"]) == "planeswalker"
+                    and source is not None
+                    and not source.planeswalker
+                )
+                best = strength
         if best > 0:
-            copies = partners.count(partner_id)
-            weight_total += best * copies
+            if via_token:
+                token_link = max(token_link, best)
+            else:
+                weight_total += best * partners.count(partner_id)
             named.append((best, partner["name"]))
+    weight_total += token_link
     value = EDGE_GAIN * (1.0 - math.exp(-weight_total / EDGE_SCALE))
     named.sort(key=lambda row: -row[0])
     return round(value, 4), [name for _strength, name in named]
