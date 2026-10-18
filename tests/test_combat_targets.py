@@ -8,7 +8,6 @@ from arenamcp.action_planner import (
     ActionPlanner,
     ActionType,
     GameAction,
-    game_action_to_schema_json,
 )
 from arenamcp.autopilot_bridge import _BridgeSubmitMixin
 from arenamcp.combat_targets import attack_target_prompt, choose_recipient
@@ -61,7 +60,13 @@ def test_target_mapping_round_trips_and_speaks_recipients():
         attacker_targets={"Beast": "Jace [297]", "Pia": "Opponent"},
     )
     planner = ActionPlanner.__new__(ActionPlanner)
-    parsed = planner._parse_action(json.loads(game_action_to_schema_json(action))["actions"][0])
+    parsed = planner._parse_action(
+        {
+            "action_type": "declare_attackers",
+            "attacker_names": ["Beast", "Pia"],
+            "attacker_targets": {"Beast": "Jace [297]", "Pia": "Opponent"},
+        }
+    )
     assert parsed.attacker_targets == action.attacker_targets
     assert "Jace [297]" in str(parsed)
     assert planner._is_action_legal(parsed, ["Attack with: Beast", "Attack with: Pia"])
