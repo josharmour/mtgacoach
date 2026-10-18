@@ -154,12 +154,6 @@ class PlanLedger:
         del self._entries[: -self._limit]
         self._turn = turn
 
-    def note_decisions(self, turn: int, lines: list[str]) -> None:
-        """Refresh the decision lines of an open or closed turn (used when the feed is late)."""
-        for entry in self._entries:
-            if entry.turn == turn:
-                entry.did = list(lines)
-
     def lessons(self) -> list[str]:
         """Deterministic lessons from the closed turns: stalls, missed casts, big life swings."""
         closed = [e for e in self._entries if e.end]

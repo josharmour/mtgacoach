@@ -1765,10 +1765,6 @@ class GamePlanManager:
         """Where the ledger reads one turn's decisions (ActionPlanner.decisions_for_turn)."""
         self._turn_decisions_source = source
 
-    def ledger_block(self) -> str:
-        """The match ledger as rendered for the reform prompt ("" before the first turn)."""
-        return self._ledger.prompt_block()
-
     def ledger_payload(self) -> dict[str, Any]:
         """The ledger for bug reports: the rendered block plus per-turn entries."""
         return {

@@ -511,3 +511,119 @@ def test_a_new_opposing_engine_reforms_the_same_turn():
     state["battlefield"] = [card for card in state["battlefield"] if card["instance_id"] != 1]
     mgr.maybe_reform(state)
     assert be.calls == 2
+
+
+# --- reform scheduling: yielding to decisions, plan status, effort ---
+
+
+def test_a_decision_call_makes_an_inflight_reform_yield_and_resume_later():
+    import threading
+
+    mgr = GamePlanManager(backend=None)
+    mgr._plan = GamePlan(win_conditions=["x"], path="y", turn_formed=3)
+    mgr._last_sig = (4,)
+    mgr._last_reform_turn = 4
+    mgr._seed = mgr._last_seed = None
+    cancel = threading.Event()
+    mgr._inflight = True
+    mgr._inflight_cancel = cancel
+    mgr._inflight_lane = None
+    mgr.yield_for_decision()
+    assert cancel.is_set() and mgr._inflight is False
+    assert mgr._should_reform((5,), our_turn=False, key=mgr._last_key) == "resumed after a decision"
+    mgr.yield_for_decision()  # nothing in flight: a no-op
+    assert "resumed after a decision" in GamePlanManager._ROUTINE_REASONS
+
+
+def test_a_reform_that_has_run_a_while_does_not_yield():
+    import threading
+    import time
+
+    mgr = GamePlanManager(backend=None)
+    mgr._plan = GamePlan(win_conditions=["x"], path="y", turn_formed=3)  # the first plan never yields
+    cancel = threading.Event()
+    mgr._inflight = True
+    mgr._inflight_cancel = cancel
+    mgr._inflight_lane = None
+    mgr._inflight_started_at = time.monotonic() - 10.0
+    mgr.yield_for_decision()
+    assert not cancel.is_set() and mgr._inflight is True
+    mgr._inflight_started_at = time.monotonic()
+    mgr.yield_for_decision()
+    assert cancel.is_set() and mgr._inflight is False
+
+
+def test_plan_status_reports_none_forming_and_ready_and_the_first_plan_never_yields(caplog):
+    import logging
+    import threading
+    import time
+
+    mgr = GamePlanManager(backend=None)
+    board = {"turn": {"turn_number": 5}}
+    with caplog.at_level(logging.WARNING, logger="arenamcp.game_plan"):
+        status = mgr.plan_status(board)
+    assert status["state"] == "none" and status["attempts"] == 0
+    assert any(m.startswith("No game plan on turn 5") for m in caplog.messages)
+    # A reform in flight with no plan: "forming", and a decision call does not cancel it.
+    cancel = threading.Event()
+    mgr._inflight = True
+    mgr._inflight_cancel = cancel
+    mgr._inflight_lane = None
+    mgr._inflight_plan_turn = 6
+    mgr._inflight_started_at = time.monotonic() - 1.0
+    mgr.yield_for_decision()
+    assert not cancel.is_set()
+    status = mgr.plan_status(board)
+    assert status["state"] == "forming" and status["inflight_for_turn"] == 6
+    # With a plan in hand, a fresh reform yields and the status says so.
+    mgr._plan = GamePlan(win_conditions=["x"], path="y", turn_formed=3)
+    mgr.yield_for_decision()
+    assert cancel.is_set()
+    status = mgr.plan_status({"turn": {"turn_number": 8}})
+    assert status["state"] == "ready" and status["age_turns"] == 5 and status["cancels"] == 1
+    assert status["last_outcome"] == "yielded to a decision"
+    assert mgr.ui_payload({"turn": {"turn_number": 8}})["plan_status"]["state"] == "ready"
+
+
+def test_the_first_plan_is_not_superseded_when_its_turn_passes():
+    import threading
+
+    mgr = GamePlanManager(backend=None)
+    cancel = threading.Event()
+    mgr._inflight = True
+    mgr._inflight_cancel = cancel
+    mgr._inflight_lane = None
+    mgr._inflight_plan_turn = 20
+    mgr._supersede_stale_inflight_locked({"turn": {"turn_number": 21}})
+    assert not cancel.is_set() and mgr._inflight is True
+    mgr._plan = GamePlan(win_conditions=["x"], path="y", turn_formed=18)
+    mgr._supersede_stale_inflight_locked({"turn": {"turn_number": 21}})
+    assert cancel.is_set() and mgr._plan_outcome == "superseded by a newer turn"
+
+
+def test_the_first_plan_runs_at_low_effort_and_later_ones_at_high():
+    calls = []
+
+    class Backend:
+        def complete(self, system, user, max_tokens, **kwargs):
+            calls.append(kwargs.get("reasoning_effort"))
+            return '{"win_conditions": ["x"], "path": "y", "role": "aggressor", "turns": []}'
+
+    mgr = GamePlanManager(Backend())
+    state = {
+        "match_id": "m1",
+        "turn": {"turn_number": 3, "active_player": 1},
+        "local_seat_id": 1,
+        "players": [{"seat_id": 1, "life_total": 20, "is_local": True}, {"seat_id": 2, "life_total": 20}],
+        "battlefield": [],
+        "hand": [],
+        "graveyard": [],
+        "stack": [],
+    }
+    assert mgr._reform(state, 3) is not None
+    assert calls == ["low"]
+    mgr._plan = GamePlan(win_conditions=["x"], path="y", turn_formed=3, effort="low")
+    assert mgr.plan_status(state)["effort"] == "low"
+    deeper = mgr._reform(state, 4)
+    assert deeper is not None and deeper.effort == "high"
+    assert calls == ["low", "high"]
