@@ -163,6 +163,7 @@ class CombatOutcome:
     damage_through: int = 0
     attacker_died: bool = False
     blockers_died: list[dict] = field(default_factory=list)
+    life_gained: int = 0  # a lifelink attacker's damage dealt (to blockers and through)
 
 
 def _damage_order(power: int, blockers: list[dict], deathtouch: bool) -> list[dict]:
@@ -216,83 +217,94 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
     atk_trample = _has(attacker, "trample")
     atk_fs = _has(attacker, "first strike") or _has(attacker, "double strike")
     atk_ds = _has(attacker, "double strike")
-    atk_lifelink = _has(attacker, "lifelink")  # noqa: F841 (for future)
+    atk_lifelink = _has(attacker, "lifelink")
     atk_indestructible = _has(attacker, "indestructible")
 
     out = CombatOutcome()
 
     if not assigned:
         out.damage_through = atk_p * (2 if atk_ds else 1)
+        out.life_gained = out.damage_through if atk_lifelink else 0
         return out
 
     assigned = _damage_order(atk_p, assigned, atk_dth)
 
-    # Pre-fight state — attacker takes damage from blockers unless
-    # one-sided first strike kills attacker before they fight.
-    attacker_alive = True
+    def first_striker(card: dict) -> bool:
+        return _has(card, "first strike") or _has(card, "double strike")
 
-    # --- First-strike step (attacker only, if applicable) ---
-    if atk_fs and atk_p > 0:
+    fs_blockers = [b for b in assigned if first_striker(b)]
+    if not atk_fs and not fs_blockers:
+        # One simultaneous damage step: the common case, kept cheap for the line search.
         dmg_left = atk_p
-        for blk in list(assigned):
-            blk_p, blk_t = _pt(blk)
-            blk_indestructible = _has(blk, "indestructible")
-            lethal = 1 if atk_dth else blk_t
+        for blk in assigned:
+            lethal = 1 if atk_dth else _pt(blk)[1]
             take = min(dmg_left, lethal)
-            if take >= lethal and not blk_indestructible:
+            if take >= lethal and not _has(blk, "indestructible"):
                 out.blockers_died.append(blk)
             dmg_left -= take
             if dmg_left <= 0:
                 break
-        if atk_trample:
-            out.damage_through += max(0, dmg_left)
-
-    # --- Regular damage step ---
-    # Blockers that died in FS can't deal damage back.
-    alive_after_fs = [b for b in assigned if b not in out.blockers_died]
-    blocker_has_fs = any(_has(b, "first strike") or _has(b, "double strike") for b in alive_after_fs)
-
-    # If blockers with first strike would kill a non-FS attacker before
-    # it strikes, attacker dies and never deals its regular damage.
-    if blocker_has_fs and not atk_fs:
-        fs_blockers = [b for b in alive_after_fs if _has(b, "first strike") or _has(b, "double strike")]
-        fs_power = sum(_pt(b)[0] for b in fs_blockers)
-        fs_dth = any(_has(b, "deathtouch") for b in fs_blockers)
-        if ((fs_dth and fs_power > 0) or fs_power >= atk_t) and not atk_indestructible:
+        if atk_trample and dmg_left > 0:
+            out.damage_through = dmg_left
+        # All of its damage is dealt: excess without trample still goes on the blockers.
+        out.life_gained = atk_p if atk_lifelink else 0
+        back = sum(_pt(b)[0] for b in assigned)
+        if not atk_indestructible and (
+            back >= atk_t or (back > 0 and any(_has(b, "deathtouch") and _pt(b)[0] > 0 for b in assigned))
+        ):
             out.attacker_died = True
-            attacker_alive = False
+        return out
 
-    # Attacker deals damage (if still alive and this is the regular or DS step).
-    if attacker_alive and atk_p > 0 and (atk_ds or not atk_fs):
+    # Damage marked on each blocker and on the attacker carries from the
+    # first-strike step into the regular step (a double striker's first hit
+    # counts toward lethal on its second).
+    marked: dict[int, int] = {id(b): 0 for b in assigned}
+    taken = 0
+    returning_deathtouch = False
+
+    def attacker_strikes() -> None:
+        # A creature whose blockers are all gone deals no damage without trample (702.19e).
+        if atk_lifelink and (atk_trample or any(b not in out.blockers_died for b in assigned)):
+            out.life_gained += atk_p
         dmg_left = atk_p
-        for blk in list(alive_after_fs):
+        for blk in assigned:
             if blk in out.blockers_died:
                 continue
-            blk_p, blk_t = _pt(blk)
-            blk_indestructible = _has(blk, "indestructible")
-            lethal = 1 if atk_dth else blk_t
+            blk_t = _pt(blk)[1]
+            lethal = (1 if marked[id(blk)] == 0 else 0) if atk_dth else max(0, blk_t - marked[id(blk)])
             take = min(dmg_left, lethal)
-            if take >= lethal and not blk_indestructible:
+            marked[id(blk)] += take
+            if take >= lethal and not _has(blk, "indestructible"):
                 out.blockers_died.append(blk)
             dmg_left -= take
             if dmg_left <= 0:
                 break
-        if atk_trample:
-            out.damage_through += max(0, dmg_left)
+        if atk_trample and dmg_left > 0:
+            out.damage_through += dmg_left
 
-    # Blockers deal damage back to attacker. In normal combat this is
-    # simultaneous with the attacker's damage — even blockers that die
-    # THIS step still deal their damage. Only blockers that died in the
-    # FS step are excluded.
-    if attacker_alive and not atk_indestructible and not out.attacker_died:
-        # Exclude FS-step kills but INCLUDE regular-step kills (simultaneous).
-        [b for b in out.blockers_died if b in alive_after_fs]
-        striking_back = alive_after_fs  # all blockers alive after FS
-        ret_power = sum(_pt(b)[0] for b in striking_back)
-        ret_dth = any(_has(b, "deathtouch") for b in striking_back)
-        if (ret_dth and ret_power > 0) or ret_power >= atk_t:
+    def attacker_dead() -> bool:
+        return not atk_indestructible and ((returning_deathtouch and taken > 0) or taken >= atk_t)
+
+    # --- First-strike step: first and double strikers on both sides, simultaneously ---
+    if atk_fs or fs_blockers:
+        if atk_fs and atk_p > 0:
+            attacker_strikes()
+        taken += sum(_pt(b)[0] for b in fs_blockers)
+        returning_deathtouch = any(_has(b, "deathtouch") and _pt(b)[0] > 0 for b in fs_blockers)
+        if attacker_dead():
             out.attacker_died = True
+            return out
 
+    # --- Regular step: what has no first strike, and double strikers again ---
+    alive = [b for b in assigned if b not in out.blockers_died]
+    if atk_p > 0 and (atk_ds or not atk_fs):
+        attacker_strikes()
+    regular = [b for b in alive if not first_striker(b) or _has(b, "double strike")]
+    taken += sum(_pt(b)[0] for b in regular)
+    returning_deathtouch = returning_deathtouch or any(
+        _has(b, "deathtouch") and _pt(b)[0] > 0 for b in regular
+    )
+    out.attacker_died = attacker_dead()
     return out
 
 
@@ -311,6 +323,7 @@ class BlockPlan:
     evaluated: int = 0  # block assignments scored (search cost)
     blockers_lost_ids: frozenset[int] = frozenset()
     recovery_credit: float = 0.0
+    attacker_life_gained: int = 0  # the attacking side's lifelink gain under these blocks
 
 
 def _can_block_this_attacker(attacker: dict, blocker: dict, allowed_ids: set[int] | None) -> bool:
@@ -475,6 +488,7 @@ def _search_blocks(
         assigned = assigned_to_atk.get(a_idx, [])
         outcome = _resolve_attacker(atk, assigned)
         plan.damage_through += outcome.damage_through
+        plan.attacker_life_gained += outcome.life_gained
         if assigned:
             if outcome.attacker_died:
                 plan.attackers_killed_material += _material(atk)
@@ -649,6 +663,7 @@ class AttackPlan:
     blockers_killed_material: int = 0
     explanation: str = ""
     score: float = 0.0
+    life_gained: int = 0  # our lifelink attackers' gain under their best blocks
 
 
 def optimal_attacks(
@@ -772,11 +787,14 @@ def evaluate_attack(
     # "damage_through" is good; we invert by using their life.
     opp_block = _search_blocks(attacking, opponent_blockers, opponent_life)
     if opp_block is None:
-        damage_through = sum(_pt(a)[0] for a in attacking)
+        unblocked = [_resolve_attacker(a, []) for a in attacking]
+        damage_through = sum(o.damage_through for o in unblocked)
+        life_gained = sum(o.life_gained for o in unblocked)
         atk_lost_mat = 0
         blk_killed_mat = 0
     else:
         damage_through = opp_block.damage_through
+        life_gained = opp_block.attacker_life_gained
         # optimal_blocks was called with OUR creatures as `attackers`
         # and THEIRS as `blockers`, so the roles carry over directly:
         # attackers killed = our attackers lost; blockers lost = their
@@ -800,6 +818,7 @@ def evaluate_attack(
         worst_case_crackback=crackback,
         attackers_lost_material=atk_lost_mat,
         blockers_killed_material=blk_killed_mat,
+        life_gained=life_gained,
     )
     plan.score = _score_attack_plan(plan, your_life, opponent_life)
     plan.explanation = (
@@ -843,6 +862,8 @@ def _score_attack_plan(plan: AttackPlan, your_life: int, opponent_life: int) -> 
     if plan.damage_through >= opponent_life:
         return 10_000.0
 
+    # Lifelink damage this swing is life we have for their crackback (Dina, Flesh Sower).
+    your_life += plan.life_gained
     # Dying to crackback is the worst.
     if plan.worst_case_crackback >= your_life:
         return -1_000.0
