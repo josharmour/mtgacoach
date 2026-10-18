@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-from arenamcp.action_planner import ActionPlan, ActionPlanner, ActionType, GameAction, plan_fallback_reason
+from arenamcp.action_planner import ActionPlan, ActionPlanner, ActionType, GameAction
 from arenamcp.gamestate import GameObject, GameState, _handle_decision_message
 
 OPPONENT, YOU = 1, 2
@@ -109,7 +109,7 @@ def test_lethal_no_block_plan_is_replaced_by_a_surviving_chump():
     assert len(action.blocker_instance_assignments) == 1
     assert set(action.blocker_instance_assignments.values()) == {CONSTRUCT}
     assert len(action.blocker_assignments) == 1
-    assert plan_fallback_reason(plan) == "planner_lethal_block"
+    assert plan.fallback_reason == "planner_lethal_block"
     assert "27 damage at 25 life" in action.reasoning
 
 
@@ -121,7 +121,7 @@ def test_danger_zone_no_block_plan_is_replaced_by_a_chump():
     ActionPlanner(Mock())._check_block_survival(plan, state, context)
     action = plan.actions[0]
     assert set(action.blocker_instance_assignments.values()) == {CONSTRUCT}
-    assert plan_fallback_reason(plan) == "planner_danger_block"
+    assert plan.fallback_reason == "planner_danger_block"
     assert "left us at 3" in action.reasoning
 
 
@@ -132,7 +132,7 @@ def test_a_done_click_counts_as_declining_every_block():
     action = plan.actions[0]
     assert action.action_type == ActionType.DECLARE_BLOCKERS
     assert set(action.blocker_instance_assignments.values()) == {CONSTRUCT}
-    assert plan_fallback_reason(plan) == "planner_danger_block"
+    assert plan.fallback_reason == "planner_danger_block"
 
 
 def test_nonlethal_or_unwinnable_combat_keeps_the_planner_choice():
@@ -141,4 +141,4 @@ def test_nonlethal_or_unwinnable_combat_keeps_the_planner_choice():
         plan = no_blocks()
         ActionPlanner(Mock())._check_block_survival(plan, state, context)
         assert plan.actions[0].blocker_instance_assignments == {}
-        assert plan_fallback_reason(plan) == ""
+        assert plan.fallback_reason == ""

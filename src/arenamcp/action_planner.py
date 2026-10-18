@@ -175,10 +175,9 @@ class GameAction:
 
 
 # WP-0.4 fallback reason codes. A non-empty reason means a DEFAULT PATH, not the
-# model, chose the action — so the resulting trajectory record must be excluded
-# from positive training credit. Note "[pick-salvage]" is deliberately absent:
-# that is the model's own pick index recovered from malformed JSON, so the
-# decision is still the model's and the record is legitimate training data.
+# model, chose the action; bug reports and logs use it to tell the two apart.
+# Note "[pick-salvage]" is deliberately absent: that is the model's own pick
+# index recovered from malformed JSON, so the decision is still the model's.
 FALLBACK_AUTO_PICK = "planner_auto_pick"
 FALLBACK_PREFLIGHT_LAND_DROP = "planner_preflight_land_drop"
 FALLBACK_NO_ACTIONS = "planner_no_actions"
@@ -274,32 +273,6 @@ def is_llm_unavailable_error(error: BaseException) -> bool:
     return any(cls.__name__ in _BACKEND_FAILURE_TYPES for cls in type(error).__mro__)
 
 
-# Strategy prefixes that used to be the ONLY fallback signal. Retained solely to
-# classify plan objects built before ActionPlan.fallback_reason existed.
-_LEGACY_FALLBACK_STRATEGY_TAGS = {
-    "[auto-pick]": FALLBACK_AUTO_PICK,
-    "[land-drop-first]": FALLBACK_PREFLIGHT_LAND_DROP,
-}
-
-
-def plan_fallback_reason(plan: Any) -> str:
-    """Return why this plan is a fallback, or "" when the model decided it.
-
-    Prefers the structured ``ActionPlan.fallback_reason`` and falls back to the
-    legacy strategy-prefix sniff so older plan objects still classify correctly.
-    """
-    if plan is None or not getattr(plan, "actions", None):
-        return FALLBACK_NO_ACTIONS
-    reason = (getattr(plan, "fallback_reason", "") or "").strip()
-    if reason:
-        return reason
-    strategy = (getattr(plan, "overall_strategy", "") or "").strip()
-    for tag, legacy_reason in _LEGACY_FALLBACK_STRATEGY_TAGS.items():
-        if strategy.startswith(tag):
-            return legacy_reason
-    return ""
-
-
 @dataclass
 class ActionPlan:
     """A complete plan of actions to execute."""
@@ -377,11 +350,6 @@ class ActionPlan:
                 line += f" — {action.override_note.rstrip('.')}"
             lines.append(f"{line}.")
         return " ".join(lines)
-
-    @property
-    def fallback(self) -> bool:
-        """True when a default path, not the model, chose these actions."""
-        return bool(self.fallback_reason)
 
     def __str__(self) -> str:
         lines = [f"Plan ({self.trigger}, turn {self.turn_number}): {self.overall_strategy}"]
