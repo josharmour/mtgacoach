@@ -52,7 +52,6 @@ from arenamcp.board_assessment import (
     role_guard,
 )
 
-
 pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
 
 

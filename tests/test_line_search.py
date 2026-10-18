@@ -851,8 +851,9 @@ def test_any_target_burn_can_go_face_for_lethal():
 def test_restricted_search_is_deterministic_and_bounded_by_work_not_time(monkeypatch):
     from types import SimpleNamespace
 
-    from arenamcp import line_search_moves
     from tests.strategic_states import SLOW_212608
+
+    from arenamcp import line_search_moves
 
     model = build_board_model(deepcopy(SLOW_212608))
     first = search_lines(model, survival=False, lethal_now=False, hard_ms=1e9)

@@ -65,7 +65,6 @@ from tests.strategic_states import (
 
 from arenamcp import board_assessment as ba
 from arenamcp import line_guard as lg
-from arenamcp import line_search
 from arenamcp import opponent_tricks as ot
 from arenamcp.action_planner import (
     DECLINE_DECISION,
@@ -80,6 +79,8 @@ from arenamcp.line_search import action_key, compare_modes
 LOGGER = "arenamcp.action_planner"
 DESTROY, GAIN = "idx:0", "idx:1"
 ROCK, ISLAND, ROOM = "idx:1", "idx:5", "idx:6"
+
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
 
 
 @pytest.fixture(autouse=True)
@@ -842,14 +843,9 @@ def _growth_cases() -> dict[str, tuple[object, dict]]:
 def test_whole_typed_prompt_growth_stays_within_budget(monkeypatch, tmp_path):
     # Review 2026-10-07 (I4): with the strategy block wired the way the autopilot wires it,
     # the whole typed prompt grew p50 475 / p90 830 / max 1056 characters over the kill
-    # switch on 122 real bug-report decisions (budget ~700). Unlimited deadlines keep the
-    # searched lines, and so the text, independent of machine load.
+    # switch on 122 real bug-report decisions (budget ~700). Unlimited deadlines (module-wide)
+    # keep the searched lines, and so the text, independent of machine load.
     _offline_tricks(monkeypatch, tmp_path)
-    search, modes = line_search.search_lines, lg.compare_modes
-    monkeypatch.setattr(
-        line_search, "search_lines", lambda model, **kw: search(model, **{**kw, "hard_ms": 1e9})
-    )
-    monkeypatch.setattr(lg, "compare_modes", lambda st, dec, **kw: modes(st, dec, **{**kw, "hard_ms": 1e9}))
 
     def prompt(decision, source) -> str:
         ba._CACHE.clear()
