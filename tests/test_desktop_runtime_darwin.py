@@ -337,7 +337,7 @@ def test_mac_auto_launch_failure_is_visible_in_parent_status_and_feed(monkeypatc
 
 
 @pytest.mark.parametrize("installed,running", [(True, True), (False, False), (False, True)])
-def test_mac_auto_launch_explains_reconnect_or_screen_mode(monkeypatch, installed, running):
+def test_mac_auto_launch_explains_reconnect_or_coaching_only(monkeypatch, installed, running):
     statuses = []
     monkeypatch.setattr(runtime.sys, "platform", "darwin")
     monkeypatch.setattr(platform_integration, "mac_bridge_installed", lambda: installed)
@@ -345,7 +345,11 @@ def test_mac_auto_launch_explains_reconnect_or_screen_mode(monkeypatch, installe
     monkeypatch.setattr(runtime, "launch_mtga", lambda *a, **k: pytest.fail("must not launch"))
     runtime.launch_native_mac_session(on_status=statuses.append)
     assert len(statuses) == 1
-    assert ("already running" if running else "screen-based autoplay mode") in statuses[0]
+    assert ("already running" if running else "Native bridge not installed") in statuses[0]
+    if not installed:
+        # Bridge-only autoplay (2026-10-18): no screenshot mode to promise.
+        assert "coaching from the log only; autoplay needs the bridge" in statuses[0]
+        assert "screen" not in statuses[0]
     if running:
         assert "Start Arena normally" not in statuses[0]
 

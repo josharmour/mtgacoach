@@ -532,9 +532,7 @@ class PipeAdapter:
                         "autopilot_enabled": bool(getattr(coach, "_autopilot_enabled", False)),
                         "autopilot_initialized": ap is not None,
                         "autopilot_state": str(getattr(ap, "_state", "") or ""),
-                        "autopilot_execution_backend": "native-mac-desktop"
-                        if getattr(ap, "requires_desktop_poll", False)
-                        else "gre-bridge",
+                        "autopilot_execution_backend": "gre-bridge",
                         "bridge_connected": bridge_connected,
                         "model_alias": str(getattr(backend, "model", "") or ""),
                         "served_model": str(getattr(backend, "last_served_model", "") or ""),
@@ -577,11 +575,8 @@ class PipeAdapter:
             elif action == "autopilot_cancel":
                 self._cancel_concede(coach, "autopilot_cancel")
                 if coach._autopilot:
-                    # AutopilotEngine has no on_cancel (only the native Mac
-                    # engine does); its "skip this action" is on_escape.
-                    cancel = getattr(coach._autopilot, "on_cancel", None) or getattr(
-                        coach._autopilot, "on_escape", None
-                    )
+                    # The engine's "skip this action" is on_escape.
+                    cancel = getattr(coach._autopilot, "on_escape", None)
                     if callable(cancel):
                         cancel()
             elif action == "autopilot_abort":
@@ -788,9 +783,6 @@ class PipeAdapter:
 
     def _handle_toggle_fallback_mode(self) -> None:
         """Bridge-only mode is fixed on; legacy fallback toggles do nothing."""
-        if getattr(getattr(self._coach, "_autopilot", None), "requires_desktop_poll", False):
-            self.log("Native Mac autoplay uses screenshots and macOS input; no bridge is required.")
-            return
         self.log("Bridge-only autopilot is always on. Mouse fallback has been removed.")
 
     def _handle_debug_report(self, screenshots: dict[str, str] | None = None) -> None:

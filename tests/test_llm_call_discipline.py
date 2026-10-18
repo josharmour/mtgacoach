@@ -243,8 +243,6 @@ class RecordingCoach:
 class FallThroughAutopilot:
     """An engine that hands every window back to the player."""
 
-    requires_desktop_poll = False
-
     def __init__(self) -> None:
         self.triggers: list[str] = []
         self._planner = SimpleNamespace(plan_actions=Mock(side_effect=AssertionError("no re-plan")))

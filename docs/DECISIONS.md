@@ -7,6 +7,59 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-10-18 — Native Mac screenshot autopilot removed; Mac autoplay is bridge-only
+
+- **User decision (2026-10-18 test-suite cleanup):** remove the screenshot-based
+  native Mac gameplay autopilot (`NativeMacAutopilot`). On macOS without the
+  bridge the coach advises only; autoplay reports MANUAL REQUIRED.
+- **Why:** since 2026-09-23 the injected IL2CPP bridge library
+  (`spikes/mac-il2cpp/probe.cpp` + `mac_bridge_adapter.py`) drives the shared
+  `AutopilotEngine` on the Mac. The screenshot engine was selected only when that
+  library was neither staged nor connected (`use_native_mac_autopilot`). Its one
+  live match made two inputs and no card plays (2026-09-23 entry below). Keeping
+  it cost a 758-line module, about 90 tests, a vision-model setting and menu, and
+  a desktop-poll branch in the coaching loop.
+- **Behaviour now (native macOS, no bridge):** `_init_autopilot` always builds
+  the GRE `AutopilotEngine`. A window it cannot submit ends in
+  `MANUAL REQUIRED: … [Bridge offline. After this match, quit MTGA and reopen the
+  coach … Launch Options to: DYLD_INSERT_LIBRARIES="…" %command%]`
+  (`platform_integration.bridge_offline_hint`), and `_autopilot_drives` is False,
+  so the coach advises that window with the model. Coaching never needed the
+  bridge (log-first).
+- **Removed:** `native_mac_autopilot.py`; `StandaloneCoach._poll_desktop_autopilot`
+  and every `requires_desktop_poll` branch (coaching loop, `_autopilot_drives`,
+  toggle, pipe status report and fallback-mode message); the bug report's
+  `screenshots.autoplay` image; the `autopilot_vision_model` / `_url` /
+  `_api_key` settings and Tools → Autoplay Vision Model…;
+  `ProxyBackend.reset_vision_failures`; `action_planner.model_unreachable`; the
+  `decision.native_mac` call class; NATIVE_MAC_AUTOPLAY.md and its handoff notes.
+  Text that promised screen-based autoplay (repair's not-applicable BepInEx
+  checks, the Mac auto-launch status, README, `--autopilot` help) now describes
+  bridge-only autoplay.
+- **Kept, because other features click the screen on the Mac:**
+  `native_mac_input.py` (window capture, Quartz clicks, focus and hit-test
+  guards) for auto-queue's post-match navigation (`auto_queue.py`,
+  `standalone_auto_queue.py`); `ProxyBackend.complete_with_image` and its vision
+  breaker; Tools → Autoplay Permissions… (Accessibility and Screen Recording,
+  which auto-queue needs); F11 / Stop Autoplay. Draft-event autoplay
+  (`draft_event.py`) acts through the Mac bridge's draft commands, not the
+  screen, and is unaffected.
+- **Tests:** deleted test_native_mac_autopilot, test_native_mac_log_planner,
+  test_standalone_native_autopilot and the native sections of
+  test_outage_followups, test_narration, test_platform_launch_options and
+  test_proxy_thinking_control. The NativeMacInput tests moved to
+  test_native_mac_input.py (helpers in tests/mac_fakes.py) and the
+  match-completion tests to test_standalone_match_completion.py.
+  test_mac_autoplay_bridge_only.py pins GRE-engine selection, the MANUAL REQUIRED
+  hint and that the coach keeps advising.
+- **Verify:** `git grep -n -e NativeMacAutopilot -e requires_desktop_poll -- src`
+  is empty; `pytest tests/test_mac_autoplay_bridge_only.py`; full suite 4881
+  passed, 2 skipped, 2 xfailed.
+- **Open:** when the library is not staged at all, the hint's "reopen the coach"
+  advice cannot help; only `spikes/mac-il2cpp/build.sh` stages it.
+
+---
+
 ## 2026-10-18 — Learning from a pro's two Alchemy drafts; decision latency; bridge restart
 
 - **Evidence:** a professional player hand-drafted two PremierDraft_YFRA_20261013

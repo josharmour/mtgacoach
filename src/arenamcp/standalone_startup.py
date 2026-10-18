@@ -38,7 +38,9 @@ class _StartupMixin:
             message = "Waiting for Arena to open…"
             self._arena_bridge_wait_started = now
         elif not mac_bridge_installed():
-            message = ""  # Native screen/input mode does not require the bridge.
+            # No bridge library to wait for: coaching runs from the log, and
+            # autoplay reports the missing bridge itself (MANUAL REQUIRED).
+            message = ""
         else:
             started = getattr(self, "_arena_bridge_wait_started", now)
             self._arena_bridge_wait_started = started

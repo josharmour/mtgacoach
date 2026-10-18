@@ -1444,7 +1444,7 @@ def test_toggling_autoplay_off_cancels_the_countdown():
     coach = StandaloneCoach.__new__(StandaloneCoach)
     coach._concede = Mock()
     coach._autopilot_enabled = True
-    coach._autopilot = Mock(requires_desktop_poll=False)
+    coach._autopilot = Mock()
     coach._autopilot_backend = None
     coach._coach = None
     coach.settings = Mock()

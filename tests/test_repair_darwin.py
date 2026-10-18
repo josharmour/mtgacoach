@@ -178,8 +178,9 @@ def test_bridge_checks_native_darwin_not_applicable(tmp_path, check, platform):
     assert r is not None
     assert r.status == "ok"  # informational — must not fail the report
     assert "Not applicable" in r.detail
-    assert "native Mac autoplay uses screenshots" in r.detail
-    assert "NATIVE_MAC_AUTOPLAY" in r.detail
+    # Bridge-only autoplay (2026-10-18): no screenshot fallback is promised.
+    assert "native macOS bridge library" in r.detail
+    assert "screenshot" not in r.detail
 
 
 def test_launch_options_check_skipped_on_darwin(tmp_path):

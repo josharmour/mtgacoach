@@ -658,10 +658,9 @@ class StandaloneCoach(
             cooling = getattr(engine, "in_manual_play_cooldown", None)
             if callable(cooling) and cooling() is True:
                 return False
-            if not getattr(engine, "requires_desktop_poll", False):
-                bridge = getattr(engine, "_gre_bridge", None)
-                if bridge is not None and getattr(bridge, "connected", True) is False:
-                    return False
+            bridge = getattr(engine, "_gre_bridge", None)
+            if bridge is not None and getattr(bridge, "connected", True) is False:
+                return False
             if state is not None:
                 given_up = getattr(engine, "is_window_given_up", None)
                 if callable(given_up) and given_up(state) is True:
@@ -991,7 +990,6 @@ class StandaloneCoach(
             from arenamcp.action_planner import ActionPlanner
             from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
             from arenamcp.coach import create_backend
-            from arenamcp.native_mac_autopilot import NativeMacAutopilot, use_native_mac_autopilot
 
             if not self._mcp:
                 self._init_mcp()
@@ -1002,21 +1000,12 @@ class StandaloneCoach(
                 self.ui.log("[red]Autopilot: no LLM backend available[/]")
                 return
 
-            native_mac = use_native_mac_autopilot()
-            autopilot_model = self._model_name
-            if native_mac:
-                autopilot_model = self.settings.get("autopilot_vision_model") or autopilot_model
-            vision_url = self.settings.get("autopilot_vision_url") if native_mac else None
-            if vision_url:
-                from arenamcp.backends.proxy import ProxyBackend
-
-                autopilot_backend = ProxyBackend(
-                    model=autopilot_model or "glm-5.3-flash",
-                    base_url=str(vision_url).rstrip("/"),
-                    api_key=self.settings.get("autopilot_vision_api_key") or "not-required",
-                )
-            else:
-                autopilot_backend = create_backend(self._backend_name, model=autopilot_model)
+            # Autoplay acts only through the GRE bridge on every platform. On
+            # native macOS without the injected bridge library this engine
+            # still starts and hands each window back to the player (MANUAL
+            # REQUIRED with the relaunch hint); the coach keeps advising from
+            # the log (docs/DECISIONS.md 2026-10-18).
+            autopilot_backend = create_backend(self._backend_name, model=self._model_name)
             self._autopilot_backend = autopilot_backend
 
             config = AutopilotConfig(
@@ -1025,50 +1014,24 @@ class StandaloneCoach(
                 enable_tts_preview=True,
             )
 
-            if native_mac:
-                # Decide from the logs with the text model (same planner as the
-                # bridge autopilot); the vision model only locates and operates
-                # the committed play.
-                planner = ActionPlanner(
-                    create_backend(self._backend_name, model=self._model_name),
-                    timeout=config.planning_timeout,
-                    land_drop_first=config.land_drop_first,
-                    deck_strategy_fn=self.get_deck_strategy,
-                    deck_playbook_fn=self.get_deck_playbook,
-                )
-                engine = NativeMacAutopilot(
-                    backend=autopilot_backend,
-                    get_game_state=self._mcp.get_game_state,
-                    config=config,
-                    speak_fn=self.speak_advice,
-                    ui_advice_fn=self.ui.advice if self.ui else None,
-                    planner=planner,
-                )
-                engine.prepare()
-                self._autopilot = engine
-            else:
-                planner = ActionPlanner(
-                    autopilot_backend,
-                    timeout=config.planning_timeout,
-                    land_drop_first=config.land_drop_first,
-                    deck_strategy_fn=self.get_deck_strategy,
-                    deck_playbook_fn=self.get_deck_playbook,
-                )
+            planner = ActionPlanner(
+                autopilot_backend,
+                timeout=config.planning_timeout,
+                land_drop_first=config.land_drop_first,
+                deck_strategy_fn=self.get_deck_strategy,
+                deck_playbook_fn=self.get_deck_playbook,
+            )
 
-                self._autopilot = AutopilotEngine(
-                    planner=planner,
-                    get_game_state=self._mcp.get_game_state,
-                    config=config,
-                    speak_fn=self.speak_advice,
-                    ui_advice_fn=self.ui.advice if self.ui else None,
-                    bug_report_fn=self._auto_bug_report_bridge_fallback,
-                    ui_turn_plan_fn=(
-                        self.ui.turn_plan if self.ui and hasattr(self.ui, "turn_plan") else None
-                    ),
-                    ui_game_plan_fn=(
-                        self.ui.game_plan if self.ui and hasattr(self.ui, "game_plan") else None
-                    ),
-                )
+            self._autopilot = AutopilotEngine(
+                planner=planner,
+                get_game_state=self._mcp.get_game_state,
+                config=config,
+                speak_fn=self.speak_advice,
+                ui_advice_fn=self.ui.advice if self.ui else None,
+                bug_report_fn=self._auto_bug_report_bridge_fallback,
+                ui_turn_plan_fn=(self.ui.turn_plan if self.ui and hasattr(self.ui, "turn_plan") else None),
+                ui_game_plan_fn=(self.ui.game_plan if self.ui and hasattr(self.ui, "game_plan") else None),
+            )
             self._autopilot._advice_recorder = self._record_advice
             self._autopilot._stuck_report_fn = self._auto_capture_autopilot_stuck
             self._autopilot._oops_fn = self._oops_report
@@ -1088,8 +1051,7 @@ class StandaloneCoach(
 
             mode = "DRY-RUN" if self._autopilot_dry_run else "LIVE"
             afk = " (AFK)" if self._autopilot_afk else ""
-            execution_mode = "native Mac screen/input" if native_mac else "GRE bridge"
-            self.ui.log(f"[bold green]Autopilot initialized ({execution_mode}): {mode}{afk}[/]")
+            self.ui.log(f"[bold green]Autopilot initialized (GRE bridge): {mode}{afk}[/]")
             logger.info(f"Autopilot initialized: {mode}{afk}")
         except ImportError as e:
             self.ui.log(f"[red]Autopilot unavailable (missing deps): {e}[/]")
@@ -1138,19 +1100,6 @@ class StandaloneCoach(
             self._bridge_poller.enrich_snapshot(judged)
         return judged
 
-    def _poll_desktop_autopilot(self) -> bool:
-        engine = self._autopilot
-        if not self._autopilot_enabled or not getattr(engine, "requires_desktop_poll", False):
-            return False
-        state = self._mcp.get_game_state() or {}
-        self._try_restore_engine_resume(state)
-        engine.process_trigger(state, "desktop_poll")
-        status = self._autopilot_control_status()
-        if status != getattr(self, "_last_desktop_ap_status", None):
-            self.ui.status("AUTOPILOT", status)
-            self._last_desktop_ap_status = status
-        return True
-
     def _autopilot_control_status(self) -> str:
         if not self._autopilot_enabled:
             return "AP:OFF"
@@ -1186,7 +1135,7 @@ class StandaloneCoach(
             self._suspend_auto_queue()
             # Clean up the separate autopilot backend
             ap_backend = getattr(self, "_autopilot_backend", None)
-            if ap_backend and not getattr(self._autopilot, "requires_desktop_poll", False):
+            if ap_backend:
                 if hasattr(ap_backend, "close"):
                     try:
                         ap_backend.close()
@@ -1233,19 +1182,12 @@ class StandaloneCoach(
                     # A request already running when the bug was captured may
                     # have re-filled the planner memo after our first abort.
                     # We have verified its owner is gone; discard that intent.
-                    for planner_name in ("_planner", "_log_planner"):
-                        planner = getattr(self._autopilot, planner_name, None)
-                        if planner is not None:
-                            planner._turn_memo = None
-                            planner._turn_intent = None
-                    if hasattr(self._autopilot, "_plan_cache"):
-                        self._autopilot._plan_cache = None
+                    planner = getattr(self._autopilot, "_planner", None)
+                    if planner is not None:
+                        planner._turn_memo = None
+                        planner._turn_intent = None
                     self._autopilot_bug_needs_reset = False
-                try:
-                    self._autopilot._clear_events()
-                except RuntimeError as exc:
-                    self.ui.log(f"Autopilot could not start: {exc}")
-                    return False
+                self._autopilot._clear_events()
                 self._autopilot_enabled = True
                 self._finish_autopilot_recovery("autopilot_resumed")
                 self._sync_narration_mode()
@@ -2327,7 +2269,6 @@ class StandaloneCoach(
                     prev_state = curr_state
                     time.sleep(0.3)
                     continue
-                desktop_autopilot_active = self._poll_desktop_autopilot()
 
                 # Announce seat detection when game starts
                 if not seat_announced:
@@ -2605,9 +2546,6 @@ class StandaloneCoach(
                             _conversation.on_state(curr_state, prev_state, triggers)
                         except Exception as e:
                             logger.debug(f"conversation.on_state failed: {e}")
-
-                    if desktop_autopilot_active:
-                        triggers = []
 
                     stale_retry_enqueued = False
                     for trigger in triggers:
@@ -3727,7 +3665,7 @@ Examples:
     parser.add_argument(
         "--autopilot",
         action="store_true",
-        help="Enable autopilot (native screen/input on Mac; GRE bridge elsewhere)",
+        help="Enable autopilot (acts through the GRE bridge; coaching only without it)",
     )
     parser.add_argument(
         "--afk", action="store_true", help="Start in AFK mode (auto-pass all priority without LLM)"

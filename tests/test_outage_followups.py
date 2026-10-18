@@ -3,15 +3,12 @@
 - Win-in-N runs as background work at low effort, never at full thinking and
   priority 0 (31 automatic win-in-N calls in 1.8 h, none ever read).
 - Every remaining model call site carries a proxy call class.
-- Native-Mac autoplay plays the board-math line when the planner's model is
-  down, and an outage shows "model offline" instead of pausing autoplay.
 - Breaker / priority / background-lane state never leaks between tests.
 - The deck playbook is cleared only when the deck changes.
 """
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 from copy import deepcopy
@@ -19,16 +16,11 @@ from types import SimpleNamespace as NS
 from unittest.mock import Mock
 
 import pytest
-from PIL import Image
 
 import arenamcp.standalone_hotkeys as hotkeys_module
-from arenamcp.action_planner import FALLBACK_LLM_UNAVAILABLE, ActionPlan, ActionType, GameAction
-from arenamcp.autopilot_models import AutopilotConfig, AutopilotState
 from arenamcp.backends import health, proxy
 from arenamcp.backends.proxy import ProxyBackend
 from arenamcp.coach import CoachEngine
-from arenamcp.native_mac_autopilot import MODEL_OFFLINE_NOTICE, NativeMacAutopilot
-from arenamcp.native_mac_input import DesktopFrame, GameWindow
 from arenamcp.standalone import StandaloneCoach
 
 SKIPPED = "[BACKEND ERROR] model server unavailable (backend down; background call skipped)"
@@ -471,183 +463,6 @@ def test_a_primer_whose_answers_were_invalid_is_still_persisted(monkeypatch, tmp
     monkeypatch.setattr(set_primer, "data_primer", lambda *args, **kwargs: deepcopy(primer))
     service._build("TST")
     assert (tmp_path / "TST.json").exists() and "TST" not in service._partial
-
-
-# ---------------------------------------------------------------------------
-# 3. Native-Mac autoplay: board-math play and "model offline" during an outage
-# ---------------------------------------------------------------------------
-
-
-def _frame():
-    return DesktopFrame(
-        GameWindow(42, 123, (100, 50, 720, 450)), Image.new("RGB", (1440, 900), "green"), time.monotonic()
-    )
-
-
-def _mac_state(legal, **extra):
-    return {
-        "match_id": "m",
-        "legal_actions": list(legal),
-        "turn": {"turn_number": 3, "active_player": 1, "priority_player": 1, "phase": "Phase_Main1"},
-        "players": [{"seat_id": 1, "is_local": True, "life_total": 20}, {"seat_id": 2, "life_total": 20}],
-        "local_seat_id": 1,
-        "stack": [],
-        "battlefield": [],
-        "hand": [
-            {"name": "Plains", "type_line": "Basic Land — Plains", "instance_id": 10, "grp_id": 100},
-            {
-                "name": "Optimistic Scavenger",
-                "type_line": "Creature — Human Scout",
-                "mana_cost": "{W}",
-                "instance_id": 11,
-                "grp_id": 101,
-            },
-        ],
-        **extra,
-    }
-
-
-def _mac_engine(state, plan, *, vision_reply=None, vision_backend=None):
-    controller = Mock()
-    controller.capture.side_effect = lambda: _frame()
-    controller.execute.return_value = True
-    backend = vision_backend or Mock()
-    backend.complete_with_image.return_value = vision_reply or json.dumps(
-        {"kind": "double_click", "point": [0.4, 0.8], "reason": "Play Plains", "confidence": 0.95}
-    )
-    planner = Mock()
-    planner.plan_actions.return_value = plan
-    advice = []
-    engine = NativeMacAutopilot(
-        backend=backend,
-        controller=controller,
-        get_game_state=lambda: state,
-        config=AutopilotConfig(),
-        planner=planner,
-        ui_advice_fn=lambda text, label: advice.append(text),
-    )
-    engine._ground_action = Mock(side_effect=lambda frame, action: action)
-    return engine, controller, backend, planner, advice
-
-
-def _unavailable_plan(detail: str = "llm_unavailable: circuit open"):
-    return ActionPlan(actions=[], fallback_reason=FALLBACK_LLM_UNAVAILABLE, fallback_detail=detail)
-
-
-def test_model_down_commits_the_board_math_land_drop():
-    state = _mac_state(["Play Land: Plains", "Cast Optimistic Scavenger [OK]", "Pass"])
-    engine, controller, backend, _, _ = _mac_engine(state, _unavailable_plan())
-    assert engine.process_trigger(state, "desktop_poll")
-    prompt = json.loads(backend.complete_with_image.call_args.args[1])
-    assert "Plains" in prompt["committed_play"]
-    assert "deck_reference" not in prompt  # a committed play, not an open-ended vision decision
-    controller.execute.assert_called_once()
-
-
-def test_model_down_board_math_pass_presses_space_without_vision():
-    state = _mac_state(["Pass"], hand=[])
-    engine, controller, backend, _, _ = _mac_engine(state, _unavailable_plan())
-    assert engine.process_trigger(state, "desktop_poll")
-    backend.complete_with_image.assert_not_called()
-    action = controller.execute.call_args.args[1]
-    assert action.kind == "key" and action.key == "space"
-
-
-def test_model_down_with_nothing_to_commit_says_offline_and_asks_the_planner_again():
-    state = _mac_state(["Target Grizzly Bears"], decision_context={"type": "select_targets"})
-    engine, controller, backend, planner, advice = _mac_engine(state, _unavailable_plan())
-    for _ in range(2):
-        engine._next_poll = 0
-        assert not engine.process_trigger(state, "desktop_poll")
-    backend.complete_with_image.assert_not_called()
-    controller.execute.assert_not_called()
-    assert advice == [MODEL_OFFLINE_NOTICE]
-    assert engine.state is not AutopilotState.PAUSED and not engine._paused_reason
-    assert planner.plan_actions.call_count == 2  # not cached: retried until the model is back
-
-
-def test_open_vision_breaker_skips_the_open_ended_vision_call():
-    state = _mac_state(["Target Grizzly Bears"], decision_context={"type": "select_targets"})
-    vision = Mock()
-    vision.available.return_value = False
-    engine, _, backend, _, advice = _mac_engine(state, ActionPlan(actions=[]), vision_backend=vision)
-    assert not engine.process_trigger(state, "desktop_poll")
-    backend.complete_with_image.assert_not_called()
-    assert advice == [MODEL_OFFLINE_NOTICE]
-    assert engine._vision_failures == 0
-
-
-def test_vision_failures_during_an_outage_never_pause_autoplay():
-    state = _mac_state(["Play Land: Plains", "Pass"])
-    engine, controller, backend, _, advice = _mac_engine(
-        state, _unavailable_plan(), vision_reply=CIRCUIT_OPEN
-    )
-    for _ in range(4):
-        engine._next_poll = 0
-        assert not engine.process_trigger(state, "desktop_poll")
-    assert backend.complete_with_image.call_count == 4
-    assert engine._vision_failures == 0
-    assert not engine._paused_reason and engine.state is not AutopilotState.PAUSED
-    assert advice[-1] == MODEL_OFFLINE_NOTICE
-    controller.execute.assert_not_called()
-
-
-def test_vision_failures_with_the_model_up_still_count():
-    state = _mac_state(["Play Land: Plains", "Pass"])
-    play = GameAction(ActionType.PLAY_LAND, card_name="Plains")
-    engine, _, _, _, _ = _mac_engine(
-        state, ActionPlan(actions=[play]), vision_reply="[BACKEND ERROR] vision analysis failed: 500"
-    )
-    assert not engine.process_trigger(state, "desktop_poll")
-    assert engine._vision_failures == 1
-
-
-def test_model_up_keeps_the_open_ended_vision_decision():
-    state = _mac_state(["Target Grizzly Bears"], decision_context={"type": "select_targets"})
-    engine, _, backend, _, _ = _mac_engine(state, ActionPlan(actions=[]))
-    engine.process_trigger(state, "desktop_poll")
-    backend.complete_with_image.assert_called_once()
-
-
-@pytest.mark.parametrize(
-    "detail", ["timeout", "llm_error: Request timed out.", "llm_error_sentinel: [BACKEND ERROR] HTTP 500"]
-)
-def test_a_slow_planner_is_not_an_offline_model(detail):
-    # Review 2026-10-07: every FALLBACK_LLM_UNAVAILABLE read as 'model offline', so a
-    # planner timeout in a targets window re-ran the planner (for its full timeout)
-    # every 3 s and never let the healthy vision model decide.
-    state = _mac_state(["Target Grizzly Bears"], decision_context={"type": "select_targets"})
-    engine, _, backend, planner, advice = _mac_engine(state, _unavailable_plan(detail))
-    planner._backend = Mock(available=Mock(return_value=True))
-    for _ in range(2):
-        engine._next_poll = 0
-        engine.process_trigger(state, "desktop_poll")
-    assert MODEL_OFFLINE_NOTICE not in advice
-    assert backend.complete_with_image.call_count == 2  # vision decides, as before wave B
-    assert planner.plan_actions.call_count == 1  # cached for the window
-
-
-@pytest.mark.parametrize(
-    ("detail", "breaker_open", "expected"),
-    [
-        ("llm_unavailable: circuit open", False, True),
-        (
-            "llm_error_sentinel: [BACKEND ERROR] model server unavailable (circuit open; retry in 9s)",
-            False,
-            True,
-        ),
-        ("llm_error: Connection error.", False, True),
-        ("timeout", True, True),  # the breaker opened meanwhile
-        ("timeout", False, False),
-        ("llm_error: Request timed out.", False, False),
-    ],
-)
-def test_model_unreachable_reads_the_failure(detail, breaker_open, expected):
-    from arenamcp.action_planner import model_unreachable
-
-    backend = Mock(available=Mock(return_value=not breaker_open))
-    assert model_unreachable(_unavailable_plan(detail), backend) is expected
-    assert model_unreachable(ActionPlan(actions=[], fallback_detail=detail), backend) is False
 
 
 # ---------------------------------------------------------------------------

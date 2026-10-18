@@ -55,20 +55,6 @@ def test_mac_bridge_launch_option_missing(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("installed", "connected", "expected"),
-    [(True, False, False), (False, True, False), (False, False, True)],
-)
-def test_mac_bridge_library_selects_the_gre_engine(monkeypatch, installed, connected, expected):
-    from arenamcp.native_mac_autopilot import use_native_mac_autopilot
-
-    monkeypatch.setattr("sys.platform", "darwin")
-    monkeypatch.setattr("arenamcp.platform_integration.bridge_capable", lambda: False)
-    monkeypatch.setattr("arenamcp.platform_integration.mac_bridge_installed", lambda: installed)
-    monkeypatch.setattr("arenamcp.native_mac_autopilot.mac_gre_bridge_connected", lambda: connected)
-    assert use_native_mac_autopilot() is expected
-
-
-@pytest.mark.parametrize(
     ("platform", "bepinex_capable", "device", "expected", "excluded"),
     [
         ("darwin", False, "desktop", "DYLD_INSERT_LIBRARIES", "BepInEx"),

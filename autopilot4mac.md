@@ -3,6 +3,10 @@
 Status: proposed for review.
 Date: 2026-09-23.
 
+Update 2026-10-18: the IL2CPP bridge route was adopted. The native visual executor
+(`native_mac_autopilot.py`) and the Phase 8 visual contingency were removed; Mac
+autoplay is bridge-only (docs/DECISIONS.md, 2026-10-18).
+
 ## 1. Outcome and constraints
 
 Deliver hands-free play of an already-open MTG Arena match on macOS, from play/draw

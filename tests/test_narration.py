@@ -1,7 +1,6 @@
 """Driver voice is factual about intent and shares existing model calls."""
 
 from types import SimpleNamespace
-from unittest.mock import Mock
 
 import pytest
 
@@ -165,56 +164,6 @@ def test_driver_policy_does_not_instruct_the_spectator_to_operate_the_game():
     assert "Do not instruct the human" in policy
     assert "selected tutor card is not yet in hand" in policy
     assert "current state/events confirm" in policy
-
-
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_native_mac_input_reports_intent_without_claiming_cast_completion(monkeypatch, dry_run):
-    from test_native_mac_autopilot import command, make_engine
-
-    engine, controller, backend, state, notices = make_engine(
-        monkeypatch, response=command(reason="Cast Murder."), dry_run=dry_run
-    )
-    engine._speak_fn = Mock()
-    assert engine.process_trigger(state, "desktop_poll")
-    expected = "Plan: casting Murder."
-    if dry_run:
-        expected = "Preview only: " + expected
-        controller.execute.assert_not_called()
-        engine._speak_fn.assert_not_called()
-    else:
-        controller.execute.assert_called_once()
-        engine._speak_fn.assert_called_once_with(expected, False)
-    notices.assert_called_once_with(expected, "AUTOPILOT")
-    assert backend.complete_with_image.call_count == 1
-    assert "A click is an attempt" in backend.complete_with_image.call_args.args[0]
-
-
-@pytest.mark.parametrize("kind", ["move", "scroll"])
-def test_native_navigation_does_not_generate_speech(monkeypatch, kind):
-    from arenamcp.native_mac_input import DesktopAction
-    from test_native_mac_autopilot import command, make_engine, make_frame
-
-    engine, _, _, _, _ = make_engine(monkeypatch)
-    engine._speak_fn = Mock()
-    action = DesktopAction.from_dict(command(kind, reason="Locate the card", amount=-1))
-    assert engine._send(make_frame(), action)
-    engine._speak_fn.assert_not_called()
-
-
-def test_native_failed_or_repeated_input_does_not_repeat_speech(monkeypatch):
-    from arenamcp.native_mac_input import DesktopAction
-    from test_native_mac_autopilot import command, make_engine, make_frame
-
-    engine, controller, _, _, _ = make_engine(monkeypatch)
-    engine._speak_fn = Mock()
-    action = DesktopAction.from_dict(command(reason="Choose Forest."))
-    controller.execute.return_value = False
-    assert not engine._send(make_frame(), action)
-    engine._speak_fn.assert_not_called()
-    controller.execute.return_value = True
-    assert engine._send(make_frame(), action)
-    assert engine._send(make_frame(), action)
-    engine._speak_fn.assert_called_once_with("Plan: choosing Forest.", False)
 
 
 def test_model_supplied_action_prefixes_are_removed_without_changing_observations():

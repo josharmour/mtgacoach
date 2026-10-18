@@ -358,7 +358,6 @@ CALL_CLASSES: dict[str, str] = {
     "decision.block_repair": "plan_actions block-repair second call",
     "decision.pay": "plan_pay_or_decline",
     "decision.mulligan": "mulligan decision",
-    "decision.native_mac": "native-Mac autopilot planner",
     "coach.advice": "coach get_advice, including threat alerts",
     "coach.question": "user question / conversation mode",
     "coach.deck_brief": "on-demand deck strategy brief",
@@ -1849,11 +1848,6 @@ class ProxyBackend:
     # serve vision and the tunnel chokes on MB image payloads — the vision
     # watchdog burned a failing call pair every ~40s all match.
     _VISION_DISABLE_AFTER = 3
-
-    def reset_vision_failures(self) -> None:
-        """Allow a new attempt after the user explicitly resumes visual autoplay."""
-        self._vision_dead = False
-        self._vision_fail_count = 0
 
     def complete_with_image(
         self,
