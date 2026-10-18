@@ -93,8 +93,13 @@ DEFAULTS = {
 }
 
 # Keys of removed features, stripped from settings.json on load: the old
-# multi-provider backend settings (online-only since 2026-06-11).
+# multi-provider backend settings (online-only since 2026-06-11) and the
+# vision model of the screenshot-driven native Mac autopilot (removed
+# 2026-10-18).
 _OLD_KEYS = {
+    "autopilot_vision_model",
+    "autopilot_vision_url",
+    "autopilot_vision_api_key",
     "backend",
     "ollama_url",
     "lmstudio_url",
