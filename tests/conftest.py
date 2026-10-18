@@ -204,9 +204,6 @@ def _sandbox_arenamcp_home(monkeypatch, tmp_path_factory):
     settings = sys.modules.get("arenamcp.settings")
     if settings is not None:
         monkeypatch.setattr(settings, "_settings", None)
-    match_history = sys.modules.get("arenamcp.match_history")
-    if match_history is not None:
-        monkeypatch.setattr(match_history, "_history", None)
     # A packet left recording by an earlier test would be salvage-saved by
     # this test's start_match_packet(), and a finalized "m1" would stop this
     # test from recording at all.
