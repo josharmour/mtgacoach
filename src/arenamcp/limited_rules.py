@@ -50,6 +50,13 @@ _GRAVEYARD_PAYOFF = re.compile(
 _PLANESWALKER_PAYOFF = re.compile(
     r"\b(?:unless|if|as long as) you control a planeswalker\b|^planeswalkers you control\b"
 )
+# Life-gained-this-turn/game conditions pay off life gain as much as "whenever you
+# gain life" does (FRA Alchemy: Flourishing Forces, Germinate Recruits, Valgavoth).
+_LIFE_GAINED_PAYOFF = re.compile(
+    r"\blife you(?:'ve| have)? gained this (?:turn|game)\b"
+    r"|\b(?:if|as long as) you(?:'ve| have)? gained life this turn\b"
+)
+_LIFELINK = re.compile(r"^lifelink\b|\b(?:has|have|gains?) lifelink\b")
 _JACE_PAYOFF = re.compile(r"\bbehold a jace\b|\byou control a jace\b|\bjace planeswalkers? you control\b")
 # FRA Rakdos: pingers enable "an opponent was dealt noncombat damage" payoffs.
 _PING = re.compile(r"\bdeals? (?:\d+|x) damage to (?:each|target) (?:opponent|player)\b")
@@ -134,6 +141,10 @@ def _rules_profile(type_line: str, oracle_text: str) -> dict:
             payoffs.add("planeswalker")
         if _JACE_PAYOFF.search(line):
             payoffs.add("jace")
+        if _LIFE_GAINED_PAYOFF.search(line):
+            payoffs.add("lifegain")
+        if _LIFELINK.search(line):
+            enables.add("lifegain")
         if _PING_PAYOFF.search(line):
             payoffs.add("noncombat_damage")
         if _PING.search(effect):
@@ -161,7 +172,7 @@ def _rules_profile(type_line: str, oracle_text: str) -> dict:
             ("scry", r"\bscry \d"),
             ("surveil", r"\bsurveil \d"),
             ("draw", r"\bdraw (?:a|one|two|three|\d+) cards?"),
-            ("lifegain", r"\bgain (?:\d+|one|two|three) life\b"),
+            ("lifegain", r"\bgain (?:\d+|x|one|two|three) life\b"),
             ("plus_counters", r"\bput\b[^.]*?\+1/\+1 counters?"),
             ("graveyard", r"\bsurveil \d|\bmills? (?:\d+|x|one|two|three|four|five|six) cards?"),
         ):

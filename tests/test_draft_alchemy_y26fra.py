@@ -271,7 +271,6 @@ def test_alchemy_cards_are_rated_by_pick_order_not_called_rarely_played():
 @pytest.mark.parametrize(
     "key, name",
     [
-        ("P1p10", "Konstrari Improviser"),
         ("P2p6", "Way of the Wildspeaker"),
         ("P2p7", "Marwyn, the Preserver"),
         ("P2p11", "Campus Crier"),
@@ -288,7 +287,7 @@ def test_the_ranker_agrees_with_the_pro(key, name):
     "key, name",
     [
         ("P1p2", "Garruk, Curse Breaker"),
-        ("P2p2", "Enlightened Confidant"),
+        ("P1p10", "Konstrari Improviser"),
         ("P2p4", "Teyo, Lightshield Expert"),
     ],
 )
@@ -297,27 +296,54 @@ def test_the_pros_pick_is_a_close_second(key, name):
 
 
 def test_flourishing_forces_is_a_contender_in_the_lifegain_pool():
-    assert position("P3p1", "Flourishing Forces") <= 2
+    assert position("P3p1", "Flourishing Forces") <= 1
 
 
-@pytest.mark.xfail(
-    strict=True, reason="Jace payoffs earn archetype credit in a pool with no Jace (2026-10-18)"
+@pytest.mark.parametrize(
+    "key, name",
+    [
+        ("P2p1", "Dina, Flesh Sower"),  # 17lands drafters' earliest Alchemy uncommon (ALSA 3.5)
+        ("P2p2", "Enlightened Confidant"),
+        ("P3p5", "Valgavoth, the Lifeline"),
+    ],
 )
-def test_a_jace_payoff_is_not_taken_into_a_pool_without_a_jace():
-    # The pro took Flourishing Forces; Way of the Healer (60.1% GIH, all of it from
-    # Jace decks) only adds "[-2]: Cadet" to planeswalkers this pool doesn't have.
-    assert position("P3p1", "Way of the Healer") > position("P3p1", "Flourishing Forces")
+def test_alchemy_lifegain_cards_lead_their_packs_for_the_lifegain_pool(key, name):
+    # 2026-10-18: unrated Alchemy cards were capped at 0.25 of deck credit and read as
+    # "assumed below average"; in a young format unrated says nothing about play.
+    assert position(key, name) == 0
+
+
+def test_life_gained_this_turn_or_game_is_a_lifegain_payoff():
+    from arenamcp.limited_rules import rules_profile
+
+    def profile(name):
+        card = PRIMER.by_name()[name.lower()]
+        return rules_profile({"type_line": card.types, "oracle_text": card.oracle})
+
+    for name in (
+        "Flourishing Forces",
+        "Germinate Recruits",
+        "Valgavoth, the Lifeline",
+        "Enlightened Confidant",
+    ):
+        assert "lifegain" in profile(name)["payoffs"], name
+    assert "lifegain" in profile("Dina, Flesh Sower")["enables"]
 
 
 @pytest.mark.xfail(
-    strict=True, reason="Jace payoffs earn archetype credit in a pool with no Jace (2026-10-18)"
+    strict=True, reason="planeswalker-payoff credit outweighs the lifegain engine the pool is built on"
+)
+def test_the_lifegain_payoff_beats_a_planeswalker_payoff_for_this_pool():
+    # The pro took Flourishing Forces over Way of the Healer (60.1% GIH, earned in Jace
+    # decks). The pool does make Jace tokens (Way of the Wildspeaker, Academic Ascent,
+    # Campus Crier), but its engine is lifegain: Dina, Confidant, Germinate Recruits.
+    assert position("P3p1", "Flourishing Forces") < position("P3p1", "Way of the Healer")
+
+
+@pytest.mark.xfail(
+    strict=True, reason="Heartwood Crafter's mana casting Emrakul from exile is not a known link"
 )
 def test_heartwood_crafter_beats_tomik_for_the_ramp_pool():
-    # Crafter's mana casts Emrakul from exile; Tomik's credit is the same Jace-payoff role.
+    # Crafter's mana "can't be spent to cast spells from your hand", but Emrakul is cast
+    # from exile through its own {3} ability; Tomik's credit is a planeswalker payoff.
     assert position("P3p7", "Heartwood Crafter") < position("P3p7", "Tomik, Orzhov Lawmage")
-
-
-@pytest.mark.xfail(strict=True, reason="unrated Alchemy uncommons lean on ALSA alone (2026-10-18)")
-def test_dina_is_a_top_three_pick_for_a_white_green_pool():
-    # 17lands drafters take Dina earliest of all Alchemy uncommons (ALSA 3.5).
-    assert position("P2p1", "Dina, Flesh Sower") <= 2

@@ -90,6 +90,9 @@ RARELY_PLAYED_RATE = 0.35  # 17lands play rate; the median rated card is ~0.7
 RARELY_PLAYED_SHARE = 0.45  # games vs. the median rated card of the same rarity
 ALSA_FIT_MIN_CARDS = 30  # rated cards with an ALSA needed to read quality from pick order
 UNRATED_ALSA_MIN, UNRATED_ALSA_MAX = -1.0, 1.2  # an unrated rare's pick-order prior stays modest
+# 17lands shows GIH from ~500 games in hand. A format whose typical rated card has
+# fewer games of its own borrows its win rates (an Alchemy draft in its first weeks).
+YOUNG_FORMAT_GAMES = 500
 SECOND_COLOR_FLOOR = 0.25  # least hold on any second color (an undecided one too)
 REMOVAL_SHARE = 0.12  # ~3 removal spells per 23-25 playables
 # 17Lands GIH overrates nonbasic lands: a dual is drawn into a two-color deck
@@ -198,6 +201,9 @@ class _SetStats:
     game_wr_sd: float | None
     # Rated cards' quality against how early drafters take them (ALSA): (intercept, slope).
     alsa_fit: tuple[float, float] | None = None
+    # Too new for 17lands to show win rates of its own cards (an Alchemy format in its
+    # first weeks): unrated then says nothing about whether drafters play a card.
+    young: bool = False
 
 
 def _alsa_fit(rated: list[Any]) -> tuple[float, float] | None:
@@ -228,10 +234,12 @@ def _set_stats(primer: SetPrimer | None) -> _SetStats:
         if len(games) >= 3:
             median_games[rarity] = float(statistics.median(games))
     fit = _alsa_fit(rated)
+    own = [card.format_games for card in rated if getattr(card, "format_games", None) is not None]
+    young = len(own) >= 10 and statistics.median(own) < YOUNG_FORMAT_GAMES
     game_wrs = [card.game_wr for card in rated if card.game_wr is not None]
     if len(game_wrs) >= 10 and statistics.pstdev(game_wrs) > 0:
-        return _SetStats(median_games, statistics.fmean(game_wrs), statistics.pstdev(game_wrs), fit)
-    return _SetStats(median_games, None, None, fit)
+        return _SetStats(median_games, statistics.fmean(game_wrs), statistics.pstdev(game_wrs), fit, young)
+    return _SetStats(median_games, None, None, fit, young)
 
 
 def _rarely_played(card: Any, stats: _SetStats) -> str | None:
@@ -288,15 +296,18 @@ def _unrated_prior(card: Any, stats: _SetStats) -> tuple[float, str]:
     A rare or mythic goes unrated because few copies exist, not because nobody
     plays it, so how early drafters take it (ALSA, r = -0.61 with quality on
     FRA's rated cards) predicts its quality. An unrated common or uncommon in a
-    mature format is one drafters leave out, so it starts below average.
+    mature format is one drafters leave out, so it starts below average. In a
+    young format (``_SetStats.young``) every new card is unrated, so pick order
+    judges commons and uncommons too (2026-10-18 Y26FRA: Dina, taken ~3.5th).
     """
-    if card.rarity in UNRATED_RARE_PRIOR:
+    if card.rarity in UNRATED_RARE_PRIOR or stats.young:
         alsa = getattr(card, "alsa", None)
         if alsa and stats.alsa_fit:
             intercept, slope = stats.alsa_fit
             z = max(UNRATED_ALSA_MIN, min(UNRATED_ALSA_MAX, intercept + slope * alsa))
             return round(z, 3), f"unrated; drafters take it around pick {alsa:.1f}"
-        return UNRATED_RARE_PRIOR[card.rarity], "unrated rare; rarity prior"
+        if card.rarity in UNRATED_RARE_PRIOR:
+            return UNRATED_RARE_PRIOR[card.rarity], "unrated rare; rarity prior"
     return UNRATED_PRIOR, "unrated; assumed below average"
 
 
@@ -844,9 +855,10 @@ def rank_pack(
                 parts["needs"] = min(parts["needs"], 0.0)
                 if parts["lane"] > 0:
                     parts["lane"] *= RARELY_PLAYED_LANE
-            if not rated:
+            if not rated and not (stats.young and not rarely):
                 # Text and primer lists cannot lift a card the data says
-                # nobody plays; a merely unrated one gets a little credit.
+                # nobody plays; a merely unrated one gets a little credit. In a
+                # young format unrated says nothing, so rules text counts in full.
                 cap = 0.0 if rarely else UNRATED_DECK_CAP
                 credit = sum(SCORE_WEIGHTS[k] * parts[k] for k in DECK_CREDIT)
                 if credit > cap:
