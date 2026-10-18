@@ -68,6 +68,7 @@ from arenamcp.board_assessment import (
 )
 from arenamcp.board_model import BoardModel, _regular_damage_part, cast_bans, spell_banned
 from arenamcp.combat_keywords import has_combat_keyword
+from arenamcp.cost_reduction import parse_cost_reduction, reduced_mana_value, reduction_amount
 from arenamcp.mulligan_policy import _land_colors, _pip_matching, hand_card
 
 # Outcome classes, compared before timing and value.
@@ -107,6 +108,12 @@ _LIFE_SCALED_TOKENS = re.compile(
     r"\bcreate x ((?:\d+)/(?:\d+) [^.\n]*?\bcreature tokens?\b[^.\n]*?),? where x is the (?:amount of )?"
     r"life you(?:'ve)? gained this turn"
 )
+# "Put a +1/+1 counter on target creature." (Seed Suture): a lasting +N/+N on our biggest body.
+_COUNTER_ON_TARGET = re.compile(
+    r"\bput (?P<n>a|an|one|two|three|\d+) \+1/\+1 counters? on (?:another )?target creature\b"
+)
+# Ids of countered bodies (a fresh id per body and count, below the token ids).
+_COUNTER_IDS = 800_000_000
 # "For every 3 life you gained this game, create an additional one of those tokens."
 _LIFE_GAME_EXTRA = re.compile(
     r"\bfor (?:every|each) (\w+) life you(?:'ve)? gained this game, create an additional one of those tokens\b"
@@ -271,6 +278,7 @@ class Variant:
     # Creature tokens it makes per point of life gained this turn (Germinate Recruits): the
     # count is read when it resolves, after the casts before it in the turn.
     life_tokens: tuple = ()
+    counter: int = 0  # +1/+1 counters it puts on target creature (we pick our biggest)
 
 
 @dataclass(eq=False)
@@ -283,6 +291,7 @@ class HandSpell:
     hand_value: float
     variants: tuple = ()
     plain: Variant | None = None  # today's greedy semantics: no mode, whole-card removal
+    reduction: Any = None  # its own "this spell costs {X} less" (``cost_reduction``)
 
 
 @dataclass(frozen=True, eq=False)
@@ -647,6 +656,7 @@ def _modelled(var: Variant) -> bool:
         var.body is not None
         or var.tokens
         or var.life_tokens
+        or var.counter
         or var.reach is not None
         or var.gain
         or var.face
@@ -712,6 +722,7 @@ class Moves:
         self._boosted: dict = {}
         self._token_id = _TOKEN_IDS  # the next token body's instance id (deterministic)
         self._life_token_memo: dict = {}
+        self._counter_memo: dict = {}
         # Hushbringer / Torpor Orb on the battlefield: a creature we cast triggers nothing on entering.
         self.enters_triggers = not any(_NO_ENTERS_TRIGGERS.search(_text(c)) for c in model.battlefield)
         self._prepare()
@@ -732,6 +743,7 @@ class Moves:
             value = _spell_value(spell, survival=self.survival, theirs=theirs, ours=list(model.ours))
             iid = _int(spell.card.get("instance_id")) or 0
             hs = HandSpell(index, spell, iid, lowest[(spell.name, spell.zone)], spell.name, max(1.0, value))
+            hs.reduction = parse_cost_reduction(str(spell.card.get("oracle_text") or ""))
             hs.variants, hs.plain = self._variants(hs)
             self.spells.append(hs)
         self.hand0 = tuple(
@@ -780,6 +792,12 @@ class Moves:
         )
         if per_life:
             per_life = tuple(s for s in per_life if s not in base_specs) or per_life
+        counter_match = _COUNTER_ON_TARGET.search(_text(etb)) if not creature else None
+        counters = (
+            (_COUNT_WORDS.get(counter_match.group("n")) or _int(counter_match.group("n")) or 0)
+            if counter_match
+            else 0
+        )
 
         def make(
             mode=None, text="", gain=0, reach=None, bounce=False, rock=False, loss=0, face=0, aim="", specs=()
@@ -787,7 +805,7 @@ class Moves:
             return Variant(
                 hs.index, "cast", mode, text, body, gain, reach, bounce, rock, spell.mana_value, spell.pips,
                 bool(info.instant_speed), loss, face, aim, tokens=self._tokens([*base_specs, *specs]),
-                life_tokens=per_life,
+                life_tokens=per_life, counter=counters,
             )  # fmt: skip
 
         def aimed(var: Variant, alt: int) -> list[Variant]:
@@ -817,7 +835,7 @@ class Moves:
             reach = removal_reach(etb) if spell.role in ("removal", "bounce") else None
             etb_reach = etb if reach is not None else None
             bounce = etb_reach is not None and spell.role == "bounce"
-            match = _LIFEGAIN.search(_text(etb)) if spell.role == "lifegain" else None
+            match = _LIFEGAIN.search(_text(etb)) if spell.role == "lifegain" or counters else None
             alt, each = face_damage(etb)
         plain = make(
             reach=etb_reach,
@@ -1118,6 +1136,37 @@ class Moves:
             found = self._life_token_memo[key] = (var, self._tokens(specs))
         return found[1]
 
+    def set_cost(self, ours, choice) -> int:
+        """The mana a set of casts costs, cast in ``begin``'s order: a spell's own cost
+        reduction counts our creatures then, the set's other bodies and counters included."""
+        total = sum(v.mana_value + (self.ward(t) if t is not None else 0) for v, t in choice)
+        reducing = [v for v, _ in choice if self.spells[v.spell].reduction is not None]
+        if not reducing:
+            return total
+        others = [v for v, _ in choice if self.spells[v.spell].reduction is None]
+        powers = [b["power"] for b in ours] + [b["power"] for v in others for b in _bodies(v)]
+        counters = sum(v.counter for v in others)
+        if counters and powers:
+            powers[powers.index(max(powers))] += counters
+        permanents = list(self.model.our_permanents)
+        for var in reducing:
+            saved = reduction_amount(self.spells[var.spell].reduction, powers, permanents)
+            total -= var.mana_value - reduced_mana_value(var.mana_value, len(var.pips), saved)
+        return total
+
+    def _countered(self, body: dict, n: int) -> dict:
+        """``body`` with ``n`` more +1/+1 counters: a fresh id (the combat memo keys on ids)."""
+        key = (body["instance_id"], n)
+        found = self._counter_memo.get(key)
+        if found is None:
+            found = self._counter_memo[key] = {
+                **body,
+                "instance_id": _COUNTER_IDS + len(self._counter_memo),
+                "power": body["power"] + n,
+                "toughness": body["toughness"] + n,
+            }
+        return found
+
     def gained_at_start(self, node: Node) -> int:
         """Life we gained this turn before the line acts: the snapshot's on T, 0 on later turns."""
         return int(self.model.life_gained_turn or 0) if (node.k == 0 and self.our_turn) else 0
@@ -1154,7 +1203,8 @@ class Moves:
             items = []
             banned = self.banned(self.spells[index], bans)
             for var in self.spells[index].variants:
-                if (instant_only and not var.instant) or var.mana_value > len(sources):
+                reduced = self.spells[index].reduction is not None
+                if (instant_only and not var.instant) or (var.mana_value > len(sources) and not reduced):
                     continue
                 if (banned and var.kind == "cast") or var.loss >= node.our_life:
                     continue
@@ -1187,7 +1237,7 @@ class Moves:
                     ):
                         continue
                     hit = [t["instance_id"] for _, t in choice if t is not None]
-                    total = sum(v.mana_value + (self.ward(t) if t is not None else 0) for v, t in choice)
+                    total = self.set_cost(node.ours, choice)
                     if len(hit) != len(set(hit)) or total > len(sources):
                         continue
                     if sum(v.loss for v, _ in choice) >= node.our_life:
@@ -1219,14 +1269,20 @@ class Moves:
     def begin(self, node: Node, land: Land | None, casts: tuple) -> Mid:
         """Our turn ``node.k`` with this land and these casts (cast now unless we attack first)."""
         mid = Mid.__new__(Mid)
-        if any(v.life_tokens for v, _ in casts):
+        if any(v.life_tokens or self.spells[v.spell].reduction is not None for v, _ in casts):
             # Gain life first, then cast what scales with the life gained this turn (pro game
-            # 2026-10-18, YFRA match 1 T11: Something Worth Saving, then Germinate Recruits).
-            casts = tuple(sorted(casts, key=lambda c: bool(c[0].life_tokens)))
+            # 2026-10-18, YFRA match 1 T11: Something Worth Saving, then Germinate Recruits);
+            # bodies and counters before a spell they make cheaper (T15: Seed Suture, then Ghalta).
+            casts = tuple(
+                sorted(
+                    casts,
+                    key=lambda c: bool(c[0].life_tokens or self.spells[c[0].spell].reduction is not None),
+                )
+            )
         mid.node, mid.land, mid.casts = node, land, casts
         mid.gained = self.gained_at_start(node)
         mid.base_sources, mid.sources = self.sources(node, land)
-        mid.used_mv = sum(v.mana_value + (self.ward(t) if t is not None else 0) for v, t in casts)
+        mid.used_mv = self.set_cost(node.ours, casts)
         mid.used_pips = tuple(p for v, _ in casts for p in v.pips)
         mid.our_life, mid.opp_life = node.our_life, node.opp_life
         mid.ours, mid.theirs = list(node.ours), list(node.theirs)
@@ -1265,6 +1321,14 @@ class Moves:
                 mid.targets.append((hs.name, var.aim))
             mid.our_life -= var.loss
             mid.opp_life -= var.face
+            if var.counter and mid.ours:
+                old = max(mid.ours, key=lambda b: (b["power"], b["toughness"], -b["instance_id"]))
+                new = self._countered(old, var.counter)
+                mid.ours = [new if b is old else b for b in mid.ours]
+                if old["instance_id"] in mid.entered:
+                    mid.entered[new["instance_id"]] = mid.entered[old["instance_id"]]
+                if old["instance_id"] in mid.our_tapped:
+                    mid.our_tapped.add(new["instance_id"])
             made = list(var.tokens) + list(self._life_bodies(var, mid.gained))
             for body in ([var.body] if var.body is not None else []) + made:
                 mid.ours.append(body)

@@ -512,7 +512,8 @@ class _Search(Moves):
                 _base, sources = self.sources(node, land)
                 for casts in self.cast_sets(node, sources, instant_only=instant_only):
                     keys = frozenset(self.play_keys(land, casts) | extra)
-                    pairs.append((self.choice_value(casts, node.theirs), block, node, land, casts, keys))
+                    value = self.choice_value(casts, node.theirs, self.gained_at_start(node))
+                    pairs.append((value, block, node, land, casts, keys))
         pairs.sort(key=lambda pair: (-round(pair[0], 6), self._pair_text(pair)))
         covered: set = set()
         first, rest = [], []

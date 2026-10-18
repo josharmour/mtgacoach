@@ -246,3 +246,19 @@ M1_T11 = board(
     ],
     hand=[(278, "Something Worth Saving"), (164, "Germinate Recruits")],
 )  # fmt: skip
+
+# Match 1 turn 15 after the land drop. Seed Suture was Emergency Phytomedic's
+# prepared copy, cast from exile; it stands in our hand here (the line search
+# plans hand casts). The pro: Phytomedic, Seed Suture on the Beast (5/5), then
+# Ghalta for {3}{G} - six mana from five lands and the Heartwood token.
+M1_T15 = board(
+    turn=15, phase="Phase_Main1", life={1: 19, 2: 7}, lands_played=1,
+    battlefield=[
+        (199, "Forest", 2, False, 1), (206, "Plains", 2, False, 3), (236, "Plains", 2, False, 7),
+        (250, "Plains", 2, False, 9), (333, "Forest", 2, False, 15), (200, "Heartwood Crafter", 2, False, 1),
+        (211, "Heartwood", 2, False, 3), (317, "Beast", 2, False, 13),
+        (204, "Mountain", 1, False, 2), (214, "Island", 1, False, 4), (224, "Island", 1, False, 6),
+        (243, "Mountain", 1, False, 8), (263, "Thopter", 1, False, 10), (266, "Traxos, Academy Guardian", 1, False, 10),
+    ],
+    hand=[(274, "Emergency Phytomedic"), (336, "Seed Suture"), (286, "Ghalta the Unstoppable")],
+)  # fmt: skip
