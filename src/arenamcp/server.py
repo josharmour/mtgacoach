@@ -59,6 +59,21 @@ draft_state: DraftState = DraftState()
 parser: LogParser = LogParser()
 watcher: MTGALogWatcher | None = None
 
+# Wakes the coaching loop out of its poll sleep (standalone._wait_for_wake).
+# Set by the log-watcher thread when a chunk carries a GRE request the client
+# must answer, and by the bridge prefetch thread when the pending request
+# changes, so a new decision is noticed in milliseconds instead of after the
+# loop's 0.15-2.5 s sleep. The coaching loop is the only one that clears it.
+loop_wake = threading.Event()
+_DECISION_REQUEST_RE = re.compile(r"GREMessageType_\w+Req\b")
+
+
+def _process_log_chunk(text: str) -> None:
+    """Parse a Player.log chunk (watcher thread), then wake the loop for a new request."""
+    parser.process_chunk(text)
+    if _DECISION_REQUEST_RE.search(text):
+        loop_wake.set()
+
 
 # Lazy-loaded caches (avoid blocking startup with bulk downloads)
 _draft_stats: DraftStatsCache | None = None
@@ -984,7 +999,7 @@ def start_watching() -> None:
 
     # Create and start the watcher
     watcher = MTGALogWatcher(
-        callback=parser.process_chunk,
+        callback=_process_log_chunk,
         resume_offset=resume_offset,
         resume_match_id=saved_state.get("match_id") if saved_state else None,
     )

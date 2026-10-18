@@ -14,6 +14,7 @@ and what the valid options are, replacing reactive log-diff detection.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import logging
@@ -34,6 +35,12 @@ logger = logging.getLogger(__name__)
 PIPE_NAME = r"\\.\pipe\mtgacoach_bridge_v2"
 PIPE_TIMEOUT_MS = 3000
 COMMAND_TIMEOUT = 5.0
+# TCP loopback ports the plugin / probe dial. Read when a server is created, so
+# the test suite can point them at ephemeral ports (tests/conftest.py): a hung
+# pytest once held 44222 for two hours and the live coach could not start its
+# bridge (2026-10-18, "[Errno 48] Address already in use").
+BRIDGE_PORT = 44222
+BOT_BATTLE_PORT = 44223
 UNMAPPED_INTERACTION_TYPE = "unmapped_interaction"
 # First BepInEx plugin version with the "concede" command (PluginInfo.Version).
 CONCEDE_PLUGIN_VERSION = "0.6.4"
@@ -172,9 +179,16 @@ class GREBridge:
     """
 
     _mac_adapter: Any = None
+    _port: int | None = None
+    # The port actually bound (differs from _port when that is 0).
+    bound_port: int | None = None
+    # The one-time WARNING for a port another process already holds.
+    _port_conflict_warned = False
 
-    def __init__(self):
+    def __init__(self, port: int | None = None):
         self._connected = False
+        # Listening port: None = BRIDGE_PORT, read at bind time (0 = ephemeral).
+        self._port = None if port is None else int(port)
         # Keepalive thread — proactively reconnects after disconnect and
         # pings periodically so we detect silently-broken sockets quickly.
         self._keepalive_thread: threading.Thread | None = None
@@ -237,12 +251,19 @@ class GREBridge:
             if self._server_socket is None:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                s.bind(("127.0.0.1", 44222))
+                port = BRIDGE_PORT if self._port is None else self._port
+                try:
+                    s.bind(("127.0.0.1", port))
+                except OSError:
+                    s.close()
+                    raise
                 s.listen(1)
                 s.setblocking(False)
+                self.bound_port = s.getsockname()[1]
                 self._server_socket = s
                 self._server_started_at = time.monotonic()
-                logger.info("GRE bridge TCP server listening on 127.0.0.1:44222")
+                self._port_conflict_warned = False
+                logger.info(f"GRE bridge TCP server listening on 127.0.0.1:{self.bound_port}")
 
             # Phase 2: Check for incoming client connection (non-blocking)
             r, _, _ = select.select([self._server_socket], [], [], 0.0)
@@ -301,6 +322,23 @@ class GREBridge:
                 self.disconnect()
                 return False
 
+        except OSError as e:
+            if e.errno in (errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", -1)):
+                # The keepalive retries every 0.5 s: name the conflict once
+                # instead of logging it twice a second forever.
+                if not self._port_conflict_warned:
+                    self._port_conflict_warned = True
+                    logger.warning(
+                        "GRE bridge: port 127.0.0.1:%s is already in use by another process "
+                        "(a second mtgacoach, or a test run left hanging). The bridge stays "
+                        "offline until that process exits; retrying quietly.",
+                        BRIDGE_PORT if self._port is None else self._port,
+                    )
+                else:
+                    logger.debug(f"GRE bridge connect error: {e}")
+            else:
+                logger.info(f"GRE bridge connect error: {e}")
+            return False
         except Exception as e:
             logger.info(f"GRE bridge connect error: {e}")
             return False
@@ -2708,7 +2746,22 @@ class BridgeDecisionPoller:
 
     _MAX_CONSECUTIVE_ERRORS = 30  # High tolerance — commands may time out when Update() is dead
 
+    # Prefetch thread (start_prefetch). The coaching loop used to fetch the
+    # pending request only between its 0.15-2.5 s sleeps, and not at all while
+    # it was inside an autopilot LLM call. A ~50 ms thread fetches it instead,
+    # wakes the loop when the request changes, and tells request watchers
+    # (autopilot planning) so a superseded model call can be cancelled.
+    _PREFETCH_INTERVAL_S = 0.05
+    _PREFETCH_IDLE_S = 0.25  # bridge not connected: just wait for it
+    # poll() answers from a prefetched response at most this old, else asks.
+    _PREFETCH_MAX_AGE_S = 0.1
+
     def __init__(self, bridge: GREBridge):
+        # Thread ownership: the _last_* diff state, _consecutive_errors,
+        # _fallback_mode and _was_connected belong to the coaching thread
+        # (poll/enrich_snapshot/reset). The prefetch thread only writes
+        # _prefetched / _prefetch_fp and reads the listener list, all under
+        # _prefetch_lock; listeners run on the prefetch thread.
         self._bridge = bridge
         self._last_request_type: str | None = None
         self._last_action_sig: str | None = None
@@ -2717,6 +2770,104 @@ class BridgeDecisionPoller:
         self._consecutive_errors: int = 0
         self._fallback_mode: bool = False
         self._was_connected: bool = False
+        self._prefetch_lock = threading.Lock()
+        self._prefetched: tuple[float, dict[str, Any]] | None = None
+        self._prefetch_fp: tuple | None = None
+        self._prefetch_thread: threading.Thread | None = None
+        self._prefetch_stop = threading.Event()
+        self._prefetch_wake: threading.Event | None = None
+        self._request_listeners: list[Any] = []
+
+    # ----- prefetch thread --------------------------------------------------
+    def start_prefetch(self, wake_event: threading.Event | None = None) -> None:
+        """Start the background request fetcher (idempotent).
+
+        ``wake_event`` is set whenever the pending request changes.
+        """
+        self._prefetch_wake = wake_event
+        thread = self._prefetch_thread
+        if thread is not None and thread.is_alive():
+            return
+        self._prefetch_stop.clear()
+        self._prefetch_thread = threading.Thread(
+            target=self._prefetch_loop, daemon=True, name="bridge-decision-prefetch"
+        )
+        self._prefetch_thread.start()
+
+    def stop_prefetch(self) -> None:
+        self._prefetch_stop.set()
+        thread = self._prefetch_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        self._prefetch_thread = None
+
+    def watch_requests(self, listener: Any) -> Any:
+        """Call ``listener(response)`` on each changed pending request; returns an unsubscribe."""
+        with self._prefetch_lock:
+            self._request_listeners.append(listener)
+
+        def unsubscribe() -> None:
+            with self._prefetch_lock:
+                with contextlib.suppress(ValueError):
+                    self._request_listeners.remove(listener)
+
+        return unsubscribe
+
+    @classmethod
+    def _response_fingerprint(cls, resp: dict[str, Any]) -> tuple:
+        actions = resp.get("actions") or []
+        return (
+            bool(resp.get("has_pending")),
+            resp.get("request_type"),
+            resp.get("request_class"),
+            resp.get("game_state_id"),
+            resp.get("msg_id"),
+            cls._compute_action_sig(actions) if actions else None,
+        )
+
+    def _prefetch_once(self) -> bool:
+        """One fetch; True when the pending request changed. Prefetch thread only."""
+        if self._fallback_mode or not self._bridge.connected:
+            return False
+        resp = self._bridge.get_pending_actions()
+        if not isinstance(resp, dict):
+            return False
+        fp = self._response_fingerprint(resp)
+        with self._prefetch_lock:
+            self._prefetched = (time.monotonic(), resp)
+            changed = fp != self._prefetch_fp
+            self._prefetch_fp = fp
+            listeners = list(self._request_listeners) if changed else []
+        if not changed:
+            return False
+        wake = self._prefetch_wake
+        if wake is not None:
+            wake.set()
+        for listener in listeners:
+            try:
+                listener(resp)
+            except Exception as e:
+                logger.debug(f"bridge request listener failed: {e}")
+        return True
+
+    def _prefetch_loop(self) -> None:
+        while not self._prefetch_stop.is_set():
+            connected = False
+            try:
+                connected = bool(self._bridge.connected) and not self._fallback_mode
+                if connected:
+                    self._prefetch_once()
+            except Exception as e:
+                logger.debug(f"bridge prefetch tick failed: {e}")
+            self._prefetch_stop.wait(self._PREFETCH_INTERVAL_S if connected else self._PREFETCH_IDLE_S)
+
+    def _fresh_prefetched(self) -> dict[str, Any] | None:
+        """The prefetched response when it is recent enough to stand in for a fetch."""
+        with self._prefetch_lock:
+            entry = self._prefetched
+        if entry is None or time.monotonic() - entry[0] > self._PREFETCH_MAX_AGE_S:
+            return None
+        return entry[1]
 
     @property
     def connected(self) -> bool:
@@ -2770,8 +2921,8 @@ class BridgeDecisionPoller:
         except Exception as e:
             logger.debug(f"dynamic card resolve failed: {e}")
 
-        # Poll
-        resp = self._bridge.get_pending_actions()
+        # Poll (the prefetch thread's answer when it is fresh)
+        resp = self._fresh_prefetched() or self._bridge.get_pending_actions()
         if resp is None:
             self._consecutive_errors += 1
             # Only enter fallback if we WERE connected and lost the connection.
@@ -2937,8 +3088,8 @@ class BotBattlePipeServer:
     passes it to a decision handler callback, and writes the response JSON line.
     """
 
-    def __init__(self, port: int = 44223):
-        self.port = port
+    def __init__(self, port: int | None = None):
+        self.port = BOT_BATTLE_PORT if port is None else int(port)
         self.running = False
         self._server_socket = None
 

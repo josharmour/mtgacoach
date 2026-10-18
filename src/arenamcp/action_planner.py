@@ -9,6 +9,7 @@ import inspect
 import json
 import logging
 import re
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -246,6 +247,17 @@ def model_unreachable(plan: Any, backend: Any = None) -> bool:
         return True
     detail = str(getattr(plan, "fallback_detail", "") or "").lower()
     return any(mark in detail for mark in ("circuit open", "model server unavailable", "connect"))
+
+
+def is_time_budget_error(error: BaseException) -> bool:
+    """The call ran out of its own time budget (the model was too slow), not a dead server.
+
+    Only our budget counts (the proxy's "LLM ... time budget exhausted", the
+    decision hedge's "no answer in time"); a transport "Request timed out."
+    is how an outage looks, and stays "unavailable".
+    """
+    text = str(error).lower()
+    return "time budget exhausted" in text or "no answer in time" in text
 
 
 def is_llm_unavailable_error(error: BaseException) -> bool:
@@ -742,6 +754,16 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         self._background_yield = fn
 
+    def set_decision_cancel_event(self, event: threading.Event | None) -> None:
+        """Cancel the decision calls made while ``event`` is installed once it is set.
+
+        The autopilot installs one around a typed decision and sets it when
+        the bridge shows a different request: the answer could only be
+        discarded ("request changed during planning", 95 calls on
+        2026-10-10), so the call stops and frees the model server.
+        """
+        self._decision_cancel_event = event
+
     def set_game_plan_source(self, source: Callable[[dict], str] | None) -> None:
         """Render the strategy block per decision from the live snapshot.
 
@@ -873,6 +895,7 @@ class ActionPlanner(_ActionLegalityMixin):
         call_class: str,
         first_token_timeout_s: float | None = None,
         reasoning_effort: str | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> str:
         """One planner model call: deterministic, raising on backend errors, labelled.
 
@@ -895,6 +918,10 @@ class ActionPlanner(_ActionLegalityMixin):
             extras["first_token_timeout_s"] = min(first_token_timeout_s, timeout_s)
         if reasoning_effort:
             extras["reasoning_effort"] = reasoning_effort
+        if cancel_event is None:
+            cancel_event = getattr(self, "_decision_cancel_event", None)
+        if cancel_event is not None and call_class.startswith("decision."):
+            extras["cancel_event"] = cancel_event
         extras = _accepted_extras(complete, extras)
         try:
             response = complete(
@@ -3210,6 +3237,9 @@ class ActionPlanner(_ActionLegalityMixin):
         and the background game-plan reform both read.
         """
         chosen = self._plan_decision_options(decision, game_state)
+        cancel_event = getattr(self, "_decision_cancel_event", None)
+        if cancel_event is not None and cancel_event.is_set():
+            return chosen  # superseded: the caller discards it, memory must not keep it
         try:
             self._memory().record(game_state, decision, chosen, self._last_decision_reasoning)
         except Exception as error:  # memory never blocks a decision
@@ -3317,6 +3347,7 @@ class ActionPlanner(_ActionLegalityMixin):
         self._last_decision_unusual_targets = {}
         self._last_decision_trace = {}
         self.last_llm_failure = ""
+        self._last_llm_too_slow = False
         context = game_state.get("decision_context") or {}
         raw = context.get("raw") or {}
         accept = decision.find("optional:accept")
@@ -3501,6 +3532,9 @@ class ActionPlanner(_ActionLegalityMixin):
             self.last_llm_failure = "bad_answer"
         except Exception as e:
             self.last_llm_failure = "unavailable" if is_llm_unavailable_error(e) else "bad_answer"
+            # Only the spoken/logged wording: "unavailable" keeps its meaning
+            # for the autopilot (no timeout escalation).
+            self._last_llm_too_slow = is_time_budget_error(e)
             logger.info(f"plan_decision_options LLM path failed: {e}")
         trace = getattr(self, "_last_decision_trace", None)
         if isinstance(trace, dict):
@@ -3544,11 +3578,13 @@ class ActionPlanner(_ActionLegalityMixin):
         line = line_fallback_option_pick(decision, game_state, picked)
         if line is not None:
             (picked, why), source = line, "line"
-        lead = (
-            "Model unavailable"
-            if getattr(self, "last_llm_failure", "") == "unavailable"
-            else "No usable model answer"
-        )
+        failure = getattr(self, "last_llm_failure", "")
+        if failure == "unavailable" and getattr(self, "_last_llm_too_slow", False):
+            lead = "Model too slow"
+        elif failure == "unavailable":
+            lead = "Model unavailable"
+        else:
+            lead = "No usable model answer"
         self._last_decision_option_ids = picked
         self._last_decision_reasoning = f"{lead}; {why}."
         trace = getattr(self, "_last_decision_trace", None)
@@ -4613,6 +4649,84 @@ class ActionPlanner(_ActionLegalityMixin):
     # Budget for a critical typed decision (removal, spending a plan card):
     # high reasoning effort needs room to think; Arena's priority timer allows it.
     _CRITICAL_DECISION_BUDGET_S = 15.0
+    # A hedge leg still running this long past its budget is abandoned.
+    _HEDGE_GRACE_S = 2.0
+
+    def _hedged_decision(
+        self,
+        ask: Callable[..., str],
+        parse: Callable[[str], tuple[dict, list[str]]],
+        message: str,
+        normal_budget: float,
+    ) -> tuple[dict, list[str]]:
+        """A critical decision: the high-effort call and the normal low-effort one, at once.
+
+        2026-10-18 14:31-14:33 (shared-GPU load): 4 of 5 high-effort calls ran
+        out their 15 s with no content and board math played the turn's key
+        spells, while low-effort calls in the same window finished in ~6 s
+        (p50 2.5 s; high p50 9.5 s when it finishes). The high answer is used
+        when it parses within its budget; otherwise the low answer, which is
+        normally ready by then; only when both fail does the caller fall back.
+        The loser is cancelled (its socket shut down). The autopilot's
+        request-changed cancel event stops both legs.
+        """
+        outer = getattr(self, "_decision_cancel_event", None)
+        legs = {
+            "high": ("high", self._CRITICAL_DECISION_BUDGET_S),
+            "low": (None, normal_budget),
+        }
+        cancels = {leg: threading.Event() for leg in legs}
+        results: dict[str, tuple[str, Any, float]] = {}
+        changed = threading.Condition()
+        started = time.monotonic()
+
+        def run(leg: str) -> None:
+            effort, budget = legs[leg]
+            try:
+                outcome = ("ok", parse(ask(message, effort=effort, budget=budget, cancel_event=cancels[leg])))
+            except Exception as error:  # reported to the waiter below
+                outcome = ("error", error)
+            with changed:
+                results[leg] = (*outcome, (time.monotonic() - started) * 1000.0)
+                changed.notify_all()
+
+        for leg in legs:
+            threading.Thread(target=run, args=(leg,), daemon=True, name=f"decision-hedge-{leg}").start()
+
+        def wait_for(leg: str) -> tuple[str, Any, float] | None:
+            deadline = started + legs[leg][1] + self._HEDGE_GRACE_S
+            with changed:
+                while leg not in results:
+                    if outer is not None and outer.is_set():
+                        for event in cancels.values():
+                            event.set()
+                        raise LLMUnavailableError("decision cancelled: the request changed")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return None
+                    changed.wait(min(0.05, remaining))
+                return results[leg]
+
+        high = wait_for("high")
+        if high is not None and high[0] == "ok":
+            cancels["low"].set()
+            logger.info("typed-decision hedge: high won in %.0f ms", high[2])
+            return high[1]
+        cancels["high"].set()
+        low = wait_for("low")
+        if low is not None and low[0] == "ok":
+            logger.info(
+                "typed-decision hedge: low won in %.0f ms (high: %s)",
+                low[2],
+                high[1] if high is not None else "no answer in time",
+            )
+            return low[1]
+        cancels["low"].set()
+        errors = [r[1] for r in (high, low) if r is not None and r[0] == "error"]
+        slow = next((e for e in errors if is_time_budget_error(e)), None)
+        if slow is not None or len(errors) < 2:
+            raise slow if slow is not None else TimeoutError("decision hedge: no answer in time")
+        raise errors[0]
 
     def _llm_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         # Circuit open: fail before formatting a 25k-character prompt, so the
@@ -4885,16 +4999,25 @@ class ActionPlanner(_ActionLegalityMixin):
             else "decision.typed"
         )
 
-        def ask(message: str, *, effort: str | None, budget: float) -> str:
-            return self._call_llm(
-                self._DECISION_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY,
-                message,
-                self._DECISION_MAX_TOKENS,
-                timeout_s=budget,
-                call_class=call_class,
-                first_token_timeout_s=self._FIRST_TOKEN_TIMEOUT_S,
-                reasoning_effort=effort,
-            )
+        def ask(
+            message: str, *, effort: str | None, budget: float, cancel_event: threading.Event | None = None
+        ) -> str:
+            from arenamcp.game_plan import critical_decision_call
+
+            # A high-effort decision holds new game-plan reforms back: vLLM
+            # runs several sequences at once, so the reform's priority only
+            # orders the queue, it does not stop the two sharing the GPU.
+            with critical_decision_call(effort == "high"):
+                return self._call_llm(
+                    self._DECISION_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY,
+                    message,
+                    self._DECISION_MAX_TOKENS,
+                    timeout_s=budget,
+                    call_class=call_class,
+                    first_token_timeout_s=self._FIRST_TOKEN_TIMEOUT_S,
+                    reasoning_effort=effort,
+                    cancel_event=cancel_event,
+                )
 
         def parse(response: str) -> tuple[dict, list[str]]:
             # P1-1: models prose-prefix the JSON despite "reply ONLY with JSON"
@@ -4918,10 +5041,11 @@ class ActionPlanner(_ActionLegalityMixin):
                 raise ValueError("typed-decision option_ids must contain only ids")
             return data, [str(option_id) for option_id in ids]
 
-        effort = "high" if critical else None
-        budget = self._CRITICAL_DECISION_BUDGET_S if critical else min(self._timeout, 12.0)
-        response = ask(user_message, effort=effort, budget=budget)
-        data, chosen = parse(response)
+        normal_budget = min(self._timeout, 12.0)
+        if critical:
+            data, chosen = self._hedged_decision(ask, parse, user_message, normal_budget)
+        else:
+            data, chosen = parse(ask(user_message, effort=None, budget=normal_budget))
         reversed_record = self._memory().reversal(game_state, decision, chosen)
         if reversed_record is not None:
             # The model is taking an action it passed on moments ago with the

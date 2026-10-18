@@ -38,6 +38,7 @@ instant-speed interaction risk
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
 import logging
@@ -1605,6 +1606,31 @@ def _round(x: Any, default: int = 0) -> int:
         return default
 
 
+_CRITICAL_LOCK = threading.Lock()
+_critical_inflight = 0
+
+
+@contextlib.contextmanager
+def critical_decision_call(active: bool = True):
+    """Mark a high-effort decision call in flight; no new game-plan reform starts meanwhile."""
+    global _critical_inflight
+    if not active:
+        yield
+        return
+    with _CRITICAL_LOCK:
+        _critical_inflight += 1
+    try:
+        yield
+    finally:
+        with _CRITICAL_LOCK:
+            _critical_inflight -= 1
+
+
+def critical_decision_call_inflight() -> bool:
+    with _CRITICAL_LOCK:
+        return _critical_inflight > 0
+
+
 def _decision_pending(game_state: dict[str, Any]) -> bool:
     """A decision (log or bridge) is waiting on us in this snapshot."""
     return bool(
@@ -1650,6 +1676,9 @@ class GamePlanManager:
             "resumed after a decision",
         }
     )
+    # The only reform that may start during our own turn: without any plan,
+    # one is worth more than one faster decision (2026-10-10 Brawl game).
+    _OUR_TURN_REASONS = frozenset({"first plan"})
     # A board-math role change between these two alone, with the lethal and
     # dead-soon flags unchanged, is noise (2026-10-07 replay: turn 6 went
     # aggressor -> race -> defender and turn 7 defender -> race on ordinary
@@ -2145,6 +2174,10 @@ class GamePlanManager:
             suspended = getattr(self, "background_suspended_fn", None)
             if callable(suspended) and suspended():
                 return False
+            if critical_decision_call_inflight():
+                # Re-requested at the next window: nothing was attempted.
+                logger.debug("Game plan reform waits: a critical decision call is in flight")
+                return False
             if game_state.get("stack") or game_state.get("game_over"):
                 return False
             if not _round((game_state.get("turn") or {}).get("turn_number")):
@@ -2159,6 +2192,16 @@ class GamePlanManager:
             else:
                 reason = self._should_reform(sig, our_turn=our_turn, key=self._strategic_key(game_state, sig))
             if not reason:
+                return False
+            if our_turn and reason not in self._OUR_TURN_REASONS:
+                # 2026-10-11 audit: 72 of 168 plan calls were cancelled or
+                # discarded, and decision calls overlapping one had ~2x TTFT
+                # (1.1 s -> 1.9 s). A mid-turn reform replans a turn that is
+                # mostly played by the time a ~20 s high-effort call returns;
+                # every decision prompt already re-renders the live board
+                # facts. Wait for the opponent's turn and plan our next turn
+                # there ("plan our next turn" fires then), at full effort.
+                logger.debug("Game plan reform (%s) deferred to the opponent's turn", reason)
                 return False
             if reason in self._ROUTINE_REASONS and _decision_pending(game_state):
                 return False

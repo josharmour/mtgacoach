@@ -8,6 +8,16 @@ from arenamcp.action_planner import ActionType, GameAction
 from arenamcp.autopilot_bridge import _BridgeSubmitMixin
 
 
+def _then_repeat(*responses):
+    """get_pending_actions answers: each in turn, then the last one for every later poll.
+
+    The finalize step polls until the GRE re-issues the request (it used to
+    sleep 0.8 s and poll once), so it may ask more than twice.
+    """
+    feed = list(responses)
+    return lambda: feed.pop(0) if len(feed) > 1 else feed[0]
+
+
 @pytest.fixture(params=["The Notary Hobbits", "Soldier"])
 def combat(monkeypatch, request):
     monkeypatch.setattr("arenamcp.autopilot_bridge.time.sleep", lambda seconds: None)
@@ -33,7 +43,7 @@ def combat(monkeypatch, request):
         ],
     }
     bridge = SimpleNamespace(
-        get_pending_actions=Mock(side_effect=[pending, {"has_pending": False}]),
+        get_pending_actions=Mock(side_effect=_then_repeat(pending, {"has_pending": False})),
         submit_blockers=Mock(return_value=True),
     )
     engine = SimpleNamespace(
@@ -71,7 +81,7 @@ def test_finalize_requires_all_intended_blocks_to_be_accepted(combat, selected_i
     for blocker in refreshed["blockers"]:
         if blocker["blockerInstanceId"] in selected_ids:
             blocker["selectedAttackerInstanceIds"] = [553]
-    engine._gre_bridge.get_pending_actions.side_effect = [pending, refreshed]
+    engine._gre_bridge.get_pending_actions.side_effect = _then_repeat(pending, refreshed)
 
     result = _BridgeSubmitMixin._try_gre_bridge_blockers(engine, action)
 

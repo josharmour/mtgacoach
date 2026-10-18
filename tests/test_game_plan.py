@@ -358,6 +358,30 @@ def test_background_refresh_cooldown_applies_to_success_and_failure(monkeypatch,
     assert be.calls == 2
 
 
+def test_mid_turn_reforms_wait_for_the_opponents_turn(monkeypatch, refresh_threads):
+    # 2026-10-11 audit: 72 of 168 plan calls were cancelled or discarded and
+    # overlapping decision calls had ~2x TTFT. Only the first plan may start
+    # on our own turn; everything else plans our next turn on theirs.
+    now = [100.0]
+    monkeypatch.setattr("arenamcp.game_plan.time.monotonic", lambda: now[0])
+    be = FakeBackend([_plan_json(), _plan_json("next turn line")])
+    mgr = GamePlanManager(be)
+    assert mgr.request_reform(_state(turn=3))  # first plan, on our turn
+    refresh_threads[-1].join(timeout=2)
+    now[0] += mgr._REFRESH_INTERVAL_S
+    mgr._stall_count = mgr._STALL_REFORM_THRESHOLD  # "plan stalled"
+    assert not mgr.request_reform(_state(turn=3))
+    mgr._stall_count = 0
+    assert not mgr.request_reform(_state(turn=7))  # "stale plan" / "no plan for this turn"
+    assert be.calls == 1
+    theirs = _state(turn=8)
+    theirs["turn"]["active_player"] = 2
+    assert mgr.request_reform(theirs)  # their turn: plan our next one, at full effort
+    refresh_threads[-1].join(timeout=2)
+    assert be.calls == 2
+    assert be.requests[-1][2].get("reasoning_effort") == GamePlanManager._PLAN_REASONING_EFFORT
+
+
 def test_background_refresh_defers_to_live_stack_and_skips_empty_snapshots(refresh_threads):
     mgr = GamePlanManager(FakeBackend([_plan_json()]))
     assert not mgr.request_reform({})

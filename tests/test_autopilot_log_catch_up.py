@@ -107,3 +107,22 @@ def test_search_is_not_submitted_if_private_request_changes_during_planning(monk
     assert engine._try_typed_decision_path(stale, "decision_required") is True
     engine._planner.plan_decision_options.assert_called_once()
     engine._gre_bridge.submit_selection.assert_not_called()
+
+
+def test_the_catch_up_wait_reads_player_log_itself():
+    # 2026-10-10: 31 catch-up timeouts/day (p50 4.3 s) because the wait only
+    # re-read the parsed state and nothing else was reading the log.
+    stale = {"_log_game_state_id": 165}
+    fresh = {"_log_game_state_id": 166}
+    current = [stale]
+    engine = _engine([stale])
+    engine._game_state_fn = lambda: current[0]
+    polls: list[int] = []
+
+    def poll_log() -> None:
+        polls.append(1)
+        current[0] = fresh  # the read brought the log up to the request
+
+    engine._poll_log_fn = poll_log
+    assert engine._await_log_catch_up(_poll(166), stale)["_log_game_state_id"] == 166
+    assert polls == [1]

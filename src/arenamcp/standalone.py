@@ -1072,6 +1072,13 @@ class StandaloneCoach(
             self._autopilot._advice_recorder = self._record_advice
             self._autopilot._stuck_report_fn = self._auto_capture_autopilot_stuck
             self._autopilot._oops_fn = self._oops_report
+            # A typed decision's model call is cancelled when the bridge
+            # prefetch thread sees a different request (BridgeDecisionPoller).
+            _watch = getattr(getattr(self, "_bridge_poller", None), "watch_requests", None)
+            if callable(_watch):
+                self._autopilot._request_watch_fn = _watch
+            # The log catch-up wait reads Player.log itself (not just the parsed state).
+            self._autopilot._poll_log_fn = self._mcp.poll_log if self._mcp else None
             if self._coach:
                 self._autopilot._game_plan_mgr = self._coach._ensure_game_plan_mgr()
                 if self._autopilot._game_plan_mgr:
@@ -1520,6 +1527,46 @@ class StandaloneCoach(
     _POLL_ACTIVE = 1.0  # Our turn with priority, combat phase
     _POLL_NORMAL = 1.5  # Opponent's turn, calm board state
     _POLL_IDLE = 2.5  # No active match
+
+    # A wake (new GRE request in the log, changed bridge request) ends the
+    # sleep early, but loop iterations stay at least this far apart so a
+    # chatty log cannot spin the loop (each iteration emits UI snapshots and
+    # asks the bridge for card positions).
+    _WAKE_MIN_GAP_S = 0.05
+
+    def _loop_wake_event(self) -> threading.Event | None:
+        wake = getattr(getattr(self, "_mcp", None), "wake_event", None)
+        return wake if isinstance(wake, threading.Event) else None
+
+    def _wait_for_wake(self, timeout: float) -> bool:
+        """Sleep up to ``timeout``; return early (True) when the loop is woken.
+
+        Threads: the log watcher and the bridge prefetch thread only set the
+        event; this (the coaching thread) is the only one that clears it, right
+        after waking, so a wake that arrives during the next iteration is kept.
+        """
+        wake = self._loop_wake_event()
+        if wake is None:
+            time.sleep(timeout)
+            return False
+        started = time.monotonic()
+        woken = wake.wait(timeout)
+        if woken:
+            wake.clear()
+            gap = self._WAKE_MIN_GAP_S - (time.monotonic() - started)
+            if gap > 0:
+                time.sleep(gap)
+        return woken
+
+    def _start_bridge_prefetch(self) -> None:
+        """Fetch the bridge's pending request on its own ~50 ms thread (BridgeDecisionPoller)."""
+        start = getattr(self._bridge_poller, "start_prefetch", None)
+        if not callable(start):
+            return
+        try:
+            start(self._loop_wake_event())
+        except Exception as e:
+            logger.debug(f"bridge prefetch did not start: {e}")
 
     def _get_poll_interval(self, game_state: dict[str, Any]) -> float:
         """Determine polling interval based on game state urgency.
@@ -3357,7 +3404,7 @@ class StandaloneCoach(
                 poll_interval = self._get_poll_interval(curr_state)
             except NameError:
                 poll_interval = self._POLL_NORMAL
-            time.sleep(poll_interval)
+            self._wait_for_wake(poll_interval)
 
         logger.info("Coaching loop stopped")
 
@@ -3436,6 +3483,7 @@ class StandaloneCoach(
             logger.info(f"Starting coaching thread for backend: {self.backend_name}")
             self._coaching_thread = threading.Thread(target=self._coaching_loop, daemon=True, name="coaching")
             self._coaching_thread.start()
+            self._start_bridge_prefetch()
             threading.Thread(
                 target=self._coaching_stall_watchdog, daemon=True, name="coaching-watchdog"
             ).start()
@@ -3545,6 +3593,10 @@ class StandaloneCoach(
                 stop_watching()
             except Exception as e:
                 logger.debug(f"Watcher stop error (non-fatal): {e}")
+
+        if self._bridge_poller is not None and hasattr(self._bridge_poller, "stop_prefetch"):
+            with contextlib.suppress(Exception):
+                self._bridge_poller.stop_prefetch()
 
         # 7. Wait for daemon threads to finish (with timeout)
         # These should exit quickly since _running is False

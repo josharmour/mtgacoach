@@ -13,9 +13,11 @@ been misdiagnosed as real autopilot failures.
 
 import atexit
 import contextlib
+import errno
 import importlib
 import os
 import shutil
+import socket
 import sys
 import tempfile
 from pathlib import Path
@@ -134,6 +136,37 @@ with contextlib.suppress(Exception):
     from arenamcp import opponent_tricks as _opponent_tricks
 
     _opponent_tricks.TrickTableService._shared = _offline_trick_service(_SESSION_HOME)
+
+
+# ---------------------------------------------------------------------------
+# Never touch the live bridge ports
+# ---------------------------------------------------------------------------
+# A GREBridge built by get_bridge() (the keepalive thread) binds its server on
+# connect(). On 2026-10-18 a hung `pytest tests` held 127.0.0.1:44222 for two
+# hours and the user's real coach could not start its bridge ("[Errno 48]
+# Address already in use"). Tests bind ephemeral ports, and any bind of a live
+# port fails loudly instead of competing with a running coach.
+_LIVE_BRIDGE_PORTS = frozenset({44222, 44223})
+with contextlib.suppress(Exception):
+    from arenamcp import gre_bridge as _gre_bridge
+
+    _gre_bridge.BRIDGE_PORT = 0
+    _gre_bridge.BOT_BATTLE_PORT = 0
+
+_original_socket_bind = socket.socket.bind
+
+
+def _bind_off_live_ports(self, address):
+    port = address[1] if isinstance(address, tuple) and len(address) > 1 else None
+    if port in _LIVE_BRIDGE_PORTS:
+        raise OSError(
+            errno.EACCES,
+            f"tests must not bind the live bridge port {port}; use port 0 (see tests/conftest.py)",
+        )
+    return _original_socket_bind(self, address)
+
+
+socket.socket.bind = _bind_off_live_ports
 
 
 def pytest_collection_finish(session):
