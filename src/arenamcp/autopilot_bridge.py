@@ -36,6 +36,25 @@ def _progress_bridge_for(engine, game_state=None):
     return factory(game_state) if callable(factory) else engine._gre_bridge
 
 
+def bridge_shows_pending(game_state: dict[str, Any]) -> bool:
+    """The connected bridge reports a live request MTGA is waiting on us to answer.
+
+    game_engine_busy is a 1.5-2.0 s timer started by LoopCount/SyntheticEvent
+    annotations in the log (gamestate_annotations). When the bridge already
+    shows the next request, the engine is not busy any more: the timer only
+    delayed the answer (2026-10-11 audit).
+    """
+    if not game_state.get("_bridge_connected"):
+        return False
+    trigger = game_state.get("_bridge_trigger") or {}
+    return bool(
+        game_state.get("_bridge_has_pending")
+        or game_state.get("_bridge_request_type")
+        or game_state.get("_bridge_request_class")
+        or (isinstance(trigger, dict) and trigger.get("has_pending"))
+    )
+
+
 class _BridgeSubmitMixin:
     def _try_gre_bridge(
         self,
@@ -48,7 +67,7 @@ class _BridgeSubmitMixin:
         through to mouse-click execution.
         """
         bridge = _progress_bridge_for(self, game_state)
-        if game_state.get("game_engine_busy"):
+        if game_state.get("game_engine_busy") and not bridge_shows_pending(game_state):
             return None
 
         if not bridge.connect():

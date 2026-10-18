@@ -29,7 +29,7 @@ from arenamcp.action_planner import (
     GameAction,
     board_math_legacy_plan,
 )
-from arenamcp.autopilot_bridge import _BridgeSubmitMixin
+from arenamcp.autopilot_bridge import _BridgeSubmitMixin, bridge_shows_pending
 from arenamcp.autopilot_exec import _ActionExecMixin
 from arenamcp.autopilot_models import AutopilotConfig, AutopilotState, ClickResult, ExecutionPath
 from arenamcp.autopilot_modes import _AutopilotModesMixin
@@ -2512,7 +2512,7 @@ class AutopilotEngine(
             if self._abort_event.is_set():
                 self._state = AutopilotState.IDLE
                 return False
-            if game_state.get("game_engine_busy"):
+            if game_state.get("game_engine_busy") and not bridge_shows_pending(game_state):
                 logger.info("Autopilot: engine busy; waiting without starting another plan")
                 self._state = AutopilotState.IDLE
                 return True
