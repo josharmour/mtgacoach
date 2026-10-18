@@ -8,10 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import importlib.util
 import json
-import sys
-from pathlib import Path
 
 import pytest
 
@@ -20,7 +17,8 @@ pytest.importorskip("httpx")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-WEBSITE_DIR = Path(__file__).resolve().parents[1] / "website"
+from tests.fakes import FakeLiteLLM
+from tests.website_app import isolate_website_modules, load_website_module
 
 WEBHOOK_SECRET = "test-webhook-secret"
 
@@ -29,23 +27,12 @@ def _load_patreon(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # db.py creates ./data/mtgacoach.db relative to cwd
     monkeypatch.setenv("PATREON_WEBHOOK_SECRET", WEBHOOK_SECRET)
     monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-master-test")
-    monkeypatch.syspath_prepend(str(WEBSITE_DIR))
+    isolate_website_modules(monkeypatch)
 
-    for name in ("db", "patreon"):
-        sys.modules.pop(name, None)
-
-    import db  # noqa: F401  (fresh module bound to tmp cwd)
-
+    db = load_website_module(monkeypatch, "db", "db.py")  # fresh module bound to tmp cwd
     db.init_db()
-
-    spec = importlib.util.spec_from_file_location("patreon", WEBSITE_DIR / "patreon.py")
-    patreon = importlib.util.module_from_spec(spec)
-    sys.modules["patreon"] = patreon
-    spec.loader.exec_module(patreon)
+    patreon = load_website_module(monkeypatch, "patreon", "patreon.py")
     return patreon, db
-
-
-from tests.fakes import FakeLiteLLM
 
 
 @pytest.fixture()
@@ -157,11 +144,8 @@ def test_alias_conflict_retries_with_suffix(env):
     assert fake.minted[0]["alias"].startswith("patreon-pat@example.com-")
 
 
-def test_membership_gate():
-    sys.path.insert(0, str(WEBSITE_DIR))
-    sys.modules.pop("patreon", None)
-    import patreon
-
+def test_membership_gate(env):
+    patreon = env[0]
     active = {"included": [{"type": "member", "attributes": {"patron_status": "active_patron"}}]}
     former = {"included": [{"type": "member", "attributes": {"patron_status": "former_patron"}}]}
     empty = {"included": []}

@@ -1,15 +1,12 @@
-"""POST /api/trial — free-trial key auto-provisioning (website/app.py).
+"""POST /api/trial — free-trial key auto-provisioning (website/routers/proxy.py).
 
 Loads the website app against a temp SQLite DB with the LiteLLM admin API
-monkeypatched (no network), mirroring tests/test_proxy_server_signup.py.
+monkeypatched (no network).
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 
@@ -17,58 +14,16 @@ pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
-WEBSITE_DIR = Path(__file__).resolve().parents[1] / "website"
+from tests.fakes import FakeLiteLLM
+from tests.website_app import load_website_app
 
 MACHINE_ID = "a" * 64
 OTHER_MACHINE_ID = "b" * 64
 
 
-from tests.fakes import FakeLiteLLM
-
-
-def _load_proxy_app(tmp_path: Path, monkeypatch):
-    config_path = tmp_path / "config.yaml"
-    (tmp_path / "static").mkdir()
-    (tmp_path / "templates").mkdir()
-    config_path.write_text(
-        """
-server:
-  host: "127.0.0.1"
-  port: 8443
-providers: []
-default_model: "gpt-5.4"
-admin:
-  username: "admin"
-  password: "test-admin"
-database:
-  path: "./data/mtgacoach.db"
-""".strip()
-        + "\n",
-        encoding="utf-8",
-    )
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("CONFIG_PATH", str(config_path))
-    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-master-test")
-    monkeypatch.syspath_prepend(str(WEBSITE_DIR))
-
-    for name in ("db", "providers", "patreon"):
-        sys.modules.pop(name, None)
-
-    module_name = "proxy_app_trial_test"
-    sys.modules.pop(module_name, None)
-    spec = importlib.util.spec_from_file_location(module_name, WEBSITE_DIR / "app.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-
-    return module, sys.modules["db"], sys.modules["patreon"]
-
-
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
-    proxy_app, proxy_db, patreon = _load_proxy_app(tmp_path, monkeypatch)
+    proxy_app, proxy_db, patreon = load_website_app(tmp_path, monkeypatch)
     fake = FakeLiteLLM(key_prefix="sk-fake-trial-")
     monkeypatch.setattr(patreon, "_http", lambda: fake)
     with TestClient(proxy_app.app) as client:
