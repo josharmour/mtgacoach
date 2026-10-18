@@ -228,7 +228,7 @@ class _DiagnosticsMixin:
             from PIL import Image
 
             from arenamcp.desktop.window_tracking import get_mtga_window_rect
-            from arenamcp.screen_capture import capture_mtga_png, is_mostly_black
+            from arenamcp.screen_capture import capture_mtga_png, find_mtga_hwnd, is_mostly_black
 
             window_rect = get_mtga_window_rect()
             bbox = None
@@ -236,7 +236,9 @@ class _DiagnosticsMixin:
                 left, top, width, height = window_rect
                 bbox = (left, top, left + width, top + height)
 
-            png_bytes = capture_mtga_png(bbox=bbox)
+            # The handle lets Windows use PrintWindow (DirectX-safe); elsewhere
+            # it is None and the capture grabs the bbox.
+            png_bytes = capture_mtga_png(find_mtga_hwnd(), bbox=bbox)
             if not png_bytes:
                 self.ui.log("[red]Screenshot capture returned no data.[/]")
                 return

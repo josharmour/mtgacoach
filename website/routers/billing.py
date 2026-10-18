@@ -64,10 +64,14 @@ async def check_subscription(request: Request):
 
     sub = _get_db().check_license(key)
     if not sub:
-        return JSONResponse(status_code=401, content={
-            "status": "invalid",
-            "message": "Invalid license key.",
-        })
+        # Free-trial keys (POST /api/trial) live in the trials table.
+        trial = _get_db().get_trial_by_key(key)
+        if not trial:
+            return JSONResponse(status_code=401, content={
+                "status": "invalid",
+                "message": "Invalid license key.",
+            })
+        return _trial_status(trial)
 
     _record_client_telemetry(request, sub["license_key"])
 
@@ -75,6 +79,8 @@ async def check_subscription(request: Request):
 
     result = {
         "status": sub["status"],
+        "kind": "subscriber",
+        "name": sub.get("name") or "",
         "message": "",
         "expires_at": sub.get("expires_at"),
         "messages": [
@@ -91,6 +97,28 @@ async def check_subscription(request: Request):
 
     status_code = 200 if sub["status"] in ("active", "trial") else 402
     return JSONResponse(status_code=status_code, content=result)
+
+
+def _trial_status(trial: dict) -> JSONResponse:
+    """A trial key's status in the client's contract: kind "trial", epoch
+    expires_at, 402 once lapsed (an unreadable expiry counts as lapsed, as in
+    POST /api/trial)."""
+    try:
+        expires = datetime.fromisoformat(str(trial.get("expires_at") or "").replace("Z", "+00:00"))
+    except ValueError:
+        expires = None
+    if expires is not None and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    expires_at = expires.timestamp() if expires is not None else None
+    if expires is None or expires <= datetime.now(timezone.utc):
+        return JSONResponse(status_code=402, content={
+            "status": "expired", "kind": "trial", "expires_at": expires_at,
+            "message": "Your 7-day trial has ended. Subscribe at mtgacoach.com/subscribe",
+        })
+    return JSONResponse(status_code=200, content={
+        "status": "trial", "kind": "trial", "name": "", "message": "",
+        "expires_at": expires_at, "messages": [],
+    })
 
 
 @router.get("/v1/subscription/messages")

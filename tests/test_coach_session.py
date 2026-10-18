@@ -30,6 +30,9 @@ def test_coach_session_bug_report_saved_event(qapp):
 def test_coach_session_offline_debug_report(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr("arenamcp.logging_config.LOG_DIR", tmp_path)
     session = CoachSession()
+    # The real capture photographs the coach and the user's live Arena window.
+    screenshots = {"coach": str(tmp_path / "coach.png"), "mtga": str(tmp_path / "mtga.png")}
+    monkeypatch.setattr(session, "capture_screenshots", lambda: screenshots)
     received = []
     session.bugReportSaved.connect(lambda path, err: received.append((path, err)))
 
@@ -42,4 +45,5 @@ def test_coach_session_offline_debug_report(qapp, tmp_path, monkeypatch):
     assert Path(path).exists()
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     assert data["reason"] == "Desktop Bug Report (offline)"
+    assert data["screenshots"] == screenshots
     session.shutdown()

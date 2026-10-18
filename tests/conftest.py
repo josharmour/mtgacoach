@@ -169,6 +169,82 @@ def _bind_off_live_ports(self, address):
 socket.socket.bind = _bind_off_live_ports
 
 
+# ---------------------------------------------------------------------------
+# Never act on the real machine: repair pipeline, screen capture
+# ---------------------------------------------------------------------------
+# Showing the Setup & Repair tab starts RepairEngine().run() on a daemon
+# thread, and its checks repair the real install (BepInEx and the plugin into
+# the real MTGA folder on Windows/Proton). The desktop bug report grabbed the
+# user's real Arena window. Both ran in the suite until 2026-10-18. The guards
+# stay installed for the whole session (a daemon thread can outlive its test),
+# and because callers swallow exceptions (the repair thread, the bug-report
+# capture), the test that tripped one fails at teardown too.
+_REAL_MACHINE_VIOLATIONS: list[str] = []
+
+
+class RealMachineAccess(RuntimeError):
+    """A test reached code that acts on the real machine instead of a stub."""
+
+
+def _refuse(what: str) -> None:
+    import threading
+
+    message = (
+        f"tests must not {what} (thread {threading.current_thread().name}); stub it, see tests/conftest.py"
+    )
+    _REAL_MACHINE_VIOLATIONS.append(message)
+    raise RealMachineAccess(message)
+
+
+def _blocked(what: str):
+    def _guard(*_args, **_kwargs):
+        _refuse(what)
+
+    return _guard
+
+
+with contextlib.suppress(Exception):
+    from arenamcp import repair_engine as _repair_engine
+
+    _real_repair_run = _repair_engine.RepairEngine.run
+    _REPAIR_CHECKS = tuple(name for name in vars(_repair_engine.RepairEngine) if name.startswith("_check_"))
+
+    def _guarded_repair_run(self, *args, **kwargs):
+        # Allowed only when every check is stubbed on the instance, which is
+        # how the pipeline-order tests drive run().
+        if not all(name in vars(self) for name in _REPAIR_CHECKS):
+            _refuse("run the real repair pipeline (RepairEngine.run)")
+        return _real_repair_run(self, *args, **kwargs)
+
+    _repair_engine.RepairEngine.run = _guarded_repair_run
+
+with contextlib.suppress(Exception):
+    from PIL import ImageGrab as _image_grab
+
+    _image_grab.grab = _blocked("capture the real screen (PIL.ImageGrab.grab)")
+
+with contextlib.suppress(Exception):
+    from arenamcp import screen_capture as _screen_capture
+
+    _screen_capture.capture_window_via_printwindow = _blocked("capture a real window (PrintWindow)")
+
+with contextlib.suppress(Exception):
+    from arenamcp import native_mac_input as _native_mac_input
+
+    _native_mac_input.NativeMacInput.capture = _blocked("capture the real Arena window (screencapture)")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_machine_access():
+    """Fail the test that reached a real-machine guard, even if its caller swallowed the error."""
+    _REAL_MACHINE_VIOLATIONS.clear()
+    yield
+    if _REAL_MACHINE_VIOLATIONS:
+        found = list(dict.fromkeys(_REAL_MACHINE_VIOLATIONS))
+        _REAL_MACHINE_VIOLATIONS.clear()
+        pytest.fail("; ".join(found))
+
+
 def pytest_collection_finish(session):
     """Move everything alive after collection out of the cyclic GC's reach.
 

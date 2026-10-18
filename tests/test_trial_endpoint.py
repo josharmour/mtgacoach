@@ -185,3 +185,69 @@ def test_trials_are_per_machine(env):
     assert r2.json()["status"] == "created"
     assert r1.json()["key"] != r2.json()["key"]
     assert len(fake.minted) == 2
+
+
+# ── /v1/subscription/check answers trial keys (the desktop access badge) ──
+
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _check(client, key):
+    return client.post(
+        "/v1/subscription/check", headers={"Authorization": f"Bearer {key}"}, json={"license_key": key}
+    )
+
+
+def test_subscription_check_answers_an_active_trial_key(env):
+    """Trial keys live in the trials table, not subscribers: the repo route
+    answered them 401 ("Key invalid"); production answers kind="trial"."""
+    _, _, _, _, client = env
+    issued = _post_trial(client).json()
+
+    r = _check(client, issued["key"])
+
+    assert r.status_code == 200
+    data = r.json()
+    assert (data["status"], data["kind"], data["name"]) == ("trial", "trial", "")
+    expires = datetime.fromisoformat(issued["expires_at"].replace("Z", "+00:00"))
+    assert data["expires_at"] == expires.timestamp()
+
+    # The desktop badge reads this as a live countdown, not "Key invalid".
+    from arenamcp.subscription import SubscriptionStatus, describe_access
+
+    status = SubscriptionStatus(
+        status=data["status"], expires_at=data["expires_at"], kind=data["kind"], name=data["name"]
+    )
+    text, _tone, _tip, needs = describe_access(issued["key"], status, now=expires.timestamp() - 86400 * 3)
+    assert text == "Trial · 3d 0h left" and not needs
+
+
+@pytest.mark.parametrize("stored_expiry", ["past", "garbage"])
+def test_subscription_check_says_402_for_a_lapsed_trial(env, stored_expiry):
+    _, proxy_db, _, _, client = env
+    now = datetime.now(timezone.utc)
+    stored = _iso(now - timedelta(hours=1)) if stored_expiry == "past" else "not-a-date"
+    proxy_db.create_trial(MACHINE_ID, "sk-fake-lapsed", _iso(now - timedelta(days=7)), stored)
+
+    r = _check(client, "sk-fake-lapsed")
+
+    assert r.status_code == 402
+    data = r.json()
+    assert (data["status"], data["kind"]) == ("expired", "trial")
+    assert "trial has ended" in data["message"]
+    if stored_expiry == "past":
+        assert data["expires_at"] == datetime.fromisoformat(stored.replace("Z", "+00:00")).timestamp()
+
+
+def test_subscription_check_marks_subscribers_and_rejects_unknown_keys(env):
+    _, proxy_db, _, _, client = env
+    sub = proxy_db.create_subscriber(email="p@example.com", name="Pat Ron", days=30)
+
+    r = _check(client, sub["license_key"])
+    assert r.status_code == 200
+    assert (r.json()["status"], r.json()["kind"], r.json()["name"]) == ("active", "subscriber", "Pat Ron")
+
+    r = _check(client, "sk-nobody")
+    assert r.status_code == 401 and r.json()["status"] == "invalid"

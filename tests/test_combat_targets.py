@@ -95,21 +95,15 @@ def test_attack_speech_uses_submitted_recipient_not_conflicting_prose():
     assert "opponent" not in plan.voice_advice
 
 
-@pytest.mark.parametrize("method", ["_try_bridge_declare_attackers", "_try_gre_bridge_attackers"])
-def test_split_attack_preserves_each_recipient(method):
+def test_split_attack_preserves_each_recipient():
     pilot = engine()
     action = GameAction(
         action_type=ActionType.DECLARE_ATTACKERS,
         attacker_names=["Beast", "Pia"],
         attacker_targets={"Beast": "Jace [297]", "Pia": "Opponent"},
     )
-    assert getattr(pilot, method)(action).success
-    submit = (
-        pilot._gre_bridge.submit_attackers_raw
-        if method == "_try_bridge_declare_attackers"
-        else pilot._gre_bridge.submit_attackers
-    )
-    entries = submit.call_args.args[0]
+    assert pilot._try_bridge_declare_attackers(action).success
+    entries = pilot._gre_bridge.submit_attackers_raw.call_args.args[0]
     assert entries[0]["damageRecipient"]["planeswalkerInstanceId"] == 297
     assert entries[1]["damageRecipient"]["playerSystemSeatId"] == 1
     pilot._attack_override.assert_not_called()

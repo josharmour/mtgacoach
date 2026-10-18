@@ -27,6 +27,7 @@ _RESPONSE_RE = re.compile(r"<== (DeckGetDeckSummariesV3|EventGetCoursesV2|EventS
 _QUEUE_RE = re.compile(r"==> EventSetDeckV3 (\{.*\})\s*$")
 
 PILES = ("main", "sideboard", "command_zone", "companions")
+UNNAMED_DECK = "Unnamed deck"
 
 
 @dataclass
@@ -41,6 +42,10 @@ class DeckRecord:
     source: str = ""  # bridge | log | queue
     last_played: str = ""
     last_updated: str = ""
+    # Built only from an event course's CourseDeckSummary: the copy taken when
+    # the deck was last submitted to that event, which lags a later rename or
+    # rebuild (EventGetCoursesV2 lists every course, stale ones included).
+    snapshot: bool = False
 
     @property
     def complete(self) -> bool:
@@ -70,16 +75,31 @@ class DeckRecord:
 
         return deck_identity(self.game_state()) if self.complete else ""
 
-    def merge_from(self, other: DeckRecord) -> None:
-        """Take the other record's cards when it has them, and any metadata we lack."""
-        if other.complete and (not self.complete or other.source == "bridge"):
+    def merge_from(self, other: DeckRecord, *, newer: bool = True) -> None:
+        """Fold another observation of this deck into this record.
+
+        ``newer``: ``other`` was seen after this record (a later log line or
+        a newer log file), so its name, format and dates replace ours (a
+        rename in Arena), and so does its card list when it was queued (a
+        rebuild). An older ``other``, or an event course's snapshot, only
+        fills what we lack, unless all we have is a snapshot. A bridge card
+        list beats a log one either way, and a missing value (or the
+        "Unnamed deck" placeholder) never erases ours.
+        """
+        wins = not other.snapshot and (newer or self.snapshot)
+        rebuilt = newer and other.source == "queue" and self.source != "bridge"
+        if other.complete and (not self.complete or other.source == "bridge" or rebuilt):
             self.main, self.sideboard = list(other.main), list(other.sideboard)
             self.command_zone, self.companions = list(other.command_zone), list(other.companions)
             self.source = other.source
-        self.name = self.name or other.name
-        self.format = self.format or other.format
-        self.last_played = self.last_played or other.last_played
-        self.last_updated = self.last_updated or other.last_updated
+        for attribute in ("name", "format", "last_played", "last_updated"):
+            mine, theirs = getattr(self, attribute), getattr(other, attribute)
+            if attribute == "name":
+                mine = "" if mine == UNNAMED_DECK else mine
+                theirs = "" if theirs == UNNAMED_DECK else theirs
+            if theirs and (wins or not mine):
+                setattr(self, attribute, theirs)
+        self.snapshot = self.snapshot and other.snapshot
 
 
 def _pairs(entries: Any) -> list[tuple[int, int]]:
@@ -120,7 +140,7 @@ def record_from_summary(summary: dict, source: str = "log") -> DeckRecord | None
     attributes = _attributes(summary)
     return DeckRecord(
         deck_id=deck_id,
-        name=str(summary.get("Name") or summary.get("name") or "Unnamed deck"),
+        name=str(summary.get("Name") or summary.get("name") or UNNAMED_DECK),
         format=attributes.get("Format", str(summary.get("format") or "")),
         source=source,
         last_played=attributes.get("LastPlayed", ""),
@@ -143,13 +163,17 @@ def parse_player_log(text: str) -> dict[str, DeckRecord]:
     """Deck records from Player.log text; later messages refine earlier ones."""
     decks: dict[str, DeckRecord] = {}
 
-    def absorb(record: DeckRecord | None) -> None:
+    def absorb(record: DeckRecord | None, event_name: Any = None) -> None:
         if record is None:
             return
         if record.deck_id in decks:
             decks[record.deck_id].merge_from(record)
         else:
             decks[record.deck_id] = record
+        # The event a deck was queued in stands in for a format only when
+        # no summary named one: it is not a newer observation of the format.
+        if event_name and not decks[record.deck_id].format:
+            decks[record.deck_id].format = str(event_name)
 
     lines = text.splitlines()
     for index, line in enumerate(lines):
@@ -160,9 +184,7 @@ def parse_player_log(text: str) -> dict[str, DeckRecord]:
             except (ValueError, TypeError, AttributeError):
                 continue
             record = record_from_deck(request.get("Summary") or {}, request.get("Deck") or {}, "queue")
-            if record is not None and not record.format and request.get("EventName"):
-                record.format = str(request["EventName"])
-            absorb(record)
+            absorb(record, request.get("EventName"))
             continue
         match = _RESPONSE_RE.search(line)
         if not match:
@@ -191,9 +213,9 @@ def parse_player_log(text: str) -> dict[str, DeckRecord]:
             deck = course.get("CourseDeck") or {}
             if isinstance(summary, dict) and summary.get("DeckId") and isinstance(deck, dict) and deck.get("MainDeck"):
                 record = record_from_deck(summary, deck, "log")
-                if record is not None and not record.format and course.get("InternalEventName"):
-                    record.format = str(course["InternalEventName"])
-                absorb(record)
+                if record is not None:
+                    record.snapshot = True
+                absorb(record, course.get("InternalEventName"))
     return decks
 
 
@@ -208,6 +230,7 @@ def default_log_paths() -> list[Path]:
 
 
 def load_log_decks(paths: list[Path] | None = None) -> dict[str, DeckRecord]:
+    """Decks from the log files (newest first); the oldest is read first so newer files win."""
     decks: dict[str, DeckRecord] = {}
     for path in reversed(paths if paths is not None else default_log_paths()):
         try:
@@ -219,7 +242,7 @@ def load_log_decks(paths: list[Path] | None = None) -> dict[str, DeckRecord]:
             continue
         for deck_id, record in parse_player_log(text).items():
             if deck_id in decks:
-                decks[deck_id].merge_from(record)
+                decks[deck_id].merge_from(record, newer=True)
             else:
                 decks[deck_id] = record
     return decks
@@ -235,7 +258,7 @@ def records_from_bridge(response: dict | None) -> dict[str, DeckRecord]:
             continue
         record = DeckRecord(
             deck_id=str(raw["deck_id"]),
-            name=str(raw.get("name") or "Unnamed deck"),
+            name=str(raw.get("name") or UNNAMED_DECK),
             format=str(raw.get("format") or ""),
             main=_pairs(raw.get("main")),
             sideboard=_pairs(raw.get("sideboard")),
@@ -248,12 +271,12 @@ def records_from_bridge(response: dict | None) -> dict[str, DeckRecord]:
 
 
 def merge_libraries(*libraries: dict[str, DeckRecord]) -> dict[str, DeckRecord]:
-    """Earlier libraries take precedence for cards (pass the bridge first)."""
+    """Earlier libraries take precedence (pass the bridge first: it is the client's live library)."""
     merged: dict[str, DeckRecord] = {}
     for library in libraries:
         for deck_id, record in library.items():
             if deck_id in merged:
-                merged[deck_id].merge_from(record)
+                merged[deck_id].merge_from(record, newer=False)
             else:
                 merged[deck_id] = DeckRecord(**{**record.__dict__})
     return merged

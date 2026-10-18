@@ -1155,6 +1155,13 @@ class _BridgeSubmitMixin:
         return "timeout", request_key
 
     def _try_bridge_declare_attackers(self, action: GameAction) -> ClickResult | None:
+        """Submit attackers via the bridge and record the declaration for bug reports."""
+        result = self._try_bridge_declare_attackers_inner(action)
+        if result is not None and result.success:
+            self._record_combat_decision("DeclareAttackers", action, result)
+        return result
+
+    def _try_bridge_declare_attackers_inner(self, action: GameAction) -> ClickResult | None:
         """Submit attacker declarations via GRE bridge (two-step NPE handler pattern).
 
         Step 1: UpdateAttacker — sets SelectedDamageRecipient on each attacker
@@ -1318,13 +1325,6 @@ class _BridgeSubmitMixin:
         result = _BridgeSubmitMixin._try_gre_bridge_blockers_inner(self, action)
         if result is not None and result.success:
             _BridgeSubmitMixin._record_combat_decision(self, "DeclareBlockers", action, result)
-        return result
-
-    def _try_gre_bridge_attackers_inner(self, action: GameAction) -> ClickResult | None:
-        """Submit attackers via the bridge and record the declaration for bug reports."""
-        result = _BridgeSubmitMixin._try_gre_bridge_attackers_inner(self, action)
-        if result is not None and result.success:
-            _BridgeSubmitMixin._record_combat_decision(self, "DeclareAttackers", action, result)
         return result
 
     def _record_combat_decision(self, kind: str, action: GameAction, result: ClickResult) -> None:
@@ -1525,45 +1525,6 @@ class _BridgeSubmitMixin:
 
         logger.info("GRE bridge submit_blockers failed, surfacing manual-required to caller")
         self._gre_bridge_failed_methods.add("declare_blockers")
-        return None
-
-    def _try_gre_bridge_attackers(self, action: GameAction) -> ClickResult | None:
-        """Submit attacker declarations via the GRE bridge.
-
-        Resolves and validates each attacker's chosen combat recipient.
-        """
-        # Verify the bridge actually has a DeclareAttacker request pending
-        bridge = _progress_bridge_for(self)
-        pending = bridge.get_pending_actions()
-        if not pending or not pending.get("has_pending"):
-            logger.info("GRE bridge attackers: no pending interaction, falling back")
-            return None
-        req_class = pending.get("request_class", "")
-        if "DeclareAttacker" not in req_class:
-            logger.info(f"GRE bridge attackers: pending is {req_class}, not DeclareAttacker, falling back")
-            return None
-
-        game_state = self._get_game_state()
-        try:
-            attacker_list = self._attack_entries(action, action.attacker_names, game_state, pending)
-            submitted_action, attacker_list = self._prepare_attack_submission(
-                action, action.attacker_names, attacker_list, game_state, pending
-            )
-        except (ValueError, TypeError, KeyError) as error:
-            logger.warning("GRE bridge attackers: %s; manual choice required", error)
-            return None
-
-        if bridge.submit_attackers(attacker_list):
-            names = ", ".join(submitted_action.attacker_names)
-            self._log_execution_path(
-                ExecutionPath.GRE_AWARE, f"declare_attackers: {names} submitted via GRE bridge"
-            )
-            return ClickResult(
-                True, 0, 0, "declare_attackers", "GRE bridge", submitted_action=submitted_action
-            )
-
-        logger.info("GRE bridge submit_attackers failed, surfacing manual-required to caller")
-        self._gre_bridge_failed_methods.add("declare_attackers")
         return None
 
     def _try_gre_bridge_select_target(self, action: GameAction) -> ClickResult | None:
