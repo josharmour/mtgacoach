@@ -7,6 +7,44 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-10-18 — Chat/voice conversation modes removed
+
+- **User decision (test-suite cleanup):** remove the chat/voice conversation
+  modes. Turn advice stays; topic selection was to stay too (see last bullet).
+- **Evidence:** unreachable from the desktop since 2026-10-04 (4d85418): the
+  chat box and push-to-talk button left the sidebar, `desktop/coach_process.py`
+  sets `ARENAMCP_PROACTIVE_ONLY=1` so `standalone.py` boots in `turn_advice`,
+  and the sidebar answers any `MODE: conversation` status with
+  `set_mode turn_advice`. Nothing imported `desktop/ptt.py` or
+  `desktop/conversation_transcript.py`; `CoachSession.send_chat` /
+  `set_verbosity` had no callers. `~/.arenamcp/standalone.log` (since
+  2026-07-16): the last `Conversation mode set: conversation` is 2026-09-29
+  18:53:12, the last topic candidate 2026-09-29 18:39:29 (2,189 batches with
+  topics, 36,925 with none); since then only the desktop's start-up
+  `set_mode turn_advice` (149 times).
+- **Removed:** the question channel end to end — PTT, transcript, the `chat`
+  and `set_verbosity` pipe commands (with the chat-only slash commands and
+  the typed "cancel" reply to an auto-concede countdown), user questions and
+  their answer threads, deferred-question recovery, verbosity, the
+  `conversation_reply` / `CONVO_STATE` events, speech priority "question",
+  and the desktop's speech priority/identity plumbing (its only reader was
+  the "never displace a pending question" rule; this undoes 34d3931).
+  Settings key `conversation_verbosity` is gone.
+- **Stayed:** turn advice (it never consulted the conversation controller;
+  `test_turn_advice_parity` still checks the dispatch), the coaching loop's
+  match-boundary detectors (now covered by `tests/test_standalone_coaching_loop.py`:
+  `_match_number`, `_advice_history`, `clear_deck_strategy`, post-match
+  staging), the stop button (`stop_speech` → engine voice stop → `speak_stop`).
+- **Topic selection:** `TopicSelector` and its cooldown/repetition gates run
+  only inside conversation mode (`standalone.py` calls `on_state` /
+  `speak_topic_if_any` only when `conversation.mode == "conversation"`), so
+  they are exactly as unreachable as the question channel. They are kept,
+  with the mode switch and `ARENAMCP_PROACTIVE_ONLY`, as a play-by-play
+  topic-commentary mode until the user confirms whether "topic selection
+  stays" meant this.
+
+---
+
 ## 2026-10-18 — Native Mac screenshot autopilot removed; Mac autoplay is bridge-only
 
 - **User decision (2026-10-18 test-suite cleanup):** remove the screenshot-based
