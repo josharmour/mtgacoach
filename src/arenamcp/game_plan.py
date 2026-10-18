@@ -1650,6 +1650,9 @@ class GamePlanManager:
             "resumed after a decision",
         }
     )
+    # The only reform that may start during our own turn: without any plan,
+    # one is worth more than one faster decision (2026-10-10 Brawl game).
+    _OUR_TURN_REASONS = frozenset({"first plan"})
     # A board-math role change between these two alone, with the lethal and
     # dead-soon flags unchanged, is noise (2026-10-07 replay: turn 6 went
     # aggressor -> race -> defender and turn 7 defender -> race on ordinary
@@ -2159,6 +2162,16 @@ class GamePlanManager:
             else:
                 reason = self._should_reform(sig, our_turn=our_turn, key=self._strategic_key(game_state, sig))
             if not reason:
+                return False
+            if our_turn and reason not in self._OUR_TURN_REASONS:
+                # 2026-10-11 audit: 72 of 168 plan calls were cancelled or
+                # discarded, and decision calls overlapping one had ~2x TTFT
+                # (1.1 s -> 1.9 s). A mid-turn reform replans a turn that is
+                # mostly played by the time a ~20 s high-effort call returns;
+                # every decision prompt already re-renders the live board
+                # facts. Wait for the opponent's turn and plan our next turn
+                # there ("plan our next turn" fires then), at full effort.
+                logger.debug("Game plan reform (%s) deferred to the opponent's turn", reason)
                 return False
             if reason in self._ROUTINE_REASONS and _decision_pending(game_state):
                 return False

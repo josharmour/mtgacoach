@@ -169,18 +169,61 @@ class _DeckLibraryMixin:
 
         threading.Thread(target=work, name="deck-strategy", daemon=True).start()
 
-    def analyze_all_decks_async(self) -> None:
-        """Build every missing playbook, one deck at a time (they share the model server)."""
+    # How often a paused analyze-all run checks whether the match is over.
+    _ANALYZE_ALL_MATCH_POLL_S = 5.0
+
+    def _deck_library_in_match(self) -> bool:
+        check = getattr(self, "_draft_event_in_match", None)
+        if not callable(check):
+            return False
+        try:
+            return bool(check())
+        except Exception:
+            return False
+
+    def analyze_all_decks_async(self) -> bool:
+        """Build every missing playbook, one deck at a time (they share the model server).
+
+        Single-flight: a second request while a run is going is ignored (on
+        2026-10-10 the 95-deck run was started twice and analysed mid-match
+        alongside the live decision calls). The next deck never starts during
+        a match; the run waits for the match to end. Returns False when a run
+        was already going.
+        """
+        if not _ANALYZE_ALL_LOCK.acquire(blocking=False):
+            logger.info("Deck strategy: analyze-all already running; ignoring the new request")
+            return False
 
         def work() -> None:
-            library = getattr(self, "_deck_library", None) or self.collect_decks()[0]
-            for record in list(library.values()):
-                if not record.complete or self.deck_strategy_status(record).get("status") == "ready":
-                    continue
-                self._deck_library_emit("emit_deck_analysis", analyze_deck_record_safe(self, record, False))
-            self._deck_library_emit("emit_deck_list", self.deck_payloads(), "")
+            try:
+                library = getattr(self, "_deck_library", None) or self.collect_decks()[0]
+                for record in list(library.values()):
+                    if not record.complete or self.deck_strategy_status(record).get("status") == "ready":
+                        continue
+                    if self._deck_library_in_match():
+                        logger.info("Deck strategy: analyze-all paused for the match")
+                        while self._deck_library_in_match() and getattr(self, "_running", True) is not False:
+                            time.sleep(self._ANALYZE_ALL_MATCH_POLL_S)
+                        if getattr(self, "_running", True) is False:
+                            return
+                        logger.info("Deck strategy: analyze-all resumes after the match")
+                        if self.deck_strategy_status(record).get("status") == "ready":
+                            continue
+                    self._deck_library_emit("emit_deck_analysis", analyze_deck_record_safe(self, record, False))
+                self._deck_library_emit("emit_deck_list", self.deck_payloads(), "")
+            finally:
+                _ANALYZE_ALL_LOCK.release()
 
-        threading.Thread(target=work, name="deck-strategy-all", daemon=True).start()
+        try:
+            threading.Thread(target=work, name="deck-strategy-all", daemon=True).start()
+        except Exception:
+            _ANALYZE_ALL_LOCK.release()
+            raise
+        return True
+
+
+# One analyze-all run per process (one coach per process).
+_ANALYZE_ALL_LOCK = threading.Lock()
 
 
 def analyze_deck_record_safe(owner: _DeckLibraryMixin, record: Any, refresh: bool) -> dict[str, Any]:
