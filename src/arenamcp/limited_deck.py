@@ -220,12 +220,14 @@ def _gih(card: dict) -> float | None:
     return normalize_card(card).gih_wr_pct
 
 
-def _card_value(card: dict, quality_scale: float = 1.0) -> float:
+def _card_value(card: dict, quality_scale: float = 1.0, cost: float | None = None) -> float:
     """Card quality in GIH points above 50; unrated rares/mythics get a prior, not zero.
 
     2026-10-05 sealed: an unrated mythic (Craterclaw Colossus) scored 0 and was
     never considered, while ordinary commons with data outranked it.
     ``quality_scale`` < 1 when a DeckStrategy carries the deck's synergy.
+    ``cost`` replaces the printed mana value for the curve terms: what the card
+    costs in the deck's colors (``_effective_cmc``), less any ramp paying for it.
     """
     normalized = normalize_card(card)
     if normalized.gih_wr_pct is not None:
@@ -235,8 +237,109 @@ def _card_value(card: dict, quality_scale: float = 1.0) -> float:
     value += 4 if rules_profile(card)["unconditional_body"] else 0
     value += 4 if _builder_removal(card) else 0
     value += 2 if "card_advantage" in normalized.tags else 0
-    value += 2 if normalized.cmc <= 3 else -max(0, normalized.cmc - 4)
+    cmc = normalized.cmc if cost is None else cost
+    value += 2 if cmc <= 3 else -max(0, cmc - 4)
     return value
+
+
+def _rules_text(card: dict) -> str:
+    text = html.unescape(re.sub(r"<[^>]*>", "", card.get("oracle_text", ""))).lower().replace("’", "'")
+    return re.sub(r"\([^)]*\)", "", text)
+
+
+# "This spell costs {X} less to cast, where X is ..." / "{1} less for each ...": what
+# the reduction usually comes to by the turn the card is cast.
+VARIABLE_COST_REDUCTION = 3
+_FIXED_REDUCTION = re.compile(r"\bthis spell costs \{o?(\d+)\} less to cast\b(?! for each)")
+_VARIABLE_REDUCTION = re.compile(r"\bthis spell costs \{o?(?:x|1)\} less to cast\b")
+
+
+def _effective_cmc(card: dict, colors: tuple[str, ...] = ()) -> float:
+    """Mana a card really costs in a deck of ``colors``.
+
+    Off-color "twobrid" symbols ({2/W}) cost two generic each, and a printed cost
+    reduction lowers it. 2026-10-18 pro WU draft: Karn, Gilded Guardian
+    ({2/W}{2/U}{2/B}{2/R}{2/G}) read as a 5-drop and took the slot of the pro's
+    Mind Meanderer; in WU it costs eight.
+    """
+    cmc = normalize_card(card).cmc
+    symbols = _symbols(card)
+    if any("2" in options and len(options) > 1 for options in symbols):
+        cmc = 0.0
+        for options in symbols:
+            single = next(iter(options)) if len(options) == 1 else ""
+            if single.isdigit():
+                cmc += int(single)
+            elif single == "X":
+                continue
+            elif "2" in options:
+                cmc += 1 if options & set(colors) else 2
+            else:
+                cmc += 1
+    text = _rules_text(card)
+    fixed = _FIXED_REDUCTION.search(text)
+    if fixed:
+        cmc -= int(fixed.group(1))
+    elif _VARIABLE_REDUCTION.search(text):
+        cmc -= VARIABLE_COST_REDUCTION
+    return max(0.0, cmc)
+
+
+_TAP_FOR_MANA = re.compile(r"\{o?t\}:[^\n]*?\badd\b")
+_UNTAP_LANDS = re.compile(r"\buntap (?:up to )?(?:two|three|four|\d+) target lands\b|\buntap all lands you control\b")
+_LAND_TO_BATTLEFIELD = re.compile(r"\bsearch your library for [^.]*\bland cards?\b[^.]*\bonto the battlefield\b")
+_RESTRICTED_MANA = re.compile(r"\bthis mana can't be spent to cast spells from your hand\b|\bspend this mana only\b")
+
+
+def _ramp(card: dict) -> float:
+    """How much a nonland card accelerates the mana: 1 for a mana source, 0.5 if restricted.
+
+    2026-10-18 pro GW draft: Heartwood Crafter ("can't be spent to cast spells
+    from your hand", so only exile casts and abilities), Loot, Garruk's untap and
+    Emrakul's own exile-to-ramp ability carried him to Emrakul, Ghalta and Ruric
+    Thar. A cast trigger that untaps lands ("when you cast this spell") pays for
+    nothing else, so only an untap the card can do on its own counts.
+    """
+    if "land" in card.get("type_line", "").lower():
+        return 0.0
+    text = _rules_text(card)
+    lines = [line for line in text.split("\n") if not line.strip().startswith("when you cast this spell")]
+    text = "\n".join(lines)
+    if not (_TAP_FOR_MANA.search(text) or _UNTAP_LANDS.search(text) or _LAND_TO_BATTLEFIELD.search(text)):
+        return 0.0
+    return 0.5 if _RESTRICTED_MANA.search(text) else 1.0
+
+
+# Ramp wants something to ramp into: a deck with N ramp pieces supports about N
+# (up to 3) big threats, and ramp pays part of their cost. 2026-10-18 pro GW draft
+# (4-1): 3 ramp pieces + Garruk, then Emrakul, Ghalta and Ruric Thar won most games,
+# where our build ran a twelfth two-drop and a third pump spell instead.
+TOP_END_CMC = 6
+MAX_RAMPED_TOP_END = 3
+RAMPED_TOP_END_POINTS = 4.0
+MIN_RAMP_FOR_TOP_END = 2.0
+RAMP_POINTS = 2.0
+
+
+def _top_end(card: dict, colors: tuple[str, ...] = ()) -> bool:
+    kind = card.get("type_line", "").lower()
+    return ("creature" in kind or "planeswalker" in kind) and _effective_cmc(card, colors) >= TOP_END_CMC
+
+
+def _ramped_slots(chosen, colors: tuple[str, ...] = ()) -> tuple[float, int]:
+    """(ramp in these cards, how many big threats that ramp supports)."""
+    ramp = sum(_ramp(card) for card in chosen)
+    if ramp < MIN_RAMP_FOR_TOP_END:
+        return ramp, 0
+    return ramp, min(MAX_RAMPED_TOP_END, int(ramp))
+
+
+def _deck_cost(card: dict, colors: tuple[str, ...], ramp: float, supported: bool) -> float:
+    """The curve cost a build charges: real cost in these colors, less ramp for a supported threat."""
+    cost = _effective_cmc(card, colors)
+    if supported:
+        cost = max(TOP_END_CMC - 2, cost - min(ramp, MAX_RAMPED_TOP_END))
+    return cost
 
 
 class DeckStrategy:
@@ -440,23 +543,32 @@ def _build_for_colors(
         card for card in spells if card.get("type_line") and _castable(card, colors) and card not in preset
     ]
     chosen: list[dict] = list(preset)
+    # Ramp earns its slot when the pool has a big threat to ramp into.
+    ramp_targets = any(_top_end(card, colors) for card in candidates + chosen)
     while candidates and len(chosen) < 23:
         bodies = sum(rules_profile(card)["unconditional_body"] for card in chosen)
         early = sum(
             rules_profile(card)["unconditional_body"] and normalize_card(card).cmc <= 3 for card in chosen
         )
-        expensive = sum(normalize_card(card).cmc >= 5 for card in chosen)
+        expensive = sum(_effective_cmc(card, colors) >= 5 for card in chosen)
         legends = Counter(card["name"] for card in chosen if _is_legendary(card))
+        ramp, slots = _ramped_slots(chosen, colors)
+        top_end = sum(_top_end(card, colors) for card in chosen)
 
         def fit(card, bodies=bodies, early=early, expensive=expensive, chosen=tuple(chosen), legends=legends):
             profile = rules_profile(card)
-            cost = normalize_card(card).cmc
-            value = _card_value(card, QUALITY_SCALE if strategy is not None else 1.0)
+            supported = _top_end(card, colors) and top_end < slots
+            cost = _deck_cost(card, colors, ramp, supported)
+            value = _card_value(card, QUALITY_SCALE if strategy is not None else 1.0, cost)
             if profile["unconditional_body"]:
                 value += 5 if bodies < 14 else 0
                 value += 4 if early < 6 and cost <= 3 else 0
-            if cost >= 5 and expensive >= 4:
+            if supported:
+                value += RAMPED_TOP_END_POINTS
+            elif cost >= 5 and expensive >= 4:
                 value -= 6
+            if ramp_targets:
+                value += RAMP_POINTS * _ramp(card)
             if legends[card["name"]]:
                 value -= 10  # a second copy of a legendary card is dead while the first is in play
             if strategy is not None:
@@ -489,12 +601,27 @@ def deck_quality(
     every card, the engine's enabler/payoff balance and the drafted lane count.
     """
     weights = FORMAT_WEIGHTS.get(fmt, FORMAT_WEIGHTS["draft"])
-    values = [_card_value(card, QUALITY_SCALE if strategy is not None else 1.0) for card in chosen]
+    ramp, slots = _ramped_slots(chosen, colors)
+    supported = set()
+    for index, card in sorted(
+        enumerate(chosen), key=lambda item: _card_value(item[1]), reverse=True
+    ):  # the best big threats are the ones the ramp is for
+        if len(supported) < slots and _top_end(card, colors):
+            supported.add(index)
+    values = [
+        _card_value(
+            card,
+            QUALITY_SCALE if strategy is not None else 1.0,
+            _deck_cost(card, colors, ramp, index in supported),
+        )
+        + (RAMPED_TOP_END_POINTS if index in supported else 0.0)
+        for index, card in enumerate(chosen)
+    ]
     gihs = [g for g in (_gih(card) for card in chosen) if g is not None]
     creatures = sum(rules_profile(card)["unconditional_body"] for card in chosen)
     removal = sum(_builder_removal(card) for card in chosen)
     cheap = sum(normalize_card(card).cmc <= 2 for card in chosen)
-    expensive = sum(normalize_card(card).cmc >= 6 for card in chosen)
+    expensive = sum(_effective_cmc(card, colors) >= 6 for card in chosen) - len(supported)
     bombs = [card["name"] for card in chosen if (_gih(card) or 0) >= BOMB_GIH]
     support = sum(
         bool(synergy_evidence(first, second))
@@ -665,6 +792,25 @@ def fallback_deck(
     return result
 
 
+# A land that makes none of the deck's colors earns one basic's slot in a two-color
+# deck only when its abilities feed several of the deck's cards. 2026-10-18 pro GW
+# draft: Hexhaven Dueling Arena (re-prepares creatures) over the ninth Forest, with
+# four "enters prepared" creatures; it also paid for Emrakul's exile ramp.
+UTILITY_LAND_MIN_LINKS = 3
+
+
+def _utility_land(pool: list[dict], chosen: list[dict], colors: tuple[str, ...]) -> dict | None:
+    best, best_links = None, 0
+    for card in _nonbasics(pool):
+        # Colorless only: a land making an off color is a splash land, not a utility land.
+        if "land" not in card.get("type_line", "").lower() or _produces(card):
+            continue
+        links = sum(bool(synergy_evidence(card, other)) for other in chosen)
+        if links >= UTILITY_LAND_MIN_LINKS and links > best_links:
+            best, best_links = card, links
+    return best
+
+
 def _build_candidate(pool: list[dict], candidate: dict) -> dict:
     """Allocate lands (on-color duals and fixing first) and validate every option."""
     colors, chosen = tuple(candidate["colors"]), candidate["chosen"]
@@ -680,6 +826,9 @@ def _build_candidate(pool: list[dict], candidate: dict) -> dict:
         and (len(_produces(card) & set(colors)) >= 2 or _produces(card) & set(splash))
     ]
     nonbasic = useful[:4]
+    utility = _utility_land(pool, chosen, colors) if not splash else None
+    if utility is not None:
+        nonbasic.append(utility)
     kept = Counter(card["grp_id"] for card in chosen + nonbasic)
     sources = Counter(color for card in nonbasic for color in _produces(card) & set(colors))
     fixers = Counter(color for card in chosen for color in _produces(card) & set(splash))

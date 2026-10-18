@@ -21,6 +21,7 @@ MECHANIC_LABELS = {
     "graveyard": "a full graveyard",
     "noncombat_damage": "noncombat damage",
     "dies": "creatures dying",
+    "prepared": "creatures that enter prepared",
 }
 
 # Keyword actions whose effects live only in reminder text, which Arena's
@@ -57,6 +58,12 @@ _LIFE_GAINED_PAYOFF = re.compile(
     r"|\b(?:if|as long as) you(?:'ve| have)? gained life this turn\b"
 )
 _LIFELINK = re.compile(r"^lifelink\b|\b(?:has|have|gains?) lifelink\b")
+# Re-using a prepared creature: making it prepared again (Hexhaven Dueling Arena) or
+# returning it to hand to recast (Rescue Girl). 2026-10-18 pro GW draft.
+_PREPARED_PAYOFF = re.compile(
+    r"\btarget creature (?:that attacked this turn )?becomes prepared\b"
+    r"|\breturn another target (?:permanent|creature|nonland permanent) you control to its owner's hand\b"
+)
 _JACE_PAYOFF = re.compile(r"\bbehold a jace\b|\byou control a jace\b|\bjace planeswalkers? you control\b")
 # FRA Rakdos: pingers enable "an opponent was dealt noncombat damage" payoffs.
 _PING = re.compile(r"\bdeals? (?:\d+|x) damage to (?:each|target) (?:opponent|player)\b")
@@ -157,7 +164,9 @@ def _rules_profile(type_line: str, oracle_text: str) -> dict:
             payoffs.add("artifact_entry")
         if re.search(r"\benters prepared\b", line):
             # Casting the prepared copy is casting its instant or sorcery.
-            enables.update({"noncreature_spell", "instant_sorcery"})
+            enables.update({"noncreature_spell", "instant_sorcery", "prepared"})
+        if _PREPARED_PAYOFF.search(line):
+            payoffs.add("prepared")
         for kind_name in ("artifact", "creature"):
             # Older Oracle wording ("... enters the battlefield under your
             # control") and current wording ("another creature you control
