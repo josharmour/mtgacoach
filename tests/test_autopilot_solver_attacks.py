@@ -141,20 +141,21 @@ def test_optimal_attacks_material_fields_not_swapped():
     fields swapped, so an attacker dying to a block was scored as a KILL.
     A 1/1 swinging into an untapped 4/6 must register as losing material,
     never gaining it."""
-    from arenamcp.combat_solver import optimal_attacks
+    from arenamcp.combat_solver import evaluate_attack, optimal_attacks
 
     elf = {"name": "Llanowar Elves", "instance_id": 10, "power": 1, "toughness": 1, "oracle_text": ""}
     wall = {"name": "Colossal Wall", "instance_id": 20, "power": 4, "toughness": 6, "oracle_text": ""}
+    swing = evaluate_attack([elf], [], [wall], 20, 20, [wall])
+    assert swing.blockers_killed_material == 0  # a 1/1 cannot kill a 4/6
+    assert swing.attackers_lost_material > 0  # the wall blocks and kills the elf
     plan = optimal_attacks([elf], [wall], 20, 20, [wall], [])
-    assert plan is not None
-    if plan.attacker_names:  # solver chose to attack anyway
-        assert plan.blockers_killed_material == 0  # a 1/1 cannot kill a 4/6
+    assert plan is not None and plan.attacker_names == []  # so the solver stays home
 
 
 def test_solver_attacks_for_lethal_through_blockers(monkeypatch):
     engine = _make_engine(monkeypatch)
-    # 5/5 + 4/4 vs one 2/2 blocker, opp at 5: lethal gets through even
-    # against the best block.
+    # 5/5 + 4/4 vs one 2/2 blocker, opp at 5: not lethal (a chump on the 5/5
+    # leaves them at 1), but both attack: the 2/2 can only chump one of them.
     state = _state(
         [
             _creature("Big One", 1, 5, 5, 10),
@@ -165,4 +166,4 @@ def test_solver_attacks_for_lethal_through_blockers(monkeypatch):
         opp_life=5,
     )
     names = engine._solver_attack_names(state)
-    assert "Big One" in names or "Big Two" in names
+    assert names == ["Big One", "Big Two"]

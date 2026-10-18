@@ -159,11 +159,9 @@ def test_legal_action_to_action_strips_zero_power_warning_tag():
 def test_legal_action_to_action_strips_pt_from_multiple_attackers():
     action = _planner()._legal_action_to_action("Attack with: Veteran Survivor (4/3), Page, Loose Leaf (2/1)")
     assert action is not None
-    # Comma split happens before strip. "Page, Loose Leaf" trips the naive
-    # split (the card name itself contains a comma) — but at minimum we must
-    # NOT preserve the "(P/T)" decoration on whatever we DID extract.
-    for name in action.attacker_names:
-        assert "(" not in name, f"P/T decoration leaked into {name!r}"
+    # The split is comma-safe (_split_creature_list): "Page, Loose Leaf" stays
+    # one name, and no "(P/T)" decoration survives.
+    assert action.attacker_names == ["Veteran Survivor", "Page, Loose Leaf"]
 
 
 def test_legal_action_to_action_strips_decoration_from_select_target():

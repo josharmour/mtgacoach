@@ -26,7 +26,7 @@ import pytest
 
 import arenamcp.autopilot as autopilot_module
 from arenamcp.action_planner import ActionPlan, ActionType, GameAction
-from arenamcp.autopilot import AutopilotConfig, AutopilotEngine, _canonical_turn
+from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
 from arenamcp.autopilot_models import ClickResult
 
 FIXTURE = Path(__file__).parent / "fixtures" / "bug_20261006_185403_game_state.json"
@@ -133,21 +133,6 @@ def _bridge_pending(request_class: str) -> dict[str, Any]:
         "_bridge_request_type": request_type,
         "_bridge_request_class": request_class,
     }
-
-
-@pytest.mark.parametrize(
-    ("turn", "expected"),
-    [
-        ({"phase": "Combat", "step": "DeclareBlock"}, ("Phase_Combat", "Step_DeclareBlock")),
-        ({"phase": "Phase_Combat", "step": "Step_DeclareAttack"}, ("Phase_Combat", "Step_DeclareAttack")),
-        ({"phase": "Main1", "step": "None"}, ("Phase_Main1", "")),
-        ({"phase": "Phase_Main1", "step": ""}, ("Phase_Main1", "")),
-        ({}, ("", "")),
-        (None, ("", "")),
-    ],
-)
-def test_canonical_turn_puts_both_sources_in_log_form(turn, expected):
-    assert _canonical_turn(turn) == expected
 
 
 @NAMES

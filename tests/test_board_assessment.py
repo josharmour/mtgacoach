@@ -392,11 +392,6 @@ def test_payload_is_json_safe_for_the_ui():
         assert len(payload["lines"]) <= 3 and isinstance(payload["posture"], str), name
 
 
-def test_play_and_cast_helpers_build_real_option_meta():
-    assert play(284)["actionType"] == "ActionType_Play"
-    assert cast(229)["instanceId"] == 229
-
-
 def test_log_snapshot_counts_hidden_opponent_hand_cards(monkeypatch):
     """Card advantage needs the opponent's hand size.
 

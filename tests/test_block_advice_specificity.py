@@ -329,5 +329,4 @@ def test_repair_respects_gre_blocker_restrictions():
     sentence = coach._solver_block_assignment_sentence(
         state, attackers, blockers, "Block with Veteran Survivor."
     )
-    if sentence:  # solver may legitimately choose "no blocks" → fallback path
-        assert "Colossal Dreadmaw with Veteran Survivor" not in sentence
+    assert sentence == "Assignment: block Grizzly Bears with Veteran Survivor."

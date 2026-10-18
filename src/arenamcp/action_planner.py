@@ -2324,7 +2324,7 @@ class ActionPlanner(_ActionLegalityMixin):
 
         ``fallback_reason`` is required, not defaulted: a preflight plan is by
         definition not a model decision, and defaulting it to "" would let a new
-        preflight path silently produce untagged training records (WP-0.4).
+        preflight path pass for a model decision in logs and bug reports (WP-0.4).
         """
         plan = ActionPlan(trigger=trigger, turn_number=turn_number)
         action = self._legal_action_to_action(legal_action)

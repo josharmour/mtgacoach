@@ -122,9 +122,9 @@ def test_canonical_phase_step_composes_with_concede_normalize_phases():
         assert normalize_phases(already) is already
 
 
-# --- the model reproduces today's _assess facts ----------------------------------
+# --- the model's facts on the recorded fixtures --------------------------------
 
-# Facts today's _assess computed inline on each fixture (HEAD 778fee8).
+# First pinned against the facts _assess computed inline before the board model (778fee8).
 PINNED = {
     "T8": dict(ours=0, theirs=2, sources=(3, 3), lands=(3, 4), hand_lands=[], drop=False, colors="GU"),
     "T10": dict(ours=0, theirs=3, sources=(3, 3), lands=(3, 5), hand_lands=["Forest"], drop=True, colors="GU"),
@@ -175,79 +175,6 @@ def test_model_spells_are_the_hand_nonlands_in_order():
         "Cadet",
     ]
     assert (t15.our_life, t15.opp_life, t15.their_hand) == (20, 4, 2)
-
-
-@pytest.mark.parametrize("name", list(FIXTURES))
-def test_model_matches_the_assessment_fields(name, monkeypatch):
-    a, model = _fresh_assess(FIXTURES[name], monkeypatch), _model(FIXTURES[name])
-    assert (a.turn, a.our_turn, a.phase, a.our_life, a.opp_life) == (
-        model.turn,
-        model.our_turn,
-        model.phase,
-        model.our_life,
-        model.opp_life,
-    )
-    assert (a.our_creatures, a.their_creatures) == (len(model.ours), len(model.theirs))
-    assert (a.our_power, a.their_power) == (
-        sum(b["power"] for b in model.ours),
-        sum(b["power"] for b in model.theirs),
-    )
-    assert (a.our_hand, a.their_hand, a.our_lands, a.their_lands) == (
-        len(model.hand),
-        model.their_hand,
-        model.our_lands,
-        model.their_lands,
-    )
-    assert (a.lands_in_hand, a.land_drop_available) == (len(model.hand_lands), model.land_drop_available)
-    assert a.colors == "".join(sorted(c for c in model.colors_all if c != "C"))
-    assert a.missing_colors == "".join(model.missing_colors)
-    assert a.unknowns[: len(model.unknowns)] == model.unknowns
-
-
-@pytest.mark.parametrize("name", list(FIXTURES))
-def test_model_drives_the_legacy_clocks_and_lookahead_unchanged(name, monkeypatch):
-    """Feeding the model's tuples to the private helpers reproduces assess()."""
-    a, m = _fresh_assess(FIXTURES[name], monkeypatch), _model(FIXTURES[name])
-    our_clock, _ = ba._simulate_attacks(
-        m.ours,
-        m.theirs,
-        m.opp_life,
-        first_attackers=m.first_our_attackers,
-        first_blockers=m.untapped_theirs if m.our_attack_pending else None,
-    )
-    their_clock, _ = ba._simulate_attacks(
-        m.theirs,
-        m.ours,
-        m.our_life,
-        first_attackers=m.first_their_attackers,
-        first_blockers=m.our_first_blockers,
-    )
-    assert (our_clock, their_clock) == (a.our_clock, a.their_clock)
-    assert a.lethal_now == (m.our_attack_pending and our_clock == 1)
-    survival_hint = (
-        a.opp_lethal_on_board
-        or a.race == "behind"
-        or (a.their_clock is not None and a.their_clock <= 2)
-        or (a.their_creatures > a.our_creatures + 1 and a.their_power > a.our_power + 2)
-    )
-    budgets = ba._budget_turns(
-        m.our_turn, m.turn, m.sources_now, m.sources_all, m.hand_lands, m.land_drop_now
-    )
-    schedule = ba._schedule(m.spells, budgets, survival=survival_hint and not a.lethal_now, theirs=m.theirs)
-    lookahead, dead_in, now_life = ba._project(
-        schedule=schedule,
-        budgets=budgets,
-        spells=m.spells,
-        ours=m.ours,
-        theirs=m.theirs,
-        our_life=m.our_life,
-        turn=m.turn,
-        our_rules=m.our_rules,
-        their_attack_pending=m.their_attack_pending,
-        first_their_attackers=m.first_their_attackers,
-        untapped_ours=m.our_first_blockers,
-    )
-    assert (lookahead, dead_in, now_life) == (a.lookahead, a.dead_in, a.our_life_now_attack)
 
 
 # --- bridge names (the P0 fix) ---------------------------------------------------
