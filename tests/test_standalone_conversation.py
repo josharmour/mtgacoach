@@ -221,9 +221,7 @@ def make_loop_coach(
     # Conversation wiring (mirrors the new __init__ block).
     coach.last_match_id = None
     coach.voice_session = VoiceSession(coach._voice_output)
-    coach.conversation = ConversationController(
-        coach, emit_event=None, snapshot_fn=lambda: dict(coach._mcp.state)
-    )
+    coach.conversation = ConversationController(coach, snapshot_fn=lambda: dict(coach._mcp.state))
     if mode == "conversation":
         coach.conversation.set_mode("conversation", persist=False)
     return coach
@@ -287,50 +285,6 @@ def test_init_conversation_session_rebinds_real_sink():
 
 
 # ---------------------------------------------------------------------------
-# Event emit adapter
-# ---------------------------------------------------------------------------
-
-
-def test_emit_conversation_event_pipe_forwards_reply_and_status():
-    coach = standalone.StandaloneCoach.__new__(standalone.StandaloneCoach)
-
-    class PipeUI:
-        def __init__(self) -> None:
-            self.events: list[dict] = []
-            self.statuses: list[tuple[str, str]] = []
-
-        def _emit(self, event: dict) -> None:
-            self.events.append(event)
-
-        def status(self, key: str, value: str) -> None:
-            self.statuses.append((key, value))
-
-    coach.ui = PipeUI()
-    identity = {
-        "session_id": 2,
-        "match_id": "m1",
-        "turn_number": 4,
-        "request_id": 7,
-        "mode": "conversation",
-    }
-
-    coach._emit_conversation_event("conversation_reply", text="hello", identity=identity)
-    coach._emit_conversation_event("conversation_status", state="thinking", request_id=7)
-
-    assert coach.ui.events == [{"type": "conversation_reply", "text": "hello", "identity": identity}]
-    assert coach.ui.statuses == [("CONVO_STATE", "thinking")]
-
-
-def test_emit_conversation_event_cli_drops_silently():
-    coach = standalone.StandaloneCoach.__new__(standalone.StandaloneCoach)
-    coach.ui = StubUI()  # no _emit channel (CLI adapter)
-
-    # Must not raise in CLI mode.
-    coach._emit_conversation_event("conversation_reply", text="hello", identity=None)
-    coach._emit_conversation_event("conversation_status", state="idle", request_id=1)
-
-
-# ---------------------------------------------------------------------------
 # speak_advice TTS funnel
 # ---------------------------------------------------------------------------
 
@@ -340,9 +294,7 @@ def test_speak_advice_routes_through_voice_session_in_conversation_mode():
     sink = MagicMock()
     coach._voice_output = sink
     coach.voice_session = VoiceSession(sink)
-    coach.conversation = ConversationController(
-        coach, emit_event=None, snapshot_fn=lambda: {"turn": {"turn_number": 5}}
-    )
+    coach.conversation = ConversationController(coach, snapshot_fn=lambda: {"turn": {"turn_number": 5}})
     coach.conversation.set_mode("conversation", persist=False)
 
     coach.speak_advice("Cast your Lightning Bolt.")
@@ -619,37 +571,6 @@ def test_turn_drop_resets_conversation(monkeypatch):
     assert coach.conversation.memory.turns == []
     # Both boundaries bumped the session identity.
     assert coach.conversation.current_identity().session_id == session_before + 2
-
-
-def test_pre_match_questions_do_not_leak_into_first_match_answers(monkeypatch):
-    """Wave-5 None->first-match boundary: questions typed BEFORE the match id
-    ever appears must not leak into first-match answers — the memory they
-    would be digested from is cleared when the first match id arrives."""
-    coach = make_loop_coach(mode="conversation", triggers=[], repeat_triggers=True)
-
-    # Pre-match: the loop has seen no match id yet, but a question was already
-    # answered (startup/transcript state) and lives in controller memory.
-    coach.conversation.on_user_question("what deck is my opponent on?")
-    for thread in list(coach.conversation._answer_threads):
-        thread.join(timeout=5)
-    assert any(t.text == "what deck is my opponent on?" for t in coach.conversation.memory.turns)
-
-    # First match id arrives on the 2nd poll (iteration 2's boundary check).
-    polls = {"n": 0}
-
-    def poll_hook():
-        polls["n"] += 1
-        if polls["n"] >= 2:
-            coach._mcp.state["match_id"] = "m1"
-
-    coach._mcp.poll_hooks.append(poll_hook)
-
-    run_loop(monkeypatch, coach, iterations=2)
-
-    # The None -> "m1" transition reset the memory: the pre-match question no
-    # longer leaks into first-match prompt digests.
-    assert coach.last_match_id == "m1"
-    assert all(t.text != "what deck is my opponent on?" for t in coach.conversation.memory.turns)
 
 
 def test_phantom_redetection_of_finalized_match_does_not_speak_opener(monkeypatch):

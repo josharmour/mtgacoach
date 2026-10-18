@@ -67,18 +67,14 @@ def speak(session: VoiceSession, text: str, priority: str, identity) -> SpeechOu
         # Higher priority always preempts.
         ("proactive", "advice", True),
         ("proactive", "urgent", True),
-        ("proactive", "question", True),
         ("advice", "urgent", True),
-        ("advice", "question", True),
-        ("urgent", "question", True),
         # Same priority: only newer seq preempts.
         ("advice", "advice", True),
-        ("question", "question", True),
+        ("urgent", "urgent", True),
         # Lower priority never preempts.
         ("advice", "proactive", False),
         ("urgent", "advice", False),
         ("urgent", "proactive", False),
-        ("question", "urgent", False),
     ],
 )
 def test_preemption_matrix(current: str, incoming: str, expected_played: bool) -> None:
@@ -113,7 +109,7 @@ def test_same_priority_older_seq_does_not_preempt() -> None:
 def test_identity_none_always_speaks_regardless_of_active_request() -> None:
     sink = RecordingSink()
     session = VoiceSession(sink)
-    assert speak(session, "first", "question", make_identity(seq=1)).played is True
+    assert speak(session, "first", "urgent", make_identity(seq=1)).played is True
 
     # Legacy path (no identity) must never be stale-dropped or preempted away.
     outcome = speak(session, "legacy", "proactive", None)
@@ -170,7 +166,7 @@ def test_stale_requests_cancelled(floor_kwargs: dict, incoming_kwargs: dict) -> 
     assert speak(session, "floor", "advice", floor).played is True
 
     stale = make_identity(seq=50, **incoming_kwargs)
-    outcome = speak(session, "stale", "question", stale)
+    outcome = speak(session, "stale", "urgent", stale)
 
     assert outcome.state == SpeechState.CANCELLED
     assert outcome.played is False
@@ -212,7 +208,7 @@ def test_cancel_obsolete_advances_floor() -> None:
     # No active request — only the floor matters here.
     session.cancel_obsolete(make_identity(session_id=3, match_id="m9", turn_number=8))
 
-    outcome = speak(session, "old", "question", make_identity(session_id=2, seq=99))
+    outcome = speak(session, "old", "urgent", make_identity(session_id=2, seq=99))
 
     assert outcome.played is False
     assert sink.spoken == []
@@ -245,10 +241,10 @@ def test_stop_speaking_silences_sink_and_resets_state() -> None:
 def test_stop_speaking_allows_lower_priority_to_speak_afterwards() -> None:
     sink = RecordingSink()
     session = VoiceSession(sink)
-    speak(session, "question", "question", make_identity(seq=1))
+    speak(session, "urgent", "urgent", make_identity(seq=1))
     session.stop_speaking()
     assert speak(session, "proactive", "proactive", make_identity(seq=2)).played is True
-    assert sink.spoken == ["question", "proactive"]
+    assert sink.spoken == ["urgent", "proactive"]
 
 
 def test_listener_receives_state_transitions() -> None:
@@ -320,34 +316,6 @@ def test_channel_released_after_sink_completion() -> None:
     session.stop_speaking()
 
 
-def test_urgent_advice_after_question_answer_not_cancelled() -> None:
-    """The repro from the review: after a question answer completes, a later
-    urgent advice request must NOT be cancelled (C1c)."""
-    sink = CompletingSink()
-    session = VoiceSession(sink, release_poll_interval=0.005)
-
-    # 1. A question (conversation answer, request_id namespace) speaks.
-    class AnswerIdentity:
-        def __init__(self, request_id: int) -> None:
-            self.session_id = 1
-            self.match_id = "m1"
-            self.turn_number = 4
-            self.request_id = request_id
-
-    assert speak(session, "answer", "question", AnswerIdentity(1)).played is True
-
-    # 2. The answer completes → channel released.
-    sink._speaking = False
-    assert session.wait_for_idle(5.0) is True
-
-    # 3. Urgent advice (SpeechIdentity seq namespace) after the answer —
-    #    previously cancelled because _active was never cleared.
-    outcome = speak(session, "urgent advice", "urgent", make_identity(seq=2))
-    assert outcome.played is True
-    assert sink.spoken == ["answer", "urgent advice"]
-    session.stop_speaking()  # teardown: end the still-speaking utterance's release monitor
-
-
 def test_seq_comparison_only_within_same_identity_class() -> None:
     """seq (SpeechIdentity) and request_id (ResponseIdentity) are unrelated
     counters — same-priority supersession must never compare across them
@@ -355,7 +323,7 @@ def test_seq_comparison_only_within_same_identity_class() -> None:
     sink = CompletingSink()
     session = VoiceSession(sink)
 
-    class AnswerIdentity:
+    class TopicIdentity:
         def __init__(self, request_id: int) -> None:
             self.session_id = 1
             self.match_id = "m1"
@@ -365,16 +333,16 @@ def test_seq_comparison_only_within_same_identity_class() -> None:
     # A request_id-namespace identity owns the channel at "urgent" rank with
     # a HUGE request id. A seq-namespace identity with a small seq must NOT
     # be cancelled by cross-namespace comparison (old behavior: 2 <= 10**9).
-    assert speak(session, "answer", "urgent", AnswerIdentity(10**9)).played is True
-    outcome = speak(session, "topic", "urgent", make_identity(seq=2))
+    assert speak(session, "topic", "urgent", TopicIdentity(10**9)).played is True
+    outcome = speak(session, "advice", "urgent", make_identity(seq=2))
     assert outcome.played is True
 
     # And the inverse: a request_id-namespace request must not be cancelled
     # by a huge seq on the channel.
     session2_sink = CompletingSink()
     session2 = VoiceSession(session2_sink)
-    assert speak(session2, "topic", "urgent", make_identity(seq=10**9)).played is True
-    outcome2 = speak(session2, "answer", "urgent", AnswerIdentity(2))
+    assert speak(session2, "advice", "urgent", make_identity(seq=10**9)).played is True
+    outcome2 = speak(session2, "topic", "urgent", TopicIdentity(2))
     assert outcome2.played is True
     # Teardown: both sinks still report speaking; end their release monitors.
     session.stop_speaking()
@@ -388,8 +356,8 @@ def test_completion_release_does_not_clobber_newer_request() -> None:
     session = VoiceSession(sink, release_poll_interval=0.005)
     assert speak(session, "first", "urgent", make_identity(seq=1)).played is True
 
-    # Second request takes the channel (preempts).
-    assert speak(session, "second", "question", make_identity(seq=2)).played is True
+    # Second request takes the channel (same rank, newer seq).
+    assert speak(session, "second", "urgent", make_identity(seq=2)).played is True
     first_state = session.state
     assert first_state == SpeechState.SPEAKING
 
@@ -565,10 +533,10 @@ def test_minimal_sink_without_stop_or_blocking() -> None:
 def test_priority_coercion_accepts_strings_and_enums() -> None:
     sink = RecordingSink()
     session = VoiceSession(sink)
-    speak(session, "a", "question", make_identity(seq=1))
-    # Unknown priority falls back to PROACTIVE → cannot preempt QUESTION.
+    speak(session, "a", "urgent", make_identity(seq=1))
+    # Unknown priority falls back to PROACTIVE → cannot preempt URGENT.
     assert speak(session, "b", "bogus", make_identity(seq=2)).played is False
-    assert speak(session, "c", SpeechPriority.QUESTION, make_identity(seq=3)).played is True
+    assert speak(session, "c", SpeechPriority.URGENT, make_identity(seq=3)).played is True
 
 
 # ── Thread safety smoke ──────────────────────────────────────────────────

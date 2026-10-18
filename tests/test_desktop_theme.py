@@ -58,7 +58,7 @@ def test_every_text_tone_is_readable(name):
     t = theme._PALETTES[name]
     for ground in (t.bg, t.surface):
         assert _contrast(t.text, ground) >= 7
-        for tone in ("muted", "accent", "good", "warn", "bad", "you", "opp", "convo"):
+        for tone in ("muted", "accent", "good", "warn", "bad", "you", "opp"):
             ratio = _contrast(getattr(t, tone), ground)
             assert ratio >= 4.5, f"{name}: {tone} on {ground} is {ratio:.2f}:1"
     assert _contrast(t.on_accent, t.accent) >= 4.5

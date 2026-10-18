@@ -194,8 +194,6 @@ def test_remote_tts_fallback_to_local_on_error(qapp, monkeypatch):
         voice_id="af_heart",
         voice_name="Heart",
         speed=1.0,
-        priority=None,
-        identity=None,
         err_msg="Connection refused",
     )
 

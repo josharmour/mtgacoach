@@ -335,9 +335,7 @@ def make_engine(
     # Conversation wiring (mirror of the __init__ block), parked in turn_advice.
     coach.last_match_id = None
     coach.voice_session = VoiceSession(coach._voice_output)
-    coach.conversation = ConversationController(
-        coach, emit_event=None, snapshot_fn=lambda: dict(coach._mcp.snapshots[0])
-    )
+    coach.conversation = ConversationController(coach, snapshot_fn=lambda: dict(coach._mcp.snapshots[0]))
     coach.conversation.set_mode(TURN_ADVICE, persist=False)
     coach._conversation_speech_seq = 0
     return coach, sink, llm

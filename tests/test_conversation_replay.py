@@ -1,4 +1,4 @@
-"""Wave-5 replay validation suite (T1/T2/T3/T4/T6/T7 release thresholds).
+"""Wave-5 replay validation suite (topic-commentary release thresholds).
 
 Deterministic recorded-game replay harness: scripted snapshot sequences fed
 through the real ConversationController + VoiceSession pipeline with mock
@@ -6,14 +6,11 @@ backends — no real Arena, no network, no Qt, no subprocess.
 
 Release thresholds from conversation-mode.md Wave 5 (agreed before testing):
 - T1: 100% stale-discard when identity drifts mid-render.
-- T2: <= 1 proactive utterance per 90s per topic class; <= 3 proactive total
-  absent questions.
+- T2: <= 1 proactive utterance per 90s per topic class; <= 3 proactive total.
 - T3: zero identical-topic restatements within 3x cooldown.
-- T4: stop/question during playback halts within the harness's clock
-  resolution — assert no post-stop playback.
-- T6: question -> reply <= 8s p50 with an instant mock backend.
-- T7: AI-down backend -> tagged [BACKEND ERROR] text in the transcript,
-  never spoken, zero unhandled exceptions.
+- T4: stop during playback halts within the harness's clock resolution —
+  assert no post-stop playback.
+- T7: AI-down backend -> never spoken, zero unhandled exceptions.
 
 A fake clock (``now_fn`` injection via ``time.time`` monkeypatching on the
 conversation module) makes the 90s windows testable instantly.
@@ -23,7 +20,6 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -96,9 +92,7 @@ class ReplayHarness:
 
     def __init__(self, get_advice, *, clock: ReplayClock | None = None) -> None:
         self.clock = clock or ReplayClock()
-        self.events: list[tuple[str, dict]] = []
         self.spoken: list[tuple[str, str]] = []  # (text, priority)
-        self.replies: list[str] = []  # transcript-visible replies
 
         self.inner = MagicMock()
         self.inner.get_advice = MagicMock(side_effect=get_advice)
@@ -116,17 +110,8 @@ class ReplayHarness:
         self.coach._game_plan_mgr = None
         self.coach._coach = self.inner
 
-        self.controller = ConversationController(
-            self.coach,
-            emit_event=self._emit,
-            snapshot_fn=lambda: state(),
-        )
+        self.controller = ConversationController(self.coach, snapshot_fn=lambda: state())
         self.controller.set_mode(CONVERSATION, persist=False)
-
-    def _emit(self, event_type: str, **fields: Any) -> None:
-        self.events.append((event_type, dict(fields)))
-        if event_type == "conversation_reply":
-            self.replies.append(str(fields.get("text", "")))
 
     def set_backend(self, get_advice) -> None:
         self.inner.get_advice = MagicMock(side_effect=get_advice)
@@ -201,36 +186,6 @@ def _threat_state(turn: int = 5, iid: int = 50, extra: list[dict] | None = None)
 # ---------------------------------------------------------------------------
 
 
-def test_replay_t1_stale_discard_on_identity_drift_mid_render(harness_factory):
-    """T1: a response rendered while the match boundary fires is discarded —
-    100% of drifted deliveries must be suppressed."""
-    harness = harness_factory()
-    ctrl = harness.controller
-
-    drift = threading.Event()
-
-    def drifting_advice(snapshot, question=None, **kw):
-        drift.wait(timeout=5.0)
-        return "answer from the previous match"
-
-    harness.set_backend(drifting_advice)
-
-    rid = ctrl.on_user_question("why not attack?")
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline and not ctrl._pending:
-        time.sleep(0.01)
-
-    # Match boundary fires MID-RENDER (reset_for_match bumps session_id).
-    ctrl.reset_for_match("m2", 2)
-    drift.set()
-    for thread in list(ctrl._answer_threads):
-        thread.join(timeout=5)
-
-    # The drifted answer never reached the transcript or the speaker.
-    assert harness.replies == []
-    assert harness.spoken == []
-
-
 def test_replay_t1_turn_drift_discards_topic(harness_factory):
     """T1: a topic rendered for turn N that finishes when the identity has
     moved to a different decision context is dropped."""
@@ -248,7 +203,6 @@ def test_replay_t1_turn_drift_discards_topic(harness_factory):
     harness.feed(prev, cur, [])
 
     assert harness.spoken == []
-    assert harness.replies == []
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +299,7 @@ def test_replay_t3_threat_class_restates_only_after_window(harness_factory):
 
 
 # ---------------------------------------------------------------------------
-# T4 — stop/question during playback halts (no post-stop playback)
+# T4 — stop during playback halts (no post-stop playback)
 # ---------------------------------------------------------------------------
 
 
@@ -394,7 +348,6 @@ def test_replay_t4_stop_during_playback_halts_within_clock_resolution(harness_fa
 
     # STOP arrives mid-playback (UI stop -> engine stop path).
     harness.voice.stop_speaking("ui")
-    harness.controller.cancel_pending()
 
     # After the stop, NOTHING new is spoken at clock resolution.
     spoken_at_stop = len(harness.spoken)
@@ -404,97 +357,13 @@ def test_replay_t4_stop_during_playback_halts_within_clock_resolution(harness_fa
     feed_thread.join(timeout=5)
 
 
-def test_replay_t4_question_during_playback_preempts_and_answers(harness_factory):
-    """T4 variant: a question during playback preempts the topic; after the
-    preemption the topic's audio never resumes (no post-preempt topic
-    playback beyond the answer)."""
-    harness = harness_factory()
-    ctrl = harness.controller
-
-    def fast_advice(snapshot, question=None, **kw):
-        return "answer to the question"
-
-    harness.set_backend(fast_advice)
-    prev = state(turn=5, battlefield=[])
-    cur = _threat_state(iid=65)
-    harness.feed(prev, cur, [])  # topic speaks (instant sink)
-    assert len(harness.spoken) == 1
-
-    # A question arrives: preemption + answer.
-    ctrl.on_user_question("what changed?")
-    for thread in list(ctrl._answer_threads):
-        thread.join(timeout=5)
-
-    assert harness.spoken[-1][0] == "answer to the question"
-    # No topic re-playback after the answer.
-    assert len(harness.spoken) == 2
-
-
 # ---------------------------------------------------------------------------
-# T6 — question -> reply latency (instant mock)
+# T7 — AI-down backend: never spoken
 # ---------------------------------------------------------------------------
-
-
-def test_replay_t6_question_reply_latency_under_8s(harness_factory):
-    """T6: with an instant mock backend, question -> conversation_reply must
-    be <= 8s p50 (the harness measures wall time of the answer thread)."""
-    harness = harness_factory()
-    ctrl = harness.controller
-
-    latencies: list[float] = []
-    for i in range(10):
-        start = time.monotonic()
-        ctrl.on_user_question(f"question {i}")
-        for thread in list(ctrl._answer_threads):
-            thread.join(timeout=8)
-        elapsed = time.monotonic() - start
-        latencies.append(elapsed)
-        assert any(c == "conversation_reply" for c, _f in harness.events), "reply event missing"
-    latencies.sort()
-    p50 = latencies[len(latencies) // 2]
-    assert p50 <= 8.0
-
-
-# ---------------------------------------------------------------------------
-# T7 — AI-down backend: tagged text in transcript, never spoken
-# ---------------------------------------------------------------------------
-
-
-def test_replay_t7_backend_down_tagged_never_spoken(harness_factory):
-    """T7: with the AI down, the transcript shows [BACKEND ERROR] text and
-    NOTHING is spoken; the run completes with zero unhandled exceptions."""
-
-    def down_backend(snapshot, question=None, **kw):
-        raise RuntimeError("gateway unreachable")
-
-    harness = harness_factory(down_backend)
-
-    # Questions fail cleanly.
-    harness.controller.on_user_question("hello?")
-    for thread in list(harness.controller._answer_threads):
-        thread.join(timeout=5)
-
-    # Topic renders fail cleanly.
-    prev = state(turn=5, battlefield=[])
-    cur = _threat_state(iid=66)
-    harness.feed(prev, cur, [])
-
-    # Transcript has tagged error text.
-    assert any(t.startswith("[BACKEND ERROR]") for t in harness.replies)
-    # Nothing was ever spoken.
-    assert harness.spoken == []
-
-    # And the pipeline is still alive afterwards (backend "recovers").
-    harness.set_backend(lambda snapshot, question=None, **kw: "Back online advice.")
-    harness.controller.on_user_question("still there?")
-    for thread in list(harness.controller._answer_threads):
-        thread.join(timeout=5)
-    assert "Back online advice." in harness.spoken_texts()
 
 
 def test_replay_t7_topic_backend_down_returns_none_cleanly(harness_factory):
-    """T7: a down backend during topic speech returns None (no crash, no
-    speech, idle status restored)."""
+    """T7: a down backend during topic speech returns None (no crash, no speech)."""
     failures: list[Exception] = []
 
     def watch(fn):
@@ -519,12 +388,9 @@ def test_replay_t7_topic_backend_down_returns_none_cleanly(harness_factory):
     harness.feed(prev, cur, ["threat_detected"])
 
     assert harness.spoken == []
-    assert harness.replies and harness.replies[0].startswith("[BACKEND ERROR]")
     assert failures == []
-
-    # Status lifecycle: idle after the failure (M6).
-    states = [f.get("state") for c, f in harness.events if c == "conversation_status"]
-    assert states[-1] == "idle"
+    assert harness.inner.get_advice.call_count == 1  # the render was attempted
+    assert "threat" not in harness.controller.memory.discussed_topics
 
 
 # ---------------------------------------------------------------------------

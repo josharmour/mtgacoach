@@ -1178,14 +1178,6 @@ def test_set_auto_concede_reaches_the_engine():
     assert coach.auto_concede == [False, True]
 
 
-def test_chat_cancel_only_intercepts_while_a_countdown_runs():
-    coach = PipeCoach(armed=True)
-    adapter, _ = pipe(coach)
-    assert adapter._try_concede_cancel_reply("Cancel!") and coach.cancels == ["chat"]
-    assert not adapter._try_concede_cancel_reply("cancel")  # nothing running any more
-    assert not PipeAdapter._try_concede_cancel_reply(pipe(PipeCoach(armed=True))[0], "what now?")
-
-
 def test_autopilot_cancel_falls_back_to_escape():
     class Engine:
         escaped = 0

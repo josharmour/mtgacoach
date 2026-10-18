@@ -37,11 +37,8 @@ class CoachSession(QObject):
     # Tactical-search result for the sidebar's tactical line
     mctsUpdated = Signal(object)
 
-    # Conversation Mode signals
+    # Conversation Mode signal
     modeChanged = Signal(str)
-    conversationReply = Signal(str)
-    conversationStatus = Signal(str)
-    localFallbackNotice = Signal(str)
 
     # Lifecycle signals
     started = Signal()
@@ -250,33 +247,19 @@ class CoachSession(QObject):
     def cycle_voice(self) -> None:
         self.send_command("cycle_voice")
 
-    def send_chat(self, text: str) -> None:
-        self.send_command("chat", text)
-
     def set_mode(self, mode: str) -> None:
         """Switch coaching mode ("turn_advice" | "conversation")."""
         self._tts.stop_speech()
         self.send_command("set_mode", mode)
 
-    def set_verbosity(self, verbosity: str) -> None:
-        """Set conversation commentary verbosity (quiet/balanced/detailed)."""
-        self.send_command("set_verbosity", verbosity)
-
     def stop_speaking(self) -> None:
-        """Stop current TTS playback (conversation + turn advice).
+        """Stop current TTS playback.
 
         Also notifies the engine (``stop_speech`` command) so the engine-side
-        arbiter channel is released and pending conversation work is cancelled
-        — the UI stop button must not leave a question answer still rendering
-        on the engine side.
+        arbiter channel is released too.
         """
         self._tts.stop_speech()
         self.send_command("stop_speech")
-
-    def emit_local_fallback_notice(self, message: str) -> None:
-        """Surface a [LOCAL FALLBACK] notice (PTT/mic failures) on the
-        conversation transcript surface."""
-        self.localFallbackNotice.emit(str(message))
 
     def capture_screenshots(self) -> dict[str, str]:
         """Capture coach window + MTGA window screenshots into bug_reports directory."""
@@ -526,14 +509,11 @@ class CoachSession(QObject):
                 self.statusChanged.emit(key, val)
                 if key == "MODE":
                     self.modeChanged.emit(val)
-                elif key == "CONVO_STATE":
-                    self.conversationStatus.emit(val)
 
         elif ev_type == "speak_stop":
-            # Engine-initiated preemption (typed question, urgent topic): the
-            # engine stopped its arbiter channel, so desktop audio must halt
-            # too — otherwise the preempted utterance keeps playing for the
-            # full LLM answer latency. stop_speech() is idempotent.
+            # The engine stopped its voice output (stop command, urgent-topic
+            # preemption, shutdown), so desktop audio must halt too.
+            # stop_speech() is idempotent.
             self._tts.stop_speech()
 
         elif ev_type in ("speak_request", "speak", "speak_audio"):
@@ -551,14 +531,7 @@ class CoachSession(QObject):
                     speed = float(event.get("speed") or 1.0)
                     voice_id = str(event.get("voice_id") or "af_heart")
                     voice_name = str(event.get("voice_name") or "Auto")
-                    # Conversation-mode speech carries optional priority and
-                    # identity (stale-response suppression); absent fields are
-                    # legacy behavior.
                     extra_kwargs: dict[str, Any] = {}
-                    if "priority" in event:
-                        extra_kwargs["priority"] = event.get("priority")
-                    if "identity" in event:
-                        extra_kwargs["identity"] = event.get("identity")
                     if speech_id:
                         extra_kwargs["speech_id"] = speech_id
                         self._report_speech_status(speech_id, "accepted")
@@ -569,11 +542,6 @@ class CoachSession(QObject):
                         speed=speed,
                         **extra_kwargs,
                     )
-
-        elif ev_type == "conversation_reply":
-            reply = str(event.get("text") or "")
-            if reply:
-                self.conversationReply.emit(reply)
 
         elif ev_type in ("advice", "emit_advice"):
             text = str(event.get("text") or event.get("advice") or "")

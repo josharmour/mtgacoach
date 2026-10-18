@@ -317,7 +317,7 @@ def make_loop(state: dict, triggers: list[str], *, autopilot: bool, engine=None,
     coach._run_win_plan_worker = Mock()
     coach.last_match_id = None
     coach.voice_session = VoiceSession(None)
-    coach.conversation = ConversationController(coach, emit_event=None, snapshot_fn=lambda: dict(state))
+    coach.conversation = ConversationController(coach, snapshot_fn=lambda: dict(state))
     coach.conversation.set_mode(TURN_ADVICE, persist=False)
     return coach
 

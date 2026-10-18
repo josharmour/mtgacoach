@@ -1,9 +1,9 @@
 """Voice speech arbiter for the standalone coach.
 
-Sits between speech producers (coaching loop, conversation answer threads,
-UI stop commands) and a pluggable speech sink, enforcing two rules:
+Sits between speech producers (coaching loop, conversation-mode topic
+commentary, UI stop commands) and a pluggable speech sink, enforcing two rules:
 
-* **Priority preemption** — QUESTION > URGENT > ADVICE > PROACTIVE. A higher
+* **Priority preemption** — URGENT > ADVICE > PROACTIVE. A higher
   priority always replaces what is currently speaking; the same priority
   replaces only when its identity sequence is newer; a lower priority is
   dropped (superseded by the current request).
@@ -58,19 +58,17 @@ class SpeechState(str, Enum):
 class SpeechPriority(str, Enum):
     """Speech urgency classes; higher rank preempts lower."""
 
-    QUESTION = "question"
     URGENT = "urgent"
     ADVICE = "advice"
     PROACTIVE = "proactive"
 
     @property
     def rank(self) -> int:
-        """Preemption rank — QUESTION(3) > URGENT(2) > ADVICE(1) > PROACTIVE(0)."""
+        """Preemption rank — URGENT(2) > ADVICE(1) > PROACTIVE(0)."""
         return _PRIORITY_RANK[self]
 
 
 _PRIORITY_RANK = {
-    SpeechPriority.QUESTION: 3,
     SpeechPriority.URGENT: 2,
     SpeechPriority.ADVICE: 1,
     SpeechPriority.PROACTIVE: 0,
@@ -138,7 +136,7 @@ def _seq_namespace(identity: Any) -> str | None:
     """Which counter namespace supplies this identity's sequence number.
 
     ``SpeechIdentity`` (advice path) carries ``seq``; the canonical
-    ``ResponseIdentity`` (conversation answers) carries ``request_id``. The
+    ``ResponseIdentity`` (conversation topics) carries ``request_id``. The
     two counters are unrelated — comparing across them would falsely cancel
     same-priority speech, so the arbiter only supersedes within one class.
     """
@@ -240,7 +238,7 @@ class VoiceSession:
             token = self._channel_token + 1
             self._channel_token = token
             notify = self._transition_locked(SpeechState.SPEAKING)
-        self._sink_speak(request.text, priority=request.priority, identity=request.identity)
+        self._sink_speak(request.text)
         self._notify(notify)
         # Release the channel when the sink finishes (or is proven done); the
         # arbiter must return to IDLE so lower-priority speech can speak again.
@@ -472,7 +470,7 @@ class VoiceSession:
                 with contextlib.suppress(Exception):
                     callback(state)
 
-    def _sink_speak(self, text: str, *, priority: SpeechPriority | None = None, identity: Any = None) -> None:
+    def _sink_speak(self, text: str) -> None:
         output = self._output
         if output is None:
             return
@@ -496,12 +494,6 @@ class VoiceSession:
             if accepts("on_complete"):
                 on_complete = self._make_sink_completion_callback()
                 kwargs["on_complete"] = on_complete
-            # A sink that arbitrates too (the desktop's TTS, through the pipe
-            # voice output) needs the request's priority and identity.
-            if accepts("priority") and priority is not None:
-                kwargs["priority"] = priority.value
-            if accepts("identity") and identity is not None:
-                kwargs["identity"] = identity
         except (TypeError, ValueError):
             pass  # builtins/C sinks — call bare
         try:

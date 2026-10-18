@@ -8,7 +8,6 @@ from the UI process.
 from __future__ import annotations
 
 import contextlib
-import dataclasses
 import json
 import logging
 import os
@@ -43,10 +42,6 @@ _HEALTH_TAG_GUARD = "".join(f"(?!{re.escape(tag)})" for tag in _HEALTH_TAGS)
 # Regex to strip Textual/Rich markup tags like [bold], [red], [/], [link=...]
 _MARKUP_RE = re.compile(_HEALTH_TAG_GUARD + r"\[/?[a-zA-Z_][a-zA-Z0-9_ =.:#/\"'-]*\]|\[/\]")
 _ISSUE_URL_RE = re.compile(r"/issues/(\d+)(?:$|[?#])")
-# Typed (or transcribed) replies that cancel a running auto-concede countdown.
-_CONCEDE_CANCEL_RE = re.compile(
-    r"^\s*(?:cancel|stop|abort|no|wait|don'?t concede|do not concede|keep playing)\b", re.IGNORECASE
-)
 
 
 def strip_markup(text: str) -> str:
@@ -71,21 +66,6 @@ def health_tag_of(text: str) -> str:
     if is_local_fallback_text(text):
         return "local_fallback"
     return ""
-
-
-def speech_identity_payload(identity: Any) -> dict[str, Any] | None:
-    """A speech identity as the JSON object the desktop's TTS arbitration reads.
-
-    The engine's identities are dataclasses (``ResponseIdentity``,
-    ``SpeechIdentity``); ``json.dumps(default=str)`` would turn them into a
-    repr string, which the desktop cannot read (it calls ``.get``).
-    """
-    to_payload = getattr(identity, "to_payload", None)
-    if callable(to_payload):
-        identity = to_payload()
-    elif dataclasses.is_dataclass(identity) and not isinstance(identity, type):
-        identity = dataclasses.asdict(identity)
-    return dict(identity) if isinstance(identity, dict) else None
 
 
 class PipeAdapter:
@@ -226,8 +206,6 @@ class PipeAdapter:
         voice_id: str,
         voice_name: str,
         speed: float,
-        priority: Any = None,
-        identity: Any = None,
         speech_id: str | None = None,
     ) -> None:
         payload: dict[str, Any] = {
@@ -237,12 +215,6 @@ class PipeAdapter:
             "voice_name": voice_name,
             "speed": speed,
         }
-        # Backward compatible: legacy consumers never see the new keys.
-        if priority is not None:
-            payload["priority"] = str(getattr(priority, "value", priority))
-        identity = speech_identity_payload(identity)
-        if identity is not None:
-            payload["identity"] = identity
         if speech_id:
             # The desktop answers with speech_status commands for this id.
             payload["speech_id"] = speech_id
@@ -678,16 +650,6 @@ class PipeAdapter:
                 self._handle_replay_advice()
             elif action == "force_advice":
                 threading.Thread(target=self._handle_force_advice, daemon=True).start()
-            elif action == "chat":
-                text = cmd.get("text", "")
-                if text:
-                    # Intercept slash commands from the chat input
-                    if self._try_concede_cancel_reply(text):
-                        pass  # "cancel" while an auto-concede countdown runs
-                    elif self._try_slash_command(text):
-                        pass  # Handled
-                    else:
-                        threading.Thread(target=self._handle_chat, args=(text,), daemon=True).start()
             elif action == "autopilot_bug":
                 coach.capture_autopilot_bug(str(cmd.get("capture_id", "")), str(cmd.get("clicked_at", "")))
             elif action == "autopilot_bug_screenshots":
@@ -717,17 +679,6 @@ class PipeAdapter:
                         conversation.set_mode(mode)
                 resulting = str(getattr(conversation, "mode", mode) if conversation is not None else mode)
                 self.status("MODE", resulting)
-            elif action == "set_verbosity":
-                # Same dual-shape tolerance as set_mode (text-vs-verbosity key).
-                verbosity = str(cmd.get("verbosity") or cmd.get("text") or "")
-                conversation = getattr(coach, "conversation", None)
-                if verbosity and conversation is not None:
-                    with contextlib.suppress(Exception):
-                        conversation.set_verbosity(verbosity)
-                resulting = str(
-                    getattr(conversation, "verbosity", verbosity) if conversation is not None else verbosity
-                )
-                self.status("VERBOSITY", resulting)
             elif action == "set_draft_commentary":
                 enabled = cmd.get("enabled") is True
                 coach.settings.set("draft_commentary", enabled)
@@ -750,13 +701,6 @@ class PipeAdapter:
                     if voice_output is not None and hasattr(voice_output, "stop"):
                         with contextlib.suppress(Exception):
                             voice_output.stop()
-                # UI-initiated stop also cancels in-flight conversation work:
-                # a pending question answer must not keep rendering (and later
-                # speak) after the user pressed stop.
-                conversation = getattr(coach, "conversation", None)
-                if conversation is not None and hasattr(conversation, "cancel_pending"):
-                    with contextlib.suppress(Exception):
-                        conversation.cancel_pending()
             else:
                 logger.warning("Unknown pipe command: %s", action)
         except Exception as e:
@@ -786,17 +730,6 @@ class PipeAdapter:
         except Exception as e:
             logger.warning("abort_concede failed: %s", e)
             return False
-
-    def _try_concede_cancel_reply(self, text: str) -> bool:
-        """'cancel' / 'stop' / 'keep playing' while a countdown runs cancels it."""
-        coach = self._coach
-        armed = getattr(coach, "concede_armed", None)
-        if not callable(armed) or not armed() or not _CONCEDE_CANCEL_RE.match(text or ""):
-            return False
-        if self._cancel_concede(coach, "chat"):
-            self.log("Auto-concede cancelled — keep playing.")
-            return True
-        return False
 
     def _handle_toggle_fallback_mode(self) -> None:
         """Bridge-only mode is fixed on; legacy fallback toggles do nothing."""
@@ -855,52 +788,6 @@ class PipeAdapter:
                 }
             )
 
-    def _handle_chat(self, text: str) -> None:
-        """Process a chat message or slash command from the GUI."""
-        cmd_text = (text or "").strip().lower()
-        if cmd_text in (
-            "/assess",
-            "/strategy",
-            "/concede",
-            "/win",
-            "game assessment",
-            "win strategy",
-            "concede",
-            "concede?",
-        ):
-            # Pass natural-language phrasings through so the LLM answers the
-            # user's actual words, not just the canned assessment question.
-            user_text = "" if cmd_text.startswith("/") else text.strip()
-            self._handle_game_assessment(user_text=user_text)
-            return
-        if cmd_text in ("/deck", "/recommend_deck", "suggest deck"):
-            self._handle_out_of_match_deck_suggestions()
-            return
-
-        coach = self._coach
-        if coach is None:
-            return
-        conversation = getattr(coach, "conversation", None)
-        if conversation is not None and getattr(conversation, "mode", "") == "conversation":
-            # Conversation mode: route through the ConversationController
-            # (memory + identity-gated answer thread) instead of the legacy
-            # one-shot advice path.
-            with contextlib.suppress(Exception):
-                conversation.on_user_question(text, source="typed")
-            return
-        if coach._coach is None:
-            return
-        try:
-            game_state = coach._mcp.get_game_state() if coach._mcp else {}
-            if game_state:
-                coach._inject_library_summary_if_needed(game_state)
-            response = coach._coach.get_advice(game_state, question=text)
-            if response:
-                self.advice(response, "CHAT")
-                coach.speak_advice(response)
-        except Exception as e:
-            self.error(f"Chat failed: {e}")
-
     @staticmethod
     def _is_in_match(game_state: dict[str, Any]) -> bool:
         """True when the snapshot shows a live match.
@@ -918,7 +805,7 @@ class PipeAdapter:
             turn_number = 0
         return bool(turn_number > 0 or game_state.get("hand") or game_state.get("battlefield"))
 
-    def _handle_game_assessment(self, user_text: str = "") -> None:
+    def _handle_game_assessment(self) -> None:
         """Perform a full game state assessment: evaluate win plan, path to victory, and concede decision."""
         coach = self._coach
         if not coach or not coach._coach:
@@ -942,8 +829,6 @@ class PipeAdapter:
                 "If we have a viable path, outline the key steps. If there is NO realistic path to victory left, "
                 "explicitly advise to CONCEDE and state why. Keep spoken advice to 2 clear sentences."
             )
-            if user_text:
-                question = f"The player asked: {user_text!r}. Answer that directly. {question}"
             response = coach._coach.get_advice(game_state, question=question)
             if response:
                 self.advice(response, "GAME ASSESSMENT")
@@ -1055,39 +940,6 @@ class PipeAdapter:
             self.error(f"Cycle model failed: {e}")
 
     # --- Slash command interception for chat input ---
-
-    def _try_slash_command(self, text: str) -> bool:
-        """Intercept slash commands typed in the chat input. Returns True if handled."""
-        t = text.strip().lower()
-        if t in ("/chance", "/winrate", "/odds"):
-            threading.Thread(target=self._handle_win_probability, daemon=True).start()
-            return True
-        if t in ("/deck-strategy", "/deckstrategy", "/deck"):
-            threading.Thread(target=self._handle_deck_strategy, daemon=True).start()
-            return True
-        if t.startswith("/bugreport"):
-            msg = text.strip()[len("/bugreport") :].strip()
-            threading.Thread(target=self._handle_bugreport, args=(msg,), daemon=True).start()
-            return True
-        if t == "/subscribe":
-            threading.Thread(target=self._handle_subscribe, daemon=True).start()
-            return True
-        if t.startswith("/local"):
-            self._handle_local_config(text.strip())
-            return True
-        if t == "/online":
-            threading.Thread(target=self._handle_switch_online, daemon=True).start()
-            return True
-        if t.startswith("/key"):
-            self._handle_set_key(text.strip())
-            return True
-        if t == "/analyze":
-            threading.Thread(target=self._handle_analyze_match, daemon=True).start()
-            return True
-        if t in ("/sideboard", "/sb"):
-            threading.Thread(target=self._handle_sideboard_recommendation, daemon=True).start()
-            return True
-        return False
 
     # --- Handler implementations ---
 

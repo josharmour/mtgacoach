@@ -228,11 +228,7 @@ class StandaloneCoach(
         # after _init_voice() runs. With voice disabled the VoiceSession
         # wraps a None sink (structural no-op) rather than staying None.
         self.voice_session = VoiceSession(self._voice_output)
-        self.conversation = ConversationController(
-            self,
-            emit_event=self._emit_conversation_event,
-            snapshot_fn=self._conversation_snapshot,
-        )
+        self.conversation = ConversationController(self, snapshot_fn=self._conversation_snapshot)
         try:
             saved_mode = str(self.settings.get("conversation_mode", TURN_ADVICE) or TURN_ADVICE)
         except Exception:
@@ -442,7 +438,7 @@ class StandaloneCoach(
         # Use local Kokoro TTS
         if self._voice_output:
             # Conversation mode: funnel through the speech arbiter so
-            # question-priority answers can preempt urgent advice and
+            # urgent advice and topic commentary share one channel and
             # stale identities are dropped. Turn-advice keeps the raw
             # sink path byte-for-byte.
             identity = self._conversation_identity_for_speech()
@@ -1315,26 +1311,6 @@ class StandaloneCoach(
             logger.debug("conversation snapshot read failed", exc_info=True)
             return None
 
-    def _emit_conversation_event(self, event_type: str, **fields: Any) -> None:
-        """Forward ConversationController events to the pipe UI (best-effort).
-
-        Pipe mode: ``conversation_reply`` rides the adapter's event queue and
-        ``conversation_status`` maps to a CONVO_STATE status event (the shape
-        the desktop session already understands). CLI mode has no event
-        channel and silently drops events.
-        """
-        try:
-            if event_type == "conversation_status":
-                status_fn = getattr(self.ui, "status", None)
-                if callable(status_fn):
-                    status_fn("CONVO_STATE", str(fields.get("state", "idle")))
-                return
-            emit = getattr(self.ui, "_emit", None)
-            if callable(emit):
-                emit({"type": event_type, **fields})
-        except Exception as e:
-            logger.debug(f"conversation event emit failed: {e}")
-
     def _conversation_identity_for_speech(self) -> Any | None:
         """Identity for arbiter-routed TTS in conversation mode, else None.
 
@@ -2089,10 +2065,9 @@ class StandaloneCoach(
                 match_id_changed = curr_match_id != last_match_id
                 if match_id_changed and last_match_id is None and curr_match_id is not None:
                     # Wave 5: None -> first match id is a real boundary — the
-                    # controller's memory may already hold pre-match content
-                    # (startup questions, deferred answers), so it must be
-                    # cleared even though match_number does not bump. The
-                    # bump-only reset used here is acceptable per review: the
+                    # controller's memory may already hold pre-match content,
+                    # so it must be cleared (and the conversation opener
+                    # spoken) even though match_number does not bump. The
                     # session_id bump invalidates all in-flight identities.
                     self._conversation_reset_for_match(curr_match_id)
                 if match_id_changed and last_match_id is not None:
@@ -3295,10 +3270,10 @@ class StandaloneCoach(
                     # Wave 3 — proactive game-dynamics commentary: after the
                     # trigger batch is dispatched (CRITICAL triggers keep the
                     # legacy dispatch), the loop asks the controller for the
-                    # best surviving topic. The controller applies the full
-                    # gate ladder (user-question priority, verbosity matrix,
-                    # cooldown, repetition suppression) internally and speaks
-                    # via the arbiter with the correct priority.
+                    # best surviving topic. The controller applies the gate
+                    # ladder (priority floor, cooldown, repetition
+                    # suppression) internally and speaks via the arbiter
+                    # with the correct priority.
                     _conversation = getattr(self, "conversation", None)
                     if _conversation is not None and _conversation.mode == "conversation":
                         try:

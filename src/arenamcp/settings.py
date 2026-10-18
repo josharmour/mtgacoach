@@ -90,11 +90,9 @@ DEFAULTS = {
     # over adb with the mtgacoach probe injected; see arenamcp.android_link).
     # MTGACOACH_GAME_DEVICE overrides it.
     "game_device": "desktop",
-    # Conversation Mode session mode ("turn_advice" | "conversation"),
-    # commentary verbosity ("quiet" | "balanced" | "detailed"), and the
-    # minimum seconds between proactive topic utterances (Wave 3).
+    # Conversation Mode session mode ("turn_advice" | "conversation") and the
+    # minimum seconds between proactive topic utterances.
     "conversation_mode": "turn_advice",
-    "conversation_verbosity": "balanced",
     "conversation_cooldown_seconds": 90,
 }
 

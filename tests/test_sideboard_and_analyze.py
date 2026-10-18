@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch
 
 from arenamcp.backend_health import BACKEND_ERROR_PREFIX
 from arenamcp.coach import SIDEBOARD_RECOMMENDATION_PROMPT, CoachEngine
-from arenamcp.pipe_adapter import PipeAdapter
 from arenamcp.standalone import StandaloneCoach
 
 
@@ -212,22 +211,3 @@ def test_standalone_sideboard_falls_back_to_pre_reset_stash():
     _, kwargs = mock_coach_engine.recommend_sideboard.call_args
     opp_seen = kwargs["opponent_cards_seen"]
     assert any("Serra Angel" in str(entry) for entry in opp_seen)
-
-
-def test_pipe_adapter_slash_command_sideboard():
-    """Test PipeAdapter slash command handler for /sideboard and /sb."""
-    adapter = PipeAdapter()
-    mock_coach = MagicMock()
-    adapter.bind_coach(mock_coach)
-
-    with patch("threading.Thread") as mock_thread:
-        assert adapter._try_slash_command("/sideboard") is True
-        mock_thread.assert_called_once()
-
-    with patch("threading.Thread") as mock_thread:
-        assert adapter._try_slash_command("/sb") is True
-        mock_thread.assert_called_once()
-
-    with patch("threading.Thread") as mock_thread:
-        assert adapter._try_slash_command("/analyze") is True
-        mock_thread.assert_called_once()

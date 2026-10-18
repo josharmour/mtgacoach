@@ -1,21 +1,20 @@
-"""Conversation Mode controller, response identity, and match memory.
+"""Conversation Mode: proactive topic commentary, response identity, match memory.
 
-This module implements the Conversation Mode engine layer (see
-``conversation-mode.md`` and the binding contract in
-``conversation-mode-progress.md``):
+Conversation mode is the play-by-play announcer: instead of turn advice, the
+coach comments on meaningful board changes (non-critical triggers become
+memory-only; CRITICAL triggers keep the legacy advice dispatch). The typed and
+push-to-talk question channel was removed on 2026-10-18 (docs/DECISIONS.md).
 
-- ``ResponseIdentity`` — canonical frozen identity stamped on every response
-  so stale answers can be discarded (session/match/turn/request).
-- ``MatchMemory`` — a compact, thread-safe per-match conversation memory
-  (turn ring, discussed topics, revealed opponent cards, plan summary,
-  proactive-speech timestamps, deferred pending questions).
-- ``TopicSelector`` — Wave-3 proactive commentary: derives prioritized
-  candidate topics from *meaningful* state changes (opponent developments,
-  role shifts, material swings, plan drift), never from every turn/event.
-- ``ConversationController`` — the engine-side session that records user
-  questions, preempts speech, spawns answer threads, gates delivery, and
-  (Wave 3) selects/gates/speaks proactive topics behind verbosity, cooldown,
-  repetition, and user-question-priority gates.
+- ``ResponseIdentity`` — canonical frozen identity stamped on topic speech so
+  stale utterances can be discarded (session/match).
+- ``MatchMemory`` — a compact, thread-safe per-match memory (turn ring,
+  discussed topics, plan summary, proactive-speech timestamps).
+- ``TopicSelector`` — derives prioritized candidate topics from *meaningful*
+  state changes (opponent developments, role shifts, material swings, plan
+  drift), never from every turn/event.
+- ``ConversationController`` — the engine-side session: mode switching,
+  match-boundary resets, and selecting/gating/speaking proactive topics
+  behind cooldown and repetition gates.
 
 The controller is deliberately structural about its collaborators: it never
 imports ``voice_session`` (duck-typed via ``coach.voice_session``) and it
@@ -33,10 +32,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
-
-# The recovery daemon's grace loop must survive tests that monkeypatch
-# ``time.sleep`` on the SHARED time module: keep a pristine handle.
-_tool_sleep = time.sleep
 
 from arenamcp.backend_health import is_backend_error_text, strip_health_tags
 from arenamcp.settings import get_settings
@@ -71,27 +66,11 @@ def _gate_now() -> float:
 TURN_ADVICE = "turn_advice"
 CONVERSATION = "conversation"
 
-VERBOSITY_QUIET = "quiet"
-VERBOSITY_BALANCED = "balanced"
-VERBOSITY_DETAILED = "detailed"
-
 VALID_MODES: tuple[str, ...] = (TURN_ADVICE, CONVERSATION)
-VALID_VERBOSITIES: tuple[str, ...] = (VERBOSITY_QUIET, VERBOSITY_BALANCED, VERBOSITY_DETAILED)
 
 # Default minimum seconds between proactive topic utterances (settings key
 # ``conversation_cooldown_seconds``). Per-topic repetition windows are 3x this.
 DEFAULT_COOLDOWN_SECONDS = 90
-# A deferred user question stays answerable after an urgent interrupt for at
-# most this many seconds, and only within the same match.
-PENDING_QUESTION_TTL_SECONDS = 60
-PENDING_QUESTION_CAP = 5
-# Fallback wait after an urgent topic's speech when the arbiter exposes no
-# completion machinery (non-VoiceSession sinks) — recovery still must not
-# preempt the topic instantly.
-_RECOVERY_GRACE_SECONDS = 1.0
-# Topic keys that read as "the situation just changed materially" — these are
-# the STATE_SHIFT-and-above classes the Balanced verbosity tier allows.
-URGENT_TOPIC_KEYS: frozenset[str] = frozenset({"threat", "urgent_decision", "low_life"})
 
 # Instruction block prepended to every proactive-topic prompt. The
 # observed-facts-vs-hypotheses rule lives HERE (in the prompt text) rather
@@ -109,44 +88,15 @@ TOPIC_PROMPT_PREFIX = (
     'hypothesis ("they might have..."), never as an observed fact.'
 )
 
-# Question path (typed/PTT): same broadcast voice, but the viewer asked a
-# direct question — recommendations are delivered as commentary on the best
-# line, never as commands.
-ANNOUNCER_QUESTION_PREFIX = (
-    "You are the broadcast announcer calling this Magic: The Gathering game "
-    "for observers. Answer the viewer's question in plain language, the way a "
-    "commentator would explain the situation. When they ask what to do, give "
-    "your read on the best line as commentary — never as an instruction to "
-    "the player."
-)
-
-
-def match_number_from_identity(identity: ResponseIdentity | None) -> int:
-    try:
-        return int(getattr(identity, "match_number", 0) or 0)
-    except (TypeError, ValueError):
-        return 0
-
 
 class EventPriority(IntEnum):
-    """Relative urgency of conversation events (higher wins preemption)."""
+    """Relative urgency of topic candidates (higher wins preemption)."""
 
     FILLER = 10
     STATE_SHIFT = 60
     TURN_CONTEXT = 40
     THREAT = 80
     URGENT_DECISION = 90
-    USER_QUESTION = 100
-
-
-EVENT_TO_SPEECH_PRIORITY: dict[EventPriority, str] = {
-    EventPriority.USER_QUESTION: "question",
-    EventPriority.URGENT_DECISION: "urgent",
-    EventPriority.THREAT: "urgent",
-    EventPriority.TURN_CONTEXT: "advice",
-    EventPriority.STATE_SHIFT: "proactive",
-    EventPriority.FILLER: "proactive",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -156,11 +106,12 @@ EVENT_TO_SPEECH_PRIORITY: dict[EventPriority, str] = {
 
 @dataclass(frozen=True)
 class ResponseIdentity:
-    """Immutable identity stamped on a conversational response.
+    """Immutable identity stamped on topic speech.
 
-    ``request_id`` is monotonic per engine process. ``session_id`` bumps on
-    mode changes AND match boundaries, so a response is stale when the live
-    identity differs in ``session_id``, ``match_id``, or ``match_number``.
+    ``session_id`` bumps on mode changes AND match boundaries, so an utterance
+    is stale when the live identity differs in ``session_id``, ``match_id``,
+    or ``match_number``. ``request_id`` has been 0 since the question channel
+    went (2026-10-18); the speech arbiter still reads it as the sequence.
     """
 
     session_id: int
@@ -183,17 +134,16 @@ class ResponseIdentity:
         }
 
     def is_stale_vs(self, other: ResponseIdentity | None) -> bool:
-        # Session-scope staleness (Wave-2 contract): a conversational response
-        # is invalid when the SESSION (mode change or match boundary) or the
+        # Session-scope staleness (Wave-2 contract): a topic utterance is
+        # invalid when the SESSION (mode change or match boundary) or the
         # match moved underneath it. Position fields (turn_number /
         # active_player / decision_sig) are deliberately NOT compared: a live
         # LLM render takes seconds while the game advances, so position
-        # equality can never hold at delivery time — every proactive topic and
-        # question answer was silently dropped (live report 2026-09-16 15:41,
+        # equality can never hold at delivery time — every proactive topic
+        # was silently dropped (live report 2026-09-16 15:41,
         # bug_20260916_154149). Position-bound gating belongs to the legacy
         # advice path's own staleness logic (standalone.py "Discarding stale
-        # advice"); supersession of in-flight answers stays request-id-based
-        # at the _is_stale call site.
+        # advice").
         if other is None:
             return False
         if self.session_id != other.session_id:
@@ -224,20 +174,6 @@ MEMORY_RING_SIZE = 12
 
 
 @dataclass
-class PendingQuestion:
-    """A user question deferred by an urgent interrupt, kept for later.
-
-    ``ts`` defaults to wall clock for direct constructions, but the
-    controller stamps deferred questions with its suppression clock (see
-    ``ConversationController._now``) so TTL checks share one clock base.
-    """
-
-    text: str
-    ts: float = field(default_factory=time.time)
-    match_id: str | None = None
-
-
-@dataclass
 class MatchMemory:
     """Compact per-match conversation memory. All mutation is controller-locked."""
 
@@ -248,8 +184,6 @@ class MatchMemory:
     # Last proactive utterance on the suppression clock. None means no
     # utterance yet; zero is a valid monotonic timestamp just after boot.
     last_proactive_ts: float | None = None
-    # Questions deferred by urgent interrupts, newest last, capped.
-    pending_questions: list[PendingQuestion] = field(default_factory=list)
     # Previous plan summary, kept so plan-drift topics can detect change.
     plan_summary_prev: str = ""
 
@@ -257,21 +191,6 @@ class MatchMemory:
         self.turns.append(turn)
         if len(self.turns) > MEMORY_RING_SIZE:
             del self.turns[: len(self.turns) - MEMORY_RING_SIZE]
-
-    def record_pending_question(
-        self, text: str, match_id: str | None = None, ts: float | None = None
-    ) -> None:
-        """Defer a question for later recovery (capped, newest kept).
-
-        ``ts`` defaults to the monotonic clock (Wave 5) so a backward
-        wall-clock jump can never extend a deferral's lifetime; callers with
-        their own clock base pass ``ts`` explicitly.
-        """
-        self.pending_questions.append(
-            PendingQuestion(text=str(text), match_id=match_id, ts=time.monotonic() if ts is None else ts)
-        )
-        if len(self.pending_questions) > PENDING_QUESTION_CAP:
-            del self.pending_questions[: len(self.pending_questions) - PENDING_QUESTION_CAP]
 
 
 # ---------------------------------------------------------------------------
@@ -789,31 +708,25 @@ def _threat_card_name(card: dict[str, Any]) -> str | None:
 class ConversationController:
     """Engine-side conversation session (instantiated as ``coach.conversation``).
 
-    Wave-2 slice: user questions get answered with memory-augmented context;
-    ``on_state`` records memory only (proactive speech is Wave 3).
+    ``on_state`` records the trigger batch in memory and selects topics;
+    ``speak_topic_if_any`` gates, renders and speaks the best one.
     """
 
     def __init__(
         self,
         coach: Any,
-        emit_event: Callable[..., None] | None = None,
         snapshot_fn: Callable[[], dict[str, Any] | None] | None = None,
         now_fn: Callable[[], float] | None = None,
     ) -> None:
         self._coach = coach
-        self._emit_event = emit_event
         self._snapshot_fn = snapshot_fn
 
         self._lock = threading.RLock()
         self._mode: str = TURN_ADVICE
-        self._verbosity: str = VERBOSITY_BALANCED
         self._session_id: int = 1
-        self._request_counter: int = 0
-        self._pending: dict[int, ResponseIdentity] = {}
-        self._answer_threads: list[threading.Thread] = []
         self.memory = MatchMemory()
-        # Wave 3: topic pipeline state — candidates from the last on_state
-        # batch plus the selector instance (structurally simple, no coach I/O).
+        # Topic pipeline state — candidates from the last on_state batch plus
+        # the selector instance (structurally simple, no coach I/O).
         self._topic_selector = TopicSelector()
         self._last_topics: list[TopicCandidate] = []
         self._last_topics_ts: float = 0.0
@@ -824,9 +737,7 @@ class ConversationController:
         # repetition). Injectable for tests; the production default is the
         # monotonic clock (see :func:`_gate_now`) so a backward wall-clock
         # jump can never freeze or instantly expire suppression.
-        # ConversationTurn.ts stays wall-clock (display timestamps) and the
-        # pending-question TTL stays wall-clock too (PendingQuestion.ts is
-        # constructed with wall-clock timestamps across the codebase).
+        # ConversationTurn.ts stays wall-clock (display timestamps).
         self._now: Callable[[], float] = now_fn or _gate_now
 
     # -- properties ---------------------------------------------------------
@@ -836,15 +747,10 @@ class ConversationController:
         with self._lock:
             return self._mode
 
-    @property
-    def verbosity(self) -> str:
-        with self._lock:
-            return self._verbosity
-
-    # -- mode / verbosity ---------------------------------------------------
+    # -- mode ---------------------------------------------------------------
 
     def set_mode(self, mode: str, persist: bool = True) -> None:
-        """Switch session mode; bumps session identity and cancels pending work."""
+        """Switch session mode; bumps session identity and stops current speech."""
         if mode not in VALID_MODES:
             raise ValueError(f"Invalid conversation mode: {mode!r}")
 
@@ -858,14 +764,6 @@ class ConversationController:
         with self._lock:
             self._mode = mode
             self._session_id += 1
-            had_pending = bool(self._pending)
-            self._pending.clear()
-
-        # Status lifecycle (M6): clearing a non-empty pending set orphans any
-        # in-flight answer's delivery — emit idle so the UI never stays stuck
-        # on "thinking" after a mode switch.
-        if had_pending:
-            self._emit_idle()
 
         # Mode transitions must be LOUD: conversation mode logs nothing on its
         # success paths, so an unlogged switch made mode state undiscoverable
@@ -901,43 +799,7 @@ class ConversationController:
         except Exception:
             logger.debug("mode confirmation speech failed", exc_info=True)
 
-    def set_verbosity(self, verbosity: str) -> None:
-        """Set commentary verbosity; behavior is reserved for Wave 3."""
-        if verbosity not in VALID_VERBOSITIES:
-            raise ValueError(f"Invalid conversation verbosity: {verbosity!r}")
-
-        with self._lock:
-            self._verbosity = verbosity
-
-        try:
-            get_settings().set("conversation_verbosity", verbosity)
-        except Exception:
-            logger.warning("Failed to persist conversation_verbosity", exc_info=True)
-
     # -- state hook ---------------------------------------------------------
-
-    def _sweep_expired_pending_questions(self) -> None:
-        """TTL sweep of deferred questions (M3) — expire unconditionally.
-
-        Deferred questions older than :data:`PENDING_QUESTION_TTL_SECONDS` are
-        removed regardless of any urgent topic in flight, so a stale question
-        can never block topic speech forever. The sweep runs on the
-        controller's suppression clock (monotonic in production, Wave 5). A
-        negative elapsed time means the question's timestamp is on a
-        different clock base (or predates a backward jump) — its age is
-        unverifiable, so it is dropped rather than trusted.
-        """
-        now = self._now()
-        with self._lock:
-            expired = [
-                pq
-                for pq in self.memory.pending_questions
-                if not 0 <= now - pq.ts <= PENDING_QUESTION_TTL_SECONDS
-            ]
-            if expired:
-                self.memory.pending_questions = [
-                    pq for pq in self.memory.pending_questions if pq not in expired
-                ]
 
     def on_state(
         self,
@@ -948,8 +810,7 @@ class ConversationController:
         """Record the trigger batch in memory, refresh plan info, and remember
         the candidate topics for the loop to gate and speak.
 
-        Wave-2 slice semantics (memory-record only) are preserved; Wave 3 adds
-        topic selection. No speech happens here — the coaching loop asks
+        No speech happens here — the coaching loop asks
         :meth:`speak_topic_if_any` after the batch is dispatched so urgency
         ordering (CRITICAL legacy dispatch first) is respected.
         """
@@ -960,15 +821,12 @@ class ConversationController:
                     ConversationTurn(
                         role="state",
                         text=", ".join(triggers),
-                        identity=self.current_identity(request_id=self._request_counter),
+                        identity=self.current_identity(),
                         trigger=", ".join(triggers),
                     )
                 )
 
         self._refresh_plan_summary()
-        # M3: expire stale deferred questions on every state batch so they
-        # unblock topic speech and can never recover stale answers.
-        self._sweep_expired_pending_questions()
 
         with self._lock:
             self._last_topics = self._topic_selector.select(
@@ -1000,29 +858,25 @@ class ConversationController:
                 curr_state if isinstance(curr_state, dict) else {}
             )
 
-    # -- proactive topics (Wave 3) -------------------------------------------
+    # -- proactive topics ---------------------------------------------------
 
     def speak_topic_if_any(
         self, match_id: str | None = None, match_number: int = 0
     ) -> tuple[str, str, TopicCandidate] | None:
         """Gate and speak the best surviving proactive topic.
 
-        Runs the full gate ladder — user-question priority, verbosity matrix,
-        speaking cooldown, per-topic repetition suppression — and, when a
-        topic survives, renders it through the coaching LLM and speaks it via
-        the arbiter (``urgent`` for URGENT-class topics, ``proactive``
-        otherwise). Returns ``(text, speech_priority, topic)`` when something
-        was spoken, else ``None``. Designed to be called from the coaching
-        loop after ``on_state``; never raises.
+        Runs the gate ladder — priority floor, speaking cooldown, per-topic
+        repetition suppression — and, when a topic survives, renders it
+        through the coaching LLM and speaks it via the arbiter (``urgent``
+        for URGENT-class topics, ``proactive`` otherwise). Returns ``(text,
+        speech_priority, topic)`` when something was spoken, else ``None``.
+        Designed to be called from the coaching loop after ``on_state``;
+        never raises.
 
-        Parameters are delivery-context only (Wave 5 review): delivery
-        gating itself comes exclusively from ``current_identity()`` —
-        ``match_id`` is forwarded to the urgent-interrupt path so deferred
-        questions stay same-match relevant, and ``match_number`` is accepted
-        for call-site symmetry with the loop's match identity but is not used
-        for gating (it is not asserted against the identity because the
-        loop's counter can legitimately differ transiently across a boundary;
-        the session_id bump, not the number, is what gates delivery).
+        ``match_id``/``match_number`` are the loop's match identity and are
+        not used for gating: delivery is gated by ``current_identity()``
+        alone (the session_id bump, not the loop's counter, is what gates
+        delivery across a boundary).
         """
         try:
             return self._speak_topic_if_any(match_id, match_number)
@@ -1043,44 +897,18 @@ class ConversationController:
         )
         if not topics or self.mode != CONVERSATION:
             return None
+        return self._gate_and_speak_topics(topics)
 
-        # USER QUESTION PRIORITY: a pending (or recoverable) user question
-        # always preempts topic speech.
-        with self._lock:
-            has_pending = bool(self._pending)
-            has_deferred = bool(self.memory.pending_questions)
-        if has_pending or has_deferred:
-            return None
-
-        try:
-            return self._gate_and_speak_topics(topics, match_id, match_number)
-        except Exception:
-            # Status lifecycle (M6): any exception in the gate/render path
-            # must leave the UI idle, never stuck on "thinking".
-            logger.exception("topic gate/speak failed")
-            self._emit_idle()
-            return None
-
-    def _gate_and_speak_topics(
-        self, topics: list[TopicCandidate], match_id: str | None, match_number: int
-    ) -> tuple[str, str, TopicCandidate] | None:
+    def _gate_and_speak_topics(self, topics: list[TopicCandidate]) -> tuple[str, str, TopicCandidate] | None:
         cooldown = self._cooldown_seconds()
         # Suppression windows run on the injectable monotonic clock (Wave 5):
         # a backward wall-clock jump must never freeze or instantly expire a
         # cooldown/repetition window.
         now = self._now()
 
-        verbosity = self.verbosity
         for topic in topics:
-            # VERBOSITY MATRIX (questions bypass verbosity entirely; this gate
-            # is topic-only): Quiet speaks only URGENT_DECISION/THREAT-class
-            # topics; Balanced speaks STATE_SHIFT and above; Detailed speaks
-            # everything except FILLER.
-            if verbosity == VERBOSITY_QUIET and topic.priority < EventPriority.THREAT:
-                continue
-            if verbosity == VERBOSITY_BALANCED and topic.priority < EventPriority.STATE_SHIFT:
-                continue
-            if verbosity == VERBOSITY_DETAILED and topic.priority <= EventPriority.FILLER:
+            # Only STATE_SHIFT-and-above topics are spoken.
+            if topic.priority < EventPriority.STATE_SHIFT:
                 continue
 
             with self._lock:
@@ -1109,30 +937,19 @@ class ConversationController:
                     continue
 
             identity = self.current_identity()
-            self._emit("conversation_status", state="thinking")
-
             reply = self._render_topic(topic)
 
             with self._lock:
                 stale = identity.is_stale_vs(self.current_identity())
 
             if stale or is_backend_error_text(reply):
-                # Tagged backend failures are transcript-only (identical to
-                # the question path) — never spoken, topic not recorded, and
-                # NOT appended to memory turns: the error text must never
-                # leak into later prompt digests (Wave 5). Status lifecycle
-                # (M6): stale/error paths return the UI to idle — the
-                # thinking status must never get stuck.
-                self._emit_idle()
-                if not stale:
-                    payload = identity.to_payload()
-                    self._emit("conversation_reply", text=reply, identity=payload)
+                # Stale renders and tagged backend failures are never spoken,
+                # the topic is not recorded, and the error text never enters
+                # memory turns (it would leak into later prompt digests).
                 return None
 
             spoken = strip_health_tags(reply)
             if not spoken:
-                # Empty render: nothing was delivered; leave the UI idle.
-                self._emit_idle()
                 return None
 
             speech_priority = "urgent" if topic.priority >= EventPriority.THREAT else "proactive"
@@ -1150,37 +967,30 @@ class ConversationController:
                     )
                 )
 
-            self._speak_topic(spoken, speech_priority, identity, topic, match_id)
-
-            self._emit("conversation_status", state="idle")
+            self._speak_topic(spoken, speech_priority, identity)
             return (spoken, speech_priority, topic)
 
         return None
 
     def _render_topic(self, topic: TopicCandidate) -> str:
-        """Render a topic through the coaching LLM (same backend as questions).
+        """Render a topic through the coaching LLM.
 
         The prompt carries the topic evidence, the current plan summary, a
-        last-2-turns digest, and instructions: keep it under ~2 sentences,
-        never claim win probabilities, and phrase anything about the
-        opponent's hidden hand/library as a hypothesis.
+        last-2-utterances digest, and instructions: keep it under ~2
+        sentences, never claim win probabilities, and phrase anything about
+        the opponent's hidden hand/library as a hypothesis.
         """
         with self._lock:
-            recent = [turn for turn in self.memory.turns[-6:] if turn.role in ("user", "coach")][-2:]
-        digest_lines = []
-        for turn in recent:
-            prefix = "user" if turn.role == "user" else "coach"
-            digest_lines.append(f"{prefix}: {turn.text[:120]}")
-        digest = "\n".join(digest_lines) or "(none)"
+            recent = [turn for turn in self.memory.turns[-6:] if turn.role == "coach"][-2:]
+        digest = "\n".join(f"coach: {turn.text[:120]}" for turn in recent) or "(none)"
 
         with self._lock:
             plan = self.memory.plan_summary or ""
 
-        evidence = topic.evidence
         question = (
             f"{TOPIC_PROMPT_PREFIX}\n"
             f"Topic: {topic.key}\n"
-            f"Evidence: {evidence}\n"
+            f"Evidence: {topic.evidence}\n"
             f"Current plan: {plan or '(not yet formed)'}\n"
             f"Recent conversation:\n{digest}\n"
             "Respond with at most two short sentences of commentary."
@@ -1196,157 +1006,26 @@ class ConversationController:
             logger.warning("topic get_advice failed: %s", exc, exc_info=True)
             return f"[BACKEND ERROR] {type(exc).__name__}: {exc}"
 
-    def _speak_topic(
-        self,
-        text: str,
-        speech_priority: str,
-        identity: ResponseIdentity,
-        topic: TopicCandidate,
-        match_id: str | None,
-    ) -> None:
-        """Deliver topic speech; an URGENT-class topic preempts in-flight
-        speech via the arbiter and defers any in-flight answer thread's
-        question for recovery."""
+    def _speak_topic(self, text: str, speech_priority: str, identity: ResponseIdentity) -> None:
+        """Deliver topic speech; an URGENT-class topic preempts in-flight speech."""
         # URGENT INTERRUPT: preemption is the arbiter's job; we stop current
         # speech and let the higher-priority request win the channel.
         if speech_priority == "urgent":
             self._preempt_speech("urgent_topic")
-            self._defer_pending_questions(match_id)
 
-        spoken = False
         vs = getattr(self._coach, "voice_session", None)
         if vs is not None and hasattr(vs, "speak"):
             try:
-                outcome = vs.speak(text, priority=speech_priority, identity=identity)
-                spoken = bool(getattr(outcome, "played", True))
+                vs.speak(text, priority=speech_priority, identity=identity)
             except Exception:
                 logger.debug("voice_session.speak failed (topic)", exc_info=True)
-                spoken = True  # conservative: assume delivered rather than re-speaking
-        else:
-            vo = getattr(self._coach, "_voice_output", None)
-            if vo is not None and hasattr(vo, "speak"):
-                try:
-                    vo.speak(text)
-                    spoken = True
-                except Exception:
-                    logger.debug("voice_output.speak failed (topic)", exc_info=True)
-
-        # Speaking-state surfacing (deferred ledger item 3): the engine now
-        # emits 'speaking' when topic audio is accepted, reverting to idle via
-        # the existing lifecycle paths; desktop maps these to the status label.
-        if spoken:
-            self._emit("conversation_status", state="speaking")
-
-        if speech_priority == "urgent" and spoken:
-            # PENDING-QUESTION RECOVERY: after the urgent speech COMPLETES
-            # (not when it starts — a recovery answer must never preempt the
-            # urgent topic it follows), re-answer a still-relevant deferred
-            # question on a daemon thread.
-            thread = threading.Thread(
-                target=self._recover_after_speech_completes,
-                args=(text, speech_priority, identity, match_id, match_number_from_identity(identity)),
-                daemon=True,
-                name="convo-topic-recovery",
-            )
-            with self._lock:
-                self._answer_threads.append(thread)
-            thread.start()
-
-    def _recover_after_speech_completes(
-        self,
-        text: str,
-        speech_priority: str,
-        identity: Any,
-        match_id: str | None,
-        match_number: int,
-    ) -> None:
-        """Wait for the urgent topic's speech to finish, then recover.
-
-        Never preempts the urgent utterance it follows and never raises.
-        """
-        try:
-            vs = getattr(self._coach, "voice_session", None)
-            self._wait_for_speech_completion(vs)
-            # Race guard: only recover in conversation mode (a mode switch
-            # mid-utterance invalidates the deferral).
-            with self._lock:
-                if self.mode != CONVERSATION:
-                    return
-            self._recover_pending_question(match_id, match_number)
-        except Exception:
-            logger.exception("pending-question recovery failed")
-
-    def _wait_for_speech_completion(self, vs: Any, timeout: float = 30.0) -> None:
-        """Block until the arbiter channel is free after the urgent speech.
-
-        Real :class:`VoiceSession` arbiters expose ``wait_for_idle`` ( backed
-        by the C1 completion machinery); anything else degrades to a bounded
-        grace wait so a recovery answer can never preempt the topic
-        immediately. Thread-safety: called from the recovery daemon only.
-
-        The grace loop uses ``time.tool_sleep`` (aliased at import) rather
-        than ``time.sleep`` so tests that monkeypatch ``time.sleep`` on the
-        shared time module (run_loop in test_standalone_conversation.py)
-        cannot have a lingering recovery daemon consume their sleep budget
-        and cut their coaching loop short (2026-09-16 suite-order flake).
-        """
-        try:
-            from arenamcp.voice_session import VoiceSession  # local import: avoids cycle
-
-            if isinstance(vs, VoiceSession):
-                vs.wait_for_idle(timeout)
-                return
-        except Exception:  # pragma: no cover - defensive
-            logger.debug("voice_session wait_for_idle unavailable", exc_info=True)
-        # Non-arbiter sink: no completion signal — bounded grace period.
-        grace_end = time.monotonic() + _RECOVERY_GRACE_SECONDS
-        while time.monotonic() < grace_end:
-            _tool_sleep(0.05)
-
-    def _defer_pending_questions(self, match_id: str | None) -> None:
-        """Snapshot pending user questions into memory for later recovery."""
-        with self._lock:
-            if not self._pending:
-                return
-            # The most recent user turn is the in-flight question thread's
-            # text (on_user_question appends it before the answer spawns).
-            turn = next((t for t in reversed(self.memory.turns) if t.role == "user"), None)
-            if turn is None:
-                return
-            # Stamp with the controller's suppression clock so the TTL sweep
-            # and recovery compare timestamps on ONE clock base (Wave 5).
-            self.memory.record_pending_question(turn.text, match_id, ts=self._now())
-
-    def _recover_pending_question(self, match_id: str | None, match_number: int) -> None:
-        """Answer the most recent still-relevant deferred question, if any.
-
-        TTL checks use the controller's suppression clock (monotonic in
-        production, Wave 5). A negative elapsed time means the question's
-        timestamp is on a different clock base (or predates a backward
-        jump) — its age is unverifiable, so it is expired rather than
-        trusted.
-        """
-        with self._lock:
-            candidates = list(self.memory.pending_questions)
-        now = self._now()
-        for pq in reversed(candidates):  # newest first
-            if not 0 <= now - pq.ts <= PENDING_QUESTION_TTL_SECONDS:
-                with self._lock:
-                    if pq in self.memory.pending_questions:
-                        self.memory.pending_questions.remove(pq)
-                continue
-            if match_id is not None and pq.match_id is not None and pq.match_id != match_id:
-                # Same-match relevance rule: questions from a finished match
-                # are no longer relevant.
-                with self._lock:
-                    if pq in self.memory.pending_questions:
-                        self.memory.pending_questions.remove(pq)
-                continue
-            with self._lock:
-                if pq in self.memory.pending_questions:
-                    self.memory.pending_questions.remove(pq)
-            self.on_user_question(pq.text, source="deferred")
             return
+        vo = getattr(self._coach, "_voice_output", None)
+        if vo is not None and hasattr(vo, "speak"):
+            try:
+                vo.speak(text)
+            except Exception:
+                logger.debug("voice_output.speak failed (topic)", exc_info=True)
 
     def _refresh_plan_summary(self) -> None:
         """Fold the current GamePlanManager plan into memory (guarded).
@@ -1380,45 +1059,9 @@ class ConversationController:
         except Exception:
             return float(DEFAULT_COOLDOWN_SECONDS)
 
-    def on_user_question(self, text: str, source: str = "typed") -> int:
-        """Record a user question, preempt speech, and spawn the answer thread.
-
-        Returns the monotonic request id for the in-flight answer.
-        """
-        if not text or not str(text).strip():
-            return 0
-
-        with self._lock:
-            self._request_counter += 1
-            request_id = self._request_counter
-            identity = self.current_identity(request_id=request_id)
-            self._pending[request_id] = identity
-            self.memory.append(
-                ConversationTurn(
-                    role="user",
-                    text=str(text).strip(),
-                    identity=identity,
-                    trigger=source,
-                )
-            )
-
-        self._preempt_speech("user_question")
-        self._emit("conversation_status", state="thinking", request_id=request_id)
-
-        thread = threading.Thread(
-            target=self._answer,
-            args=(request_id, str(text), identity),
-            daemon=True,
-            name=f"convo-answer-{request_id}",
-        )
-        with self._lock:
-            self._answer_threads.append(thread)
-        thread.start()
-        return request_id
-
     def reset_for_match(self, match_id: str | None, match_number: int, match_start: bool = True) -> None:
-        # Match boundary: clear memory (including Wave-3 proactive-timing and
-        # deferred-question fields), bump session identity, drop pending.
+        # Match boundary: clear memory (including the proactive-timing
+        # fields) and bump session identity.
         # ``match_start``: True when a NEW match is beginning; False when the
         # boundary is a match ENDING (match_id -> None). The audible opener
         # only belongs to match START — announcing "Match underway" as the
@@ -1433,16 +1076,10 @@ class ConversationController:
             with contextlib.suppress(Exception):
                 plan_hint = str(self.memory.plan_summary or "")
         with self._lock:
-            had_pending = bool(self._pending)
             self.memory = MatchMemory()
             self._session_id += 1
-            self._pending.clear()
             self._last_topics = []
             self._threat_signature_prev = None  # Wave 5 (M2): new board baseline
-        # Status lifecycle (M6): see set_mode — orphaned answers must clear
-        # the UI's "thinking" status.
-        if had_pending:
-            self._emit_idle()
         # Match-start handshake (user request 2026-09-16): in conversation
         # mode, announce the session audibly when a NEW match begins so mode
         # state is knowable without looking at the panel. Match-END boundaries
@@ -1482,18 +1119,7 @@ class ConversationController:
         except Exception:
             logger.warning("match-opener speech failed", exc_info=True)
 
-    def cancel_pending(self) -> None:
-        # Invalidate in-flight requests: their identities no longer match
-        # pending set membership, so answers are discarded on delivery.
-        with self._lock:
-            had_pending = bool(self._pending)
-            self._pending.clear()
-        # Status lifecycle (M6): a stop/cancel that drops a non-empty pending
-        # set must also release the "thinking" status.
-        if had_pending:
-            self._emit_idle()
-
-    def current_identity(self, request_id: int | None = None) -> ResponseIdentity:
+    def current_identity(self) -> ResponseIdentity:
         # Built from coach state with guarded attribute access everywhere;
         # unavailable fields degrade to None/0 rather than raising.
         snapshot = self._snapshot() or {}
@@ -1519,7 +1145,6 @@ class ConversationController:
                     logger.debug("decision signature build failed", exc_info=True)
 
         with self._lock:
-            rid = self._request_counter if request_id is None else request_id
             mode = self._mode
             session_id = self._session_id
 
@@ -1531,7 +1156,7 @@ class ConversationController:
             active_player=active_player if isinstance(active_player, int) else None,
             decision_sig=decision_sig,
             mode=mode,
-            request_id=int(rid or 0),
+            request_id=0,
         )
 
     # -- internals ----------------------------------------------------------
@@ -1571,148 +1196,3 @@ class ConversationController:
                 vo.stop()
             except Exception:
                 logger.debug("voice_output.stop failed", exc_info=True)
-
-    def _emit(self, event_type: str, **fields: Any) -> None:
-        if self._emit_event is None:
-            return
-        try:
-            self._emit_event(event_type, **fields)
-        except Exception:
-            logger.debug("emit_event(%s) failed", event_type, exc_info=True)
-
-    def _emit_idle(self) -> None:
-        """Emit conversation_status idle — M6 lifecycle fix.
-
-        ``thinking`` is emitted when a topic/question render starts; EVERY
-        exit path that leaves nothing pending/speaking must return the UI to
-        idle, including stale-after-cancel, backend-error, and exception
-        paths. Guarded: safe to call redundantly.
-        """
-        self._emit("conversation_status", state="idle")
-
-    def _augment_question(self, text: str) -> str:
-        # Replay the recent conversation as a compact digest so the coaching
-        # LLM can answer follow-ups without a second stateful channel.
-        with self._lock:
-            recent = list(self.memory.turns[-6:])
-
-        lines: list[str] = []
-        for turn in recent:
-            if turn.role == "user":
-                lines.append(f"user: {turn.text}")
-            elif turn.role == "coach":
-                lines.append(f"coach: {turn.text}")
-
-        if not lines:
-            # No history: keep the raw question, framed with the
-            # broadcast-announcer voice.
-            return f"{ANNOUNCER_QUESTION_PREFIX}\n\nUser question: {text}"
-
-        digest = "\n".join(lines)
-        return f"{ANNOUNCER_QUESTION_PREFIX}\n\nRecent conversation:\n{digest}\n\nUser question: {text}"
-
-    def _is_stale(self, identity: ResponseIdentity) -> bool:
-        # Delivery gate: session/match/mode drift, or a newer request is
-        # pending. Supersession by request id, not completion order.
-        with self._lock:
-            if identity.request_id not in self._pending:
-                return True
-            if self._session_id != identity.session_id:
-                return True
-            if self._mode != identity.mode:
-                return True
-            newer = any(rid > identity.request_id for rid in self._pending)
-            # Supersession is by REQUEST ID, not completion order: a newer
-            # request that already finished (and popped itself from _pending)
-            # still supersedes this one — otherwise an older answer can slip
-            # through in the completion race.
-            counter = self._request_counter
-        if newer or counter > identity.request_id:
-            return True
-
-        live = self.current_identity(request_id=identity.request_id)
-        return identity.is_stale_vs(live)
-
-    def _answer(self, request_id: int, text: str, identity: ResponseIdentity) -> None:
-        # Daemon answer thread body: never raises out of the thread.
-        try:
-            snapshot = self._snapshot()
-            augmented = self._augment_question(text)
-
-            inner = getattr(self._coach, "_coach", None)
-            if inner is None or not hasattr(inner, "get_advice"):
-                reply = "[BACKEND ERROR] coach engine unavailable"
-            else:
-                try:
-                    reply = inner.get_advice(snapshot, question=augmented, conversational=True)
-                except Exception as exc:
-                    logger.warning("get_advice failed: %s", exc, exc_info=True)
-                    reply = f"[BACKEND ERROR] {type(exc).__name__}: {exc}"
-
-            if not isinstance(reply, str) or not reply.strip():
-                reply = "[BACKEND ERROR] empty response from coach backend"
-
-            if self._is_stale(identity):
-                # Superseded / stale answers are dropped silently. Status
-                # lifecycle (M6): the question's "thinking" status must still
-                # resolve to idle — the answer thread owns that transition.
-                with self._lock:
-                    self._pending.pop(identity.request_id, None)
-                self._emit_idle()
-                return
-
-            payload = identity.to_payload()
-            self._emit("conversation_reply", text=reply, identity=payload)
-
-            # Backend-error replies are transcript-only (Wave 5): they are
-            # emitted for display but never appended to memory turns, so a
-            # failure message can never leak into later prompt digests.
-            if not is_backend_error_text(reply):
-                with self._lock:
-                    self.memory.append(
-                        ConversationTurn(
-                            role="coach",
-                            text=reply,
-                            identity=identity,
-                        )
-                    )
-            with self._lock:
-                self._pending.pop(identity.request_id, None)
-
-            self._speak(reply, identity)
-            self._emit("conversation_status", state="idle", request_id=request_id)
-        except Exception:
-            # Absolute backstop: the thread must never crash the engine.
-            logger.exception("conversation answer thread crashed")
-            # Status lifecycle (M6): a crashed answer must still clear the
-            # "thinking" status rather than leave the UI stuck.
-            self._emit_idle()
-
-    def _speak(self, text: str, identity: ResponseIdentity) -> None:
-        # TTS boundary: health tags are stripped, error-tagged text is never
-        # spoken (it is only displayed via conversation_reply).
-        if is_backend_error_text(text):
-            return
-
-        spoken = strip_health_tags(text)
-        if not spoken:
-            return
-
-        vs = getattr(self._coach, "voice_session", None)
-        if vs is not None and hasattr(vs, "speak"):
-            try:
-                vs.speak(spoken, priority="question", identity=identity)
-                # Speaking-state surfacing (deferred ledger item 3): accepted
-                # question speech flips the label to 'speaking'; the desktop
-                # clears it when the next reply/status event arrives.
-                self._emit("conversation_status", state="speaking")
-                return
-            except Exception:
-                logger.debug("voice_session.speak failed", exc_info=True)
-
-        vo = getattr(self._coach, "_voice_output", None)
-        if vo is not None and hasattr(vo, "speak"):
-            try:
-                vo.speak(spoken)
-            except Exception:
-                logger.debug("voice_output.speak failed", exc_info=True)
