@@ -166,6 +166,6 @@ def test_check_license_trial_key_validates_against_gateway(monkeypatch):
 
 
 def _models_response():
-    resp = _http_response({"data": [{"id": "deepseek-v4-flash"}]})
+    resp = _http_response({"data": [{"id": "glm-5.3-flash"}]})
     resp.status = 200
     return resp

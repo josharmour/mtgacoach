@@ -175,7 +175,7 @@ def test_supported_glm_efforts_pass_through(effort):
 
 
 def test_medium_effort_untouched_for_non_glm_models():
-    be = make_backend(model="qwen-local")
+    be = make_backend(model="custom-vision-model")
     be.complete("s", "u", reasoning_effort="medium")
     assert ctk(be._client.calls[0])["reasoning_effort"] == "medium"
 
