@@ -46,7 +46,6 @@ from arenamcp.coach_prompts import (
     CONCISE_SYSTEM_PROMPT,
     DECISION_PROMPTS,
     DECK_ANALYSIS_PROMPT,
-    DECK_STRATEGY_BRIEF_PROMPT,
     DEFAULT_SYSTEM_PROMPT,
     POST_MATCH_ANALYSIS_PROMPT,
     SIDEBOARD_RECOMMENDATION_PROMPT,
@@ -155,7 +154,6 @@ __all__ = [
     "DECISION_PROMPTS",
     "WIN_PLAN_PROMPT",
     "DECK_ANALYSIS_PROMPT",
-    "DECK_STRATEGY_BRIEF_PROMPT",
     "POST_MATCH_ANALYSIS_PROMPT",
     "SIDEBOARD_RECOMMENDATION_PROMPT",
     "_build_bridge_context_lines",
@@ -1017,65 +1015,6 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             "Deck playbook spoken summary %r is a placeholder; using the archetype and plan", summary[:80]
         )
         data["spoken_summary"] = replacement[:400].rstrip(".") + "."
-
-    def get_deck_strategy_brief(self, deck_cards: list[tuple[str, str, str]], backend=None) -> str | None:
-        """Generate a brief 3-5 sentence spoken strategy for a deck.
-
-        Uses a conversational prompt suited for TTS output after a draft
-        or when the user asks for /deck-strategy.
-
-        Args:
-            deck_cards: List of (card_name, card_type, oracle_text) tuples
-            backend: Optional separate backend instance
-
-        Returns:
-            Brief strategy string, or None on failure
-        """
-
-        start = time.perf_counter()
-        be = backend or self._backend
-
-        try:
-            from collections import Counter
-
-            oracle_by_name: dict[str, str] = {}
-            count_key = Counter()
-            for name, card_type, oracle in deck_cards:
-                count_key[(name, card_type)] += 1
-                if oracle and name not in oracle_by_name:
-                    oracle_by_name[name] = oracle
-
-            deck_lines = []
-            for (name, card_type), count in count_key.most_common():
-                type_short = card_type.split("—")[0].strip() if card_type else "Unknown"
-                line = f"{count}x {name} ({type_short})"
-                oracle = oracle_by_name.get(name, "")
-                is_basic = "basic" in (card_type or "").lower()
-                if oracle and not is_basic:
-                    oracle_short = self._remove_reminder_text(oracle).strip()
-                    if oracle_short:
-                        line += f" — {oracle_short}"
-                deck_lines.append(line)
-
-            deck_text = "\n".join(deck_lines)
-            user_message = f"DECK LIST ({len(deck_cards)} cards):\n{deck_text}"
-
-            strategy = be.complete(
-                DECK_STRATEGY_BRIEF_PROMPT,
-                user_message,
-                **accepted_call_kwargs(be, call_class="coach.deck_brief"),
-            )
-
-            if not strategy or is_backend_error_text(strategy):
-                logger.warning(f"Deck strategy brief failed: {strategy and strategy[:80]}")
-                return None
-
-            elapsed = (time.perf_counter() - start) * 1000
-            logger.info(f"Deck strategy brief: {elapsed:.0f}ms, {len(strategy)} chars")
-            return strategy
-        except Exception as e:
-            logger.error(f"Deck strategy brief failed: {e}")
-            return None
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:

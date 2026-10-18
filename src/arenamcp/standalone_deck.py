@@ -156,99 +156,6 @@ class _DeckAnalysisMixin:
             raise
         return True
 
-    def _generate_deck_strategy_brief(self, card_ids: list[int] | None = None) -> None:
-        """Generate and speak a brief deck strategy.
-
-        Runs in a background thread so it doesn't block the coaching loop.
-        Works for any game mode — draft, sealed, or constructed.
-
-        Args:
-            card_ids: Optional pre-captured list of grpIds. If not provided,
-                      uses deck_cards from the current game state (library).
-        """
-        if not self._coach or not self._mcp:
-            return
-
-        playbook = self._coach._deck_playbook
-        if playbook is not None and card_ids is None:
-            brief = playbook.data["spoken_summary"]
-            self.ui.log(f"\n[bold green]DECK STRATEGY:[/] {brief}\n")
-            self.speak_advice(brief)
-            return
-
-        # Capture the list now so the background thread has it
-        pre_captured = list(card_ids) if card_ids else None
-
-        def _run():
-            try:
-                deck_grp_ids = pre_captured or []
-
-                # Fallback: use current game's deck (library), or reconstruct
-                # from visible zones if ConnectResp was missed
-                if not deck_grp_ids:
-                    try:
-                        gs = self._mcp.get_game_state()
-                        deck_grp_ids = list(gs.get("deck_cards") or [])
-                        if not deck_grp_ids:
-                            local_seat = self._get_local_seat_from_state(gs)
-                            if local_seat is not None:
-                                seen = set()
-                                for zone in ("hand", "battlefield", "graveyard", "exile", "command"):
-                                    for card in gs.get(zone, []):
-                                        if card.get("owner_seat_id") == local_seat:
-                                            gid = card.get("grp_id", 0)
-                                            if gid and gid not in seen:
-                                                seen.add(gid)
-                                                deck_grp_ids.append(gid)
-                    except Exception:
-                        pass
-
-                if not deck_grp_ids:
-                    self.ui.log("[yellow]No deck available yet. Start a game first.[/]")
-                    logger.info("No deck cards available for strategy brief")
-                    return
-
-                # Use the card database directly, skipping the MCP tool
-                # layer. For a 60-card deck the MCP indirection adds tens of
-                # ms of pointless overhead per call.
-                from arenamcp.card_db import get_card_database
-
-                card_db = get_card_database()
-                enriched = []
-                for grp_id in deck_grp_ids:
-                    try:
-                        info = card_db.get_card_by_arena_id(grp_id)
-                        if info is not None:
-                            enriched.append(
-                                (
-                                    info.name or f"Unknown({grp_id})",
-                                    info.type_line or "",
-                                    info.oracle_text or "",
-                                )
-                            )
-                        else:
-                            enriched.append((f"Unknown({grp_id})", "", ""))
-                    except Exception:
-                        enriched.append((f"Unknown({grp_id})", "", ""))
-
-                from arenamcp.coach import create_backend
-
-                brief_backend = create_backend(self._backend_name, model=self.model_name)
-                try:
-                    strategy = self._coach.get_deck_strategy_brief(enriched, backend=brief_backend)
-                finally:
-                    if hasattr(brief_backend, "close"):
-                        brief_backend.close()
-
-                if strategy:
-                    # Speech is presentation only; never overwrite the playbook.
-                    self.ui.log(f"\n[bold green]DECK STRATEGY:[/] {strategy}\n")
-                    self.speak_advice(strategy)
-            except Exception as e:
-                logger.error(f"Deck strategy brief failed: {e}")
-
-        threading.Thread(target=_run, daemon=True, name="deck-strategy-brief").start()
-
     def get_deck_playbook(self):
         return self._coach._deck_playbook if self._coach else None
 
@@ -257,26 +164,6 @@ class _DeckAnalysisMixin:
         if self._coach:
             return self._coach._deck_strategy
         return None
-
-    def _resolve_unknown_cards(self, game_state: dict) -> None:
-        """Card resolution uses local card database and GRE metadata."""
-        pass
-
-    @staticmethod
-    def _enrich_vlm_resolved_card(card: dict, name: str) -> None:
-        """Try to fill oracle_text using the unified card database."""
-        try:
-            from arenamcp.card_db import get_card_database
-
-            card_db = get_card_database()
-            result = card_db.get_card_by_name(name)
-            if result:
-                card["oracle_text"] = result.oracle_text or card.get("oracle_text", "")
-                card["type_line"] = result.type_line or card.get("type_line", "")
-                card["mana_cost"] = result.mana_cost or card.get("mana_cost", "")
-                card["name"] = f"{result.name} (vision)"  # Use canonical name
-        except Exception as e:
-            logger.debug(f"Card enrichment failed for '{name}' (best effort): {e}")
 
     def get_sideboard_recommendations(self) -> str | None:
         """Generate Bo3 sideboarding recommendations between games."""

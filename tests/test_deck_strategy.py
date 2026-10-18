@@ -380,21 +380,6 @@ def test_report_block_replay_keeps_real_identity_tax_and_legal_alternatives(monk
     assert token_plan.actions[0].blocker_instance_assignments == {1042: 1046}
 
 
-def test_spoken_summary_cannot_replace_internal_strategy():
-    runtime = _DeckAnalysisMixin()
-    runtime._coach = CoachEngine(Mock())
-    runtime._coach._deck_playbook = playbook_for()
-    runtime._coach._deck_strategy = runtime._coach._deck_playbook.render()
-    stored = runtime._coach._deck_strategy
-    runtime._mcp = Mock()
-    runtime.ui = Mock()
-    runtime.speak_advice = Mock()
-    runtime._generate_deck_strategy_brief()
-    assert runtime._coach._deck_strategy == stored
-    runtime._coach._backend.complete.assert_not_called()
-    runtime.speak_advice.assert_called_once_with(runtime._coach._deck_playbook.data["spoken_summary"])
-
-
 def test_deck_worker_starts_once_then_restarts_for_a_changed_commander(deck, monkeypatch):
     state, _, _ = deck
     workers = []

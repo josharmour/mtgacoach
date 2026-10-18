@@ -361,7 +361,6 @@ CALL_CLASSES: dict[str, str] = {
     "decision.native_mac": "native-Mac autopilot planner",
     "coach.advice": "coach get_advice, including threat alerts",
     "coach.question": "user question / conversation mode",
-    "coach.deck_brief": "on-demand deck strategy brief",
     "coach.win_prob": "win probability",
     "coach.sideboard": "sideboard advice",
     "coach.postmatch": "post-match analysis and rating calls",
