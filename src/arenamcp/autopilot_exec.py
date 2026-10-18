@@ -264,19 +264,6 @@ class _ActionExecMixin:
 
         return ClickResult(False, 0, 0, action.action_type.value, "Bridge not connected")
 
-    def _build_blocker_id_map(self, game_state: dict[str, Any]) -> dict[str, int]:
-        """Build a name -> instance_id map from the blocker decision context."""
-        decision = game_state.get("decision_context") or {}
-        if decision.get("type") != "declare_blockers":
-            return {}
-
-        names = decision.get("legal_blockers", [])
-        ids = decision.get("legal_blocker_ids", [])
-        if len(names) != len(ids) or not ids:
-            return {}
-
-        return dict(zip(names, ids, strict=False))
-
     @staticmethod
     def _get_target_owner_order(
         game_state: dict[str, Any],

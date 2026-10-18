@@ -217,7 +217,6 @@ class StaticAbility:
     keywords: tuple[str, ...] = ()
     anthem: str = ""
     pt_rule: str = ""
-    cost_reduction: str = ""
     text: str = ""
     ability_type: str = "Static"
 
@@ -395,14 +394,13 @@ class AbilitySynthesizer:
         if "~'s power is equal to" in text.lower():
             return StaticAbility(pt_rule=text, text=original_line)
 
+        # "This spell costs {X} less ...": recognised (so it counts toward
+        # coverage); the line search reads the amount from the oracle text
+        # itself (line_search_moves, cost_reduction.parse_cost_reduction).
         from arenamcp.cost_reduction import parse_cost_reduction
 
-        reduction = parse_cost_reduction(original_line)
-        if reduction is not None:
-            per = "greatest power among creatures you control" if reduction.per == "greatest_power" else (
-                f"each {reduction.per} you control"
-            )
-            return StaticAbility(cost_reduction=f"{{{reduction.amount}}} less per {per}", text=original_line)
+        if parse_cost_reduction(original_line) is not None:
+            return StaticAbility(text=original_line)
 
         return None
 

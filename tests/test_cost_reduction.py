@@ -2,8 +2,8 @@
 
 The pro cast Seed Suture on the 4/4 Beast (5/5), then Ghalta the Unstoppable
 ("This spell costs {X} less to cast, where X is the greatest power among
-creatures you control") for {3}{G}. ``StaticAbility.cost_reduction`` was
-never filled and the line search read Ghalta at nine mana.
+creatures you control") for {3}{G}. The line search read Ghalta at nine mana
+until it parsed the spell's own reduction (``cost_reduction.parse_cost_reduction``).
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from copy import deepcopy
 
 from tests.pro_yfra_states import CARDS, M1_T15
 
-from arenamcp.ability_synthesizer import AbilitySynthesizer
 from arenamcp.board_model import build_board_model
 from arenamcp.cost_reduction import parse_cost_reduction, reduced_mana_value, reduction_amount
 from arenamcp.line_search import _Search, search_lines
@@ -38,11 +37,6 @@ def test_parse_greatest_power_and_for_each():
 def test_reduction_pays_generic_mana_only():
     assert reduced_mana_value(9, 1, 5) == 4
     assert reduced_mana_value(9, 1, 20) == 1
-
-
-def test_synthesizer_fills_static_cost_reduction():
-    parsed = AbilitySynthesizer.parse_card("Ghalta the Unstoppable", GHALTA, "Legendary Creature — Dinosaur")
-    assert any(getattr(a, "cost_reduction", "") for a in parsed.abilities), parsed
 
 
 def _three_casts(source):

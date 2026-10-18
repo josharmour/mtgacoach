@@ -379,11 +379,6 @@ def _mana_value(cost: str) -> int:
     return value
 
 
-def _activated_costs(card: dict) -> list[str]:
-    """Costs of non-mana, non-loyalty activated abilities."""
-    return [cost for cost, _effect in _activated_abilities(card)]
-
-
 def _activated_abilities(card: dict) -> list[tuple[str, str]]:
     """(cost, effect) of non-mana, non-loyalty activated abilities without a sorcery-speed limit."""
     abilities = []

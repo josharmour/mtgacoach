@@ -77,20 +77,9 @@ def test_bridge_blockers_populate_blocker_names():
     snapshot = _snapshot_with_board()
     enrich_snapshot_from_pending_response(snapshot, _blockers_poll(), bridge_connected=True)
     ctx = snapshot["decision_context"]
-    # names paired 1:1 with ids (the shape _build_blocker_id_map requires)
+    # names paired 1:1 with ids, like the log path's decision_context
     assert ctx["legal_blockers"] == ["Llanowar Elves"]
     assert len(ctx["legal_blockers"]) == len(ctx["legal_blocker_ids"])
-
-
-def test_autopilot_can_build_blocker_id_map_from_bridge_data():
-    """Regression: bridge blocks used to omit legal_blockers names, so
-    autopilot's _build_blocker_id_map returned {} and couldn't block by name."""
-    from arenamcp.autopilot import AutopilotEngine
-
-    snapshot = _snapshot_with_board()
-    enrich_snapshot_from_pending_response(snapshot, _blockers_poll(), bridge_connected=True)
-    ap = AutopilotEngine.__new__(AutopilotEngine)
-    assert AutopilotEngine._build_blocker_id_map(ap, snapshot) == {"Llanowar Elves": 10}
 
 
 def test_blocker_name_fallback_keeps_pairing_when_name_missing():
@@ -117,17 +106,9 @@ def test_enriched_shape_is_readable_by_combat_solver():
     enrich_snapshot_from_pending_response(snapshot, _blockers_poll(), bridge_connected=True)
     ctx = snapshot["decision_context"]
 
-    # Attacker objects recovered from the raw_blockers attackerInstanceIds.
-    attackers = combat_solver.collect_attackers_from_raw_blockers(snapshot, ctx["raw_blockers"])
-    assert [a["instance_id"] for a in attackers] == [50]
-
     # blocker -> allowed-attacker map.
     amap = combat_solver.blocker_allowed_attackers_map(ctx["raw_blockers"])
     assert amap == {10: {50}}
-
-    # legal_blocker_ids resolves to our untapped creature.
-    blockers = combat_solver.collect_blockers_from_decision(snapshot, ctx)
-    assert [b["instance_id"] for b in blockers] == [10]
 
 
 def test_no_blockers_payload_is_a_noop():

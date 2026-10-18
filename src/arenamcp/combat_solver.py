@@ -925,43 +925,6 @@ def _score_attack_plan(plan: AttackPlan, your_life: int, opponent_life: int) -> 
 # --- Game-state adapters -----------------------------------------------
 
 
-def collect_attackers(game_state: dict[str, Any]) -> list[dict]:
-    """Return creatures currently attacking (is_attacking=True).
-
-    If none are flagged attacking (e.g. during DeclareBlockers before a
-    snapshot refresh), fall back to using the raw_blockers structure's
-    attackerInstanceIds via `collect_attackers_from_raw_blockers`.
-    """
-    battlefield = game_state.get("battlefield", [])
-    return [c for c in battlefield if c.get("is_attacking")]
-
-
-def collect_attackers_from_raw_blockers(game_state: dict[str, Any], raw_blockers: list[dict]) -> list[dict]:
-    """Derive the BLOCKABLE attackers from the GRE declareBlockersReq payload.
-
-    Each entry in raw_blockers exposes `attackerInstanceIds`, so the union
-    omits attackers no blocker can block (e.g. a flyer vs. no reach). Use
-    `collect_attackers` for the damage that actually comes through.
-    """
-    battlefield = game_state.get("battlefield", [])
-    attacker_ids: set[int] = set()
-    for blk in raw_blockers:
-        for aid in blk.get("attackerInstanceIds") or []:
-            try:
-                attacker_ids.add(int(aid))
-            except (TypeError, ValueError):
-                continue
-    return [c for c in battlefield if int(c.get("instance_id") or 0) in attacker_ids]
-
-
-def collect_blockers_from_decision(
-    game_state: dict[str, Any], decision_context: dict[str, Any]
-) -> list[dict]:
-    blocker_ids = set(int(x) for x in (decision_context.get("legal_blocker_ids") or []))
-    battlefield = game_state.get("battlefield", [])
-    return [c for c in battlefield if int(c.get("instance_id") or 0) in blocker_ids]
-
-
 def blocker_allowed_attackers_map(
     raw_blockers: list[dict],
 ) -> dict[int, set[int]]:
