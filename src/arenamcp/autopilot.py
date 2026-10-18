@@ -3643,6 +3643,7 @@ class AutopilotEngine(
                     plan = ActionPlan(
                         actions=validated,
                         overall_strategy=plan.overall_strategy,
+                        fallback_reason=plan.fallback_reason,
                     )
 
             # P0-4: a fallback "[auto-pick] Pass" is a shrug, not a decision.
@@ -3707,6 +3708,7 @@ class AutopilotEngine(
                     continue
 
                 self._current_action_idx = i
+                action.model_choice = not plan.fallback_reason
 
                 action_text = f"[{i + 1}/{len(plan.actions)}] {action}"
                 self._notify("AUTOPILOT", action_text)

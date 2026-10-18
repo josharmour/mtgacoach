@@ -146,6 +146,11 @@ class GameAction:
     # Bound at planning time, then revalidated against the live combat request.
     attacker_instance_ids: list[int] = field(default_factory=list)
     blocker_instance_assignments: dict[int, int] = field(default_factory=dict)
+    # The model chose this action (a plan without a fallback_reason), as opposed
+    # to an auto-confirm, AFK default or deterministic fallback.
+    model_choice: bool = False
+    # Why a deterministic override replaced what was asked for; spoken after the action.
+    override_note: str = ""
 
     def __str__(self) -> str:
         parts = [self.action_type.value]
@@ -356,6 +361,8 @@ class ActionPlan:
                     line = f"Click {action.card_name or 'button'}"
             else:
                 line = kind.value.replace("_", " ").capitalize()
+            if action.override_note:
+                line += f" — {action.override_note.rstrip('.')}"
             lines.append(f"{line}.")
         return " ".join(lines)
 

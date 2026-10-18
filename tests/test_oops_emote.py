@@ -1982,3 +1982,28 @@ def test_a_single_candidate_auto_target_is_recorded_as_evidence(monkeypatch):
     assert engine._progress_bridge(state).submit_targets(266)
     (record,) = engine.oops_evidence()["targets"]
     assert (record["source_id"], record["targets"]) == (395, [266])
+
+
+def test_a_combat_fact_read_just_after_the_turn_rolled_over_is_judged():
+    """2026-10-18 13:56:25: Diviner of Victory died in our turn-9 combat; the fact was read on
+    turn 10 "0s later" and the attack blunder was suppressed as stale."""
+    h = Harness()
+    h.observe(live_state(turn=6, match=FBLTHP_MATCH), game=(FBLTHP_MATCH, 1))
+    facts = [{**fact, "at": h.now} for fact in fblthp_facts()]
+    h.observe(
+        live_state(turn=7, match=FBLTHP_MATCH),
+        game=(FBLTHP_MATCH, 1),
+        facts=facts,
+        evidence={"attacks": [fblthp_attack()]},
+    )
+    assert len(h.sent) == 1 and h.controller.snapshot()["recent"][-1]["kind"] == ATTACK_BLUNDER
+    # Two turns on, it is still not judged.
+    later = Harness()
+    later.observe(live_state(turn=6, match=FBLTHP_MATCH), game=(FBLTHP_MATCH, 1))
+    later.observe(
+        live_state(turn=8, match=FBLTHP_MATCH),
+        game=(FBLTHP_MATCH, 1),
+        facts=[{**fact, "at": later.now} for fact in fblthp_facts()],
+        evidence={"attacks": [fblthp_attack()]},
+    )
+    assert later.sent == []

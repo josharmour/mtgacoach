@@ -61,6 +61,10 @@ MIN_GAP_S = 60.0
 MANUAL_DWELL_S = 10.0
 # An incident that could not be sent this long after it became due is dropped.
 STALE_S = 20.0
+# A fact from the turn that just ended, read this soon, is the same moment: our
+# combat damage and the next turn's start can land in one log poll (2026-10-18
+# 13:56:25: Diviner of Victory died on turn 9, the fact was read on turn 10 "0s later").
+ROLLOVER_S = 5.0
 
 STUCK_LOOP = "stuck_loop"
 SELF_CANCEL = "self_cancel"
@@ -701,7 +705,14 @@ class OopsController:
             self._facts.append(fact)
             seen_at = fact.get("at")
             age = now - seen_at if isinstance(seen_at, (int, float)) else 0.0
-            if fact.get("turn") != turn or age > STALE_S:
+            fact_turn = fact.get("turn")
+            rolled_over = (
+                isinstance(fact_turn, int)
+                and isinstance(turn, int)
+                and fact_turn == turn - 1
+                and age <= ROLLOVER_S
+            )
+            if (fact_turn != turn and not rolled_over) or age > STALE_S:
                 if fact.get("kind") == SELF_HARM or (
                     fact.get("kind") == "combat"
                     and fact.get("deaths")
