@@ -1,7 +1,7 @@
 """OpenAI-compatible API backend for LLM coaching.
 
-Handles both online (mtgacoach.com) and local (Ollama/LM Studio) modes
-through the same OpenAI-compatible chat completions interface.
+Talks to the api.mtgacoach.com LiteLLM gateway (the app is online-only)
+through the OpenAI chat completions interface.
 """
 
 import logging
@@ -150,9 +150,9 @@ def _reads_like_deliberation(candidate: str) -> bool:
 # Online mode: hardcoded API endpoint
 ONLINE_BASE_URL = "https://api.mtgacoach.com/v1"
 
-# Default local endpoint (vLLM). Ollama lives at :11434 if a user wants to fall back.
+# Base URL of a ProxyBackend built without one (tests). Deliberately not the
+# gateway, so a bare backend can never send real customer traffic.
 DEFAULT_LOCAL_URL = "http://localhost:8000/v1"
-DEFAULT_LOCAL_MODEL = "gemma4:e2b"
 
 
 class BackendError(Exception):
@@ -884,11 +884,11 @@ def _circuit_gate(
 
 
 class ProxyBackend:
-    """LLM backend using OpenAI-compatible chat completions API.
+    """LLM backend using the OpenAI-compatible chat completions API.
 
-    In online mode, routes through api.mtgacoach.com with the user's
-    license key. In local mode, connects to a user-configured endpoint
-    (Ollama, LM Studio, or any OpenAI-compatible server).
+    ``create_online`` routes through api.mtgacoach.com with the user's
+    license key. An explicit ``base_url`` (tests, a user-configured vision
+    endpoint) talks to any OpenAI-compatible server.
     """
 
     def __init__(
@@ -910,9 +910,6 @@ class ProxyBackend:
         self._stream_usage_supported = True
         self.last_request_metrics: dict | None = None
 
-        # Fire-and-forget warmup for any local backend to pre-load weights/KV cache
-        self._local_warmup()
-
     @classmethod
     def create_online(cls, model: str | None = None, license_key: str = "") -> "ProxyBackend":
         """Create a backend configured for online mode (mtgacoach.com)."""
@@ -925,20 +922,6 @@ class ProxyBackend:
             api_key=license_key,
         )
 
-    @classmethod
-    def create_local(
-        cls,
-        model: str | None = None,
-        url: str | None = None,
-        api_key: str | None = None,
-    ) -> "ProxyBackend":
-        """Create a backend configured for local mode (vLLM/Ollama/LM Studio)."""
-        return cls(
-            model=model or DEFAULT_LOCAL_MODEL,
-            base_url=url or DEFAULT_LOCAL_URL,
-            api_key=api_key or "vllm",
-        )
-
     # Hard ceiling applied at the SDK level. Per-call request_timeout_s in
     # complete() can tighten this. Without a finite client-level timeout,
     # the OpenAI SDK defaults to ~10 minutes — which means a hung backend
@@ -947,7 +930,7 @@ class ProxyBackend:
     _CLIENT_HARD_TIMEOUT_S = 60.0
 
     def _get_client(self):
-        """Create one HTTP client even when startup and warmup race."""
+        """Create one HTTP client even when startup preparation and a request race."""
         if self._client is not None:
             return self._client
         with self._client_lock:
@@ -989,38 +972,6 @@ class ProxyBackend:
         the remote model is warm or healthy. Requests still determine health.
         """
         self._get_client()
-
-    def _local_warmup(self) -> None:
-        """Send a minimal warmup request to a local backend in a background thread.
-
-        Fires for any non-online endpoint (vLLM/Ollama/LM Studio/etc.) so the
-        first real coach call doesn't pay the cold-start cost.
-        """
-        if os.environ.get("ARENAMCP_ENGINE_RELOAD") == "1":
-            logger.debug("[PROXY] Engine reload: skipping synthetic model warmup")
-            return
-        url = self._base_url or ""
-        if not url or url == ONLINE_BASE_URL:
-            return
-        # Only warm up obvious local URLs to avoid surprising arbitrary endpoints.
-        is_local = "localhost" in url or "127.0.0.1" in url or url.startswith("http://0.0.0.0")
-        if not is_local:
-            return
-
-        def _warmup():
-            try:
-                client = self._get_client()
-                client.chat.completions.create(
-                    model=self.model,
-                    messages=[{"role": "user", "content": "hi"}],
-                    max_tokens=1,
-                )
-                logger.info(f"[PROXY] Local warmup complete for model {self.model}")
-            except Exception as e:
-                logger.debug(f"[PROXY] Local warmup failed (non-fatal): {e}")
-
-        t = threading.Thread(target=_warmup, daemon=True)
-        t.start()
 
     def complete(
         self,
@@ -1916,13 +1867,3 @@ class ProxyBackend:
                     "configured backend/gateway cannot serve vision requests"
                 )
             return f"{BACKEND_ERROR_PREFIX} vision analysis failed: {e}"
-
-    def list_models(self) -> list[str]:
-        """List available models from the endpoint."""
-        try:
-            client = self._get_client()
-            models = client.models.list()
-            return [m.id for m in models.data]
-        except Exception as e:
-            logger.error(f"Failed to list models: {e}")
-            return []

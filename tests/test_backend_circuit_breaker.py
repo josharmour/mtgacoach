@@ -18,25 +18,19 @@ import pytest
 from arenamcp.backend_health import BackendHealth, HealthState, is_backend_error_text
 from arenamcp.backends import health, proxy
 from arenamcp.backends.health import CircuitBreaker
-from arenamcp.backends.proxy import BackendError, BackendUnavailable, ProxyBackend
-
-URL = "http://test.invalid/v1"
-MODEL = "glm-5.3-flash"
-
-
-@pytest.fixture(autouse=True)
-def _isolate(monkeypatch):
-    for var in ("ARENAMCP_LLM_PRIORITY", "ARENAMCP_LLM_CIRCUIT", "ARENAMCP_LLM_BACKGROUND_LANE"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None)
-    monkeypatch.setattr(proxy, "_BACKGROUND_LANE", proxy._BackgroundLane())
-    health.reset_circuit_breakers()
-    proxy.reset_priority_state()
-    BackendHealth.reset_instance()
-    yield
-    health.reset_circuit_breakers()
-    proxy.reset_priority_state()
-    BackendHealth.reset_instance()
+from arenamcp.backends.proxy import BackendError, BackendUnavailable
+from tests.proxy_fakes import (
+    MODEL,
+    PROBE_OK,
+    URL,
+    APIConnectionError,
+    APITimeoutError,
+    FakeAPIError,
+    chunk,
+    litellm_500,
+    make_backend,
+    ok_stream,
+)
 
 
 class Clock:
@@ -50,80 +44,10 @@ class Clock:
         self.t += dt
 
 
-class FakeAPIError(Exception):
-    def __init__(self, msg, status_code=None, body=None):
-        super().__init__(msg)
-        self.status_code = status_code
-        self.body = body
-
-
-class APIConnectionError(Exception):
-    """Name matches the SDK's connection error, which the proxy keys on."""
-
-
-class APITimeoutError(Exception):
-    """Name matches the SDK's timeout error (a socket read timeout)."""
-
-
-def chunk(text=None, *, reasoning=None, finish=None):
-    has_choice = text is not None or reasoning is not None or finish is not None
-    return NS(
-        model=MODEL,
-        usage=None,
-        choices=[NS(delta=NS(content=text, reasoning_content=reasoning), finish_reason=finish)]
-        if has_choice
-        else [],
-    )
-
-
-def ok_stream(text="ok"):
-    return [chunk(text, finish="stop")]
-
-
-PROBE_OK = NS(model=MODEL, usage=None, choices=[NS(message=NS(content=""), finish_reason="length")])
-LITELLM_500 = "Error code: 500 - OpenAIException - Connection error. No fallback model group found. LiteLLM Retried: 1 times"
-
-
-def litellm_500():
-    return FakeAPIError(LITELLM_500, status_code=500)
-
-
-class FakeClient:
-    def __init__(self, behaviors=()):
-        self.behaviors = list(behaviors)
-        self.calls: list[dict] = []
-        self.timeouts: list = []
-        self.lock = threading.Lock()
-        self.chat = NS(completions=NS(create=self._create))
-        self.models = NS(list=lambda: NS(data=[]))
-
-    def with_options(self, **options):
-        self.timeouts.append(options.get("timeout"))
-        return self
-
-    def _create(self, **params):
-        with self.lock:
-            self.calls.append(params)
-            behavior = self.behaviors.pop(0) if self.behaviors else ok_stream()
-        if isinstance(behavior, Exception):
-            raise behavior
-        if callable(behavior):
-            return behavior()
-        if isinstance(behavior, list):
-            return iter(behavior)
-        return behavior
-
-
 @pytest.fixture
 def no_retry_sleep(monkeypatch):
     """Skip the proxy's real 0.5 s retry pause (time.sleep is the module's)."""
     monkeypatch.setattr(proxy.time, "sleep", lambda s: None)
-
-
-def make_backend(behaviors=(), model=MODEL, url=URL) -> ProxyBackend:
-    be = ProxyBackend(model=model, base_url=url)
-    be._client = FakeClient(behaviors)
-    return be
 
 
 def install_breaker(clock: Clock, url=URL, model=MODEL) -> CircuitBreaker:

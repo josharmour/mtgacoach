@@ -23,25 +23,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from arenamcp.backend_health import BackendHealth
-from arenamcp.backends import health, proxy
+from arenamcp.backends import proxy
 from arenamcp.backends.proxy import BackendCallCancelled, ProxyBackend
 
 MODEL = "glm-5.3-flash"
-
-
-@pytest.fixture(autouse=True)
-def _isolate(monkeypatch):
-    for var in ("ARENAMCP_LLM_PRIORITY", "ARENAMCP_LLM_CIRCUIT", "ARENAMCP_LLM_BACKGROUND_LANE"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None)
-    monkeypatch.setattr(proxy, "_BACKGROUND_LANE", proxy._BackgroundLane())
-    health.reset_circuit_breakers()
-    proxy.reset_priority_state()
-    BackendHealth.reset_instance()
-    yield
-    health.reset_circuit_breakers()
-    proxy.reset_priority_state()
-    BackendHealth.reset_instance()
 
 
 class ScriptedServer:
@@ -134,12 +119,7 @@ def _warm_sdk():
 
 
 def _backend(url: str) -> ProxyBackend:
-    original = ProxyBackend._local_warmup
-    ProxyBackend._local_warmup = lambda self: None
-    try:
-        return ProxyBackend(model=MODEL, base_url=url, api_key="x")
-    finally:
-        ProxyBackend._local_warmup = original
+    return ProxyBackend(model=MODEL, base_url=url, api_key="x")
 
 
 @pytest.fixture

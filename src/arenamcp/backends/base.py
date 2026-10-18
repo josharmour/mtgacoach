@@ -12,7 +12,3 @@ class LLMBackend(Protocol):
     def complete(self, system_prompt: str, user_message: str) -> str:
         """Get a completion from the LLM."""
         ...
-
-    def list_models(self) -> list[str]:
-        """List available models (optional)."""
-        return []

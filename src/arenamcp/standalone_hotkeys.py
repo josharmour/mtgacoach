@@ -440,20 +440,6 @@ class _StandaloneHotkeysMixin:
 
         return False
 
-    def _on_provider_cycle_hotkey(self) -> None:
-        """F11 - Toggle between online and local mode."""
-        if self.draft_mode:
-            return
-
-        new_mode = "local" if self.backend_name == "online" else "online"
-        display_name = "Online" if new_mode == "online" else "Local"
-
-        self.ui.log(f"\n[MODE] Switching to {display_name}...")
-        self.set_backend(new_mode, None)
-        # Invalidate cached model list
-        self._model_list_for: str | None = None
-        self._model_list: list = []
-
     def _on_model_cycle_hotkey(self) -> None:
         """F12 - Cycle through models within the current mode."""
         if self.draft_mode:
@@ -575,7 +561,6 @@ class _StandaloneHotkeysMixin:
             keyboard.on_press_key("f7", lambda _: self._on_bug_report_hotkey(), suppress=False)
             keyboard.on_press_key("f8", lambda _: self._on_swap_seat_hotkey(), suppress=False)
             keyboard.on_press_key("f10", lambda _: self.run_speed_test(), suppress=False)
-            keyboard.on_press_key("f11", lambda _: self._on_provider_cycle_hotkey(), suppress=False)
             keyboard.on_press_key("f12", lambda _: self._on_model_cycle_hotkey(), suppress=False)
             keyboard.add_hotkey("ctrl+0", lambda: self._on_read_win_plan(), suppress=False)
             logger.info("Hotkeys registered")

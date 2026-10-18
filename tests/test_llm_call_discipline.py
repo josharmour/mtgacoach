@@ -611,31 +611,22 @@ def test_a_fast_failing_outage_never_restarts_the_coach_before_the_breaker_opens
     0.6 s, so three empties re-forced every 0.5 s hit the restart threshold
     (3) at ~2.7 s, before the breaker's 5th failure, and _reinit_coach threw
     the CoachEngine (playbook, deck strategy, game plan) away."""
-    from tests.test_backend_circuit_breaker import FakeClient, litellm_500
+    from tests.proxy_fakes import litellm_500, make_backend
 
-    from arenamcp.backends import health
-    from arenamcp.backends.proxy import ProxyBackend
-
-    health.reset_circuit_breakers()
-    monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None)
-    backend = ProxyBackend(model="glm-5.3-flash", base_url="http://restart.invalid/v1")
-    backend._client = FakeClient([litellm_500() for _ in range(5)])
+    backend = make_backend([litellm_500() for _ in range(5)], url="http://restart.invalid/v1")
     coach = make_loop(_combat_state(), ["combat_attackers"], autopilot=False)
     coach._coach.advice = ""
     coach._coach._backend = backend
     coach._coach.on_advice = lambda: backend.complete("s", "u", call_class="coach.advice")
     coach._reinit_coach = Mock(side_effect=AssertionError("no restart for an outage the breaker tracks"))
-    try:
-        for _ in range(3):
-            coach._trigger.triggers = ["combat_attackers"]
-            coach._running = True
-            run_loop(monkeypatch, coach)
-        assert len(backend._client.calls) == 3
-        assert backend.available(), "three fast failures: the breaker has not opened yet"
-        assert getattr(coach, "_consecutive_errors", 0) == 0
-        coach._reinit_coach.assert_not_called()
-    finally:
-        health.reset_circuit_breakers()
+    for _ in range(3):
+        coach._trigger.triggers = ["combat_attackers"]
+        coach._running = True
+        run_loop(monkeypatch, coach)
+    assert len(backend._client.calls) == 3
+    assert backend.available(), "three fast failures: the breaker has not opened yet"
+    assert getattr(coach, "_consecutive_errors", 0) == 0
+    coach._reinit_coach.assert_not_called()
 
 
 def test_breaker_open_and_close_each_show_one_banner():

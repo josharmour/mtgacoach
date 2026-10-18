@@ -40,7 +40,6 @@ def captured(monkeypatch):
         return "Play Forest."
 
     monkeypatch.setattr(ProxyBackend, "_complete_once", fake_complete_once, raising=True)
-    monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None, raising=False)
     return seen
 
 
@@ -91,8 +90,7 @@ def test_thinking_is_always_sent_explicitly_and_only_as_a_template_kwarg(capture
 
 
 @pytest.mark.parametrize("json_mode", [False, True])
-def test_glm_vision_uses_low_effort_separated_reasoning(monkeypatch, json_mode):
-    monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None)
+def test_glm_vision_uses_low_effort_separated_reasoning(json_mode):
     backend = ProxyBackend(model="glm-5.3-flash", base_url="http://127.0.0.1:9/v1", api_key="test")
     client = Mock()
     client.chat.completions.create.return_value = SimpleNamespace(
@@ -108,8 +106,7 @@ def test_glm_vision_uses_low_effort_separated_reasoning(monkeypatch, json_mode):
         assert "response_format" not in params
 
 
-def test_explicit_vision_resume_reenables_failed_endpoint(monkeypatch):
-    monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None)
+def test_explicit_vision_resume_reenables_failed_endpoint():
     backend = ProxyBackend(model="test", base_url="http://127.0.0.1:9/v1", api_key="test")
     backend._vision_dead = True
     backend._vision_fail_count = 3
@@ -128,8 +125,7 @@ def test_explicit_vision_resume_reenables_failed_endpoint(monkeypatch):
 @pytest.mark.parametrize(
     "saved_model", [None, "dsv4", "deepseek-v4-flash", "gemma-4-12b-it", "glm-5.3-flash"]
 )
-def test_hosted_model_is_current_glm_regardless_of_saved_alias(saved_model, monkeypatch):
-    monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None)
+def test_hosted_model_is_current_glm_regardless_of_saved_alias(saved_model):
     backend = ProxyBackend.create_online(model=saved_model, license_key="test-key")
     assert backend.model == "glm-5.3-flash"
 

@@ -10,7 +10,6 @@ from arenamcp.backend_health import (
     is_backend_error_text,
 )
 from arenamcp.backends.proxy import ProxyBackend
-from arenamcp.coach_backends import _is_local_backend
 from arenamcp.coach_prompts import (
     POST_MATCH_ANALYSIS_PROMPT,
     SIDEBOARD_RECOMMENDATION_PROMPT,
@@ -97,13 +96,7 @@ class _CoachAnalysisMixin:
 
         # Longer timeout for strategic plans (more tokens to generate).
         is_thinking = isinstance(be, ProxyBackend) and be.enable_thinking
-        is_local = _is_local_backend(be)
-        if is_thinking:
-            api_timeout = 90
-        elif is_local:
-            api_timeout = 90  # Local models need much more time
-        else:
-            api_timeout = 45
+        api_timeout = 90 if is_thinking else 45
 
         api_start = time.perf_counter()
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)

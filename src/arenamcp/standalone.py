@@ -944,19 +944,8 @@ class StandaloneCoach(
         # Pass UI subtask callback for real-time progress display
         progress_cb = self.ui.subtask if self.ui else None
 
-        # "auto" mode: detect and report which backend was selected
-        requested = self.backend_name
         llm_backend = create_backend(self.backend_name, model=self.model_name, progress_callback=progress_cb)
         actual_model = getattr(llm_backend, "model", "unknown")
-
-        # If auto-selected, update our backend_name to reflect the actual choice
-        if requested == "auto":
-            from arenamcp.backend_detect import auto_select_mode
-
-            resolved_mode, _ = auto_select_mode()
-            self._backend_name = resolved_mode
-            self.settings.set("mode", "auto", save=False)  # Keep "auto" in settings
-            self.ui.log(f"[bold green]Auto-detected mode: {resolved_mode} (model: {actual_model})[/]")
 
         logger.info(f"Created {self.backend_name} backend with model: {actual_model}")
         self._validate_model_on_launch()
@@ -3635,7 +3624,6 @@ class StandaloneCoach(
 
         tests = [
             ("Online (default)", "online", None),
-            ("Local (default)", "local", None),
         ]
 
         import time
@@ -3695,8 +3683,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m arenamcp.standalone --backend online
-  python -m arenamcp.standalone --backend local
+  python -m arenamcp.standalone
   python -m arenamcp.standalone --draft --set MH3
         """,
     )

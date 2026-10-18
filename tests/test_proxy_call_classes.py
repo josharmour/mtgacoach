@@ -16,59 +16,11 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace as NS
 
 import pytest
+from tests.proxy_fakes import chunk, make_backend
 
 from arenamcp.backend_health import BackendHealth, is_backend_error_text
-from arenamcp.backends import health, proxy
+from arenamcp.backends import proxy
 from arenamcp.backends.proxy import BackendCallCancelled, ProxyBackend
-
-
-@pytest.fixture(autouse=True)
-def _isolate(monkeypatch):
-    for var in ("ARENAMCP_LLM_PRIORITY", "ARENAMCP_LLM_CIRCUIT", "ARENAMCP_LLM_BACKGROUND_LANE"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None)
-    monkeypatch.setattr(proxy, "_BACKGROUND_LANE", proxy._BackgroundLane())
-    health.reset_circuit_breakers()
-    proxy.reset_priority_state()
-    BackendHealth.reset_instance()
-    yield
-    health.reset_circuit_breakers()
-    proxy.reset_priority_state()
-    BackendHealth.reset_instance()
-
-
-def chunk(text=None, *, reasoning=None, finish=None):
-    has_choice = text is not None or reasoning is not None or finish is not None
-    return NS(
-        model="glm-5.3-flash",
-        usage=None,
-        choices=[NS(delta=NS(content=text, reasoning_content=reasoning), finish_reason=finish)]
-        if has_choice
-        else [],
-    )
-
-
-class FakeClient:
-    """Scriptable OpenAI client: one behavior per create() call."""
-
-    def __init__(self, behaviors=()):
-        self.behaviors = list(behaviors)
-        self.calls: list[dict] = []
-        self.lock = threading.Lock()
-        self.chat = NS(completions=NS(create=self._create))
-
-    def with_options(self, **options):
-        return self
-
-    def _create(self, **params):
-        with self.lock:
-            self.calls.append(params)
-            behavior = self.behaviors.pop(0) if self.behaviors else [chunk("ok", finish="stop")]
-        if isinstance(behavior, Exception):
-            raise behavior
-        if isinstance(behavior, list):
-            return iter(behavior)
-        return behavior
 
 
 class BlockingStream:
@@ -93,12 +45,6 @@ class BlockingStream:
 
     def close(self):
         self.closed.set()
-
-
-def make_backend(behaviors=(), model="glm-5.3-flash", url="http://test.invalid/v1") -> ProxyBackend:
-    be = ProxyBackend(model=model, base_url=url)
-    be._client = FakeClient(behaviors)
-    return be
 
 
 def ctk(params) -> dict:
