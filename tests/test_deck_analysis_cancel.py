@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import threading
 import time
 from unittest.mock import Mock
 
@@ -55,4 +54,3 @@ def test_plan_waits_for_the_deck_analysis_only_briefly():
     assert coach._deck_analysis_blocks_plan() is False
     coach.clear_deck_strategy()
     assert coach._deck_analysis_blocks_plan() is False
-    assert isinstance(threading.Event(), threading.Event)

@@ -256,8 +256,6 @@ def test_a_listed_payoff_that_loses_games_does_not_beat_a_playable():
 
 
 def _pool_cards(grp_ids):
-    from arenamcp.limited_deck import _card_value  # noqa: F401  (module import check)
-
     cards = []
     for grp_id in grp_ids:
         card = PRIMER.card(grp_id)

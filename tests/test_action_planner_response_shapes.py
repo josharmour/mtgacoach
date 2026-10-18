@@ -26,6 +26,8 @@ def _parse(text: str):
 def test_wrapped_actions_still_parse():
     plan = _parse('{"actions": [{"pick": 1, "reasoning": "develop"}], "overall_strategy": "curve out"}')
     assert [a.action_type for a in plan.actions] == [ActionType.CAST_SPELL]
+    # The pick resolves to that menu entry, with the model's reasoning kept.
+    assert plan.actions[0].card_name == "Optimistic Scavenger" and plan.actions[0].reasoning == "develop"
     assert plan.overall_strategy == "curve out"
 
 

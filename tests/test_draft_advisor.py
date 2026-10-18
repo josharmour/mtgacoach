@@ -89,7 +89,7 @@ def test_invalid_model_choices_keep_explained_heuristic_fallback(failure):
     assert result["reasoning_source"] == "heuristic"
 
 
-def test_theme_follows_actual_picks_and_resets_for_new_draft():
+def test_plan_follows_actual_picks_and_resets_for_new_draft():
     backend = Mock()
     backend.complete.return_value = json.dumps(response())
     advisor = DraftAdvisor(backend)
