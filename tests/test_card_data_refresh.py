@@ -73,7 +73,13 @@ def test_network_failure_keeps_stale_indexes_usable(tmp_path, monkeypatch):
     assert database.get_card_by_name("Old Card") is not None
 
 
-@pytest.mark.parametrize("payload", [b"not gzip", gzip.compress(b"{}"), gzip.compress(b'{"data":{}}')])
+# mtime=0 and explicit ids: gzip stamps the clock into its header, so the
+# generated test ids changed every second and pytest-xdist workers disagreed.
+@pytest.mark.parametrize(
+    "payload",
+    [b"not gzip", gzip.compress(b"{}", mtime=0), gzip.compress(b'{"data":{}}', mtime=0)],
+    ids=["not-gzip", "empty-object", "empty-data"],
+)
 def test_invalid_refresh_preserves_previous_cache(tmp_path, monkeypatch, payload):
     database = cached_database(tmp_path, stale=True)
     previous = database._cache_file.read_bytes()

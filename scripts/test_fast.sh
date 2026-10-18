@@ -10,7 +10,8 @@
 #
 # Works from any worktree: it mirrors the checkout you run it from.
 # Python: $MTGACOACH_TEST_PYTHON, else ~/.venvs/mtgacoach-dev (created with uv
-# on first run from pyproject's dependencies + dev extras + pytest-xdist).
+# on first run from pyproject's dependencies + dev extras, the website's
+# requirements and pytest-xdist; without fastapi the website tests skip).
 set -euo pipefail
 
 src="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
@@ -24,7 +25,8 @@ if [[ ! -x "$py" ]]; then
   uv="$(command -v uv || echo "$HOME/.local/bin/uv")"
   echo "Creating $venv (one time)..."
   "$uv" venv -q --python 3.12 "$venv"
-  "$uv" pip install -q --python "$venv/bin/python" -r "$src/pyproject.toml" --extra dev pytest-xdist
+  "$uv" pip install -q --python "$venv/bin/python" -r "$src/pyproject.toml" --extra dev \
+    -r "$src/website/requirements.txt" pytest-xdist
   py="$venv/bin/python"
 fi
 
