@@ -7,33 +7,6 @@ from pathlib import Path
 import pytest
 
 from arenamcp.scryfall import ScryfallCache
-from arenamcp.settings import _migrate_settings
-
-
-def test_settings_migration_local_and_auto() -> None:
-    # Test that legacy "backend": "local" maps to "mode": "local" and deletes "backend"
-    data = {"backend": "local"}
-    assert _migrate_settings(data) is True
-    assert data.get("mode") == "local"
-    assert "backend" not in data
-
-    # Test that legacy "backend": "ollama" maps to "mode": "local", deletes "backend", and migrates URL
-    data = {"backend": "ollama", "ollama_url": "http://ollama"}
-    assert _migrate_settings(data) is True
-    assert data.get("mode") == "local"
-    assert data.get("local_url") == "http://ollama"
-    assert "backend" not in data
-
-    # Test that legacy "backend": "auto" maps to "mode": "auto"
-    data = {"backend": "auto"}
-    assert _migrate_settings(data) is True
-    assert data.get("mode") == "auto"
-    assert "backend" not in data
-
-    # Test that normal mode is preserved if "backend" is not there
-    data = {"mode": "local"}
-    assert _migrate_settings(data) is False
-    assert data.get("mode") == "local"
 
 
 def test_scryfall_cache_async_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
