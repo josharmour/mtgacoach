@@ -3808,6 +3808,10 @@ Examples:
         # frontend never saw an exit, so the Restart Coach button did
         # nothing. Force the exit.
         with contextlib.suppress(Exception):
+            from arenamcp.gre_bridge import shutdown_bridge
+
+            shutdown_bridge()
+        with contextlib.suppress(Exception):
             coach.stop()
         logger.info(
             "Pipe-mode coach exiting (restart_requested=%s)",

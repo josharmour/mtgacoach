@@ -393,7 +393,16 @@ def bridge_capable() -> bool:
 def bridge_offline_hint() -> str:
     """Recovery guidance for the execution bridge on the selected game device."""
     from arenamcp.android_link import game_device
+    from arenamcp import gre_bridge
 
+    # 2026-10-18 14:54: the bridge was offline because a previous coach still
+    # held the port, yet the hint told the user to relaunch MTGA with
+    # DYLD_INSERT_LIBRARIES, which it already had.
+    if gre_bridge._bridge is not None and gre_bridge._bridge.port_in_use:
+        return (
+            "Another mtgacoach process still holds the bridge port; the bridge "
+            "reconnects on its own once that process exits."
+        )
     if game_device() == "android":
         return (
             "Check the Android phone link and adb reverse connection, then "

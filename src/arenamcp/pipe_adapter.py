@@ -453,6 +453,14 @@ class PipeAdapter:
                 if not line:
                     # stdin closed (GUI exited)
                     logger.info("stdin closed, stopping coach")
+                    # The desktop spawns the next coach right away: free the
+                    # bridge port before anything that can stall shutdown.
+                    try:
+                        from arenamcp.gre_bridge import shutdown_bridge
+
+                        shutdown_bridge()
+                    except Exception as e:
+                        logger.debug("bridge shutdown on stdin close failed: %s", e)
                     if self._coach:
                         self._abort_concede(self._coach, "the desktop closed")
                         self._coach._running = False

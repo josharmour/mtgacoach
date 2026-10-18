@@ -64,3 +64,44 @@ def test_a_port_held_by_another_process_is_warned_about_once(caplog):
     finally:
         holder.close()
         _close(bridge)
+
+
+def test_shutdown_releases_the_port_and_never_rebinds():
+    # 2026-10-18 14:54: the old coach held the port ~70 s after a desktop
+    # restart, so the new coach's bridge stayed offline mid-match.
+    bridge = gre_bridge.GREBridge()
+    bridge.connect()
+    port = bridge.bound_port
+    bridge.shutdown()
+    assert bridge._server_socket is None
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", port))  # free again
+    finally:
+        probe.close()
+    bridge._last_connect_attempt = 0.0
+    assert bridge.connect() is False and bridge._server_socket is None
+
+
+def test_shutdown_bridge_resets_the_singleton(monkeypatch):
+    bridge = gre_bridge.GREBridge()
+    monkeypatch.setattr(gre_bridge, "_bridge", bridge)
+    gre_bridge.shutdown_bridge()
+    assert gre_bridge._bridge is None and bridge._shut_down
+    gre_bridge.shutdown_bridge()  # idempotent with no bridge
+
+
+def test_offline_hint_names_a_port_conflict_not_a_relaunch(monkeypatch):
+    from arenamcp.platform_integration import bridge_offline_hint
+
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    holder.bind(("127.0.0.1", 0))
+    holder.listen(1)
+    bridge = gre_bridge.GREBridge(port=holder.getsockname()[1])
+    monkeypatch.setattr(gre_bridge, "_bridge", bridge)
+    try:
+        assert bridge.connect() is False and bridge.port_in_use
+        hint = bridge_offline_hint()
+        assert "holds the bridge port" in hint and "DYLD" not in hint
+    finally:
+        holder.close()

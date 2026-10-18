@@ -184,6 +184,7 @@ class GREBridge:
     bound_port: int | None = None
     # The one-time WARNING for a port another process already holds.
     _port_conflict_warned = False
+    _shut_down = False  # shutdown() ran: never bind the port again
 
     def __init__(self, port: int | None = None):
         self._connected = False
@@ -239,6 +240,8 @@ class GREBridge:
         """Create a TCP server socket and wait for the BepInEx plugin to connect."""
         if self._connected:
             return True
+        if self._shut_down:
+            return False
 
         now = time.monotonic()
         if now - self._last_connect_attempt < self._reconnect_cooldown:
@@ -411,6 +414,28 @@ class GREBridge:
 
     def stop_keepalive(self) -> None:
         self._keepalive_stop.set()
+
+    @property
+    def port_in_use(self) -> bool:
+        """Our bridge port is held by another process, so no server is listening."""
+        return self._server_socket is None and self._port_conflict_warned
+
+    def shutdown(self) -> None:
+        """Stop the keepalive, drop the plugin and release the listening port.
+
+        2026-10-18 14:54: a desktop restart spawned the new coach while the old
+        one, already told to stop, still held 127.0.0.1:44222 for ~70 s, so the
+        new coach's bridge stayed offline ("Address already in use") and the
+        autopilot fell to MANUAL REQUIRED mid-match. The port must go first.
+        """
+        self._shut_down = True
+        self.stop_keepalive()
+        self.disconnect()
+        server, self._server_socket = self._server_socket, None
+        self._server_started_at = None
+        if server is not None:
+            with contextlib.suppress(OSError):
+                server.close()
 
     # How long the server may listen with zero plugin connections before
     # we conclude the plugin isn't running and warn the user.
@@ -3070,6 +3095,18 @@ def get_bridge() -> GREBridge:
         except Exception as e:
             logger.debug(f"Could not start bridge keepalive: {e}")
     return _bridge
+
+
+def shutdown_bridge() -> None:
+    """Release the bridge port if this process ever opened it (pipe-mode exit).
+
+    The next ``get_bridge()`` builds a fresh bridge, so an in-process restart
+    can still bind the port again.
+    """
+    global _bridge
+    bridge, _bridge = _bridge, None
+    if bridge is not None:
+        bridge.shutdown()
 
 
 def get_poller() -> BridgeDecisionPoller:
