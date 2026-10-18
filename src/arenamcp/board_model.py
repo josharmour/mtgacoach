@@ -416,6 +416,10 @@ class BoardModel:
     # Our commanders in the command zone (``our_commanders``); those with a known cost are
     # also in ``spells`` (zone "command"). Empty outside commander games.
     commanders: tuple[CommandCast, ...] = ()
+    # Life we gained this turn / this game (``Player.life_gained_*``, from the log's
+    # ModifiedLife annotations): X for "where X is the amount of life you gained this turn".
+    life_gained_turn: int = 0
+    life_gained_game: int = 0
 
     @property
     def unknowns(self) -> list[str]:
@@ -501,6 +505,8 @@ def build_board_model(state: dict) -> BoardModel | None:
     sources_now = [s for c in our_permanents if not c.get("is_tapped") and (s := _mana_source(c, turn))]
     hand_lands = [c for c in hand if _is_land(c) and not _is_creature(c)]
     lands_played = _int(_player(state, local).get("lands_played")) or 0
+    life_gained_turn = _int(_player(state, local).get("life_gained_this_turn")) or 0
+    life_gained_game = _int(_player(state, local).get("life_gained_this_game")) or 0
     land_drop_now = (not our_turn) or lands_played == 0
     colors_all = set().union(*(s.produces for s in sources_all)) if sources_all else set()
     for land in hand_lands:
@@ -593,4 +599,5 @@ def build_board_model(state: dict) -> BoardModel | None:
         t_casts_post_combat=our_turn and phase in ("Phase_Combat", "Phase_Main2"),
         t_instant_only=our_turn and phase == "Phase_Ending",
         commanders=tuple(commanders),
+        life_gained_turn=max(0, life_gained_turn), life_gained_game=max(0, life_gained_game),
     )  # fmt: skip

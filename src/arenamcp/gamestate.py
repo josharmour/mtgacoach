@@ -219,6 +219,8 @@ class GameState(_GameStateAnnotationsMixin):
         "dungeon_status": dict,
         # Action history: rolling buffer of recent player actions
         "action_history": list,
+        # ModifiedLife annotation ids already counted into life gained
+        "_life_annotation_ids": set,
         # Timer state from GRE
         "timer_state": dict,
         # Temporary engine-busy signals from obscure GRE annotations
@@ -568,6 +570,8 @@ class GameState(_GameStateAnnotationsMixin):
                         team_id=_coerce_optional_int(player_data.get("team_id")),
                         status=str(player_data.get("status", "") or ""),
                         controller_seat_id=_coerce_optional_int(player_data.get("controller_seat_id")),
+                        life_gained_this_turn=_coerce_int(player_data.get("life_gained_this_turn", 0), 0),
+                        life_gained_this_game=_coerce_int(player_data.get("life_gained_this_game", 0), 0),
                     )
 
                 self.game_objects = {}
@@ -2275,6 +2279,8 @@ class GameState(_GameStateAnnotationsMixin):
             team_id=team_id,
             status=status,
             controller_seat_id=controller_seat_id,
+            life_gained_this_turn=existing.life_gained_this_turn if existing else 0,
+            life_gained_this_game=existing.life_gained_this_game if existing else 0,
         )
 
         self.players[seat_id] = player
@@ -2625,6 +2631,7 @@ class GameState(_GameStateAnnotationsMixin):
         if new_turn != prev_turn:
             for player in self.players.values():
                 player.lands_played = 0
+                player.life_gained_this_turn = 0
             for obj in self.game_objects.values():
                 obj.is_attacking = False
                 obj.is_blocking = False

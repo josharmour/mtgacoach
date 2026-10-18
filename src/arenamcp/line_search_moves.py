@@ -102,6 +102,15 @@ _CREATES_CREATURES = re.compile(
 )
 # Token clauses read as unknown: a variable count, copies, tokens that enter attacking.
 _TOKEN_UNREAD = re.compile(r"\b(?:for each|equal to|where x|tapped|attacking|blocking|cop(?:y|ies))\b")
+# "Create X 2/2 ... creature tokens named Cadet, where X is the amount of life you gained this turn."
+_LIFE_SCALED_TOKENS = re.compile(
+    r"\bcreate x ((?:\d+)/(?:\d+) [^.\n]*?\bcreature tokens?\b[^.\n]*?),? where x is the (?:amount of )?"
+    r"life you(?:'ve)? gained this turn"
+)
+# "For every 3 life you gained this game, create an additional one of those tokens."
+_LIFE_GAME_EXTRA = re.compile(
+    r"\bfor (?:every|each) (\w+) life you(?:'ve)? gained this game, create an additional one of those tokens\b"
+)
 _TOKEN_CONDITION = re.compile(r"\b(?:if|unless|for each|otherwise|instead)\b")
 _TOKEN_TEMPORARY = re.compile(
     r"\b(?:exile|sacrifice) (?:it|them|that token|those tokens)\b[^.]*\bnext end step\b"
@@ -259,6 +268,9 @@ class Variant:
     aim: str = ""  # "opponent": the face-damage variant of an 'any target' spell
     fetch: str = ""  # landcycling: the basic's colour ("" = we choose the most needed one)
     tokens: tuple = ()  # creature token bodies it makes (each with its own id)
+    # Creature tokens it makes per point of life gained this turn (Germinate Recruits): the
+    # count is read when it resolves, after the casts before it in the turn.
+    life_tokens: tuple = ()
 
 
 @dataclass(eq=False)
@@ -326,7 +338,7 @@ class Mid:
     __slots__ = (
         "node", "land", "casts", "sources", "base_sources", "used_mv", "used_pips", "our_life", "opp_life",
         "ours", "theirs", "our_tapped", "entered", "hand", "lands", "played", "rocks", "returning",
-        "attack_first", "applied", "modes", "targets", "cycles", "cast_names", "keys",
+        "attack_first", "applied", "modes", "targets", "cycles", "cast_names", "keys", "gained",
     )  # fmt: skip
 
     def copy(self) -> Mid:
@@ -383,7 +395,22 @@ def classify(name: str, bullet: str) -> tuple[str, int, dict | None, bool]:
     return ("tokens" if token_specs(_cast_text(pseudo)) else "other"), 0, None, False
 
 
-def token_specs(text: str) -> list[tuple[int, int, int, tuple[str, ...], str]] | None:
+def _life_scaled(text: str, gained: int | None) -> str:
+    """``text`` with "create X ... tokens, where X is the amount of life you gained this turn"
+    read as "create <gained> ..." (unchanged when ``gained`` is None)."""
+    if gained is None:
+        return text
+    return _LIFE_SCALED_TOKENS.sub(lambda m: f"create {max(0, min(int(gained), 10))} {m.group(1)}", text)
+
+
+def life_scaled_tokens(text: str) -> bool:
+    """``text`` (lower-case cast text) makes X creature tokens, X the life gained this turn."""
+    return bool(_LIFE_SCALED_TOKENS.search(text or ""))
+
+
+def token_specs(
+    text: str, *, life_gained: int | None = None, life_gained_game: int | None = None
+) -> list[tuple[int, int, int, tuple[str, ...], str]] | None:
     """The creature tokens ``text`` (lower-case cast text) makes: [(count, power, toughness, keywords, name)].
 
     [] when it makes none; None when it makes creature tokens that can't be
@@ -391,9 +418,17 @@ def token_specs(text: str) -> list[tuple[int, int, int, tuple[str, ...], str]] |
     enter tapped or attacking, a condition ("if", "unless", "instead") before
     the "create", or tokens exiled or sacrificed at the next end step.
     "They gain haste until end of turn" after it gives them haste.
+
+    ``life_gained``: the life we gained this turn, which reads "create X ...
+    tokens, where X is the amount of life you gained this turn" (Germinate
+    Recruits; 0 makes none of them). ``life_gained_game``: this game's, which
+    reads "For every 3 life you gained this game, create an additional one of
+    those tokens" (Flourishing Forces). Without them those counts stay unread
+    (X) or at the printed minimum (the additional tokens).
     """
+    text = _life_scaled(text or "", life_gained)
     specs: list[tuple[int, int, int, tuple[str, ...], str]] = []
-    for line in (text or "").splitlines():
+    for line in text.splitlines():
         for create in re.finditer(r"\bcreate\b", line):
             start = line.rfind(".", 0, create.start()) + 1
             end = line.find(".", create.end())
@@ -411,6 +446,8 @@ def token_specs(text: str) -> list[tuple[int, int, int, tuple[str, ...], str]] |
             ):
                 return None
             count = _COUNT_WORDS.get(match.group("n")) or _int(match.group("n")) or 0
+            if count == 0 and match.group("n") == "0":
+                continue  # "where X is the life you gained this turn" with none gained
             if not 0 < count <= 10:
                 return None
             rest = match.group("rest")
@@ -428,6 +465,12 @@ def token_specs(text: str) -> list[tuple[int, int, int, tuple[str, ...], str]] |
                 ]
                 name = (" ".join(words).title() or "Creature") + " token"
             specs.append((count, int(match.group("p")), int(match.group("t")), tuple(sorted(keywords)), name))
+    extra = _LIFE_GAME_EXTRA.search(text)
+    if extra and specs and life_gained_game is not None:
+        step = _COUNT_WORDS.get(extra.group(1)) or _int(extra.group(1)) or 0
+        if step > 0:
+            count, power, toughness, keywords, name = specs[-1]
+            specs[-1] = (min(10, count + int(life_gained_game) // step), power, toughness, keywords, name)
     return specs
 
 
@@ -563,7 +606,7 @@ def unmodelled_effect(card: dict | None, result: Any = None) -> str:
         name = str(card["name"])
         if _x_unmodelled(card, role):
             return "its X cost"
-        if token_specs(_cast_text(card)) is None:
+        if token_specs(_cast_text(card), life_gained=0) is None:
             return "its tokens"
         modes = bullets(str(card.get("oracle_text") or ""))
         if modes and all(classify(name, mode)[0] == "other" for mode in modes):
@@ -601,7 +644,13 @@ def mode_label(kind: str, gain: int, bullet: str, name: str = "") -> str:
 def _modelled(var: Variant) -> bool:
     """The cast does something the search values: a body, tokens, removal, life, face damage, a rock."""
     return bool(
-        var.body is not None or var.tokens or var.reach is not None or var.gain or var.face or var.rock
+        var.body is not None
+        or var.tokens
+        or var.life_tokens
+        or var.reach is not None
+        or var.gain
+        or var.face
+        or var.rock
     )
 
 
@@ -662,6 +711,7 @@ class Moves:
         self._cast_memo: dict = {}
         self._boosted: dict = {}
         self._token_id = _TOKEN_IDS  # the next token body's instance id (deterministic)
+        self._life_token_memo: dict = {}
         # Hushbringer / Torpor Orb on the battlefield: a creature we cast triggers nothing on entering.
         self.enters_triggers = not any(_NO_ENTERS_TRIGGERS.search(_text(c)) for c in model.battlefield)
         self._prepare()
@@ -721,7 +771,15 @@ class Moves:
         oracle_modes = bullets(str(card.get("oracle_text") or "")) if has_bullets else []
         # Outside any 'choose one' bullet: creature tokens there come with every variant.
         outside = "\n".join(line for line in cast_text.splitlines() if not line.startswith("•"))
-        base_specs = token_specs(outside) or []
+        base_specs = token_specs(outside, life_gained=0, life_gained_game=self.model.life_gained_game) or []
+        # "Create X ... tokens, where X is the amount of life you gained this turn": per life.
+        per_life = tuple(
+            token_specs(_life_scaled(outside, 1), life_gained=0) or ()
+            if life_scaled_tokens(outside)
+            else ()
+        )
+        if per_life:
+            per_life = tuple(s for s in per_life if s not in base_specs) or per_life
 
         def make(
             mode=None, text="", gain=0, reach=None, bounce=False, rock=False, loss=0, face=0, aim="", specs=()
@@ -729,6 +787,7 @@ class Moves:
             return Variant(
                 hs.index, "cast", mode, text, body, gain, reach, bounce, rock, spell.mana_value, spell.pips,
                 bool(info.instant_speed), loss, face, aim, tokens=self._tokens([*base_specs, *specs]),
+                life_tokens=per_life,
             )  # fmt: skip
 
         def aimed(var: Variant, alt: int) -> list[Variant]:
@@ -1017,7 +1076,7 @@ class Moves:
             value = _spell_value(hs.spell, survival=self.survival, theirs=list(theirs))
         elif var.rock:
             value = 1.5
-        elif var.reach is None and not var.gain and not var.tokens:
+        elif var.reach is None and not var.gain and not var.tokens and not var.life_tokens:
             value = 1.0
         for token in var.tokens:  # a token is worth what the same creature spell would be
             pseudo = _Spell(token["_card"], token["name"], "creature", 0, (), False)
@@ -1035,8 +1094,33 @@ class Moves:
         self._value_memo[key] = value
         return value
 
-    def choice_value(self, choice, theirs) -> float:
-        return sum(self.item_value(v, t, theirs) for v, t in choice)
+    def choice_value(self, choice, theirs, gained: int = 0) -> float:
+        """The items' values; a life-scaled token maker counts the life ``gained`` this turn
+        before it plus what the rest of the set gains (``_apply_casts`` casts the gains first)."""
+        value = sum(self.item_value(v, t, theirs) for v, t in choice)
+        if any(v.life_tokens for v, _ in choice):
+            x = min(10, gained + sum(v.gain for v, _ in choice if not v.life_tokens))
+            for var, _target in choice:
+                for token in self._life_bodies(var, x):
+                    pseudo = _Spell(token["_card"], token["name"], "creature", 0, (), False)
+                    value += _spell_value(pseudo, survival=self.survival, theirs=list(theirs))
+        return value
+
+    def _life_bodies(self, var: Variant, gained: int) -> tuple[dict, ...]:
+        """The token bodies a life-scaled token maker makes with ``gained`` life gained
+        this turn (memoised, so each body keeps one id and identity within the search)."""
+        if not var.life_tokens or gained <= 0:
+            return ()
+        key = (id(var), gained)
+        found = self._life_token_memo.get(key)
+        if found is None:
+            specs = [(min(10, c * gained), p, t, kw, n) for c, p, t, kw, n in var.life_tokens]
+            found = self._life_token_memo[key] = (var, self._tokens(specs))
+        return found[1]
+
+    def gained_at_start(self, node: Node) -> int:
+        """Life we gained this turn before the line acts: the snapshot's on T, 0 on later turns."""
+        return int(self.model.life_gained_turn or 0) if (node.k == 0 and self.our_turn) else 0
 
     def choice_text(self, choice) -> str:
         return " + ".join(
@@ -1060,6 +1144,7 @@ class Moves:
             max((b["power"] for b in node.ours), default=-1),
             node.our_life,
             bans,
+            self.gained_at_start(node),
         )
         found = self._cast_memo.get(key)
         if found is not None:
@@ -1110,7 +1195,7 @@ class Moves:
                     pips = tuple(p for v, _ in choice for p in v.pips)
                     if pips and not _pip_matching(pips, sources):
                         continue
-                    scored.append((choice, self.choice_value(choice, theirs), total))
+                    scored.append((choice, self.choice_value(choice, theirs, key[-1]), total))
         scored.sort(key=lambda item: (-round(item[1], 6), -item[2], self.choice_text(item[0])))
         result = self._cast_memo[key] = [item[0] for item in scored]
         return result
@@ -1134,7 +1219,12 @@ class Moves:
     def begin(self, node: Node, land: Land | None, casts: tuple) -> Mid:
         """Our turn ``node.k`` with this land and these casts (cast now unless we attack first)."""
         mid = Mid.__new__(Mid)
+        if any(v.life_tokens for v, _ in casts):
+            # Gain life first, then cast what scales with the life gained this turn (pro game
+            # 2026-10-18, YFRA match 1 T11: Something Worth Saving, then Germinate Recruits).
+            casts = tuple(sorted(casts, key=lambda c: bool(c[0].life_tokens)))
         mid.node, mid.land, mid.casts = node, land, casts
+        mid.gained = self.gained_at_start(node)
         mid.base_sources, mid.sources = self.sources(node, land)
         mid.used_mv = sum(v.mana_value + (self.ward(t) if t is not None else 0) for v, t in casts)
         mid.used_pips = tuple(p for v, _ in casts for p in v.pips)
@@ -1175,7 +1265,8 @@ class Moves:
                 mid.targets.append((hs.name, var.aim))
             mid.our_life -= var.loss
             mid.opp_life -= var.face
-            for body in ([var.body] if var.body is not None else []) + list(var.tokens):
+            made = list(var.tokens) + list(self._life_bodies(var, mid.gained))
+            for body in ([var.body] if var.body is not None else []) + made:
                 mid.ours.append(body)
                 mid.entered[body["instance_id"]] = mid.node.abs_turn
             if target is not None and any(b is target for b in mid.theirs):
@@ -1184,6 +1275,7 @@ class Moves:
                 if var.bounce:
                     mid.returning.append(target)
             mid.our_life += var.gain
+            mid.gained += var.gain
             if var.rock:
                 mid.rocks.append(SimpleNamespace(produces=frozenset("WUBRGC"), name=hs.name))
 

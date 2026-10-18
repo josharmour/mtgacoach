@@ -21,6 +21,31 @@ logger = logging.getLogger(__name__)
 class _GameStateAnnotationsMixin:
     """Processes GRE message annotations (damage, targets, zone transfers, etc.)."""
 
+    def _record_life_gain(self, ann: dict, affected_ids: list[int], detail_map: dict) -> None:
+        """Add a ModifiedLife gain to the affected seats' life-gained counters.
+
+        The annotation's affectedIds are seat ids and its ``life`` detail the
+        signed change. Each annotation id is counted once: the same id can be
+        seen again in a later message.
+        """
+        delta = _coerce_int(detail_map.get("life", 0), 0)
+        if delta <= 0:
+            return
+        ann_id = _coerce_optional_int(ann.get("id"))
+        seen = getattr(self, "_life_annotation_ids", None)
+        if seen is None:
+            seen = self._life_annotation_ids = set()
+        if ann_id is not None:
+            if ann_id in seen:
+                return
+            seen.add(ann_id)
+        for seat in affected_ids:
+            player = self.players.get(seat)
+            if player is None:
+                continue
+            player.life_gained_this_turn += delta
+            player.life_gained_this_game += delta
+
     def _process_annotations(self, annotations: list[dict]) -> None:
         """Process GRE annotations from a GameStateMessage.
 
@@ -340,6 +365,7 @@ class _GameStateAnnotationsMixin:
                     self._record_match_result_locked(result, ann_type)
 
                 elif ann_type == "AnnotationType_ModifiedLife":
+                    self._record_life_gain(ann, affected_ids, detail_map)
                     self._add_event(
                         {
                             "type": "life_changed",

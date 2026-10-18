@@ -217,11 +217,18 @@ class Player:
     # PlayerInfo.controllerSeatId: another seat while that player controls
     # this one's turn (Emrakul, the Promised End / Mindslaver).
     controller_seat_id: int | None = None
+    # Life gained, summed from the log's AnnotationType_ModifiedLife gains
+    # ("where X is the amount of life you gained this turn", "for every 3
+    # life you gained this game"). The turn counter resets on each new turn.
+    life_gained_this_turn: int = 0
+    life_gained_this_game: int = 0
 
     def to_dict(self) -> dict:
         return {
             "seat_id": self.seat_id,
             "life_total": self.life_total,
+            "life_gained_this_turn": self.life_gained_this_turn,
+            "life_gained_this_game": self.life_gained_this_game,
             "lands_played": self.lands_played,
             "mana_pool": self.mana_pool,
             "team_id": self.team_id,
