@@ -69,6 +69,13 @@ def test_mulligan_has_no_choices():
 
 
 class _Backend:
+    """Replies with ``reply``; ``last_user`` is the last coach prompt.
+
+    get_advice also starts a real game-plan reform thread on this backend
+    (call_class "background.game_plan"); recording that call too raced the
+    assertions on ``last_user``.
+    """
+
     timeout_s = 5.0
 
     def __init__(self, reply: str):
@@ -76,7 +83,8 @@ class _Backend:
         self.last_user = ""
 
     def complete(self, system_prompt, user_message, *a, **k):
-        self.last_user = user_message
+        if str(k.get("call_class") or "").startswith("coach."):
+            self.last_user = user_message
         return self.reply
 
 

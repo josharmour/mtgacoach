@@ -19,6 +19,7 @@ remove it — so the voice read "local fallback" out loud.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 from typing import Any
 
@@ -199,3 +200,65 @@ def test_buried_backend_error_tag_wins_over_local_fallback():
 
     assert out.startswith(BACKEND_ERROR_PREFIX), out
     assert "LOCAL FALLBACK" not in strip_health_tags(out)
+
+
+# ── 4. get_advice's own timeout is surfaced, never masked ────────────
+
+
+def _stall_backend_calls(monkeypatch, backend) -> None:
+    """Make get_advice's wait on ``backend.complete`` time out at once.
+
+    get_advice runs the call in a ThreadPoolExecutor and waits
+    max(timeout_s + 5, 15) s; past that it substitutes
+    "[BACKEND ERROR] LLM timed out after Ns" for the reply. Other executor
+    work runs normally.
+    """
+
+    class _TimedOut:
+        def result(self, timeout=None):
+            raise concurrent.futures.TimeoutError()
+
+    real = concurrent.futures.ThreadPoolExecutor
+
+    class _StallingExecutor(real):
+        def submit(self, fn, *args, **kwargs):
+            if getattr(fn, "__self__", None) is backend:
+                return _TimedOut()
+            return super().submit(fn, *args, **kwargs)
+
+    monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", _StallingExecutor)
+
+
+def test_outer_timeout_says_no_coaching_instead_of_guessing_a_play(monkeypatch):
+    """GAP 4 of the 2026-10-18 audit: what the timeout sentinel turns into."""
+    coach = _make_coach()
+    coach._ensure_game_plan_mgr = lambda: None
+    _stall_backend_calls(monkeypatch, coach._backend)
+    state = _make_state(
+        legal_actions=["Cast Kogla, the Titan Ape [OK]", "Play Land: Forest", "Pass"],
+        hand=[{"name": "Kogla, the Titan Ape", "type_line": "Creature — Ape", "mana_cost": "{3}{G}{G}{G}"}],
+    )
+
+    for trigger in ("new_turn", "decision_required"):
+        out = coach.get_advice(state, trigger=trigger, style="quick")
+        assert out == "No coaching available: cannot reach the AI service right now.", (trigger, out)
+        # Shown and spoken alike: no tag to strip, no legal action substituted.
+        assert strip_health_tags(out) == out
+        assert "Kogla" not in out and "Forest" not in out
+
+
+def test_outer_timeout_on_a_threat_speaks_the_local_threat_fallback(monkeypatch):
+    coach = _make_coach()
+    coach._ensure_game_plan_mgr = lambda: None
+    _stall_backend_calls(monkeypatch, coach._backend)
+    threat = {
+        "name": "Sheoldred, the Apocalypse",
+        "warning": "Drains 2 on your draws!",
+        "card": {"type_line": "Legendary Creature — Praetor"},
+    }
+
+    out = coach.get_advice(_make_state(["Pass"]), trigger="threat_detected", threat=threat, style="quick")
+
+    assert out.startswith(LOCAL_FALLBACK_PREFIX), out
+    assert "Sheoldred, the Apocalypse" in out
+    assert strip_health_tags(out).startswith("Sheoldred")

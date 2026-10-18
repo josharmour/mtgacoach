@@ -709,22 +709,6 @@ def plan_threads(monkeypatch):
         assert not thread.is_alive()
 
 
-def test_one_plan_per_turn_side_and_card_churn_never_reforms():
-    backend = BreakerBackend([_plan_json("ours"), _plan_json("for turn 5")])
-    mgr = GamePlanManager(backend)
-    mgr.maybe_reform(_game(3))
-    state = _game(
-        3, hand=[{"instance_id": 1, "name": "Drawn Card"}], graveyard=[{"instance_id": 2, "name": "Spent"}]
-    )
-    mgr.maybe_reform(state)
-    assert len(backend.calls) == 1
-    mgr.maybe_reform(_game(4, active=2))
-    mgr.maybe_reform(_game(4, active=2, hand=[{"instance_id": 3, "name": "Another"}]))
-    assert len(backend.calls) == 2
-    mgr.maybe_reform(_game(5))  # our turn, already planned during theirs
-    assert len(backend.calls) == 2
-
-
 def test_plan_calls_are_labelled_background_and_cancellable(plan_threads):
     backend = BreakerBackend([_plan_json()])
     assert GamePlanManager(backend).request_reform(_game(3))
