@@ -18,6 +18,9 @@ Industry-standard bot drafting, made explicit and explainable:
 - Synergy: the primer's synergy notes shared with picked cards.
 - Signals: in pack 1, good cards arriving well after their average pick (ATA)
   suggest their colors are open upstream.
+- Hate: a strong card we will not play, weighed by how much it beats our deck
+  and how likely a neighbour plays it, wins the pick only when the best card
+  for our deck adds little (a full lane, comparable cards still to come).
 
 The model-backed DraftAdvisor sees this ranking as evidence; when the model is
 unavailable or its answer fails validation, this ranking makes the pick.
@@ -57,6 +60,7 @@ SCORE_WEIGHTS = {
     "signal": 5.5,
     "scarcity": 3.0,
     "penalty": 1.0,
+    "hate": 1.0,
 }
 DECK_CREDIT = ("archetype", "engine", "edges", "notes", "scarcity")
 # With six removal spells the deck has enough: scarcity of more counts less.
@@ -110,6 +114,45 @@ DUPLICATE_STEP_BODY = 0.1
 DUPLICATE_CREDIT = 0.6  # deck credit kept per redundant copy already held
 PREMIUM_BASELINE = 0.75
 BASIC_LAND_COLORS = {"plains": "W", "island": "U", "swamp": "B", "mountain": "R", "forest": "G"}
+
+# Hate-drafting (2026-10-18 pro draft, P3p3: Jace, Reality Sculptor, a blue rare
+# that blanks attackers, over an in-lane Arcane Amphisbaena for a full Selesnya
+# creature deck). Denying a card is its own component, never deck fit: what the
+# card would do against us, weighed against what the best pick for our deck adds
+# once the rest of the draft is counted. Units are quality (GIH z) points.
+DECK_SPELLS = 23
+# Share of our remaining looks that end in a playable for our deck at a given quality.
+FUTURE_TAKE_RATE = 0.5
+# Only a card at least this good is worth denying.
+HATE_MIN_Z = 0.35
+# The least threat that earns a hate pick at all (a fringe card is not denied).
+HATE_MIN_THREAT = 0.25
+# How much of our own lane must be settled before denial counts in full.
+HATE_COMMITMENT = 0.8
+# How much of a card's strength lands on us. A merely good card counts half: the
+# neighbour is one of seven drafters, and Arena pairs us from the whole queue.
+# Rules text that beats our deck specifically adds to it.
+HATE_HARM_BASE = 0.5
+HATE_HARM_REMOVAL = 0.5
+HATE_HARM_COMBAT = 0.75
+HATE_HARM_LIFEGAIN = 0.75
+# The chance a drafter next to us plays a color we know nothing about; colors
+# flowing to us are flowing past us too, so the neighbours downstream get them.
+NEIGHBOUR_BASE = 0.5
+# Denying one copy of a common barely dents a neighbour who will see others.
+HATE_RARITY = {"M": 1.0, "R": 1.0, "U": 0.5, "C": 0.25}
+# A winning hate pick leads the best deck pick by this much per point of excess threat.
+HATE_LEAD = 1.0
+_COMBAT_DENIAL = re.compile(
+    r"\bcreatures? (?:can't|cannot) attack\b"
+    r"|\bwhenever a creature attacks you\b[^.]*\bgets -\d+/-0\b"
+    r"|\battacking creatures? (?:get|gets) -\d+/-0\b"
+    r"|\bprevent all combat damage\b"
+    r"|\btap all creatures\b"
+)
+_LIFEGAIN_DENIAL = re.compile(
+    r"\b(?:players|your opponents|opponents) can't gain life\b|\blife totals? can't change\b"
+)
 
 _REMOVAL_PATTERNS = tuple(
     re.compile(pattern)
@@ -171,7 +214,7 @@ class PickScore:
 
     def as_plan_evaluation(self, rank: int) -> dict[str, Any]:
         """The ranking for the pick model: deck value and a quality band, no win rates."""
-        deck = sum(v for k, v in self.components.items() if k not in ("quality", "bomb", "signal"))
+        deck = sum(v for k, v in self.components.items() if k not in ("quality", "bomb", "signal", "hate"))
         return {
             "grp_id": self.grp_id,
             "name": self.name,
@@ -508,6 +551,80 @@ def second_color_hold(lane: Lane, pack_number: int, pick_number: int) -> float:
     if pack_number >= 3:
         hold = max(hold, min(1.0, max(0.0, (pick_number - 2) / 6)))
     return hold
+
+
+def deck_floor(pool_quality: list[float], candidates: list[tuple[float, int]], supply) -> float:
+    """Quality of the weakest spell our deck will play once the rest of the draft is in.
+
+    ``pool_quality``: our castable nonland picks; ``candidates``: (quality,
+    grp_id) for every set card castable in our colors. The floor is the
+    highest quality q at which the pool's cards of q or better plus the
+    looks still to come that offer one (``FutureSupply``, at
+    FUTURE_TAKE_RATE) fill DECK_SPELLS. A card adds to our deck only what
+    it has above this line: below it, the packs will replace it anyway.
+    """
+    held = sorted(pool_quality, reverse=True)
+    if supply is None:
+        return held[DECK_SPELLS - 1] if len(held) >= DECK_SPELLS else -math.inf
+    availability = supply.book.availability
+    totals = [0.0] * 14
+    ranked = sorted(candidates, reverse=True)
+    index = 0
+    for q in sorted({*held, *(value for value, _ in ranked)}, reverse=True):
+        while index < len(ranked) and ranked[index][0] >= q:
+            row = availability.get(ranked[index][1])
+            if row is not None:
+                totals = [a + b for a, b in zip(totals, row, strict=True)]
+            index += 1
+        coming = sum(n * (1.0 - math.exp(-totals[pick - 1])) for pick, n in supply.schedule.items())
+        if sum(value >= q for value in held) + FUTURE_TAKE_RATE * coming >= DECK_SPELLS:
+            return q
+    return -math.inf
+
+
+def hate_threat(
+    card: Any,
+    quality: float,
+    floor: float,
+    *,
+    creature_share: float,
+    lifegain: bool,
+    signals: dict[str, float] | None,
+) -> tuple[float, str]:
+    """(threat in quality points, words) of a card we will not play, in a neighbour's deck.
+
+    Strength is what it adds to a deck like ours: its quality above the deck
+    floor, a bomb's excess counting twice. Its rules text decides how much
+    of that lands on us: HATE_HARM_BASE for a card that is merely good,
+    more for removal or attack denial against a creature deck and life-gain
+    denial against a lifegain engine. A common or uncommon is denied only in
+    part (HATE_RARITY: the neighbour sees other copies), and the threat
+    counts by the chance a drafter next to us plays its colors.
+    """
+    if quality < HATE_MIN_Z:
+        return 0.0, ""
+    strength = quality - floor + max(0.0, quality - BOMB_BASELINE)
+    text = html.unescape(re.sub(r"<[^>]*>", "", str(getattr(card, "oracle", "") or ""))).lower()
+    harm, against = HATE_HARM_BASE, ""
+    if is_removal(card):
+        harm += HATE_HARM_REMOVAL * creature_share
+        against = "removal for our creatures"
+    if _COMBAT_DENIAL.search(text):
+        harm += HATE_HARM_COMBAT * creature_share
+        against = "it blanks our attackers"
+    if lifegain and _LIFEGAIN_DENIAL.search(text):
+        harm += HATE_HARM_LIFEGAIN
+        against = "it shuts off our life gain"
+    colors = [c for c in card.colors if c in COLOR_ORDER]
+    flow = statistics.fmean(float((signals or {}).get(c, 0.0)) for c in colors) if colors else 1.0
+    odds = NEIGHBOUR_BASE + (1.0 - NEIGHBOUR_BASE) * flow
+    unique = HATE_RARITY.get(card.rarity, HATE_RARITY["C"])
+    who = f"the {'-'.join(_COLOR_WORDS[c] for c in colors)} drafter next to us" if colors else "a neighbour"
+    why = f"hate-pick: denies it to {who}" + (f"; {against}" if against else "")
+    return strength * harm * odds * unique, why
+
+
+_COLOR_WORDS = {"W": "white", "U": "blue", "B": "black", "R": "red", "G": "green"}
 
 
 def deck_plan_for(
@@ -910,7 +1027,103 @@ def rank_pack(
             band=quality_band(base, reasons[0] if reasons else ""),
             partners=list(linked),
         )
+    if deck_plan is not None and lead is not None and lane.commitment > 0:
+        _add_hate(
+            scores,
+            primer,
+            deck_plan,
+            supply,
+            playable_pool,
+            quality_of,
+            castable_in,
+            lateness=min(1.0, lane.commitment / HATE_COMMITMENT) * hold,
+            creature_share=bodies / len(playable_pool) if playable_pool else 0.0,
+            signals=signals,
+        )
     return sorted(scores.values(), key=lambda pick: (is_ordinary_basic(pick.name), -pick.score))
+
+
+def _add_hate(
+    scores: dict[int, PickScore],
+    primer: SetPrimer,
+    deck_plan,
+    supply,
+    playable_pool: list[Any],
+    quality_of,
+    castable_in,
+    *,
+    lateness: float,
+    creature_share: float,
+    signals: dict[str, float] | None,
+) -> None:
+    """Give a card we will not play the "hate" component when denying it beats our best pick.
+
+    What the best deck pick adds is its quality above our deck's projected
+    floor (``deck_floor``) plus what it fills that the floor card would not
+    (curve and removal needs, an engine slot, scarcity). Early on the floor is
+    open and every playable adds; with a full lane and the packs still to come
+    it rises, and a replaceable playable gives way to denying a strong card.
+    A winning hate pick is placed just ahead of that pick, by its excess
+    threat; a losing one changes nothing.
+    """
+    from arenamcp.draft_deck_plan import SUBSTITUTE_MARGIN
+
+    lead = deck_plan.lead()
+    colors = lead.plan.colors
+    book = deck_plan.playbook
+    own = [
+        pick
+        for pick in scores.values()
+        if not is_ordinary_basic(pick.name) and pick.components and pick.grp_id in book.tags
+    ]
+    if not own or lateness <= 0:
+        return
+    best = max(own, key=lambda pick: pick.score)
+    pool_quality = [quality_of(card.grp_id) for card in playable_pool if castable_in(card.grp_id, colors)]
+    candidates = [
+        (quality_of(grp_id), grp_id)
+        for grp_id, tags in book.tags.items()
+        if not tags.land and castable_in(grp_id, colors)
+    ]
+    floor = deck_floor(pool_quality, candidates, supply)
+    if floor == -math.inf:
+        return  # our deck still has open slots: every playable adds
+    # A playable the packs will offer again adds only if none comes: the
+    # chance of no comparable card in our remaining looks (2026-10-18 P3p3:
+    # two commons whose like a full Selesnya pool would still see).
+    best_quality = quality_of(best.grp_id)
+    substitutes = [
+        grp_id
+        for value, grp_id in candidates
+        if value >= best_quality - SUBSTITUTE_MARGIN and grp_id != best.grp_id
+    ]
+    unreplaced = math.exp(-FUTURE_TAKE_RATE * supply.expected(substitutes)) if supply is not None else 1.0
+    filled = sum(max(0.0, best.components.get(key, 0.0)) for key in ("needs", "engine", "scarcity"))
+    adds = max(0.0, best_quality - floor) * unreplaced + filled
+    lifegain = "lifegain" in lead.plan.engine and lead.ledger.payoffs.get("lifegain", 0) > 0
+    for pick in own:
+        card = primer.card(pick.grp_id)
+        if pick is best or card is None or is_nonbasic_land(card):
+            continue
+        if any(castable_in(pick.grp_id, h.plan.colors) for h in deck_plan.hypotheses):
+            continue  # a card we may play is judged as ours
+        threat, why = hate_threat(
+            card,
+            quality_of(pick.grp_id),
+            floor,
+            creature_share=creature_share,
+            lifegain=lifegain,
+            signals=signals,
+        )
+        threat *= lateness
+        if threat < HATE_MIN_THREAT or threat <= adds:
+            continue
+        value = best.score - pick.score + HATE_LEAD * (threat - adds)
+        pick.components["hate"] = round(value, 4)
+        pick.score = round(pick.score + value, 4)
+        # Second, after the quality note: the pick log speaks the first three reasons.
+        pick.reasons.insert(1, why)
+        pick.reasons.insert(2, f"{best.name} adds little to a deck this full")
 
 
 # The value of whatever we would otherwise take when a pack comes back: late

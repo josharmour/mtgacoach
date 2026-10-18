@@ -26,7 +26,9 @@ from arenamcp.draft_autopick import (
     card_value,
     color_openness,
     color_signals,
+    hate_threat,
     note_openness,
+    pool_lane,
     rank_pack,
 )
 from arenamcp.draftstate import DraftState, _handle_event_start, extract_set_code
@@ -281,6 +283,68 @@ def test_alchemy_cards_are_rated_by_pick_order_not_called_rarely_played():
 def test_the_ranker_agrees_with_the_pro(key, name):
     assert fx.NAMES[fx.PICKS[key]] == name
     assert position(key, name) == 0
+
+
+def test_the_pro_hate_picks_jace_over_a_replaceable_in_lane_common():
+    # P3p3, 32 picks in: a full Selesnya creature deck, and the packs still to come
+    # offer more commons like Keeper of the Quiet Hour and Arcane Amphisbaena. Jace, a
+    # blue rare whose static ability takes 5 power off every attacker, is the card
+    # that hurts this deck most in a neighbour's hands.
+    picks = ranked("P3p3")
+    names = [pick.name for pick in picks]
+    assert fx.NAMES[fx.PICKS["P3p3"]] == "Jace, Reality Sculptor"
+    assert names[0] == "Jace, Reality Sculptor"
+    assert names.index("Jace, Reality Sculptor") < names.index("Arcane Amphisbaena")
+    jace = picks[0]
+    # Denial is its own component; the card's own deck fit still says off lane.
+    assert jace.components["hate"] > 0 and jace.components["lane"] < 0
+    assert jace.reasons[1].startswith("hate-pick: denies it to the blue drafter")
+    assert "blanks our attackers" in jace.reasons[1]
+
+
+def test_no_hate_pick_while_our_deck_still_has_open_slots():
+    # Early on every playable fills a slot: our own picks decide. In this draft the
+    # only pick denial wins is P3p3.
+    hated = [key for key in fx.ORDER if any(pick.components.get("hate", 0) > 0 for pick in ranked(key))]
+    assert hated == ["P3p3"]
+
+
+def test_the_hate_pick_is_spoken_as_one():
+    from arenamcp.draft_narration import DraftNarrator
+
+    picks = ranked("P3p3")
+    pool = fx.pool_before("P3p3")
+    lane = pool_lane(pool, PRIMER, fx.COSTS)
+    text = DraftNarrator().pick_line(
+        names=["Jace, Reality Sculptor"],
+        chosen=[picks[0]],
+        ranking=picks,
+        pool=pool + [picks[0].grp_id],
+        lane_before=lane,
+        lane_after=lane,
+        primer=PRIMER,
+        pack_number=3,
+        pick_number=3,
+        pack_size=13,
+        mana_costs=fx.COSTS,
+    )
+    assert text.startswith(
+        "Taking Jace, Reality Sculptor: a hate-pick that denies it to the blue drafter next to us"
+    ), text
+
+
+def test_a_common_is_worth_less_denied_than_a_rare_and_removal_more_against_creatures():
+    from types import SimpleNamespace
+
+    def threat(rarity, oracle, share=0.8):
+        card = SimpleNamespace(name="X", colors="B", rarity=rarity, oracle=oracle, types="Instant")
+        return hate_threat(card, 1.0, -1.0, creature_share=share, lifegain=False, signals={"B": 0.0})[0]
+
+    plain = "Draw two cards."
+    kill = "Destroy target creature."
+    assert threat("C", plain) == pytest.approx(threat("R", plain) / 4)
+    assert threat("R", kill) > threat("R", plain)
+    assert threat("R", kill, share=0.2) < threat("R", kill, share=0.8)
 
 
 @pytest.mark.parametrize(
