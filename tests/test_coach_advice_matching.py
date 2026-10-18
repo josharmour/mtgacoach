@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from arenamcp.coach import CoachEngine
 
 
@@ -108,7 +110,13 @@ def test_match_negative_attack_is_not_overridden():
     assert "Don't attack" in out
 
 
-def test_match_need_mana_tag_stripping_and_fallback():
+def test_need_tag_is_ignored_when_matching_and_no_other_spell_is_substituted():
+    """Matching strips the [OK]/[NEED:x] markers, so advice naming a
+    [NEED:B] spell counts as matching its legal action and is NOT replaced
+    by the [OK] Planar Incision (the old failure: blind-casting a different
+    spell). Note the tension with the prompt contract, which forbids
+    recommending [NEED] cards at all (coach_prompts.py, CRITICAL MANA RULES):
+    the advice to cast the unpayable spell survives here."""
     coach = _make_coach()
     state = _make_state(
         legal_actions=["Cast Planar Incision [OK]", "Cast Northern Air Temple [NEED:B]", "Pass"],
@@ -119,10 +127,7 @@ def test_match_need_mana_tag_stripping_and_fallback():
     )
 
     out = coach._postprocess_advice("Cast Northern Air Temple to establish your first Shrine.", state)
-    # Ensure Northern Air Temple was recognized (regex stripped [NEED:B])
-    assert "Northern Air Temple" in out
-    # Ensure it did NOT fall back to blind-casting Planar Incision
-    assert "Planar Incision" not in out
+    assert out == "Cast Northern Air Temple to establish your first Shrine."
 
 
 def test_equip_target_in_hand_fixed_to_battlefield_creature():
@@ -172,8 +177,8 @@ def test_equip_target_in_hand_no_battlefield_creature():
     assert "Equip Spatula to Eagle of the Great Shelf" not in out
 
 
-def test_strip_uncastable_post_land_sequence():
-    coach = _make_coach()
+def _short_on_mana_state() -> dict[str, Any]:
+    """2 Mountains on the battlefield + 1 in hand = 3 mana: a 5-mana Eagle can't follow."""
     state = _make_state(
         legal_actions=[
             "Cast Eagle of the Great Shelf",
@@ -184,32 +189,58 @@ def test_strip_uncastable_post_land_sequence():
         ],
         hand=[
             {"name": "Mountain", "type_line": "Basic Land — Mountain"},
-            {
-                "name": "Eagle of the Great Shelf",
-                "type_line": "Creature — Bird Soldier",
-                "mana_cost": "{4}{W}",
-            },
+            {"name": "Eagle of the Great Shelf", "type_line": "Creature — Bird Soldier", "mana_cost": "{4}{W}"},
         ],
     )
-    state["battlefield"] = [
-        {
-            "name": "Mountain",
-            "type_line": "Basic Land — Mountain",
-            "owner_seat_id": 1,
-            "controller_seat_id": 1,
-            "is_tapped": False,
-        },
-        {
-            "name": "Mountain",
-            "type_line": "Basic Land — Mountain",
-            "owner_seat_id": 1,
-            "controller_seat_id": 1,
-            "is_tapped": False,
-        },
-    ]
+    mountain = {
+        "name": "Mountain",
+        "type_line": "Basic Land — Mountain",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "is_tapped": False,
+    }
+    state["battlefield"] = [dict(mountain), dict(mountain)]
+    return state
 
-    out = coach._postprocess_advice("Play Mountain then cast Eagle of the Great Shelf.", state)
-    # 2 lands on BF + 1 from hand = 3 total mana, which cannot cast 5-mana Eagle of the Great Shelf.
-    # Postprocess should strip the uncastable 'then cast Eagle...' clause and recommend 'Play Mountain.'
-    assert "Eagle of the Great Shelf" not in out
-    assert "Play Mountain" in out
+
+def _wrong_colors_state() -> dict[str, Any]:
+    """Only Plains (on the battlefield and in hand): a {1}{R} spell can't follow."""
+    plains = {"name": "Plains", "type_line": "Basic Land — Plains", "oracle_text": "({T}: Add {W}.)"}
+    return {
+        "local_seat_id": 2,
+        "players": [
+            {"seat_id": 1, "is_local": False, "life_total": 20},
+            {"seat_id": 2, "is_local": True, "life_total": 20, "lands_played": 0},
+        ],
+        "turn": {"active_player": 2, "priority_player": 2, "turn_number": 2, "phase": "Phase_Main1"},
+        "battlefield": [dict(plains, owner_seat_id=2, controller_seat_id=2, is_tapped=False)],
+        "hand": [
+            dict(plains, owner_seat_id=2),
+            {
+                "name": "Bothersome Noisemaker",
+                "type_line": "Creature — Goblin Bard",
+                "mana_cost": "{1}{R}",
+                "grp_id": 103465,
+                "owner_seat_id": 2,
+            },
+        ],
+        "legal_actions": ["Play Land: Plains", "Pass"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("make_state", "advice", "land_play", "spell"),
+    [
+        (_short_on_mana_state, "Play Mountain then cast Eagle of the Great Shelf.", "Play Mountain", "Eagle"),
+        (_wrong_colors_state, "Play Plains then play Bothersome Noisemaker.", "Play Plains", "Noisemaker"),
+    ],
+    ids=["too-little-mana", "wrong-color"],
+)
+def test_spell_that_cannot_follow_the_land_drop_is_stripped(make_state, advice, land_play, spell):
+    """Land-then-spell advice keeps the land drop and drops a spell the
+    post-land mana can't pay for, whether short on total mana or on colour.
+    (The castable counterpart is in test_coach_postprocess_color_castability.)"""
+    out = _make_coach()._postprocess_advice(advice, make_state())
+
+    assert spell not in out
+    assert land_play in out

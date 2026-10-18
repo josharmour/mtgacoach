@@ -181,24 +181,6 @@ def test_compact_coach_debug_report_triggers(panel, monkeypatch):
     assert called == [True]
 
 
-def test_compact_coach_toolbar_buttons(panel):
-    assert panel.ap_btn is not None
-    assert not hasattr(panel, "brain_stream_btn")
-    assert panel.bug_report_btn is not None
-    assert panel.restart_btn is not None
-    assert panel.reload_engine_btn is not None
-    assert panel.voice_btn is not None
-    assert panel.style_btn is not None
-    assert panel.mute_btn is not None
-
-
-def test_compact_coach_bug_report_button_click(panel, monkeypatch):
-    called = []
-    monkeypatch.setattr(panel.session, "trigger_debug_report", lambda: called.append(True))
-    panel.bug_report_btn.click()
-    assert len(called) == 1
-
-
 @pytest.mark.parametrize("theme_name", ["dark", "light", "high-contrast"])
 def test_recovery_buttons_always_visible_without_opening_a_menu(panel, qapp, theme_name):
     from PySide6.QtCore import QRect

@@ -66,58 +66,26 @@ def _make_coach() -> CoachEngine:
     return CoachEngine(backend=_Stub())
 
 
-def test_strips_basic_land_play_when_no_land_in_hand():
+@pytest.mark.parametrize(
+    ("land", "type_line"),
+    [
+        ("Forest", "Basic Land — Forest"),
+        # Modern lands were silently let through by the old basic-only regex.
+        ("Spara's Headquarters", "Land — Forest Plains Island"),
+        ("Snow-Covered Forest", "Basic Snow Land — Forest"),
+    ],
+    ids=["basic", "triome", "snow-basic"],
+)
+def test_strips_land_play_when_no_land_in_hand(land, type_line):
     coach = _make_coach()
-    state = _state_no_lands_in_hand(
-        extra_zones={"battlefield": [{"name": "Forest", "type_line": "Basic Land — Forest"}]}
-    )
+    state = _state_no_lands_in_hand(extra_zones={"battlefield": [{"name": land, "type_line": type_line}]})
 
-    out = coach._postprocess_advice(
-        "Play Forest. Cast Lightning Bolt at their face.",
-        state,
-    )
+    out = coach._postprocess_advice(f"Play {land}. Cast Lightning Bolt at their face.", state)
 
-    assert "Play Forest" not in out
-    assert "Lightning Bolt" in out
-
-
-def test_strips_triome_play_when_no_land_in_hand():
-    """Modern lands like Triomes were silently let through by the old basic-only regex."""
-    coach = _make_coach()
-    state = _state_no_lands_in_hand(
-        extra_zones={
-            "battlefield": [
-                {
-                    "name": "Spara's Headquarters",
-                    "type_line": "Land — Forest Plains Island",
-                }
-            ]
-        }
-    )
-
-    out = coach._postprocess_advice(
-        "Play Spara's Headquarters. Cast Lightning Bolt.",
-        state,
-    )
-
-    assert "Spara's Headquarters" not in out
-    assert "Lightning Bolt" in out
-
-
-def test_strips_snow_basic_when_no_land_in_hand():
-    coach = _make_coach()
-    state = _state_no_lands_in_hand(
-        extra_zones={
-            "battlefield": [{"name": "Snow-Covered Forest", "type_line": "Basic Snow Land — Forest"}]
-        }
-    )
-
-    out = coach._postprocess_advice(
-        "Play Snow-Covered Forest, then untap.",
-        state,
-    )
-
-    assert "Snow-Covered Forest" not in out
+    # The rest of the advice survives as written: had the land play stayed,
+    # the legality filter would have replaced the whole line with a
+    # [LOCAL FALLBACK] action, which also drops the land name.
+    assert out == "Cast Lightning Bolt at their face."
 
 
 def test_keeps_play_recommendation_when_land_actually_in_hand():
@@ -144,6 +112,7 @@ def test_keeps_play_recommendation_when_land_actually_in_hand():
         ("Play a land and then cast Lightning Bolt at their face.", "Cast Lightning Bolt at their face."),
         ("Cast Lightning Bolt at their face, then play a land.", "Cast Lightning Bolt at their face"),
     ],
+    ids=["then", "comma-then", "and-then", "trailing-then"],
 )
 def test_strips_generic_a_land_phrase_with_its_joiner(advice, expected):
     """The stripped land play used to leave "then cast Lightning Bolt" (or
@@ -153,25 +122,14 @@ def test_strips_generic_a_land_phrase_with_its_joiner(advice, expected):
     assert coach._postprocess_advice(advice, _state_no_lands_in_hand()) == expected
 
 
-def test_no_typo_dict_means_typoed_card_passes_through_unchanged():
-    """The hardcoded typo_fixes dict is gone. We assert removal: the previous
-    Gemma-3N quirks list no longer rewrites prose. A typo with no matching
-    card in game state stays as-is rather than getting corrected to one of
-    the dict's hardcoded targets."""
+def test_misspelled_card_name_is_corrected_from_game_state():
+    """The fuzzy pass fixes a model typo against card names actually in play
+    (it replaced a hardcoded typo dictionary)."""
     coach = _make_coach()
-    state = _state_no_lands_in_hand()
 
-    # "brerak out" was in the old typo_fixes dict; with no Break Out card
-    # actually in state, the response should pass through.
-    out = coach._postprocess_advice(
-        "Cast brerak out at their face.",
-        state,
-    )
+    out = coach._postprocess_advice("Cast Lightnign Bolt at their face.", _state_no_lands_in_hand())
 
-    assert "Break Out" not in out, (
-        "the hardcoded typo_fixes dict should be gone — fuzzy matching alone "
-        "shouldn't invent card names that aren't present in game state"
-    )
+    assert out == "Cast Lightning Bolt at their face."
 
 
 def test_normalize_game_state_cards():
