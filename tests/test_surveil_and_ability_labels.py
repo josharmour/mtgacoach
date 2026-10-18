@@ -17,10 +17,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import arenamcp.autopilot as autopilot_module
+from tests.fakes import TypedBridge, make_engine, planner_with, target_state
+
 from arenamcp import decisions
 from arenamcp.action_planner import ActionPlanner
-from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
+from arenamcp.autopilot import AutopilotEngine
 from arenamcp.decisions import (
     build_pending_decision,
     default_group_choice,
@@ -284,11 +285,9 @@ def test_default_scry_choice_is_a_valid_assignment():
 
 
 def test_legacy_safe_default_no_longer_bins_the_surveilled_card(monkeypatch):
-    from tests.test_autopilot_safe_default_group import _engine as legacy_engine
-
     monkeypatch.setattr(decisions, "_default_instance_card", CARDS.get)
     bridge = _GroupBridge(SURVEIL_BRIDGE_POLL)
-    engine, _ = legacy_engine(bridge)
+    engine = make_engine(bridge)
     result = engine._try_gre_bridge_group_default(_board(4, []), SURVEIL_BRIDGE_POLL)
     assert result is not None and result.success
     assert bridge.groups == [
@@ -302,30 +301,11 @@ def test_legacy_safe_default_no_longer_bins_the_surveilled_card(monkeypatch):
 # --- typed path end to end ---------------------------------------------------
 
 
-class _Backend:
-    def __init__(self, response):
-        self.response = response
-        self.prompts = []
-
-    def complete(self, system, user, *args, **kwargs):
-        self.prompts.append(user)
-        return self.response
-
-
 def test_typed_path_lets_the_model_keep_the_sphinx(monkeypatch):
     monkeypatch.setattr(decisions, "_default_instance_card", CARDS.get)
     bridge = _GroupBridge(SURVEIL_BRIDGE_POLL)
-    planner = ActionPlanner.__new__(ActionPlanner)
-    planner._backend = _Backend('{"option_ids": ["grp:298:top"], "reasoning": "Sphinx is my best threat."}')
-    planner._timeout = 5.0
-    monkeypatch.setattr(autopilot_module, "get_bridge", lambda: bridge)
-    engine = AutopilotEngine(
-        planner=planner,
-        mapper=MagicMock(),
-        controller=MagicMock(),
-        get_game_state=lambda: {},
-        config=AutopilotConfig(dry_run=False),
-    )
+    planner = planner_with('{"option_ids": ["grp:298:top"], "reasoning": "Sphinx is my best threat."}')
+    engine = make_engine(bridge, planner)
     state = {
         "turn": {"turn_number": 7, "phase": "Phase_Main1"},
         "players": [{"seat_id": 2, "is_local": True}, {"seat_id": 1}],
@@ -509,16 +489,14 @@ def test_planner_follows_reasoning_when_it_names_a_different_card(monkeypatch):
 
 
 def test_typed_path_surveil_uses_the_safe_default_when_the_model_answer_is_unusable(monkeypatch):
-    from tests.test_typed_decision_path import _engine, _planner_with, _state, _TypedBridge
-
-    bridge = _TypedBridge(SURVEIL_BRIDGE_POLL)
+    bridge = TypedBridge(SURVEIL_BRIDGE_POLL)
     bridge.groups = None
     bridge.submit_group = lambda groups: (setattr(bridge, "groups", groups), True)[1]
     monkeypatch.setattr(
         "arenamcp.decisions.default_group_choice", lambda decision, state=None: ["grp:298:top"]
     )
-    engine = _engine(monkeypatch, bridge, _planner_with("nonsense"))
-    assert engine._try_typed_decision_path(_state(), "decision_required") is True
+    engine = make_engine(bridge, planner_with("nonsense"))
+    assert engine._try_typed_decision_path(target_state(), "decision_required") is True
     assert bridge.groups[0]["ids"] == [298] and bridge.groups[1]["ids"] == []
 
 
@@ -554,14 +532,7 @@ def test_typed_path_surveil_bins_flooded_land_without_the_model(monkeypatch):
 
     planner._backend = MagicMock(complete=never)
     planner._timeout = 5.0
-    monkeypatch.setattr(autopilot_module, "get_bridge", lambda: bridge)
-    engine = AutopilotEngine(
-        planner=planner,
-        mapper=MagicMock(),
-        controller=MagicMock(),
-        get_game_state=lambda: {},
-        config=AutopilotConfig(dry_run=False),
-    )
+    engine = make_engine(bridge, planner)
     state = {
         **_board(6, [MOUNTAIN]),
         "turn": {"turn_number": 18, "phase": "Phase_Main1"},

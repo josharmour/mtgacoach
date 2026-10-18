@@ -22,8 +22,6 @@ def _engine(monkeypatch) -> AutopilotEngine:
     monkeypatch.setattr(autopilot_module, "get_bridge", lambda: _DummyBridge())
     return AutopilotEngine(
         planner=None,
-        mapper=None,
-        controller=None,
         get_game_state=lambda: {},
         config=AutopilotConfig(dry_run=True),
     )

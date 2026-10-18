@@ -4,12 +4,11 @@ from copy import deepcopy
 from unittest.mock import Mock
 
 import pytest
+from tests.fakes import FakeBridge, TypedBridge, make_engine, planner_with
 
 from arenamcp.action_planner import ActionPlan, ActionType, GameAction
 from arenamcp.autopilot_models import AutopilotState, ClickResult
 from arenamcp.autopilot_progress import DecisionProgressGuard
-from test_autopilot_bridge_lock import _DummyBridge, _make_engine
-from test_typed_decision_path import _engine, _planner_with, _TypedBridge
 
 
 def _poll(kind="SelectN", **updates):
@@ -102,9 +101,9 @@ def test_native_request_class_alias_uses_semantic_guard(request_class):
 
 
 def test_typed_path_pauses_and_captures_before_a_fourth_model_call(monkeypatch):
-    bridge = _TypedBridge(_poll())
-    planner = _planner_with('{"option_ids":["sel:101"]}')
-    engine = _engine(monkeypatch, bridge, planner)
+    bridge = TypedBridge(_poll())
+    planner = planner_with('{"option_ids":["sel:101"]}')
+    engine = make_engine(bridge, planner)
     clock = [0.0]
     monkeypatch.setattr("arenamcp.autopilot.time.monotonic", lambda: clock[0])
     engine._current_plan = ActionPlan(actions=[GameAction(action_type=ActionType.SELECT_N)])
@@ -128,9 +127,9 @@ def test_typed_path_pauses_and_captures_before_a_fourth_model_call(monkeypatch):
 
 
 def test_legacy_selection_hook_blocks_further_submits_and_cancel_noop_does_not_reset(monkeypatch):
-    bridge = _TypedBridge(_poll())
+    bridge = TypedBridge(_poll())
     bridge.cancel_action = Mock(return_value=True)
-    engine = _engine(monkeypatch, bridge, _planner_with("{}"))
+    engine = make_engine(bridge, planner_with("{}"))
     clock = [0.0]
     monkeypatch.setattr("arenamcp.autopilot.time.monotonic", lambda: clock[0])
     engine._stuck_report_fn = Mock()
@@ -161,14 +160,13 @@ def test_failed_plan_never_announces_completion_or_executes_followup_done(monkey
         "hand": [{"name": "Original"}],
     }
     notes = []
-    engine, planner = _make_engine(
-        monkeypatch,
-        lambda: deepcopy(state),
-        _DummyBridge({"has_pending": True, "request_type": "ActionsAvailable", "game_state_id": 10}),
-        notes,
+    engine = make_engine(
+        FakeBridge({"has_pending": True, "request_type": "ActionsAvailable", "game_state_id": 10}),
+        game_state=lambda: deepcopy(state),
+        verify_after_action=False,
+        ui_advice_fn=lambda text, label: notes.append(f"{label}:{text}"),
     )
-    engine._config.dry_run = False
-    engine._config.verify_after_action = False
+    planner = engine._planner
     planner.plan_actions = Mock(
         return_value=ActionPlan(
             actions=[
@@ -193,7 +191,7 @@ def test_failed_plan_never_announces_completion_or_executes_followup_done(monkey
     assert not any("Plan complete" in note for note in notes)
 
 
-def test_manual_combat_failure_stays_paused_on_external_tick_with_new_transport_ids(monkeypatch):
+def test_manual_combat_failure_stays_paused_on_external_tick_with_new_transport_ids():
     state = {
         "match_id": "one",
         "turn": {"turn_number": 3},
@@ -204,10 +202,10 @@ def test_manual_combat_failure_stays_paused_on_external_tick_with_new_transport_
         "pending_decision": "Declare Attackers",
         "decision_context": {"type": "declare_attackers", "legal_attacker_ids": [101, 102]},
     }
-    bridge = _DummyBridge({"has_pending": True, "request_type": "DeclareAttackers"})
-    engine, planner = _make_engine(monkeypatch, lambda: state, bridge)
+    bridge = FakeBridge({"has_pending": True, "request_type": "DeclareAttackers"})
+    engine = make_engine(bridge, game_state=lambda: state)
+    planner = engine._planner
     planner.plan_actions = Mock()
-    engine._config.dry_run = False
     engine._pause_for_manual("Attack declaration could not be submitted", state)
     advanced_id = {**state, "_bridge_game_state_id": 999}
     assert engine.process_trigger(advanced_id, "decision_required") is False
@@ -220,9 +218,9 @@ def test_manual_combat_failure_stays_paused_on_external_tick_with_new_transport_
 
 
 def test_acknowledged_cancel_without_a_changed_choice_still_counts_attempts(monkeypatch):
-    bridge = _TypedBridge(_poll())
+    bridge = TypedBridge(_poll())
     bridge.cancel_action = Mock(return_value=True)
-    engine = _engine(monkeypatch, bridge, _planner_with("{}"))
+    engine = make_engine(bridge, planner_with("{}"))
     engine._stuck_report_fn = Mock()
     clock = [0.0]
     monkeypatch.setattr("arenamcp.autopilot.time.monotonic", lambda: clock[0])
@@ -237,8 +235,8 @@ def test_acknowledged_cancel_without_a_changed_choice_still_counts_attempts(monk
 
 def test_single_target_shortcut_is_guarded_without_model_calls(monkeypatch):
     poll = _poll("SelectTargets", target_candidates=[{"targetInstanceId": 101}])
-    bridge = _TypedBridge(poll)
-    engine = _engine(monkeypatch, bridge, _planner_with("{}"))
+    bridge = TypedBridge(poll)
+    engine = make_engine(bridge, planner_with("{}"))
     engine._stuck_report_fn = Mock()
     monkeypatch.setattr(engine, "_pick_single_target_candidate", lambda state: 101)
     monkeypatch.setattr(engine, "_try_typed_decision_path", lambda *args: None)

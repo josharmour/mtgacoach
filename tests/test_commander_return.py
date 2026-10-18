@@ -3,9 +3,9 @@
 from unittest.mock import Mock
 
 import pytest
+from tests.fakes import make_engine
 
 from arenamcp.action_planner import ActionPlan, ActionPlanner, ActionType, GameAction
-from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
 from arenamcp.autopilot_bridge import _BridgeSubmitMixin
 from arenamcp.decisions import build_pending_decision
 from arenamcp.gamestate import GameObject, GameObjectKind, GameState
@@ -119,10 +119,7 @@ def test_typed_commander_return_bypasses_portal_decline_and_revalidates_request(
         '{"option_ids": ["optional:decline"], "reasoning": "Declining stops Portal from reanimating it."}'
     )
     planner = ActionPlanner(backend=backend)
-    engine = AutopilotEngine(
-        planner=planner, mapper=Mock(), controller=Mock(), config=AutopilotConfig(dry_run=False)
-    )
-    engine._gre_bridge = Mock(connected=True)
+    engine = make_engine(Mock(connected=True), planner)
     poll = _commander_poll(commander_prompt)
     fresh = {**poll, "msg_id": poll["msg_id"] + 1} if changed_request else poll
     engine._gre_bridge.get_pending_actions.side_effect = [poll, fresh]

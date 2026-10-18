@@ -43,8 +43,6 @@ class _AutopilotTelemetryMixin:
                 "auto_resolve": self._config.auto_resolve,
                 "auto_execute_delay": self._config.auto_execute_delay,
                 "planning_timeout": self._config.planning_timeout,
-                "prefer_deterministic": self._config.prefer_deterministic,
-                "enable_vision_fallback": self._config.enable_vision_fallback,
             },
             "stats": {
                 "actions_executed": self._actions_executed,
@@ -57,7 +55,6 @@ class _AutopilotTelemetryMixin:
             },
             "current_action_idx": self._current_action_idx,
             "land_drop_last_turn": self._land_drop_last_turn,
-            "has_vision_scan": self._has_vision_scan,
             "gre_bridge_connected": self._gre_bridge.connected,
             "blocked_actions": [list(key) for key in self._blocked_action_keys],
         }
@@ -92,16 +89,6 @@ class _AutopilotTelemetryMixin:
         trace = getattr(self._planner, "get_last_decision_trace", None)
         if callable(trace):
             info["last_typed_decision"] = trace()
-
-        # Screen mapper state
-        try:
-            info["screen_mapper"] = {
-                "window_rect": self._mapper.window_rect,
-                "cache_size": getattr(self._mapper, "cache_size", 0),
-            }
-        except Exception as e:
-            logger.debug(f"Could not read screen_mapper state: {e}")
-            info["screen_mapper"] = {"error": "unavailable"}
 
         # Planner backend info
         try:

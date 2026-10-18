@@ -11,15 +11,9 @@ pay/decline decision (decline when the LLM is unavailable).
 
 import time
 
-import arenamcp.autopilot as autopilot_module
-from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
+from tests.fakes import make_engine
 
-
-class _DummyBridge:
-    connected = False
-
-    def connect(self):
-        return False
+from arenamcp.autopilot import AutopilotEngine
 
 
 class _NoLLMPlanner:
@@ -39,15 +33,8 @@ class _DeclinePlanner:
         return False
 
 
-def _engine(monkeypatch, planner=None) -> AutopilotEngine:
-    monkeypatch.setattr(autopilot_module, "get_bridge", lambda: _DummyBridge())
-    return AutopilotEngine(
-        planner=planner or _NoLLMPlanner(),
-        mapper=None,
-        controller=None,
-        get_game_state=lambda: {},
-        config=AutopilotConfig(dry_run=False),
-    )
+def _engine(planner=None) -> AutopilotEngine:
+    return make_engine(planner=planner or _NoLLMPlanner())
 
 
 def _go_shintai_state(can_cancel=True):
@@ -69,51 +56,51 @@ def _go_shintai_state(can_cancel=True):
     }
 
 
-def test_out_of_band_harmful_cost_declined_when_llm_unavailable(monkeypatch):
-    eng = _engine(monkeypatch)
+def test_out_of_band_harmful_cost_declined_when_llm_unavailable():
+    eng = _engine()
     reason = eng._should_decline_optional_cost(_go_shintai_state())
     assert reason is not None
     assert "declining conservatively" in reason
 
 
-def test_out_of_band_harmful_cost_respects_llm_decline(monkeypatch):
-    eng = _engine(monkeypatch, planner=_DeclinePlanner())
+def test_out_of_band_harmful_cost_respects_llm_decline():
+    eng = _engine(planner=_DeclinePlanner())
     reason = eng._should_decline_optional_cost(_go_shintai_state())
     assert reason is not None
     assert "LLM chose decline" in reason
 
 
-def test_out_of_band_harmful_cost_pays_when_llm_says_pay(monkeypatch):
-    eng = _engine(monkeypatch, planner=_PayPlanner())
+def test_out_of_band_harmful_cost_pays_when_llm_says_pay():
+    eng = _engine(planner=_PayPlanner())
     assert eng._should_decline_optional_cost(_go_shintai_state()) is None
 
 
-def test_own_fresh_cast_always_auto_pays(monkeypatch):
+def test_own_fresh_cast_always_auto_pays():
     # The normal casting flow: autopilot cast something seconds ago; the
     # PayCosts belongs to it. No LLM call, no decline.
-    eng = _engine(monkeypatch)
+    eng = _engine()
     eng._last_cast_submitted = (14, "rampant growth")
     eng._last_cast_submitted_ts = time.monotonic()
     assert eng._should_decline_optional_cost(_go_shintai_state()) is None
 
 
-def test_stale_own_cast_does_not_bless_the_cost(monkeypatch):
+def test_stale_own_cast_does_not_bless_the_cost():
     # A cast from 2 minutes ago is not this window's source (live incident:
     # Rampant Growth at 23:00:26 vs the trigger at 23:01:01).
-    eng = _engine(monkeypatch)
+    eng = _engine()
     eng._last_cast_submitted = (12, "rampant growth")
     eng._last_cast_submitted_ts = time.monotonic() - 120.0
     assert eng._should_decline_optional_cost(_go_shintai_state()) is not None
 
 
-def test_non_cancellable_cost_keeps_auto_pay(monkeypatch):
+def test_non_cancellable_cost_keeps_auto_pay():
     # No pay/decline choice exists — nothing to gate.
-    eng = _engine(monkeypatch)
+    eng = _engine()
     assert eng._should_decline_optional_cost(_go_shintai_state(can_cancel=False)) is None
 
 
-def test_benign_trigger_keeps_auto_pay(monkeypatch):
-    eng = _engine(monkeypatch)
+def test_benign_trigger_keeps_auto_pay():
+    eng = _engine()
     state = _go_shintai_state()
     state["stack"][0]["oracle_text"] = "you may pay {2}. if you do, draw a card."
     assert eng._should_decline_optional_cost(state) is None

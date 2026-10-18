@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from tests.fakes import TARGET_POLL, TypedBridge, make_engine, planner_with, target_state
 
 from arenamcp.decisions import DecisionOption, PendingDecision, build_pending_decision
 from arenamcp.match_packets import (
@@ -21,7 +22,6 @@ from arenamcp.match_packets import (
     stop_match_packet,
 )
 from arenamcp.request_tracker import decision_fingerprint
-from test_typed_decision_path import _TARGET_POLL, _engine, _planner_with, _state, _TypedBridge
 
 
 @pytest.fixture
@@ -84,16 +84,16 @@ def test_match_packet_lifecycle(temp_packets_dir):
     assert saved_data["decisions"][0]["outcome"] == "ADVANCED"
 
 
-def test_autopilot_integration_records_packets(monkeypatch):
+def test_autopilot_integration_records_packets():
     # Ensure packet is active
     packet = start_match_packet("test_integration_match")
 
-    bridge = _TypedBridge(_TARGET_POLL)
-    planner = _planner_with('{"option_ids": ["tgt:2"], "reasoning": "opponent"}')
-    eng = _engine(monkeypatch, bridge, planner)
+    bridge = TypedBridge(TARGET_POLL)
+    planner = planner_with('{"option_ids": ["tgt:2"], "reasoning": "opponent"}')
+    eng = make_engine(bridge, planner)
 
     # Execute decision
-    handled = eng._try_typed_decision_path(_state(known_source=True), "decision_required")
+    handled = eng._try_typed_decision_path(target_state(known_source=True), "decision_required")
     assert handled is True
 
     # Verify decision logged in packet
@@ -102,7 +102,7 @@ def test_autopilot_integration_records_packets(monkeypatch):
     assert packet.decisions[0]["outcome"] == "pending"
 
     # Simulate observing a different state (ADVANCED)
-    decision_fingerprint(build_pending_decision(_TARGET_POLL))
+    decision_fingerprint(build_pending_decision(TARGET_POLL))
     # RequestTracker note_submitted is called by autopilot
     # Now simulate observe with None (advancing)
     eng._request_tracker.observe(None)

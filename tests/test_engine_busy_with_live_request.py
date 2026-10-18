@@ -2,21 +2,13 @@
 
 from unittest.mock import MagicMock
 
-from arenamcp.autopilot import AutopilotEngine
+from tests.fakes import make_engine
+
 from arenamcp.autopilot_bridge import bridge_shows_pending
-from arenamcp.autopilot_models import AutopilotConfig
 
 
 def _engine():
-    engine = AutopilotEngine(
-        planner=MagicMock(),
-        mapper=MagicMock(),
-        controller=MagicMock(),
-        get_game_state=lambda: {},
-        config=AutopilotConfig(dry_run=True),
-    )
-    engine._gre_bridge = MagicMock(connected=True)
-    return engine
+    return make_engine(MagicMock(connected=True), MagicMock(), dry_run=True)
 
 
 BUSY = {"game_engine_busy": True, "turn": {"turn_number": 3}}

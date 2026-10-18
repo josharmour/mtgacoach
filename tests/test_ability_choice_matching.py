@@ -12,64 +12,28 @@ import logging
 from unittest.mock import MagicMock
 
 import pytest
+from tests.fakes import make_engine
+from tests.jace_states import (
+    ABILITIES,
+    BRIDGE_ACTIONS,
+    DRAW,
+    GAME_OBJECTS,
+    JACE_DRAW,
+    JACE_SURVEIL,
+    POLL,
+    SURVEIL,
+    WITNESS,
+    jace_engine,
+    jace_state,
+)
 
 import arenamcp.gre_action_matcher as matcher
-from arenamcp.action_planner import ActionPlanner, ActionType, GameAction
-from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
+from arenamcp.action_planner import ActionType, GameAction
+from arenamcp.autopilot import AutopilotEngine
 from arenamcp.decisions import build_pending_decision
 from arenamcp.gre_action_matcher import GREActionRef, match_action_to_gre, resolve_activation
 from arenamcp.gre_bridge import GREBridge
 from arenamcp.mac_bridge_adapter import MacBridgeAdapter
-
-SURVEIL, DRAW = 208424, 208425
-ABILITIES = {SURVEIL: ("-1", "Surveil 1."), DRAW: ("-3", "Draw a card.")}
-
-# The bridge actions at gameStateId 493 / msgId 699, as the mac adapter serialized them.
-WITNESS = {"actionType": "Activate", "grpId": 106272, "instanceId": 371, "abilityGrpId": 153236}
-JACE_SURVEIL = {"actionType": "Activate", "grpId": 106555, "instanceId": 443, "abilityGrpId": SURVEIL}
-JACE_DRAW = {"actionType": "Activate", "grpId": 106555, "instanceId": 443, "abilityGrpId": DRAW}
-BRIDGE_ACTIONS = [
-    WITNESS,
-    JACE_SURVEIL,
-    JACE_DRAW,
-    {"actionType": "Activate_Mana", "grpId": 106529, "instanceId": 245, "abilityGrpId": 1002},
-    {"actionType": "Pass"},
-    {"actionType": "FloatMana"},
-]
-POLL = {
-    "has_pending": True,
-    "request_type": "ActionsAvailable",
-    "request_class": "ActionsAvailableRequest",
-    "can_pass": True,
-    "game_state_id": 493,
-    "msg_id": 699,
-    "actions": BRIDGE_ACTIONS,
-}
-JACE_CARD = {
-    "instance_id": 443,
-    "grp_id": 106555,
-    "name": "Jace",
-    "oracle_text": "Surveil 1.\nDraw a card.",
-    "type_line": "Token Planeswalker — Jace",
-    "card_types": ["Planeswalker"],
-    "controller_seat_id": 2,
-    "owner_seat_id": 2,
-    "counters": {"Loyalty": 4},
-    "turn_entered_battlefield": 20,
-}
-WITNESS_CARD = {
-    "instance_id": 371,
-    "grp_id": 106272,
-    "name": "Undulating Witness",
-    "oracle_text": "Flying\n{o2}: This creature gets +1/-1 until end of turn.",
-    "card_types": ["Creature"],
-    "controller_seat_id": 2,
-    "owner_seat_id": 2,
-    "power": 4,
-    "toughness": 6,
-    "turn_entered_battlefield": 12,
-}
-GAME_OBJECTS = {443: JACE_CARD, 371: WITNESS_CARD}
 
 
 @pytest.fixture(autouse=True)
@@ -133,61 +97,15 @@ def test_loyalty_numbers_inside_pt_changes_are_not_costs():
 # --- typed-decision path (the incident path) ----------------------------
 
 
-class _CapturingBackend:
-    def __init__(self, response: str):
-        self.response = response
-        self.prompts: list[str] = []
-
-    def complete(self, system, user, *args, **kwargs):
-        self.prompts.append(user)
-        return self.response
-
-
-def _typed_engine(response: str, poll: dict = POLL):
-    backend = _CapturingBackend(response)
-    bridge = MagicMock()
-    bridge.connected = True
-    bridge.get_pending_actions.return_value = poll
-    bridge.submit_action_by_index.return_value = True
-    bridge.submit_pass.return_value = True
-    engine = AutopilotEngine(
-        planner=ActionPlanner(backend=backend),
-        mapper=MagicMock(),
-        controller=MagicMock(),
-        get_game_state=lambda: {},
-        config=AutopilotConfig(dry_run=False),
-    )
-    engine._gre_bridge = bridge
-    engine._request_tracker = MagicMock()
-    engine._request_tracker.may_submit.return_value = True
-    engine._request_tracker.exhausted.return_value = False
-    return engine, bridge, backend
-
-
-def _typed_state() -> dict:
-    return {
-        "turn": {"turn_number": 20, "phase": "Phase_Main1", "active_player": 2, "priority_player": 2},
-        "players": [
-            {"seat_id": 1, "life_total": 15},
-            {"seat_id": 2, "life_total": 13, "is_local": True},
-        ],
-        "local_seat_id": 2,
-        "battlefield": [JACE_CARD, WITNESS_CARD],
-        "hand": [],
-        "stack": [],
-        "_bridge_connected": True,
-    }
-
-
-def _decision_prompt(backend: _CapturingBackend) -> str:
+def _decision_prompt(backend) -> str:
     return next(prompt for prompt in backend.prompts if "PENDING DECISION: ActionsAvailable" in prompt)
 
 
 def test_sibling_loyalty_abilities_reach_the_model_with_their_text():
-    engine, bridge, backend = _typed_engine(
+    engine, bridge, backend = jace_engine(
         '{"option_ids": ["idx:2"], "reasoning": "Empty hand; Jace -3 draws a card."}'
     )
-    assert engine._try_typed_decision_path(_typed_state(), "decision_required") is True
+    assert engine._try_typed_decision_path(jace_state(), "decision_required") is True
     prompt = _decision_prompt(backend)
     assert "- idx:1: Activate: Jace [-1: Surveil 1.]" in prompt
     assert "- idx:2: Activate: Jace [-3: Draw a card.]" in prompt
@@ -200,9 +118,9 @@ def test_sibling_loyalty_abilities_reach_the_model_with_their_text():
 def test_indistinguishable_sibling_activations_are_withheld(monkeypatch, caplog):
     # Ability text unavailable: the model cannot know which index is which.
     monkeypatch.setattr(matcher, "describe_ability", lambda aid: ("", ""))
-    engine, bridge, backend = _typed_engine('{"option_ids": ["idx:1"], "reasoning": "Draw with Jace."}')
+    engine, bridge, backend = jace_engine('{"option_ids": ["idx:1"], "reasoning": "Draw with Jace."}')
     with caplog.at_level(logging.WARNING, logger="arenamcp.autopilot"):
-        assert engine._try_typed_decision_path(_typed_state(), "decision_required") is True
+        assert engine._try_typed_decision_path(jace_state(), "decision_required") is True
     prompt = _decision_prompt(backend)
     assert "idx:1" not in prompt and "idx:2" not in prompt
     assert "withholding" in caplog.text
@@ -229,13 +147,7 @@ def test_label_helper_keeps_known_siblings_and_drops_duplicates():
 
 
 def _legacy_engine() -> AutopilotEngine:
-    engine = AutopilotEngine(
-        planner=MagicMock(),
-        mapper=MagicMock(),
-        controller=MagicMock(),
-        get_game_state=lambda: {},
-        config=AutopilotConfig(dry_run=False),
-    )
+    engine = make_engine(planner=MagicMock())
     engine._bridge_preloaded_actions = BRIDGE_ACTIONS
     return engine
 
@@ -243,28 +155,28 @@ def _legacy_engine() -> AutopilotEngine:
 def test_legacy_activation_without_an_ability_is_refused():
     engine = _legacy_engine()
     action = _activate("Jace")
-    assert engine._pin_activation_ability(action, _typed_state()) is False
+    assert engine._pin_activation_ability(action, jace_state()) is False
     assert action.gre_action_ref is None
 
 
 def test_legacy_activation_naming_the_draw_is_pinned_to_it():
     engine = _legacy_engine()
     action = _activate("Jace: Draw a card")
-    assert engine._pin_activation_ability(action, _typed_state()) is True
+    assert engine._pin_activation_ability(action, jace_state()) is True
     assert action.gre_action_ref.ability_grp_id == DRAW
 
 
 def test_legacy_activation_with_a_resolved_ref_is_kept():
     engine = _legacy_engine()
     action = _activate("Jace", gre_action_ref=GREActionRef.from_raw(JACE_DRAW))
-    assert engine._pin_activation_ability(action, _typed_state()) is True
+    assert engine._pin_activation_ability(action, jace_state()) is True
     assert action.gre_action_ref.ability_grp_id == DRAW
 
 
 def test_legacy_single_ability_activation_is_untouched():
     engine = _legacy_engine()
     action = _activate("Undulating Witness")
-    assert engine._pin_activation_ability(action, _typed_state()) is True
+    assert engine._pin_activation_ability(action, jace_state()) is True
     assert action.gre_action_ref is None
 
 
@@ -283,17 +195,8 @@ def test_bridge_match_requires_the_requested_ability():
     assert find(BRIDGE_ACTIONS, "Activate", 106272, 371, 0) == 0
 
 
-def test_submit_by_index_carries_the_ability_identity():
-    bridge = GREBridge()
-    commands: list[dict] = []
-    bridge._send_safe = lambda cmd, timeout=None: commands.append(cmd) or {"ok": True}  # type: ignore[method-assign]
-    assert bridge.submit_action_by_index(2, expected=JACE_DRAW)
-    assert commands[0]["expected_ability_grp_id"] == DRAW
-    assert commands[0]["expected_instance_id"] == 443
-
-
 def test_mac_adapter_refuses_a_stale_index_pointing_at_another_ability():
-    from tests.test_mac_bridge_adapter import FakeGame, action, actions_request
+    from tests.mac_bridge_fakes import FakeGame, action, actions_request
 
     game = FakeGame(
         actions_request(

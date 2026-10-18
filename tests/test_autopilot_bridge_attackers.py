@@ -25,22 +25,6 @@ class _DummyBridge:
         return {"ok": True, "has_pending": False}
 
 
-class _DummyMapper:
-    window_rect = (0, 0, 100, 100)
-    cache_size = 0
-
-    def refresh_window(self):
-        return self.window_rect
-
-
-class _DummyController:
-    def focus_mtga_window(self) -> None:
-        return None
-
-    def wait(self, *args, **kwargs) -> None:
-        return None
-
-
 def _get_game_state() -> dict:
     return {}
 
@@ -125,11 +109,7 @@ def engine():
     """
     from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
 
-    config = AutopilotConfig()
-    mapper = _DummyMapper()
-    controller = _DummyController()
-
-    eng = AutopilotEngine(config, mapper, controller, _get_game_state)
+    eng = AutopilotEngine(planner=None, get_game_state=_get_game_state, config=AutopilotConfig())
     eng._speak_fn = None
 
     # Attach a mock bridge

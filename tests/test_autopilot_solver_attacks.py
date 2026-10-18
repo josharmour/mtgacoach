@@ -18,22 +18,6 @@ class _DummyPlanner:
         return []
 
 
-class _DummyMapper:
-    window_rect = (0, 0, 100, 100)
-    cache_size = 0
-
-    def refresh_window(self):
-        return self.window_rect
-
-    def get_button_coord(self, name):
-        return None
-
-
-class _DummyController:
-    def focus_mtga_window(self):
-        return None
-
-
 class _DummyBridge:
     connected = False
 
@@ -45,8 +29,6 @@ def _make_engine(monkeypatch) -> AutopilotEngine:
     monkeypatch.setattr(autopilot_module, "get_bridge", lambda: _DummyBridge())
     return AutopilotEngine(
         planner=_DummyPlanner(),
-        mapper=_DummyMapper(),
-        controller=_DummyController(),
         get_game_state=lambda: {},
         config=AutopilotConfig(dry_run=True),
     )

@@ -3,13 +3,13 @@
 from unittest.mock import Mock
 
 import pytest
+from tests.fakes import TypedBridge, make_engine, planner_with
+from tests.mac_bridge_fakes import FakeGame, enum, listing, submitted_uint_values
 
 from arenamcp.action_planner import DECLINE_DECISION
 from arenamcp.autopilot import AutopilotState
 from arenamcp.decisions import build_pending_decision, submit_option
 from arenamcp.mac_bridge_adapter import MacBridgeAdapter
-from test_mac_bridge_adapter import FakeGame, enum, listing, submitted_uint_values
-from test_typed_decision_path import _engine, _planner_with, _TypedBridge
 
 CARDS = {
     101: {"name": "Shang-Chi, Master of Kung Fu", "type_line": "Legendary Creature — Human Hero", "cmc": 4},
@@ -120,7 +120,7 @@ def test_native_search_checks_the_offered_set_and_count_before_submission(ids):
 def test_two_creature_search_carries_card_rules_to_planner_and_submits_both(poll):
     decision = build_pending_decision(poll)
     assert (decision.min_select, decision.max_select) == (0, 2)
-    planner = _planner_with('{"option_ids":["sel:538","sel:539"],"reasoning":"Two complementary threats."}')
+    planner = planner_with('{"option_ids":["sel:538","sel:539"],"reasoning":"Two complementary threats."}')
     planner._backend.complete = Mock(wraps=planner._backend.complete)
     picked = planner.plan_decision_options(decision, {})
     assert picked == ["sel:538", "sel:539"]
@@ -131,12 +131,12 @@ def test_two_creature_search_carries_card_rules_to_planner_and_submits_both(poll
             assert card["oracle_text"].splitlines()[0] in prompt
     assert "Choose at least 0 and at most 2 option(s)." in prompt
     assert "does not trigger 'when you cast'" in system
-    bridge = _TypedBridge(poll)
+    bridge = TypedBridge(poll)
     assert submit_option(bridge, decision, picked)
     assert bridge.submitted == [("selection", [538, 539])]
 
 
-def test_unidentified_search_is_not_sold_as_a_strategic_choice(monkeypatch):
+def test_unidentified_search_is_not_sold_as_a_strategic_choice():
     poll = {
         "has_pending": True,
         "request_type": "Search",
@@ -144,9 +144,9 @@ def test_unidentified_search_is_not_sold_as_a_strategic_choice(monkeypatch):
         "select_n_min": 0,
         "select_n_max": 2,
     }
-    planner = _planner_with('{"option_ids":["sel:537"],"reasoning":"Strongest creature."}')
-    bridge = _TypedBridge(poll)
-    engine = _engine(monkeypatch, bridge, planner)
+    planner = planner_with('{"option_ids":["sel:537"],"reasoning":"Strongest creature."}')
+    bridge = TypedBridge(poll)
+    engine = make_engine(bridge, planner)
     engine._pause_for_manual = Mock()
     assert engine._try_typed_decision_path({}, "decision_required") is True
     assert planner._backend.calls == 0
@@ -167,10 +167,10 @@ def test_transient_unidentified_fetch_retries_after_reveal_without_manual_or_emp
         "select_n_max": 1,
         "can_cancel": True,
     }
-    planner = _planner_with('{"option_ids":["sel:257"],"reasoning":"Get the needed Forest."}')
-    bridge = _TypedBridge(poll)
+    planner = planner_with('{"option_ids":["sel:257"],"reasoning":"Get the needed Forest."}')
+    bridge = TypedBridge(poll)
     bridge.cancel_action = Mock(side_effect=AssertionError("Do not cancel a paid fetch while names load"))
-    engine = _engine(monkeypatch, bridge, planner)
+    engine = make_engine(bridge, planner)
     engine._pause_for_manual = Mock()
     assert engine._try_typed_decision_path({}, "decision_required")
     assert planner._backend.calls == 0
@@ -198,9 +198,9 @@ def test_unresolved_search_wait_is_bounded_and_reports_manual_once(monkeypatch):
         "select_n_min": 0,
         "select_n_max": 1,
     }
-    planner = _planner_with("must not call model")
-    bridge = _TypedBridge(poll)
-    engine = _engine(monkeypatch, bridge, planner)
+    planner = planner_with("must not call model")
+    bridge = TypedBridge(poll)
+    engine = make_engine(bridge, planner)
     bridge.auto_respond = Mock(return_value=True)
     engine._pause_for_manual = Mock(wraps=engine._pause_for_manual)
     game_state = {"_bridge_request_type": "Search", "pending_decision": "Search", "turn": {"turn_number": 3}}
@@ -230,11 +230,11 @@ def test_two_forest_search_clears_stale_manual_hold_and_tracks_unaccepted_submis
         "select_n_min": 0,
         "select_n_max": 2,
     }
-    bridge = _TypedBridge(poll)
-    planner = _planner_with(
+    bridge = TypedBridge(poll)
+    planner = planner_with(
         '{"option_ids":["sel:671","sel:692"],"reasoning":"Two Forests to hand for future land drops."}'
     )
-    engine = _engine(monkeypatch, bridge, planner)
+    engine = make_engine(bridge, planner)
     engine._given_up_semantics = {"previous": "unidentified search"}
     engine._given_up_window_sig = ("Search", "unidentified")
     monkeypatch.setattr(engine._request_tracker, "REJECT_GRACE_S", 0.0)
@@ -259,14 +259,14 @@ def test_two_forest_search_clears_stale_manual_hold_and_tracks_unaccepted_submis
     ],
 )
 def test_bad_search_answer_does_not_fall_back_to_first_creature(poll, response):
-    planner = _planner_with(response)
+    planner = planner_with(response)
     assert planner.plan_decision_options(build_pending_decision(poll), {}) == [DECLINE_DECISION]
 
 
 def test_explicit_fail_to_find_can_submit_empty_selection(poll, monkeypatch):
-    planner = _planner_with('{"option_ids":[],"reasoning":"Avoid the search penalty."}')
-    bridge = _TypedBridge(poll)
-    engine = _engine(monkeypatch, bridge, planner)
+    planner = planner_with('{"option_ids":[],"reasoning":"Avoid the search penalty."}')
+    bridge = TypedBridge(poll)
+    engine = make_engine(bridge, planner)
     assert engine._try_typed_decision_path({}, "decision_required") is True
     assert bridge.submitted == [("selection", [])]
 
@@ -274,8 +274,8 @@ def test_explicit_fail_to_find_can_submit_empty_selection(poll, monkeypatch):
 def test_empty_library_search_can_finish_without_guessing_a_card(poll):
     poll["search_candidates"] = []
     decision = build_pending_decision(poll)
-    planner = _planner_with("must not be called")
+    planner = planner_with("must not be called")
     assert planner.plan_decision_options(decision, {}) == []
-    bridge = _TypedBridge(poll)
+    bridge = TypedBridge(poll)
     assert submit_option(bridge, decision, [])
     assert bridge.submitted == [("selection", [])]

@@ -2,123 +2,26 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from tests.fakes import FakeBridge, make_engine
 
 import arenamcp.autopilot as autopilot_module
-from arenamcp.action_planner import ActionPlan, ActionType, GameAction
-from arenamcp.autopilot import AutopilotConfig, AutopilotEngine, AutopilotState
+from arenamcp.action_planner import ActionType, GameAction
+from arenamcp.autopilot import AutopilotState
 from arenamcp.autopilot_models import ClickResult
 
 
-class _DummyPlanner:
-    def __init__(self):
-        self._timeout = 0.1
-        self._backend = object()
-        self.plan_calls = 0
-
-    def plan_actions(self, *args, **kwargs) -> ActionPlan:
-        self.plan_calls += 1
-        return ActionPlan(actions=[], overall_strategy="noop")
-
-    def get_recent_diagnostics(self) -> list[dict]:
-        return []
-
-
-class _DummyMapper:
-    window_rect = (0, 0, 100, 100)
-    cache_size = 0
-
-    def refresh_window(self):
-        return self.window_rect
-
-    def get_button_coord(self, name: str):
-        return None
-
-
-class _DummyController:
-    def focus_mtga_window(self) -> None:
-        return None
-
-    def wait(self, *args, **kwargs) -> None:
-        return None
-
-    def press_key(self, key: str, description: str) -> ClickResult:
-        return ClickResult(True, 0, 0, description or key)
-
-    def click(self, x: int, y: int, description: str, window_rect) -> ClickResult:
-        return ClickResult(True, x, y, description)
-
-
-class _DummyBridge:
-    def __init__(self, pending_response: dict | None = None, connected: bool = True):
-        self.connected = connected
-        self.pending_response = pending_response or {"ok": True, "has_pending": False}
-
-    def connect(self) -> bool:
-        return self.connected
-
-    def get_pending_actions(self) -> dict:
-        return self.pending_response
-
-    def auto_respond(self) -> bool:
-        return False
-
-    def submit_pass(self) -> bool:
-        return False
-
-    def cancel_action(self) -> bool:
-        return False
-
-    def submit_mulligan(self, keep: bool) -> bool:
-        return False
-
-    def submit_choose_starting_player(self, seat_id: int) -> bool:
-        return False
-
-    def submit_action_by_match(self, **kwargs) -> bool:
-        return False
-
-    def submit_action_by_index(self, *args, **kwargs) -> bool:
-        return False
-
-    def submit_attackers(self, attackers) -> bool:
-        return False
-
-    def submit_attackers_raw(self, attackers):
-        return None
-
-    def submit_blockers(self, assignments) -> bool:
-        return False
-
-    def submit_targets(self, target_instance_id: int) -> bool:
-        return False
-
-    def submit_selection(self, ids: list[int]) -> bool:
-        return False
-
-
-def _make_engine(
-    monkeypatch, state_fn, bridge: _DummyBridge, notifications: list[str] | None = None
-) -> tuple[AutopilotEngine, _DummyPlanner]:
-    planner = _DummyPlanner()
-    mapper = _DummyMapper()
-    controller = _DummyController()
-    monkeypatch.setattr(autopilot_module, "get_bridge", lambda: bridge)
-    engine = AutopilotEngine(
-        planner=planner,
-        mapper=mapper,
-        controller=controller,
-        get_game_state=state_fn,
-        config=AutopilotConfig(
-            dry_run=True,
-            verify_after_action=True,
-            verification_timeout=0.01,
-            post_action_delay=0.0,
-        ),
+def _make_engine(state_fn, bridge: FakeBridge, notifications: list[str] | None = None):
+    engine = make_engine(
+        bridge,
+        game_state=state_fn,
+        dry_run=True,
+        verification_timeout=0.01,
+        post_action_delay=0.0,
         ui_advice_fn=(lambda text, label: notifications.append(f"{label}:{text}"))
         if notifications is not None
         else None,
     )
-    return engine, planner
+    return engine, engine._planner
 
 
 @pytest.mark.parametrize(
@@ -138,7 +41,7 @@ def test_process_trigger_submits_live_bridge_decision(
         "actions": [],
         "can_pass": request_type == "ActionsAvailable",
     }
-    bridge = _DummyBridge(pending)
+    bridge = FakeBridge(pending)
     submit = Mock(return_value=True)
     monkeypatch.setattr(bridge, submit_method, submit)
     state = {
@@ -149,7 +52,7 @@ def test_process_trigger_submits_live_bridge_decision(
         "turn": {"turn_number": 1},
         "players": [{"seat_id": 1, "is_local": True}],
     }
-    engine, planner = _make_engine(monkeypatch, lambda: dict(state), bridge)
+    engine, planner = _make_engine(lambda: dict(state), bridge)
     engine._config.dry_run = False
     planner.plan_decision_options = Mock(return_value=[option_id])
 
@@ -162,7 +65,7 @@ def test_process_trigger_submits_live_bridge_decision(
 
 
 def test_get_game_state_clears_stale_pending_when_bridge_is_idle(monkeypatch):
-    bridge = _DummyBridge({"ok": True, "has_pending": False})
+    bridge = FakeBridge({"ok": True, "has_pending": False})
     state = {
         "turn": {"turn_number": 3, "phase": "Phase_Main1", "step": "Step_PreCombatMain"},
         "players": [{"seat_id": 1, "is_local": True}],
@@ -173,7 +76,7 @@ def test_get_game_state_clears_stale_pending_when_bridge_is_idle(monkeypatch):
         "_bridge_connected": True,
         "_bridge_game_state_id": 77,
     }
-    engine, _ = _make_engine(monkeypatch, lambda: dict(state), bridge)
+    engine, _ = _make_engine(lambda: dict(state), bridge)
 
     fresh = engine._get_game_state()
 
@@ -185,14 +88,14 @@ def test_get_game_state_clears_stale_pending_when_bridge_is_idle(monkeypatch):
 
 @pytest.mark.parametrize("submitted", [True, False])
 def test_empty_planner_pass_returns_bridge_submission_result(monkeypatch, submitted):
-    bridge = _DummyBridge({"ok": True, "has_pending": True, "request_type": "ActionsAvailable"})
+    bridge = FakeBridge({"ok": True, "has_pending": True, "request_type": "ActionsAvailable"})
     state = {
         "_bridge_connected": True,
         "_bridge_has_pending": True,
         "_bridge_request_type": "ActionsAvailable",
         "turn": {"turn_number": 1},
     }
-    engine, planner = _make_engine(monkeypatch, lambda: dict(state), bridge)
+    engine, planner = _make_engine(lambda: dict(state), bridge)
     engine._config.dry_run = False
     monkeypatch.setattr(engine, "_try_typed_decision_path", lambda *args: None)
     execute = Mock(return_value=ClickResult(submitted))
@@ -205,46 +108,18 @@ def test_empty_planner_pass_returns_bridge_submission_result(monkeypatch, submit
     assert not engine._lock.locked()
 
 
-def test_process_trigger_refuses_when_bridge_idle_and_no_log_data(monkeypatch):
-    """When bridge says idle AND the trigger has no log-derived data, refuse."""
-    bridge = _DummyBridge({"ok": True, "has_pending": False})
-    engine, planner = _make_engine(monkeypatch, lambda: {}, bridge)
-
-    handled = engine.process_trigger(
-        {
-            "turn": {
-                "turn_number": 4,
-                "active_player": 1,
-                "priority_player": 1,
-                "phase": "Phase_Main1",
-                "step": "Step_PreCombatMain",
-            },
-            "players": [{"seat_id": 1, "is_local": True}],
-            "_bridge_connected": True,
-        },
-        "priority_gained",
-    )
-
-    # Consumed as stale: suppress fallback planning against the idle bridge.
-    assert handled is True
-    assert planner.plan_calls == 0
-    assert engine.state == AutopilotState.IDLE
-
-
-def test_process_trigger_refuses_when_bridge_idle_despite_log_data(monkeypatch):
+@pytest.mark.parametrize(
+    "log_decision",
+    [{}, {"pending_decision": "Priority", "decision_context": {"type": "actions_available"}}],
+    ids=["no_log_data", "despite_log_data"],
+)
+def test_process_trigger_refuses_when_bridge_idle(log_decision):
     """Arbiter doctrine (fable-improvements.md item 4): a connected, idle
     bridge is authoritative; log-derived decisions are stale. The old
     behavior (proceed on log data) planned and spoke against ghost
     decisions the client had already consumed (live 2026-06-09)."""
-    bridge = _DummyBridge({"ok": True, "has_pending": False})
-    # Use dry_run so execution doesn't need real screen coordinates
-    engine, planner = _make_engine(monkeypatch, lambda: {}, bridge)
-    engine._config = AutopilotConfig(
-        dry_run=True,
-        verify_after_action=False,
-        verification_timeout=0.01,
-        post_action_delay=0.0,
-    )
+    bridge = FakeBridge({"ok": True, "has_pending": False})
+    engine, planner = _make_engine(lambda: {}, bridge)
 
     handled = engine.process_trigger(
         {
@@ -257,8 +132,7 @@ def test_process_trigger_refuses_when_bridge_idle_despite_log_data(monkeypatch):
             },
             "players": [{"seat_id": 1, "is_local": True}],
             "_bridge_connected": True,
-            "pending_decision": "Priority",
-            "decision_context": {"type": "actions_available"},
+            **log_decision,
         },
         "priority_gained",
     )
@@ -270,7 +144,7 @@ def test_process_trigger_refuses_when_bridge_idle_despite_log_data(monkeypatch):
 
 
 def test_process_trigger_pauses_for_unmapped_bridge_interaction(monkeypatch):
-    bridge = _DummyBridge(
+    bridge = FakeBridge(
         {
             "ok": True,
             "has_pending": True,
@@ -279,7 +153,7 @@ def test_process_trigger_pauses_for_unmapped_bridge_interaction(monkeypatch):
         }
     )
     notifications: list[str] = []
-    engine, planner = _make_engine(monkeypatch, lambda: {}, bridge, notifications)
+    engine, planner = _make_engine(lambda: {}, bridge, notifications)
 
     handled = engine.process_trigger(
         {
@@ -306,45 +180,10 @@ def test_process_trigger_pauses_for_unmapped_bridge_interaction(monkeypatch):
     assert any("MANUAL REQUIRED" in item for item in notifications)
 
 
-class _RecordingController:
-    """Spy controller that records every input call so we can assert no mouse use."""
-
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-
-    def focus_mtga_window(self) -> None:
-        self.calls.append("focus_mtga_window")
-        return None
-
-    def wait(self, *args, **kwargs) -> None:
-        return None
-
-    def press_key(self, key: str, description: str) -> ClickResult:
-        self.calls.append(f"press_key:{key}")
-        return ClickResult(True, 0, 0, description or key)
-
-    def click(self, x: int, y: int, description: str, window_rect) -> ClickResult:
-        self.calls.append(f"click:{description}")
-        return ClickResult(True, x, y, description)
-
-    def double_click(self, x: int, y: int, description: str, window_rect) -> ClickResult:
-        self.calls.append(f"double_click:{description}")
-        return ClickResult(True, x, y, description)
-
-    def click_card_in_hand(self, *args, **kwargs) -> ClickResult:
-        self.calls.append("click_card_in_hand")
-        return ClickResult(True, 0, 0, "card")
-
-
-def _make_bridge_only_engine(monkeypatch, bridge: _DummyBridge):
+def _make_bridge_only_engine(monkeypatch, bridge: FakeBridge):
     """Build an engine in real bridge-only mode (dry_run=False)."""
-    planner = _DummyPlanner()
-    mapper = _DummyMapper()
-    controller = _RecordingController()
     notifications: list[str] = []
     bug_calls: list[tuple[str, dict]] = []
-
-    monkeypatch.setattr(autopilot_module, "get_bridge", lambda: bridge)
 
     # Run the dispatched bug-report thread synchronously so assertions are
     # deterministic. The autopilot dispatches via threading.Thread(...).start().
@@ -360,28 +199,21 @@ def _make_bridge_only_engine(monkeypatch, bridge: _DummyBridge):
 
     monkeypatch.setattr(autopilot_module.threading, "Thread", _SyncThread)
 
-    engine = AutopilotEngine(
-        planner=planner,
-        mapper=mapper,
-        controller=controller,
-        get_game_state=lambda: {},
-        config=AutopilotConfig(
-            dry_run=False,
-            bridge_only_when_connected=True,
-            verify_after_action=False,
-            verification_timeout=0.01,
-            post_action_delay=0.0,
-        ),
+    engine = make_engine(
+        bridge,
+        verify_after_action=False,
+        verification_timeout=0.01,
+        post_action_delay=0.0,
         ui_advice_fn=lambda text, label: notifications.append(f"{label}:{text}"),
         bug_report_fn=lambda reason, extra: bug_calls.append((reason, extra)),
     )
-    return engine, controller, notifications, bug_calls
+    return engine, notifications, bug_calls
 
 
-def test_execute_action_no_mouse_when_bridge_unavailable(monkeypatch):
-    """Bridge disconnected → manual required + bug report, no mouse fallback."""
-    bridge = _DummyBridge(connected=False)
-    engine, controller, notifications, bug_calls = _make_bridge_only_engine(monkeypatch, bridge)
+def test_unavailable_bridge_is_manual_required_with_a_bug_report(monkeypatch):
+    """Bridge disconnected → MANUAL REQUIRED and an auto-filed bridge bug."""
+    bridge = FakeBridge(connected=False)
+    engine, notifications, bug_calls = _make_bridge_only_engine(monkeypatch, bridge)
 
     state = {
         "turn": {"turn_number": 3, "phase": "Phase_Main1", "step": "Step_PreCombatMain"},
@@ -396,7 +228,6 @@ def test_execute_action_no_mouse_when_bridge_unavailable(monkeypatch):
     result = engine._execute_action(action, state)
 
     assert result.success is False
-    assert controller.calls == [], f"expected zero mouse calls, got {controller.calls}"
     assert any("MANUAL REQUIRED" in n for n in notifications)
     assert len(bug_calls) == 1
     reason, extra = bug_calls[0]
@@ -405,9 +236,9 @@ def test_execute_action_no_mouse_when_bridge_unavailable(monkeypatch):
     assert extra["auto_fallback_bug"]["card_name"] == "Forest"
 
 
-def test_execute_action_no_mouse_when_bridge_submit_fails(monkeypatch):
-    """Bridge connected but submit returns False → manual required + bug report."""
-    bridge = _DummyBridge(
+def test_failed_bridge_submit_is_manual_required_with_a_bug_report(monkeypatch):
+    """Bridge connected but submit returns False → MANUAL REQUIRED + bug report."""
+    bridge = FakeBridge(
         {
             "ok": True,
             "has_pending": True,
@@ -416,7 +247,7 @@ def test_execute_action_no_mouse_when_bridge_submit_fails(monkeypatch):
         },
         connected=True,
     )
-    engine, controller, notifications, bug_calls = _make_bridge_only_engine(monkeypatch, bridge)
+    engine, notifications, bug_calls = _make_bridge_only_engine(monkeypatch, bridge)
 
     state = {
         "turn": {"turn_number": 3, "phase": "Phase_Main1", "step": "Step_PreCombatMain"},
@@ -437,7 +268,6 @@ def test_execute_action_no_mouse_when_bridge_submit_fails(monkeypatch):
     result = engine._execute_action(action, state)
 
     assert result.success is False
-    assert controller.calls == [], f"expected zero mouse calls, got {controller.calls}"
     assert any("MANUAL REQUIRED" in n for n in notifications)
     assert len(bug_calls) == 1
     reason, extra = bug_calls[0]
@@ -456,7 +286,7 @@ def test_execute_action_classifies_stale_play_land_as_planner_action_stale(monke
     #139 #140). The plan loop blocks the skipped play for the window, so
     planning it again hits "Blocked action repeated" instead of looping.
     """
-    bridge = _DummyBridge(
+    bridge = FakeBridge(
         {
             "ok": True,
             "has_pending": True,
@@ -465,7 +295,7 @@ def test_execute_action_classifies_stale_play_land_as_planner_action_stale(monke
         },
         connected=True,
     )
-    engine, controller, notifications, bug_calls = _make_bridge_only_engine(monkeypatch, bridge)
+    engine, notifications, bug_calls = _make_bridge_only_engine(monkeypatch, bridge)
 
     # Bridge has 6 actions — none of type "Play". This is the post-land-drop
     # state where the user already played their land for the turn.
@@ -494,7 +324,6 @@ def test_execute_action_classifies_stale_play_land_as_planner_action_stale(monke
 
     assert result.success is True
     assert "stale-skip" in result.error
-    assert controller.calls == [], f"expected zero mouse calls, got {controller.calls}"
     assert not any("MANUAL REQUIRED" in n for n in notifications)
     # Critical: no auto-bug filed for stale state mismatches
     assert bug_calls == [], f"expected no auto-bug for planner_action_stale, got {bug_calls}"
@@ -506,7 +335,7 @@ def test_execute_action_files_bug_for_real_submit_failure_with_play_action_prese
     Confirms the stale-vs-real classifier doesn't accidentally suppress
     legitimate bridge bugs.
     """
-    bridge = _DummyBridge(
+    bridge = FakeBridge(
         {
             "ok": True,
             "has_pending": True,
@@ -515,7 +344,7 @@ def test_execute_action_files_bug_for_real_submit_failure_with_play_action_prese
         },
         connected=True,
     )
-    engine, controller, notifications, bug_calls = _make_bridge_only_engine(monkeypatch, bridge)
+    engine, notifications, bug_calls = _make_bridge_only_engine(monkeypatch, bridge)
 
     state = {
         "turn": {"turn_number": 3, "phase": "Phase_Main1", "step": "Step_PreCombatMain"},
@@ -547,7 +376,7 @@ def test_execute_action_files_bug_for_real_submit_failure_with_play_action_prese
 
 
 def test_verify_action_blocks_repeated_bridge_action_when_state_id_stalls(monkeypatch):
-    bridge = _DummyBridge(
+    bridge = FakeBridge(
         {
             "ok": True,
             "has_pending": True,
@@ -575,7 +404,7 @@ def test_verify_action_blocks_repeated_bridge_action_when_state_id_stalls(monkey
         "_bridge_request_type": "ActionsAvailableReq",
         "_bridge_request_class": "ActionsAvailableRequest",
     }
-    engine, _ = _make_engine(monkeypatch, lambda: dict(state), bridge)
+    engine, _ = _make_engine(lambda: dict(state), bridge)
     action = GameAction(
         action_type=ActionType.CAST_SPELL,
         card_name="Shock",
