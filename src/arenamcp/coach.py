@@ -2905,6 +2905,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             oracle = self._clean_oracle_for_prompt(str(obj.get("oracle_text") or ""))
             if oracle:
                 lines.append(f"     {oracle}")
+        try:
+            from arenamcp.stack_responses import shield_response_note
+
+            note = shield_response_note(game_state)
+        except Exception as exc:  # a prompt note never breaks the prompt
+            logger.debug("No shield-response note: %s", exc)
+            note = ""
+        if note:
+            lines.extend(note.splitlines())
         return lines
 
     def _format_zones_and_events(

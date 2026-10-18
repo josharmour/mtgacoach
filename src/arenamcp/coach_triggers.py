@@ -4,7 +4,6 @@ Extracted from arenamcp.coach (pure move, no behavior change).
 Re-exported from arenamcp.coach for backwards compatibility."""
 
 import logging
-from types import SimpleNamespace
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -83,9 +82,9 @@ class GameStateTrigger:
 
         Returns True if hand contains an instant or a card with the Flash
         keyword (not Flashback) whose mana value and coloured pips our
-        untapped lands can pay.
+        untapped lands can pay (``stack_responses``).
         """
-        from arenamcp.mulligan_policy import COLORS, _land_colors, _pip_matching, hand_card
+        from arenamcp.stack_responses import affordable_at_instant_speed, untapped_sources
 
         local_seat = None
         for p in state.get("players", []):
@@ -96,27 +95,9 @@ class GameStateTrigger:
         if local_seat is None:
             return False
 
-        # A land whose colours the snapshot doesn't say counts as any colour:
-        # an unknown must never quiet a real response window.
-        sources = [
-            SimpleNamespace(
-                produces=_land_colors(c)
-                or (frozenset({"C"}) if c.get("oracle_text") or c.get("color_production") else frozenset(COLORS))
-            )
-            for c in state.get("battlefield", [])
-            if (c.get("controller_seat_id") or c.get("owner_seat_id")) == local_seat
-            and "land" in str(c.get("type_line") or "").lower()
-            and not c.get("is_tapped")
-        ]
-
-        for card in state.get("hand", []):
-            info = hand_card({**card, "rarity": card.get("rarity") or "-"})
-            if info.is_land or not info.instant_speed:
-                continue
-            if info.mana_value <= len(sources) and _pip_matching(info.pips, sources):
-                return True
-
-        return False
+        sources = untapped_sources(state, local_seat)
+        hand = [card for card in state.get("hand", []) if isinstance(card, dict)]
+        return any(affordable_at_instant_speed(card, sources) for card in hand)
 
     def check_triggers(self, prev_state: dict[str, Any], curr_state: dict[str, Any]) -> list[str]:
         """Compare two game states and return triggered condition names.
