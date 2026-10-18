@@ -930,6 +930,9 @@ def rank_pack(
                         if support and "removal" not in tags.roles:
                             # A scarce payoff the pool cannot feed is not worth hoarding.
                             rare *= max(support.values())
+                        if "removal" not in tags.roles:
+                            # Nor is one whose triggers give little (``WEAK_PAYOFF``).
+                            rare *= tags.payoff_strength
                         parts["scarcity"] += hypothesis.weight * SCARCITY_GAIN * rare
                         if why and hypothesis.weight * rare > scarce_best:
                             scarce_best, scarce_note = hypothesis.weight * rare, why

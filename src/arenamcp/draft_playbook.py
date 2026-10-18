@@ -113,6 +113,9 @@ _PAYOFF_LINE = re.compile(
 _TEMPORARY_PUMP = re.compile(r"\bgets? \+\d+/\+\d+ until end of turn\b")
 _LASTING_REWARD = re.compile(r"\bcreate\b|\bdraw\b|\bdamage\b|\bcounters?\b|\breturn\b|\bcan attack\b")
 WEAK_PAYOFF = 0.6
+# A planeswalker payoff that only guards them (see ``card_tags``).
+GUARD_PAYOFF = 0.4
+_LOYALTY_ABILITY = re.compile(r"\[[+\-−]?(?:\d+|x)\]:")
 
 
 def family(mechanic: str) -> str:
@@ -217,6 +220,15 @@ def card_tags(card: SetCard) -> CardTags:
         line.startswith("prowess") or (_TEMPORARY_PUMP.search(line) and not _LASTING_REWARD.search(line))
         for line in payoff_lines
     )
+    strength = WEAK_PAYOFF if weak else 1.0
+    granted = [line for line in lines if line.startswith("planeswalkers you control have")]
+    if granted and not payoff_lines and not any(_LOYALTY_ABILITY.search(line) for line in granted):
+        # Granting planeswalkers a loyalty ability gives each one a new use; a
+        # granted static only guards them (2026-10-18 P3p7: Tomik, Orzhov
+        # Lawmage's "no more than one creature can attack this planeswalker"
+        # outranked the Heartwood Crafter that casts the pool's Emrakul). A
+        # guard adds no card, body or damage, so it counts below a pump.
+        strength = GUARD_PAYOFF
     return CardTags(
         grp_id=card.grp_id,
         name=card.name,
@@ -227,7 +239,7 @@ def card_tags(card: SetCard) -> CardTags:
         payoffs=frozenset(profile["payoffs"]),
         indirect=frozenset(profile.get("indirect") or ()),
         land=land,
-        payoff_strength=WEAK_PAYOFF if weak else 1.0,
+        payoff_strength=strength,
         planeswalker="planeswalker" in front,
     )
 

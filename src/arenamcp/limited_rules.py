@@ -21,6 +21,7 @@ MECHANIC_LABELS = {
     "graveyard": "a full graveyard",
     "noncombat_damage": "noncombat damage",
     "dies": "creatures dying",
+    "off_hand": "spells cast from outside the hand",
 }
 
 # Keyword actions whose effects live only in reminder text, which Arena's
@@ -66,6 +67,15 @@ _SAC_OUTLET = re.compile(r"\bsacrifice (?:a|another|one) (?:other )?(?:creature|
 _DIES_PAYOFF = re.compile(
     r"^whenever (?:another |a |one or more )?(?:other )?(?:nontoken )?creatures?(?: or planeswalkers?)?"
     r" you control (?:dies|die)\b"
+)
+# Mana that "can't be spent to cast spells from your hand" (FRA Heartwood Crafter)
+# still casts spells from anywhere else and pays activated abilities: a card cast
+# from exile through its own ability (Emrakul, the Exigent Doom), flashback, a
+# card cast from the graveyard, and the spell a prepared creature carries.
+_OFF_HAND_MANA = re.compile(r"\bcan't be spent to cast spells from your hand\b")
+_OFF_HAND_CAST = re.compile(
+    r"\bfor as long as it remains exiled\b|\bflashback\b|\benters prepared\b"
+    r"|\bcast (?:it|this card|that card|them) from (?:exile|your graveyard)\b"
 )
 _ARTIFACT_PAYOFF = re.compile(
     r"\bnumber of artifacts you control\b|\bfor each artifact you control\b"
@@ -155,6 +165,10 @@ def _rules_profile(type_line: str, oracle_text: str) -> dict:
             enables.add("dies")
         if _ARTIFACT_PAYOFF.search(line):
             payoffs.add("artifact_entry")
+        if _OFF_HAND_MANA.search(line):
+            enables.add("off_hand")
+        if _OFF_HAND_CAST.search(line):
+            payoffs.add("off_hand")
         if re.search(r"\benters prepared\b", line):
             # Casting the prepared copy is casting its instant or sorcery.
             enables.update({"noncreature_spell", "instant_sorcery"})

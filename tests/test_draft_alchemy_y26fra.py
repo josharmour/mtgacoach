@@ -438,10 +438,23 @@ def test_a_planeswalker_payoff_keeps_full_credit_in_a_walker_rich_pool():
     assert thin < 0.6
 
 
-@pytest.mark.xfail(
-    strict=True, reason="Heartwood Crafter's mana casting Emrakul from exile is not a known link"
-)
 def test_heartwood_crafter_beats_tomik_for_the_ramp_pool():
     # Crafter's mana "can't be spent to cast spells from your hand", but Emrakul is cast
-    # from exile through its own {3} ability; Tomik's credit is a planeswalker payoff.
+    # from exile through its own {3} ability, and prepared spells and flashback are not
+    # cast from the hand either. Tomik's credit was a planeswalker payoff that only
+    # guards the pool's one Garruk and one Jace token.
     assert position("P3p7", "Heartwood Crafter") < position("P3p7", "Tomik, Orzhov Lawmage")
+    crafter = next(pick for pick in ranked("P3p7") if pick.name == "Heartwood Crafter")
+    assert "Emrakul, the Exigent Doom" in crafter.partners
+
+
+def test_restricted_mana_links_to_spells_cast_from_outside_the_hand():
+    from arenamcp.limited_rules import rules_profile
+
+    def profile(name):
+        card = PRIMER.by_name()[name.lower()]
+        return rules_profile({"type_line": card.types, "oracle_text": card.oracle})
+
+    assert "off_hand" in profile("Heartwood Crafter")["enables"]
+    for name in ("Emrakul, the Exigent Doom", "Generous Revival", "Blossom-Blessed Angel"):
+        assert "off_hand" in profile(name)["payoffs"], name

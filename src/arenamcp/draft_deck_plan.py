@@ -519,12 +519,24 @@ def pool_edges(
     if card is None:
         return 0.0, []
     weight_total = 0.0
+    # Jace token makers feeding this card's planeswalker payoff field one Jace
+    # between them (``engine_enablers``): their links count as one. A land that
+    # enters untapped beside a planeswalker only asks that one is out when it
+    # is played, which every token maker makes likelier, so it keeps them all.
+    own = book.tag(grp_id) if book is not None else None
+    walker_payoff = (
+        own is not None
+        and not own.land
+        and "planeswalker" in own.engine_payoffs()
+        and "loyalty" not in own.payoffs
+    )
+    token_link = 0.0
     named: list[tuple[float, str]] = []
     for partner_id in dict.fromkeys(partners):
         partner = _card_dict(primer, partner_id)
         if partner is None or partner_id == grp_id:
             continue
-        best = 0.0
+        best, via_token = 0.0, False
         for edge in synergy_evidence(card, partner):
             strength = BROAD_MECHANICS.get(family(edge["mechanic"]), (0, 1.0))[1]
             if edge.get("indirect"):
@@ -532,11 +544,23 @@ def pool_edges(
             payoff = book.tag(edge["payoff_id"]) if book is not None else None
             if payoff is not None:
                 strength *= payoff.payoff_strength
-            best = max(best, strength)
+            if strength > best:
+                source = book.tag(edge["source_id"]) if book is not None else None
+                via_token = (
+                    walker_payoff
+                    and edge["payoff_id"] == grp_id
+                    and family(edge["mechanic"]) == "planeswalker"
+                    and source is not None
+                    and not source.planeswalker
+                )
+                best = strength
         if best > 0:
-            copies = partners.count(partner_id)
-            weight_total += best * copies
+            if via_token:
+                token_link = max(token_link, best)
+            else:
+                weight_total += best * partners.count(partner_id)
             named.append((best, partner["name"]))
+    weight_total += token_link
     value = EDGE_GAIN * (1.0 - math.exp(-weight_total / EDGE_SCALE))
     named.sort(key=lambda row: -row[0])
     return round(value, 4), [name for _strength, name in named]
