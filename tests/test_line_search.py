@@ -1012,9 +1012,15 @@ def test_unmodelled_effect_names_what_the_search_cannot_value():
     assert unmodelled_effect(card(5, "Heartstring Puller", 1)) == ""  # its enters token
     assert unmodelled_effect(card(6, "Archive Arbiter", 1)) == ""  # its gain-4 mode is modelled
     assert unmodelled_effect(lifelinker) == ""
-    assert unmodelled_effect(card(7, "Elemental Surge", 1)) == "its tokens"
+    assert unmodelled_effect(card(7, "Elemental Surge", 1)) == "its tokens"  # exiled at end of turn
     assert unmodelled_effect(pinger) == "its triggered ability"
     assert unmodelled_effect(fighter) == "its triggered ability"
+    draw = {"name": "Test Study", "type_line": "Sorcery", "mana_cost": "{2}{R}", "oracle_text": "Draw two cards."}
+    assert unmodelled_effect(draw) == ""  # card draw changes nothing the search values
+    assert unmodelled_effect(card(8, "Grizzly Bears", 1)) == ""
+    assert unmodelled_effect(card(9, "Unsummon", 1)) == ""  # bounce
+    assert unmodelled_effect(card(10, "Splinter Twin", 1))  # an aura granting a copy ability
+    assert unmodelled_effect(None) == "" and unmodelled_effect({}) == ""
     assert unmodelled_effect(card(8, "Seismic Jolt", 1)) == "a combat trick"
     assert unmodelled_effect(card(9, "Pacifism", 1)) and unmodelled_effect(card(10, "Splinter Twin", 1))
     assert (

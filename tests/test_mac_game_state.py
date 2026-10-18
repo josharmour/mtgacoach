@@ -449,3 +449,37 @@ def test_counters_and_attachments_shaped():
     assert buffed_row["damaged_this_turn"] is True
     assert buffed_row["summoning_sickness"] is True
     assert buffed_row["face_down"] is True
+
+
+def test_mac_snapshot_reports_the_loyalty_counter_not_the_boxed_zero():
+    from arenamcp.mac_game_state import _card_entry
+
+    def enum(name):
+        return {"e": name, "v": 0}
+
+    def listing(*values):
+        return {
+            "$c": "System.Collections.Generic.List<X>",
+            "$h": 900,
+            "$n": len(values),
+            "$items": list(values),
+        }
+
+    zero = {"$c": "System.Nullable`1[System.UInt32]", "$struct": True, "hasValue": True, "value": 0}
+    counter = {"$c": "GreClient.Rules.CounterData", "$struct": True, "type_": enum("Loyalty"), "count_": 1}
+    node = {
+        "$c": "GreClient.Rules.MtgCardInstance",
+        "$h": 298,
+        "instanceId": 298,
+        "baseGrpId": 106555,
+        "objectType_": enum("Token"),
+        "cardTypes_": listing(enum("Planeswalker")),
+        "loyalty": zero,
+        "counterDatas_": listing(counter),
+    }
+    entry = _card_entry(node)
+    assert entry["loyalty"] == 1 and entry["counters"] == {"Loyalty": 1}
+    # Without a counter, a planeswalker's zero is unknown, not a free kill.
+    assert "loyalty" not in _card_entry({**node, "counterDatas_": listing()})
+    with_value = {**zero, "value": 4}
+    assert _card_entry({**node, "loyalty": with_value, "counterDatas_": listing()})["loyalty"] == 4

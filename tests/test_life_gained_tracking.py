@@ -111,11 +111,9 @@ def test_life_gained_earlier_this_turn_sets_the_cadet_count():
     result = search_lines(model, survival=False, lethal_now=False, hard_ms=1e9)
     step = result.best.steps[0]
     assert step.casts == ("Germinate Recruits",), step
-
-
-def test_board_helper_carries_counters():
-    model = build_board_model(
+    # The fixture helper's counters reach the model the same way.
+    helper = build_board_model(
         board(turn=3, phase="Phase_Main1", life={1: 20, 2: 20}, battlefield=[], hand=[],
               gained_turn=1, gained_game=5)
     )  # fmt: skip
-    assert (model.life_gained_turn, model.life_gained_game) == (1, 5)
+    assert (helper.life_gained_turn, helper.life_gained_game) == (1, 5)

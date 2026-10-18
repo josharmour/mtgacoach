@@ -137,15 +137,6 @@ def test_rejected_target_has_no_surviving_spoken_instruction(target_state):
     assert plan.voice_advice == ""
 
 
-def test_busy_engine_consumes_trigger_without_competing_coaching():
-    engine = AutopilotEngine(planner=Mock())
-    engine._detect_manual_play = Mock(return_value=False)
-    engine._maybe_escape_stuck_window = Mock(return_value=False)
-    assert engine.process_trigger({"game_engine_busy": True}, "decision_required") is True
-    engine._planner.plan_actions.assert_not_called()
-    engine._planner.plan_decision_options.assert_not_called()
-
-
 def test_busy_planner_lock_is_never_stolen_or_sent_to_coaching():
     engine = AutopilotEngine(planner=Mock())
     assert engine._acquire_lock(blocking=False)

@@ -20,6 +20,7 @@ import shutil
 import socket
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -319,3 +320,28 @@ def instant_combat_acks(monkeypatch):
 
     for name in ("_BLOCK_ACK_MAX_WAIT_S", "_ATTACK_ACK_MAX_WAIT_S", "_COMBAT_ACK_SETTLE_S"):
         monkeypatch.setattr(autopilot_bridge, name, 0.0)
+
+
+@pytest.fixture
+def plan_threads(monkeypatch):
+    """The game plan's background threads, joined (and checked finished) after the test.
+
+    One background strategy job runs at a time, process-wide: first wait out a
+    plan refresh another test may have left running.
+    """
+    from arenamcp.game_plan import STRATEGIC_LANE
+
+    assert STRATEGIC_LANE.wait_idle(5)
+    started: list[threading.Thread] = []
+    real_thread = threading.Thread
+
+    def make(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        started.append(thread)
+        return thread
+
+    monkeypatch.setattr("arenamcp.game_plan.threading.Thread", make)
+    yield started
+    for thread in started:
+        thread.join(timeout=3)
+        assert not thread.is_alive()
