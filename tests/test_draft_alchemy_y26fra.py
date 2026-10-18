@@ -14,6 +14,7 @@ lessons not learned yet are strict xfails in test_pro_deck_builds.)
 
 from __future__ import annotations
 
+import functools
 import sqlite3
 
 import pytest
@@ -229,25 +230,40 @@ def test_card_text_comes_once_and_without_arena_markup(tmp_path):
 # -- the pro's draft ----------------------------------------------------------------
 
 
-def signals_at(key: str) -> dict[str, float]:
+@functools.cache
+def _signals_by_pick() -> dict[str, dict[str, float]]:
+    """The table's signals after each pick, accumulated in one pass over the draft."""
     store: dict = {}
-    for seen in fx.ORDER[: fx.ORDER.index(key) + 1]:
+    signals = {}
+    for seen in fx.ORDER:
         pack_no, pick_no = (int(part) for part in seen[1:].split("p"))
         note_openness(store, pack_no, color_openness(fx.PACKS[seen], pick_no, PRIMER))
-    return color_signals(store, int(key[1:].split("p")[0]))
+        signals[seen] = color_signals(store, pack_no)
+    return signals
+
+
+def signals_at(key: str) -> dict[str, float]:
+    return dict(_signals_by_pick()[key])
 
 
 def ranked(key: str):
+    return list(_ranked(key))
+
+
+@functools.cache
+def _ranked(key: str) -> tuple:
     pack_no, pick_no = (int(part) for part in key[1:].split("p"))
-    return rank_pack(
-        fx.PACKS[key],
-        fx.pool_before(key),
-        PRIMER,
-        pack_number=pack_no,
-        pick_number=pick_no,
-        names=fx.NAMES,
-        mana_costs=fx.COSTS,
-        signals=signals_at(key),
+    return tuple(
+        rank_pack(
+            fx.PACKS[key],
+            fx.pool_before(key),
+            PRIMER,
+            pack_number=pack_no,
+            pick_number=pick_no,
+            names=fx.NAMES,
+            mana_costs=fx.COSTS,
+            signals=signals_at(key),
+        )
     )
 
 

@@ -9,6 +9,7 @@ way the live driver computes them.
 
 from __future__ import annotations
 
+import functools
 import statistics
 
 import pytest
@@ -26,19 +27,38 @@ GROUPS = {
 }
 
 
-def signals_at(key: str) -> dict[str, float]:
+@functools.cache
+def _signals_by_pick() -> dict[str, dict[str, float]]:
+    """The table's signals after each pick, accumulated in one pass over the draft."""
     store: dict = {}
-    for seen in fx.ORDER[: fx.ORDER.index(key) + 1]:
+    signals = {}
+    for seen in fx.ORDER:
         pack_no, pick_no = (int(part) for part in seen[1:].split("p"))
         note_openness(store, pack_no, color_openness(fx.PACKS[seen], pick_no, PRIMER))
-    return color_signals(store, int(key[1:].split("p")[0]))
+        signals[seen] = color_signals(store, pack_no)
+    return signals
+
+
+def signals_at(key: str) -> dict[str, float]:
+    return dict(_signals_by_pick()[key])
 
 
 def ranked(key: str, pool: list[int] | None = None):
+    if pool is None:
+        return list(_ranked_as_drafted(key))
+    return _rank(key, pool)
+
+
+@functools.cache
+def _ranked_as_drafted(key: str) -> tuple:
+    return tuple(_rank(key, fx.pool_before(key)))
+
+
+def _rank(key: str, pool: list[int]):
     pack_no, pick_no = (int(part) for part in key[1:].split("p"))
     return rank_pack(
         fx.PACKS[key],
-        fx.pool_before(key) if pool is None else pool,
+        pool,
         PRIMER,
         pack_number=pack_no,
         pick_number=pick_no,
