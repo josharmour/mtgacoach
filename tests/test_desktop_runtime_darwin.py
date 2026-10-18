@@ -80,39 +80,6 @@ def test_runtime_root_env_override_wins(monkeypatch, tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# open_path
-# ---------------------------------------------------------------------------
-
-
-def test_open_path_darwin_uses_usr_bin_open(monkeypatch, tmp_path: Path) -> None:
-    target = tmp_path / "somefile.txt"
-    target.write_text("x", encoding="utf-8")
-
-    calls: list[list[str]] = []
-    monkeypatch.setattr(runtime.sys, "platform", "darwin")
-    monkeypatch.setattr(runtime.subprocess, "Popen", lambda args, **_: calls.append(args))
-    monkeypatch.setattr(runtime.shutil, "which", lambda name: pytest.fail(f"unexpected which({name!r})"))
-
-    runtime.open_path(str(target))
-
-    assert calls == [["/usr/bin/open", str(target)]]
-
-
-def test_open_path_linux_still_uses_xdg_open(monkeypatch, tmp_path: Path) -> None:
-    target = tmp_path / "somefile.txt"
-    target.write_text("x", encoding="utf-8")
-
-    calls: list[list[str]] = []
-    monkeypatch.setattr(runtime.sys, "platform", "linux")
-    monkeypatch.setattr(runtime.shutil, "which", lambda name: "/usr/bin/xdg-open")
-    monkeypatch.setattr(runtime.subprocess, "Popen", lambda args, **_: calls.append(args))
-
-    runtime.open_path(str(target))
-
-    assert calls == [["/usr/bin/xdg-open", str(target)]]
-
-
-# ---------------------------------------------------------------------------
 # is_mtga_running
 # ---------------------------------------------------------------------------
 
@@ -137,124 +104,32 @@ def test_mtga_process_patterns_darwin_covers_native_and_wine(monkeypatch) -> Non
     assert runtime._mtga_process_patterns() == [r"MTGA\.exe"]
 
 
-def test_is_mtga_running_darwin_detects_native_process(monkeypatch) -> None:
+NATIVE, WINE = r"MTGA\.app/Contents/MacOS/MTGA", r"MTGA\.exe"
+
+
+@pytest.mark.parametrize(
+    ("matching", "running", "probed"),
+    [
+        # The native pattern matches first: no need to try the Wine pattern.
+        ({NATIVE}, True, [NATIVE]),
+        ({WINE}, True, [NATIVE, WINE]),
+        (set(), False, [NATIVE, WINE]),
+    ],
+    ids=["native", "wine", "none"],
+)
+def test_is_mtga_running_darwin(monkeypatch, matching, running, probed) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(runtime.sys, "platform", "darwin")
-    monkeypatch.setattr(
-        runtime.subprocess,
-        "run",
-        _fake_pgrep({r"MTGA\.app/Contents/MacOS/MTGA"}, calls),
-    )
+    monkeypatch.setattr(runtime.subprocess, "run", _fake_pgrep(matching, calls))
 
     runtime._invalidate_mtga_running_cache()
-    assert runtime.is_mtga_running() is True
-    # Native pattern matched first; no need to try the Wine pattern.
-    assert calls == [["pgrep", "-f", r"MTGA\.app/Contents/MacOS/MTGA"]]
-
-
-def test_is_mtga_running_darwin_detects_wine_process(monkeypatch) -> None:
-    calls: list[list[str]] = []
-    monkeypatch.setattr(runtime.sys, "platform", "darwin")
-    monkeypatch.setattr(runtime.subprocess, "run", _fake_pgrep({r"MTGA\.exe"}, calls))
-
-    runtime._invalidate_mtga_running_cache()
-    assert runtime.is_mtga_running() is True
-    assert calls == [
-        ["pgrep", "-f", r"MTGA\.app/Contents/MacOS/MTGA"],
-        ["pgrep", "-f", r"MTGA\.exe"],
-    ]
-
-
-def test_is_mtga_running_darwin_no_match(monkeypatch) -> None:
-    calls: list[list[str]] = []
-    monkeypatch.setattr(runtime.sys, "platform", "darwin")
-    monkeypatch.setattr(runtime.subprocess, "run", _fake_pgrep(set(), calls))
-
-    runtime._invalidate_mtga_running_cache()
-    assert runtime.is_mtga_running() is False
-    assert len(calls) == 2
-
-
-# ---------------------------------------------------------------------------
-# close_mtga
-# ---------------------------------------------------------------------------
-
-
-def test_close_mtga_darwin_pkills_both_patterns(monkeypatch) -> None:
-    calls: list[list[str]] = []
-
-    def fake_run(args: list[str], **_: object) -> SimpleNamespace:
-        calls.append(list(args))
-        return SimpleNamespace(returncode=1, stdout="", stderr="")  # no match is fine
-
-    monkeypatch.setattr(runtime.sys, "platform", "darwin")
-    monkeypatch.setattr(runtime, "is_mtga_running", lambda: True)
-    monkeypatch.setattr(runtime, "_wait_for_mtga_exit", lambda *a, **k: None)
-    monkeypatch.setattr(runtime.subprocess, "run", fake_run)
-
-    assert runtime.close_mtga() is True
-    assert calls == [
-        ["pkill", "-f", r"MTGA\.app/Contents/MacOS/MTGA"],
-        ["pkill", "-f", r"MTGA\.exe"],
-    ]
-
-
-def test_close_mtga_darwin_raises_on_pkill_error(monkeypatch) -> None:
-    def fake_run(args: list[str], **_: object) -> SimpleNamespace:
-        return SimpleNamespace(returncode=2, stdout="", stderr="boom")
-
-    monkeypatch.setattr(runtime.sys, "platform", "darwin")
-    monkeypatch.setattr(runtime, "is_mtga_running", lambda: True)
-    monkeypatch.setattr(runtime, "_wait_for_mtga_exit", lambda *a, **k: None)
-    monkeypatch.setattr(runtime.subprocess, "run", fake_run)
-
-    with pytest.raises(RuntimeError, match="boom"):
-        runtime.close_mtga()
-
-
-def test_close_mtga_windows_taskkill_is_reachable(monkeypatch) -> None:
-    """Regression: `return True` used to sit above the taskkill block, making
-    it dead code — Windows never actually killed MTGA."""
-    calls: list[list[str]] = []
-
-    def fake_run(args: list[str], **_: object) -> SimpleNamespace:
-        calls.append(list(args))
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(runtime.sys, "platform", "win32")
-    monkeypatch.setattr(runtime, "is_mtga_running", lambda: True)
-    monkeypatch.setattr(runtime, "_wait_for_mtga_exit", lambda *a, **k: None)
-    monkeypatch.setattr(runtime.subprocess, "run", fake_run)
-
-    assert runtime.close_mtga() is True
-    assert calls == [["taskkill", "/IM", "MTGA.exe", "/T", "/F"]]
-
-
-def test_close_mtga_returns_false_when_not_running(monkeypatch) -> None:
-    monkeypatch.setattr(runtime, "is_mtga_running", lambda: False)
-    monkeypatch.setattr(runtime.subprocess, "run", lambda *a, **k: pytest.fail("should not shell out"))
-
-    assert runtime.close_mtga() is False
+    assert runtime.is_mtga_running() is running
+    assert calls == [["pgrep", "-f", pattern] for pattern in probed]
 
 
 # ---------------------------------------------------------------------------
 # launch_mtga
 # ---------------------------------------------------------------------------
-
-
-def test_launch_mtga_darwin_opens_app_bundle(monkeypatch, tmp_path: Path) -> None:
-    bundle = tmp_path / "MTGA.app"
-    (bundle / "Contents" / "MacOS").mkdir(parents=True)
-
-    calls: list[list[str]] = []
-    monkeypatch.setattr(runtime.sys, "platform", "darwin")
-    monkeypatch.setattr(runtime, "is_mtga_running", lambda: False)
-    monkeypatch.setattr(runtime.subprocess, "Popen", lambda args, **_: calls.append(args))
-
-    result = runtime.launch_mtga(str(tmp_path))
-
-    assert calls == [["/usr/bin/open", str(bundle)]]
-    assert result == str(bundle)
 
 
 def test_mac_bridge_launch_executes_game_directly(monkeypatch, tmp_path):
@@ -310,8 +185,8 @@ def test_native_mac_session_auto_launch(monkeypatch, tmp_path, installed, runnin
     assert result == (str(bundle) if expected else None)
 
 
-def test_mac_auto_launch_failure_does_not_close_coach(monkeypatch):
-    messages = []
+def test_mac_auto_launch_failure_is_logged_and_shown_without_closing_the_coach(monkeypatch):
+    statuses, errors, messages = [], [], []
 
     def fail_launch(**kwargs):
         raise OSError("Steam unavailable")
@@ -319,19 +194,8 @@ def test_mac_auto_launch_failure_does_not_close_coach(monkeypatch):
     monkeypatch.setenv("MTGACOACH_GAME_DEVICE", "desktop")  # independent of the user's settings.json
     monkeypatch.setattr(runtime, "launch_native_mac_session", fail_launch)
     monkeypatch.setattr(desktop_app, "_write_log", messages.append)
-    desktop_app._launch_native_mac_session()
+    desktop_app._launch_native_mac_session(statuses.append, errors.append)  # must not raise
     assert messages == ["MTGA automatic launch failed: Steam unavailable"]
-
-
-def test_mac_auto_launch_failure_is_visible_in_parent_status_and_feed(monkeypatch):
-    statuses, errors = [], []
-
-    def fail_launch(**kwargs):
-        raise OSError("Steam unavailable")
-
-    monkeypatch.setenv("MTGACOACH_GAME_DEVICE", "desktop")
-    monkeypatch.setattr(runtime, "launch_native_mac_session", fail_launch)
-    desktop_app._launch_native_mac_session(statuses.append, errors.append)
     assert statuses == errors
     assert "Arena could not start: Steam unavailable" in statuses[0]
 
@@ -419,56 +283,6 @@ def test_android_mode_does_not_start_mtga_on_the_mac(monkeypatch):
     assert messages == ["game_device=android: not starting MTGA on this Mac"]
 
 
-def test_launch_mtga_darwin_accepts_bundle_path_itself(monkeypatch, tmp_path: Path) -> None:
-    bundle = tmp_path / "MTGA.app"
-    bundle.mkdir()
-
-    calls: list[list[str]] = []
-    monkeypatch.setattr(runtime.sys, "platform", "darwin")
-    monkeypatch.setattr(runtime, "is_mtga_running", lambda: False)
-    monkeypatch.setattr(runtime.subprocess, "Popen", lambda args, **_: calls.append(args))
-
-    result = runtime.launch_mtga(str(bundle))
-
-    assert calls == [["/usr/bin/open", str(bundle)]]
-    assert result == str(bundle)
-
-
-def test_launch_mtga_darwin_falls_back_to_steam_url(monkeypatch, tmp_path: Path) -> None:
-    calls: list[list[str]] = []
-    monkeypatch.setattr(runtime.sys, "platform", "darwin")
-    monkeypatch.setattr(runtime, "is_mtga_running", lambda: False)
-    monkeypatch.setattr(runtime.subprocess, "Popen", lambda args, **_: calls.append(args))
-
-    result = runtime.launch_mtga(str(tmp_path))
-
-    assert calls == [["/usr/bin/open", "steam://rungameid/2141910"]]
-    assert result == str(tmp_path)
-
-
-def test_launch_mtga_darwin_steam_fallback_reports_wine_exe(monkeypatch, tmp_path: Path) -> None:
-    exe = tmp_path / "MTGA.exe"
-    exe.write_text("", encoding="utf-8")
-
-    calls: list[list[str]] = []
-    monkeypatch.setattr(runtime.sys, "platform", "darwin")
-    monkeypatch.setattr(runtime, "is_mtga_running", lambda: False)
-    monkeypatch.setattr(runtime.subprocess, "Popen", lambda args, **_: calls.append(args))
-
-    result = runtime.launch_mtga(str(tmp_path))
-
-    assert calls == [["/usr/bin/open", "steam://rungameid/2141910"]]
-    assert result == str(exe)
-
-
-def test_launch_mtga_linux_still_requires_exe(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(runtime.sys, "platform", "linux")
-    monkeypatch.setattr(runtime.subprocess, "Popen", lambda *a, **k: pytest.fail("should not launch"))
-
-    with pytest.raises(FileNotFoundError):
-        runtime.launch_mtga(str(tmp_path))
-
-
 # ---------------------------------------------------------------------------
 # find_mtga_install_dir (darwin Steam path candidate)
 # ---------------------------------------------------------------------------
@@ -540,66 +354,3 @@ def test_release_single_instance_lock_noop_when_unheld(monkeypatch) -> None:
     monkeypatch.setattr(desktop_app, "_INSTANCE_LOCK_FILE", None)
     monkeypatch.setattr(desktop_app, "_INSTANCE_MUTEX", None)
     desktop_app._release_single_instance_lock()  # must not raise
-
-
-# ── bridge_applicable / is_fully_provisioned gating ──────────────────────
-
-
-def _minimal_state(**overrides):
-    """Build a RuntimeState with sane defaults for gating tests."""
-    from arenamcp.desktop.runtime import RuntimeState
-
-    base = dict(
-        repo_dir="/repo",
-        repo_checkout=True,
-        runtime_root="/rt",
-        runtime_venv_dir="/rt/venv",
-        runtime_venv_exists=True,
-        python_exe="/rt/venv/bin/python",
-        python_source="runtime_venv",
-        python_ready=True,
-        python_ready_detail="ok",
-        mtga_dir=None,
-        mtga_dir_source="none",
-        mtga_exe_path=None,
-        mtga_running=False,
-        player_log="/tmp/Player.log",
-        bepinex_log=None,
-        bepinex_dir=None,
-        bepinex_installed=False,
-        plugin_install_path=None,
-        plugin_installed=False,
-        plugin_build_path=None,
-        plugin_built=False,
-        bepinex_bundle=None,
-        restart_mtga_required=False,
-    )
-    base.update(overrides)
-    return RuntimeState(**base)
-
-
-def test_native_mac_install_is_provisioned_without_bridge(monkeypatch, tmp_path):
-    """Native Mac client (no MTGA.exe) must not gate provisioning on BepInEx."""
-    monkeypatch.setattr(runtime.sys, "platform", "darwin")
-    (tmp_path / "MTGA.app").mkdir()
-    state = _minimal_state(mtga_dir=str(tmp_path))
-    assert state.bridge_applicable is False
-    assert state.bridge_ready is False
-    assert state.is_fully_provisioned is True
-
-
-def test_crossover_bottle_still_requires_bridge(monkeypatch, tmp_path):
-    monkeypatch.setattr(runtime.sys, "platform", "darwin")
-    (tmp_path / "MTGA.exe").write_bytes(b"MZ")
-    state = _minimal_state(mtga_dir=str(tmp_path))
-    assert state.bridge_applicable is True
-    assert state.is_fully_provisioned is False
-
-
-def test_windows_still_requires_bridge(monkeypatch, tmp_path):
-    monkeypatch.setattr(runtime.sys, "platform", "win32")
-    state = _minimal_state(mtga_dir=str(tmp_path))
-    assert state.bridge_applicable is True
-    assert state.is_fully_provisioned is False
-    provisioned = _minimal_state(mtga_dir=str(tmp_path), bepinex_installed=True, plugin_installed=True)
-    assert provisioned.is_fully_provisioned is True

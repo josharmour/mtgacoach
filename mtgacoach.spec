@@ -51,7 +51,6 @@ hiddenimports = [
     "arenamcp.desktop.performance_tab",
     "arenamcp.desktop.repair_tab",
     "arenamcp.desktop.runtime",
-    "arenamcp.desktop.setup_splash",
     "arenamcp.desktop.theme",
     "arenamcp.desktop.tts_manager",
     "arenamcp.desktop.tts_worker",

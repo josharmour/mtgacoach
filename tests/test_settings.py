@@ -17,6 +17,8 @@ LEGACY = {
     "autopilot_vision_model": "glm-5.3-flash",
     "autopilot_vision_url": "http://10.0.0.10:8444/v1/",
     "autopilot_vision_api_key": "sk-vision",
+    # The desktop runtime's removed restart-detector baseline.
+    "config_mtimes": {"C:/MTGA": {"BepInEx.cfg": 1.0}},
 }
 
 

@@ -11,7 +11,7 @@ import time
 import webbrowser
 import zipfile
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 try:
@@ -36,7 +36,6 @@ _COMMON_MTGA_PATHS = [
     Path(r"C:\Program Files\Epic Games\MagicTheGathering"),
 ]
 _RELEASES_URL = "https://github.com/josharmour/mtgacoach/releases"
-_PYTHON_DOWNLOADS_URL = "https://www.python.org/downloads/windows/"
 _MAC_LAUNCH_LOCK = threading.Lock()
 _native_mtga_process: subprocess.Popen | None = None
 
@@ -65,50 +64,6 @@ class RuntimeState:
     plugin_build_path: str | None
     plugin_built: bool
     bepinex_bundle: str | None
-    restart_mtga_required: bool
-    issues: list[str] = field(default_factory=list)
-
-    @property
-    def has_ready_python_runtime(self) -> bool:
-        return (
-            self.python_exe is not None
-            and self.python_ready
-            and (
-                self.runtime_venv_exists
-                or self.python_source == "app_runtime"
-                or (self.repo_checkout and self.python_source in {"current", "app_venv"})
-            )
-        )
-
-    @property
-    def bridge_ready(self) -> bool:
-        return self.mtga_dir is not None and self.bepinex_installed and self.plugin_installed
-
-    @property
-    def bridge_applicable(self) -> bool:
-        """Whether the BepInEx bridge can exist for this install at all.
-
-        The bridge only loads into the Windows Mono build (native Windows,
-        Proton, or a Wine/CrossOver bottle). The native macOS client is
-        IL2CPP — no CLR to host the plugin — so coaching runs log-only there
-        and the bridge must not gate provisioning (docs/PLATFORM_PARITY.md).
-        A bottle install is recognizable by its MTGA.exe.
-        """
-        if sys.platform != "darwin":
-            return True
-        if self.mtga_dir is None:
-            return True
-        return (Path(self.mtga_dir) / "MTGA.exe").exists()
-
-    @property
-    def is_launchable(self) -> bool:
-        return self.has_ready_python_runtime
-
-    @property
-    def is_fully_provisioned(self) -> bool:
-        if not self.has_ready_python_runtime:
-            return False
-        return self.bridge_ready or not self.bridge_applicable
 
 
 def _is_app_root(path: Path) -> bool:
@@ -488,129 +443,6 @@ def is_mtga_running() -> bool:
         return _running_cache_value
 
 
-def _safe_mtime(path: Path | None) -> float:
-    if path is None or not path.exists():
-        return 0.0
-    try:
-        return path.stat().st_mtime
-    except OSError:
-        return 0.0
-
-
-# Config files that require an MTGA restart to take effect, relative to the
-# MTGA install dir. Tracked alongside the BepInEx/plugin binaries so that
-# editing a config (not just swapping a DLL) is detected.
-_RESTART_CONFIG_FILES = {
-    "doorstop_config.ini": ("doorstop_config.ini",),
-    "BepInEx.cfg": ("BepInEx", "config", "BepInEx.cfg"),
-}
-
-
-def _config_paths_for(mtga_dir: str) -> dict[str, Path]:
-    base = Path(mtga_dir)
-    return {name: base.joinpath(*parts) for name, parts in _RESTART_CONFIG_FILES.items()}
-
-
-def get_saved_config_mtimes(mtga_dir: str) -> dict[str, float]:
-    """Return the recorded baseline config mtimes for *mtga_dir*.
-
-    The baseline is stored per MTGA directory under ``config_mtimes`` in
-    settings.json. Missing/old settings files degrade gracefully to ``{}``.
-    """
-    try:
-        if not _SETTINGS_FILE.exists():
-            return {}
-        with _SETTINGS_FILE.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        all_mtimes = data.get("config_mtimes")
-        if isinstance(all_mtimes, dict):
-            entry = all_mtimes.get(mtga_dir)
-            if isinstance(entry, dict):
-                return {str(k): float(v) for k, v in entry.items() if isinstance(v, (int, float))}
-    except Exception:
-        pass
-    return {}
-
-
-def set_saved_config_mtimes(mtga_dir: str, mtimes: dict[str, float]) -> None:
-    """Persist the baseline config mtimes for *mtga_dir* into settings.json."""
-    _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
-    data: dict[str, object] = {}
-    if _SETTINGS_FILE.exists():
-        try:
-            with _SETTINGS_FILE.open("r", encoding="utf-8") as handle:
-                loaded = json.load(handle)
-            if isinstance(loaded, dict):
-                data.update(loaded)
-        except Exception:
-            pass
-    all_mtimes = data.get("config_mtimes")
-    if not isinstance(all_mtimes, dict):
-        all_mtimes = {}
-    all_mtimes[mtga_dir] = {str(k): float(v) for k, v in mtimes.items()}
-    data["config_mtimes"] = all_mtimes
-    with _SETTINGS_FILE.open("w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2)
-
-
-def _record_config_mtimes(mtga_dir: str) -> None:
-    """Snapshot the current config mtimes as the baseline for *mtga_dir*.
-
-    Called right after an install/repair so that freshly-written configs do
-    not produce a spurious "restart required" signal.
-    """
-    mtimes: dict[str, float] = {}
-    for name, path in _config_paths_for(mtga_dir).items():
-        current = _safe_mtime(path)
-        if current > 0:
-            mtimes[name] = current
-    if mtimes:
-        set_saved_config_mtimes(mtga_dir, mtimes)
-
-
-def _restart_mtga_required(
-    *,
-    player_log: Path,
-    bepinex_dir: Path | None,
-    plugin_install_path: Path | None,
-    mtga_dir: str | None = None,
-) -> bool:
-    if bepinex_dir is None and plugin_install_path is None:
-        return False
-
-    player_log_mtime = _safe_mtime(player_log)
-    if player_log_mtime <= 0:
-        return False
-
-    install_times = [
-        _safe_mtime(plugin_install_path),
-        _safe_mtime(bepinex_dir / "core" / "BepInEx.dll" if bepinex_dir else None),
-        _safe_mtime(bepinex_dir / "plugins" / "MtgaCoachBridge.dll" if bepinex_dir else None),
-    ]
-
-    # Config changes (BepInEx.cfg, doorstop_config.ini) also require a restart
-    # to take effect, but only the binaries were tracked before. Fold the
-    # configs into the same Player.log comparison: a config newer than the
-    # latest Player.log write means MTGA is running with a stale config. This
-    # is self-clearing (Player.log becomes newest again after the restart).
-    #
-    # The recorded baseline (from a prior install/repair) is used to suppress
-    # configs that still match what we installed, which avoids a false signal
-    # right after install when Player.log can be older than the fresh configs.
-    if mtga_dir:
-        saved = get_saved_config_mtimes(mtga_dir)
-        for name, path in _config_paths_for(mtga_dir).items():
-            current = _safe_mtime(path)
-            if current <= 0:
-                continue  # config not written yet (created on first MTGA run)
-            baseline = saved.get(name)
-            if baseline is not None and current <= baseline:
-                continue  # unchanged since we recorded the baseline
-            install_times.append(current)
-
-    return max(install_times, default=0.0) > player_log_mtime
-
-
 def detect_runtime_state() -> RuntimeState:
     app_root = Path(get_app_root())
     # A valid checkout is anything that ships pyproject.toml (git clone *or*
@@ -752,27 +584,6 @@ def detect_runtime_state() -> RuntimeState:
 
     bepinex_bundle = find_bepinex_bundle()
 
-    restart_mtga_required = _restart_mtga_required(
-        player_log=player_log_path,
-        bepinex_dir=Path(bepinex_dir) if bepinex_dir else None,
-        plugin_install_path=Path(plugin_install_path) if plugin_install_path else None,
-        mtga_dir=mtga_dir,
-    )
-
-    issues: list[str] = []
-    if python_exe is None:
-        issues.append("Python 3.10+ not found")
-    elif not python_ready:
-        issues.append("Setup environment has not completed")
-    if mtga_dir is None:
-        issues.append("MTGA install not detected")
-    if mtga_dir is not None and not bepinex_installed:
-        issues.append("BepInEx not installed in MTGA")
-    if mtga_dir is not None and bepinex_installed and not plugin_installed:
-        issues.append("MtgaCoachBridge.dll not deployed to BepInEx/plugins")
-    if restart_mtga_required:
-        issues.append("Restart MTGA to load the updated bridge")
-
     return RuntimeState(
         repo_dir=str(app_root),
         repo_checkout=repo_checkout,
@@ -796,8 +607,6 @@ def detect_runtime_state() -> RuntimeState:
         plugin_build_path=str(plugin_build) if plugin_built else None,
         plugin_built=plugin_built,
         bepinex_bundle=bepinex_bundle,
-        restart_mtga_required=restart_mtga_required,
-        issues=issues,
     )
 
 
@@ -856,43 +665,6 @@ def read_version() -> str:
     return "unknown"
 
 
-def _subprocess_creationflags() -> int:
-    if sys.platform != "win32":
-        return 0
-    return getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-
-
-def get_setup_wizard_command(mode: str | None = None) -> tuple[str, list[str], dict[str, str]]:
-    app_root = Path(get_app_root())
-    runtime_root = get_runtime_root()
-    python_exe, _ = find_python_executable()
-    if python_exe is None:
-        raise RuntimeError("Python executable not found")
-
-    env = os.environ.copy()
-    env["MTGACOACH_RUNTIME_ROOT"] = runtime_root
-    env["PYTHONUNBUFFERED"] = "1"
-    env["PYTHONIOENCODING"] = "utf-8"
-    args = [str(app_root / "setup_wizard.py")]
-    if mode == "create_venv":
-        args.append("--create-venv")
-    elif mode == "setup_environment":
-        args.append("--setup-environment")
-    return (python_exe, args, env)
-
-
-def run_setup_wizard(mode: str | None = None) -> subprocess.Popen[str]:
-    app_root = Path(get_app_root())
-    python_exe, args, env = get_setup_wizard_command(mode)
-    return subprocess.Popen(
-        [python_exe] + args,
-        cwd=app_root,
-        env=env,
-        creationflags=_subprocess_creationflags(),
-        text=True,
-    )
-
-
 def install_bepinex(mtga_dir: str) -> str:
     if is_mtga_running():
         raise RuntimeError("Close MTGA before installing BepInEx")
@@ -924,10 +696,6 @@ def install_bepinex(mtga_dir: str) -> str:
                 break
         if source is not None and source.exists():
             shutil.copy2(source, Path(mtga_dir) / filename)
-
-    # Baseline the freshly-written configs so detect_runtime_state() doesn't
-    # report a spurious "restart required" immediately after install.
-    _record_config_mtimes(mtga_dir)
 
     return str(target_dir)
 
@@ -1016,10 +784,6 @@ def install_plugin(mtga_dir: str) -> str:
     dest_dll = plugins_dir / "MtgaCoachBridge.dll"
     shutil.copy2(source_dll, dest_dll)
 
-    # Refresh the config baseline so the install doesn't trip the restart
-    # detector before MTGA has been launched against the new plugin.
-    _record_config_mtimes(mtga_dir)
-
     return str(dest_dll)
 
 
@@ -1043,55 +807,6 @@ def _invalidate_mtga_running_cache() -> None:
     _running_cache_value = None
 
 
-def _wait_for_mtga_exit(timeout_s: float = 10.0) -> None:
-    """Audit #17: 'Fix Everything' re-gated on a 1s-stale running cache
-    right after close_mtga, failing with 'Close MTGA before installing'.
-    Wait for the process to actually die and drop the cache."""
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        _invalidate_mtga_running_cache()
-        if not is_mtga_running():
-            return
-        time.sleep(0.5)
-    _invalidate_mtga_running_cache()
-
-
-def close_mtga() -> bool:
-    if not is_mtga_running():
-        return False
-
-    if sys.platform != "win32":
-        # pkill exit codes: 0 = matched, 1 = no process matched (fine — a
-        # different pattern may have matched, or it exited already), >1 = error.
-        for pattern in _mtga_process_patterns():
-            result = subprocess.run(
-                ["pkill", "-f", pattern],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-            if result.returncode not in (0, 1):
-                detail = (result.stderr or result.stdout).strip() or "pkill failed"
-                raise RuntimeError(detail)
-        _wait_for_mtga_exit()
-        return True
-
-    result = subprocess.run(
-        ["taskkill", "/IM", "MTGA.exe", "/T", "/F"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-        creationflags=_NO_WINDOW_FLAGS,
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip() or "taskkill failed"
-        raise RuntimeError(detail)
-    _wait_for_mtga_exit()
-    return True
-
-
 def _find_mac_app_bundle(mtga_dir: str) -> Path | None:
     """Locate the native MTGA.app bundle for a macOS install dir.
 
@@ -1109,9 +824,11 @@ def _find_mac_app_bundle(mtga_dir: str) -> Path | None:
 
 
 def launch_mtga(mtga_dir: str, *, on_status: Callable[[str], None] | None = None) -> str:
-    """Launch Arena once, keeping any existing Mac game process untouched."""
-    if sys.platform != "darwin":
-        return _launch_mtga(mtga_dir, on_status=on_status)
+    """Launch the native Mac Arena with its bridge once, keeping any running game untouched.
+
+    Only launch_native_mac_session calls it: on a Mac with the native bridge
+    installed and an MTGA.app under *mtga_dir*.
+    """
     with _MAC_LAUNCH_LOCK:
         _invalidate_mtga_running_cache()
         # The child handle also covers the brief fork/exec window before pgrep
@@ -1124,83 +841,55 @@ def launch_mtga(mtga_dir: str, *, on_status: Callable[[str], None] | None = None
 
 
 def _launch_mtga(mtga_dir: str, *, on_status: Callable[[str], None] | None = None) -> str:
+    """Start MTGA.app with the native bridge library injected (DYLD_INSERT_LIBRARIES)."""
     global _native_mtga_process
-    if sys.platform == "darwin":
-        app_bundle = _find_mac_app_bundle(mtga_dir)
-        if app_bundle is not None:
-            from arenamcp.platform_integration import MAC_BRIDGE_LIBRARY, mac_bridge_installed
+    app_bundle = _find_mac_app_bundle(mtga_dir)
+    if app_bundle is None:
+        raise FileNotFoundError(f"MTGA.app not found under {mtga_dir}")
+    from arenamcp.platform_integration import MAC_BRIDGE_LIBRARY
 
-            if mac_bridge_installed():
-                if is_mtga_running():
-                    return str(app_bundle)
-                executable = app_bundle / "Contents" / "MacOS" / "MTGA"
-                if not executable.is_file():
-                    raise FileNotFoundError(f"MTGA executable not found: {executable}")
-                if on_status:
-                    on_status("Starting Steam before launching Arena with its bridge…")
-                subprocess.run(["/usr/bin/open", "-a", "Steam"], check=True, timeout=10)
-                for attempt in range(30):
-                    steam = subprocess.run(
-                        ["/usr/bin/pgrep", "-x", "steam_osx"], capture_output=True, timeout=5
-                    )
-                    if steam.returncode == 0:
-                        break
-                    time.sleep(1)
-                else:
-                    raise RuntimeError("Steam is still starting. Open Steam and try launching MTGA again.")
-                _invalidate_mtga_running_cache()
-                if is_mtga_running():
-                    if on_status:
-                        on_status(
-                            "Arena is already running. Connecting to its bridge; your match stays open."
-                        )
-                    return str(app_bundle)
-                env = os.environ.copy()
-                env["SteamAppId"] = "2141910"
-                env["SteamGameId"] = "2141910"
-                env["DYLD_INSERT_LIBRARIES"] = str(MAC_BRIDGE_LIBRARY)
-                log_path = Path(get_runtime_root()) / "mtga-launch.log"
-                log_path.parent.mkdir(parents=True, exist_ok=True)
-                if on_status:
-                    on_status("Launching Arena with its native bridge…")
-                with log_path.open("ab") as launch_log:
-                    _native_mtga_process = subprocess.Popen(
-                        [str(executable)],
-                        cwd=str(app_bundle.parent),
-                        env=env,
-                        stdin=subprocess.DEVNULL,
-                        stdout=launch_log,
-                        stderr=subprocess.STDOUT,
-                        start_new_session=True,
-                    )
-                _invalidate_mtga_running_cache()
-                if on_status:
-                    on_status("Arena launch requested. Waiting for its bridge to connect…")
-                return str(app_bundle)
-            subprocess.Popen(["/usr/bin/open", str(app_bundle)])
-            return str(app_bundle)
-        # No native bundle (e.g. Steam-managed install elsewhere, or a Wine/
-        # CrossOver bottle): ask Steam to launch it via the URL scheme.
-        subprocess.Popen(["/usr/bin/open", "steam://rungameid/2141910"])
-        executable = Path(mtga_dir) / "MTGA.exe"
-        return str(executable if executable.exists() else Path(mtga_dir))
-
-    executable = Path(mtga_dir) / "MTGA.exe"
-    if not executable.exists():
-        raise FileNotFoundError(f"MTGA.exe not found at {executable}")
-
-    if sys.platform == "win32":
-        os.startfile(str(executable))  # type: ignore[attr-defined]
+    if is_mtga_running():
+        return str(app_bundle)
+    executable = app_bundle / "Contents" / "MacOS" / "MTGA"
+    if not executable.is_file():
+        raise FileNotFoundError(f"MTGA executable not found: {executable}")
+    if on_status:
+        on_status("Starting Steam before launching Arena with its bridge…")
+    subprocess.run(["/usr/bin/open", "-a", "Steam"], check=True, timeout=10)
+    for attempt in range(30):
+        steam = subprocess.run(["/usr/bin/pgrep", "-x", "steam_osx"], capture_output=True, timeout=5)
+        if steam.returncode == 0:
+            break
+        time.sleep(1)
     else:
-        steam_bin = shutil.which("steam")
-        flatpak_bin = shutil.which("flatpak")
-        if steam_bin:
-            subprocess.Popen([steam_bin, "steam://rungameid/2141910"])
-        elif flatpak_bin:
-            subprocess.Popen([flatpak_bin, "run", "com.valvesoftware.Steam", "steam://rungameid/2141910"])
-        else:
-            subprocess.Popen([str(executable)])
-    return str(executable)
+        raise RuntimeError("Steam is still starting. Open Steam and try launching MTGA again.")
+    _invalidate_mtga_running_cache()
+    if is_mtga_running():
+        if on_status:
+            on_status("Arena is already running. Connecting to its bridge; your match stays open.")
+        return str(app_bundle)
+    env = os.environ.copy()
+    env["SteamAppId"] = "2141910"
+    env["SteamGameId"] = "2141910"
+    env["DYLD_INSERT_LIBRARIES"] = str(MAC_BRIDGE_LIBRARY)
+    log_path = Path(get_runtime_root()) / "mtga-launch.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    if on_status:
+        on_status("Launching Arena with its native bridge…")
+    with log_path.open("ab") as launch_log:
+        _native_mtga_process = subprocess.Popen(
+            [str(executable)],
+            cwd=str(app_bundle.parent),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=launch_log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    _invalidate_mtga_running_cache()
+    if on_status:
+        on_status("Arena launch requested. Waiting for its bridge to connect…")
+    return str(app_bundle)
 
 
 def launch_native_mac_session(*, on_status: Callable[[str], None] | None = None) -> str | None:
@@ -1233,31 +922,6 @@ def launch_native_mac_session(*, on_status: Callable[[str], None] | None = None)
             on_status("Arena's Mac app was not found. Choose its install location in Setup & Repair.")
         return None
     return launch_mtga(mtga_dir, on_status=on_status)
-
-
-def restart_mtga(mtga_dir: str) -> str:
-    close_mtga()
-    return launch_mtga(mtga_dir)
-
-
-def open_path(path: str) -> None:
-    if not path:
-        return
-    target = Path(path)
-    if not target.exists():
-        return
-    if sys.platform == "win32":
-        os.startfile(str(target))  # type: ignore[attr-defined]
-        return
-    if sys.platform == "darwin":
-        # xdg-open does not exist on macOS; /usr/bin/open is the equivalent.
-        subprocess.Popen(["/usr/bin/open", str(target)])
-        return
-    xdg_open = shutil.which("xdg-open")
-    if xdg_open:
-        subprocess.Popen([xdg_open, str(target)])
-    else:
-        webbrowser.open(target.as_uri())
 
 
 def open_url(url: str = _RELEASES_URL) -> None:
