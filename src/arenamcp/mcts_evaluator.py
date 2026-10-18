@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from arenamcp.combat_solver import optimal_attacks, optimal_blocks
+from arenamcp.mulligan_policy import hand_card
 from arenamcp.opponent_model import OpponentModel, OpponentProfile
 
 logger = logging.getLogger(__name__)
@@ -1187,7 +1188,13 @@ class MCTSEvaluator:
             )
 
         # 4. Evaluate Pass Priority / Hold Open Mana
-        has_instants_or_flashes = any("instant" in str(c.get("type_line") or "").lower() for c in hand)
+        # An instant or a Flash card (Teyo: "Flash" on its own line; "Flashback"
+        # is not flash) we could cast with the mana we would hold.
+        held_infos = [hand_card({**c, "rarity": c.get("rarity") or "-"}) for c in hand if isinstance(c, dict)]
+        has_instants_or_flashes = any(
+            info.instant_speed and not info.is_land and info.mana_value <= available_mana
+            for info in held_infos
+        )
         if available_mana > 0 and has_instants_or_flashes:
             pass_val = base_val + fmt_config.hold_mana_value
             branches.append(

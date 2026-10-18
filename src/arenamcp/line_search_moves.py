@@ -605,6 +605,36 @@ def _modelled(var: Variant) -> bool:
     )
 
 
+# An enters trigger's +1/+1 counters on a creature we choose: "Put a +1/+1 counter on it if
+# it's a creature" after "target permanent you control" (Teyo), "put two +1/+1 counters on
+# target creature you control". The creature itself is a legal choice unless it says "another".
+_ENTERS_COUNTERS = re.compile(
+    r"\bput (?P<n>a|an|one|two|three|\d+) \+1/\+1 counters? on (?:it|that creature|that permanent"
+    r"|target creature(?: you control)?|target permanent you control)\b"
+)
+_OWN_TARGET = re.compile(r"\btarget (?:creature|permanent)(?: you control)?\b")
+_NOT_SELF = re.compile(r"\b(?:another target|other target|you don't control|an opponent controls)\b")
+
+
+def enters_counters(card: dict) -> int:
+    """+1/+1 counters a creature's own enters trigger can put on itself (0: none, or not on itself).
+
+    A flash creature like Teyo, Lightshield Expert is worth more than its printed 1/1 as a
+    surprise blocker: its trigger may target itself. Where it is better spent on another
+    creature the search undervalues it, never overvalues it.
+    """
+    from arenamcp.opponent_tricks import _enters_text, clean_oracle
+
+    total = 0
+    for line in _enters_text(clean_oracle(str(card.get("oracle_text") or ""))).lower().splitlines():
+        if line.startswith("•") or _NOT_SELF.search(line) or not _OWN_TARGET.search(line):
+            continue
+        for match in _ENTERS_COUNTERS.finditer(line):
+            word = match.group("n")
+            total += int(word) if word.isdigit() else _COUNT_WORDS.get(word, 0)
+    return total
+
+
 def _bodies(var: Variant) -> list[dict]:
     """The creatures a cast puts onto the battlefield: its own body and its tokens."""
     return ([var.body] if var.body is not None else []) + list(var.tokens)
@@ -707,6 +737,9 @@ class Moves:
         info = hand_info(card)
         creature = spell.role == "creature" and _is_creature(card)
         body = _body(card, self.model.turn, self.model.our_rules) if creature else None
+        counters = enters_counters(card) if body is not None and self.enters_triggers else 0
+        if counters:  # its enters trigger puts its +1/+1 counters on itself
+            body = {**body, "power": body["power"] + counters, "toughness": body["toughness"] + counters}
         extra_life = extra_life_cost(card)
         # What acts on casting: a spell's text; a permanent's own enters trigger without a
         # condition (``applied_text``). ``etb`` reads it: the card itself when nothing was left out.

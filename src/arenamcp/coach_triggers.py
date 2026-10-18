@@ -4,6 +4,7 @@ Extracted from arenamcp.coach (pure move, no behavior change).
 Re-exported from arenamcp.coach for backwards compatibility."""
 
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -80,12 +81,12 @@ class GameStateTrigger:
     def _has_castable_instants(self, state: dict[str, Any]) -> bool:
         """Check if player has any instant-speed cards they can cast.
 
-        Returns True if hand contains instants or flash cards that can be
-        cast with the current available mana.
+        Returns True if hand contains an instant or a card with the Flash
+        keyword (not Flashback) whose mana value and coloured pips our
+        untapped lands can pay.
         """
-        import re
+        from arenamcp.mulligan_policy import COLORS, _land_colors, _pip_matching, hand_card
 
-        # Count untapped lands for mana
         local_seat = None
         for p in state.get("players", []):
             if p.get("is_local"):
@@ -95,38 +96,24 @@ class GameStateTrigger:
         if local_seat is None:
             return False
 
-        battlefield = state.get("battlefield", [])
-        untapped_lands = sum(
-            1
-            for c in battlefield
-            if c.get("owner_seat_id") == local_seat
-            and "land" in c.get("type_line", "").lower()
+        # A land whose colours the snapshot doesn't say counts as any colour:
+        # an unknown must never quiet a real response window.
+        sources = [
+            SimpleNamespace(
+                produces=_land_colors(c)
+                or (frozenset({"C"}) if c.get("oracle_text") or c.get("color_production") else frozenset(COLORS))
+            )
+            for c in state.get("battlefield", [])
+            if (c.get("controller_seat_id") or c.get("owner_seat_id")) == local_seat
+            and "land" in str(c.get("type_line") or "").lower()
             and not c.get("is_tapped")
-        )
+        ]
 
-        # Check hand for castable instants/flash
-        hand = state.get("hand", [])
-        for card in hand:
-            type_line = card.get("type_line", "").lower()
-            oracle_text = card.get("oracle_text", "").lower()
-
-            # Check if instant speed
-            is_instant_speed = "instant" in type_line or "flash" in oracle_text
-            if not is_instant_speed:
+        for card in state.get("hand", []):
+            info = hand_card({**card, "rarity": card.get("rarity") or "-"})
+            if info.is_land or not info.instant_speed:
                 continue
-
-            # Calculate CMC
-            cost = card.get("mana_cost", "")
-            cmc = 0
-            if cost:
-                generic = re.findall(r"\{(\d+)\}", cost)
-                cmc += sum(int(g) for g in generic)
-                colored = re.findall(r"\{[WUBRGC]\}", cost)
-                cmc += len(colored)
-                hybrid = re.findall(r"\{[^}]+/[^}]+\}", cost)
-                cmc += len(hybrid)
-
-            if untapped_lands >= cmc:
+            if info.mana_value <= len(sources) and _pip_matching(info.pips, sources):
                 return True
 
         return False
