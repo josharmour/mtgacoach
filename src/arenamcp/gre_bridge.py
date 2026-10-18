@@ -14,6 +14,7 @@ and what the valid options are, replacing reactive log-diff detection.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import logging
@@ -34,6 +35,12 @@ logger = logging.getLogger(__name__)
 PIPE_NAME = r"\\.\pipe\mtgacoach_bridge_v2"
 PIPE_TIMEOUT_MS = 3000
 COMMAND_TIMEOUT = 5.0
+# TCP loopback ports the plugin / probe dial. Read when a server is created, so
+# the test suite can point them at ephemeral ports (tests/conftest.py): a hung
+# pytest once held 44222 for two hours and the live coach could not start its
+# bridge (2026-10-18, "[Errno 48] Address already in use").
+BRIDGE_PORT = 44222
+BOT_BATTLE_PORT = 44223
 UNMAPPED_INTERACTION_TYPE = "unmapped_interaction"
 # First BepInEx plugin version with the "concede" command (PluginInfo.Version).
 CONCEDE_PLUGIN_VERSION = "0.6.4"
@@ -172,9 +179,16 @@ class GREBridge:
     """
 
     _mac_adapter: Any = None
+    _port: int | None = None
+    # The port actually bound (differs from _port when that is 0).
+    bound_port: int | None = None
+    # The one-time WARNING for a port another process already holds.
+    _port_conflict_warned = False
 
-    def __init__(self):
+    def __init__(self, port: int | None = None):
         self._connected = False
+        # Listening port: None = BRIDGE_PORT, read at bind time (0 = ephemeral).
+        self._port = None if port is None else int(port)
         # Keepalive thread — proactively reconnects after disconnect and
         # pings periodically so we detect silently-broken sockets quickly.
         self._keepalive_thread: threading.Thread | None = None
@@ -237,12 +251,19 @@ class GREBridge:
             if self._server_socket is None:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                s.bind(("127.0.0.1", 44222))
+                port = BRIDGE_PORT if self._port is None else self._port
+                try:
+                    s.bind(("127.0.0.1", port))
+                except OSError:
+                    s.close()
+                    raise
                 s.listen(1)
                 s.setblocking(False)
+                self.bound_port = s.getsockname()[1]
                 self._server_socket = s
                 self._server_started_at = time.monotonic()
-                logger.info("GRE bridge TCP server listening on 127.0.0.1:44222")
+                self._port_conflict_warned = False
+                logger.info(f"GRE bridge TCP server listening on 127.0.0.1:{self.bound_port}")
 
             # Phase 2: Check for incoming client connection (non-blocking)
             r, _, _ = select.select([self._server_socket], [], [], 0.0)
@@ -301,6 +322,23 @@ class GREBridge:
                 self.disconnect()
                 return False
 
+        except OSError as e:
+            if e.errno in (errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", -1)):
+                # The keepalive retries every 0.5 s: name the conflict once
+                # instead of logging it twice a second forever.
+                if not self._port_conflict_warned:
+                    self._port_conflict_warned = True
+                    logger.warning(
+                        "GRE bridge: port 127.0.0.1:%s is already in use by another process "
+                        "(a second mtgacoach, or a test run left hanging). The bridge stays "
+                        "offline until that process exits; retrying quietly.",
+                        BRIDGE_PORT if self._port is None else self._port,
+                    )
+                else:
+                    logger.debug(f"GRE bridge connect error: {e}")
+            else:
+                logger.info(f"GRE bridge connect error: {e}")
+            return False
         except Exception as e:
             logger.info(f"GRE bridge connect error: {e}")
             return False
@@ -2937,8 +2975,8 @@ class BotBattlePipeServer:
     passes it to a decision handler callback, and writes the response JSON line.
     """
 
-    def __init__(self, port: int = 44223):
-        self.port = port
+    def __init__(self, port: int | None = None):
+        self.port = BOT_BATTLE_PORT if port is None else int(port)
         self.running = False
         self._server_socket = None
 
