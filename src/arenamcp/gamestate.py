@@ -182,6 +182,9 @@ class GameState(_GameStateAnnotationsMixin):
         # has no attachedToId on objects; this is how log mode learns that our
         # Pacifism sits on their Serra Angel (bridge mode reads AttachedToId).
         "_attachments": dict,
+        # Each blocker's attackerInstanceIds from this turn's DeclareBlockersReqs
+        # ({"turn": n, "options": {blocker: [attackers]}}, gamestate_decisions).
+        "_blocker_options": dict,
         # Decision tracking
         "pending_decision": None,
         "decision_seat_id": None,

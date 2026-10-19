@@ -432,6 +432,29 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
             # BLOCKABLE attacker, even if attackState was missed (issue #420).
             if isinstance(blk, dict):
                 attacker_id_set.update(_ensure_int_list(blk.get("attackerInstanceIds", [])))
+                attacker_id_set.update(_ensure_int_list(blk.get("selectedAttackerInstanceIds", [])))
+
+        # A selected blocker at maxAttackers lists no attackerInstanceIds
+        # (2026-10-19 gsid 224: Rabbit 484 kept on 468 after a rejected
+        # declaration), so remember what this combat's requests listed for
+        # each blocker: the declaration may move or withdraw that block.
+        memory = getattr(game_state, "_blocker_options", None)
+        if not isinstance(memory, dict):
+            memory = game_state._blocker_options = {}
+        if memory.get("turn") != game_state.turn_info.turn_number:
+            memory.clear()
+            memory["turn"] = game_state.turn_info.turn_number
+        remembered = memory.setdefault("options", {})
+        selected_blockers = []
+        for blk in legal_blockers:
+            if not isinstance(blk, dict):
+                continue
+            blocker_id = _coerce_int(blk.get("blockerInstanceId", blk.get("instanceId", 0)), 0)
+            listed = _ensure_int_list(blk.get("attackerInstanceIds", []))
+            if listed:
+                remembered[blocker_id] = listed
+            if blk.get("selectedAttackerInstanceIds"):
+                selected_blockers.append(blocker_id)
 
         # blockers[].attackerInstanceIds lists only attackers some blocker CAN
         # block. An unblockable attacker (a flyer vs. no reach) is absent, yet
@@ -474,6 +497,12 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
             "raw_blockers": legal_blockers,
             "attacker_ids": attacker_ids,
             "attackers": attacker_names,
+            # combat_solver.blocker_options: earlier options of selected blockers
+            "blocker_options": {
+                blocker_id: [i for i in remembered[blocker_id] if i in attacker_id_set]
+                for blocker_id in selected_blockers
+                if blocker_id in remembered
+            },
         }
         return False
 

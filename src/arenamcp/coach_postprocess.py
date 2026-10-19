@@ -1528,7 +1528,7 @@ class _AdvicePostprocessMixin:
             return ""
         try:
             from arenamcp.combat_solver import (
-                blocker_allowed_attackers_map,
+                blocker_options,
                 optimal_blocks,
             )
         except Exception:
@@ -1537,7 +1537,7 @@ class _AdvicePostprocessMixin:
         local_player = next((p for p in players if p.get("is_local")), None)
         your_life = local_player.get("life_total", 20) if local_player else 20
         ctx = game_state.get("decision_context") or {}
-        allowed_map = blocker_allowed_attackers_map(ctx.get("raw_blockers") or [])
+        allowed_map = blocker_options(ctx.get("raw_blockers") or [], ctx.get("blocker_options"))
 
         atk_names = self._spoken_name_map(attackers)
         blk_names = self._spoken_name_map(blockers)

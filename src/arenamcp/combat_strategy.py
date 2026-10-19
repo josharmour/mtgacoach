@@ -970,9 +970,12 @@ _BLOCKER_PAYOFF = re.compile(
     r"|\b(?:undying|persist|afterlife)\b"
     r"|:[^.\n]*\bgets? \+\d+/"
 )
-# Damage the attacker deals to a player is worth more than its number.
+# Damage the attacker deals to a player is worth more than its number. "deal"
+# too: 2026-10-19 07:34:34 the guard dropped a Rabbit's block on Dark Leo &
+# Shredder ("Whenever Dark Leo & Shredder deal combat damage to a player,
+# create a 1/1 black Ninja creature token...") as a one-damage chump.
 _ATTACKER_HIT_PAYOFF = re.compile(
-    r"deals (?:combat )?damage to (?:a player|an opponent|that player|you)\b|\b(?:infect|toxic|poisonous)\b"
+    r"deals? (?:combat )?damage to (?:a player|an opponent|that player|you)\b|\b(?:infect|toxic|poisonous)\b"
 )
 # An instant-speed trick that can turn a chump into a winning block.
 _BLOCK_TRICK = re.compile(
@@ -987,15 +990,20 @@ def _local_player(state: dict) -> dict | None:
 
 
 def _legal_block_map(state: dict, pending: dict | None) -> dict[int, set[int]] | None:
-    """Blocker id -> attacker ids it may block, from the live request or the logged one."""
-    from arenamcp.combat_solver import blocker_allowed_attackers_map
+    """Blocker id -> attacker ids it may block, from the live request or the logged one.
 
+    A blocker the request shows selected counts with its options from this
+    combat (``combat_solver.blocker_options``), not as unable to block.
+    """
+    from arenamcp.combat_solver import blocker_options
+
+    context = state.get("decision_context") or {}
     raw = pending.get("blockers") if isinstance(pending, dict) else None
     if not isinstance(raw, list):
-        raw = (state.get("decision_context") or {}).get("raw_blockers")
+        raw = context.get("raw_blockers")
     if not isinstance(raw, list):
         return None
-    return blocker_allowed_attackers_map(raw)
+    return blocker_options(raw, context.get("blocker_options"))
 
 
 def _incoming_attackers(
@@ -1184,7 +1192,11 @@ def wasteful_chump_blocks(
     """Planned chump blocks that buy too little, as blocker id -> reason.
 
     A chump block here is a single blocker that dies while its attacker
-    survives. It is dropped only when everything below holds:
+    survives. Against menace two blockers are the smallest legal block, so a
+    pair whose creatures both die without killing the attacker is one chump:
+    both go or both stay, never one (a lone blocker on a menace attacker is
+    illegal; Arena rejects the declaration). A chump is dropped only when
+    everything below holds:
       - without it we are still above CHUMP_DANGER_LIFE after this combat
         (not lethal or near-lethal) and still out of reach of the opponent's
         surviving creatures next turn if the block kept us out of reach;
@@ -1226,19 +1238,21 @@ def wasteful_chump_blocks(
     through = _damage_through(attackers, assignments, cards, factors)
     wasteful: dict[int, str] = {}
     for attacker_id, blockers in groups.items():
-        attacker, blocker = cards.get(attacker_id), cards.get(blockers[0])
-        if len(blockers) != 1 or not _known_body(attacker) or not _known_body(blocker):
+        attacker = cards.get(attacker_id)
+        bodies = [cards.get(blocker) for blocker in blockers]
+        unit = 2 if attacker is not None and _has(attacker, "menace") and len(blockers) == 2 else 1
+        if len(blockers) != unit or not _known_body(attacker) or not all(_known_body(b) for b in bodies):
             continue
-        outcome = _resolve_attacker(attacker, [blocker])
-        if outcome.attacker_died or blocker not in outcome.blockers_died:
+        outcome = _resolve_attacker(attacker, bodies)
+        if outcome.attacker_died or any(body not in outcome.blockers_died for body in bodies):
             continue  # a trade, a kill or a blocker that survives
-        if _BLOCKER_PAYOFF.search(_rules_text(blocker)):
+        if any(_BLOCKER_PAYOFF.search(_rules_text(body)) for body in bodies):
             continue
         if outcome.damage_through == 0 and _ATTACKER_HIT_PAYOFF.search(_rules_text(attacker)):
             continue
         if _may_guard_planeswalker(attacker, outcome.damage_through, cards, local_seat):
             continue
-        without = {b: a for b, a in assignments.items() if b != blockers[0]}
+        without = {b: a for b, a in assignments.items() if b not in blockers}
         through_without = _damage_through(attackers, without, cards, factors)
         life_without, life_with = life - through_without, life - through
         if life_without <= CHUMP_DANGER_LIFE:
@@ -1247,12 +1261,87 @@ def wasteful_chump_blocks(
         if life_without <= clock < life_with:
             continue  # the block keeps us out of lethal range next turn
         saved = through_without - through
-        wasteful[blockers[0]] = (
-            f"{blocker.get('name') or 'blocker'} {blocker['power']}/{blocker['toughness']} would die to "
+        who = " and ".join(
+            f"{body.get('name') or 'blocker'} {body['power']}/{body['toughness']}" for body in bodies
+        )
+        reason = (
+            f"{who} would die to "
             f"{attacker.get('name') or 'the attacker'} {attacker['power']}/{attacker['toughness']} without "
             f"killing it to save {saved} damage; at {life} life we stay at {life_without} without the block"
         )
+        wasteful.update(dict.fromkeys(blockers, reason))
     return wasteful
+
+
+def repair_menace_blocks(
+    state: dict, assignments: dict[int, int], pending: dict | None = None
+) -> tuple[dict[int, int], list[str]]:
+    """Make a block declaration legal against menace: never one lone blocker on a menace attacker.
+
+    2026-10-19 07:34:34 (match cd41ad5a): Rabbit 485 alone blocked Biting-Palm
+    Ninja, menace from a counter (ability grpId 142); Arena answered the
+    SubmitBlockersReq with FailureReason_CombatRestrictionViolated.
+
+    A lone block is dropped, unless dropping it lets lethal damage through:
+    then the cheapest unused creature that may block that attacker joins it.
+    Returns the declaration (blocker id -> attacker id) and one note per change.
+    """
+    cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
+    declared = dict(assignments)
+    counts = Counter(declared.values())
+    lone = [
+        attacker_id
+        for attacker_id, count in counts.items()
+        if count == 1 and attacker_id in cards and _has(cards[attacker_id], "menace")
+    ]
+    if not lone:
+        return declared, []
+    local = _local_player(state) or {}
+    life = local.get("life_total")
+    legal = _legal_block_map(state, pending) or {}
+    attackers = _incoming_attackers(state, local.get("seat_id"), legal)
+    known = (
+        _is_int(life)
+        and attackers is not None
+        and all(_known_body(card) for card in attackers)
+        and all(_known_body(cards.get(blocker)) for blocker in declared)
+    )
+    factors = _damage_factors(state, attackers or [], local.get("seat_id")) if known else {}
+
+    def name(identity: int) -> str:
+        return f"{cards.get(identity, {}).get('name') or 'creature'} [{identity}]"
+
+    notes: list[str] = []
+    for attacker_id in lone:
+        blocker_id = next(blocker for blocker, target in declared.items() if target == attacker_id)
+        without = {blocker: target for blocker, target in declared.items() if blocker != blocker_id}
+        partners = sorted(
+            (_material(cards[blocker]), blocker)
+            for blocker, allowed in legal.items()
+            if attacker_id in allowed and blocker not in declared and _known_body(cards.get(blocker))
+        )
+        if partners and known and _damage_through(attackers, without, cards, factors) >= life:
+            partner = partners[0][1]
+            declared[partner] = attacker_id
+            notes.append(
+                f"{name(partner)} joins {name(blocker_id)} on {name(attacker_id)}: it has menace, "
+                "and dropping the block is lethal"
+            )
+            continue
+        declared = without
+        notes.append(
+            f"not blocking {name(attacker_id)} with {name(blocker_id)} alone: it has menace "
+            "and can only be blocked by two or more creatures"
+        )
+    return declared, notes
+
+
+# The safe default searches every block assignment up to this many (about
+# 1.2 us each: 4 attackers x 8 blockers, 390625, took 0.45 s), past the
+# solver's 50000 default. 2026-10-19 07:34:45, 4 attackers x 7 blockers: the
+# greedy fallback chumped Shark Shredder where the full search kills Dark Leo
+# & Shredder, Biting-Palm Ninja and the Ninja token; it runs once per window.
+SAFE_DEFAULT_BLOCK_OPTIONS = 400_000
 
 
 def safe_default_blocks(state: dict, pending: dict | None = None) -> tuple[dict[int, int], str] | None:
@@ -1260,8 +1349,10 @@ def safe_default_blocks(state: dict, pending: dict | None = None) -> tuple[dict[
 
     Returns (blocker id -> attacker id, reason). An empty mapping declares no
     blockers. Blocks come from the combat solver (survive lethal, then the
-    best material exchange) minus wasteful chumps. None when the board cannot
-    be checked (unknown life, attackers or power): no blind declaration then.
+    best material exchange) minus wasteful chumps, legal against menace.
+    Blockers the request already shows selected are choices like any other
+    (``_legal_block_map``). None when the board cannot be checked (unknown
+    life, attackers or power): no blind declaration then.
     """
     local = _local_player(state)
     if local is None:
@@ -1288,13 +1379,21 @@ def safe_default_blocks(state: dict, pending: dict | None = None) -> tuple[dict[
         return {}, f"no blocker with known power and toughness; {unblocked} damage at {life} life"
     # The solver counts printed power: x-times damage is lethal at 1/x of our life.
     factor = max(factors.values(), default=1)
-    plan = optimal_blocks(attackers, blockers, math.ceil(life / factor), blocker_allowed_attackers=legal)
+    plan = optimal_blocks(
+        attackers,
+        blockers,
+        math.ceil(life / factor),
+        blocker_allowed_attackers=legal,
+        max_options=SAFE_DEFAULT_BLOCK_OPTIONS,
+    )
     assignments = dict(plan.assignments) if plan is not None else {}
     for blocker in wasteful_chump_blocks(state, assignments, pending):
         assignments.pop(blocker, None)
     assignments.update(
         walker_saving_blocks(attackers, blockers, assignments, legal, cards, local.get("seat_id"))
     )
+    # The greedy fallback (large boards) can put one blocker on a menace attacker.
+    assignments = repair_menace_blocks(state, assignments, pending)[0]
     through = _damage_through(attackers, assignments, cards, factors)
     if not assignments:
         return {}, f"no blocks: {through} damage at {life} life"

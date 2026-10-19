@@ -944,3 +944,38 @@ def blocker_allowed_attackers_map(
                 continue
         out[bid] = ids
     return out
+
+
+def selected_blocks(raw_blockers: list[dict]) -> dict[int, set[int]]:
+    """Blocks the request already shows selected, as blocker_instance_id -> attacker ids."""
+    out: dict[int, set[int]] = {}
+    for blk in raw_blockers or []:
+        if not isinstance(blk, dict):
+            continue
+        try:
+            bid = int(blk.get("blockerInstanceId") or blk.get("instanceId"))
+            ids = {int(aid) for aid in blk.get("selectedAttackerInstanceIds") or []}
+        except (TypeError, ValueError):
+            continue
+        if ids:
+            out[bid] = ids
+    return out
+
+
+def blocker_options(raw_blockers: list[dict], remembered: dict | None = None) -> dict[int, set[int]]:
+    """Every attacker each blocker may block in this declaration, its current selection included.
+
+    A selected blocker at maxAttackers lists no attackerInstanceIds (Player.log
+    2026-10-19 gsid 224: Rabbit 484 kept on 468 after a rejected declaration;
+    gsid 225: all seven blockers). Read as-is, "nobody can block" (the 07:35:15
+    watchdog declared "[No Blocks]" and committed seven blockers). Its options
+    are what it blocks plus what this combat's earlier requests listed for it
+    (``remembered``: decision_context["blocker_options"], kept by the log
+    parser); a selection can be withdrawn or moved like Arena's own UI does.
+    """
+    out = blocker_allowed_attackers_map(raw_blockers)
+    remembered = remembered or {}
+    for bid, selection in selected_blocks(raw_blockers).items():
+        earlier = remembered.get(bid, remembered.get(str(bid))) or ()
+        out[bid] = out.get(bid, set()) | selection | {int(aid) for aid in earlier}
+    return out
