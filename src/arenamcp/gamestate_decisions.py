@@ -186,12 +186,15 @@ def _resolve_request_source_context(game_state: "GameState", source_id: int) -> 
     try:
         from arenamcp import server
 
-        source_info = server.enrich_with_oracle_text(stack_obj.grp_id)
+        is_ability = stack_obj.object_kind.name == "ABILITY"
+        # An ability's id is looked up in the ability table: read as a card id it can name an
+        # unrelated card (ledger #88: ability 92970 is also card 92970, Deal Gone Bad).
+        lookup = server.enrich_ability if is_ability else server.enrich_with_oracle_text
+        source_info = lookup(stack_obj.grp_id)
         source_name = str(source_info.get("name", "") or "")
         source_type = str(source_info.get("type_line", "") or "")
         source_oracle = str(source_info.get("oracle_text", "") or "")
-        if stack_obj.object_kind.name == "ABILITY" and source_type.lower() != "ability":
-            source_name = ""
+        if is_ability and not source_oracle:
             source_oracle = resolved.get("source_card_oracle_text", "")
 
         if source_oracle:
@@ -207,7 +210,8 @@ def _resolve_request_source_context(game_state: "GameState", source_id: int) -> 
     except Exception:
         pass
 
-    if not resolved.get("source_card"):
+    # (Not an ability's id: the card table names an unrelated card, ledger #88.)
+    if not resolved.get("source_card") and getattr(stack_obj.object_kind, "name", "") != "ABILITY":
         resolved_name = game_state._resolve_card_name(stack_obj.grp_id)
         if resolved_name and not resolved_name.startswith("Card#"):
             resolved["source_card"] = resolved_name
