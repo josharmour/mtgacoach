@@ -1796,6 +1796,7 @@ def _assess(state: dict) -> BoardAssessment | None:
         line_text=best_text,
         evasive_clock=bool(getattr(clocks, "evasive_clock", False)),
         walkers=_their_walkers(battlefield, opponent),
+        our_walkers=_their_walkers(battlefield, model.local),  # (the same listing, our side)
         # "Only" claims force no role while a cast or pending effect they can't see could change them.
         only_survivor=bool(found and found.only_survivor) and not caveat,
         greedy_dies=bool(found and getattr(found, "greedy_dies", False)) and not caveat,
@@ -2654,6 +2655,7 @@ def _role(
     caveat: str = "",
     evasive_clock: bool = False,
     walkers: str = "",
+    our_walkers: str = "",
 ) -> tuple[str, str]:
     """Who's the beatdown: lethal and survival first, then fast clocks, then board/cards/curve.
 
@@ -2762,6 +2764,22 @@ def _role(
             f"clocks even ({our_clock} vs {their_clock}) — damage matters most; block only to swing the race"
         )
     # No fast clock on either side.
+    if ours == 0 and theirs == 0 and (walkers or our_walkers):
+        # Ledger #91 (2026-10-19 c8ea2b6c T13): "AGGRESSOR — empty boards" with Elspeth out.
+        sides = "; ".join(
+            part
+            for part in (
+                f"their planeswalkers {walkers}" if walkers else "",
+                f"our planeswalkers {our_walkers}" if our_walkers else "",
+            )
+            if part
+        )
+        if walkers:
+            return ROLE_AGGRESSOR, (
+                f"no creatures on either side, but {sides} — deploy threats and pressure the planeswalker "
+                "before it takes over"
+            )
+        return ROLE_CONTROL, f"no creatures on either side; {sides} — protect it and grind"
     if ours == 0 and theirs == 0:
         if deck_curve is not None and deck_curve <= 2.9:
             return (

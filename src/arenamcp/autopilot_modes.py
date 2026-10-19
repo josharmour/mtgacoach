@@ -65,6 +65,8 @@ class _AutopilotModesMixin:
                 return f"unpayable ward tax: {payment.describe()}, and only {mana} mana is available"
             logger.info("Optional cost is a ward tax (%s); paying it", payment.describe())
             return None
+        if self._cost_on_our_spell(game_state):
+            return None
         if self._paying_for_own_play(game_state):
             return None
         if not self._source_spell_is_harmful_to_target(game_state, None, None):
@@ -98,6 +100,54 @@ class _AutopilotModesMixin:
             return False
         source = str((game_state.get("decision_context") or {}).get("source_card") or "").strip().lower()
         return source in ("", "unknown") or name in source
+
+    @staticmethod
+    def _cost_on_our_spell(game_state: dict[str, Any]) -> bool:
+        """The cost is charged to OUR spell on the stack: unpaid, that spell is countered.
+
+        2026-10-19 12:21:04 and 12:23:49 (match 5d5d32f8, ledger #93): their
+        Spell Pierce ("counter target noncreature spell unless its controller
+        pays {2}") asked {2} for our Burst Lightning; the PayCostsReq names our
+        Burst as the cost's object. It went to the harmful-optional-cost gate,
+        whose model call read it as the kicker and declined; the lethal Burst
+        (opponent at 2) was countered. The own-play window only covers 10 s after
+        our cast. A cost on our own spell card (its cast cost, a ward tax, a
+        Spell Pierce / Mana Leak tax) is always worth paying when Arena asks:
+        an unaffordable one has no Auto Pay and is cancelled by the payment step.
+        """
+        context = game_state.get("decision_context") or {}
+        payload = game_state.get("_bridge_request_payload") or {}
+        try:
+            source_id = int(
+                context.get("source_id") or context.get("sourceId") or payload.get("sourceId") or 0
+            )
+        except (TypeError, ValueError):
+            return False
+        if not source_id:
+            return False
+        local = game_state.get("local_seat_id") or next(
+            (
+                p.get("seat_id")
+                for p in game_state.get("players") or []
+                if isinstance(p, dict) and p.get("is_local")
+            ),
+            None,
+        )
+        for item in game_state.get("stack") or []:
+            if not isinstance(item, dict) or int(item.get("instance_id") or 0) != source_id:
+                continue
+            if str(item.get("object_kind") or "").upper() == "ABILITY":
+                return False
+            controller = item.get("controller_seat_id") or item.get("owner_seat_id")
+            if local is None or controller != local:
+                return False
+            logger.info(
+                "PayCosts is charged to our own %s on the stack (%s); paying it",
+                item.get("name") or "spell",
+                context.get("mana_cost") or context.get("mana") or "cost",
+            )
+            return True
+        return False
 
     @staticmethod
     def _ward_payment(game_state: dict[str, Any]) -> Any:

@@ -598,7 +598,15 @@ def damage_would_kill(creature: dict, damage: int) -> bool | None:
         return False
     if toughness <= damage:
         return True
-    if creature.get("damaged_this_turn") or creature.get("is_attacking") or creature.get("is_blocking"):
+    if creature.get("is_attacking") or creature.get("is_blocking"):
+        return None
+    if creature.get("damaged_this_turn"):
+        # Marked damage counts when it is known (ledger #109, 2026-10-19 12:31:48:
+        # Iroh's 4 at a 4/5 Hearth Elemental with 3 marked was "kills nothing",
+        # so the target was declined although the Elemental died to 2).
+        marked = creature.get("damage")
+        if type(marked) is int and marked > 0:
+            return toughness - marked <= damage
         return None
     return False
 
@@ -1122,46 +1130,97 @@ def castable_discard_for_minor_effect(card: dict, state: dict, metadata: dict | 
     )
 
 
+def _kill_claim_patterns(creature: dict) -> list[str]:
+    """Regexes (on lowercased, space-normalised text) for a claim that ``creature`` dies."""
+    full = str(creature.get("name") or "").lower().strip()
+    short = full.split(",")[0].strip()
+    last = short.split()[-1] if short else ""  # "the Heckler dies", "finish off the Witchstalker"
+    names = [n for n in dict.fromkeys((full, short, last if len(last) >= 5 else "")) if len(n) >= 4]
+    return [
+        rf"\b(?:kill\w*|finish\w* off|destroy\w*)\s+(?:(?:the|their|that|a|an|its|his|her)\s+)?"
+        rf"(?:[\w'’/+-]+\s+){{0,3}}"
+        rf"(?:[\w'’/+-]+,\s+(?:the|their|that|its)\s+(?:[\w'’/+-]+\s+){{0,3}})?{re.escape(name)}"
+        rf"|{re.escape(name)}\b[^.;]{{0,40}}\b(?:dies|die)\b"
+        for name in names
+    ]
+
+
+def _kill_claim_spans(text: str, creature: dict) -> list[tuple[int, int]]:
+    """Where ``text`` (lowercased, space-normalised) claims ``creature`` dies, negated clauses skipped."""
+    spans: list[tuple[int, int]] = []
+    for pattern in _kill_claim_patterns(creature):
+        for match in re.finditer(pattern, text):
+            if not _negated_claim(text, match.start()) and not _NEGATION.search(match.group(0)):
+                spans.append(match.span())
+        if spans:
+            break
+    return spans
+
+
 def claimed_kills(reasoning: str, creatures: list[dict]) -> list[dict]:
     """The creatures a model's reasoning says die: "kills Hallway Heckler", "the Heckler dies".
 
     One appositive counts: "kills their only creature, the flying Dawnwing
-    Marshal" (2026-10-19 09:01:42, match 41753907 T5).
+    Marshal" (2026-10-19 09:01:42, match 41753907 T5). A negated claim does
+    not ("Neither spell kills the 7/7 Gearhulk", "the Gearhulk won't die").
     """
     text = " ".join(str(reasoning or "").lower().split())
     if not text or not _KILL_CLAIM.search(text):
         return []
-    found = []
-    for creature in creatures:
-        full = str(creature.get("name") or "").lower().strip()
-        short = full.split(",")[0].strip()
-        last = short.split()[-1] if short else ""  # "the Heckler dies", "finish off the Witchstalker"
-        names = [n for n in dict.fromkeys((full, short, last if len(last) >= 5 else "")) if len(n) >= 4]
-        for name in names:
-            pattern = (
-                rf"\b(?:kill\w*|finish\w* off|destroy\w*)\s+(?:(?:the|their|that|a|an|its|his|her)\s+)?"
-                rf"(?:[\w'’/+-]+\s+){{0,3}}"
-                rf"(?:[\w'’/+-]+,\s+(?:the|their|that|its)\s+(?:[\w'’/+-]+\s+){{0,3}})?{re.escape(name)}"
-                rf"|{re.escape(name)}\b[^.;]{{0,40}}\b(?:dies|die)\b"
-            )
-            if any(not _negated_claim(text, match.start()) for match in re.finditer(pattern, text)):
-                found.append(creature)
-                break
-    return found
+    return [creature for creature in creatures if _kill_claim_spans(text, creature)]
+
+
+def strip_kill_claims(reasoning: str, creatures: list[dict]) -> str:
+    """``reasoning`` without its claims that ``creatures`` die (ledger #86).
+
+    "Casting Tectonic Hazard pings opponent and kills Konstrari Improviser while
+    triggering Slickshot's +2/+0" keeps "Casting Tectonic Hazard pings opponent
+    while triggering Slickshot's +2/+0". A "<name> dies" sentence goes whole.
+    """
+    text = " ".join(str(reasoning or "").split())
+    lower = text.lower()
+    spans = sorted(
+        {span for creature in creatures for span in _kill_claim_spans(lower, creature)}, reverse=True
+    )
+    limit = len(text)
+    for start, end in spans:
+        if end > limit:
+            continue  # inside a sentence already removed
+        if re.search(r"\bdies?$", lower[start:end]):
+            begin = max(lower.rfind(mark, 0, start) for mark in (". ", "; ", "! ", "? "))
+            start = 0 if begin < 0 else begin + 2
+            stops = [i for i in (lower.find(mark, end) for mark in (".", ";", "!", "?")) if i >= 0]
+            end = min(stops) + 1 if stops else len(text)
+        else:
+            connector = re.search(r"(?:,\s*(?:and\s+)?|\s+and\s+|\s+to\s+)$", lower[:start])
+            if connector:
+                start = connector.start()
+            else:  # "for {R} kills their only creature, the Marshal, and pings" -> "for {R} and pings"
+                start = len(lower[:start].rstrip())
+                follow = re.match(r"\s*,", lower[end:])
+                end += follow.end() if follow else 0
+        text, lower = text[:start] + " " + text[end:], lower[:start] + " " + lower[end:]
+        limit = start
+    text = re.sub(r"\s+([,.;!?])", r"\1", " ".join(text.split())).strip(" ,;")
+    # A stub left by the cut ("Hazard.") says nothing.
+    text = " ".join(part for part in re.split(r"(?<=[.!?])\s+", text) if len(part.split()) >= 2)
+    return text[:1].upper() + text[1:] if text else ""
 
 
 # 2026-10-19 12:21:42 / 12:30:34 (ledger #86b): "Neither spell kills the 7/7
 # Gearhulk" and "Strike can't kill a 4/5 Elemental, so aim it at the face" were
 # read as kill claims, and correct face burn was thrown out three times in a game.
+# "Without killing", "rather than killing" and "instead of killing" negate too.
 _NEGATION = re.compile(
     r"\b(?:neither|nor|not|no|never|cannot|can't|can’t|won't|won’t|doesn't|doesn’t|don't|don’t|"
-    r"isn't|isn’t|wouldn't|wouldn’t|couldn't|couldn’t|fails? to|unable to|too small to|short of)\b"
+    r"isn't|isn’t|wouldn't|wouldn’t|couldn't|couldn’t|fails? to|unable to|too small to|short of|"
+    r"without|rather than|instead of)\b"
 )
 
 
 def _negated_claim(text: str, start: int) -> bool:
     """The kill claim starting at ``start`` sits in a negated clause."""
-    clause = re.split(r"[.;:!?,—–]|\bso\b|\bbut\b|\bwhile\b|\binstead\b", text[:start])[-1]
+    clause = re.split(r"[.;:!?,—–]|\bso\b|\bbut\b|\bwhile\b|\binstead\b(?!\s+of)", text[:start])[-1]
     return bool(_NEGATION.search(clause[-40:]))
 
 

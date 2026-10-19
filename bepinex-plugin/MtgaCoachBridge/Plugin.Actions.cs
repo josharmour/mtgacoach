@@ -1921,43 +1921,79 @@ namespace MtgaCoachBridge
                 return;
             }
 
-            var built = new List<DamageAssigner>();
+            // Answer as Arena's Done button does: every attacker of the request,
+            // every receiver in Arena's order (0 for one the caller leaves out);
+            // an attacker the caller leaves out keeps Arena's own assignment.
+            // 2026-10-18 18:41: an answer without the player's entry came back
+            // FailureReason_InvalidDamageAssignment seven times (#102).
+            var wanted = new Dictionary<uint, Dictionary<uint, uint>>();
             foreach (var aJson in assignersJson)
             {
                 uint attackerId = (uint)(int)aJson["instanceId"];
-                var existing = dmgReq.Assigners.Find(x => x.InstanceId == attackerId);
-                if (existing == null)
+                if (dmgReq.Assigners.Find(x => x.InstanceId == attackerId) == null)
                 {
                     _log.LogWarning($"submit_assign_damage: attacker {attackerId} not in request");
                     continue;
                 }
-                // Clone existing assigner and overwrite assignments with caller-supplied damage.
+                if (!wanted.TryGetValue(attackerId, out var damage))
+                {
+                    damage = new Dictionary<uint, uint>();
+                    wanted[attackerId] = damage;
+                }
+                var assignmentsArr = aJson["assignments"] as JArray;
+                if (assignmentsArr == null) continue;
+                foreach (var asJson in assignmentsArr)
+                {
+                    uint receiverId = (uint)(int)asJson["instanceId"];
+                    damage.TryGetValue(receiverId, out var sofar);
+                    damage[receiverId] = sofar + (uint)(int)asJson["damage"];
+                }
+            }
+            if (wanted.Count == 0)
+            {
+                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "No attacker in the command is in the AssignDamage request" });
+                return;
+            }
+
+            var built = new List<DamageAssigner>();
+            foreach (var existing in dmgReq.Assigners)
+            {
+                wanted.TryGetValue(existing.InstanceId, out var damage);
+                if (damage != null)
+                {
+                    foreach (var receiverId in damage.Keys)
+                    {
+                        bool known = false;
+                        foreach (var a in existing.Assignments)
+                        {
+                            if (a.InstanceId == receiverId) { known = true; break; }
+                        }
+                        if (!known)
+                        {
+                            cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = $"Receiver {receiverId} is not in attacker {existing.InstanceId}'s assignments" });
+                            return;
+                        }
+                    }
+                }
                 var newAssigner = new DamageAssigner
                 {
                     InstanceId = existing.InstanceId,
                     TotalDamage = existing.TotalDamage,
                 };
-                var assignmentsArr = aJson["assignments"] as JArray;
-                if (assignmentsArr != null)
+                foreach (var template in existing.Assignments)
                 {
-                    foreach (var asJson in assignmentsArr)
+                    uint assigned = template.AssignedDamage;
+                    if (damage != null)
                     {
-                        uint receiverId = (uint)(int)asJson["instanceId"];
-                        uint damage = (uint)(int)asJson["damage"];
-                        DamageAssignment template = null;
-                        foreach (var a in existing.Assignments)
-                        {
-                            if (a.InstanceId == receiverId) { template = a; break; }
-                        }
-                        var newAssignment = new DamageAssignment
-                        {
-                            InstanceId = receiverId,
-                            MinDamage = template?.MinDamage ?? 0,
-                            MaxDamage = template?.MaxDamage ?? damage,
-                            AssignedDamage = damage,
-                        };
-                        newAssigner.Assignments.Add(newAssignment);
+                        damage.TryGetValue(template.InstanceId, out assigned);
                     }
+                    newAssigner.Assignments.Add(new DamageAssignment
+                    {
+                        InstanceId = template.InstanceId,
+                        MinDamage = template.MinDamage,
+                        MaxDamage = template.MaxDamage,
+                        AssignedDamage = assigned,
+                    });
                 }
                 built.Add(newAssigner);
             }

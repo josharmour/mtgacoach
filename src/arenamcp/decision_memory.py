@@ -1007,4 +1007,15 @@ def critical_decision(
                         continue
                     return f"removal target: {source}"
         return ""
+    if request_type == "CastingTimeOptions":
+        # The mode of a removal spell on the stack (#87, 2026-10-19 c8ea2b6c T14: Iroh's
+        # Demonstration's 4 to one creature at low effort over the sweep that killed three).
+        modal = [o for o in options if (getattr(o, "meta", {}) or {}).get("choiceKind") == "modal"]
+        source_id = (getattr(modal[0], "meta", {}) or {}).get("sourceId") if modal else None
+        for card in state.get("stack") or []:
+            oracle = str(card.get("oracle_text") or "")
+            if source_id and card.get("instance_id") == source_id and _REMOVAL_RE.search(oracle):
+                if not burn_kills_nothing(oracle, state, source=card):
+                    return f"removal mode: {card.get('name') or source_id}"
+        return ""
     return ""
