@@ -5193,6 +5193,11 @@ class AutopilotEngine(
                 explanation = f"Choose {', '.join(labels)}." if labels else "Find no cards."
             elif decision.request_type == "SelectTargets" and not labels:
                 explanation = "Choose no targets."
+            elif decision.request_type == "CastingTimeOptions":
+                # "Done" casts the spell; read as a pass it was spoken "Passing" (ledger #119).
+                from arenamcp.casting_options import casting_option_speech
+
+                explanation = casting_option_speech(decision, option_ids, game_state) or explanation
             from arenamcp.narration import submission_narration
 
             explanation = submission_narration(explanation, reasoning)
