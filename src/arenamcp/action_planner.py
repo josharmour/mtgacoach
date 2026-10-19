@@ -4562,6 +4562,12 @@ class ActionPlanner(_ActionLegalityMixin):
     _CRITICAL_DECISION_BUDGET_S = 15.0
     # A hedge leg still running this long past its budget is abandoned.
     _HEDGE_GRACE_S = 2.0
+    # Once a valid low answer is in, the high leg gets at most this much longer.
+    # 2026-10-19 Mono-Red Burn, 07:15-09:08: 137 hedges with a valid low answer
+    # waited a mean 3.1 s more for the high one (29 over 5 s); at 08:25:31 the
+    # low answer was ready at 4.9 s and the action left at 15.0 s, when the
+    # high leg ran out of budget with nothing.
+    _HIGH_AFTER_LOW_S = 3.0
 
     def _hedged_decision(
         self,
@@ -4569,6 +4575,7 @@ class ActionPlanner(_ActionLegalityMixin):
         parse: Callable[[str], tuple[dict, list[str]]],
         message: str,
         normal_budget: float,
+        low_agrees: Callable[[list[str]], str] | None = None,
     ) -> tuple[dict, list[str]]:
         """A critical decision: the high-effort call and the normal low-effort one, at once.
 
@@ -4576,10 +4583,14 @@ class ActionPlanner(_ActionLegalityMixin):
         out their 15 s with no content and board math played the turn's key
         spells, while low-effort calls in the same window finished in ~6 s
         (p50 2.5 s; high p50 9.5 s when it finishes). The high answer is used
-        when it parses within its budget; otherwise the low answer, which is
-        normally ready by then; only when both fail does the caller fall back.
-        The loser is cancelled (its socket shut down). The autopilot's
-        request-changed cancel event stops both legs.
+        when it parses within its budget; otherwise the low answer; only when
+        both fail does the caller fall back. The loser is cancelled (its socket
+        shut down). The autopilot's request-changed cancel event stops both legs.
+
+        A valid low answer waits at most ``_HIGH_AFTER_LOW_S`` for the high one,
+        and not at all when ``low_agrees`` (the board-math line's own play,
+        :func:`board_math_agreement`) names it: two independent ways to the
+        same play leave the high leg nothing to add.
         """
         outer = getattr(self, "_decision_cancel_event", None)
         legs = {
@@ -4604,33 +4615,65 @@ class ActionPlanner(_ActionLegalityMixin):
         for leg in legs:
             threading.Thread(target=run, args=(leg,), daemon=True, name=f"decision-hedge-{leg}").start()
 
-        def wait_for(leg: str) -> tuple[str, Any, float] | None:
-            deadline = started + legs[leg][1] + self._HEDGE_GRACE_S
+        def ok(leg: str) -> bool:
+            return leg in results and results[leg][0] == "ok"
+
+        def wait_until(deadline: float, done: Callable[[], bool]) -> None:
             with changed:
-                while leg not in results:
+                while not done():
                     if outer is not None and outer.is_set():
                         for event in cancels.values():
                             event.set()
                         raise LLMUnavailableError("decision cancelled: the request changed")
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        return None
+                        return
                     changed.wait(min(0.05, remaining))
-                return results[leg]
 
-        high = wait_for("high")
-        if high is not None and high[0] == "ok":
+        high_deadline = started + legs["high"][1] + self._HEDGE_GRACE_S
+        # The first valid answer, or the high leg finishing (or out of time).
+        wait_until(high_deadline, lambda: ok("high") or ok("low") or "high" in results)
+        agreed = ""
+        if ok("low") and not ok("high") and "high" not in results:
+            if low_agrees is not None:
+                try:
+                    agreed = low_agrees(results["low"][1][1]) or ""
+                except Exception as error:  # never block a decision on the check
+                    logger.debug("hedge agreement check failed: %s", error)
+            if not agreed:
+                wait_until(
+                    min(high_deadline, time.monotonic() + self._HIGH_AFTER_LOW_S), lambda: "high" in results
+                )
+        trace = getattr(self, "_last_decision_trace", None)
+        if ok("high"):
             cancels["low"].set()
-            logger.info("typed-decision hedge: high won in %.0f ms", high[2])
+            high, low = results["high"], results.get("low")
+            if low is not None and low[0] == "ok":
+                same = low[1][1] == high[1][1]
+                note = f" (low: {'the same' if same else low[1][1]} at {low[2]:.0f} ms)"
+            else:
+                note = ""
+            logger.info("typed-decision hedge: high won in %.0f ms%s", high[2], note)
+            if isinstance(trace, dict):
+                trace["hedge"] = {"winner": "high", "high_ms": round(high[2])}
             return high[1]
         cancels["high"].set()
-        low = wait_for("low")
+        if not ok("low"):
+            wait_until(started + legs["low"][1] + self._HEDGE_GRACE_S, lambda: "low" in results)
+        high, low = results.get("high"), results.get("low")
         if low is not None and low[0] == "ok":
-            logger.info(
-                "typed-decision hedge: low won in %.0f ms (high: %s)",
-                low[2],
-                high[1] if high is not None else "no answer in time",
-            )
+            if high is not None:
+                why = f"high: {high[1]}"
+            elif agreed:
+                why = f"high not awaited: the low answer is the board-math play, {agreed}"
+            elif time.monotonic() < high_deadline:
+                waited = time.monotonic() - started - low[2] / 1000.0
+                why = f"high: no answer {waited:.1f} s after it, not waited for"
+            else:
+                why = "high: no answer in time"
+            logger.info("typed-decision hedge: low won in %.0f ms (%s)", low[2], why)
+            if isinstance(trace, dict):
+                trace["hedge"] = {"winner": "low", "low_ms": round(low[2]), "why": why[:160]}
             return low[1]
         cancels["low"].set()
         errors = [r[1] for r in (high, low) if r is not None and r[0] == "error"]
@@ -4876,7 +4919,8 @@ class ActionPlanner(_ActionLegalityMixin):
         # Removal, spending a plan card, or targeting a removal effect: the
         # model thinks at high effort with a longer budget. Routine priority
         # windows stay at low effort within the short budget.
-        critical = critical_decision(decision, game_state, getattr(self, "_game_plan", ""))
+        passed_over: list[str] = []
+        critical = critical_decision(decision, game_state, getattr(self, "_game_plan", ""), skipped=passed_over)
         # On the opponent's turn the windows close fast (2026-10-11 turn 9: 13
         # windows each answered within 3 s while one high-effort call ran its
         # full 15 s and timed out), so every decision there runs at low effort.
@@ -4886,6 +4930,8 @@ class ActionPlanner(_ActionLegalityMixin):
             critical = ""
         elif critical:
             logger.info("typed-decision: high reasoning effort (%s)", critical)
+        elif passed_over and not opponent_turn:
+            logger.info("typed-decision: low effort, burn only goes face (%s)", "; ".join(passed_over))
         self._last_decision_trace = {
             "request_type": decision.request_type,
             "request_id": list(decision.request_id),
@@ -4964,10 +5010,29 @@ class ActionPlanner(_ActionLegalityMixin):
 
         normal_budget = min(self._timeout, 12.0)
         if critical:
-            data, chosen = self._hedged_decision(ask, parse, user_message, normal_budget)
+            low_agrees = None
+            if decision.request_type == "ActionsAvailable" and line_source is not None and not unmodelled:
+                # The searched line valued every option: its own play needs no second opinion.
+                def low_agrees(ids: list[str]) -> str:
+                    return board_math_agreement(decision, tag_state, ids)
+
+            data, chosen = self._hedged_decision(ask, parse, user_message, normal_budget, low_agrees)
         else:
             data, chosen = parse(ask(user_message, effort=None, budget=normal_budget))
         reversed_record = self._memory().reversal(game_state, decision, chosen)
+        followed = self._memory().stated_plan_followed(reversed_record, game_state, decision, chosen)
+        if followed:
+            logger.info(
+                "typed-decision: %s carries out the plan an earlier pass stated (%r in: %s); no reversal check",
+                chosen,
+                followed,
+                reversed_record.reasoning[:120],
+            )
+            self._last_decision_trace["reversal_check"] = {
+                "earlier": reversed_record.reasoning,
+                "skipped": f"carries out the plan the pass stated ({followed})",
+            }
+            reversed_record = None
         if reversed_record is not None:
             # The model is taking an action it passed on moments ago with the
             # board unchanged: one more call, at high effort, with the
@@ -5383,6 +5448,26 @@ def line_fallback_option_pick(
     except Exception as error:  # the strategic layer never blocks a decision
         logger.debug("line fallback pick skipped: %s", error)
         return None
+
+
+def board_math_agreement(decision: Any, game_state: dict[str, Any], chosen: list[str]) -> str:
+    """Why the board-math fallback would play exactly ``chosen`` here, or "".
+
+    The fallback's own pick (:func:`board_math_option_pick`, overridden by
+    :func:`line_fallback_option_pick` as in ``_board_math_fallback``) on our
+    main phase with an empty stack, where it follows the searched line. Never
+    a pass: holding everything is the call the high-effort answer is for.
+    """
+    chosen = [str(option_id) for option_id in chosen or []]
+    if decision.request_type != "ActionsAvailable" or len(chosen) != 1 or chosen == ["pass"]:
+        return ""
+    if not _own_main_phase_with_empty_stack(game_state):
+        return ""
+    picked, why = board_math_option_pick(decision, game_state)
+    line = line_fallback_option_pick(decision, game_state, picked)
+    if line is not None:
+        picked, why = line
+    return (why or "the board-math play") if picked == chosen else ""
 
 
 def board_math_legacy_plan(
