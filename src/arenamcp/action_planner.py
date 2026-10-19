@@ -4160,6 +4160,44 @@ class ActionPlanner(_ActionLegalityMixin):
         label = str(getattr(decision, "source_label", "") or "").strip().lower()
         return value if source_label and label == source_label else None
 
+    def _decline_no_kill_spell(self, game_state: dict[str, Any], name: Any, effect: str) -> bool:
+        """Whether a spell whose ``effect`` kills no legal opposing target is given back now.
+
+        Declining the target cancels the whole cast. Never while the cast
+        itself is the value — a prowess / "whenever you cast a noncreature
+        spell" creature about to attack (2026-10-19 match 115944ce T8, #65:
+        Iroh's Demonstration was given back with two Slickshot Show-Offs and a
+        prowess Emberheart waiting to attack an empty board). Otherwise at most
+        once per spell per turn: the cast step recasts what was declined
+        (#61, the 11:13 loop), and the second time the pick stands.
+        """
+        from arenamcp.cast_triggers import cast_trigger_attackers
+
+        pumped = cast_trigger_attackers(game_state)
+        if pumped:
+            logger.warning(
+                "Keeping the pick: %s kills no legal opposing target (picked %s), but casting it "
+                "pumps %s for this combat",
+                effect,
+                name,
+                ", ".join(str(card.get("name")) for card in pumped),
+            )
+            return False
+        turn = ((game_state.get("turn") or {}).get("turn_number")) or 0
+        key = (turn, self._decision_source_instance(game_state) or str(name))
+        declined = self.__dict__.setdefault("_kept_spell_declines", set())
+        if key in declined:
+            logger.warning(
+                "Keeping the pick: %s kills no legal opposing target (picked %s), "
+                "but this spell was already declined this turn",
+                effect,
+                name,
+            )
+            return False
+        declined.add(key)
+        logger.warning("Keeping the spell: %s kills no legal opposing target (picked %s)", effect, name)
+        return True
+
     def _prefer_lethal_damage_target(
         self, decision: Any, game_state: dict[str, Any], chosen: list[str], *, fallback: bool = False
     ) -> list[str]:
@@ -4225,22 +4263,9 @@ class ActionPlanner(_ActionLegalityMixin):
             # Demonstration (mode "4 damage to target creature") at a 7/7
             # Trostani looped cast -> decline every ~6 s until Arena's turn
             # timer ran out. Decline a given spell once per turn; the second
-            # time the model's pick stands.
-            turn = ((game_state.get("turn") or {}).get("turn_number")) or 0
-            key = (turn, self._decision_source_instance(game_state) or str(name))
-            declined = self.__dict__.setdefault("_kept_spell_declines", set())
-            if key in declined:
-                logger.warning(
-                    "Keeping the pick: %d damage kills no legal opposing target (picked %s), "
-                    "but this spell was already declined this turn",
-                    damage,
-                    name,
-                )
+            # time the model's pick stands (_decline_no_kill_spell).
+            if not self._decline_no_kill_spell(game_state, name, f"{damage} damage"):
                 return chosen
-            declined.add(key)
-            logger.warning(
-                "Keeping the spell: %d damage kills no legal opposing target (picked %s)", damage, name
-            )
             return [DECLINE_DECISION]
         best = max(alternatives)
         logger.warning("Retargeting: %d damage does not kill %s; %s dies instead", damage, name, best[3])
@@ -4757,9 +4782,11 @@ class ActionPlanner(_ActionLegalityMixin):
                 )
         name = cards.get(picked, {}).get("name", picked)
         if not alternatives:
-            logger.warning(
-                "Keeping the spell: -%d/-%d kills no legal opposing target (picked %s)", amount, amount, name
-            )
+            # 2026-10-19 (#61): the same cast -> decline -> recast loop as
+            # 4 damage at a 7/7 (_prefer_lethal_damage_target): decline once
+            # per turn, never while the cast pumps an attacker.
+            if not self._decline_no_kill_spell(game_state, name, f"-{amount}/-{amount}"):
+                return chosen
             return [DECLINE_DECISION]
         best = max(alternatives)
         logger.warning(

@@ -4672,6 +4672,30 @@ class AutopilotEngine(
         logger.info("typed-decision: log still behind the bridge (gameStateId %s < %s); yielding", have, want)
         return None
 
+    @staticmethod
+    def _untargeted_mode_for_no_kill(
+        decision: Any, game_state: dict[str, Any], option_ids: list[str]
+    ) -> list[str]:
+        """Swap a no-kill targeted damage mode for the spell's one-sided untargeted mode.
+
+        2026-10-19 (match 115944ce T8, #65): Iroh's Demonstration's "4 damage
+        to target creature" was chosen against a 7/7; its target was declined,
+        the cast cancelled and the spell hidden for the turn, prowess and
+        Slickshot pumps with it. "1 damage to each creature your opponents
+        control" keeps the cast (cast_triggers.untargeted_mode_instead).
+        """
+        from arenamcp.cast_triggers import untargeted_mode_instead
+
+        try:
+            swap = untargeted_mode_instead(decision, list(option_ids or []), game_state)
+        except Exception as error:
+            logger.debug("modal switch check failed: %s", error, exc_info=True)
+            return option_ids
+        if swap is None:
+            return option_ids
+        logger.warning("Modal switch: %s", swap[1])
+        return [swap[0]]
+
     def _try_typed_decision_path(self, game_state: dict[str, Any], trigger: str) -> bool | None:
         """Handle interactive requests via the typed PendingDecision pipeline.
 
@@ -4832,6 +4856,8 @@ class AutopilotEngine(
             self._state = AutopilotState.IDLE
             return True
         self._note_typed_fallback()
+        if decision.request_type == "CastingTimeOptions":
+            option_ids = self._untargeted_mode_for_no_kill(decision, game_state, option_ids)
         if decision.request_type == "Group" and (
             len(option_ids) != decision.min_select or not decision.selection_is_valid(option_ids)
         ):
