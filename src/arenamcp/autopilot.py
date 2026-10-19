@@ -4868,6 +4868,19 @@ class AutopilotEngine(
             self._pause_for_manual("Non-mana payment submission failed — select payment manually", game_state)
             return True
         if decision.request_type == "SelectTargets":
+            # A failed submission against a request that has since moved on
+            # (answered by the player's own click, or advanced by our first
+            # slot) is stale, not a bridge gap: re-plan the live one. Seam Rip
+            # 2026-10-18 18:26:12 — the player clicked the only target 40 ms
+            # before our submit, and MANUAL REQUIRED was announced for a
+            # resolved spell.
+            latest = self._gre_bridge.get_pending_actions() or {}
+            current = build_pending_decision(latest, resolve_instance=_resolve_instance)
+            if current is None or current.request_id != decision.request_id:
+                logger.info("typed-decision: SelectTargets moved on after a failed submit; yielding")
+                self._request_tracker.observe(decision_fingerprint(current) if current else None)
+                self._state = AutopilotState.IDLE
+                return True
             if not option_ids:
                 self._pause_for_manual(
                     "SelectTargets: choose no targets manually — the bridge could not submit an empty selection",
