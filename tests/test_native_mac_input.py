@@ -1,17 +1,21 @@
 """Native macOS screen input (auto-queue's clicks) refuses stale, covered or unverifiable input."""
 
 import ctypes
+import time
 from unittest.mock import Mock
 
 import pytest
+from PIL import Image, ImageDraw
 from tests.mac_fakes import InstantEvent, command, fake_native_controller, make_frame
 
 from arenamcp.native_mac_input import (
     DesktopAction,
+    DesktopFrame,
     DesktopUnavailable,
     GameWindow,
     NativeMacInput,
     _ForegroundProcess,
+    click_changed_screen,
     frame_changed,
 )
 
@@ -165,3 +169,62 @@ def test_unverifiable_input_target_blocks_click(hit_result, pid_result):
     controller._accessibility.AXUIElementGetPid.return_value = pid_result
     with pytest.raises(DesktopUnavailable, match="Cannot verify"):
         NativeMacInput._check_point(controller, make_frame().window, (0.5, 0.5))
+
+
+# ---------------------------------------------------------------------------
+# Whether a click did anything (auto-queue's "had no visible effect")
+# ---------------------------------------------------------------------------
+
+# Dark 1600x935 Arena screens like the 2026-10-19 captures: Claim at the bottom
+# right, the reward card beside it, "[Click to Continue]" at the bottom centre.
+CARD = (830, 250, 1050, 570)
+CLAIM_BUTTON = (1335, 850, 1555, 900)
+PROMPT = (715, 895, 885, 915)
+CLAIM_CLICK = DesktopAction.from_dict(command(point=[0.901, 0.934]))
+PROMPT_CLICK = DesktopAction.from_dict(command(point=[0.5, 0.97]))
+
+
+def arena_screen(*boxes) -> DesktopFrame:
+    image = Image.new("RGB", (1600, 935), (22, 20, 30))
+    draw = ImageDraw.Draw(image)
+    for box, color in boxes:
+        draw.rectangle(box, fill=color)
+    return DesktopFrame(GameWindow(42, 123, (100, 50, 800, 467)), image, time.monotonic())
+
+
+def test_reward_card_turning_over_beside_claim_is_an_effect():
+    # 07:46:51 Claim, 07:46:53 "previous claim click on 'Claim' had no visible
+    # effect", yet the card turns over (captures: whole-window mean 3.9, click point 8.8).
+    face_down = arena_screen((CARD, (110, 80, 50)), (CLAIM_BUTTON, (220, 120, 40)))
+    face_up = arena_screen((CARD, (215, 210, 195)), (CLAIM_BUTTON, (220, 120, 40)))
+    assert not frame_changed(face_down, face_up, CLAIM_CLICK)  # the stale-layout guard tolerates it
+    assert click_changed_screen(face_down, face_up, CLAIM_CLICK)
+
+
+def test_new_dark_screen_keeping_the_prompt_under_the_pointer_is_an_effect():
+    # 08:05:18 Continue on the rank screen; at 08:05:26 the Reward screen, with
+    # its own "[Click to Continue]" in the same place, counted as no effect.
+    rank = arena_screen(((720, 410, 880, 580), (200, 130, 60)), (PROMPT, (230, 230, 230)))
+    reward = arena_screen(
+        ((140, 150, 1000, 660), (60, 55, 75)),
+        ((1040, 150, 1470, 660), (55, 62, 72)),
+        (PROMPT, (230, 230, 230)),
+    )
+    assert not frame_changed(rank, reward, PROMPT_CLICK)
+    assert click_changed_screen(rank, reward, PROMPT_CLICK)
+
+
+def test_hover_glow_and_sparkles_are_not_an_effect():
+    # A missed click must still read as one: the pointer's own hover highlight
+    # and small ambient particles do not count.
+    before = arena_screen((CARD, (110, 80, 50)), (CLAIM_BUTTON, (220, 120, 40)))
+    after = arena_screen(
+        (CARD, (110, 80, 50)),
+        (CLAIM_BUTTON, (250, 150, 70)),
+        ((600, 330, 624, 354), (255, 240, 150)),
+        ((560, 420, 580, 440), (255, 240, 150)),
+    )
+    assert not click_changed_screen(before, after, CLAIM_CLICK)
+    assert not click_changed_screen(before, before, CLAIM_CLICK)
+    moved = DesktopFrame(GameWindow(42, 123, (0, 0, 800, 467)), before.image, time.monotonic())
+    assert click_changed_screen(before, moved, CLAIM_CLICK)

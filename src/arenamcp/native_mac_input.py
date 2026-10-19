@@ -151,6 +151,34 @@ def frame_changed(before: DesktopFrame, after: DesktopFrame, action: DesktopActi
     return sum(ImageStat.Stat(crop).mean) / 3 > 25
 
 
+def click_changed_screen(before: DesktopFrame, after: DesktopFrame, action: DesktopAction) -> bool:
+    """Whether a click visibly did something, including away from the click point.
+
+    frame_changed is a stale-layout guard: it ignores anything short of a large
+    whole-window change or a change under the pointer. As a click-effect check
+    it called real progress a miss (2026-10-19 07:46:53, 08:00:27, 08:15:41).
+    Measured on captures of those screens: the first Claim turns the reward
+    card over beside the button (whole-window mean 3.9, click point 8.8, the
+    card's 20 px cells up to 70), and the dark rank-progress screen giving way
+    to the Reward screen keeps "[Click to Continue]" under the pointer (mean
+    20.1, click point 10.5). Several clearly changed cells anywhere count; the
+    pointer's own hover highlight does not.
+    """
+    if frame_changed(before, after, action):
+        return True
+    images = [frame.image.convert("RGB").resize((320, 180)) for frame in (before, after)]
+    difference = ImageChops.difference(*images)
+    pointer = (min(15, int(action.point[0] * 16)), min(8, int(action.point[1] * 9)))
+    changed = 0
+    for row in range(9):
+        for column in range(16):
+            if abs(column - pointer[0]) <= 1 and abs(row - pointer[1]) <= 1:
+                continue
+            cell = difference.crop((column * 20, row * 20, column * 20 + 20, row * 20 + 20))
+            changed += sum(ImageStat.Stat(cell).mean) / 3 > 30
+    return changed >= 3
+
+
 class NativeMacInput:
     """Use Quartz screen points, independent of the screenshot's Retina scale."""
 

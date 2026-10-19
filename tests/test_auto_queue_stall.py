@@ -264,6 +264,32 @@ def test_endless_loading_screen_pauses_with_a_logged_reason(clock, log):
     assert log.matching("Auto queue still waiting")[-1][0] > warning[0][0] + 60
 
 
+def test_unreadable_rank_screen_is_retried_not_left_for_twenty_minutes(clock, log):
+    # 2026-10-19 08:27:34-08:27:49: three rejected readings of the rank-progress
+    # screen paused auto-queue ("still waiting 1174s") until 08:47:29, when a
+    # person clicked through Arena.
+    state = {"match_id": None}
+    arena = FakeArena(clock)
+    unreadable = answer("results", "continue", "Click to Continue prompt", point=[0.5, 0.97])
+    rank = answer(
+        "results", "dismiss_result", "Bronze Tier 1", result_visible=True, result_title="Bronze Tier 1"
+    )
+    model = Answers(VICTORY, unreadable, unreadable, unreadable, rank, HOME, RECENT, MATCHMAKING)
+    nav = navigator(arena, model, state)
+    run(nav, state, clock, 120.0)
+    paused = log.matching("automatic retry 1/3")
+    retried = log.matching("Looking at Arena again (automatic retry 1/3)")
+    assert paused and retried
+    assert retried[0][0] - paused[0][0] == pytest.approx(auto_queue._PAUSE_RETRY_S, abs=1.0)
+    assert [line[2] for line in log.matching("Auto queue clicked")] == [
+        "Auto queue clicked dismiss_result 'VICTORY' at (0.500, 0.500) (estimate 0.500, 0.500; image 160x93)",
+        "Auto queue clicked dismiss_result 'Bronze Tier 1' at (0.500, 0.500) (estimate 0.500, 0.500; image 160x93)",
+        "Auto queue clicked open_play 'Play' at (0.900, 0.930) (estimate 0.900, 0.930; image 160x93)",
+        "Auto queue clicked start_queue 'Play' at (0.900, 0.930) (estimate 0.900, 0.930; image 160x93)",
+    ]
+    assert nav.get_debug_info()["queue_observed"] and not nav.paused_reason
+
+
 def test_matchmaking_is_reported_but_not_treated_as_a_stall(clock, log):
     state = {"match_id": None}
     arena = FakeArena(clock)

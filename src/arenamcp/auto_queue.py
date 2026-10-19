@@ -21,7 +21,13 @@ from collections import Counter, deque
 from typing import Any
 
 from arenamcp.backend_health import is_backend_error_text
-from arenamcp.native_mac_input import DesktopAction, DesktopUnavailable, NativeMacInput, frame_changed
+from arenamcp.native_mac_input import (
+    DesktopAction,
+    DesktopUnavailable,
+    NativeMacInput,
+    click_changed_screen,
+    frame_changed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +46,12 @@ Do not invent a Continue button or wait for one. Leave point null: the controlle
 the overlay once and then checks a fresh screenshot to confirm that it actually closed.
 If awaiting_result_dismissal is true, inspect whether the title is still present; an
 earlier click does not prove it closed. Report the current screen, not an assumed next step.
+After a ranked match the same overlay turns into rank progress: a rank emblem with the rank
+("Bronze Tier 1", "Silver Tier 4", "Mythic"), "Constructed Rank" or "Limited Rank", sometimes a
+rank-up animation, and "[Click to Continue]" at the bottom, often with no VICTORY/DEFEAT title.
+It is still the result overlay: report screen=results, action=dismiss_result,
+result_visible=true, result_title and label = the rank exactly as shown (e.g. "Bronze Tier 1"),
+point null. Never click "View Battlefield".
 Arena sometimes shows a small post-match survey "Did you have fun in the match?" with a happy
 face, a sad face and a "Skip" link, on top of the result or home screen. That is screen=survey
 and takes precedence over every other action: report action=dismiss_survey with label "Skip"
@@ -64,6 +76,8 @@ If the screenshot shows gameplay, mulligans, sideboarding, a queue/loading scree
 unfamiliar screen, do not click: report match, sideboard, queue, or blocked respectively.
 Set matchmaking_visible=true only for an actual search for an opponent. A generic
 "Waiting for the Server" spinner while returning home is loading, not matchmaking.
+A label is the visible text only: no surrounding brackets, quotes or punctuation and no
+description (Click to Continue, not "[Click to Continue]" or "Continue prompt").
 For every click, quote the visible button/tile/result title and use its center coordinates
 normalized to 0.0..1.0 (fractions of image width and height, e.g. [0.85, 0.92], NOT pixels
 and NOT 0..1000), except dismiss_result uses [0.5, 0.5].
@@ -126,6 +140,14 @@ _STEP_LIMIT_S = 90.0
 # Screenshots that keep answering "wait" on a loading or unrecognised screen (not
 # matchmaking) pause after this long instead of polling the model forever.
 _SCREEN_WAIT_LIMIT_S = 180.0
+# 2026-10-19 08:27:49: three unreadable observations of the rank-progress screen
+# paused navigation until someone clicked through Arena at 08:47:29. A pause that
+# only means the screen could not be read looks again after this long, at most
+# _PAUSE_RETRIES times per navigation, before it waits for the user.
+_PAUSE_RETRY_S = 30.0
+_PAUSE_RETRIES = 3
+# At most this many clicks per finished match (they usually take 3-6).
+_CLICK_LIMIT = 20
 _REFINE_CROP = 0.3
 # Observed 23:15:20: a crop held two "Play" buttons and refinement hopped
 # ~160px to another Recently Played tile, joining the wrong deck and queue.
@@ -179,6 +201,37 @@ _LABELS = {
     "open_recent": {"recently played"},
     "start_queue": {"play", "find match"},
 }
+# MatchEndScene.ShowEndOfMatchProgress turns the Victory/Defeat overlay into rank
+# progress: "Rank/Rank_Tier_Tooltip" ("Silver Tier 4"), the class alone for
+# Mythic, "Constructed Rank"/"Limited Rank", and a rank-up badge. The overlay's
+# background exit button still covers the window. Observed 2026-10-19 08:27:34
+# ("[Click to Continue]" under "Bronze Tier 1") and 09:10:20 ('Silver Tier 4
+# rank-up result overlay'), both rejected for not being Victory/Defeat/Draw.
+_RANK_TITLE = re.compile(
+    r"\b(?:beginner|bronze|silver|gold|platinum|diamond|mythic)\s+tier\s*[1-4]\b"
+    r"|\b(?:constructed|limited)\s+rank\b"
+    r"|\brank(?:ed)?[\s-]*up\b"
+    r"|^mythic\b",
+    re.IGNORECASE,
+)
+
+
+def _visible_text(value: Any) -> str:
+    """A model-quoted label as Arena shows it, without the quoting around it.
+
+    2026-10-19 07:46:33: the model quoted Arena's "[Click to Continue]" with
+    its brackets and the exact label check rejected Arena's own prompt.
+    """
+    return re.sub(r"^[\W_]+|[\W_]+$", "", " ".join(str(value or "").split()))
+
+
+def _is_result_title(text: str) -> bool:
+    """A Victory/Defeat/Draw title or the rank shown on the same overlay."""
+    return text.casefold() in _LABELS["dismiss_result"] or bool(_RANK_TITLE.search(text))
+
+
+class _LookAgain(ValueError):
+    """An observation too vague to click but not a wrong one: observe again, it is not a failure."""
 
 
 def parse_queue_action(
@@ -207,10 +260,17 @@ def parse_queue_action(
         "blocked",
     }:
         raise ValueError("Unknown navigation screen")
-    label = " ".join(str(data.get("label") or "").split())
-    result_title = " ".join(str(data.get("result_title") or "").split())
-    if not result_title and label.casefold() in _LABELS["dismiss_result"]:
+    label = _visible_text(data.get("label"))
+    result_title = _visible_text(data.get("result_title"))
+    if label and label != data.get("label"):
+        data = {**data, "label": label}
+    if not result_title and _is_result_title(label):
         result_title = label
+    overlay = result_title if _is_result_title(result_title) else ""
+    if not overlay and kind == "dismiss_result" and label.casefold() in _LABELS["continue"]:
+        # 08:27:34: dismiss_result quoting the rank screen's own "[Click to
+        # Continue]". That prompt belongs to the overlay being dismissed.
+        overlay = label
     # Observed at 09:49:35: the model recognized DEFEAT but returned wait,
     # because it saw no separate Continue button. A confirmed result overlay
     # is itself dismissible; this is not permission to click an old board.
@@ -218,22 +278,35 @@ def parse_queue_action(
         screen in {"results", "match"}
         and kind in {"wait", "continue", "dismiss_result", "open_play"}
         and data.get("result_visible") is True
-        and result_title.casefold() in _LABELS["dismiss_result"]
+        and overlay
     ):
         # The banner, not a hypothetical button or the battlefield behind it,
         # identifies this full-screen click target. Ignore proposed button
         # coordinates and names when the visible result title is known.
-        data = {**data, "screen": "results", "action": "dismiss_result", "label": result_title, "point": None}
-        kind, screen, label = "dismiss_result", "results", result_title
+        data = {**data, "screen": "results", "action": "dismiss_result", "label": overlay, "point": None}
+        kind, screen, label = "dismiss_result", "results", overlay
     if kind in {"wait", "stop"}:
         return data, None
     if kind not in _ALLOWED or screen not in _ALLOWED[kind]:
         raise ValueError(f"Navigation action {kind!r} is not allowed on screen {screen!r}")
     if not label:
+        if kind == "dismiss_result":
+            # 08:05:06 and 08:27:49: a result screen with nothing quoted. Not
+            # clickable, but no evidence of a wrong screen either.
+            raise _LookAgain(
+                "Result dismissal needs the visible result title, rank or Click to Continue prompt as its label"
+            )
         raise ValueError("Navigation target must have a visible label")
     if re.search(r"\b(?:draft|sealed|purchase|buy)\b|entry fee", label, re.IGNORECASE):
         raise ValueError("Paid or limited events are outside automatic requeueing")
-    if kind in _LABELS and label.casefold() not in _LABELS[kind]:
+    if kind == "dismiss_result":
+        if not (_is_result_title(label) or label.casefold() in _LABELS["continue"]):
+            raise ValueError(
+                f"Unexpected 'dismiss_result' label {label!r}; expected one of "
+                f"{sorted(_LABELS['dismiss_result'])}, the rank shown (e.g. 'Bronze Tier 1') "
+                "or the Click to Continue prompt"
+            )
+    elif kind in _LABELS and label.casefold() not in _LABELS[kind]:
         raise ValueError(
             f"Unexpected {kind!r} button label {label!r}; expected one of {sorted(_LABELS[kind])}"
         )
@@ -349,9 +422,14 @@ class AutoQueueNavigator:
         self._ended_match_id: str | None = None
         self._seen_ends: deque[str] = deque(maxlen=32)
         self._next_poll = 0.0
+        # Clicks per proposal that showed no effect yet, and all clicks.
         self._attempts: Counter[str] = Counter()
+        self._clicks = 0
         self._failures = 0
         self._result_waits = 0
+        # A pause that looks at Arena again by itself at _retry_at (monotonic).
+        self._retry_at = 0.0
+        self._pause_retries = 0
         self._stage = "off"
         self._last_frame = None
         self._last_proposal: dict | None = None
@@ -362,7 +440,8 @@ class AutoQueueNavigator:
         self._queue_observed = False
         self._resume_pending = False
         self._awaiting_result_dismissal = False
-        self._last_click: tuple[Any, DesktopAction, dict] | None = None
+        # The frame just before the last click, the click, what it targeted, and its _attempts key.
+        self._last_click: tuple[Any, DesktopAction, dict, str] | None = None
         self._survey_skips = 0
         self._survey_waits = 0
         # Stall evidence: how long the current status has held, when navigation
@@ -473,17 +552,24 @@ class AutoQueueNavigator:
                 # Retain only navigation already armed by a match completion.
                 # A fresh navigator never starts a game merely by being enabled.
                 self._resume_pending = self.active and bool(self._ended_match_id)
+            elif self._resume_pending and self._started_next_match():
+                # 2026-10-19 07:28:48: re-enabled during the match its last
+                # click had joined; "Retrying navigation" was followed 11 ms
+                # later by the handoff. That match is not navigation to retry.
+                self._resume_pending = False
             self.enabled = bool(enabled)
             self._abort.set()
             self._generation += 1
             self._abort = threading.Event()
             self.active = bool(enabled and self._resume_pending)
             self.paused_reason = ""
+            self._retry_at = 0.0
             if self.active:
                 self._resume_pending = False
-                self._failures = self._result_waits = 0
+                self._failures = self._result_waits = self._pause_retries = 0
                 self._survey_skips = self._survey_waits = 0
                 self._attempts.clear()
+                self._clicks = 0
                 self._next_poll = 0
                 self._stage = "resuming"
                 self._screen_wait_since = self._last_watchdog = 0.0
@@ -521,9 +607,12 @@ class AutoQueueNavigator:
             self.paused_reason = ""
             self._stage = "results"
             self._attempts.clear()
+            self._clicks = 0
             self._history.clear()
             self._failures = 0
             self._result_waits = 0
+            self._retry_at = 0.0
+            self._pause_retries = 0
             self._survey_skips = self._survey_waits = 0
             self._queue_started = False
             self._queue_observed = False
@@ -546,6 +635,14 @@ class AutoQueueNavigator:
         match_id = state.get("match_id")
         return bool(match_id and self._ended_match_id and match_id != self._ended_match_id)
 
+    def _started_next_match(self) -> bool:
+        """The game state already shows a later match than the one navigation was for."""
+        try:
+            state = self._get_game_state()
+        except Exception:
+            return False
+        return isinstance(state, dict) and self._new_match(state)
+
     def _handoff(self, generation: int | None = None, aborted: threading.Event | None = None) -> None:
         with self._lock:
             if generation is not None and aborted is not None and not self._current(generation, aborted):
@@ -567,6 +664,8 @@ class AutoQueueNavigator:
                 self._handoff()
                 return False
             now = time.monotonic()
+            if self.paused_reason and self._retry_at and now >= self._retry_at:
+                self._retry_after_pause()
             self._watchdog(now)
             self._heartbeat(now)
             if self.paused_reason or now < self._next_poll:
@@ -580,10 +679,46 @@ class AutoQueueNavigator:
             self._worker.start()
             return True
 
-    def _pause(self, reason: str) -> None:
+    def _pause(self, reason: str, *, retry: bool = False) -> None:
+        """Stop navigating until the user toggles auto queue.
+
+        ``retry``: the screen only could not be read, so look again by itself
+        after _PAUSE_RETRY_S, at most _PAUSE_RETRIES times per navigation.
+        """
         self.paused_reason = reason
         self._stage = "paused"
-        self._status(reason + " Toggle auto queue off/on to retry this navigation.")
+        if retry and self._pause_retries < _PAUSE_RETRIES:
+            self._pause_retries += 1
+            self._retry_at = time.monotonic() + _PAUSE_RETRY_S
+            self._status(
+                f"{reason.rstrip('.')}. Looking at Arena again in {_PAUSE_RETRY_S:.0f}s"
+                f" (automatic retry {self._pause_retries}/{_PAUSE_RETRIES})."
+            )
+            return
+        self._retry_at = 0.0
+        self._status(f"{reason.rstrip('.')}. Toggle auto queue off/on to retry this navigation.")
+
+    @property
+    def retry_scheduled(self) -> bool:
+        """Paused, but navigation resumes by itself (keep the Mac awake for it)."""
+        return bool(self.paused_reason and self._retry_at)
+
+    def _retry_after_pause(self) -> None:
+        reason = self.paused_reason
+        self.paused_reason = ""
+        self._retry_at = 0.0
+        self._failures = self._result_waits = 0
+        self._next_poll = 0.0
+        self._stage = "resuming"
+        self._screen_wait_since = self._last_watchdog = 0.0
+        logger.info(
+            "Auto queue: retrying automatically (%d/%d) after: %s",
+            self._pause_retries,
+            _PAUSE_RETRIES,
+            reason,
+        )
+        self._progress(f"automatic retry {self._pause_retries}")
+        self._status(f"Looking at Arena again (automatic retry {self._pause_retries}/{_PAUSE_RETRIES})")
 
     def _wait_for_results(self) -> None:
         """An end animation is an observation to retry, not a failed action."""
@@ -591,7 +726,7 @@ class AutoQueueNavigator:
         self._failures = 0
         self._next_poll = time.monotonic() + 3
         if self._result_waits >= 12:
-            self._pause("Arena's result screen did not become ready to dismiss")
+            self._pause("Arena's result screen did not become ready to dismiss", retry=True)
         else:
             self._status("Waiting for the match result overlay to become ready")
 
@@ -738,8 +873,19 @@ class AutoQueueNavigator:
             self._last_frame = frame
             missed_click = None
             if self._last_click is not None:
-                clicked_frame, clicked_action, clicked = self._last_click
-                if not frame_changed(clicked_frame, frame, clicked_action):
+                # One verdict per click, from the first screenshot after it. A
+                # click kept for later steps was compared with ever older
+                # screens: at 07:46:48 the Reward screen counted as no effect
+                # of a Continue click that had already changed the screen.
+                clicked_frame, clicked_action, clicked, clicked_key = self._last_click
+                self._last_click = None
+                if click_changed_screen(clicked_frame, frame, clicked_action):
+                    # A revealed reward card is progress even though Claim
+                    # stays for a second click, so it does not count toward
+                    # the repeated-click limit.
+                    self._attempts[clicked_key] = max(0, self._attempts[clicked_key] - 1)
+                    self._progress(f"{clicked['action']} {clicked['label']!r} changed the screen")
+                else:
                     missed_click = clicked
                     logger.info(
                         "Auto queue: previous %s click on %r had no visible effect",
@@ -761,6 +907,11 @@ class AutoQueueNavigator:
                         kind: {
                             "screens": sorted(screens),
                             "labels": sorted(_LABELS[kind])
+                            + (
+                                ["the rank shown on a rank-progress overlay, e.g. bronze tier 1"]
+                                if kind == "dismiss_result"
+                                else []
+                            )
                             if kind in _LABELS
                             else "exact visible label of the tile showing expected_queue.deck_name",
                         }
@@ -895,7 +1046,7 @@ class AutoQueueNavigator:
             if time.monotonic() - frame.captured_at > 12:
                 raise ValueError("Navigation screenshot expired")
             key = json.dumps([data["action"], data["label"], action.point])
-            if self._attempts[key] >= 3 or sum(self._attempts.values()) >= 20:
+            if self._attempts[key] >= 3 or self._clicks >= _CLICK_LIMIT:
                 self._pause("Arena navigation stopped making progress")
                 return
             estimate = action.point
@@ -927,7 +1078,7 @@ class AutoQueueNavigator:
                     *estimate,
                     *fresh.image.size,
                 )
-                self._last_click = (fresh, action, {"action": data["action"], "label": data["label"]})
+                self._last_click = (fresh, action, {"action": data["action"], "label": data["label"]}, key)
                 clicked_result = data["action"] == "dismiss_result" or (
                     data["action"] == "continue" and self._stage == "results"
                 )
@@ -937,9 +1088,11 @@ class AutoQueueNavigator:
                     self._queue_started = True
                     self._queue_clicked_at = time.time()
                 self._attempts[key] += 1
+                self._clicks += 1
                 self._history.append({"action": data["action"], "label": data["label"]})
                 self._failures = 0
                 self._result_waits = 0
+                self._pause_retries = 0
                 self._last_rejection = None
                 self._screen_wait_since = 0.0
                 self._progress(f"clicked {data['action']} {data['label']!r}")
@@ -962,9 +1115,13 @@ class AutoQueueNavigator:
                 self._next_poll = time.monotonic() + 3
                 self._status(str(error))
         except Exception as error:
-            logger.info("Auto-queue step failed: %s", error)
+            look_again = isinstance(error, _LookAgain)
+            logger.info(
+                "Auto queue: %s; observing again" if look_again else "Auto-queue step failed: %s", error
+            )
             if self._current(generation, aborted):
                 if isinstance(proposal, dict):
+                    # A vague reading is fed back too, so the next one quotes the screen.
                     self._last_rejection = {"error": str(error), "proposal": proposal}
                     logger.info(
                         "Auto queue rejected screen=%r action=%r label=%r",
@@ -972,10 +1129,14 @@ class AutoQueueNavigator:
                         proposal.get("action"),
                         proposal.get("label"),
                     )
+                if look_again:
+                    # Bounded by the result-screen waits, not the failure budget.
+                    self._wait_for_results()
+                    return
                 self._failures += 1
                 self._next_poll = time.monotonic() + 3
                 if self._failures >= 3:
-                    self._pause("Could not verify the next Arena navigation step")
+                    self._pause("Could not verify the next Arena navigation step", retry=True)
                 else:
                     self._status("Checking Arena again before navigation")
 
@@ -1100,6 +1261,9 @@ class AutoQueueNavigator:
                 "awaiting_result_dismissal": self._awaiting_result_dismissal,
                 "recent_actions": list(self._history),
                 "failures": self._failures,
+                "clicks": self._clicks,
+                "pause_retries": self._pause_retries,
+                "retry_in_s": round(self._retry_at - now, 1) if self.retry_scheduled else None,
                 "result_waits": self._result_waits,
                 "survey_skips": self._survey_skips,
                 "survey_waits": self._survey_waits,

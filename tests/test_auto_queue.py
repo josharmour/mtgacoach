@@ -933,3 +933,252 @@ def test_survey_without_a_skip_control_waits_bounded_without_clicking():
     step(nav)
     assert "survey" in nav.paused_reason
     assert nav.get_debug_info()["survey_waits"] == 25
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-19: rank-progress screens, quoted labels, reward reveals
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("action", "screen", "label", "expected"),
+    [
+        ("continue", "results", "[Click to Continue]", "Click to Continue"),  # 07:46:33, 08:05:11
+        ("continue", "reward", "(Continue)", "Continue"),
+        ("continue", "results", "Click to Continue.", "Click to Continue"),
+        ("claim", "reward", "“Claim”", "Claim"),
+        ("open_play", "home", "  Play  ", "Play"),
+        ("dismiss_survey", "survey", "[Skip]", "Skip"),
+    ],
+)
+def test_quoted_or_bracketed_labels_are_the_visible_text(action, screen, label, expected):
+    data, click = parse_queue_action(proposal(action, screen, label=label, point=[0.5, 0.95]))
+    assert data["label"] == expected
+    assert click is not None and click.point == (0.5, 0.95)
+
+
+@pytest.mark.parametrize(
+    ("action", "screen", "label"),
+    [
+        ("open_play", "home", "[Play Brawl]"),
+        ("claim", "reward", "[Buy]"),
+        ("dismiss_survey", "survey", "(:)"),
+        ("continue", "results", "[View Battlefield]"),
+    ],
+)
+def test_stripping_quotes_does_not_admit_other_controls(action, screen, label):
+    with pytest.raises(ValueError):
+        parse_queue_action(proposal(action, screen, label=label, point=[0.5, 0.95]))
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        # 09:10:20, rejected: "expected one of ['defeat', 'draw', 'victory']".
+        {"action": "dismiss_result", "label": "Silver Tier 4 rank-up result overlay"},
+        # 08:27:34: Arena's own prompt quoted for the overlay dismissal.
+        {"action": "dismiss_result", "label": "[Click to Continue]"},
+        {"action": "dismiss_result", "label": None, "result_title": "Bronze Tier 1"},
+        {"action": "wait", "label": None, "result_title": "Bronze Tier 1"},
+        {"action": "continue", "label": "[Click to Continue]", "result_title": "Gold Tier 2"},
+        {"action": "dismiss_result", "label": "Constructed Rank"},
+        {"action": "dismiss_result", "label": "Mythic"},
+        {"action": "dismiss_result", "label": "RANK UP!"},
+    ],
+)
+def test_rank_progress_overlay_is_dismissed_like_victory(changes):
+    data, click = parse_queue_action(
+        proposal(**{"screen": "results", "result_visible": True, "point": [0.92, 0.07], **changes})
+    )
+    assert data["action"] == "dismiss_result" and data["screen"] == "results"
+    assert data["label"] and "[" not in data["label"]
+    # The overlay's own exit target, never "View Battlefield" at the top right.
+    assert click is not None and click.point == (0.5, 0.5)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"label": "Bronze Tier 1", "result_visible": False},
+        {"label": "Bronze Tier 1", "result_visible": None},
+        {"label": "[Click to Continue]", "result_visible": False},
+        {"label": "Pay 1000 Gold", "result_visible": True},
+        {"label": "Gold", "result_visible": True},
+        {"label": "View Battlefield", "result_visible": True},
+        {"label": "Bronze Tier 1", "result_visible": True, "screen": "reward"},
+        {"label": "Silver Tier 4", "result_visible": True, "confidence": 0.8},
+    ],
+)
+def test_rank_overlay_dismissal_still_needs_a_visible_result_overlay(changes):
+    data = {"screen": "results", "point": None, **changes}
+    screen = data.pop("screen")
+    with pytest.raises(ValueError):
+        parse_queue_action(proposal("dismiss_result", screen, **data))
+
+
+def test_rank_screen_readings_that_paused_auto_queue_now_click_or_look_again():
+    # 08:27:34-08:27:49: these three readings of the rank-progress screen were
+    # rejected, paused navigation, and Arena sat there until 08:47:29.
+    nav, controller, backend, _, statuses = navigator()
+    arm(nav)
+    backend.complete_with_image.return_value = proposal(
+        "dismiss_result", "results", label=None, result_visible=True, point=None
+    )
+    for _ in range(3):
+        step(nav)
+    controller.execute.assert_not_called()
+    assert not nav.paused_reason
+    assert nav.get_debug_info()["failures"] == 0
+    assert nav.get_debug_info()["result_waits"] == 3
+    request = json.loads(backend.complete_with_image.call_args.args[1])
+    assert "Click to Continue" in request["previous_rejection"]["error"]
+    assert any("rank" in label for label in request["supported_actions"]["dismiss_result"]["labels"])
+
+    backend.complete_with_image.return_value = proposal(
+        "dismiss_result", "results", label="[Click to Continue]", result_visible=True, point=None
+    )
+    step(nav)
+    controller.execute.assert_called_once()
+    assert controller.execute.call_args.args[1].point == (0.5, 0.5)
+    assert nav.get_debug_info()["recent_actions"] == [
+        {"action": "dismiss_result", "label": "Click to Continue"}
+    ]
+    assert "waiting for it to close" in statuses[-1]
+
+    backend.complete_with_image.return_value = proposal(
+        "continue", "results", label="[Click to Continue]", result_visible=True, point=[0.5, 0.955]
+    )
+    controller.capture.side_effect = lambda: make_frame(color="blue")
+    step(nav)
+    assert controller.execute.call_count == 2
+    assert controller.execute.call_args.args[1].point == (0.5, 0.955)
+    assert not nav.paused_reason
+
+
+def test_three_unverifiable_steps_pause_then_look_again_by_themselves(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("arenamcp.auto_queue.time.monotonic", lambda: now[0])
+    nav, controller, backend, state, statuses = navigator()
+    arm(nav)
+    backend.complete_with_image.return_value = proposal("open_play", "home", label="Play Brawl")
+    for _ in range(3):
+        step(nav)
+    assert nav.paused_reason == "Could not verify the next Arena navigation step"
+    assert nav.retry_scheduled
+    assert "automatic retry 1/3" in statuses[-1]
+    assert nav.process_tick(state) and nav._worker is None  # cooling down: no screenshot
+
+    now[0] += 30
+    backend.complete_with_image.return_value = proposal("open_play", "home")
+    nav._step = lambda generation, aborted: None  # process_tick only schedules the step
+    assert nav.process_tick(state)
+    assert not nav.paused_reason and nav.active
+    assert statuses[-1] == "Looking at Arena again (automatic retry 1/3)"
+    del nav._step
+    step(nav)
+    controller.execute.assert_called_once()
+    assert nav.get_debug_info()["pause_retries"] == 0  # a delivered click restores the budget
+
+
+def test_automatic_retries_are_bounded_then_wait_for_the_user(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("arenamcp.auto_queue.time.monotonic", lambda: now[0])
+    nav, controller, backend, state, statuses = navigator()
+    nav._step = lambda generation, aborted: None  # process_tick only schedules the step
+    arm(nav)
+    backend.complete_with_image.return_value = proposal("open_play", "home", label="Play Brawl")
+    for retry in range(1, 5):
+        for _ in range(3):
+            AutoQueueNavigator._step(nav, nav._generation, nav._abort)
+        assert nav.paused_reason
+        if retry <= 3:
+            assert f"automatic retry {retry}/3" in statuses[-1]
+            now[0] += 30
+            nav.process_tick(state)
+            assert not nav.paused_reason
+    assert not nav.retry_scheduled
+    assert statuses[-1].endswith("Toggle auto queue off/on to retry this navigation.")
+    calls = backend.complete_with_image.call_count
+    now[0] += 3600
+    assert nav.process_tick(state)
+    assert nav.paused_reason and backend.complete_with_image.call_count == calls
+    controller.execute.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [proposal("stop", "blocked", point=None), proposal("wait", "sideboard", point=None)],
+    ids=["blocked", "sideboard"],
+)
+def test_pauses_for_a_manual_check_never_retry_by_themselves(monkeypatch, response):
+    now = [100.0]
+    monkeypatch.setattr("arenamcp.auto_queue.time.monotonic", lambda: now[0])
+    nav, _, backend, state, _ = navigator()
+    arm(nav)
+    backend.complete_with_image.return_value = response
+    step(nav)
+    assert nav.paused_reason and not nav.retry_scheduled
+    now[0] += 3600
+    nav.process_tick(state)
+    assert nav.paused_reason
+    assert backend.complete_with_image.call_count == 1
+
+
+def test_reward_reveal_is_progress_not_a_missed_claim():
+    # 07:46:51 / 08:15:39: each Claim turned a reward card over and stayed on
+    # screen for the next one. A click that changed the screen does not count
+    # toward the limit on repeating the same click.
+    nav, controller, backend, _, _ = navigator()
+    shades = iter(["#404040", "#606060", "#808080", "#a0a0a0", "#c0c0c0", "#e0e0e0"])
+    shade = ["#202020"]
+
+    def reveal(frame, action, aborted):
+        shade[0] = next(shades)
+        return True
+
+    controller.capture.side_effect = lambda: make_frame(color=shade[0])
+    controller.execute.side_effect = reveal
+    arm(nav)
+    backend.complete_with_image.return_value = proposal("claim", "reward", label="Claim", point=[0.9, 0.93])
+    for _ in range(5):  # more identical Claims than the repeated-click limit (3) allows
+        step(nav)
+    assert controller.execute.call_count == 5
+    assert not nav.paused_reason
+    for call in backend.complete_with_image.call_args_list:
+        assert json.loads(call.args[1])["previous_click_had_no_visible_effect"] is None
+
+
+def test_a_click_is_judged_once_against_the_screen_before_it():
+    # 07:46:39 Continue; at 07:46:44 the screen had changed; at 07:46:48 a later
+    # screen was compared with the pre-click one again and called a miss.
+    nav, controller, backend, _, _ = navigator()
+    arm(nav)
+    backend.complete_with_image.return_value = proposal(
+        "continue", "results", label="Click to Continue", point=[0.5, 0.95]
+    )
+    step(nav)
+    controller.execute.assert_called_once()
+    backend.complete_with_image.return_value = proposal("wait", "results", point=None)
+    controller.capture.side_effect = lambda: make_frame(color="black")
+    step(nav)
+    controller.capture.side_effect = make_frame  # the pre-click screen's colour again
+    step(nav)
+    requests = [json.loads(call.args[1]) for call in backend.complete_with_image.call_args_list]
+    assert [request["previous_click_had_no_visible_effect"] for request in requests] == [None, None, None]
+
+
+def test_reenabling_during_the_next_match_does_not_announce_a_retry():
+    # 07:28:48.995 "Retrying navigation for the finished match", 07:28:49.006
+    # "Next match started": the match its Play click joined was already running.
+    nav, _, backend, state, statuses = navigator()
+    arm(nav)
+    step(nav)  # Play on the expected tile
+    nav.set_enabled(False)
+    state["match_id"] = "next"
+    nav.set_enabled(True)
+    assert not nav.active
+    assert statuses[-1] == "Waiting for this match to finish"
+    assert "Retrying navigation for the finished match" not in statuses
+    assert not nav.process_tick(state)
+    assert backend.complete_with_image.call_count == 1
+    assert nav.note_match_end({"match_id": "next", "deck_name": "Current deck"}, confirmed_match_end=True)
