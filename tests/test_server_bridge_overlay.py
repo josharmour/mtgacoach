@@ -256,8 +256,9 @@ def test_get_game_state_overlays_bridge_visible_state(monkeypatch):
     assert result["pending_decision"] == "Select Targets"
     assert result["decision_context"]["type"] == "target_selection"
     assert result["dungeon_status"][1]["dungeon"] == "Lost Mine"
-    assert result["timer_state"][1]["time_remaining_ms"] == 45000
-    assert result["timer_state"][1]["is_ticking"] is True
+    # Arena's clock stays the Player.log reading; the plugin's untimed MtgTimer
+    # snapshot read "2s left" on fresh windows (2026-10-18 21:22).
+    assert result["timer_state"] == {1: {"time_remaining_ms": 11111}}
 
 
 def test_get_game_state_uses_bridge_local_seat_for_pending_decision(monkeypatch):

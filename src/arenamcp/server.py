@@ -1473,36 +1473,6 @@ def _derive_seat_ids(
     return local_seat_id, opponent_seat_id
 
 
-def _normalize_bridge_timer_state(bridge_timer_state: dict[str, Any]) -> dict[int, dict[str, Any]]:
-    """Map bridge player timer payloads to the snapshot timer_state schema."""
-    normalized: dict[int, dict[str, Any]] = {}
-    player_timers = bridge_timer_state.get("player_timers")
-    if not isinstance(player_timers, dict):
-        return normalized
-
-    for seat_key, timers in player_timers.items():
-        seat_id = _coerce_int(seat_key)
-        if seat_id is None:
-            continue
-        timer_entries = [entry for entry in _copy_list(timers) if isinstance(entry, dict)]
-        if not timer_entries:
-            continue
-
-        chosen = next((entry for entry in timer_entries if entry.get("running")), timer_entries[0])
-        duration_sec = _coerce_int(chosen.get("duration_sec"), 0) or 0
-        elapsed_sec = _coerce_int(chosen.get("elapsed_sec"), 0) or 0
-        remaining_ms = max(0, (duration_sec - elapsed_sec) * 1000)
-
-        normalized[seat_id] = {
-            "time_remaining_ms": remaining_ms,
-            "timer_type": chosen.get("type") or chosen.get("timer_type") or "",
-            "behavior": chosen.get("behavior") or "",
-            "is_ticking": bool(chosen.get("running", chosen.get("is_ticking", False))),
-        }
-
-    return normalized
-
-
 def controlled_turn_state(players: list[dict], turn: dict, local_seat_id: int | None) -> dict[str, bool]:
     """Who is controlling whose turn (Emrakul, the Promised End / Mindslaver).
 
@@ -1684,10 +1654,12 @@ def _get_bridge_overlay(
     exile = _bridge_zone_cards("exile")
     command = _bridge_zone_cards("command")
 
-    timer_state = {}
-    bridge_timer_state = bridge.get_timer_state()
-    if bridge_timer_state:
-        timer_state = _normalize_bridge_timer_state(bridge_timer_state)
+    # Arena's clock stays the Player.log reading (decision_clock): it carries the
+    # time it was made, so a reading from an earlier window is ignored. The
+    # plugin's MtgTimer snapshot has no such time, and a timer Arena no longer
+    # advances read as current: on 2026-10-18 21:22 (Linux/Proton) it showed
+    # "2s left" on fresh priority windows and the decision watchdog passed our
+    # main phases. The native-Mac bridge never sent timers, so this matches it.
 
     opponent_hand_zone = bridge_zones.get("opponent_hand", {})
     local_library_zone = bridge_zones.get("local_library", {})
@@ -1738,8 +1710,6 @@ def _get_bridge_overlay(
     )
     if bridge_state.get("game_state_id") is not None:
         overlay["_bridge_game_state_id"] = _coerce_int(bridge_state.get("game_state_id"), 0) or 0
-    if timer_state:
-        overlay["timer_state"] = timer_state
     pending_interaction = bridge_state.get("pending_interaction")
     if pending_interaction:
         overlay["bridge_pending_interaction"] = pending_interaction
