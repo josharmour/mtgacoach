@@ -13,6 +13,7 @@ from arenamcp import combat_solver
 from arenamcp.combat_keywords import (
     annotate_cant_be_blocked,
     is_creature_modified,
+    is_creature_now,
     modified_conditional_keywords,
     unmet_modified_flag,
 )
@@ -127,12 +128,7 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
     your_life, opponent_life = int(local.get("life_total", 20)), int(opponent.get("life_total", 20))
     battlefield = state.get("battlefield") or []
     cards = {card["instance_id"]: card for card in battlefield if card.get("instance_id")}
-    creatures = [
-        card
-        for card in battlefield
-        if "creature" in str(card.get("type_line", "")).lower()
-        or "CardType_Creature" in (card.get("card_types") or [])
-    ]
+    creatures = [card for card in battlefield if is_creature_now(card)]
     yours = [
         card for card in creatures if card.get("controller_seat_id", card.get("owner_seat_id")) == local_id
     ]
@@ -689,7 +685,7 @@ def _eligible_blockers(state: dict, opponent_seat: int) -> list[dict]:
     for card in state.get("battlefield") or []:
         if (
             _controller(card) != opponent_seat
-            or "creature" not in _types(card)
+            or not is_creature_now(card)
             or card.get("is_tapped")
             or card.get("is_attacking")
             or card.get("is_phased_out")
@@ -1573,7 +1569,7 @@ def free_attackers(
     theirs = [
         card
         for card in battlefield
-        if _controller(card) == opponent.get("seat_id") and "creature" in _types(card)
+        if _controller(card) == opponent.get("seat_id") and is_creature_now(card)
     ]
     blockers = _eligible_blockers(state, opponent.get("seat_id"))
     ours_home = [

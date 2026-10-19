@@ -66,6 +66,7 @@ from arenamcp.gamestate_transforms import (
     _ensure_list,
     _has_stun_counter,
     _parse_attack_state,
+    _parse_attacker_block_state,
     _parse_block_state,
 )
 
@@ -112,6 +113,7 @@ __all__ = [
     "_handle_pay_costs",
     "_handle_select_n_req",
     "_parse_attack_state",
+    "_parse_attacker_block_state",
     "_parse_block_state",
     "_parse_object_kind",
     "_parse_zone_type",
@@ -362,6 +364,7 @@ class GameState(_GameStateAnnotationsMixin):
         logger.info("Resetting GameState for new match")
         self._apply_field_defaults()
         self.log_game_state_id = 0  # gameStateIds restart every game
+        self.log_summarized_at_gsid = -1
         self.turn_info = TurnInfo()
         self._raw_gre_sequence = 0
         self.publish_snapshot()
@@ -1608,6 +1611,7 @@ class GameState(_GameStateAnnotationsMixin):
             },
             "pending_decision": self.pending_decision,
             "_log_game_state_id": getattr(self, "log_game_state_id", 0),
+            "_log_summarized_at_gsid": getattr(self, "log_summarized_at_gsid", -1),
             "decision_seat_id": self.decision_seat_id,
             "decision_context": self.decision_context,
             "last_cleared_decision": self.last_cleared_decision,
@@ -2135,6 +2139,7 @@ class GameState(_GameStateAnnotationsMixin):
             entered_via_play_land = existing_obj.entered_via_play_land
             is_attacking = existing_obj.is_attacking
             is_blocking = existing_obj.is_blocking
+            is_blocked = existing_obj.is_blocked
             attack_target_id = existing_obj.attack_target_id
             summoning_sickness = existing_obj.summoning_sickness
             object_kind = existing_obj.object_kind
@@ -2160,6 +2165,7 @@ class GameState(_GameStateAnnotationsMixin):
             entered_via_play_land = False
             is_attacking = False
             is_blocking = False
+            is_blocked = None
             attack_target_id = None
             summoning_sickness = False
             object_kind = GameObjectKind.UNKNOWN
@@ -2247,8 +2253,12 @@ class GameState(_GameStateAnnotationsMixin):
             is_attacking = False
         if "blockState" in obj_data:
             is_blocking = _parse_block_state(obj_data["blockState"])
+            is_blocked = _parse_attacker_block_state(obj_data["blockState"])
         elif full_info and "isBlocking" not in obj_data:
             is_blocking = False
+            is_blocked = None
+        if not is_attacking:
+            is_blocked = None
         if "attackInfo" in obj_data:
             attack_info = obj_data["attackInfo"] if isinstance(obj_data["attackInfo"], dict) else {}
             attack_target_id = _coerce_optional_int(attack_info.get("targetId"))
@@ -2341,6 +2351,7 @@ class GameState(_GameStateAnnotationsMixin):
             entered_via_play_land=entered_via_play_land,
             is_attacking=is_attacking,
             is_blocking=is_blocking,
+            is_blocked=is_blocked,
             attack_target_id=attack_target_id,
             summoning_sickness=summoning_sickness,
             object_kind=object_kind,
@@ -2988,6 +2999,7 @@ class GameState(_GameStateAnnotationsMixin):
             for obj in self.game_objects.values():
                 obj.is_attacking = False
                 obj.is_blocking = False
+                obj.is_blocked = None
 
         turn_changed = new_turn != prev_turn
         new_priority = turn_data.get("priorityPlayer", prev_priority)
@@ -3184,6 +3196,11 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
             for idx, msg in enumerate(messages):
                 if not isinstance(msg, dict):
                     continue
+                if msg.get("_summarized"):
+                    # Ledger #174: Arena summarized this event in Player.log; the state ids
+                    # it carried will never arrive in detail. Readers waiting for the log to
+                    # reach the bridge's gameStateId stop waiting (autopilot catch-up gate).
+                    game_state.log_summarized_at_gsid = int(getattr(game_state, "log_game_state_id", 0) or 0)
                 msg_type = msg.get("type", "")
                 seat_hint = _coerce_optional_int(msg.get("systemSeatId"))
                 if seat_hint is None:

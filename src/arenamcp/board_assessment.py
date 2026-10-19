@@ -2410,7 +2410,9 @@ def _threats(
             if outlet:
                 reach = outlet * len(theirs)
                 score += 2 + reach
-                why.append(f"sacrifice outlet: {outlet} damage a creature they sacrifice (~{reach} reach now)")
+                why.append(
+                    f"sacrifice outlet: {outlet} damage a creature they sacrifice (~{reach} reach now)"
+                )
         elif re.search(r"deals? \d+ damage to each opponent|each opponent loses \d+ life", text):
             score += 2
             why.append("direct damage")

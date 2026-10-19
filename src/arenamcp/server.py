@@ -1525,6 +1525,9 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
         val = obj.get(key)
         if val:  # Only include truthy values
             result[key] = copy.deepcopy(val)
+    # An attacker's blocked / unblocked fate (False matters: Sneak returns an unblocked one).
+    if obj.get("is_blocked") is not None:
+        result["is_blocked"] = bool(obj["is_blocked"])
     return result
 
 
@@ -1607,6 +1610,8 @@ def _serialize_bridge_card(
     targeting = _copy_list(card.get("target_ids") or fallback.get("targeting"))
     if targeting:
         result["targeting"] = [value for value in targeting if value is not None]
+    if fallback.get("is_blocked") is not None and result["is_attacking"]:
+        result["is_blocked"] = bool(fallback["is_blocked"])
 
     for key in (
         "modified_power",
@@ -2152,6 +2157,7 @@ def get_game_state() -> dict[str, Any]:
         "_bridge_request_payload": copy.deepcopy(snap.get("_bridge_request_payload")),
         "_bridge_game_state_id": snap.get("_bridge_game_state_id", 0),
         "_log_game_state_id": snap.get("_log_game_state_id", 0),
+        "_log_summarized_at_gsid": snap.get("_log_summarized_at_gsid", -1),
     }
 
     bridge_overlay = _get_bridge_overlay(

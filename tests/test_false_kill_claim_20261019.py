@@ -57,12 +57,23 @@ def _improviser_window():
     return state, _cast_menu((221, "Tectonic Hazard"))
 
 
+def _without_burn_timing(monkeypatch, planner):
+    """The model's answer reaches the false-kill guard: no #136 hold in front of it.
+
+    This Slickshot carries no cast-pump text, so Hazard (killing nothing) would
+    come off the menu before the model is asked (``test_burn_timing_20261019``).
+    """
+    monkeypatch.setattr(planner, "_hold_instant_burn", lambda decision, s: (decision, []))
+    return planner
+
+
 # --- #86: a false claim on a cast the line makes anyway -------------------------------------
 
 
-def test_a_false_kill_claim_on_the_lines_own_cast_keeps_the_pick(caplog):
+def test_a_false_kill_claim_on_the_lines_own_cast_keeps_the_pick(caplog, monkeypatch):
     state, menu = _improviser_window()
     planner = _planner(json.dumps({"option_ids": ["idx:0"], "reasoning": SAID_1208}))
+    _without_burn_timing(monkeypatch, planner)
     with caplog.at_level(logging.WARNING, logger="arenamcp.action_planner"):
         assert planner.plan_decision_options(menu, state) == ["idx:0"]
 
@@ -83,6 +94,7 @@ def test_a_false_kill_claim_the_line_does_not_back_is_still_thrown_out(monkeypat
     state, menu = _improviser_window()
     monkeypatch.setattr(planner_module, "line_casts_option", lambda *args, **kwargs: "")
     planner = _planner(json.dumps({"option_ids": ["idx:0"], "reasoning": SAID_1208}))
+    _without_burn_timing(monkeypatch, planner)
     with caplog.at_level(logging.WARNING, logger="arenamcp.action_planner"):
         planner.plan_decision_options(menu, state)
 

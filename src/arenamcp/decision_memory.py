@@ -299,6 +299,8 @@ class DecisionMemory:
         label = labels.get(option_id)
         if not label:
             return None
+        if _their_end_step_instant(state, decision, option_id):
+            return None
         signature = board_signature(state)
         for record in reversed(self.this_turn(state)):
             if record.request_type != "ActionsAvailable" or record.chosen != ["pass"]:
@@ -350,6 +352,35 @@ class DecisionMemory:
     def recent_actions_text(self, limit: int = REFORM_ACTIONS) -> str:
         """The latest decisions, one per line, for the game-plan reform prompt."""
         return "\n".join(f"  - {record.line()}" for record in self._records[-limit:])
+
+
+def _their_end_step_instant(state: dict, decision: Any, option_id: str) -> bool:
+    """An instant-speed cast at the opponent's end step (or cleanup): never a reversal of an earlier pass.
+
+    Ledger #153 (2026-10-19 14:02:30, f5bc17dc T4): Burst Lightning at their
+    end step "reversed" a pass from their main phase on the same board; the
+    re-ask passed on a false premise ("saving the single red mana for my own
+    curve-out next turn") and the held Burst and Shock were stranded. This is
+    the last window for that mana, which untaps at our next turn either way.
+    """
+    local = _local_seat(state)
+    active = (state.get("turn") or {}).get("active_player")
+    if local is None or active is None or active == local:
+        return False
+    if turn_window(state) not in (_TURN_STEPS.index("end"), _TURN_STEPS.index("cleanup")):
+        return False
+    option = next((o for o in getattr(decision, "options", ()) or () if o.option_id == option_id), None)
+    if option is None or (getattr(option, "meta", None) or {}).get("actionType") != "ActionType_Cast":
+        return False
+    card = _source_card(option, state)
+    if not card:
+        return False
+    from arenamcp.mulligan_policy import hand_card
+
+    try:
+        return bool(hand_card(card).instant_speed)
+    except Exception:
+        return False
 
 
 def _source_card(option: Any, state: dict) -> dict:
@@ -593,7 +624,8 @@ def burn_kills_nothing(
     them against a 4/4 Bristly Bill or a 4-toughness Dawnwing Marshal the burn
     could not kill. Burning face is the race the board math and the game plan
     already count, not removal. Destroy, exile and -N/-N effects, X damage,
-    an opposing planeswalker, a creature the damage kills (marked damage
+    an opposing planeswalker the damage kills (its loyalty, or unknown
+    loyalty), a creature the damage kills (marked damage
     counted) or one in combat keep the decision critical. The kicked amount
     counts unless ``castable`` (the card about to be cast) shows the mana
     for the kicker cannot be there this turn; a spell already on the stack
@@ -613,13 +645,18 @@ def burn_kills_nothing(
     if burn is None:
         return False
     mana = mana_available(state)
+    from arenamcp.combat_strategy import loyalty
+
     doomed = _doomed(state, source)
     for card in _theirs(state):
         if card.get("instance_id") in doomed:
             continue
         types = _types(card)
-        if burn.walkers and "planeswalker" in types and _reachable(burn, card, state, mana):
-            return False
+        if burn.walkers and "planeswalker" in types:
+            # Ledger #139 (d9a33232 T4): Shock's 2 at a 3-loyalty Jace killed nothing.
+            left = loyalty(card)
+            if any(left is None or damage >= left for damage in _reachable(burn, card, state, mana)):
+                return False
         if burn.creatures and "creature" in types:
             if any(_damage_may_kill(card, damage) for damage in _reachable(burn, card, state, mana)):
                 return False
@@ -881,6 +918,8 @@ class LethalReach:
     burn: int
     pumps: int
     pumpers: tuple[str, ...]
+    sneak: int = 0  # a Sneak swap after blocks: its creature's power less the attacker it returns
+    sneak_name: str = ""
 
     def text(self) -> str:
         parts = [f"attackers {self.attack}"] if self.attack else []
@@ -888,7 +927,45 @@ class LethalReach:
             parts.append(f"burn {self.burn}")
         if self.pumps:
             parts.append(f"cast pumps +{self.pumps} ({', '.join(self.pumpers)})")
+        if self.sneak:
+            parts.append(f"Sneak {self.sneak_name} after blocks +{self.sneak}")
         return f"up to {self.damage} damage this turn ({', '.join(parts)}) against their {self.life} life"
+
+
+def _sneak_reach(
+    state: dict, attackers: list[dict], mana: int, window: int | None
+) -> tuple[int, str, int | None]:
+    """(+damage, card, unblocked damage or None) a Sneak cast adds this turn: in our
+    declare-blockers step the real swap (``sneak.sneak_now``) and the unblocked attackers'
+    damage; before it, the Sneak creature's power less our weakest attacker's.
+
+    Ledger #156 (match be1a945f T12): the reach read 20 against their 17 and
+    never counted the Sneak Leonardo worth 15 more.
+    """
+    from arenamcp.sneak import entry_power, sneak_casts, sneak_now
+
+    if window == _TURN_STEPS.index("declareblock"):
+        found = sneak_now(state)
+        if found is None or found.affordable is False:
+            return 0, "", None
+        return max(0, found.total - found.through), found.cast.name, found.through
+    if not attackers or window is None or window > _TURN_STEPS.index("declareattack"):
+        return 0, "", None
+    local = _local_seat(state)
+    creatures = sum(
+        1
+        for c in state.get("battlefield") or []
+        if c.get("controller_seat_id") == local and "creature" in _types(c) and not _is_land(c)
+    )
+    weakest = min((c["power"] for c in attackers if type(c.get("power")) is int), default=0)
+    best, name = 0, ""
+    for cast in sneak_casts(state):
+        if cast.mana_value > mana:
+            continue
+        gain = entry_power(cast.card, creatures) - max(0, weakest)
+        if gain > best:
+            best, name = gain, cast.name
+    return best, name, None
 
 
 def lethal_reach(decision: Any, state: dict | None) -> LethalReach | None:
@@ -967,9 +1044,21 @@ def lethal_reach(decision: Any, state: dict | None) -> LethalReach | None:
                     if candidate[0] > best[spend][0]:
                         best[spend] = candidate
     extra, face, spells = best[mana]
-    if attack + extra < life:
+    sneak, sneak_name = 0, ""
+    if our_turn:
+        try:
+            sneak, sneak_name, unblocked = _sneak_reach(state, attackers, mana, window)
+        except Exception:  # a reading aid: the bound never fails on it
+            sneak, sneak_name, unblocked = 0, "", None
+        if sneak and unblocked is not None:
+            attack = unblocked  # blocks are known: the unblocked attackers' damage
+        elif not sneak:
+            sneak_name = ""
+    if attack + extra + sneak < life:
         return None
-    return LethalReach(attack + extra, life, attack, face, spells * per_spell, tuple(pumpers))
+    return LethalReach(
+        attack + extra + sneak, life, attack, face, spells * per_spell, tuple(pumpers), sneak, sneak_name
+    )
 
 
 def _names_in_plan(name: str, plan_text: str) -> bool:

@@ -122,3 +122,18 @@ def test_the_catch_up_wait_reads_player_log_itself():
     engine._poll_log_fn = poll_log
     assert engine._await_log_catch_up(_poll(166), stale)["_log_game_state_id"] == 166
     assert polls == [1]
+
+
+def test_a_summarized_log_does_not_block_the_decision():
+    """Ledger #174 (2026-10-19 15:54, after an MTGA crash and reconnect): Arena summarized the
+    ConnectResp/GameState/ActionsAvailable event in Player.log, the log stayed at 589 while the
+    bridge was at 602, and the gate yielded until Arena's clock ran out."""
+    summarized = {"_log_game_state_id": 589, "_log_summarized_at_gsid": 589}
+    engine = _engine([summarized])
+    assert engine._await_log_catch_up(_poll(602), summarized) is summarized
+
+
+def test_a_summary_before_newer_detail_still_waits():
+    older_summary = {"_log_game_state_id": 589, "_log_summarized_at_gsid": 580}
+    engine = _engine([older_summary])
+    assert engine._await_log_catch_up(_poll(602), older_summary) is None

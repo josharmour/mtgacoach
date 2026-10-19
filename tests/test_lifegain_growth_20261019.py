@@ -149,3 +149,25 @@ def test_their_walker_grows_on_each_life_gain_event():
     assert dict((iid, loyal) for iid, _n, loyal in after_cast.walkers) == {341: 4}
     assert dict((iid, loyal) for iid, _n, loyal in after_hold.walkers) == {341: 3}
     assert effigy in after_cast.hand
+
+
+def test_633f56bd_essence_channeler_grows_on_the_vanguards_lifelink():
+    # Match 633f56bd T11 (tests/test_attack_line_guard_20261019.py, Arena's card text): Leonin
+    # Vanguard's lifelink hit on their T12 attack puts a counter on Essence Channeler ("Whenever
+    # you gain life, put a +1/+1 counter on this creature."): 5/4 from T14. Holding no longer
+    # survives (was life 10, 6, 2): both lines die on T16; the attack line guard needs a best line
+    # that survives and stands aside. Their real T12 attack took 8 (10 -> 2).
+    from tests.test_attack_line_guard_20261019 import _t11
+
+    from arenamcp.line_guard import attack_line_guard
+
+    state = _t11(channeler_grows=True)
+    ba._CACHE.clear()
+    facts = ba.assess(deepcopy(state))
+    result = facts.line_search
+    hold = result.first_action[("nocast",)]
+    attack = result.first_action[("attack", frozenset({336, 349}))]
+    assert (hold.lives(), hold.cls, hold.dead_turn) == ([10, 5, 0], DEAD, 16), hold.summary()
+    assert (attack.cls, attack.dead_turn) == (DEAD, 16), attack.summary()
+    assert result.posture == "either"
+    assert attack_line_guard(result, [336, 349], state, lethal_now=False, all_in=False) is None
