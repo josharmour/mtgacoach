@@ -3810,6 +3810,22 @@ class ActionPlanner(_ActionLegalityMixin):
             picked,
             f" [line pick; board math: {board_pick}]" if source == "line" else "",
         )
+        gap = trace.get("line_gap") if isinstance(trace, dict) else None
+        if (
+            failure == "set_aside"
+            and isinstance(gap, dict)
+            and gap.get("mode") == "on"
+            and picked
+            and picked != [gap.get("chosen")]
+        ):
+            # Ledger #116: the doubted low answer had no high-effort answer to replace it.
+            gap["applied"] = list(picked)
+            logger.warning(
+                "line_gap: did replace %s with %s (%s)",
+                gap.get("card"),
+                _option_text(decision, picked[0]),
+                why,
+            )
         return picked
 
     def _second_look(
@@ -4047,7 +4063,10 @@ class ActionPlanner(_ActionLegalityMixin):
         - "face_burn" (ledger #59, #77): burn that only goes face, with no
           lethal, that the line search rates below its best line or not at all;
         - "attack_only" (ledger #37): a haste creature that leaves at end step,
-          cast before combat, whose attack the losing-attack guard would hold.
+          cast before combat, whose attack the losing-attack guard would hold;
+        - "line_gap" (ledger #116): any cast the line search rates
+          ``LINE_GUARD_MARGIN`` or more below its best line, with no lethal and
+          that line playable now (not repeated when "face_burn" already cites it).
         """
         if (
             decision.request_type != "ActionsAvailable"
@@ -4060,7 +4079,10 @@ class ActionPlanner(_ActionLegalityMixin):
             ("false_lethal", self._false_lethal_concern),
             ("face_burn", self._face_burn_concern),
             ("attack_only", self._attack_only_cast_concern),
+            ("line_gap", self._line_gap_concern),
         ):
+            if kind == "line_gap" and any(seen == "face_burn" for seen, _text in found):
+                continue
             try:
                 text = check(
                     decision, game_state, str(chosen[0]), str(reasoning or ""), line_source, line_tags or {}
@@ -4187,6 +4209,108 @@ class ActionPlanner(_ActionLegalityMixin):
         return (
             f"{name} only does face damage now: {now}, nothing is lethal this turn, and {rating}. "
             "Held, it can kill a creature they play later; cast it now only if you can name what that gains."
+        )
+
+    def _line_gap_concern(
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        option_id: str,
+        _reasoning: str,
+        source: Any,
+        tags: dict,
+    ) -> str:
+        """A cast the line search rates ``LINE_GUARD_MARGIN`` or more below its best line (ledger #116).
+
+        2026-10-19 12:49:36 (match 2c67eed8 T8): Iroh's Demonstration on a
+        Dazzling Angel was tagged "[LINE: -8 vs best]"; the best line was
+        "Mountain + Giant Cindermaw; then Mountain + Iroh's Demonstration",
+        which kept Iroh's for the Herald of Faith that later dealt 8. The low
+        answer took 9.9 s, the high one never came, and the low pick stood:
+        outside survival mode no guard reads a value gap. Our main phase, a
+        payable cast with that tag, no lethal this turn or within reach (the
+        search missed such a kill before, ledger #100), and a best line that
+        casts this turn, its spells offered, starting with the board-math
+        fallback's own pick (its land, or a cast Arena confirms). With
+        ``ARENAMCP_LINE_GAP`` 'shadow' it only logs what it would replace.
+        """
+        from arenamcp.decision_memory import _TURN_STEPS, turn_window
+        from arenamcp.line_guard import LINE_GUARD_MARGIN, line_gap_mode
+        from arenamcp.line_search import action_key
+
+        setting = line_gap_mode()
+        gap = re.match(r"\[LINE: -(\d+) vs best", str(tags.get(option_id) or ""))
+        if setting == "off" or not gap or int(gap.group(1)) < LINE_GUARD_MARGIN:
+            return ""
+        option = decision.find(option_id)
+        meta = (option.meta if option is not None else None) or {}
+        if meta.get("actionType") != "ActionType_Cast" or option.payable is False:
+            return ""
+        if turn_window(game_state) not in (_TURN_STEPS.index("main1"), _TURN_STEPS.index("main2")):
+            return ""
+        best = getattr(source, "best", None)
+        step = best.steps[0] if best is not None and getattr(best, "steps", None) else None
+        if step is None or not step.casts or getattr(source, "posture", "") == "lethal":
+            return ""
+        offered = {
+            str(find_source(game_state, o.meta or {}).get("name") or "")
+            for o in decision.options
+            if (o.meta or {}).get("actionType") == "ActionType_Cast" and o.payable is not False
+        }
+        if any(name not in offered for name in step.casts):
+            return ""
+        if _lethal_this_turn(game_state) is not False or lethal_reach(decision, game_state) is not None:
+            return ""
+        picked, _why = board_math_option_pick(decision, game_state)
+        line = line_fallback_option_pick(decision, game_state, picked)
+        if line is not None:
+            picked = line[0]
+        replacement = decision.find(picked[0]) if len(picked) == 1 else None
+        if replacement is None or replacement.option_id in (option_id, "pass"):
+            return ""
+        kind = (replacement.meta or {}).get("actionType")
+        if kind != "ActionType_Play" and replacement.payable is not True:
+            return ""
+        if action_key(replacement, game_state) not in best.first_actions:
+            return ""
+        name = str(find_source(game_state, meta).get("name") or _option_text(decision, option_id))
+        instead = _option_text(decision, replacement.option_id)
+        summary = best.summary(90)
+        logged = (tuple(getattr(decision, "request_id", ()) or ()), option_id, setting)
+        if getattr(self, "_line_gap_logged", None) != logged:
+            self._line_gap_logged = logged
+            if setting == "on":
+                logger.info(
+                    "line_gap: %s is %s below the best line (%s); high effort decides, else %s replaces it",
+                    name,
+                    gap.group(1),
+                    summary,
+                    instead,
+                )
+            else:
+                logger.info(
+                    "line_gap [shadow]: would replace %s with %s (%s below the best line: %s)",
+                    name,
+                    instead,
+                    gap.group(1),
+                    summary,
+                )
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict):
+            trace["line_gap"] = {
+                "chosen": option_id,
+                "card": name,
+                "gap": int(gap.group(1)),
+                "replacement": replacement.option_id,
+                "with": instead,
+                "mode": setting,
+            }
+        if setting != "on":
+            return ""
+        return (
+            f"The line search rates {name} {gap.group(1)} below its best line ({summary}), and nothing is "
+            f"lethal this turn. Play the best line ({instead} first) unless you can name what casting {name} "
+            "now gains that the search misses."
         )
 
     _LEAVES_AT_END_RE = re.compile(
@@ -5383,6 +5507,33 @@ class ActionPlanner(_ActionLegalityMixin):
             logger.debug("line target not read: %s", error)
             return "", 0
 
+    def _line_target_agreement(self, decision: Any, game_state: dict[str, Any], chosen: list[str]) -> str:
+        """Why a target answer is the searched line's own target for this cast, or "" (ledger #118).
+
+        2026-10-19 12:48:55 (match 2c67eed8 T6): the line was "Burst Lightning
+        (on Helpful Hunter)"; the low answer picked Helpful Hunter at 2.1 s and
+        the hedge waited 3 s more for a high answer that never came. The line's
+        target is the one :meth:`_searched_line_target` gave when the cast was
+        chosen (:meth:`_remember_cast_intent`); without that, its answer for the
+        source card now. A single offered target only.
+        """
+        chosen = [str(option_id) for option_id in chosen or []]
+        if decision.request_type != "SelectTargets" or len(chosen) != 1:
+            return ""
+        intent = self._cast_intent_for(decision)
+        if intent is None:
+            card = str(getattr(decision, "source_label", "") or "").strip()
+            target, target_id = self._searched_line_target(game_state, card) if card else ("", 0)
+            intent = {"card": card, "line_target": target, "line_target_id": target_id}
+        target = str(intent.get("line_target") or "")
+        if not target:
+            return ""
+        wanted = self._line_target_option(decision, game_state, intent)
+        if not wanted or chosen != [wanted]:
+            return ""
+        where = "the opponent" if target == "opponent" else target
+        return f"the searched line aims {intent['card']} at {where}"
+
     def _cast_intent_for(self, decision: Any) -> dict[str, Any] | None:
         """The remembered intent of the cast whose targets ``decision`` chooses, or None."""
         intent = getattr(self, "_cast_intent", None)
@@ -5885,7 +6036,8 @@ class ActionPlanner(_ActionLegalityMixin):
 
         A valid low answer waits at most ``_HIGH_AFTER_LOW_S`` for the high one,
         and not at all when ``low_agrees`` (the board-math line's own play,
-        :func:`board_math_agreement`) names it: two independent ways to the
+        :func:`board_math_agreement`; at a target step the line's own target,
+        :meth:`_line_target_agreement`) names it: two independent ways to the
         same play leave the high leg nothing to add. A low answer that
         ``low_doubt`` questions (face burn the line search rates below its best
         line, a false lethal claim: :meth:`_second_look_concerns`) waits for
@@ -6412,6 +6564,11 @@ class ActionPlanner(_ActionLegalityMixin):
                 # The searched line valued every option: its own play needs no second opinion.
                 def low_agrees(ids: list[str], data: dict) -> str:
                     return board_math_agreement(decision, tag_state, ids, reasoning_of(data))
+
+            elif decision.request_type == "SelectTargets":
+                # The searched line's own target for this cast needs none either (ledger #118).
+                def low_agrees(ids: list[str], data: dict) -> str:
+                    return self._line_target_agreement(decision, tag_state, ids)
 
             def low_doubt(ids: list[str], data: dict) -> str:
                 return "; ".join(kind for kind, _text in concerns_for(ids, data))
