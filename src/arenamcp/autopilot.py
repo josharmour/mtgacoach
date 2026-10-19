@@ -2127,6 +2127,134 @@ class AutopilotEngine(
         except Exception:
             return False
 
+    # The watchdog declares a planner attack this fresh instead of its own default (#67).
+    _WATCHDOG_PLAN_MAX_AGE_S = 2.0
+    _EVASION = ("flying", "menace")
+
+    def note_advised_plan(self, plan: Any, game_state: dict[str, Any]) -> None:
+        """Remember the planner's latest attack (the advice shown while autoplay stands by)."""
+        try:
+            action = next(
+                (
+                    a
+                    for a in plan.actions or []
+                    if a.action_type == ActionType.DECLARE_ATTACKERS and a.attacker_names
+                ),
+                None,
+            )
+        except Exception:
+            return
+        if action is not None:
+            self._advised_attack = (
+                time.monotonic(),
+                game_state.get("match_id"),
+                self._turn_number(game_state),
+                action,
+            )
+
+    def _watchdog_attack(self, state: dict[str, Any], poll: dict[str, Any]) -> tuple[bool, str] | None:
+        """The watchdog's attack: the planner's if it is fresh, else the solver's plus free evasive attackers.
+
+        2026-10-19 11:14:39 (match 115944ce, #67): standing by after a
+        (misread) manual play, the planner advised "Attack with Slickshot
+        Show-Off, Slickshot Show-Off, and Emberheart Challenger" at .443; the
+        watchdog's safe default at .554 declared the solver's attack,
+        Emberheart alone, though the opponent had no untapped creature. A plan
+        younger than _WATCHDOG_PLAN_MAX_AGE_S is declared as it stands (the
+        bridge path checks it against the request); with no untapped potential
+        blocker on their side, no flier or menace creature is held back.
+        Returns None to fall back to the usual safe default.
+        """
+        from arenamcp.combat_targets import attack_candidates, recipient_key, recipient_label
+
+        candidates = attack_candidates(state, poll) or []
+        if any(isinstance(entry, dict) and entry.get("selectedDamageRecipient") for entry in candidates):
+            return None
+        noted = getattr(self, "_advised_attack", None)
+        if noted is not None:
+            at, match_id, turn, action = noted
+            age = time.monotonic() - at
+            if (
+                age <= self._WATCHDOG_PLAN_MAX_AGE_S
+                and turn == self._turn_number(state)
+                and match_id == state.get("match_id")
+            ):
+                result = self._try_bridge_declare_attackers(dataclasses.replace(action))
+                if result is not None and result.success:
+                    names = list(
+                        getattr(result.submitted_action, "attacker_names", None) or action.attacker_names
+                    )
+                    self._record_autopilot_decision(
+                        state,
+                        "watchdog",
+                        action_type="safe_default",
+                        summary="planner attack: " + ", ".join(names),
+                    )
+                    return True, "declared the planner's attack with " + ", ".join(names)
+                # It may have reached Arena in part: the usual safe default
+                # checks the request before it declares anything.
+                logger.info("[WATCHDOG] the planner's attack (%.1fs old) could not be declared", age)
+                return None
+
+        from arenamcp.combat_keywords import has_combat_keyword
+        from arenamcp.combat_strategy import combat_choice
+
+        local = state.get("local_seat_id") or next(
+            (p.get("seat_id") for p in state.get("players") or [] if p.get("is_local")), None
+        )
+        battlefield = [card for card in state.get("battlefield") or [] if isinstance(card, dict)]
+        if local is None or any(
+            (card.get("controller_seat_id") or card.get("owner_seat_id")) not in (None, local)
+            and "creature" in str(card.get("type_line") or "").lower()
+            and not card.get("is_tapped")
+            for card in battlefield
+        ):
+            return None
+        cards = {int(card.get("instance_id") or 0): card for card in battlefield}
+        choice = combat_choice(state)
+        assignments = dict(choice.assignments) if choice is not None else {}
+        for entry in candidates:
+            identity = int(entry.get("attackerInstanceId") or 0) if isinstance(entry, dict) else 0
+            card = cards.get(identity)
+            if not card or identity in assignments:
+                continue
+            text = str(card.get("oracle_text") or "").lower()
+            if not (any(has_combat_keyword(card, kw) for kw in self._EVASION) or "can't be blocked" in text):
+                continue
+            legal = [r for r in entry.get("legalDamageRecipients") or [] if isinstance(r, dict)]
+            try:
+                player = next((r for r in legal if recipient_key(r)[0] == "player"), None)
+            except ValueError:
+                player = None
+            if player is not None:
+                assignments[identity] = player
+        if choice is not None and len(assignments) == len(choice.assignments):
+            return None  # the solver already sends every free evasive attacker
+        if not assignments:
+            return None
+        names, identities, targets = [], [], {}
+        for identity, recipient in assignments.items():
+            name = f"{(cards.get(identity) or {}).get('name') or 'Creature'} [id:{identity}]"
+            names.append(name)
+            identities.append(identity)
+            targets[name] = recipient_label(recipient, state)
+        action = GameAction(
+            action_type=ActionType.DECLARE_ATTACKERS,
+            attacker_names=names,
+            attacker_instance_ids=identities,
+            attacker_targets=targets,
+            reasoning="Safe default: the solver's attack; no evasive attacker held back from an empty board",
+        )
+        result = self._try_bridge_declare_attackers(action)
+        if result is None or not result.success:
+            return None
+        declared = list(getattr(result.submitted_action, "attacker_names", None) or names)
+        logger.info("Safe-default attacks (no untapped blockers): %s", ", ".join(declared))
+        self._record_autopilot_decision(
+            state, "watchdog", action_type="safe_default", summary="attack: " + ", ".join(declared)
+        )
+        return True, "attacked with " + ", ".join(declared)
+
     def watchdog_safe_default(self, game_state: dict[str, Any], reason: str = "") -> tuple[bool, str]:
         """Answer the live request with a safe legal default (decision watchdog).
 
@@ -2167,6 +2295,10 @@ class AutopilotEngine(
                     self._log_execution_path(ExecutionPath.GRE_AWARE, "watchdog: passed priority")
                     return True, "passed priority"
                 return False, "priority window cannot be passed"
+            if "DeclareAttack" in rtype + rclass:
+                declared = self._watchdog_attack(state, poll)
+                if declared is not None:
+                    return declared
             from arenamcp.decisions import build_pending_decision, search_safe_default, submit_option
             from arenamcp.request_tracker import decision_fingerprint, request_window
 
