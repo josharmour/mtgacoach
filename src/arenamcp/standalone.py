@@ -345,7 +345,11 @@ class StandaloneCoach(
         pending = curr_state.get("pending_decision") or pending
         decision_context = curr_state.get("decision_context") or {}
         decision_type = str(decision_context.get("type") or "").lower()
-        if decision_type in ("scry", "surveil"):
+        # A London-mulligan bottom shows hand cards the state already knows;
+        # the planner (or the coach's bottom section) decides it. 2026-10-19
+        # 09:30:33: the vision read said "Put Boltwave on the bottom" while
+        # the autopilot bottomed Shock.
+        if decision_type in ("scry", "surveil", "mulligan_bottom"):
             logger.info(
                 "Resolved generic selection to %s without vision",
                 decision_type,
