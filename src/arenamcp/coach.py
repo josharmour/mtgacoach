@@ -1029,27 +1029,17 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         """Make oracle text safe and compact for the model prompt.
 
         MTGA-derived oracle text frequently ships raw HTML (``<nobr>``, ``<i>``,
-        ``<br>``) and can carry the same ability line repeated 3-4x (e.g. once
-        raw, once ``<nobr>``-wrapped, then raw again) because forged/local DB
-        rows concatenate multiple renderings into one field. Strip the tags and
-        drop consecutive duplicate lines so each ability appears exactly once
-        and no raw markup leaks into the model input.
+        ``<br>``) and can carry the same ability repeated 2-3x (once raw, once
+        ``<nobr>``-wrapped, then raw again), a modal ability together with its
+        "•" modes. Strip the tags and drop the repeats so each ability appears
+        exactly once and no raw markup leaks into the model input
+        (:func:`arenamcp.match_context.oracle_lines`).
         """
-        import re
+        from arenamcp.match_context import oracle_lines
 
         if not text:
             return text
-        out: list[str] = []
-        prev: str | None = None
-        for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-            norm = " ".join(re.sub(r"<[^>]+>", "", line).split())
-            if not norm:
-                continue
-            if norm == prev:  # drop consecutive duplicate line
-                continue
-            out.append(norm)
-            prev = norm
-        return "\n".join(out)
+        return "\n".join(oracle_lines(text))
 
     @staticmethod
     def _land_has_abilities(oracle_text: str, type_line: str) -> bool:

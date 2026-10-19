@@ -100,6 +100,49 @@ def _local_card(grp_id: int, epoch: int) -> dict[str, Any]:
     return result
 
 
+_MARKUP = re.compile(r"<[^>]*>")
+
+
+def oracle_lines(text: Any) -> list[str]:
+    """Rules text as prompt lines: markup stripped, Arena's repeated renderings dropped.
+
+    MTGA's card data stores many abilities two or three times (plain, then
+    ``<nobr>``/``<i>``/``<indent>`` variants), and a modal ability repeats with
+    its "•" modes: 2026-10-18 prompts quoted Yuriko's and Divining Duelist's
+    triggers three times each, and the cached Brawl playbooks quoted every
+    "+1/+1 counter" rule three times. An ability (a line plus the "•" lines
+    under it) equal to an earlier one is dropped; two different abilities keep
+    their own modes even when a mode reads the same.
+    """
+    lines = [plain_rule(raw) for raw in str(text or "").replace("\r", "\n").split("\n")]
+    return [lines[index] for index in unique_abilities(lines)]
+
+
+def plain_rule(line: Any) -> str:
+    """One rules line without markup or runs of whitespace."""
+    return " ".join(_MARKUP.sub("", str(line or "")).split())
+
+
+def unique_abilities(lines: list[str]) -> list[int]:
+    """Indices of the non-empty ``lines`` (markup-free) that are not a repeat of an earlier ability."""
+    blocks: list[list[int]] = []
+    for index, line in enumerate(lines):
+        if not line:
+            continue
+        if line.startswith("•") and blocks:
+            blocks[-1].append(index)
+        else:
+            blocks.append([index])
+    seen: set[tuple[str, ...]] = set()
+    keep: list[int] = []
+    for block in blocks:
+        key = tuple(lines[index] for index in block)
+        if key not in seen:
+            seen.add(key)
+            keep.extend(block)
+    return keep
+
+
 def _ids(values: Any) -> list[int]:
     return [value for value in values or [] if isinstance(value, int) and value > 4]
 
@@ -183,12 +226,14 @@ def _card_line(info: dict, count: int, grp_id: int) -> str:
         fields.append(f"MV {info['cmc']}")
     if info.get("power") not in (None, "") and info.get("toughness") not in (None, ""):
         fields.append(f"printed {info['power']}/{info['toughness']}")
-    fields.append(str(info.get("oracle_text") or "Rules text unavailable; do not invent abilities."))
+    fields.append(
+        " ".join(oracle_lines(info.get("oracle_text"))) or "Rules text unavailable; do not invent abilities."
+    )
     for face in info.get("related_faces") or []:
         if isinstance(face, dict) and face.get("oracle_text"):
             fields.append(
                 f"Other face {face.get('name', '?')}: {face.get('mana_cost', '')} "
-                f"{face.get('type_line', '')} — {face['oracle_text']}"
+                f"{face.get('type_line', '')} — {' '.join(oracle_lines(face['oracle_text']))}"
             )
     return " | ".join(" ".join(part.split()) for part in fields if part)
 
