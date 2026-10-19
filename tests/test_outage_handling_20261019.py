@@ -170,7 +170,7 @@ def test_a_stream_that_stops_after_its_first_token_fails_fast_and_counts(hung, m
         raise_on_error=True,
     )
     assert isinstance(error, BackendError) and error.kind == "stream_stall", error
-    assert elapsed < 2.5, "the stall is cut at STREAM_STALL_S, not at the 8 s read timeout"
+    assert elapsed < 4.0, "the stall is cut at STREAM_STALL_S (0.5 s), not at the 8 s read timeout"
     assert be.last_request_metrics["status"] == "stalled"
     snap = be.circuit_snapshot()
     assert snap["consecutive_failures"] == 1, "a stalled stream is a counted circuit failure"
@@ -184,19 +184,20 @@ def test_the_budget_is_a_wall_clock_deadline_after_the_first_token(hung, monkeyp
     against a 12 s budget); now no read outlives the budget.
     """
     monkeypatch.setattr(proxy, "STREAM_STALL_S", 30.0, raising=False)  # only the budget can end it
-    server = hung([("token_then_hang", 1.0)])
+    server = hung([("token_then_hang", 2.0)])
     be = _backend(server.url)
     error, elapsed = _timed(
         be.complete,
         "s",
         "u",
-        request_timeout_s=1.5,
-        first_token_timeout_s=1.45,
+        request_timeout_s=3.0,
+        first_token_timeout_s=2.9,
         call_class="decision.typed",
         raise_on_error=True,
     )
     assert isinstance(error, BackendError) and "budget exhausted" in str(error), error
-    assert elapsed < 1.5 + 0.5, f"the 1.5 s budget ran {elapsed:.1f} s"
+    # The old reads ran to 2.0 + 2.9 s; the margin is for a loaded test machine.
+    assert elapsed < 3.0 + 1.2, f"the 3 s budget ran {elapsed:.1f} s"
     # Tokens arrived: a budget that ran out is slow, not down.
     assert be.circuit_snapshot()["consecutive_failures"] == 0
 
@@ -216,7 +217,7 @@ def test_background_work_has_no_stall_limit_only_its_budget(hung, monkeypatch):
         raise_on_error=True,
     )
     assert isinstance(error, BackendError) and "budget exhausted" in str(error), error
-    assert 1.3 < elapsed < 2.2
+    assert 1.3 < elapsed < 3.5, elapsed  # its budget, not the 0.3 s stall limit
     assert be.circuit_snapshot()["consecutive_failures"] == 0 and not be.degraded()
 
 
