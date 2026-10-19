@@ -25,6 +25,7 @@ from arenamcp.backend_health import (
     is_local_fallback_text,
 )
 from arenamcp.backends import LLMBackend, ProxyBackend
+from arenamcp.board_compaction import group_counted, group_labels, group_trades, number_ranges
 from arenamcp.card_db import is_unknown_card_name
 from arenamcp.coach_analysis import _CoachAnalysisMixin
 from arenamcp.coach_backends import (
@@ -1908,6 +1909,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         *,
         for_planner: bool = False,
         rules_in_reference: bool = False,
+        display_label: str | None = None,
     ) -> list[str]:
         """Format a single battlefield card into display lines.
 
@@ -1916,6 +1918,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 lifetime, including static restrictions and attack triggers on
                 older permanents. Planner lines also spell out what a
                 creature's tapped state and damage mean (_creature_state_note).
+            display_label: The name shown instead of "Name #N" (a group of
+                identical permanents: "Rabbit ×12 (#1..#12)", ledger #182).
         """
         lines: list[str] = []
         name = card.get("name", "Unknown")
@@ -1924,7 +1928,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         is_creature = self._is_creature_now(card)
         is_land = "land" in type_line
 
-        if name_counts[name] > 1:
+        if display_label is not None:
+            display_name = display_label
+        elif name_counts[name] > 1:
             name_seen[name] = name_seen.get(name, 0) + 1
             display_name = f"{name} #{name_seen[name]}"
         else:
@@ -2061,6 +2067,70 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     lines.append(f"       {self._clean_oracle_for_prompt(att_oracle)}")
         return lines
 
+    # At least this many identical permanents on one side share a line (ledger #182).
+    _BOARD_GROUP_MIN = 3
+
+    def _format_board_side(
+        self,
+        cards: list[dict],
+        local_seat: int,
+        turn_num: int,
+        attachments: dict[int, list[dict]],
+        game_state: dict[str, Any],
+        *,
+        is_local: bool,
+        for_planner: bool = False,
+    ) -> list[str]:
+        """One side of the battlefield, identical permanents as one line (ledger #182).
+
+        Cards are numbered as before ("Rabbit #3"); permanents whose whole
+        rendering is the same (P/T, tapped / sick / attacking / blocking flags,
+        counters, damage, keywords, attachments, granted abilities and rules
+        text), ``_BOARD_GROUP_MIN`` or more of them, are one line at the first
+        one's place naming how many and which numbers:
+        "*Rabbit ×12 (#1..#12) 1/1". 2026-10-19 match 41b07b15: 23 Soldier
+        tokens and 12 Rabbits were 35 near-identical lines.
+        """
+        counts = Counter(c.get("name", "Unknown") for c in cards)
+        seen: dict[str, int] = {}
+        groups: dict[tuple, list[tuple[dict, int | None]]] = {}
+        order: list[tuple[tuple, dict, int | None]] = []
+        for card in cards:
+            name = card.get("name", "Unknown")
+            number = None
+            if counts[name] > 1:
+                seen[name] = seen.get(name, 0) + 1
+                number = seen[name]
+            # The card's rendering without its number or rules text: what the model reads of it.
+            key_lines = self._format_board_card(
+                card, local_seat, turn_num, attachments, Counter(), {}, is_local=is_local,
+                for_planner=for_planner, rules_in_reference=True, display_label=str(name),
+            )  # fmt: skip
+            key = (tuple(key_lines), str(card.get("oracle_text") or ""))
+            groups.setdefault(key, []).append((card, number))
+            order.append((key, card, number))
+        lines: list[str] = []
+        rules_shown: set[tuple[str, str]] = set()
+        for key, card, number in order:
+            members = groups[key]
+            name = str(card.get("name", "Unknown"))
+            label = f"{name} #{number}" if number is not None else None
+            if len(members) >= self._BOARD_GROUP_MIN:
+                if card is not members[0][0]:
+                    continue  # shown with the first of its group
+                numbers = [n for _card, n in members if n is not None]
+                label = f"{name} ×{len(members)}" + (f" ({number_ranges(numbers)})" if numbers else "")
+            lines.extend(
+                self._format_board_card(
+                    card, local_seat, turn_num, attachments, Counter(), {}, is_local=is_local,
+                    for_planner=for_planner,
+                    rules_in_reference=self._rules_in_deck_reference(card, game_state)
+                    or self._rules_shown_before(card, rules_shown),
+                    display_label=label,
+                )
+            )  # fmt: skip
+        return lines
+
     # Matches attack-tax permanents (Ghostly Prison, Propaganda, War Tax
     # activations aside): "...can't attack you unless their controller pays
     # {2} for each creature...". Arena oracle text encodes costs as {o2}.
@@ -2131,12 +2201,16 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             pt = f" {power}/{toughness}" if power is not None and toughness is not None else ""
             return f"{card.get('name', '?')}{pt}"
 
-        untapped = [describe(c) for c in opp_creatures if not c.get("is_tapped") and not c.get("is_phased_out")]
-        tapped = [str(c.get("name", "?")) for c in opp_creatures if c.get("is_tapped")]
+        # Identical bodies once, with a count ("Soldier 1/1 ×23", ledger #182).
+        untapped = group_counted(
+            describe(c) for c in opp_creatures if not c.get("is_tapped") and not c.get("is_phased_out")
+        )
+        tapped = group_counted(str(c.get("name", "?")) for c in opp_creatures if c.get("is_tapped"))
         if untapped:
             line = f"Their untapped potential blockers: {', '.join(untapped)}"
             return [line + (f" (tapped, can't block: {', '.join(tapped)})" if tapped else "")]
-        everything = " — all of their creatures are tapped" if len(tapped) == len(opp_creatures) else ""
+        all_tapped = all(c.get("is_tapped") for c in opp_creatures)
+        everything = " — all of their creatures are tapped" if all_tapped else ""
         return [f"Their untapped potential blockers: NONE{everything}"]
 
     def _format_attack_combat(
@@ -2192,7 +2266,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 else:
                     deduped_names.append(n)
             lines.append(
-                f"Atk: {len(valid_attackers)}cr/{your_attack_power}pwr vs {lethal} \u2014 can attack: {', '.join(deduped_names)}"
+                f"Atk: {len(valid_attackers)}cr/{your_attack_power}pwr vs {lethal} \u2014 can attack: "
+                f"{', '.join(group_labels(deduped_names))}"
             )
             if unblockable:
                 sources = ", ".join(sorted({str(c["cant_be_blocked"]) for c in unblockable}))
@@ -2202,6 +2277,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     + f" = {unblockable_power} damage no blocker can stop"
                 )
             if valid_attackers and opp_blockers:
+                # Each distinct line once (ledger #182: 15 attackers into 33 blockers were 528 lines).
+                trades = []
                 for atk in valid_attackers:
                     for blk in opp_blockers:
                         trade = self._compute_combat_trade(atk, blk)
@@ -2222,9 +2299,16 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                             display_result = f"GOOD \u2014 {result}"
                         else:
                             display_result = result
-                        lines.append(
-                            f"  If {blk_name} {blk_pow}/{blk_tgh} blocks {atk_name} {atk_pow}/{atk_tgh}: {display_result}"
+                        trades.append(
+                            (
+                                f"{blk_name} {blk_pow}/{blk_tgh}",
+                                blk.get("instance_id") or id(blk),
+                                f"{atk_name} {atk_pow}/{atk_tgh}",
+                                atk.get("instance_id") or id(atk),
+                                display_result,
+                            )
                         )
+                lines.extend(group_trades(trades))
         else:
             lines.append("Atk: None (T/SS)")
 
@@ -2391,7 +2475,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             else:
                 atk_labels.append(f"{n} {p}/{t}{tags}")
         lines.append(f"Blk: {fly_dmg}fly/{gnd_dmg}gnd dmg | {len(flyer_blockers)}FLY-blk avail")
-        lines.append(f"Attackers: {', '.join(atk_labels)}")
+        lines.append(f"Attackers: {', '.join(group_labels(atk_labels))}")
         life_after_no_blocks = your_life - total_incoming
         if life_after_no_blocks <= 0:
             lines.append(
@@ -2422,6 +2506,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             life_after_blocks = life_after_no_blocks
 
         if your_creatures and attacking:
+            trades = []  # each distinct line once (ledger #182)
             for atk in attacking:
                 for blk in your_creatures:
                     trade = self._compute_combat_trade(atk, blk)
@@ -2434,9 +2519,16 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     blk_name = blk.get("name", "?")
                     blk_pow = blk.get("power") or 0
                     blk_tgh = blk.get("toughness") or 0
-                    lines.append(
-                        f"  If {blk_name} {blk_pow}/{blk_tgh} blocks {atk_name} {atk_pow}/{atk_tgh}: {result}"
+                    trades.append(
+                        (
+                            f"{blk_name} {blk_pow}/{blk_tgh}",
+                            blk.get("instance_id") or id(blk),
+                            f"{atk_name} {atk_pow}/{atk_tgh}",
+                            atk.get("instance_id") or id(atk),
+                            result,
+                        )
                     )
+            lines.extend(group_trades(trades))
 
         attacking_ids = {c.get("instance_id") for c in attacking}
         opp_non_attacking = [
@@ -3437,24 +3529,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             lines.append("")
             lines.append("YOUR BOARD:")
             if your_cards:
-                your_name_counts = Counter(c.get("name", "Unknown") for c in your_cards)
-                your_name_seen: dict[str, int] = {}
-                your_rules_shown: set[tuple[str, str]] = set()
-                for card in your_cards:
-                    lines.extend(
-                        self._format_board_card(
-                            card,
-                            local_seat,
-                            turn_num,
-                            _attachments,
-                            your_name_counts,
-                            your_name_seen,
-                            is_local=True,
-                            for_planner=for_planner,
-                            rules_in_reference=self._rules_in_deck_reference(card, game_state)
-                            or self._rules_shown_before(card, your_rules_shown),
-                        )
+                lines.extend(
+                    self._format_board_side(
+                        your_cards, local_seat, turn_num, _attachments, game_state, is_local=True,
+                        for_planner=for_planner,
                     )
+                )  # fmt: skip
             else:
                 lines.append("  (empty)")
 
@@ -3482,28 +3562,19 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
             lines.append("OPP BOARD:")
             if opp_cards:
-                opp_name_counts = Counter(c.get("name", "Unknown") for c in opp_cards)
-                opp_name_seen: dict[str, int] = {}
-                opp_rules_shown: set[tuple[str, str]] = set()
-                for card in opp_cards:
-                    # Add inferred ATK flag before formatting
-                    if card.get("instance_id") in _inferred_atk_ids and not card.get("is_attacking"):
-                        card = dict(card)
-                        card["is_attacking"] = True
-                    lines.extend(
-                        self._format_board_card(
-                            card,
-                            local_seat,
-                            turn_num,
-                            _attachments,
-                            opp_name_counts,
-                            opp_name_seen,
-                            is_local=False,
-                            for_planner=for_planner,
-                            rules_in_reference=self._rules_in_deck_reference(card, game_state)
-                            or self._rules_shown_before(card, opp_rules_shown),
-                        )
+                # Add inferred ATK flag before formatting
+                shown = [
+                    {**card, "is_attacking": True}
+                    if card.get("instance_id") in _inferred_atk_ids and not card.get("is_attacking")
+                    else card
+                    for card in opp_cards
+                ]
+                lines.extend(
+                    self._format_board_side(
+                        shown, local_seat, turn_num, _attachments, game_state, is_local=False,
+                        for_planner=for_planner,
                     )
+                )  # fmt: skip
             else:
                 lines.append("  (empty)")
 

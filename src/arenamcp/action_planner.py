@@ -17,6 +17,7 @@ from enum import Enum
 from typing import Any
 
 from arenamcp.backend_health import is_backend_error_text
+from arenamcp.backends.proxy import first_token_budget
 from arenamcp.big_board import big_board_declaration, compress_menu, declaration_effort, group_menu
 from arenamcp.cast_notes import combat_cast_note, loot_mode_note, trick_timing_note, turn_investments_note
 from arenamcp.damage_assignment import fallback_plan as damage_fallback_plan
@@ -832,9 +833,24 @@ class ActionPlanner(_ActionLegalityMixin):
     # (2026-10-04/06). Kept 2 s inside the planner budget.
     _PLAN_FIRST_TOKEN_TIMEOUT_S = 12.0
 
-    def _plan_first_token_timeout(self) -> float:
+    # Ledger #182: a typed decision's legs keep their answer time after a big prompt's later
+    # first token (``first_token_budget``), up to this long.
+    _SIZED_BUDGET_CAP_S = 18.0
+
+    def _plan_first_token_timeout(self, input_chars: int = 0) -> float:
+        """The plan call's first-token limit; a big prompt (ledger #182) may use up to 2 s inside
+        the planner budget."""
         budget = float(self._timeout or 0.0)
-        return min(self._PLAN_FIRST_TOKEN_TIMEOUT_S, max(self._FIRST_TOKEN_TIMEOUT_S, budget - 2.0))
+        base = min(self._PLAN_FIRST_TOKEN_TIMEOUT_S, max(self._FIRST_TOKEN_TIMEOUT_S, budget - 2.0))
+        return min(first_token_budget(base, input_chars), max(base, budget - 2.0))
+
+    def _sized_budget(self, budget_s: float, first_token_s: float) -> float:
+        """``budget_s`` plus however much later than usual the first token may come (ledger #182),
+        so the answer keeps its time; at most ``_SIZED_BUDGET_CAP_S`` (or ``budget_s`` if longer)."""
+        later = first_token_s - self._FIRST_TOKEN_TIMEOUT_S
+        if later <= 0:
+            return budget_s
+        return min(max(budget_s, self._SIZED_BUDGET_CAP_S), budget_s + later)
 
     def _call_llm(
         self,
@@ -1172,7 +1188,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 4096,
                 timeout_s=self._timeout,
                 call_class=call_class,
-                first_token_timeout_s=self._plan_first_token_timeout(),
+                first_token_timeout_s=self._plan_first_token_timeout(len(system_prompt) + len(user_message)),
                 reasoning_effort=effort,
             )
 
@@ -3196,7 +3212,8 @@ class ActionPlanner(_ActionLegalityMixin):
         # We deliberately do NOT re-append them here — duplicating those
         # blocks ~doubled the prompt size in earlier versions.
         if decision_context:
-            parts.append(f"\nDecision: {json.dumps(decision_context, indent=2)}")
+            # One compact line (ledger #182): indented, fifteen attackers' recipients were ~100 lines.
+            parts.append(f"\nDecision: {json.dumps(decision_context, separators=(',', ':'), default=str)}")
 
         from arenamcp.combat_targets import attack_target_prompt
 
@@ -7215,6 +7232,7 @@ class ActionPlanner(_ActionLegalityMixin):
         low_agrees: Callable[[list[str], dict], str] | None = None,
         low_doubt: Callable[[list[str], dict], str] | None = None,
         patient: bool = False,
+        high_budget: float | None = None,
     ) -> tuple[dict, list[str]]:
         """A critical decision: the high-effort call and the normal low-effort one, at once.
 
@@ -7242,7 +7260,7 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         outer = getattr(self, "_decision_cancel_event", None)
         legs = {
-            "high": ("high", self._CRITICAL_DECISION_BUDGET_S),
+            "high": ("high", high_budget or self._CRITICAL_DECISION_BUDGET_S),
             "low": (None, normal_budget),
         }
         cancels = {leg: threading.Event() for leg in legs}
@@ -7710,7 +7728,7 @@ class ActionPlanner(_ActionLegalityMixin):
                     self._DECISION_MAX_TOKENS,
                     timeout_s=budget,
                     call_class=call_class,
-                    first_token_timeout_s=self._FIRST_TOKEN_TIMEOUT_S,
+                    first_token_timeout_s=first_token_s,
                     reasoning_effort=effort,
                     cancel_event=cancel_event,
                 )
@@ -7737,7 +7755,15 @@ class ActionPlanner(_ActionLegalityMixin):
                 raise ValueError("typed-decision option_ids must contain only ids")
             return data, [str(option_id) for option_id in ids]
 
-        normal_budget = min(self._timeout, 12.0)
+        # Ledger #182 (15:48:58): a 38K-character prompt got no first token from either leg within
+        # 8.0 s. A big prompt's first token may come later, and each leg keeps its answer time.
+        first_token_s = first_token_budget(self._FIRST_TOKEN_TIMEOUT_S, len(system_prompt) + len(user_message))
+        normal_budget = self._sized_budget(min(self._timeout, 12.0), first_token_s)
+        if first_token_s > self._FIRST_TOKEN_TIMEOUT_S:
+            logger.info(
+                "typed-decision: big prompt (%d chars): first token within %.1f s, budget %.1f s",
+                len(system_prompt) + len(user_message), first_token_s, normal_budget,
+            )  # fmt: skip
         if critical and llm_degraded(getattr(self, "_backend", None)):
             # 2026-10-19 09:34:06-09:34:23: during the vLLM hang each critical
             # decision sent both legs into the hung server (6 requests before
@@ -7783,6 +7809,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 low_agrees,
                 low_doubt,
                 patient=critical.startswith("within lethal reach"),
+                high_budget=self._sized_budget(self._CRITICAL_DECISION_BUDGET_S, first_token_s),
             )
             answered_high = (self._last_decision_trace.get("hedge") or {}).get("winner") == "high"
         else:
