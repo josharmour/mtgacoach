@@ -920,6 +920,11 @@ class GameState(_GameStateAnnotationsMixin):
                         ],
                         face_down=bool(obj_data.get("face_down", False)),
                         face_down_reason=_coerce_optional_int(obj_data.get("face_down_reason")),
+                        token_source_grp_id=_coerce_optional_int(obj_data.get("token_source_grp_id")),
+                        token_creator_ability_grp_id=_coerce_optional_int(
+                            obj_data.get("token_creator_ability_grp_id")
+                        ),
+                        token_creator_id=_coerce_optional_int(obj_data.get("token_creator_id")),
                     )
                     self.game_objects[instance_id] = game_object
 
@@ -2149,6 +2154,7 @@ class GameState(_GameStateAnnotationsMixin):
             damage = existing_obj.damage
             face_down = existing_obj.face_down
             face_down_reason = existing_obj.face_down_reason
+            token_source_grp_id = existing_obj.token_source_grp_id
         else:
             grp_id = 0
             zone_id = 0
@@ -2175,6 +2181,7 @@ class GameState(_GameStateAnnotationsMixin):
             damage = 0
             face_down = False
             face_down_reason = None
+            token_source_grp_id = None
 
         # 2. Overwrite with present data
         if "grpId" in obj_data:
@@ -2300,6 +2307,9 @@ class GameState(_GameStateAnnotationsMixin):
             except ValueError:
                 object_kind = GameObjectKind.UNKNOWN
                 logger.debug(f"Unknown GameObjectType: {kind_str}")
+        # A token names the card that made it (Lagomos's Elemental: 82257); ledger #185.
+        if object_kind == GameObjectKind.TOKEN and obj_data.get("objectSourceGrpId"):
+            token_source_grp_id = _coerce_int(obj_data["objectSourceGrpId"], 0) or None
 
         # Parse counters on this object
         if "counters" in obj_data:
@@ -2361,6 +2371,10 @@ class GameState(_GameStateAnnotationsMixin):
             damage=damage,
             face_down=face_down,
             face_down_reason=face_down_reason,
+            token_source_grp_id=token_source_grp_id,
+            # The TokenCreated annotation names the creating ability once; keep it.
+            token_creator_ability_grp_id=existing_obj.token_creator_ability_grp_id if existing_obj else None,
+            token_creator_id=existing_obj.token_creator_id if existing_obj else None,
             # A spell's targets (TargetSpec) hold while it stays where it is: a diff that
             # re-sends the object does not re-send that persistent annotation (ledger #122).
             targeting=list(existing_obj.targeting)

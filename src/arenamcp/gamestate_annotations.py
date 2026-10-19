@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from arenamcp.gamestate_models import GameObjectKind
 from arenamcp.gamestate_transforms import (
     _coerce_int,
     _coerce_optional_int,
@@ -267,8 +268,21 @@ class _GameStateAnnotationsMixin:
 
                 elif ann_type in ("AnnotationType_TokenCreated", "AnnotationType_TokenDeleted"):
                     is_created = "Created" in ann_type
+                    # The affector is the ability that made the token (Player.log 2026-10-19
+                    # gsid 289: ability 541, grpId 152901, parentId 451 = Lagomos, Hand of
+                    # Hatred). Its text says whether the token leaves at the next end step
+                    # (ledger #185, token_lifetime.py); the ability object is gone soon after.
+                    creator = (
+                        self.game_objects.get(_coerce_int(ann.get("affectorId", 0), 0)) if is_created else None
+                    )
                     for obj_id in affected_ids:
                         obj = self.game_objects.get(obj_id)
+                        if obj and creator is not None and creator.instance_id != obj_id:
+                            if creator.object_kind == GameObjectKind.ABILITY:
+                                obj.token_creator_ability_grp_id = creator.grp_id or None
+                                obj.token_creator_id = creator.parent_instance_id or None
+                            else:
+                                obj.token_creator_id = creator.instance_id
                         if obj:
                             self._add_event(
                                 {

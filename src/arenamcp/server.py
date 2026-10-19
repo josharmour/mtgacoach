@@ -25,6 +25,7 @@ from arenamcp.card_db import (
 )
 from arenamcp.coach import CoachEngine, GameStateTrigger, create_backend
 from arenamcp.combat_keywords import annotate_cant_be_blocked
+from arenamcp.death_triggers import annotate_death_swings
 from arenamcp.draft_eval import evaluate_pack, format_pick_recommendation
 from arenamcp.draftstate import DraftState, create_draft_handler, extract_set_code
 from arenamcp.draftstats import DraftStatsCache
@@ -1452,6 +1453,42 @@ def _normalize_object_kind(raw_kind: Any, fallback_kind: str = "UNKNOWN") -> str
     return kind.upper()
 
 
+def _token_creator_facts(obj: dict[str, Any]) -> dict[str, Any]:
+    """``token_creator`` (name), ``token_creator_id`` and ``token_expires`` of a token, or {}.
+
+    Ledger #185 (match 4d934402 T11): Lagomos's Elemental and Urabrask's Forge's
+    Horror are sacrificed at the next end step by the abilities that made them;
+    the tokens' own text is "Trample / Haste". The creating ability's text (the
+    TokenCreated affector, ``token_creator_ability_grp_id``) decides, else the
+    creator card's (``token_source_grp_id``, the token's objectSourceGrpId).
+    """
+    from arenamcp.token_lifetime import token_expiry
+
+    ability = _coerce_int(obj.get("token_creator_ability_grp_id"), 0) or 0
+    source = _coerce_int(obj.get("token_source_grp_id"), 0) or 0
+    creator_id = _coerce_int(obj.get("token_creator_id"), 0) or 0
+    if not (ability or source):
+        return {}
+    facts: dict[str, Any] = {}
+    text = ""
+    try:
+        if ability:
+            text = str(_get_card_db().get_ability_text(ability) or "")
+        source_info = enrich_with_oracle_text(source) if source else {}
+    except Exception as exc:  # a broken DB never breaks serialization
+        logger.debug("token creator lookup failed for %s/%s: %s", ability, source, exc)
+        source_info = {}
+    name = str(source_info.get("name") or "")
+    if name and not is_unknown_card_name(name) and not name.startswith(("Card#", "Unknown (ID:", "Ability (ID:")):
+        facts["token_creator"] = name
+    if creator_id:
+        facts["token_creator_id"] = creator_id
+    expires = token_expiry(text or str(source_info.get("oracle_text") or ""))
+    if expires:
+        facts["token_expires"] = expires
+    return facts
+
+
 def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
     """Serialize a published-snapshot object with oracle text enrichment.
 
@@ -1528,6 +1565,7 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
     # An attacker's blocked / unblocked fate (False matters: Sneak returns an unblocked one).
     if obj.get("is_blocked") is not None:
         result["is_blocked"] = bool(obj["is_blocked"])
+    result.update(_token_creator_facts(obj))
     return result
 
 
@@ -1676,6 +1714,8 @@ def _serialize_bridge_card(
     for key in ("is_copy", "copied_from_grp_id", "base_grp_id", "original_grp_id", "is_token"):
         if card.get(key) is not None:
             result[key] = card[key]
+    # The token's creator is a log fact (ledger #185).
+    result.update(_token_creator_facts(fallback))
 
     return result
 
@@ -2189,6 +2229,9 @@ def get_game_state() -> dict[str, Any]:
     # Static "can't be blocked" grants (Tetsuko Umezawa, Fugitive) live on
     # another permanent; mark the creatures they cover for every consumer.
     annotate_cant_be_blocked(response.get("battlefield"))
+    # Death triggers on any permanent (Vein Ripper): each creature's life swing
+    # when it dies, read by the combat solver (ledger #184).
+    annotate_death_swings(response.get("battlefield"))
     return response
 
 

@@ -64,6 +64,7 @@ from arenamcp.combat_keywords import (
     printed_combat_keywords,
     unmet_modified_flag,
 )
+from arenamcp.death_triggers import annotate_death_swings, death_trigger_notes
 from arenamcp.game_plan import (
     BACKGROUND_PRIORITY,
     STRATEGIC_LANE,
@@ -2298,6 +2299,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             else:
                 lines.append(f"Crackback: {opp_attack_power}pwr vs your {your_life} life \u2014 safe")
 
+        # Death triggers move life per death in this combat too (ledger #184).
+        board_cards = (game_state or {}).get("battlefield") or (your_cards + opp_cards)
+        for note in death_trigger_notes(board_cards, (local_player or {}).get("seat_id")):
+            lines.append(f"Death trigger: {note}; every trade pays it.")
+
         # Deterministic attack solver — picks the attacker subset that
         # maximizes expected damage through while surviving worst-case
         # crackback. Surface its pick so the LLM can follow it.
@@ -2481,6 +2487,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         opp_next_turn_power = sum(unblocked(c) for c in attacking) + sum(
             _resolve_attacker(c, []).damage_through for c in opp_non_attacking
         )
+
+        # Death triggers move life per death (ledger #184, match 4d934402 T11:
+        # two Rabbit trades into Vein Ripper cost 8 life and gave them 8).
+        board_cards = (game_state or {}).get("battlefield") or (your_cards + opp_cards)
+        for note in death_trigger_notes(board_cards, (local_player or {}).get("seat_id")):
+            lines.append(f"Death trigger: {note}; every block that kills or loses a creature pays it.")
 
         # Deterministic block solver — grounds the LLM in the actual
         # material/life outcome of every legal block assignment rather
@@ -3425,6 +3437,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         # Mark creatures a static grant (Tetsuko Umezawa) makes unblockable so
         # the board tags and the combat lines below agree with the rules text.
         annotate_cant_be_blocked(battlefield)
+        # And each creature's life swing when it dies (Vein Ripper): the block
+        # and attack solvers below read it (ledger #184).
+        annotate_death_swings(battlefield)
         your_cards = [
             c
             for c in battlefield

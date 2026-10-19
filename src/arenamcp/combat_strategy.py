@@ -30,6 +30,8 @@ from arenamcp.combat_solver import (
     walker_crackback_cost,
 )
 from arenamcp.combat_targets import attack_candidates, recipient_key, recipient_label
+from arenamcp.death_triggers import annotate_death_swings, swing_of
+from arenamcp.token_lifetime import dies_anyway
 
 logger = logging.getLogger(__name__)
 
@@ -2711,6 +2713,7 @@ def safe_default_blocks(state: dict, pending: dict | None = None) -> tuple[dict[
     legal = {blocker: allowed for blocker, allowed in legal.items() if allowed}
     if not legal:
         return {}, "no creature can block any attacker"
+    annotate_death_swings(state.get("battlefield"))
     cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
     attackers = _incoming_attackers(state, local.get("seat_id"), legal)
     if not attackers or not all(_known_body(card) for card in attackers):
@@ -2808,6 +2811,7 @@ def free_blocks(state: dict, pending: dict | None = None) -> dict[int, tuple[int
     legal = _legal_block_map(state, pending)
     if not legal:
         return {}
+    annotate_death_swings(state.get("battlefield"))
     cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
     attackers = _incoming_attackers(state, local.get("seat_id"), legal)
     if not attackers or not all(_known_body(card) for card in attackers):
@@ -2815,6 +2819,7 @@ def free_blocks(state: dict, pending: dict | None = None) -> dict[int, tuple[int
     tricky = {_controller(card) for card in attackers if _their_fight_tricks(state, _controller(card))}
     used: set[int] = set()
     found: dict[int, tuple[int, str]] = {}
+    # A token that leaves at the next end step is worth nothing to kill (ledger #185): it goes last.
     for attacker in sorted(attackers, key=lambda card: -_material(card)):
         if (
             _has(attacker, "menace")
@@ -2830,16 +2835,22 @@ def free_blocks(state: dict, pending: dict | None = None) -> dict[int, tuple[int
             if not _can_block(attacker, blocker):
                 continue
             outcome = _resolve_attacker(attacker, [blocker])
-            if outcome.attacker_died and blocker not in outcome.blockers_died:
-                options.append((_material(blocker), -int(blocker["toughness"]), blocker_id, blocker))
+            if not outcome.attacker_died or blocker in outcome.blockers_died:
+                continue
+            # Its death drains us (Vein Ripper, ledger #184): free only if the block saves more.
+            prevented = _resolve_attacker(attacker, []).damage_through - outcome.damage_through
+            if -swing_of(attacker)[1] > prevented:
+                continue
+            options.append((_material(blocker), -int(blocker["toughness"]), blocker_id, blocker))
         if not options:
             continue
         _cost, _toughness, blocker_id, blocker = min(options, key=lambda option: option[:3])
         used.add(blocker_id)
+        leaves = f" ({attacker.get('token_creator') or 'its creator'} sacrifices it at end step anyway)"
         found[blocker_id] = (
             attacker["instance_id"],
             f"{blocker.get('name') or 'blocker'} {blocker['power']}/{blocker['toughness']} blocks "
             f"{attacker.get('name') or 'attacker'} {attacker['power']}/{attacker['toughness']}, "
-            "kills it and survives",
+            f"kills it and survives{leaves if dies_anyway(attacker) else ''}",
         )
     return found

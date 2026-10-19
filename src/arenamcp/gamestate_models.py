@@ -128,6 +128,13 @@ class GameObject:
     # BlockState_Blocked / BlockState_Unblocked): True / False, None before blocks or for a
     # non-attacker. Sneak returns an *unblocked* attacker (ledger #156, match be1a945f).
     is_blocked: bool | None = None
+    # A token's creator (ledger #185): the card (GameObjectInfo.objectSourceGrpId), and from the
+    # TokenCreated annotation the creating ability (the affector's grpId) and the permanent it
+    # belongs to (the affector's parentId). Lagomos's Elemental is sacrificed at the next end
+    # step by the ability that made it; the token's own text says nothing (token_lifetime.py).
+    token_source_grp_id: int | None = None
+    token_creator_ability_grp_id: int | None = None
+    token_creator_id: int | None = None
 
     def to_dict(self) -> dict:
         """Convert to simple dict for snapshot serialization."""
@@ -203,6 +210,10 @@ class GameObject:
             result["face_down"] = True
             if self.face_down_reason is not None:
                 result["face_down_reason"] = self.face_down_reason
+        for key in ("token_source_grp_id", "token_creator_ability_grp_id", "token_creator_id"):
+            value = getattr(self, key)
+            if value:
+                result[key] = value
         return result
 
 
