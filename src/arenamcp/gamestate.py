@@ -887,6 +887,7 @@ class GameState(_GameStateAnnotationsMixin):
                             str(item) for item in obj_data.get("removed_abilities", []) if item is not None
                         ],
                         damaged_this_turn=bool(obj_data.get("damaged_this_turn", False)),
+                        damage=_coerce_int(obj_data.get("damage", 0), 0),
                         crewed_this_turn=bool(obj_data.get("crewed_this_turn", False)),
                         saddled_this_turn=bool(obj_data.get("saddled_this_turn", False)),
                         is_phased_out=bool(obj_data.get("is_phased_out", False)),
@@ -2093,6 +2094,7 @@ class GameState(_GameStateAnnotationsMixin):
             object_kind = existing_obj.object_kind
             counters = existing_obj.counters.copy()
             keywords = list(existing_obj.keywords)
+            damage = existing_obj.damage
         else:
             grp_id = 0
             zone_id = 0
@@ -2114,6 +2116,7 @@ class GameState(_GameStateAnnotationsMixin):
             object_kind = GameObjectKind.UNKNOWN
             counters = {}
             keywords = []
+            damage = 0
 
         # 2. Overwrite with present data
         if "grpId" in obj_data:
@@ -2194,6 +2197,12 @@ class GameState(_GameStateAnnotationsMixin):
             summoning_sickness = bool(obj_data["hasSummoningSickness"])
         elif full_info:
             summoning_sickness = False
+        # Marked damage (2026-10-19: "dies to N" for the typed-decision prompt);
+        # cleanup resends the object without it.
+        if "damage" in obj_data:
+            damage = _coerce_int(obj_data["damage"], 0)
+        elif full_info:
+            damage = 0
 
         if "cardTypes" in obj_data:
             card_types = _coerce_str_list(obj_data["cardTypes"])
@@ -2258,6 +2267,7 @@ class GameState(_GameStateAnnotationsMixin):
             object_kind=object_kind,
             counters=counters,
             keywords=keywords,
+            damage=damage,
         )
 
         self.game_objects[instance_id] = game_object

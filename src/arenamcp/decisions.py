@@ -1377,6 +1377,28 @@ _LEAD_VERBS = {
     "channeling": "ActionType_Activate",
 }
 
+# Words allowed between the lead verb and the card it names ("Playing the
+# second Mountain"). Any other word there ("Cast the creature first", "Cast it")
+# means the verb's object is not a card name, and the pick stands.
+_LEAD_OBJECT_FILLERS = frozenset(
+    {
+        "the", "a", "an", "our", "my", "your", "this", "that", "another", "other",
+        "first", "second", "third", "fourth", "fifth", "last", "remaining", "spare", "extra", "free",
+        "untapped",
+    }
+)  # fmt: skip
+# Name words too common in reasoning prose to identify a card on their own.
+_GENERIC_NAME_WORDS = frozenset(
+    {
+        "the", "of", "and", "with", "from", "into", "upon", "onto", "your", "their", "this", "that",
+        "them", "then", "than", "when", "what", "each", "every", "more", "less", "first", "last",
+        "card", "cards", "spell", "spells", "creature", "creatures", "land", "lands", "token", "tokens",
+        "mana", "turn", "turns", "damage", "attack", "attacker", "attackers", "blocker", "blockers",
+        "burn", "removal", "life", "draw", "haste", "flying",
+    }
+)  # fmt: skip
+_NAME_TOKEN = re.compile(r"[a-z0-9]+(?:['’][a-z]+)?")
+
 
 def reasoning_choice_conflict(
     decision: PendingDecision,
@@ -1390,9 +1412,21 @@ def reasoning_choice_conflict(
     drop…; Tam's Resistance has no creature to buff." arrived with idx:1 —
     Cast Tam's Resistance — and that is what was submitted. Deliberately
     narrow: only a single ActionsAvailable pick, only when the reasoning
-    opens with an action verb (cast/play/activate/cycle…) naming a card the
-    chosen option's card is absent from, and only options of that verb's
-    action type. Returns [] whenever the intent is unclear.
+    opens with an action verb (cast/play/activate/cycle…) whose direct object
+    is another card, only when the lead never mentions the chosen card, and
+    only options of that verb's action type. Returns [] whenever the intent
+    is unclear.
+
+    2026-10-19 (Mono-Red Burn): four correct picks were replaced because the
+    chosen card counted as named only by its full name. "Cast Slickshot first
+    so the following Burst Lightning pumps it" (Slickshot Show-Off chosen),
+    "Cast the creature first so remaining mana can still fire Impractical
+    Joke" (Hired Claw chosen) and "Cast the hasty Effigy first so it can
+    attack … alongside a follow-up Lightning Strike" (Fleeting Effigy chosen)
+    each submitted the burn spell the sentence sequences AFTER the pick. A
+    distinctive word of the chosen card's name now counts as naming it, and
+    the overriding card must be the verb's direct object, not merely the
+    first card the clause mentions.
     """
     if decision.request_type != "ActionsAvailable" or len(chosen) != 1:
         return []
@@ -1404,31 +1438,61 @@ def reasoning_choice_conflict(
     action_type = _LEAD_VERBS.get(verb.group(1).lower()) if verb else None
     if not action_type:
         return []
-    rest = lead[verb.end() :].lower()
+    lead_lower = lead.lower()
 
-    def names(option: DecisionOption) -> list[str]:
-        try:
-            full = (resolve_name(int(option.meta.get("grpId") or 0)) or "").strip().lower()
-        except Exception:
-            return []
+    card_names: dict[int, str] = {}
+    for option in decision.options:
+        grp_id = int(option.meta.get("grpId") or 0)
+        if grp_id and grp_id not in card_names:
+            try:
+                card_names[grp_id] = (resolve_name(grp_id) or "").strip().lower()
+            except Exception:
+                card_names[grp_id] = ""
+    # A name word identifies its card only when no other card on the menu
+    # shares it ("lightning" in Burst Lightning and Lightning Strike).
+    token_cards: dict[str, set[int]] = {}
+    for grp_id, full in card_names.items():
+        for token in _NAME_TOKEN.findall(full):
+            token_cards.setdefault(token, set()).add(grp_id)
+
+    def names(grp_id: int) -> list[str]:
+        full = card_names.get(grp_id, "")
         short = full.split(",")[0].strip()
         return [n for n in dict.fromkeys((full, short)) if len(n) >= 4]
 
-    picked_names = names(picked)
-    if not picked_names or any(n in lead.lower() for n in picked_names):
+    def distinctive(grp_id: int) -> list[str]:
+        return [
+            token
+            for token in dict.fromkeys(_NAME_TOKEN.findall(card_names.get(grp_id, "")))
+            if len(token) >= 4 and token not in _GENERIC_NAME_WORDS and token_cards.get(token) == {grp_id}
+        ]
+
+    picked_grp = int(picked.meta.get("grpId") or 0)
+    if not names(picked_grp):
         return []
-    first: tuple[int, int] | None = None  # (position, grpId) of the first card the lead names
-    for option in decision.options:
-        for name in names(option):
-            position = rest.find(name)
-            if position >= 0 and (first is None or position < first[0]):
-                first = (position, int(option.meta.get("grpId") or 0))
-    if first is None:
+    if any(n in lead_lower for n in names(picked_grp)) or any(
+        re.search(rf"\b{re.escape(token)}\b", lead_lower) for token in distinctive(picked_grp)
+    ):
+        return []
+    # The verb's direct object: skip determiners and ordinals, then a card name.
+    words = lead_lower[verb.end() :].split()
+    while words and words[0] in _LEAD_OBJECT_FILLERS:
+        words.pop(0)
+    obj = " ".join(words)
+    head = _NAME_TOKEN.match(obj)
+    heads = {head.group(0), re.sub(r"['’]s$", "", head.group(0))} if head else set()
+    meant = [
+        grp_id
+        for grp_id in card_names
+        if grp_id != picked_grp
+        and (any(obj.startswith(name) for name in names(grp_id)) or heads & set(distinctive(grp_id)))
+    ]
+    if len(meant) != 1:
         return []
     return [
         option.option_id
         for option in decision.options
-        if int(option.meta.get("grpId") or 0) == first[1]
+        if int(option.meta.get("grpId") or 0) == meant[0]
         and option.meta.get("actionType") == action_type
         and option.payable is not False
         and option.option_id != picked.option_id

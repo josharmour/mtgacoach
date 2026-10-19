@@ -1250,6 +1250,7 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
         "keywords",
         "removed_abilities",
         "damaged_this_turn",
+        "damage",
         "crewed_this_turn",
         "saddled_this_turn",
         "is_phased_out",

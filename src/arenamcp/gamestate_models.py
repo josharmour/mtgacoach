@@ -100,6 +100,8 @@ class GameObject:
     removed_abilities: list[str] = field(default_factory=list)
     # Turn-specific state
     damaged_this_turn: bool = False
+    # GameObjectInfo.damage: damage marked on it now (cleared at cleanup)
+    damage: int = 0
     crewed_this_turn: bool = False
     saddled_this_turn: bool = False
     # Phasing
@@ -163,6 +165,8 @@ class GameObject:
             result["removed_abilities"] = self.removed_abilities
         if self.damaged_this_turn:
             result["damaged_this_turn"] = True
+        if self.damage:
+            result["damage"] = self.damage
         if self.crewed_this_turn:
             result["crewed_this_turn"] = True
         if self.saddled_this_turn:
