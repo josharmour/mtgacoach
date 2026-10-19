@@ -801,6 +801,116 @@ def cast_payoffs(state: dict) -> list[str]:
     return found
 
 
+_FACE_DAMAGE_RE = re.compile(
+    r"deals? (\d+) damage to (?:any target|each opponent|target player|target opponent)", re.IGNORECASE
+)
+_CAST_PUMP_RE = re.compile(
+    r"whenever you cast a noncreature spell, (?:this creature|it|~|[^,.]{1,40}) gets \+(\d+)/\+\d+",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class LethalReach:
+    """The most damage we might deal this turn, when it reaches their life (a cheap overestimate)."""
+
+    damage: int
+    life: int
+    attack: int
+    burn: int
+    pumps: int
+    pumpers: tuple[str, ...]
+
+    def text(self) -> str:
+        parts = [f"attackers {self.attack}"] if self.attack else []
+        if self.burn:
+            parts.append(f"burn {self.burn}")
+        if self.pumps:
+            parts.append(f"cast pumps +{self.pumps} ({', '.join(self.pumpers)})")
+        return f"up to {self.damage} damage this turn ({', '.join(parts)}) against their {self.life} life"
+
+
+def lethal_reach(decision: Any, state: dict | None) -> LethalReach | None:
+    """Their life is within our most damage this turn, or None (ActionsAvailable only).
+
+    2026-10-19 12:05:06 (match 18b1601a T9, ledger #100): they were at 7 and
+    Tectonic Hazard (1) made both airborne Slickshot Show-Offs 3/2: exactly 7.
+    Nothing in the window counted as removal, so it ran at low effort and
+    followed the line tag that put Fleeting Effigy first (the line search did
+    not count the cast pumps, ledger #94). The bound: our creatures that can
+    attack before combat on our turn (their power), plus the most the payable
+    noncreature casts on the menu deal to their face within our mana, plus
+    per such cast +N for each attacker with "whenever you cast a noncreature
+    spell, ... gets +N/+0" and +1 for each with prowess. Blockers, tapped
+    lands of theirs and ordering are ignored: it only gates effort.
+    """
+    if not isinstance(state, dict) or str(getattr(decision, "request_type", "")) != "ActionsAvailable":
+        return None
+    life = next(
+        (
+            p.get("life_total")
+            for p in state.get("players") or []
+            if not p.get("is_local") and type(p.get("life_total")) is int
+        ),
+        None,
+    )
+    if life is None or life <= 0:
+        return None
+    local = _local_seat(state)
+    our_turn = local is not None and (state.get("turn") or {}).get("active_player") == local
+    window = turn_window(state)
+    attackers: list[dict] = []
+    if our_turn and window is not None and window <= _TURN_STEPS.index("declareattack"):
+        from arenamcp.combat_strategy import able_attackers
+
+        attackers = able_attackers(state)
+    attack = sum(card["power"] for card in attackers if type(card.get("power")) is int and card["power"] > 0)
+    per_spell = 0
+    pumpers: list[str] = []
+    for card in attackers:
+        # Without reminder text: prowess's own "(Whenever you cast a noncreature spell, ...)" counts once.
+        text = _REMINDER_RE.sub(
+            " ", f"{card.get('oracle_text') or ''} {' '.join(map(str, card.get('keywords') or []))}"
+        )
+        bonus = sum(int(n) for n in _CAST_PUMP_RE.findall(text)) + (
+            1 if re.search(r"\bprowess\b", text, re.I) else 0
+        )
+        if bonus:
+            per_spell += bonus
+            pumpers.append(str(card.get("name") or card.get("instance_id")))
+    mana = mana_available(state)
+    # For each amount of mana: (face damage + pumps, face damage, spells cast), most first.
+    best = [(0, 0, 0)] * (mana + 1)
+    seen: set = set()
+    for option in getattr(decision, "options", ()) or ():
+        meta = getattr(option, "meta", {}) or {}
+        if getattr(option, "payable", None) is False or meta.get("actionType") != "ActionType_Cast":
+            continue
+        card = _source_card(option, state)
+        if not card or card.get("instance_id") in seen or "creature" in _types(card):
+            continue
+        seen.add(card.get("instance_id"))
+        oracle = str(card.get("oracle_text") or "")
+        cost = _cmc(card.get("mana_cost"))
+        variants = [(cost, sum(int(n) for n in _FACE_DAMAGE_RE.findall(oracle)))]
+        kicked = _DAMAGE_INSTEAD_RE.findall(oracle)
+        kicker = _KICKER_RE.search(oracle)
+        if kicked and kicker:
+            variants.append((cost + _cmc(kicker.group(1)), max(int(n) for n in kicked)))
+        before = list(best)
+        for spend in range(mana + 1):
+            for need, damage in variants:
+                if need <= spend:
+                    total, face, spells = before[spend - need]
+                    candidate = (total + damage + per_spell, face + damage, spells + 1)
+                    if candidate[0] > best[spend][0]:
+                        best[spend] = candidate
+    extra, face, spells = best[mana]
+    if attack + extra < life:
+        return None
+    return LethalReach(attack + extra, life, attack, face, spells * per_spell, tuple(pumpers))
+
+
 def _names_in_plan(name: str, plan_text: str) -> bool:
     if not name or not plan_text:
         return False
@@ -820,7 +930,8 @@ def critical_decision(
     - a removal spell or ability is castable now (ActionsAvailable);
     - an option spends a card the game plan names (an activation from hand,
       which is a discard cost, or a SelectN discard/sacrifice of that card);
-    - the targets of a removal effect are being chosen (SelectTargets).
+    - the targets of a removal effect are being chosen (SelectTargets);
+    - their life is within our most damage this turn (:func:`lethal_reach`).
 
     Burn that can kill nothing on the opposing side (:func:`burn_kills_nothing`)
     is not removal here; ``skipped`` (when given) collects why such cards were
@@ -834,6 +945,10 @@ def critical_decision(
     request_type = str(getattr(decision, "request_type", "") or "")
     options = list(getattr(decision, "options", ()) or ())
     if request_type == "ActionsAvailable":
+        # First: a possible kill outweighs any removal or plan-card reason (ledger #100).
+        reach = lethal_reach(decision, state)
+        if reach is not None:
+            return f"within lethal reach: {reach.text()}"
         face_only = 0
         for option in options:
             if getattr(option, "payable", None) is False:

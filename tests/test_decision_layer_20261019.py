@@ -937,3 +937,63 @@ def test_the_planner_remembers_why_it_declined(monkeypatch):
     planner.plan_decision_options(targets, _trostani_board())
     line = planner.decisions_for_turn(6)[-1]
     assert CANCELLED in line and "spell kept in hand" in line and "weakens" not in line
+
+
+# --- #100: a window within lethal reach runs at high effort --------------------------------------
+# 18b1601a T9 12:05:02 (Player.log): they were at 7; ours Slickshot Show-Off x2 (one just cast, haste)
+# and Emberheart Challenger, one untapped Mountain, Tectonic Hazard and Fleeting Effigy in hand. Hazard
+# (1) pumps both airborne Slickshots +2/+0: exactly 7. The window ran at low effort and cast Effigy,
+# which the line search (blind to the pumps, #94) tagged "LINE best".
+
+
+def _lethal_window(their_life=7, **turn):
+    theirs = [
+        _card(442, "Traveling Chocobo", THEM, type_line="Creature — Bird", card_types=["CardType_Creature"],
+              power=3, toughness=2, oracle_text=""),
+        _card(426, "Tifa Lockhart", THEM, type_line="Legendary Creature — Human Monk",
+              card_types=["CardType_Creature"], power=1, toughness=2, oracle_text="Trample", is_tapped=True),
+        _card(346, "Sazh's Chocobo", THEM, power=4, toughness=5, is_tapped=True),
+        *(_land(i, THEM, True, "Forest") for i in (345, 358, 439)),
+    ]  # fmt: skip
+    ours = [
+        _land(411),
+        _land(349, tapped=True),
+        _land(340, tapped=True),
+        _card(350, "Slickshot Show-Off", ME, turn_entered_battlefield=5),
+        _card(430, "Emberheart Challenger", ME, turn_entered_battlefield=7),
+        _card(447, "Slickshot Show-Off", ME, turn_entered_battlefield=9),
+    ]
+    hand = [_card(446, "Tectonic Hazard", ME), _card(436, "Fleeting Effigy", ME)]
+    return _board(
+        ours=ours, theirs=theirs, hand=hand, turn=9, life=9, their_life=their_life, lands_played=1, **turn
+    )
+
+
+LETHAL_MENU = _menu(
+    _cast("idx:0", _card(436, "Fleeting Effigy", ME)), _cast("idx:1", _card(446, "Tectonic Hazard", ME))
+)
+
+
+def test_their_life_within_our_reach_makes_the_window_critical():
+    why = critical_decision(LETHAL_MENU, _lethal_window(), "")
+    assert why.startswith(
+        "within lethal reach: up to 10 damage this turn (attackers 4, burn 1, cast pumps +5"
+    )
+    assert why.endswith("against their 7 life")
+    assert critical_decision(LETHAL_MENU, _lethal_window(their_life=11), "") == ""
+    # Their turn: our creatures do not attack, so Hazard's 1 is all.
+    assert critical_decision(LETHAL_MENU, _lethal_window(active_player=THEM), "") == ""
+
+
+def test_a_lethal_reach_window_waits_for_high_effort_and_says_why(monkeypatch):
+    monkeypatch.setattr(ActionPlanner, "_HIGH_AFTER_LOW_S", 0.05)
+    model = _Model(
+        _reply("idx:0", "Casting Fleeting Effigy adds a third hasty attacker per the best line."),
+        _reply("idx:1", "Hazard pumps both Slickshots to 3/2 flying: 1 + 3 + 3 is exactly 7."),
+        high_delay=0.4,
+    )
+    planner = _planner(model)
+    assert planner._llm_decision_options(LETHAL_MENU, _lethal_window()) == ["idx:1"]
+    assert "high" in model.efforts
+    assert "LETHAL REACH: up to 10 damage this turn" in model.prompts[0]
+    assert planner.get_last_decision_trace()["hedge"]["winner"] == "high"

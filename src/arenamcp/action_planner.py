@@ -18,7 +18,7 @@ from typing import Any
 
 from arenamcp.backend_health import is_backend_error_text
 from arenamcp.cast_notes import combat_cast_note, loot_mode_note, trick_timing_note, turn_investments_note
-from arenamcp.decision_memory import DecisionMemory, burn_combo_note, critical_decision
+from arenamcp.decision_memory import DecisionMemory, burn_combo_note, critical_decision, lethal_reach
 from arenamcp.decisions import expand_target_selection
 from arenamcp.mana_potential import mana_reach_note
 from arenamcp.match_context import prepare_match_context, strategic_policy, with_deck_reference
@@ -3928,6 +3928,8 @@ class ActionPlanner(_ActionLegalityMixin):
             )
             if not held or life is None or face >= life or _lethal_this_turn(game_state) is not False:
                 return decision, []
+            if lethal_reach(decision, game_state) is not None:
+                return decision, []  # their life is within reach: never hold burn then (ledger #100)
         except Exception as error:  # the hold never blocks a decision
             logger.debug("instant-timing hold skipped: %s", error)
             return decision, []
@@ -4122,6 +4124,8 @@ class ActionPlanner(_ActionLegalityMixin):
         most = max(damage for _need, damage in burn.variants)
         if life is None or life <= most or _lethal_this_turn(game_state) is not False:
             return ""
+        if lethal_reach(decision, game_state) is not None:
+            return ""  # a window within lethal reach waits for high effort anyway (ledger #100)
         empty = not any("creature" in _types(c) for c in _theirs(game_state))
         now = (
             "it hits no creature now (their board is empty)"
@@ -5735,6 +5739,7 @@ class ActionPlanner(_ActionLegalityMixin):
         normal_budget: float,
         low_agrees: Callable[[list[str], dict], str] | None = None,
         low_doubt: Callable[[list[str], dict], str] | None = None,
+        patient: bool = False,
     ) -> tuple[dict, list[str]]:
         """A critical decision: the high-effort call and the normal low-effort one, at once.
 
@@ -5754,7 +5759,10 @@ class ActionPlanner(_ActionLegalityMixin):
         line, a false lethal claim: :meth:`_second_look_concerns`) waits for
         the high leg to its deadline instead, and without a high answer the
         decision fails over to the caller's board-math fallback
-        (:class:`SecondLookError`) rather than firing it.
+        (:class:`SecondLookError`) rather than firing it. ``patient`` (a window
+        within lethal reach, ledger #100: the line search the agreement trusts
+        missed that kill) waits for the high leg to its deadline with no
+        agreement shortcut; without a high answer the low one stands.
         """
         outer = getattr(self, "_decision_cancel_event", None)
         legs = {
@@ -5801,7 +5809,7 @@ class ActionPlanner(_ActionLegalityMixin):
         if ok("low") and not ok("high"):
             low_data, low_ids = results["low"][1]
             high_pending = "high" not in results
-            if low_agrees is not None and high_pending:
+            if low_agrees is not None and high_pending and not patient:
                 try:
                     agreed = low_agrees(low_ids, low_data) or ""
                 except Exception as error:  # never block a decision on the check
@@ -5814,6 +5822,11 @@ class ActionPlanner(_ActionLegalityMixin):
             if doubt and high_pending:
                 logger.info(
                     "typed-decision hedge: the low answer %s waits for high effort (%s)", low_ids, doubt
+                )
+                wait_until(high_deadline, lambda: "high" in results)
+            elif patient and high_pending:
+                logger.info(
+                    "typed-decision hedge: within lethal reach; the low answer %s waits for high", low_ids
                 )
                 wait_until(high_deadline, lambda: "high" in results)
             elif not agreed and high_pending:
@@ -6046,7 +6059,19 @@ class ActionPlanner(_ActionLegalityMixin):
             lines.insert(lines.index("OPTIONS:"), lines_text)
         # Burn that kills together what no one spell kills (ledger #64), and
         # instant burn held for the opponent's end step (ledger #80).
-        for note in (burn_combo_note(decision, tag_state), self._instant_timing_note(decision, tag_state)):
+        # And their life within our reach this turn (ledger #100).
+        reach = lethal_reach(decision, tag_state)
+        reach_note = (
+            f"LETHAL REACH: {reach.text()}. Look for the kill before anything else: burn to their face, and "
+            "cast noncreature spells before combat when they pump our attackers."
+            if reach is not None
+            else ""
+        )
+        for note in (
+            reach_note,
+            burn_combo_note(decision, tag_state),
+            self._instant_timing_note(decision, tag_state),
+        ):
             if note:
                 lines.insert(lines.index("OPTIONS:"), note)
         if decision.request_type == "SelectTargets":
@@ -6258,7 +6283,13 @@ class ActionPlanner(_ActionLegalityMixin):
                 return "; ".join(kind for kind, _text in concerns_for(ids, data))
 
             data, chosen = self._hedged_decision(
-                ask, parse, user_message, normal_budget, low_agrees, low_doubt
+                ask,
+                parse,
+                user_message,
+                normal_budget,
+                low_agrees,
+                low_doubt,
+                patient=critical.startswith("within lethal reach"),
             )
             answered_high = (self._last_decision_trace.get("hedge") or {}).get("winner") == "high"
         else:
