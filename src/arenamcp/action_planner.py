@@ -5303,8 +5303,17 @@ class ActionPlanner(_ActionLegalityMixin):
         # windows each answered within 3 s while one high-effort call ran its
         # full 15 s and timed out), so every decision there runs at low effort.
         opponent_turn = _is_opponent_turn(game_state, local_seat)
+        own_stack = ""
+        if decision.request_type == "ActionsAvailable":
+            own_stack = own_stack_only(decision, game_state)
         if critical and opponent_turn:
             logger.info("typed-decision: %s, but on the opponent's turn — low effort", critical)
+            critical = ""
+        elif critical and own_stack:
+            # Nothing of theirs to answer: passing resolves it (2026-10-19 09:03:36).
+            logger.info(
+                "typed-decision: %s, but only our own %s is on the stack — low effort", critical, own_stack
+            )
             critical = ""
         elif critical:
             logger.info("typed-decision: high reasoning effort (%s)", critical)
@@ -5588,6 +5597,54 @@ def _own_main_phase_with_empty_stack(state: dict[str, Any]) -> bool:
     return "main" in str(turn.get("phase") or "").lower() and not (state.get("stack") or [])
 
 
+def own_stack_only(decision: Any, state: dict[str, Any]) -> str:
+    """The name of our spell on top when everything on the stack is ours; '' otherwise.
+
+    Nothing of theirs is there to answer, so passing lets it resolve. A
+    snapshot can trail the request: a land play or a sorcery-speed cast on
+    the menu proves the stack already empty (:func:`play_safety.menu_proves_empty_stack`
+    for lands), and then this is ''. 2026-10-19 09:03:36 (match 41753907):
+    with our own Fleeting Effigy on the stack the window went to the model
+    at high effort ("removal available: Burst Lightning") and ran 15 s.
+    """
+    from arenamcp.mulligan_policy import hand_card
+
+    local = _local_seat(state)
+    stack = state.get("stack") or []
+    if local is None or not stack:
+        return ""
+    if any(not isinstance(entry, dict) or _controller_seat(entry) != local for entry in stack):
+        return ""
+    for option in getattr(decision, "options", ()) or ():
+        meta = option.meta or {}
+        kind = str(meta.get("actionType") or "").removeprefix("ActionType_")
+        if kind == "Play":
+            return ""
+        if kind == "Cast":
+            card = find_source(state, meta)
+            if card.get("type_line") and not hand_card(card).instant_speed:
+                return ""
+    return str(stack[-1].get("name") or "spell")
+
+
+def _controller_seat(card: dict[str, Any]) -> Any:
+    return card.get("controller_seat_id") or card.get("owner_seat_id")
+
+
+def _no_board_math_reason(decision: Any, state: dict[str, Any]) -> str:
+    """Why the board-math fallback only drops a land or passes in this window."""
+    turn = state.get("turn") or {}
+    local = _local_seat(state)
+    main = "main" in str(turn.get("phase") or "").lower()
+    if local is not None and turn.get("active_player") == local and main:
+        own = own_stack_only(decision, state)
+        if own:
+            return f"our own {own} is on the stack, so pass and let it resolve"
+        if state.get("stack"):
+            return "with a spell on the stack only a pass is safe"
+    return "outside our main phase only a land drop or a pass is safe"
+
+
 def _line_text(step: Any) -> str:
     """Speakable board-math line for this turn ("plays Island, then casts A and B")."""
     parts = []
@@ -5619,7 +5676,9 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
 
     fallback = ActionPlanner.deterministic_option_pick(decision)
     if decision.request_type != "ActionsAvailable" or not _own_main_phase_with_empty_stack(game_state):
-        return fallback, "outside our main phase only a land drop or a pass is safe"
+        # 2026-10-19 09:03:51: "outside our main phase" was said in our main
+        # phase, with our own Fleeting Effigy on the stack.
+        return fallback, _no_board_math_reason(decision, game_state)
     assessment, option_role = None, None
     step, plan_text, scheduled = None, "", set()
     greedy: set[str] = set()
