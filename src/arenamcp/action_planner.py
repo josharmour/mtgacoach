@@ -4824,6 +4824,37 @@ class ActionPlanner(_ActionLegalityMixin):
         logger.warning("Keeping the spell: %s kills no legal opposing target (picked %s)", effect, name)
         return True
 
+    def _planned_follow_up_kills(
+        self, decision: Any, game_state: dict[str, Any], card: dict[str, Any] | None, damage: int
+    ) -> bool:
+        """The model's reasoning names more burn in hand that finishes this target.
+
+        2026-10-19 12:31:22 (ledger #103): "Mode 2 puts 4 damage on a Hearth
+        Elemental so Lightning Strike finishes it" — 4 + 3 kills the 4/5, but
+        the 4 alone does not, so the target was declined, the cast cancelled,
+        and the Strike then went at an undamaged Elemental. A two-spell kill is
+        a kill, as in _reject_false_kill_claim.
+        """
+        from arenamcp.play_safety import damage_would_kill, named_burn_damage
+
+        if card is None:
+            return False
+        played = {
+            "name": str(getattr(decision, "source_label", "") or ""),
+            "instance_id": self._decision_source_instance(game_state),
+        }
+        reasoning = str(getattr(self, "_last_decision_reasoning", "") or "")
+        follow_up = named_burn_damage(reasoning, game_state, played)
+        if follow_up <= 0 or not damage_would_kill(card, damage + follow_up):
+            return False
+        logger.info(
+            "Keeping the target: %d damage plus %d from the burn the reasoning names kills %s",
+            damage,
+            follow_up,
+            card.get("name"),
+        )
+        return True
+
     def _prefer_lethal_damage_target(
         self, decision: Any, game_state: dict[str, Any], chosen: list[str], *, fallback: bool = False
     ) -> list[str]:
@@ -4873,6 +4904,8 @@ class ActionPlanner(_ActionLegalityMixin):
 
         picked = int(str(targets[0])[4:])
         if killable(picked) is not False:
+            return chosen
+        if not fallback and self._planned_follow_up_kills(decision, game_state, cards.get(picked), damage):
             return chosen
         alternatives = []
         for option in decision.options:
