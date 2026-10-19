@@ -66,3 +66,25 @@ def test_generic_selection_resolved_to_scry_skips_vision(monkeypatch) -> None:
     assert should_stop is False
     assert queued == []
     assert coach._mcp.polls == 1
+
+
+def test_mulligan_bottom_skips_vision(monkeypatch) -> None:
+    """2026-10-19 09:30:33: vision said "Put Boltwave on the bottom" while the autopilot bottomed Shock."""
+    coach, queued = _make_coach(
+        {
+            "pending_decision": "Mulligan Bottom",
+            "decision_context": {"type": "mulligan_bottom"},
+        }
+    )
+    monkeypatch.setattr(standalone.time, "sleep", lambda _seconds: None)
+
+    refreshed, should_stop = coach._handle_unresolved_generic_selection(
+        {
+            "pending_decision": "Group Selection",
+            "decision_context": {"type": "mulligan_bottom"},
+        }
+    )
+
+    assert refreshed["pending_decision"] == "Mulligan Bottom"
+    assert should_stop is False
+    assert queued == []

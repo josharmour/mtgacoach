@@ -183,6 +183,17 @@ _WORD_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
 _UNKNOWN_MANA = 4
 _FACE_SPLIT = re.compile(r"\n\s*(?:---|//)\s*\n")
 _EMBLEM = re.compile(r"\bemblem\b")
+# An opponent's spell or ability on the stack that could still take their own
+# attackers out of the fight or protect us: a board-wide or symmetric effect...
+_THEIR_STACK_BOARDWIDE = re.compile(
+    r"\b(?:all|each) (?:other )?(?:creatures?|permanents?|nonland|attacking|blocking)\b|\beach player\b"
+    r"|sacrific|gains? control|exchange control|\bswitch|\bphases?\b|\bprevent|can't (?:attack|block)"
+    r"|\bskip|loses? all abilities|lose the game|base power|tap all|doesn't untap"
+)
+# ...or a targeted one that hurts what it targets, aimed at anything but us and ours.
+_THEIR_STACK_TARGETED = re.compile(
+    r"\b(?:destroy|exile|damage|return|tap|taps|fights?|loses?|can't)\b|[-−]\d+/[-−]\d+|gets? [-−]\d"
+)
 
 
 @dataclass
@@ -952,8 +963,7 @@ def _estimate(state: Any) -> LossEstimate:
         caps.append((_MAYBE, f"{dig} could dig for an answer with mana to spare"))
     caps.extend(_recent_effects(view, local=local, turn=turn))
     facts["outs"] = outs
-    if view.get("stack"):
-        caps.append((0.7, "something is on the stack"))
+    caps.extend(_stack_caps(view, local=local, opponent=opponent))
     pending = str(view.get("pending_decision") or "").strip()
     if pending.lower() not in _BENIGN_DECISIONS:
         caps.append((0.7, f"a decision is in progress ({pending})"))
@@ -966,6 +976,46 @@ def _estimate(state: Any) -> LossEstimate:
         numbers = f" ({through} through vs {our_life} life)" if timing_known else ""
         reason = f"Dead next attack{numbers}, but " + blockers[0]
     return LossEstimate(confidence, reason, facts, blockers)
+
+
+def _stack_caps(view: dict, *, local: int, opponent: int) -> list[tuple[float, str]]:
+    """A cap for each stack object that could still change their attack or our outs.
+
+    Ours (or one of unknown control) may be an out. One of theirs counts only
+    when its text is unknown, has a board-wide or symmetric effect, or hurts
+    a target that is not us or ours (their own attacker, say): an attack
+    trigger, a pump or their life gain leaves us as dead as before.
+    2026-10-19 08:11:51 (match a74bbc90): a Pest's attack trigger on their
+    side aborted a running countdown at 23 damage through vs 11 life.
+    """
+    stack = view.get("stack") or []
+    if not isinstance(stack, list):
+        return [(0.7, "something is on the stack")]
+    ours: set[int] = {local}
+    for zone in ("battlefield", "stack", "graveyard", "hand", "exile"):
+        for card in view.get(zone) or []:
+            if isinstance(card, dict) and _controller(card) == local and _int(card.get("instance_id")):
+                ours.add(_int(card.get("instance_id")))
+    caps: list[tuple[float, str]] = []
+    for item in stack:
+        if not isinstance(item, dict):
+            caps.append((0.7, "something unknown is on the stack"))
+            continue
+        name, text = _name(item), _text(item)
+        if _controller(item) != opponent:
+            caps.append((0.7, f"{name} is on the stack"))
+            continue
+        if not text.strip():
+            caps.append((0.7, f"their {name} on the stack is unknown"))
+            continue
+        hazard = _THEIR_STACK_BOARDWIDE.search(text)
+        if hazard is None and "target" in text and _THEIR_STACK_TARGETED.search(text):
+            targets = [_int(t) for t in item.get("targeting") or []]
+            if not targets or any(t not in ours for t in targets):
+                hazard = _THEIR_STACK_TARGETED.search(text)
+        if hazard is not None:
+            caps.append((0.7, f"their {name} on the stack could change the combat ('{hazard.group(0)}')"))
+    return caps
 
 
 def _stays_tapped(card: dict, attached: dict[int, list[dict]]) -> bool:
@@ -997,17 +1047,25 @@ def _castable_haste_power(state: dict, local: int, turn: int, battlefield: list[
 
 
 def _concede_reason(evasive: list[dict], through: int, our_life: int, when: str) -> str:
+    """The spoken concede reason. The named attackers and the damage they leave add up to ``through``.
+
+    2026-10-19 09:21:34 (match f9e0ec3b): "their 2/4 flying Youthful Valkyrie,
+    6/6 flying Exemplar of Light get through this attack vs your 11 life" — 8
+    named, the 13 through also counted an unnamed 5/5 Lyra Dawnbringer. The
+    two strongest are named; the rest is "N more damage".
+    """
     if evasive:
+        named = sorted(evasive, key=lambda b: -b["power"])[:2]
         names = ", ".join(
             f"{b['power']}/{b['toughness']} {'flying' if _flying(b) and not b['_unblockable'] else 'unblockable'} "
             f"{b['name']}"
-            for b in evasive[:2]
+            for b in named
         )
-        more = through - sum(b["power"] for b in evasive)
+        more = through - sum(b["power"] for b in named)
         if more > 0:
             head = f"their {names} and {more} more damage get through"
         else:
-            head = f"their {names} {'gets' if len(evasive) == 1 else 'get'} through"
+            head = f"their {names} {'gets' if len(named) == 1 else 'get'} through"
     else:
         head = f"{through} damage gets through your best blocks"
     return f"Concede: {head} {when} vs your {our_life} life, and nothing you can cast stops it."

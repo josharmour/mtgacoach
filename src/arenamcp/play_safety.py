@@ -530,6 +530,63 @@ def x_damage_removal(card: dict, x: int) -> tuple[int, bool] | None:
     return x * (2 if match.group(1) else 1), "planeswalker" in match.group(2)
 
 
+# One damage clause: at a target creature or planeswalker, at any target, or at
+# every creature ("each opponent and each creature they control").
+_DAMAGE_CLAUSE = re.compile(
+    r"\bdeals (\d+) damage to (?P<scope>any target"
+    r"|(?:another )?target (?:attacking or blocking |attacking |blocking |tapped )?"
+    r"(?:creature or planeswalker|creature|planeswalker)"
+    r"|(?:each opponent and )?each (?:other )?creature)\b"
+)
+_KICKED_DAMAGE = re.compile(r"\b(?:this spell|it) was kicked\b[^.\n]*\bdeals (\d+) damage\b")
+_NOT_ONE_AMOUNT = ("x damage", "where x", "for each", "instead", "divided", "choose ", "up to")
+
+
+def damage_effect(
+    card: dict,
+    state: dict | None = None,
+    *,
+    activation: bool = False,
+    metadata: dict | None = None,
+    kicked: bool | None = None,
+) -> tuple[int, str] | None:
+    """(damage, scope) when a play's whole effect is one fixed damage clause; None otherwise.
+
+    scope is "target" (target creature or planeswalker), "any" (any target: a
+    creature, a planeswalker or a player) or "each" (every creature they
+    control). Kicker damage ("if this spell was kicked, it deals 4 damage
+    instead") counts when ``kicked`` says so, or (``kicked`` None) when base
+    cost plus kicker fits our untapped mana or no ``state`` is given: the
+    larger reach never calls a kill false.
+
+    2026-10-19 09:01:42 (match 41753907 T5): Tectonic Hazard, "1 damage to each
+    opponent and each creature they control", was cast because it "kills their
+    only creature, the flying Dawnwing Marshal" — a 2/2. :func:`fixed_damage_removal`
+    reads only "target creature" damage, so neither it nor Shock, Lightning
+    Strike or Burst Lightning ("any target") was ever checked.
+    """
+    if activation:
+        text = _offered_ability(card, metadata)[1]
+    else:
+        type_line = str(card.get("type_line") or "").lower()
+        if type_line and not any(kind in type_line for kind in ("instant", "sorcery")):
+            return None
+        text = " ".join(line for line in _rules_lines(card.get("oracle_text")) if ":" not in line)
+    text = re.sub(r"\([^)]*\)", " ", text.lower())
+    upgrade = _KICKED_DAMAGE.search(text)
+    base = _KICKED_SENTENCE.sub(" ", text) if upgrade else text
+    clauses = list(_DAMAGE_CLAUSE.finditer(base))
+    if len(clauses) != 1 or any(phrase in base for phrase in _NOT_ONE_AMOUNT):
+        return None
+    damage = int(clauses[0].group(1))
+    if kicked is None:
+        kicked = state is None or _kicker_affordable(card, state)
+    if upgrade and kicked:
+        damage = max(damage, int(upgrade.group(1)))
+    scope = clauses[0].group("scope")
+    return damage, "any" if scope == "any target" else "each" if scope.startswith("each") else "target"
+
+
 def damage_would_kill(creature: dict, damage: int) -> bool | None:
     """True/False when the board proves it; None when damage already marked or combat could change it."""
     from arenamcp.combat_keywords import has_combat_keyword
@@ -862,6 +919,57 @@ def play_kill_reach(card: dict, *, activation: bool, metadata: dict | None = Non
     return None
 
 
+def claim_kill_reach(
+    card: dict, state: dict, *, activation: bool, metadata: dict | None = None
+) -> tuple[str, int] | None:
+    """:func:`play_kill_reach` plus "any target" and "each creature" damage, for checking a stated kill.
+
+    Burn that can go face is no wasted card when it kills nothing, so the
+    menu guards keep :func:`play_kill_reach`; a kill the reasoning claims is
+    checked against every damage spell (:func:`damage_effect`).
+    """
+    reach = play_kill_reach(card, activation=activation, metadata=metadata)
+    if reach is not None:
+        return reach
+    parsed = damage_effect(card, state, activation=activation, metadata=metadata)
+    return ("damage", parsed[0]) if parsed else None
+
+
+def named_burn_damage(reasoning: str, state: dict, played: dict) -> int:
+    """Damage of the other burn spells in our hand that the reasoning names.
+
+    "Strike the Marshal, then Burst finishes it" claims a kill for two spells
+    together; the claim is checked against their sum, not the first spell's
+    damage alone. Names count in full or by a word the played card's own name
+    lacks ("Burst" for Burst Lightning beside Lightning Strike); another copy
+    of the played card never counts, since its name is the played card's.
+    """
+
+    def words(value: Any) -> list[str]:
+        return re.findall(r"[a-z0-9']+", str(value or "").lower())
+
+    text = f" {' '.join(words(reasoning))} "
+    if not text.strip():
+        return 0
+    own_words = set(words(played.get("name")))
+    total = 0
+    for card in state.get("hand") or []:
+        if not isinstance(card, dict) or card is played:
+            continue
+        if card.get("instance_id") is not None and card.get("instance_id") == played.get("instance_id"):
+            continue
+        name = words(card.get("name"))
+        distinct = [word for word in name if len(word) >= 4 and word not in own_words]
+        if not name or set(name) == own_words or not (
+            f" {' '.join(name)} " in text or any(f" {word} " in text for word in distinct)
+        ):
+            continue
+        parsed = damage_effect(card, state)
+        if parsed and parsed[1] != "each":
+            total += parsed[0]
+    return total
+
+
 def _combat_in_progress(state: dict) -> bool:
     """Attackers or blockers are declared in the current combat, on either side."""
     if menu_proves_empty_stack(state):
@@ -1015,7 +1123,11 @@ def castable_discard_for_minor_effect(card: dict, state: dict, metadata: dict | 
 
 
 def claimed_kills(reasoning: str, creatures: list[dict]) -> list[dict]:
-    """The creatures a model's reasoning says die: "kills Hallway Heckler", "the Heckler dies"."""
+    """The creatures a model's reasoning says die: "kills Hallway Heckler", "the Heckler dies".
+
+    One appositive counts: "kills their only creature, the flying Dawnwing
+    Marshal" (2026-10-19 09:01:42, match 41753907 T5).
+    """
     text = " ".join(str(reasoning or "").lower().split())
     if not text or not _KILL_CLAIM.search(text):
         return []
@@ -1028,7 +1140,8 @@ def claimed_kills(reasoning: str, creatures: list[dict]) -> list[dict]:
         for name in names:
             pattern = (
                 rf"\b(?:kill\w*|finish\w* off|destroy\w*)\s+(?:(?:the|their|that|a|an|its|his|her)\s+)?"
-                rf"(?:[\w'’/+-]+\s+){{0,3}}{re.escape(name)}"
+                rf"(?:[\w'’/+-]+\s+){{0,3}}"
+                rf"(?:[\w'’/+-]+,\s+(?:the|their|that|its)\s+(?:[\w'’/+-]+\s+){{0,3}})?{re.escape(name)}"
                 rf"|{re.escape(name)}\b[^.;]{{0,40}}\b(?:dies|die)\b"
             )
             if re.search(pattern, text):
