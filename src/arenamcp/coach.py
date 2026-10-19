@@ -1841,6 +1841,30 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         shown.add(key)
         return False
 
+    @staticmethod
+    def _creature_state_note(card: dict, is_local: bool) -> str:
+        """What a planner needs to read off a creature line: tapped meaning, marked damage, damage that kills it.
+
+        2026-10-19 (Mono-Red Burn): "[T]" was never explained, so the model
+        pumped a Slickshot that had entered tapped "for this turn's combat",
+        aimed Lightning Strike at a tapped Virulent Emissary "to clear the
+        ground blocker" while its untapped twin blocked, and said Burst
+        Lightning's 2 "kills neither Overseer" with Inspiring Overseer a 3/2.
+        """
+        from arenamcp.play_safety import creature_state_facts
+
+        facts = creature_state_facts(card, mine=is_local)
+        parts = [facts["status"]] if card.get("is_tapped") else []
+        if "marked_damage" in facts:
+            parts.append(f"{facts['marked_damage']} damage marked")
+        dies_to = facts.get("dies_to_damage")
+        if isinstance(dies_to, str):
+            parts.append("indestructible: damage can't kill it")
+        elif dies_to is not None and (not is_local or "marked_damage" in facts):
+            # Their creatures always say what kills them; ours only once damaged.
+            parts.append(f"dies to {dies_to} damage")
+        return f" — {'; '.join(parts)}" if parts else ""
+
     def _format_board_card(
         self,
         card: dict,
@@ -1857,9 +1881,10 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         """Format a single battlefield card into display lines.
 
         Args:
-            for_planner: Retained for call compatibility. Rules text remains
-                relevant throughout a permanent's lifetime, including static
-                restrictions and attack triggers on older permanents.
+            for_planner: Rules text remains relevant throughout a permanent's
+                lifetime, including static restrictions and attack triggers on
+                older permanents. Planner lines also spell out what a
+                creature's tapped state and damage mean (_creature_state_note).
         """
         lines: list[str] = []
         name = card.get("name", "Unknown")
@@ -1961,7 +1986,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             counter_str = f" ({','.join(cparts)})"
 
         flag_str = f" [{','.join(flags)}]" if flags else ""
-        lines.append(f"  {display_name}{pt}{counter_str}{flag_str}")
+        state_note = self._creature_state_note(card, is_local) if is_creature and for_planner else ""
+        lines.append(f"  {display_name}{pt}{counter_str}{flag_str}{state_note}")
 
         raw_oracle = card.get("oracle_text", "")
         is_basic_land = is_land and not self._land_has_abilities(raw_oracle, type_line)

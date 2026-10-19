@@ -546,6 +546,55 @@ def damage_would_kill(creature: dict, damage: int) -> bool | None:
     return False
 
 
+def lethal_damage(creature: dict) -> int | None:
+    """Damage that kills this creature now: its current toughness minus marked damage.
+
+    None when damage cannot kill it (indestructible) or its toughness is
+    unknown. 2026-10-19 (match f9e0ec3b T8): the model said Burst Lightning's
+    2 "kills neither Overseer nor anything else" with Inspiring Overseer a 3/2.
+    """
+    toughness = creature.get("modified_toughness")
+    if type(toughness) is not int:
+        toughness = creature.get("toughness")
+    if type(toughness) is not int or has_combat_keyword(creature, "indestructible"):
+        return None
+    damage = creature.get("damage") if type(creature.get("damage")) is int else 0
+    return max(1, toughness - damage)
+
+
+def creature_state_facts(creature: dict, *, mine: bool) -> dict[str, Any]:
+    """A battlefield creature's current P/T, tapped state, marked damage and the damage that kills it.
+
+    2026-10-19 08:08:10 (match a74bbc90): two Virulent Emissary targets were
+    offered as bare names; Lightning Strike hit the one tapped from attacking
+    "to clear the ground blocker", and the untapped copy blocked Hired Claw.
+    """
+    facts: dict[str, Any] = {}
+    power = creature.get("modified_power")
+    power = power if type(power) is int else creature.get("power")
+    toughness = creature.get("modified_toughness")
+    toughness = toughness if type(toughness) is int else creature.get("toughness")
+    if type(power) is int and type(toughness) is int:
+        facts["pt"] = f"{power}/{toughness}"
+    if creature.get("is_tapped"):
+        facts["status"] = (
+            "tapped: can't attack or block until your next untap"
+            if mine
+            else "tapped: can't block until their next untap"
+        )
+    else:
+        facts["status"] = "untapped"
+    damage = creature.get("damage") if type(creature.get("damage")) is int else 0
+    if damage > 0:
+        facts["marked_damage"] = damage
+    dies_to = lethal_damage(creature)
+    if dies_to is not None:
+        facts["dies_to_damage"] = dies_to
+    elif type(toughness) is int:
+        facts["dies_to_damage"] = "never (indestructible)"
+    return facts
+
+
 def damage_removal_kills_nothing(card: dict, state: dict) -> str:
     """Withhold fixed-damage removal when no opposing target would die.
 

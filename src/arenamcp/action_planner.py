@@ -4786,6 +4786,15 @@ class ActionPlanner(_ActionLegalityMixin):
                     "controller_seat_id": ctrl,
                     "owner_seat_id": card.get("owner_seat_id"),
                 }
+                # 2026-10-19 08:08:10: two "Virulent Emissary" targets, one tapped
+                # from attacking; the strike "clearing the ground blocker" hit it.
+                if _as_int(o.option_id[4:]) in battlefield_ids and (
+                    "creature" in str(card.get("type_line") or "").lower()
+                    or "CardType_Creature" in (card.get("card_types") or [])
+                ):
+                    from arenamcp.play_safety import creature_state_facts
+
+                    facts.update(creature_state_facts(card, mine=ctrl is not None and ctrl == local_seat))
                 ward = ward_of(card) if _as_int(o.option_id[4:]) in battlefield_ids else None
                 if ward is not None and ctrl not in (None, local_seat) and ward_mana is not None:
                     warded_targets = True
