@@ -5768,6 +5768,58 @@ class ActionPlanner(_ActionLegalityMixin):
         self._note_target_choice([wanted], reason)
         return [wanted]
 
+    def _face_reach_this_turn(self, decision: Any, game_state: dict[str, Any], damage: int) -> int:
+        """An optimistic bound on face damage this turn: this spell, the burn in hand the
+        reasoning names, and (before combat on our turn) our creatures able to attack plus
+        their attack pings. Blockers are ignored: it only stops a redirect away from face."""
+        from arenamcp.play_safety import damage_effect
+
+        played = str(getattr(decision, "source_label", "") or "").lower()
+        played_id = self._decision_source_instance(game_state)
+        reasoning = " ".join(re.findall(r"[a-z0-9']+", str(getattr(self, "_last_decision_reasoning", "") or "").lower()))
+        total = int(damage)
+        for card in game_state.get("hand", []) or []:
+            if not isinstance(card, dict) or card.get("instance_id") == played_id:
+                continue
+            name = str(card.get("name") or "").lower()
+            words = [w for w in re.findall(r"[a-z0-9']+", name) if len(w) >= 4 and w not in played]
+            if not name or name == played or not (name in reasoning or any(f" {w} " in f" {reasoning} " for w in words)):
+                continue
+            parsed = damage_effect(card, game_state)
+            text = str(card.get("oracle_text") or "").lower()
+            # Face burn only: any target, target player/opponent, or each opponent (Boltwave).
+            if parsed and (parsed[1] == "any" or "opponent" in text or "target player" in text):
+                total += int(parsed[0])
+                continue
+            face = re.search(
+                r"deals? (\d+) damage to (?:each opponent|target opponent|target player|any target)", text
+            )
+            if face:
+                total += int(face.group(1))
+        turn = game_state.get("turn") or {}
+        local = game_state.get("local_seat_id") or next(
+            (p.get("seat_id") for p in game_state.get("players") or [] if isinstance(p, dict) and p.get("is_local")),
+            None,
+        )
+        phase = str(turn.get("phase") or "")
+        if local is None or turn.get("active_player") != local or "Combat" in phase or phase.endswith("Main2"):
+            return total
+        number = _as_int(turn.get("turn_number")) or 0
+        for card in game_state.get("battlefield", []) or []:
+            if not isinstance(card, dict) or card.get("controller_seat_id") != local:
+                continue
+            if "creature" not in str(card.get("type_line") or "").lower() or card.get("is_tapped"):
+                continue
+            text = str(card.get("oracle_text") or "").lower()
+            entered = _as_int(card.get("turn_entered_battlefield"))
+            if entered is not None and entered >= number and "haste" not in text:
+                continue
+            total += max(0, _as_int(card.get("power")) or 0)
+            ping = re.search(r"whenever [^.]*attack[^.]*deals? (\d+) damage", text)
+            if ping:
+                total += int(ping.group(1))
+        return total
+
     def _follow_line_over_face(
         self, decision: Any, game_state: dict[str, Any], chosen: list[str]
     ) -> list[str]:
@@ -5811,6 +5863,17 @@ class ActionPlanner(_ActionLegalityMixin):
             None,
         )
         if life is None or life <= parsed[0] or _lethal_this_turn(game_state) is not False:
+            return chosen
+        reach = self._face_reach_this_turn(decision, game_state, parsed[0])
+        if reach >= life:
+            # Ledger #145 (2026-10-19 13:54:11): opponent at 7, the model's line was Burst
+            # Lightning face (7->5), Boltwave (->2), then the attack and Hired Claw's ping. This
+            # spell alone is not lethal, but the turn may be: a burn deck keeps it face.
+            logger.info(
+                "Keeping the face pick: up to %d damage this turn (this spell, named burn, attackers) vs %d life",
+                reach,
+                life,
+            )
             return chosen
         # #126 (2026-10-19 13:14:15): the line wanted Burst Lightning on a 1/1 Callous Inspector; the
         # model went face because the kill "only feeds its death trigger and gives a Clue". The line
