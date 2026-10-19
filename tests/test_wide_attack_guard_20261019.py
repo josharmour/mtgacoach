@@ -23,8 +23,8 @@ import pytest
 from arenamcp.action_planner import ActionPlan, ActionPlanner, ActionType, GameAction
 from arenamcp.combat_strategy import (
     _copies_answered,
-    _thinned_declaration,
     _TheirBlocks,
+    _thinned_declaration,
     losing_attackers,
 )
 
@@ -86,7 +86,9 @@ def hare(iid, **extra):
 
 
 def rabbit(iid, **extra):
-    return creature(iid, "Rabbit", US, 1, 1, type_line="Token Creature — Rabbit", object_kind="TOKEN", **extra)
+    return creature(
+        iid, "Rabbit", US, 1, 1, type_line="Token Creature — Rabbit", object_kind="TOKEN", **extra
+    )
 
 
 def lathiel(iid=512, power=2):
@@ -220,7 +222,9 @@ def test_the_t11_all_in_stands(line_search, monkeypatch, caplog):
 
 def test_their_actual_blocks_charge_lathiels_lifelink_once():
     state, ours = t11()
-    blockers = [card for card in state["battlefield"] if card["controller_seat_id"] == THEM and "power" in card]
+    blockers = [
+        card for card in state["battlefield"] if card["controller_seat_id"] == THEM and "power" in card
+    ]
     theirs = _TheirBlocks(blockers, 10)
     through, on = theirs.blocks(ours)
     assert through == 6
@@ -234,7 +238,9 @@ def test_their_actual_blocks_charge_lathiels_lifelink_once():
 
 def test_no_more_rabbits_are_held_than_their_blockers_answer():
     state, ours = t11()
-    blockers = [card for card in state["battlefield"] if card["controller_seat_id"] == THEM and "power" in card]
+    blockers = [
+        card for card in state["battlefield"] if card["controller_seat_id"] == THEM and "power" in card
+    ]
     battlefield = state["battlefield"]
     assert _copies_answered(rabbit(463), blockers, battlefield=battlefield, strategy_text="") == 4
     # Lathiel 2/2 only trades with a Hare: three blockers eat one for free.
@@ -284,7 +290,9 @@ def test_attackers_every_one_of_which_is_eaten_for_nothing_are_all_held():
     losing = losing_attackers(wide_board(ours, theirs), ids(ours))
     assert set(losing) == {701, 702, 703, 704}
     assert all("kill it and survive; nothing gets through" in reason for reason in losing.values())
-    assert any("the rest of the attack gets nothing more through for it" in reason for reason in losing.values())
+    assert any(
+        "the rest of the attack gets nothing more through for it" in reason for reason in losing.values()
+    )
 
 
 def test_two_rabbits_into_a_lone_lifelinker_stay_home():

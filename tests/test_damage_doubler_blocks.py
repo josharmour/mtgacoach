@@ -11,7 +11,13 @@ Grazer block, and the unblocked Brawler's doubled 22 killed us at -1.
 
 from __future__ import annotations
 
-from arenamcp.combat_strategy import damage_to_us_factor, safe_default_blocks, wasteful_chump_blocks
+from arenamcp.combat_strategy import (
+    _after_combat,
+    _next_attack_damage,
+    damage_to_us_factor,
+    safe_default_blocks,
+    wasteful_chump_blocks,
+)
 from test_combat_safe_defaults import LOCAL, OPPONENT, board, creature
 
 BRAWLER = creature(
@@ -57,9 +63,27 @@ def test_without_the_doubler_the_same_chump_is_still_dropped():
     assert "save 3 damage" in dropped[677]
 
 
+def test_their_next_attack_is_doubled_through_the_creatures_we_keep():
+    # #171 (match 2b77f14d T9): their next attack goes through the creatures this combat leaves us,
+    # each absorbing one of their biggest attackers, no longer their raw board power (62 here).
+    # With both chumps our two Hobbits absorb Titania and the Brawler (10 tramples over a 1/1) and
+    # Ouroboroid connects: (10 + 8) x 2 = 36. Without the Grazer chump it absorbs one more: 10 x 2.
+    state = _state(life=80)
+    cards = {card["instance_id"]: card for card in state["battlefield"]}
+    threats = [BRAWLER, OUROBOROID, TITANIA]
+    ours = [cards[iid] for iid in (677, 668, 675, 676)]
+    factors = {OPPONENT: 2}
+    left, coming = _after_combat([BRAWLER, OUROBOROID], PLANNED, cards, ours, threats)
+    assert _next_attack_damage(coming, left, factors) == 36
+    left, coming = _after_combat([BRAWLER, OUROBOROID], {668: 660}, cards, ours, threats)
+    assert _next_attack_damage(coming, left, factors) == 20
+    assert _next_attack_damage(coming, left, {}) == 10
+    # At 80 life (58 without the block) that is far from lethal: the chump goes, doubled numbers named.
+    dropped = wasteful_chump_blocks(state, PLANNED)
+    assert "save 6 damage" in dropped[677] and "stay at 58" in dropped[677]
+
+
 def test_doubled_damage_is_reported_in_the_reason():
-    # At 80 life the block still keeps us above their doubled next-turn clock (62).
-    assert 677 not in wasteful_chump_blocks(_state(life=80), PLANNED)
     # At 200 nothing is close: the drop names the doubled numbers.
     dropped = wasteful_chump_blocks(_state(life=200), PLANNED)
     assert "save 6 damage" in dropped[677]

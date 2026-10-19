@@ -249,8 +249,14 @@ def select(blocker, attacker=None):
 
 @pytest.mark.usefixtures("instant_combat_acks")
 def test_lone_block_on_a_menace_attacker_never_leaves_the_bridge():
-    """07:34:34: 484->Shark, 485->Biting-Palm Ninja (menace), 490->Dark Leo, 491->Ninja."""
-    state = with_context(incident_board(), blockers_request())
+    """07:34:34: 484->Shark, 485->Biting-Palm Ninja (menace), 490->Dark Leo, 491->Ninja.
+
+    At 8 life each chump is what keeps us above CHUMP_DANGER_LIFE (8 - 3, 8 - 4), so the chump guard
+    keeps both and the menace repair alone drops the lone Ninja block. At the live 20, their next attack
+    through the creatures we keep is far from lethal (#171: no longer their raw board power), so the
+    chump guard drops both chumps; this test is about the menace block.
+    """
+    state = with_context(incident_board(life=8), blockers_request())
     bridge = ArenaBlockers(blockers_request(), state)
     action = GameAction(
         ActionType.DECLARE_BLOCKERS,
@@ -386,8 +392,9 @@ def test_a_selected_blocker_is_offered_with_all_its_options():
 def test_replan_naming_the_selected_block_is_accepted_and_not_resent():
     """07:34:42: the re-plan proposed 484->468 again and got 'Combat instance 468 is not eligible'."""
     request = blockers_request({484: SHARK}, gsid=224, msg=300)
-    # Their next swing (13) would reach 12 life without the chump: the guard keeps it.
-    state = with_context(incident_board(extra_threat_power=4), request)
+    # At 13 life the Shark's 4 would leave us at CHUMP_DANGER_LIFE without the chump: the guard keeps it.
+    # (At 20 their next swing through our six creatures left is nowhere near lethal: #171 drops it.)
+    state = with_context(incident_board(life=13, extra_threat_power=4), request)
     plan = parse(
         {
             "actions": [
