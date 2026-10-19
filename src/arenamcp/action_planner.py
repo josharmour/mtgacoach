@@ -5207,7 +5207,13 @@ class ActionPlanner(_ActionLegalityMixin):
         only creature", a 2/2 Dawnwing Marshal). Other burn in hand that the
         reasoning names adds its damage: a two-spell kill is no false claim.
         """
-        from arenamcp.play_safety import claim_kill_reach, claimed_kills, kill_verdict, named_burn_damage
+        from arenamcp.play_safety import (
+            claim_kill_reach,
+            claimed_kills,
+            kill_verdict,
+            named_burn_damage,
+            strip_kill_claims,
+        )
 
         option = decision.find(chosen[0])
         meta = (option.meta if option is not None else None) or {}
@@ -5225,17 +5231,39 @@ class ActionPlanner(_ActionLegalityMixin):
         if not survivors:
             return chosen
         names = ", ".join(f"{v.get('name')} ({v.get('power')}/{v.get('toughness')})" for v in survivors)
+        effect = f"-X/-{reach[1]}" if reach[0] == "shrink" else f"{reach[1]} damage"
+        spell = card.get("name") or chosen[0]
+        if isinstance(self._last_decision_trace, dict):
+            self._last_decision_trace["false_kill_claim"] = [v.get("name") for v in survivors]
+        # Ledger #86 (12:08:20): Hazard "kills" a 2/2, but its pump/prowess value was real and
+        # the greedy schedule cast it anyway. Only the claim is wrong: keep the pick, fix the words.
+        line = line_casts_option(decision, game_state, chosen[0], self._last_decision_reasoning)
+        if line:
+            logger.warning(
+                "typed-decision: the reasoning claims %s %s but %s of %s cannot kill it; keeping %s, %s (%s)",
+                "kills" if len(survivors) == 1 else "kill",
+                names,
+                effect,
+                spell,
+                chosen[0],
+                line,
+                self._last_decision_reasoning[:160],
+            )
+            correction = f"Board math: {effect} from {spell} does not kill {names}; {line}."
+            kept = strip_kill_claims(self._last_decision_reasoning, survivors)
+            self._last_decision_reasoning = f"{kept} {correction}".strip()
+            if isinstance(self._last_decision_trace, dict):
+                self._last_decision_trace["false_kill_kept"] = line
+            return chosen
         logger.warning(
             "typed-decision: the reasoning claims %s %s but %s of %s cannot kill it; not playing %s (%s)",
             "kills" if len(survivors) == 1 else "kill",
             names,
-            f"-X/-{reach[1]}" if reach[0] == "shrink" else f"{reach[1]} damage",
-            card.get("name") or chosen[0],
+            effect,
+            spell,
             chosen[0],
             self._last_decision_reasoning[:160],
         )
-        if isinstance(self._last_decision_trace, dict):
-            self._last_decision_trace["false_kill_claim"] = [v.get("name") for v in survivors]
         return []
 
     def _verify_shrink_pick(self, decision: Any, game_state: dict[str, Any], chosen: list[str]) -> list[str]:
@@ -6970,6 +6998,47 @@ def line_fallback_option_pick(
     except Exception as error:  # the strategic layer never blocks a decision
         logger.debug("line fallback pick skipped: %s", error)
         return None
+
+
+def line_casts_option(decision: Any, game_state: dict[str, Any], option_id: str, reasoning: str = "") -> str:
+    """Why the searched line casts ``option_id``'s spell this turn, or "" (ledger #86).
+
+    The best line's casts this turn; when it holds every spell, the greedy
+    schedule's casts, as in :func:`board_math_option_pick`. Our main phase with
+    an empty stack and a payable cast only. A spell the line aims needs
+    ``reasoning`` to name that target (:func:`_reasoning_names_target`).
+    """
+    if decision.request_type != "ActionsAvailable" or not _own_main_phase_with_empty_stack(game_state):
+        return ""
+    option = decision.find(option_id)
+    meta = (option.meta if option is not None else None) or {}
+    if option is None or option.payable is not True or meta.get("actionType") != "ActionType_Cast":
+        return ""
+    name = str(find_source(game_state, meta).get("name") or "")
+    if not name:
+        return ""
+    try:
+        from arenamcp.board_assessment import assess
+
+        assessment = assess(game_state)
+        if assessment is None or not assessment.our_turn or not assessment.lookahead:
+            return ""
+        first = assessment.lookahead[0]
+        casts, why = set(first.casts), f"the searched line casts {name} this turn"
+        if not casts:
+            baseline = getattr(getattr(assessment, "line_search", None), "baseline", None)
+            steps = getattr(baseline, "steps", None) or ()
+            casts = set(getattr(steps[0], "casts", ()) or ()) if steps else set()
+            why = f"the searched line holds, and the greedy schedule casts {name} this turn"
+    except Exception as error:  # the strategic layer never blocks a decision
+        logger.debug("line cast check skipped: %s", error)
+        return ""
+    if name not in casts:
+        return ""
+    target = ActionPlanner._searched_line_target(game_state, name)[0]
+    if target and not _reasoning_names_target(reasoning, target):
+        return ""
+    return why
 
 
 def board_math_agreement(
