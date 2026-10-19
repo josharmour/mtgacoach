@@ -598,7 +598,15 @@ def damage_would_kill(creature: dict, damage: int) -> bool | None:
         return False
     if toughness <= damage:
         return True
-    if creature.get("damaged_this_turn") or creature.get("is_attacking") or creature.get("is_blocking"):
+    if creature.get("is_attacking") or creature.get("is_blocking"):
+        return None
+    if creature.get("damaged_this_turn"):
+        # Marked damage counts when it is known (ledger #109, 2026-10-19 12:31:48:
+        # Iroh's 4 at a 4/5 Hearth Elemental with 3 marked was "kills nothing",
+        # so the target was declined although the Elemental died to 2).
+        marked = creature.get("damage")
+        if type(marked) is int and marked > 0:
+            return toughness - marked <= damage
         return None
     return False
 
