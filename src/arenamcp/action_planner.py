@@ -4302,6 +4302,63 @@ class ActionPlanner(_ActionLegalityMixin):
             "Held, it can kill a creature they play later; cast it now only if you can name what that gains."
         )
 
+    @staticmethod
+    def _instant_for_sorcery_kill(
+        decision: Any, game_state: dict[str, Any], ids: list[str], line_source: Any
+    ) -> str:
+        """The pick spends an instant on a kill the best line makes with a sorcery: why, or ''.
+
+        2026-10-19 12:54:10 (match 17a32d51 T5, ledger #124): the best line was
+        "Iroh's Demonstration (on Emberheart Challenger)"; the low-effort answer
+        cast Shock at it and was taken 3 s later. The same kill at sorcery
+        speed keeps the instant for their turn. Only a cast the line's T step
+        does not make, of an instant-speed card whose effect kills that
+        sorcery's creature target (:func:`play_safety.claim_kill_reach`).
+        """
+        from arenamcp.mulligan_policy import hand_card
+        from arenamcp.play_safety import claim_kill_reach, kill_verdict
+
+        if getattr(decision, "request_type", "") != "ActionsAvailable" or len(ids or []) != 1:
+            return ""
+        best = getattr(line_source, "best", None)
+        step = best.steps[0] if best is not None and getattr(best, "steps", None) else None
+        if step is None or not step.targets:
+            return ""
+        option = decision.find(ids[0])
+        meta = (option.meta if option is not None else None) or {}
+        if meta.get("actionType") != "ActionType_Cast":
+            return ""
+        card = find_source(game_state, meta)
+        name = str(card.get("name") or "")
+        if not name or name in step.casts or not card.get("type_line") or not hand_card(card).instant_speed:
+            return ""
+        reach = claim_kill_reach(card, game_state, activation=False)
+        if reach is None:
+            return ""
+        plays = step.plays[1] if len(step.plays) == 3 else ()
+        target_ids = {
+            body.get("name"): body.get("instance_id") for _var, body in plays if isinstance(body, dict)
+        }
+        hand = {str(c.get("name") or ""): c for c in game_state.get("hand") or [] if isinstance(c, dict)}
+        theirs = [
+            c
+            for c in game_state.get("battlefield") or []
+            if isinstance(c, dict)
+            and _controller_seat(c) not in (None, _local_seat(game_state))
+            and "creature" in str(c.get("type_line") or "").lower()
+        ]
+        for spell_name, target in step.targets:
+            spell = hand.get(spell_name)
+            if spell is None or target == "opponent" or hand_card(spell).instant_speed:
+                continue
+            wanted = target_ids.get(target)
+            victim = next((c for c in theirs if c.get("instance_id") == wanted), None) or next(
+                (c for c in theirs if c.get("name") == target), None
+            )
+            if victim is not None and kill_verdict(reach, victim) is True:
+                return f"{name} kills {target}, which the best line kills with {spell_name} at sorcery speed"
+        return ""
+
     def _line_gap_concern(
         self,
         decision: Any,
@@ -5571,8 +5628,12 @@ class ActionPlanner(_ActionLegalityMixin):
         power, aimed it at a tapped 7/8. 10:13:45 (match 1e4ccb0c): "Shock to
         face advances the burn race" and the line "Shock (on opponent)", then
         the target step's model picked a 3/4 Battlesong Berserker the 2 damage
-        could not kill. Any other priority choice clears it.
+        could not kill. Any other priority choice clears it. A kicker choice
+        (CastingTimeOptions) is kept for its spell (:meth:`_recorded_kick`).
         """
+        if decision.request_type == "CastingTimeOptions":
+            self._remember_kicker_choice(decision, game_state, chosen)
+            return
         if decision.request_type != "ActionsAvailable":
             return
         self._cast_intent = None
@@ -5732,7 +5793,13 @@ class ActionPlanner(_ActionLegalityMixin):
             return chosen
         from arenamcp.play_safety import damage_effect
 
-        parsed = damage_effect({"oracle_text": self._decision_source_oracle(decision, game_state)})
+        # The kicker as chosen for this spell (ledger #125: "4 damage" for an unkicked Burst
+        # Lightning); unknown, the kicked amount, so a face shot that may be lethal stays.
+        kicked = self._recorded_kick(game_state)
+        parsed = damage_effect(
+            {"oracle_text": self._decision_source_oracle(decision, game_state)},
+            kicked=True if kicked is None else kicked,
+        )
         if parsed is None or parsed[1] != "any":
             return chosen
         life = next(
@@ -5814,7 +5881,7 @@ class ActionPlanner(_ActionLegalityMixin):
         from arenamcp.play_safety import damage_effect, damage_would_kill
 
         source = {"oracle_text": self._decision_source_oracle(decision, game_state)}
-        parsed = damage_effect(source, kicked=False)
+        parsed = damage_effect(source, kicked=bool(self._recorded_kick(game_state)))
         if parsed is not None and parsed[1] == "any":
             dying = [
                 str(card.get("name") or card.get("instance_id"))
@@ -5829,6 +5896,29 @@ class ActionPlanner(_ActionLegalityMixin):
             )
         parts.append("Target what that intent said unless the board changed since.")
         return " ".join(parts)
+
+    def _remember_kicker_choice(self, decision: Any, game_state: dict[str, Any], chosen: list[str]) -> None:
+        """Whether the spell a CastingTimeOptions menu with a Kicker option belongs to was kicked."""
+        kicker = [o for o in decision.options if (o.meta or {}).get("choiceKind") == "kicker"]
+        if not kicker:
+            return
+        source = _as_int(kicker[0].meta.get("sourceId")) or self._decision_source_instance(game_state)
+        if source:
+            kicked = any(o.option_id in (chosen or []) for o in kicker)
+            self._cast_kicked = (game_state.get("match_id"), source, kicked)
+
+    def _recorded_kick(self, game_state: dict[str, Any]) -> bool | None:
+        """Whether the pending request's source spell was kicked, as this planner chose it; None unknown.
+
+        2026-10-19 12:53:43 (match 17a32d51 T3, ledger #125): Burst Lightning
+        cast with "Done" (no kicker) was "4 damage" to the #56 redirect, which
+        reads the kicked amount when it cannot tell.
+        """
+        recorded = getattr(self, "_cast_kicked", None)
+        source = self._decision_source_instance(game_state)
+        if not recorded or not source or recorded[:2] != (game_state.get("match_id"), source):
+            return None
+        return recorded[2]
 
     def _prefer_lethal_shrink_target(
         self, decision: Any, game_state: dict[str, Any], chosen: list[str]
@@ -6746,7 +6836,9 @@ class ActionPlanner(_ActionLegalityMixin):
                     return self._line_target_agreement(decision, tag_state, ids)
 
             def low_doubt(ids: list[str], data: dict) -> str:
-                return "; ".join(kind for kind, _text in concerns_for(ids, data))
+                kinds = [kind for kind, _text in concerns_for(ids, data)]
+                instead = self._instant_for_sorcery_kill(decision, tag_state, ids, line_source)
+                return "; ".join(kinds + ([f"instant_for_sorcery_kill: {instead}"] if instead else []))
 
             data, chosen = self._hedged_decision(
                 ask,

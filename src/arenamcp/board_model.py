@@ -423,6 +423,11 @@ class BoardModel:
     # Lands the opponent played this turn (``Player.lands_played``): on their turn, whether
     # their land drop (and its landfall) is still to come before their attack (ledger #97).
     their_lands_played: int = 0
+    # Our own spells on the stack (``play_safety.our_stack_damage``, ledger #122): their
+    # creatures (instance ids) the pending damage kills and the damage it deals the opponent.
+    # The line search resolves them at its root; the assessment's own facts do not.
+    our_stack_doomed: frozenset[int] = frozenset()
+    our_stack_face: int = 0
 
     @property
     def unknowns(self) -> list[str]:
@@ -577,6 +582,12 @@ def build_board_model(state: dict) -> BoardModel | None:
     their_lands = sum(
         1 for c in battlefield if _controller(c) == opponent and _is_land(c) and not _is_creature(c)
     )
+    try:
+        from arenamcp.play_safety import our_stack_damage
+
+        pending = our_stack_damage(state) if state.get("stack") else None
+    except Exception:  # a reading aid: the board facts never fail on it
+        pending = None
     return BoardModel(
         local=local, opponent=opponent, turn=turn, our_turn=our_turn, phase=phase, step=step,
         our_life=_life(state, local), opp_life=_life(state, opponent),
@@ -605,4 +616,6 @@ def build_board_model(state: dict) -> BoardModel | None:
         commanders=tuple(commanders),
         life_gained_turn=max(0, life_gained_turn), life_gained_game=max(0, life_gained_game),
         their_lands_played=max(0, their_lands_played),
+        our_stack_doomed=pending.doomed if pending else frozenset(),
+        our_stack_face=pending.face if pending else 0,
     )  # fmt: skip

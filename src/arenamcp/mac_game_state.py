@@ -505,6 +505,8 @@ def _card_entry(node: dict[str, Any], seats: _PlayerSeats | None = None) -> dict
     face_down_reason = enum_name(field(field(node, "FaceDownState"), "reasonFaceDown"))
     if face_down_reason and face_down_reason != "None":
         entry["face_down"] = True
+        # "Disguise", "Morph", ...: the snapshot names the creature by it (ledger #123).
+        entry["face_down_reason"] = face_down_reason
 
     return entry
 

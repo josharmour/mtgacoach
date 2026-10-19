@@ -1162,6 +1162,10 @@ def get_enrichment_failures() -> list[dict[str, Any]]:
 def enrich_with_oracle_text(grp_id: int) -> dict[str, Any]:
     """Look up card data and return enriched dict.
 
+    Grp id 3 is Arena's face-down card (:func:`face_down_info`, ledger #123:
+    read through the ability table it was "Double strike"). For a game
+    object use :func:`card_object_info`.
+
     Delegates to the unified FallbackCardDatabase which tries sources in order:
     1. MTGJSON by arena_id (most complete, updated daily)
     2. MTGA local DB (has newest cards, tokens, digital-only)
@@ -1179,23 +1183,25 @@ def enrich_with_oracle_text(grp_id: int) -> dict[str, Any]:
     """
     if grp_id == 0:
         return {"grp_id": 0, "name": "Unknown", "oracle_text": "", "type_line": "", "mana_cost": ""}
+    if grp_id == FACE_DOWN_GRP_ID:
+        return face_down_info()
 
     card_db = _get_card_db()
-    card = card_db.get_card_by_arena_id(grp_id)
+    found = card_db.get_card_by_arena_id(grp_id)
 
-    if card is not None:
+    if found is not None:
         return {
             "grp_id": grp_id,
-            "name": card.name or f"Unknown ({grp_id})",
-            "oracle_text": card.oracle_text or "",
-            "type_line": card.type_line or "",
-            "mana_cost": card.mana_cost or "",
-            "cmc": card.cmc,
-            "colors": [color for color in card.colors if color in {"W", "U", "B", "R", "G"}],
-            "power": card.power,
-            "toughness": card.toughness,
-            "rarity": card.rarity,
-            "related_faces": card.related_faces,
+            "name": found.name or f"Unknown ({grp_id})",
+            "oracle_text": found.oracle_text or "",
+            "type_line": found.type_line or "",
+            "mana_cost": found.mana_cost or "",
+            "cmc": found.cmc,
+            "colors": [color for color in found.colors if color in {"W", "U", "B", "R", "G"}],
+            "power": found.power,
+            "toughness": found.toughness,
+            "rarity": found.rarity,
+            "related_faces": found.related_faces,
         }
 
     # Check if it's an ABILITY (e.g. on stack) via MTGA database
@@ -1267,6 +1273,85 @@ def _is_ability_kind(kind: Any) -> bool:
     """``object_kind`` (a GameObjectKind, its name, or the GRE's 'GameObjectType_Ability') is an ability."""
     value = str(getattr(kind, "name", kind) or "").upper()
     return value == "ABILITY" or value.endswith("_ABILITY")
+
+
+# Arena's face-down card (CardTitleProvider.FACE_DOWN_GRPID = 3): a Morph, Disguise, Manifest or
+# Cloak creature, a foretold card. Read through the ability table, id 3 is "Double strike".
+FACE_DOWN_GRP_ID = 3
+# ReasonFaceDown (GreProtobuf), by value: the face-down kinds worth naming.
+_FACE_DOWN_REASONS = {
+    2: "Morph",
+    3: "Manifest",
+    5: "Foretell",
+    6: "Disguise",
+    7: "Cloak",
+    8: "Manifest Dread",
+}
+
+
+def face_down_reason_name(value: Any) -> str:
+    """'Disguise' from the GRE's REASON value (6) or enum name ('ReasonFaceDown_Disguise'); '' otherwise."""
+    number = _coerce_int(value)
+    if number is not None:
+        return _FACE_DOWN_REASONS.get(number, "")
+    name = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", str(value or "").removeprefix("ReasonFaceDown_"))
+    return name if name in _FACE_DOWN_REASONS.values() else ""
+
+
+def is_face_down(obj: dict[str, Any]) -> bool:
+    """A face-down object: the snapshot's ``face_down`` flag, or a card object with grp id 3."""
+    if obj.get("face_down"):
+        return True
+    kind = obj.get("object_kind") or obj.get("object_type")
+    return _coerce_int(obj.get("grp_id")) == FACE_DOWN_GRP_ID and not _is_ability_kind(kind)
+
+
+def face_down_info(obj: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Name, type and rules text of a face-down object: never its grp id's ability text.
+
+    2026-10-19 12:55 (match 17a32d51 T8-T13, ledger #123): a face-down
+    Fugitive Codebreaker (grpId 3, isFacedown, ward {2}) was read as
+    "Ability (ID: 3)" with "Double strike", so their clock counted a double
+    striker ("dead in 2") and T13's Shock went at it. It is "Face-down 2/2
+    (Disguise)"; its power and toughness stay the GRE object's, and its rules
+    text is only the abilities the object itself has (``ability_grp_ids``:
+    the disguise ward, a granted haste).
+    """
+    obj = obj or {}
+    reason = face_down_reason_name(obj.get("face_down_reason"))
+    types = " ".join(str(t) for t in obj.get("card_types") or []).lower()
+    creature = "creature" in types or not types  # face down on the battlefield is a 2/2 creature
+    creature = creature and reason != "Foretell"
+    texts: list[str] = []
+    for grp in obj.get("ability_grp_ids") or []:
+        try:
+            text = str(_get_card_db().get_ability_text(int(grp)) or "")
+        except Exception as exc:  # a broken DB never breaks serialization
+            logger.debug("ability text lookup failed for %s: %s", grp, exc)
+            text = ""
+        if text and text not in texts:
+            texts.append(text)
+    name = ("Face-down 2/2" if creature else "Face-down card") + (f" ({reason})" if reason else "")
+    return {
+        "grp_id": _coerce_int(obj.get("grp_id"), FACE_DOWN_GRP_ID),
+        "name": name,
+        "oracle_text": "\n".join(texts),
+        "type_line": "Creature" if creature else "",
+        "mana_cost": "",
+    }
+
+
+def card_object_info(obj: dict[str, Any]) -> dict[str, Any]:
+    """:func:`enrich_with_oracle_text` for a game object that is no ability: a face-down one is
+    :func:`face_down_info`, and a CARD object is never named from the ability table (ledger #123)."""
+    if is_face_down(obj):
+        return face_down_info(obj)
+    grp_id = _coerce_int(obj.get("grp_id"), 0) or 0
+    info = enrich_with_oracle_text(grp_id)
+    kind = str(getattr(obj.get("object_kind"), "name", obj.get("object_kind")) or "").upper()
+    if kind in ("CARD", "GAMEOBJECTTYPE_CARD") and str(info.get("type_line") or "") == "Ability":
+        return {**info, "name": f"Unknown ({grp_id})", "oracle_text": "", "type_line": ""}
+    return info
 
 
 def _parent_grp_id(parent_instance_id: Any, lookup: dict[int, dict[str, Any]] | None = None) -> int | None:
@@ -1376,7 +1461,7 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
     if _is_ability_kind(obj.get("object_kind")):
         enriched = enrich_ability(grp_id, _parent_grp_id(obj.get("parent_instance_id")))
     else:
-        enriched = enrich_with_oracle_text(grp_id)
+        enriched = card_object_info(obj)
     name = enriched.get("name") or f"Unknown ({grp_id})"
     type_line = enriched.get("type_line") or ""
     subtypes = obj.get("subtypes", [])
@@ -1434,6 +1519,8 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
         "attack_target_id",
         "summoning_sickness",
         "attached_to_id",
+        "face_down",
+        "face_down_reason",
     ):
         val = obj.get(key)
         if val:  # Only include truthy values
@@ -1462,11 +1549,21 @@ def _serialize_bridge_card(
 
     fallback_grp_id = _coerce_int(fallback.get("grp_id"), 0) or 0
     grp_id = _coerce_int(card.get("grp_id"), fallback_grp_id) or 0
+    face_down = bool(card.get("face_down") or fallback.get("face_down"))
     if _is_ability_kind(card.get("object_type") or fallback.get("object_kind")):
         parent_id = card.get("parent_instance_id", fallback.get("parent_instance_id"))
         enriched = enrich_ability(grp_id, _parent_grp_id(parent_id, snapshot_lookup))
     else:
-        enriched = enrich_with_oracle_text(grp_id)
+        enriched = card_object_info(
+            {
+                "grp_id": grp_id,
+                "object_kind": card.get("object_type") or fallback.get("object_kind"),
+                "face_down": face_down,
+                "face_down_reason": card.get("face_down_reason") or fallback.get("face_down_reason"),
+                "card_types": card.get("card_types") or fallback.get("card_types"),
+                "ability_grp_ids": card.get("ability_grp_ids") or fallback.get("ability_grp_ids"),
+            }
+        )
 
     name = enriched.get("name") or fallback.get("name") or f"Unknown ({grp_id})"
     type_line = enriched.get("type_line") or fallback.get("type_line") or ""
@@ -1566,8 +1663,11 @@ def _serialize_bridge_card(
         result["summoning_sickness"] = True
     if card.get("revealed_to_opponent"):
         result["revealed_to_opponent"] = True
-    if card.get("face_down"):
+    if face_down:
         result["face_down"] = True
+        reason = card.get("face_down_reason") or fallback.get("face_down_reason")
+        if reason:
+            result["face_down_reason"] = reason
     for key in ("is_copy", "copied_from_grp_id", "base_grp_id", "original_grp_id", "is_token"):
         if card.get(key) is not None:
             result[key] = card[key]
