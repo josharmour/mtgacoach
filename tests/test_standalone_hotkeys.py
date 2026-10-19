@@ -34,7 +34,6 @@ def test_register_hotkeys_hooks_the_function_keys_and_ctrl_0(monkeypatch):
         "f7": "_on_bug_report_hotkey",
         "f8": "_on_swap_seat_hotkey",
         "f10": "run_speed_test",
-        "f11": "_on_provider_cycle_hotkey",
         "f12": "_on_model_cycle_hotkey",
         "ctrl+0": "_on_read_win_plan",
     }
@@ -44,7 +43,7 @@ def test_register_hotkeys_hooks_the_function_keys_and_ctrl_0(monkeypatch):
     coach._register_hotkeys()
 
     keys = [c.args[0] for c in mock_keyboard.on_press_key.call_args_list]
-    assert keys == ["f2", "f3", "f5", "f6", "f7", "f8", "f10", "f11", "f12"]
+    assert keys == ["f2", "f3", "f5", "f6", "f7", "f8", "f10", "f12"]
     mock_keyboard.add_hotkey.assert_called_once()
     assert mock_keyboard.add_hotkey.call_args.args[0] == "ctrl+0"
     calls = mock_keyboard.on_press_key.call_args_list + mock_keyboard.add_hotkey.call_args_list
