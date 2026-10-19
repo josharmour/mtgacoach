@@ -743,10 +743,33 @@ class GREBridge:
         try:
             resp = self._send_safe({"action": "get_pending_actions"})
             if resp.get("ok"):
-                return resp
+                return self._reshape_cost_selection(resp)
         except GREBridgeError as e:
             logger.debug(f"get_pending_actions failed: {e}")
         return None
+
+    # The BepInEx plugin has no handler for a payment whose cost is a choice
+    # (Gallia, Tragic Host: "Exile another creature card from your graveyard"):
+    # it reports PayCostsRequest with no actions and the autopilot can only try
+    # auto-pay (MANUAL REQUIRED 2026-10-18 22:25). The reflection adapter reads
+    # that EffectCost selection as SelectN, as on the Mac, and submits it.
+    _cost_selection_via_adapter = False
+
+    def _reshape_cost_selection(self, resp: dict[str, Any]) -> dict[str, Any]:
+        adapter = self._mac_adapter
+        if adapter is None or adapter.plays_matches or resp.get("request_class") != "PayCostsRequest":
+            self._cost_selection_via_adapter = False
+            return resp
+        try:
+            shaped = adapter.handle({"action": "get_pending_actions"})
+        except Exception as e:  # noqa: BLE001 - fall back to the plugin's reply
+            logger.debug(f"cost selection reshape failed: {e}")
+            shaped = None
+        if isinstance(shaped, dict) and shaped.get("ok") and shaped.get("payment_selection"):
+            self._cost_selection_via_adapter = True
+            return shaped
+        self._cost_selection_via_adapter = False
+        return resp
 
     def resolve_grp_ids(self, grp_ids: list[int]) -> dict[int, str]:
         """Resolve card names for grpIds via the running client.
@@ -1189,7 +1212,11 @@ class GREBridge:
     def submit_selection(self, ids: list[int]) -> bool:
         """Submit selection for SelectN or Search requests."""
         try:
-            resp = self._send_safe({"action": "submit_selection", "ids": ids})
+            command = {"action": "submit_selection", "ids": ids}
+            if self._cost_selection_via_adapter and self._mac_adapter is not None:
+                resp = self._mac_adapter.handle(command)
+            else:
+                resp = self._send_safe(command)
             if resp.get("ok"):
                 logger.info(f"GRE bridge submitted selection: {len(ids)} ids")
                 return True
