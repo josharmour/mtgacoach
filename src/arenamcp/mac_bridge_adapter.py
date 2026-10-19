@@ -73,6 +73,18 @@ TARGET_GONE_GRACE_S = 0.6
 # Commands answered by the injected library directly.
 PASSTHROUGH = {"ping", "reflect_batch"}
 
+# The BepInEx plugin (Windows client, natively or under Proton) speaks reflect-1
+# too, but keeps its own in-game commands. Only the limited-event, deck, screen
+# and survey hands it lacks run here; get_draft_state is included because the
+# plugin's reply ({"scenes": ...}) lacks the pack fields the draft driver reads.
+BEPINEX_RUNTIME = "bepinex"
+BEPINEX_REFLECT_COMMANDS = frozenset(
+    {"confirm_draft_pick", "dismiss_survey", "event_play", "finish_sealed_open", "get_deck_editor",
+     "get_decks", "get_draft_state", "get_event_page", "get_limited_pool", "get_screen", "get_survey",
+     "go_to_event", "leave_match", "preview_draft_pick", "set_limited_deck", "submit_draft_pick",
+     "submit_limited_deck"}
+)  # fmt: skip
+
 DECISION_TYPES = {
     "SelectTargetsReq": "target_selection",
     "SearchReq": "search",
@@ -352,7 +364,14 @@ class MacBridgeAdapter:
         return self._run(ops, timeout)
 
     def handles(self, command: dict[str, Any]) -> bool:
+        if self._runtime == BEPINEX_RUNTIME:
+            return command.get("action") in BEPINEX_REFLECT_COMMANDS
         return command.get("action") not in PASSTHROUGH
+
+    @property
+    def plays_matches(self) -> bool:
+        """True when in-game commands run here; the BepInEx plugin plays its own."""
+        return self._runtime != BEPINEX_RUNTIME
 
     def handle(self, command: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
         action = str(command.get("action") or "")

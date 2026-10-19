@@ -84,6 +84,8 @@ PING = {"ok": True, "version": "0.6.5"}
     ("device", "reply", "connected", "runtime", "adapter"),
     [
         ("desktop", PING, True, "bepinex", False),
+        # A plugin that speaks reflect-1 gets the adapter's limited-event hands.
+        ("desktop", {**PING, "runtime": "bepinex", "protocols": ["reflect-1"]}, True, "bepinex", True),
         (
             "desktop",
             {**PING, "runtime": "il2cpp-macos", "protocols": ["reflect-1"]},
@@ -107,6 +109,7 @@ PING = {"ok": True, "version": "0.6.5"}
     ],
     ids=[
         "bepinex",
+        "bepinex_reflect",
         "mac",
         "mac_old_library",
         "android",
@@ -128,6 +131,41 @@ def test_handshake_accepts_pings_and_picks_the_command_path(
         assert isinstance(bridge._mac_adapter, MacBridgeAdapter) is adapter
     finally:
         plugin.close()
+
+
+def test_bepinex_reflect_runs_only_limited_commands_through_the_adapter(bridge):
+    """The plugin keeps its own in-game commands; screens and limited events go
+    through reflect_batch, and in-game gating stays on the plugin path."""
+    ok, plugin = _dial(
+        bridge,
+        {**PING, "runtime": "bepinex", "protocols": ["reflect-1"]},
+        {"ok": True, "submitted_type": "Pass"},
+        {"ok": True, "results": [None] * 16},
+    )
+    try:
+        assert ok
+        assert bridge.limited_hands is True
+        assert bridge._adapter_plays is False
+        assert bridge.concede_supported is True  # plugin 0.6.5, by version
+        bridge._send_command({"action": "submit_pass"})
+        bridge._send_command({"action": "get_screen"})
+        assert plugin.received[1] == {"action": "submit_pass"}
+        assert plugin.received[2]["action"] == "reflect_batch"
+        assert [op["op"] for op in plugin.received[2]["ops"]][:1] == ["find"]
+    finally:
+        plugin.close()
+
+
+def test_native_mac_adapter_plays_matches_and_bepinex_does_not():
+    send = lambda command, timeout: {"ok": True}  # noqa: E731
+    mac = MacBridgeAdapter(send, "il2cpp-macos")
+    bepinex = MacBridgeAdapter(send, "bepinex")
+    assert mac.plays_matches and mac.handles({"action": "submit_action"})
+    assert not bepinex.plays_matches
+    assert not bepinex.handles({"action": "submit_action"})
+    assert not bepinex.handles({"action": "ping"})
+    for action in ("get_screen", "set_limited_deck", "submit_limited_deck", "finish_sealed_open", "get_draft_state"):
+        assert bepinex.handles({"action": action})
 
 
 def test_command_log_keeps_what_changed_something_and_failed_polls(bridge):
