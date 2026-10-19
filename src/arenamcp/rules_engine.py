@@ -1200,7 +1200,9 @@ class RulesEngine:
             x_options = RulesEngine._choose_x_options(game_state, decision_context)
             if x_options:
                 return x_options
-            return ["Cast normally", "Use alternative cost (Foretell/Flashback/Escape)"]
+            # Unknown options are not invented: "Use alternative cost
+            # (Foretell/Flashback/Escape)" stood for a mode it couldn't name.
+            return RulesEngine.casting_time_option_labels(decision_context) or ["Cast normally"]
 
         if dec_type == "select_counters":
             return ["Select counters", "Done"]
@@ -1228,6 +1230,60 @@ class RulesEngine:
             return ["Accept (yes)", "Decline (no)"]
 
         return []
+
+    @staticmethod
+    def casting_time_option_labels(decision_context: dict[str, Any]) -> list[str]:
+        """The choices the log's CastingTimeOptionsReq really offers, or [].
+
+        2026-10-19 11:14:33 (match 115944ce): Iroh's Demonstration's mode
+        choice was shown as "Cast normally / Use alternative cost
+        (Foretell/Flashback/Escape)"; the planner's pick 2 (meaning the
+        4-damage mode) had no executable mapping. Modes read "Mode N: <text>"
+        with N the bridge's optionIndex, as the bridge-fed labels do.
+        """
+        raw = decision_context.get("raw") or {}
+        requests = raw.get("castingTimeOptionReq") if isinstance(raw, dict) else None
+        modes: list[str] = []
+        extras: list[str] = []
+        has_done = False
+        for request in requests or []:
+            if not isinstance(request, dict):
+                continue
+            kind = str(request.get("castingTimeOptionType") or "").removeprefix("CastingTimeOptionType_")
+            if kind == "Modal":
+                options = (request.get("modalReq") or {}).get("modalOptions") or []
+                for index, option in enumerate(options):
+                    grp_id = int(option.get("grpId") or 0) if isinstance(option, dict) else 0
+                    modes.append(f"Mode {index}: {RulesEngine._mode_text(grp_id, decision_context)}")
+            elif kind == "Done":
+                has_done = True
+            elif kind == "Kicker":
+                from arenamcp.gamestate_decisions import _braced_mana_cost
+
+                # The request's manaCost is the whole kicked cast (Burst
+                # Lightning: {R} + {4} arrives as R1 + Generic4).
+                cost = _braced_mana_cost(request.get("manaCost") or [])
+                extras.append(f"Pay kicker (total cost {cost})" if cost else "Pay kicker")
+            elif kind and kind != "ChooseX":
+                extras.append(f"Casting option: {kind}")
+        # An optional cost (kicker, ...) may be declined: casting without it is
+        # "Cast normally", Arena's Done.
+        plain = ["Cast normally"] if has_done or extras else []
+        return modes + extras + plain if modes else plain + extras
+
+    @staticmethod
+    def _mode_text(ability_grp_id: int, decision_context: dict[str, Any]) -> str:
+        if not ability_grp_id:
+            return "unknown mode"
+        try:
+            from arenamcp.card_db import get_card_database
+            from arenamcp.decisions import clean_rules_text
+
+            text = get_card_database().get_ability_text(ability_grp_id) or ""
+            text = clean_rules_text(text, str(decision_context.get("source_card") or ""))
+        except Exception:
+            text = ""
+        return text or f"ability {ability_grp_id}"
 
     @staticmethod
     def _choose_x_options(game_state: dict[str, Any], decision_context: dict[str, Any]) -> list[str]:

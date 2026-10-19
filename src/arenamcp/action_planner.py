@@ -414,7 +414,7 @@ class TurnPlan:
 # JSON schema embedded in the system prompt for constrained output
 ACTION_SCHEMA = """{
   "actions": [{
-    "pick": 0,
+    "pick": "integer: the 1-based number of a Legal: menu entry; OMIT for structured actions",
     "action_type": "play_land|cast_spell|declare_attackers|declare_blockers|select_target|select_n|modal_choice|mulligan_keep|mulligan_mull|pass_priority|resolve|draft_pick|click_button|activate_ability|order_blockers|assign_damage|order_combat_damage|pay_costs|search_library|distribute|numeric_input|choose_starting_player|select_replacement|select_counters|casting_options|order_triggers",
     "card_name": "string (card name, empty if not applicable)",
     "target_names": ["string (target card/player names)"],
@@ -2840,6 +2840,8 @@ class ActionPlanner(_ActionLegalityMixin):
             # hallucination is structurally impossible on this path.
             action = None
             pick = action_data.get("pick") if isinstance(action_data, dict) else None
+            if pick is not None and self._structured_combat_declaration(action_data):
+                pick = None  # an echoed pick never replaces a declaration (#44)
             if pick is not None:
                 try:
                     idx = int(pick) - 1
@@ -2853,7 +2855,7 @@ class ActionPlanner(_ActionLegalityMixin):
                             continue
                         action = self._parse_action({**action_data, "action_type": "declare_blockers"})
                     else:
-                        action = self._legal_action_to_action(entry)
+                        action = self._menu_entry_action(entry, action_data)
                     if action is not None:
                         action.reasoning = str(action_data.get("reasoning", "") or "")
                         logger.debug(f"Menu pick {pick} → {self._last_menu[idx]!r}")
