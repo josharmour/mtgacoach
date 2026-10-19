@@ -1067,7 +1067,12 @@ class ActionPlanner(_ActionLegalityMixin):
                 trigger, current_turn, diag, start, f"llm_error_sentinel: {str(e)[:160]}"
             )
         except Exception as e:
-            logger.error(f"Action planning LLM call failed: {e}")
+            cancel_event = getattr(self, "_decision_cancel_event", None)
+            if cancel_event is not None and cancel_event.is_set():
+                # The autopilot cancelled it: a newer request replaced this one.
+                logger.info(f"Action planning cancelled (request changed): {e}")
+            else:
+                logger.error(f"Action planning LLM call failed: {e}")
             return self._llm_unavailable_plan(trigger, current_turn, diag, start, f"llm_error: {e}")
 
         diag["elapsed_ms"] = (time.perf_counter() - start) * 1000
