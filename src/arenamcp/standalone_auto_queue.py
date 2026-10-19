@@ -15,6 +15,7 @@ class _AutoQueueMixin:
         self._auto_queue_since = time.time()
         # Turning it on never starts a match; only a restart resumes one.
         self._auto_queue_restart_pending = False
+        self._auto_queue_resume = None
         self._auto_queue_last_noted = None
         self._auto_queue_observed_match = None
         self._auto_queue_faulted = False
@@ -33,6 +34,66 @@ class _AutoQueueMixin:
         inhibitor = getattr(self, "_auto_queue_sleep_inhibitor", None)
         if inhibitor:
             inhibitor.stop()
+
+    def _auto_queue_export(self) -> dict | None:
+        """Armed navigation for the engine-reload checkpoint (standalone_startup.py)."""
+        if not getattr(self, "_auto_queue_enabled", False):
+            return None
+        navigator = getattr(self, "_auto_queue_navigator", None)
+        record = None
+        if navigator is not None:
+            try:
+                record = navigator.export_for_reload()
+            except Exception as exc:
+                logger.warning("Auto queue: could not save navigation for the engine reload: %s", exc)
+        # A record restored from an earlier reload and not yet resumed (autoplay
+        # was not driving) rides along to the next engine.
+        return record or getattr(self, "_auto_queue_resume", None)
+
+    def _resume_auto_queue_after_reload(self, navigator, record: dict, state: dict) -> bool:
+        """Continue the navigation the previous engine had armed (engine reload checkpoint).
+
+        2026-10-19: the coach reloads itself between matches when its code
+        changed (standalone_auto_reload.py), usually seconds after a match
+        ended and navigation armed. The previous engine saved that navigation;
+        it resumes here with the same finished match, queue, deck and stage,
+        without re-reading Player.log. When it does not apply (expired, or a
+        later match is in the state), the restart path below decides as for
+        any restart.
+        """
+        ended = record.get("ended_match_id")
+        current_id = state.get("match_id")
+        try:
+            age = time.time() - float(record.get("saved_at") or 0.0)
+        except (TypeError, ValueError):
+            age = float("inf")
+        if not ended:
+            return False
+        if not 0 <= age <= 600:
+            logger.info(
+                "Auto queue after reload: the saved navigation for match %s expired (%.0fs old)", ended, age
+            )
+            return False
+        if current_id and current_id != ended:
+            logger.info(
+                "Auto queue after reload: match %s started after match %s ended; autoplay is in control",
+                current_id,
+                ended,
+            )
+            return False
+        if not navigator.restore_after_reload(record):
+            logger.info("Auto queue after reload: navigation did not take match %s (disabled)", ended)
+            return False
+        self._auto_queue_observed_match = self._auto_queue_last_noted = ended
+        expected = record.get("expected_queue") or {}
+        logger.info(
+            "Auto queue after reload: continuing navigation for match %s at stage %s; requeueing %s with %r",
+            ended,
+            record.get("stage"),
+            expected.get("event_id") or record.get("last_event_id"),
+            expected.get("deck_name"),
+        )
+        return True
 
     def _arm_auto_queue_after_restart(self, navigator, state: dict) -> bool:
         """The coach restarted with auto-queue on and Arena idle after a match: requeue it.
@@ -147,7 +208,10 @@ class _AutoQueueMixin:
                 inhibitor.start()
             if getattr(self, "_auto_queue_restart_pending", False):
                 self._auto_queue_restart_pending = False
-                self._arm_auto_queue_after_restart(navigator, state)
+                resume = getattr(self, "_auto_queue_resume", None)
+                self._auto_queue_resume = None
+                if not (resume and self._resume_auto_queue_after_reload(navigator, resume, state)):
+                    self._arm_auto_queue_after_restart(navigator, state)
             completed = get_completed_match_for_navigation()
             match_id = completed.get("match_id")
             current_id = state.get("match_id")

@@ -640,6 +640,158 @@ class AutoQueueNavigator:
             self._status("Match finished; returning to Recently Played")
             return True
 
+    @property
+    def step_running(self) -> bool:
+        """A navigation step (screenshot, model call, click) is under way."""
+        worker = self._worker
+        return bool(worker is not None and worker.is_alive())
+
+    @property
+    def queue_joined(self) -> bool:
+        """Navigation clicked into the next queue: a match can start any moment."""
+        return bool(self.active and self._queue_started)
+
+    def export_for_reload(self) -> dict | None:
+        """Navigation armed for a finished match, as JSON for the engine-reload checkpoint.
+
+        None when nothing is armed (waiting for a match end, or off). A
+        navigation suspended while armed (set_enabled(False)) is exported as
+        resumable, as re-enabling it would resume it.
+        """
+        with self._lock:
+            if not self._ended_match_id or not (self.active or self._resume_pending):
+                return None
+            now, wall = time.monotonic(), time.time()
+
+            def as_wall(mono: float) -> float:
+                return wall - (now - mono) if mono else 0.0
+
+            record = {
+                "saved_at": wall,
+                "ended_match_id": self._ended_match_id,
+                "expected_queue": dict(self._expected_queue) if self._expected_queue else None,
+                "last_event_id": self._last_event_id,
+                "stage": self._stage if self.active else "resuming",
+                "status": self._last_status if self.active else "",
+                "paused_reason": self.paused_reason if self.active else "",
+                "retry_in_s": round(self._retry_at - now, 1)
+                if self.active and self.retry_scheduled
+                else None,
+                "queue_started": self._queue_started,
+                "queue_observed": self._queue_observed,
+                "queue_clicked_at": self._queue_clicked_at,
+                "queue_confirmed": self._queue_confirmed,
+                "awaiting_result_dismissal": self._awaiting_result_dismissal,
+                "history": list(self._history),
+                "attempts": dict(self._attempts),
+                "clicks": self._clicks,
+                "failures": self._failures,
+                "result_waits": self._result_waits,
+                "pause_retries": self._pause_retries,
+                "survey_skips": self._survey_skips,
+                "survey_waits": self._survey_waits,
+                "last_rejection": self._last_rejection,
+                "seen_ends": list(self._seen_ends),
+                "armed_at": as_wall(self._armed_at),
+                "progress_at": as_wall(self._progress_at),
+                "progress_note": self._progress_note,
+            }
+        # Model proposals are parsed JSON, but the checkpoint must never fail on one.
+        return json.loads(json.dumps(record, default=str))
+
+    def restore_after_reload(self, record: dict) -> bool:
+        """Continue a navigation the previous engine had armed, as if no reload happened.
+
+        The caller has checked that no later match started. Clicks that were
+        in flight are not carried (the last click's verdict needs its frame);
+        each step re-observes Arena anyway.
+        """
+        ended = str(record.get("ended_match_id") or "")
+        with self._lock:
+            if not self.enabled or not ended:
+                return False
+            now, wall = time.monotonic(), time.time()
+
+            def as_mono(stamp: Any) -> float:
+                try:
+                    stamp = float(stamp or 0.0)
+                except (TypeError, ValueError):
+                    return 0.0
+                return now - max(0.0, wall - stamp) if stamp else 0.0
+
+            def count(key: str) -> int:
+                try:
+                    return max(0, int(record.get(key) or 0))
+                except (TypeError, ValueError):
+                    return 0
+
+            self._abort.set()
+            self._abort = threading.Event()
+            self._generation += 1
+            self._ended_match_id = ended
+            for match_id in [*(record.get("seen_ends") or []), ended]:
+                if match_id and match_id not in self._seen_ends:
+                    self._seen_ends.append(str(match_id))
+            self._last_event_id = str(record.get("last_event_id") or "")
+            expected = record.get("expected_queue")
+            self._expected_queue = (
+                {"event_id": str(expected.get("event_id") or ""), "deck_name": str(expected["deck_name"])}
+                if isinstance(expected, dict) and expected.get("deck_name")
+                else None
+            )
+            try:
+                self._queue_clicked_at = float(record.get("queue_clicked_at") or 0.0)
+            except (TypeError, ValueError):
+                self._queue_clicked_at = 0.0
+            self._queue_confirmed = bool(record.get("queue_confirmed"))
+            self._queue_started = bool(record.get("queue_started"))
+            self._queue_observed = bool(record.get("queue_observed"))
+            self._awaiting_result_dismissal = bool(record.get("awaiting_result_dismissal"))
+            self._history = deque(
+                (entry for entry in record.get("history") or [] if isinstance(entry, dict)), maxlen=12
+            )
+            attempts = record.get("attempts")
+            self._attempts = Counter(
+                {str(key): int(value) for key, value in attempts.items() if isinstance(value, int)}
+                if isinstance(attempts, dict)
+                else {}
+            )
+            self._clicks = count("clicks")
+            self._failures = count("failures")
+            self._result_waits = count("result_waits")
+            self._pause_retries = count("pause_retries")
+            self._survey_skips = count("survey_skips")
+            self._survey_waits = count("survey_waits")
+            rejection = record.get("last_rejection")
+            self._last_rejection = rejection if isinstance(rejection, dict) else None
+            self._last_click = None
+            self._resume_pending = False
+            self._next_poll = 0.0
+            self._screen_wait_since = self._last_watchdog = self._model_wait_since = 0.0
+            self._recheck_pending = False
+            self._armed_at = as_mono(record.get("armed_at"))
+            self._progress_at = as_mono(record.get("progress_at")) or now
+            self._progress_note = str(record.get("progress_note") or "")
+            self.active = True
+            paused = str(record.get("paused_reason") or "")
+            stage = str(record.get("stage") or "")
+            if paused:
+                # A pause that waits for the user still waits; one that retries
+                # by itself keeps its remaining cooldown.
+                self.paused_reason = paused
+                self._stage = "paused"
+                retry_in = record.get("retry_in_s")
+                self._retry_at = (
+                    now + max(0.0, float(retry_in)) if isinstance(retry_in, (int, float)) else 0.0
+                )
+                self._status(str(record.get("status") or paused))
+            else:
+                self.paused_reason = ""
+                self._retry_at = 0.0
+                self._stage = "resuming" if stage in ("", "off", "waiting_for_match_end", "paused") else stage
+                self._status("Engine reloaded; continuing navigation for the finished match")
+            return True
+
     def _current(self, generation: int, aborted: threading.Event) -> bool:
         return self.enabled and self.active and self._generation == generation and not aborted.is_set()
 

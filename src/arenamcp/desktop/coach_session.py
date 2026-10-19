@@ -41,6 +41,9 @@ class CoachSession(QObject):
     started = Signal()
     stopped = Signal()
     processExited = Signal(int)
+    # The engine asks to be reloaded (its code changed; it is between matches).
+    # The window routes this to the same slot as the Reload engine button.
+    engineReloadRequested = Signal(str)  # reason
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -560,6 +563,18 @@ class CoachSession(QObject):
 
         elif ev_type == "deck_analysis":
             self.deckAnalysisChanged.emit({k: v for k, v in event.items() if k != "type"})
+
+        elif ev_type == "request_engine_reload":
+            # Sent between matches when the engine's code changed on disk
+            # (standalone_auto_reload.py). A reload already under way, or a
+            # closing app, takes precedence: never a second engine.
+            reason = str(event.get("reason") or "The engine asked to reload")
+            if self._pending_restart is None and not self._shutting_down and self.is_running:
+                logger.info("Engine requested a reload: %s", reason)
+                self.logEmitted.emit(f"{reason}; reloading the engine between matches.", "status")
+                self.engineReloadRequested.emit(reason)
+            else:
+                logger.info("Ignored an engine reload request (%s): a reload or shutdown is under way", reason)
 
     def _handle_stderr(self, line: str) -> None:
         logger.debug(f"[coach stderr] {line}")

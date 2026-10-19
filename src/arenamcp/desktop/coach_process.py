@@ -78,6 +78,9 @@ class CoachProcess(QObject):
             env.insert("PYTHONPATH", src_dir)
             env.insert("MTGACOACH_RUNTIME_ROOT", runtime_root)
             env.insert("MTGACOACH_FRONTEND", "pyside")
+            # Engine events this frontend handles that older ones would ignore:
+            # request_engine_reload (CoachSession -> the Reload engine slot).
+            env.insert("MTGACOACH_FRONTEND_FEATURES", "request_engine_reload")
             env.insert("PYTHONUNBUFFERED", "1")
             env.insert("PYTHONIOENCODING", "utf-8")
             # Never inherit a stale reload flag from the desktop environment.
