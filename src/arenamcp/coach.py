@@ -4042,11 +4042,17 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             "pirate": "You are a ruthless pirate captain coaching a swabby! Speak like a pirate! Yarr! Keep it short!",
         }
 
+        from arenamcp.coach_prompts import situational_coach_prompt
         from arenamcp.situational_rules import subjects_in_play
 
-        # The policy's tutor and fetch-land rules need a library effect in play.
+        # Rules whose subject is absent (the Strixhaven keyword primer, the
+        # Equipment rule, the policy's tutor and fetch-land rules) stay out.
         subjects = subjects_in_play(game_state, extra_text=game_state.get("legal_actions") or [])
-        effective_system_prompt = prompts.get(style_key, _quick_prompt) + "\n" + strategic_policy(subjects)
+        effective_system_prompt = (
+            situational_coach_prompt(prompts.get(style_key, _quick_prompt), subjects)
+            + "\n"
+            + strategic_policy(subjects)
+        )
         effective_system_prompt += "\n\n" + narration_policy(voice_mode)
         dynamic_context = ""
 

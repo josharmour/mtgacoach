@@ -151,6 +151,47 @@ def test_the_typed_and_plan_calls_send_the_rules_for_their_board():
     assert "- EQUIPMENT:" in plan_backend.calls[-1]
 
 
+def test_the_coach_prompt_drops_the_strixhaven_primer_and_equipment_rule_without_their_cards():
+    from arenamcp.coach_prompts import DEFAULT_SYSTEM_PROMPT, situational_coach_prompt
+
+    assert situational_coach_prompt(DEFAULT_SYSTEM_PROMPT, SUBJECTS) == DEFAULT_SYSTEM_PROMPT
+    plain = situational_coach_prompt(DEFAULT_SYSTEM_PROMPT, frozenset())
+    for absent in ("SECRETS OF STRIXHAVEN", "- PREPARE", "- PARADIGM", "- CONVERGE", "- EQUIPMENT & TARGETING"):
+        assert absent not in plain, absent
+    for kept in ("- HEURISTIC HINTS:", "- Bounce/removal spells", "- ORACLE TEXT:", "CRITICAL MANA RULES:"):
+        assert kept in plain, kept
+    assert "\n\n\n" not in plain
+    assert len(plain) < len(DEFAULT_SYSTEM_PROMPT) - 2000
+    # An opponent's prepared creature is enough for the primer.
+    prepared = _card("Hallway Heckler", "Creature — Elemental Sorcerer", "This creature enters prepared.", owner=OPP)
+    assert subjects_in_play(_state(battlefield=[FOREST, prepared])) == {"set_mechanics"}
+
+
+def test_coach_advice_sends_the_rules_for_its_board():
+    from types import SimpleNamespace
+
+    from arenamcp.coach import CoachEngine
+
+    class Capture:
+        def __init__(self):
+            self.systems = []
+
+        def complete(self, system, user, *args, **kwargs):
+            self.systems.append(system)
+            return "Cast Grizzly Bears."
+
+    backend = Capture()
+    coach = CoachEngine(backend=backend)
+    coach._ensure_game_plan_mgr = lambda: None
+    coach._rules_db = SimpleNamespace(get_rules_for_situation=lambda *args, **kwargs: [])
+    coach.get_advice(_state(legal_actions=["Cast Grizzly Bears [OK]", "Pass"]), trigger="new_turn")
+    assert "SECRETS OF STRIXHAVEN" not in backend.systems[-1] and TUTORS not in backend.systems[-1]
+    assert "FORGET all previous" not in backend.systems[-1]  # calls are stateless: no earlier game to forget
+    heckler = _card("Hallway Heckler", "Creature — Elemental Sorcerer", "This creature enters prepared.")
+    coach.get_advice(_state(hand=[BEAR, heckler], legal_actions=["Pass"]), trigger="new_turn")
+    assert "SECRETS OF STRIXHAVEN" in backend.systems[-1]
+
+
 def test_the_kill_switch_sends_every_rule(monkeypatch):
     monkeypatch.setenv("ARENAMCP_SITUATIONAL_RULES", "0")
     assert subjects_in_play(_state(), _decision()) == SUBJECTS

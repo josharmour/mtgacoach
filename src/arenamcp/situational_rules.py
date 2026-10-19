@@ -10,7 +10,9 @@ visible cards and the pending decision. With every subject present the text is
 the full prompt, unchanged.
 
 The check is deliberately generous: any of our cards in any visible zone, or
-an option label, that mentions the subject keeps its rules.
+an option label, that mentions the subject keeps its rules. The coach's
+Secrets of Strixhaven keyword primer ("set_mechanics") counts either side's
+cards.
 ``ARENAMCP_SITUATIONAL_RULES=0`` sends every rule.
 """
 
@@ -21,8 +23,13 @@ import re
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-SUBJECTS = frozenset({"commander", "vehicle", "animation", "equipment", "library"})
+SUBJECTS = frozenset({"commander", "vehicle", "animation", "equipment", "library", "set_mechanics"})
 _ZONES = ("hand", "battlefield", "stack", "command", "graveyard", "exile")
+# The Secrets of Strixhaven keywords the coach prompt explains (coach_prompts):
+# present on any visible card, either side.
+_SET_MECHANICS = re.compile(
+    r"\b(?:prepared?|increment|paradigm|infusion|opus|repartee|flashback|converge)\b", re.I
+)
 _VEHICLE = re.compile(r"\bvehicle\b|\bcrew(?:s|ed)?\b", re.I)
 _ANIMATION = re.compile(
     r"\bbecomes? (?:a|an)\b[^.]*\bcreature\b|\bit'?s an? [^.]*\bcreature\b|\bis (?:also )?an? [^.]*\bcreature\b",
@@ -53,13 +60,18 @@ def subjects_in_play(state: dict | None, decision: Any = None, extra_text: Itera
         for card in state.get(zone) or []:
             if not isinstance(card, dict):
                 continue
+            card_text = f"{card.get('type_line') or ''}\n{card.get('oracle_text') or ''}"
+            if _SET_MECHANICS.search(card_text):
+                found.add("set_mechanics")
             side = card.get("controller_seat_id") or card.get("owner_seat_id")
             if local is not None and side not in (None, local):
                 continue
             if zone == "command":
                 found.add("commander")
-            texts.append(f"{card.get('type_line') or ''}\n{card.get('oracle_text') or ''}")
+            texts.append(card_text)
     text = "\n".join(texts)
+    if _SET_MECHANICS.search(text):
+        found.add("set_mechanics")
     if getattr(decision, "min_weight", None) is not None or _VEHICLE.search(text):
         found.update(("vehicle", "animation"))  # crewing animates the Vehicle
     if _ANIMATION.search(text):
