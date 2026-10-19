@@ -3836,7 +3836,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             Advice string from the LLM
         """
 
-        from arenamcp.match_context import STRATEGIC_POLICY, prepare_match_context, with_deck_reference
+        from arenamcp.match_context import prepare_match_context, strategic_policy, with_deck_reference
         from arenamcp.narration import action_narration, narration_policy
 
         voice_mode = narration_mode or getattr(self, "narration_mode", "advisor")
@@ -4042,7 +4042,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             "pirate": "You are a ruthless pirate captain coaching a swabby! Speak like a pirate! Yarr! Keep it short!",
         }
 
-        effective_system_prompt = prompts.get(style_key, _quick_prompt) + "\n" + STRATEGIC_POLICY
+        from arenamcp.situational_rules import subjects_in_play
+
+        # The policy's tutor and fetch-land rules need a library effect in play.
+        subjects = subjects_in_play(game_state, extra_text=game_state.get("legal_actions") or [])
+        effective_system_prompt = prompts.get(style_key, _quick_prompt) + "\n" + strategic_policy(subjects)
         effective_system_prompt += "\n\n" + narration_policy(voice_mode)
         dynamic_context = ""
 

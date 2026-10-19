@@ -17,6 +17,8 @@ from functools import lru_cache
 from typing import Any
 
 from arenamcp.library_counts import observed_library_count
+from arenamcp.situational_rules import SUBJECTS as SITUATIONAL_SUBJECTS
+from arenamcp.situational_rules import compose as compose_rules
 
 logger = logging.getLogger(__name__)
 _ZONES = ("hand", "battlefield", "graveyard", "exile", "stack", "command")
@@ -40,32 +42,57 @@ def reset_seen_rules() -> None:
         _seen_rules = (None, [])
 
 
-STRATEGIC_POLICY = (
-    "Follow the deck's win conditions and current game plan, but reassess every decision against "
-    "the live board, stack, mana and legal options. A plan is conditional, not a forced script. "
-    "Survival, a changed threat, new information or an immediate winning line can override it. "
-    "For removal, compare acting now with holding interaction, the target's actual impact, protection, "
-    "and the resource trade. For tutors, choose an eligible card still available for the current "
-    "need: survival/interaction, mana, engine, protection, or closing the game. Account for the "
-    "tutor's destination, restrictions, X and the cost/timing of using the found card. Recheck actual "
-    "search options when they arrive. Do not tutor a habitual favorite or spend removal merely "
-    "because it is payable. Library composition does not reveal draw order or guarantee a draw. "
-    "An unknown library count or missing deck inventory does not mean the library is empty; "
-    "never reject a fetch/tutor or predict decking based on missing observations. "
-    "A fetch land that sacrifices itself for one land replaces a land; it is not net land ramp. "
-    "Evaluate its life cost, needed colors/mana, timing and actual synergies; deck thinning alone "
-    "is not a reason to crack it immediately. "
-    "Apply the deck playbook's relevant mechanisms and conditions to each choice, including combat, "
-    "sacrifices, discards, commander zones and mana use. Equal combat stats do not imply equal "
-    "strategic value. Compare preserving an ongoing engine with spending a recoverable resource "
-    "to replay a supported trigger; account for the surviving board, colored mana, commander tax, "
-    "timing, summoning sickness and opportunity cost. Do not count a sacrificed source toward its "
-    "own recovery or assume a token has the original's cast/enter/zone options. Neither commanders "
-    "nor tokens are automatically expendable. Before choosing, compare the strongest legal "
-    "alternative and name the relevant mechanism or the live constraint that makes deviating better. "
-    "Use only effects supported by the supplied Oracle text: cast, enter, attack, death and zone "
-    "changes are different events. A static material/combat score does not price these strategic effects."
+# Subject-tagged like the decision rules (situational_rules): the tutor and
+# fetch-land sentences need a library effect in play.
+STRATEGIC_POLICY_PARTS: tuple[tuple[str | None, str], ...] = (
+    (
+        None,
+        "Follow the deck's win conditions and current game plan, but reassess every decision against "
+        "the live board, stack, mana and legal options. A plan is conditional, not a forced script. "
+        "Survival, a changed threat, new information or an immediate winning line can override it. "
+        "For removal, compare acting now with holding interaction, the target's actual impact, protection, "
+        "and the resource trade. ",
+    ),
+    (
+        "library",
+        "For tutors, choose an eligible card still available for the current "
+        "need: survival/interaction, mana, engine, protection, or closing the game. Account for the "
+        "tutor's destination, restrictions, X and the cost/timing of using the found card. Recheck actual "
+        "search options when they arrive. ",
+    ),
+    (
+        None,
+        "Do not tutor a habitual favorite or spend removal merely "
+        "because it is payable. Library composition does not reveal draw order or guarantee a draw. "
+        "An unknown library count or missing deck inventory does not mean the library is empty; "
+        "never reject a fetch/tutor or predict decking based on missing observations. ",
+    ),
+    (
+        "library",
+        "A fetch land that sacrifices itself for one land replaces a land; it is not net land ramp. "
+        "Evaluate its life cost, needed colors/mana, timing and actual synergies; deck thinning alone "
+        "is not a reason to crack it immediately. ",
+    ),
+    (
+        None,
+        "Apply the deck playbook's relevant mechanisms and conditions to each choice, including combat, "
+        "sacrifices, discards, commander zones and mana use. Equal combat stats do not imply equal "
+        "strategic value. Compare preserving an ongoing engine with spending a recoverable resource "
+        "to replay a supported trigger; account for the surviving board, colored mana, commander tax, "
+        "timing, summoning sickness and opportunity cost. Do not count a sacrificed source toward its "
+        "own recovery or assume a token has the original's cast/enter/zone options. Neither commanders "
+        "nor tokens are automatically expendable. Before choosing, compare the strongest legal "
+        "alternative and name the relevant mechanism or the live constraint that makes deviating better. "
+        "Use only effects supported by the supplied Oracle text: cast, enter, attack, death and zone "
+        "changes are different events. A static material/combat score does not price these strategic effects.",
+    ),
 )
+STRATEGIC_POLICY = compose_rules(STRATEGIC_POLICY_PARTS)
+
+
+def strategic_policy(subjects: Iterable[str] = SITUATIONAL_SUBJECTS) -> str:
+    """The strategic policy for the rule subjects in play (situational_rules.subjects_in_play)."""
+    return compose_rules(STRATEGIC_POLICY_PARTS, subjects)
 
 
 @lru_cache(maxsize=4096)
