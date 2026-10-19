@@ -32,8 +32,14 @@ namespace MtgaCoachBridge
                     cmd.SetResponse(new JObject
                     {
                         ["ok"] = true,
-                        ["version"] = PluginInfo.Version
+                        ["version"] = PluginInfo.Version,
+                        ["runtime"] = "bepinex",
+                        ["protocols"] = new JArray(ReflectProtocol)
                     });
+                    break;
+
+                case "reflect_batch":
+                    HandleReflectBatch(cmd);
                     break;
 
                 case "get_pending_actions":
