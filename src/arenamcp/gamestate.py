@@ -698,6 +698,9 @@ class GameState(_GameStateAnnotationsMixin):
                 # event_id empty for the rest of the game).
                 "event_id": self.event_id,
                 "format_name": self.format_name,
+                # Named by the same room event (2026-10-19 match 115944ce: the
+                # 11:14:23 restart saved its packet with opponent_name None).
+                "opponent_name": self.opponent_name,
                 "local_seat_id": self.local_seat_id,
                 "seat_source": self._seat_source,
                 "turn_info": self.turn_info.to_dict(),
@@ -784,6 +787,7 @@ class GameState(_GameStateAnnotationsMixin):
                 self._result_game = (self.match_id, self.game_number) if self.last_game_result else None
                 self.event_id = str(checkpoint.get("event_id") or "")
                 self.format_name = str(checkpoint.get("format_name") or "")
+                self.opponent_name = str(checkpoint.get("opponent_name") or "")
                 self.local_seat_id = _coerce_optional_int(checkpoint.get("local_seat_id"))
                 self._seat_source = _coerce_int(checkpoint.get("seat_source", 0), 0)
 

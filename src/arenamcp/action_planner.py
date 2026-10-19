@@ -6372,6 +6372,7 @@ class ActionPlanner(_ActionLegalityMixin):
             data.get("unusual_target_reasons") if isinstance(data.get("unusual_target_reasons"), dict) else {}
         )
         self._last_decision_reasoning = " ".join(reason.split()[:50]) if isinstance(reason, str) else ""
+        self._note_false_claims(game_state, decision, chosen)
         self._last_decision_option_ids = chosen
         self._last_decision_trace.update(
             selected_ids=chosen,
@@ -6382,6 +6383,43 @@ class ActionPlanner(_ActionLegalityMixin):
             "typed-decision choice %s: %s", chosen, self._last_decision_reasoning or "reason not supplied"
         )
         return chosen
+
+    def _note_false_claims(self, game_state: dict[str, Any], decision: Any, chosen: list[str]) -> None:
+        """Annotate the reasoning's claims the board contradicts (ledger #84; no model call).
+
+        2026-10-19: "Casting Giant Cindermaw gives haste trample pressure" (it has
+        no haste), Fleeting Effigy "grows Slickshot via the noncreature-spell
+        trigger" (a creature spell), a summoning-sick Hired Claw's ping. The
+        pick stands; the stored reasoning, which later prompts quote, carries
+        the facts, and the log says what was wrong.
+        """
+        try:
+            from arenamcp.game_plan import decision_claim_notes
+
+            cast_ids = [
+                option.meta.get("instanceId")
+                for option in decision.options
+                if option.option_id in chosen and (option.meta or {}).get("actionType") == "ActionType_Cast"
+            ]
+            notes = decision_claim_notes(self._last_decision_reasoning, game_state, cast_ids=cast_ids)
+        except Exception as error:  # never cost the decision
+            logger.debug("typed-decision claim check failed: %s", error)
+            return
+        if not notes:
+            return
+        logger.warning(
+            "typed-decision reasoning contradicts the board (%s): %s",
+            "; ".join(notes),
+            self._last_decision_reasoning,
+        )
+        # After a full stop: reasoning_choice_conflict reads only the lead sentence.
+        stop = "" if self._last_decision_reasoning.rstrip().endswith((".", "!", "?")) else "."
+        self._last_decision_reasoning = (
+            f"{self._last_decision_reasoning.rstrip()}{stop} [checked: {'; '.join(notes)}]"
+        )
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict):
+            trace["false_claims"] = list(notes)
 
     # The game view's restatement of the request and its menu. A typed prompt
     # names the request and lists every option (with its id and payability)

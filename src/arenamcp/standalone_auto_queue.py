@@ -46,20 +46,42 @@ class _AutoQueueMixin:
         request, other match, gameplay or draft. The queue and deck come from
         the log's request for that match, and navigation keeps its own rules
         (no paid or draft events; the log confirms the queue joined).
+
+        Every outcome is logged. 2026-10-19 (ledger #55): after the 11:06:23
+        restart Arena sat idle on Decks (match 15e0eb20 ended 10:58:35, a
+        DeckUpsertDeckV3 at 11:05) and nothing requeued: that coach still ran
+        c9dfda7 (master reached this code at 11:07:14), and by the 11:07:19
+        restart a human had clicked Play (EventJoin 11:06:39) and match
+        73ccac27 was under way. The silent "match in progress" return left
+        the coach log unable to tell the two apart.
         """
         turn = state.get("turn") or state.get("turn_info") or {}
         current_id = state.get("match_id")
-        if current_id and ((turn.get("turn_number") or 0) > 0 or state.get("pending_decision")):
+        turn_number = turn.get("turn_number") or 0
+        if current_id and (turn_number > 0 or state.get("pending_decision")):
+            logger.info(
+                "Auto queue after restart: match %s is being played (turn %s%s); requeueing after it ends",
+                current_id,
+                turn_number,
+                ", decision pending" if state.get("pending_decision") else "",
+            )
             return False
         from arenamcp.server import idle_completed_match_from_log
 
         completed = idle_completed_match_from_log()
         if not completed or (current_id and current_id != completed["match_id"]):
             logger.info(
-                "Auto queue after restart: Arena is not idle after a recent match; waiting for a match end"
+                "Auto queue after restart: Arena is not idle after a recent match (%s); waiting for a match end",
+                f"the log's last idle match is {completed['match_id']}, the coach holds {current_id}"
+                if completed
+                else "Player.log shows no completed match with only menu traffic after it",
             )
             return False
         if not navigator.note_match_end(completed, confirmed_match_end=True):
+            logger.info(
+                "Auto queue after restart: navigation did not take match %s (already handled or disabled)",
+                completed["match_id"],
+            )
             return False
         self._auto_queue_observed_match = self._auto_queue_last_noted = completed["match_id"]
         logger.info(

@@ -380,6 +380,65 @@ def _harmless_text(text: str) -> bool:
     return not _OUT_HINT.search(text)
 
 
+# Arena's raw cost text: "{o1oR}" is {1}{R}, "{oT}" {T}, "{o(G/W)}" {G/W}.
+_ARENA_PIP = re.compile(r"o(\([^)]*\)|\d+|[a-z])", re.IGNORECASE)
+
+
+def _printed_cost(cost: str) -> str:
+    """``cost`` with Arena's raw mana text ("{o1or}") as printed symbols ("{1}{R}")."""
+
+    def symbols(match: re.Match) -> str:
+        inner = match.group(1)
+        pips = _ARENA_PIP.findall(inner)
+        if pips and "".join(f"o{pip}" for pip in pips).lower() == inner.lower():
+            return "".join("{" + pip.strip("()").upper() + "}" for pip in pips)
+        return "{" + inner.upper() + "}"
+
+    return re.sub(r"\{([^}]*)\}", symbols, cost)
+
+
+# 2026-10-19 11:54:28 (match c8ea2b6c T19, ledger #90): Hired Claw's "{1}{R}: Put a
+# +1/+1 counter on this creature. Activate only if an opponent lost life this turn
+# and only once each turn." counted as a possible out (confidence 0.60) against 20
+# flying damage at our 9 life. A ground creature growing changes nothing against
+# fliers it can't block, and the opponent had lost no life that turn.
+_SELF_PUMP = re.compile(
+    r"^(?:put (?:a|an|one|two|three|\d+) \+1/\+1 counters? on (?:~|this creature)"
+    r"|(?:~|this creature) gets \+\d+/\+\d+ until end of turn)$"
+)
+_ACTIVATION_RIDER = re.compile(r"^activate (?:this ability )?only\b")
+_IF_OPPONENT_LOST_LIFE = re.compile(r"\bactivate (?:this ability )?only if an opponent lost life this turn\b")
+
+
+def _self_pump_only(effect: str) -> bool:
+    """The ability only makes its own creature bigger (its "activate only ..." riders aside)."""
+    sentences = [part.strip() for part in re.split(r"\.\s*", effect) if part.strip()]
+    return (
+        bool(sentences)
+        and bool(_SELF_PUMP.match(sentences[0]))
+        and all(_ACTIVATION_RIDER.match(part) for part in sentences[1:])
+    )
+
+
+def _opponent_lost_life_this_turn(state: dict, opponent: int | None, turn: int) -> bool | None:
+    """Whether the log shows the opponent losing life this turn (None: the record can't tell)."""
+    events = state.get("recent_events")
+    if not isinstance(events, list) or opponent is None or not turn:
+        return None
+    dicts = [e for e in events if isinstance(e, dict)]
+    if dicts and _int(dicts[0].get("turn")) == turn:
+        return None  # the bounded buffer may have dropped this turn's earlier events
+    for event in dicts:
+        if event.get("type") != "life_changed" or _int(event.get("turn")) != turn:
+            continue
+        affected = {_int(seat) for seat in event.get("affected_ids") or []}
+        changes = (event.get("details") or {}).get("life")
+        changes = changes if isinstance(changes, list) else [changes]
+        if opponent in affected and any((_int(change) or 0) < 0 for change in changes):
+            return True
+    return False
+
+
 def _harmless_card(card: dict, text: str) -> bool:
     """A card that cannot stop the attack: pure card draw, selection, ramp or a spell counter."""
     if not text.strip():
@@ -480,8 +539,17 @@ def _scan_outs(
     battlefield: list[dict],
     ours: list[dict],
     our_life: int | None,
+    opponent: int | None = None,
+    evasive: list[dict] | tuple = (),
+    combat_ahead: bool = False,
 ) -> _Outs:
-    """Possible outs (names), digs, and confidence caps for things we cannot rule out."""
+    """Possible outs (names), digs, and confidence caps for things we cannot rule out.
+
+    ``evasive``: their attackers our blockers can't stop; when they alone kill
+    us and none of our attacks comes first (``combat_ahead``), a creature
+    ability that only makes that creature bigger is no out unless the creature
+    could block one of them (ledger #90).
+    """
     found = _Outs()
     outs, caps = found.outs, found.caps
     ours_permanents = [c for c in battlefield if _controller(c) == local]
@@ -538,7 +606,7 @@ def _scan_outs(
                 if "draw" in effect:
                     found.digs.append((name, len(sources) - _mana_needed(cost, our_life)))
                 continue
-            outs.append(f"{name} (from hand: {cost})")
+            outs.append(f"{name} (from hand: {_printed_cost(cost)})")
         how, digs = _castable_faces(
             card, flash_granted=flash_granted, sorcery_window=sorcery_window, sources=sources, life=our_life
         )
@@ -557,6 +625,9 @@ def _scan_outs(
         )
         if how:
             outs.append(f"{_name(card)} (command zone, {how})")
+
+    evasive_lethal = our_life is not None and sum(b["power"] for b in evasive) >= our_life
+    can_stop = [b for b in evasive if not b.get("_unblockable")]
 
     # Battlefield: activated abilities, crew, sorcery-speed keywords, statics.
     for card in ours_permanents:
@@ -577,7 +648,16 @@ def _scan_outs(
                 continue
             if _harmless_text(effect) or not _affordable(cost, sources, our_life):
                 continue
-            outs.append(f"{name} (ability: {cost})")
+            if (
+                _IF_OPPONENT_LOST_LIFE.search(effect)
+                and _opponent_lost_life_this_turn(state, opponent, turn) is False
+            ):
+                continue
+            if _self_pump_only(effect) and evasive_lethal and not combat_ahead:
+                body = next((b for b in ours if b.get("_card") is card), None)
+                if body is None or not (_reach_or_flying(body) and can_stop):
+                    continue
+            outs.append(f"{name} (ability: {_printed_cost(cost)})")
         crew = re.search(r"\bcrew (\d+)", text)
         if crew and not tapped:
             need = int(crew.group(1))
@@ -607,7 +687,7 @@ def _scan_outs(
             if "activate only as a sorcery" in effect and not sorcery_window:
                 continue
             if _affordable(cost, sources, our_life):
-                outs.append(f"{name} (graveyard ability: {cost})")
+                outs.append(f"{name} (graveyard ability: {_printed_cost(cost)})")
     for card in state.get("exile") or []:
         if not isinstance(card, dict) or _owner(card) != local:
             continue
@@ -677,13 +757,40 @@ def _counter_delta(card: dict) -> int:
     return delta
 
 
-def _printed_now(card: dict) -> tuple[int, int] | None:
-    """Printed power/toughness plus counters, when the printed values are known."""
+# A static "+N/+M" from an attached Aura or Equipment ("Enchanted creature gets +1/+0 and
+# has lifelink and ward {2}."), not one that lasts a turn or depends on something.
+_ATTACHED_BUFF = re.compile(r"\b(?:enchanted|equipped) creature gets ([+-]\d+)/([+-]\d+)")
+_BUFF_CONDITION = re.compile(r"\buntil\b|\bfor each\b|\bas long as\b|\bwhere x\b|\bif\b|\bthis turn\b")
+
+
+def _attached_buff(card: dict, attached: list[dict]) -> tuple[int, int]:
+    """The static power/toughness the Auras and Equipment attached to ``card`` give it."""
+    power = toughness = 0
+    for source in attached:
+        text = _text(source).replace("−", "-").replace("–", "-")
+        for sentence in re.split(r"[.\n]", text):
+            match = _ATTACHED_BUFF.search(sentence)
+            if match is None or _BUFF_CONDITION.search(sentence):
+                continue
+            power += int(match.group(1))
+            toughness += int(match.group(2))
+    return power, toughness
+
+
+def _printed_now(card: dict, attached: list[dict] | None = None) -> tuple[int, int] | None:
+    """Printed power/toughness plus counters and attached Auras' static buffs, when the printed
+    values are known.
+
+    2026-10-19 match a9cd5a2e: Skyward Spider was 5/4 with Sheltered by Ghosts
+    (+1/+0) on it; the best case counted it 3/3 once our turn ended, as if the
+    Aura's buff wore off with the turn.
+    """
     power, toughness = _int(card.get("printed_power")), _int(card.get("printed_toughness"))
     if power is None or toughness is None:
         return None
     delta = _counter_delta(card)
-    return power + delta, toughness + delta
+    buff = _attached_buff(card, attached or [])
+    return power + delta + buff[0], toughness + delta + buff[1]
 
 
 def _danger(card: dict) -> tuple[int, int]:
@@ -739,8 +846,14 @@ def _best_case_view(
                 )
                 notes.append(f"{_name(card)} {why}; assuming it can't attack")
 
-    # Our turn: "until end of turn" changes are gone by their attack.
+    # Our turn: "until end of turn" changes are gone by their attack (an attached
+    # Aura's or Equipment's static buff stays).
     if our_turn:
+        on_card: dict[int, list[dict]] = {}
+        for card in cards:
+            host = _int(card.get("attached_to_id"))
+            if host and ("aura" in _types(card) or "equipment" in _types(card)):
+                on_card.setdefault(host, []).append(card)
         for card in cards:
             if not _is_creature(card):
                 continue
@@ -748,7 +861,7 @@ def _best_case_view(
             if power is None or toughness is None:
                 continue
             mine = _controller(card) == local
-            base = _printed_now(card)
+            base = _printed_now(card, on_card.get(_int(card.get("instance_id")) or -1))
             if base is None:
                 if not mine and (
                     card.get("modified_power") is not None or card.get("modified_toughness") is not None
@@ -939,9 +1052,23 @@ def _estimate(state: Any) -> LossEstimate:
         evasive_power=evasive_power,
         evasive=[f"{b['name']} {b['power']}/{b['toughness']}" for b in evasive],
     )
-    clear_margin = life_after <= -2 or evasive_power >= our_life
+    # Ledger #52 (match a9cd5a2e review): the margin is the most defensive play's,
+    # not the projected best line's. That line may race (attack with the only
+    # creature that could chump), and the block solver stops chumping once every
+    # block loses (a lost game scores the same however much gets through). So the
+    # margin takes the line that leaves us the most life, and every blocker
+    # chumping where it stops the most: an exactly lethal board with a chump is
+    # a thin margin, not a concede.
+    margin_life = life_after
+    if timing_known:
+        defensive = _most_life_after(assessment, our_turn=our_turn)
+        chumped = _most_chumped_life(their_able, our_blockers, our_life)
+        margin_life = max(life_after, chumped, life_after if defensive is None else defensive)
+        if margin_life > life_after:
+            facts["defensive_life_after"] = margin_life
+    clear_margin = margin_life <= -2 or evasive_power >= our_life
     if not clear_margin:
-        caps.append((_MAYBE, f"thin margin: {through} through vs {our_life} life"))
+        caps.append((_MAYBE, f"thin margin: {our_life - margin_life} through vs {our_life} life"))
 
     # --- outs and unknowns ------------------------------------------------------
     scan = _scan_outs(
@@ -953,6 +1080,9 @@ def _estimate(state: Any) -> LossEstimate:
         battlefield=battlefield,
         ours=ours,
         our_life=our_life,
+        opponent=opponent,
+        evasive=evasive,
+        combat_ahead=our_turn and not combat_done,
     )
     caps.extend(scan.caps)
     outs = scan.outs
@@ -976,6 +1106,120 @@ def _estimate(state: Any) -> LossEstimate:
         numbers = f" ({through} through vs {our_life} life)" if timing_known else ""
         reason = f"Dead next attack{numbers}, but " + blockers[0]
     return LossEstimate(confidence, reason, facts, blockers)
+
+
+def _most_chumped_life(attackers: list[dict], blockers: list[dict], life: int) -> int:
+    """Our life after ``attackers`` hit if ``blockers`` block to stop the most damage (an upper bound).
+
+    A chump stops a whole non-trampling attacker, a trampler only up to the
+    blocker's toughness; double strike hits twice; a lifelink blocker that
+    blocks heals its power. The most damage blocks can stop is a max flow
+    (blocker -> attacker it may block -> the attacker's damage), which is never
+    less than the best real assignment, so the result never understates our
+    life. Menace is ignored (in our favour).
+    """
+    from arenamcp.board_assessment import _lifelink
+    from arenamcp.combat_solver import _can_block
+
+    def hits(attacker: dict) -> int:
+        return max(0, attacker["power"]) * (2 if has_combat_keyword(attacker, "double strike") else 1)
+
+    damage = [hits(a) for a in attackers]
+    stop = [
+        [
+            (min(damage[j], max(0, b["toughness"])) if has_combat_keyword(a, "trample") else damage[j])
+            if _can_block(a, b)
+            else 0
+            for j, a in enumerate(attackers)
+        ]
+        for b in blockers
+    ]
+    heal = sum(max(0, b["power"]) for i, b in enumerate(blockers) if any(stop[i]) and _lifelink(b))
+    stopped = _max_flow([max(row, default=0) for row in stop], stop, damage)
+    return life + heal - max(0, sum(damage) - stopped)
+
+
+def _max_flow(supply: list[int], capacity: list[list[int]], demand: list[int]) -> int:
+    """Max flow source -> left i (``supply[i]``) -> right j (``capacity[i][j]``) -> sink (``demand[j]``)."""
+    left, right = len(supply), len(demand)
+    flow = [[0] * right for _ in range(left)]
+    sent, taken = [0] * left, [0] * right
+    total = 0
+    while True:
+        # Breadth-first search for an augmenting path in the residual graph.
+        parent: dict[tuple[str, int], tuple[str, int] | None] = {}
+        queue = []
+        for i in range(left):
+            if supply[i] - sent[i] > 0:
+                parent[("L", i)] = None
+                queue.append(("L", i))
+        end = None
+        while queue and end is None:
+            node = queue.pop(0)
+            side, k = node
+            if side == "L":
+                for j in range(right):
+                    if ("R", j) not in parent and capacity[k][j] - flow[k][j] > 0:
+                        parent[("R", j)] = node
+                        if demand[j] - taken[j] > 0:
+                            end = ("R", j)
+                            break
+                        queue.append(("R", j))
+            else:
+                for i in range(left):
+                    if ("L", i) not in parent and flow[i][k] > 0:
+                        parent[("L", i)] = node
+                        queue.append(("L", i))
+        if end is None:
+            return total
+        path = [end]
+        while parent[path[-1]] is not None:
+            path.append(parent[path[-1]])
+        path.reverse()  # L, R, L, R, ..., R
+        start, finish = path[0][1], path[-1][1]
+        amount = min(supply[start] - sent[start], demand[finish] - taken[finish])
+        for a, b in zip(path, path[1:], strict=False):
+            if a[0] == "L":
+                amount = min(amount, capacity[a[1]][b[1]] - flow[a[1]][b[1]])
+            else:
+                amount = min(amount, flow[b[1]][a[1]])
+        for a, b in zip(path, path[1:], strict=False):
+            if a[0] == "L":
+                flow[a[1]][b[1]] += amount
+            else:
+                flow[b[1]][a[1]] -= amount
+        sent[start] += amount
+        taken[finish] += amount
+        total += amount
+
+
+def _most_life_after(assessment: Any, *, our_turn: bool) -> int | None:
+    """Our life after their next attack on the line search's line that leaves us the most.
+
+    The lookahead follows the BEST line, which may race: attack with the only
+    creature that could chump, cast a threat instead of holding a blocker. On
+    an exactly lethal board that line dies by a clear margin while holding the
+    chump back dies by none (0 life left), and a thin margin is no concede
+    (ledger #52, match a9cd5a2e review). On our turn: life after the attack
+    that follows our T step; on theirs: life after the attack under way, over
+    every root block the search tried. None without a line search.
+    """
+    search = getattr(assessment, "line_search", None)
+    lines = list(getattr(assessment, "lines", None) or [])
+    if search is not None:
+        lines += [getattr(search, "baseline", None), *(getattr(search, "first_action", None) or {}).values()]
+    best: int | None = None
+    for line in lines:
+        if line is None:
+            continue
+        if our_turn:
+            steps = getattr(line, "steps", None) or ()
+            value = steps[0].life_after if steps else None
+        else:
+            value = getattr(line, "now_life", None)
+        if isinstance(value, int) and (best is None or value > best):
+            best = value
+    return best
 
 
 def _stack_caps(view: dict, *, local: int, opponent: int) -> list[tuple[float, str]]:
