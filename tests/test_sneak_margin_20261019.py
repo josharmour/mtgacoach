@@ -18,11 +18,16 @@ life: +14) are unchanged.
 
 from __future__ import annotations
 
+import pytest
 from tests import valkyrie_boards_20261019 as vb
 
 from arenamcp import sneak
 from arenamcp.action_planner import ActionPlanner
 from arenamcp.decisions import DecisionOption, PendingDecision
+
+# The lines these tests pin must not depend on a loaded machine (the hard cap is a clock).
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
+
 
 LEO = 237  # Leonardo's command-zone instance id at T10
 
@@ -55,7 +60,9 @@ def test_main_one_holds_the_sneak_mana_for_a_sneak_far_better_than_the_hard_cast
     state = vb.t10_main1()
     (cast,) = sneak.sneak_casts(state)
     assert (cast.cost, cast.hard_cost, cast.zone) == ("{W}", "{2}{W}", "command")
-    hold = sneak.sneak_main_hold(state)
+    # The #189 callers (all-in for a lethal Sneak line, the losing-attack guard) ask for lethal.
+    assert sneak.sneak_main_hold(state) is None
+    hold = sneak.sneak_main_hold(state, lethal_only=False)
     # Their three blockers take three of our six able attackers: 3 through; the Sneak returns a
     # 1/1 and Leonardo comes in with 21 creatures around: 23 of their 27, not lethal.
     assert (hold.through, hold.power, hold.total, hold.life, hold.keep) == (3, 21, 23, 27, 1)
@@ -82,7 +89,7 @@ def test_the_normal_cast_is_withheld_even_when_the_mana_covers_both():
 def test_a_smaller_margin_or_a_dearer_sneak_is_not_held():
     state = vb.t10_main1()
     state["players"][1]["life_total"] = 45  # +20 is less than half of 45
-    assert sneak.sneak_main_hold(state) is None
+    assert sneak.sneak_main_hold(state, lethal_only=False) is None
     assert sneak.hold_filter(_main1_menu(), state)[1] == ""
     (cast,) = sneak.sneak_casts(vb.t10_main1())
     assert sneak.beats_hard_cast(cast, 20, 27, hard_mana=2)

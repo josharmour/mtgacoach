@@ -23,6 +23,7 @@ import logging
 from copy import deepcopy
 from typing import Any
 
+import pytest
 from tests import leonardo_boards_20261019 as lb
 
 from arenamcp import sneak
@@ -30,6 +31,10 @@ from arenamcp.action_planner import ActionPlanner
 from arenamcp.board_assessment import assess
 from arenamcp.decisions import DecisionOption, PendingDecision
 from arenamcp.line_guard import option_note
+
+# The lines these tests pin must not depend on a loaded machine (the hard cap is a clock).
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
+
 
 LOCAL, OPPONENT = 1, 2
 CARDS: dict[str, dict[str, Any]] = {

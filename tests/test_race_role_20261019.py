@@ -19,10 +19,14 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
 from tests import valkyrie_boards_20261019 as vb
 
 from arenamcp import board_assessment as ba
 from arenamcp.game_plan import GAME_PLAN_PROMPT, GamePlanManager, validate_plan
+
+# The lines these tests pin must not depend on a loaded machine (the hard cap is a clock).
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
 
 
 def _line(attack: tuple[str, ...]):

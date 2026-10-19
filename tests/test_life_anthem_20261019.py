@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
 from tests import valkyrie_boards_20261019 as vb
 
 from arenamcp import line_search_moves as moves
@@ -26,6 +27,10 @@ from arenamcp.board_assessment import assess
 from arenamcp.board_model import build_board_model, starting_life
 from arenamcp.line_search import _Search
 from arenamcp.line_search_moves import attack_punisher, hold_punishers, life_anthem, life_anthem_facts
+
+# The lines these tests pin must not depend on a loaded machine (the hard cap is a clock).
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
+
 
 # The thirteen tokens the T12 best line attacks with (the Warriors but 576, the able Rabbits).
 TOKENS = (600, 602, 603, 607, 609, 610, 611, 615, 617, 618, 619, 620, 625)

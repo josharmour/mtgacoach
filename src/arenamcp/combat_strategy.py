@@ -1195,6 +1195,21 @@ def _all_in(state: dict) -> bool:
     return bool(assessment is not None and getattr(assessment, "all_in", False))
 
 
+def _sneak_lethal(state: dict) -> bool:
+    """The Sneak line (attack with everything, Sneak after blocks) is lethal; False when unknown.
+
+    #189 (2026-10-19 16:20-16:26, match 2149ea96): the model planned that swing ("attackers
+    20 + Sneak Leonardo, Big Brother 14 against their 21 life") and this guard held every
+    attacker back one by one, as each alone fed Thalia, the Survivor.
+    """
+    try:
+        from arenamcp.sneak import sneak_main_hold
+
+        return sneak_main_hold(state, declare_step=True) is not None
+    except Exception:
+        return False
+
+
 def _walker_target_id(target, cards: dict, opponent_seat) -> int | None:
     """The opponent's planeswalker an attack recipient names, or None (the player, unknown, ambiguous).
 
@@ -1313,7 +1328,8 @@ def losing_attackers(
         (net of lifelink) as the declaration, or matches that best line;
         never more identical copies than their blockers answer at once,
         unless every copy is held (``_thinned_declaration``);
-      - the whole attack is not lethal through their best blocks;
+      - the whole attack is not lethal through their best blocks, nor with a Sneak after them
+        (#189, ``_sneak_lethal``);
       - it is not required to attack (GRE ``mustAttack`` in the state or the
         live ``pending`` bridge request);
       - it is not aimed at a planeswalker of theirs that the attackers aimed
@@ -1340,6 +1356,8 @@ def losing_attackers(
         return {}
     if _all_in(state):
         return {}  # nothing to lose: a chump attack still might matter
+    if _sneak_lethal(state):
+        return {}  # #189: every attacker counts toward the lethal Sneak after blocks
     battlefield = state.get("battlefield") or []
     # bug_20261006_184540: "Cadet 2/2 can block Yuriko" held back a creature
     # that Tetsuko Umezawa made unblockable. Mark board grants for _can_block.

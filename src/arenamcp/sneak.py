@@ -434,11 +434,15 @@ def sneak_attack(attackers: list[dict], blockers: list[dict], life: int, sneak_p
     return net, net - weakest + sneak_power
 
 
-def sneak_main_hold(state: dict | None) -> SneakHold | None:
+def sneak_main_hold(
+    state: dict | None, *, declare_step: bool = False, lethal_only: bool = True
+) -> SneakHold | None:
     """Before our attack: the Sneak line (attack with every able creature, Sneak after blocks)
-    when it is lethal on the current board, or beats casting the card normally by at least half
-    their life at the same or a lower cost (``beats_hard_cast``, ledger #179), else None. Main
-    phase 1 of our turn only, and never when the attack is lethal without it."""
+    when it is lethal on the current board, else None; with ``lethal_only`` False also when it
+    beats casting the card normally by at least half their life at the same or a lower cost
+    (``beats_hard_cast``, ledger #179: the main-1 hold). Main phase 1 of our turn only, or also
+    our declare-attackers step with ``declare_step`` (the attack that the Sneak follows), and never
+    when the attack is lethal without it."""
     if not isinstance(state, dict):
         return None
     turn = state.get("turn") or {}
@@ -446,7 +450,8 @@ def sneak_main_hold(state: dict | None) -> SneakHold | None:
     if local is None or turn.get("active_player") != local:
         return None
     phase, step = _norm(turn.get("phase")), _norm(turn.get("step"))
-    if not (phase in ("main1", "beginning") or (phase == "combat" and step in ("", "begincombat"))):
+    combat_steps = ("", "begincombat") + (("declareattack", "declareattackers") if declare_step else ())
+    if not (phase in ("main1", "beginning") or (phase == "combat" and step in combat_steps)):
         return None
     casts = sneak_casts(state)
     if not casts:
@@ -474,7 +479,7 @@ def sneak_main_hold(state: dict | None) -> SneakHold | None:
         if with_sneak <= without:
             continue
         hold = SneakHold(cast, without, power, with_sneak, life, cast.mana_value)
-        if not hold.lethal and not beats_hard_cast(cast, hold.gain, life):
+        if not hold.lethal and (lethal_only or not beats_hard_cast(cast, hold.gain, life)):
             continue
         if best is None or (hold.lethal, hold.total) > (best.lethal, best.total):
             best = hold
@@ -671,7 +676,7 @@ def hold_filter(decision: Any, state: dict | None) -> tuple[Any, str]:
     """
     if not isinstance(state, dict) or getattr(decision, "request_type", "") != "ActionsAvailable":
         return decision, ""
-    hold = sneak_main_hold(state)
+    hold = sneak_main_hold(state, lethal_only=False)
     if hold is None:
         return decision, ""
     try:

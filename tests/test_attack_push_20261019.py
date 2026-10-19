@@ -43,6 +43,10 @@ from arenamcp.board_assessment import assess
 from arenamcp.combat_strategy import combat_choice
 from arenamcp.line_guard import attack_push, attack_push_mode
 
+# The lines these tests pin must not depend on a loaded machine (the hard cap is a clock).
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
+
+
 # The thirteen tokens the best line sends at T12: the Warriors and the able Rabbits.
 TOKENS = [600, 602, 603, 607, 609, 610, 611, 615, 617, 618, 619, 620, 625]
 MODEL_STRATEGY = "Stabilize behind the token wall and close with later swarm swings."
