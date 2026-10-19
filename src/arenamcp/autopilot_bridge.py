@@ -882,6 +882,7 @@ class _BridgeSubmitMixin:
                 theirs,
                 remaining_blockers,
                 our_walker_loyalties=walkers,
+                caller="bridge solver attack",
             )
         except Exception as e:
             logger.debug(f"combat solver attack fallback failed: {e}")
@@ -972,7 +973,9 @@ class _BridgeSubmitMixin:
                 your_life,
                 theirs,
             )
-            best = optimal_attacks(candidates, opp_blockers, opp_life, your_life, theirs, spare)
+            best = optimal_attacks(
+                candidates, opp_blockers, opp_life, your_life, theirs, spare, caller="bridge attack override"
+            )
         except Exception as e:
             logger.debug(f"attack override solver failed: {e}")
             return None

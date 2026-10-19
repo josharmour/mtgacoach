@@ -2266,7 +2266,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         # maximizes expected damage through while surviving worst-case
         # crackback. Surface its pick so the LLM can follow it.
         try:
-            from arenamcp.combat_solver import optimal_attacks
+            from arenamcp.combat_solver import display_deadline, optimal_attacks
             from arenamcp.combat_strategy import combat_choice
 
             recipient_plan = combat_choice(game_state) if game_state else None
@@ -2278,6 +2278,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             your_remaining_blockers = [
                 c for c in your_creatures if c not in valid_attackers and not c.get("is_tapped")
             ]
+            # A main-phase prompt only shows the pick (no attack request pending): big boards
+            # get the short deadline instead of 2 s on the decision path (#162/#182).
             solver_plan = optimal_attacks(
                 valid_attackers,
                 opp_blockers,
@@ -2285,6 +2287,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 your_life,
                 opp_next_turn_attackers,
                 your_remaining_blockers,
+                deadline_s=display_deadline(len(valid_attackers)),
+                caller="coach prompt",
             )
             if solver_plan is not None:
                 lines.append(f"Computed optimal attack: {solver_plan.explanation}")
