@@ -1484,6 +1484,180 @@ def _kill_corrections(
     return text, notes
 
 
+# --- claims in a decision's reasoning (ledger #84) -------------------------------------
+#
+# 2026-10-19: the per-decision reasoning states abilities the cards don't have.
+# 11:23:15 / 11:23:50 (match b2a6f83a): "Casting Giant Cindermaw gives haste trample
+# pressure", "two hasty trampling attackers" (Cindermaw has no haste). 11:40:47 (match
+# a358cce5 T9): "Casting Fleeting Effigy ... grows Slickshot via the noncreature-spell
+# trigger" (Effigy is a creature spell). a358cce5 T11: a Hired Claw ping expected from a
+# summoning-sick Claw. The plan's keyword check (#23) now also reads decision
+# reasoning, with three more claims: "hasty X" / "X gives haste", a noncreature-spell
+# or prowess trigger from casting a creature, and a summoning-sick creature attacking,
+# pinging or tapping this turn.
+
+_HASTE_CLAIM = re.compile(r"\bhast(?:e|y)\b")
+_NONCREATURE_TRIGGER = re.compile(r"\bnon-?creature[- ]spell\b|\bprowess\b|\bspell trigger\b")
+_ATTACK_CLAIM = re.compile(
+    r"\b(?:attack(?:s|ing)?|swing(?:s|ing)?|ping(?:s|ing)?|crew(?:s|ing)?|tap(?:s|ping)? (?:it|~)"
+    r"|attack trigger)\b"
+)
+# Not this turn, or not a claim: "next turn", "later", "can't attack", "T13".
+_NOT_NOW = re.compile(
+    r"\b(?:next|later|future|following|eventually|can't|cannot|won't|not|no|until|after this turn)\b"
+    r"|\bt\d+\b|\bturn \d+\b"
+)
+_CLAUSE_END = re.compile(r"[;.|\n]|\bthen\b|\bwhile\b|\band then\b")
+
+
+def _summoning_sick(card: dict, turn: int, global_haste: bool) -> bool:
+    from arenamcp.combat_keywords import has_combat_keyword
+
+    entered = card.get("turn_entered_battlefield")
+    return (
+        _is_creature_card(card)
+        and isinstance(entered, int)
+        and entered >= turn > 0
+        and not global_haste
+        and not has_combat_keyword(card, "haste")
+    )
+
+
+def decision_claim_notes(text: str, state: dict | None, *, cast_ids: Any = ()) -> list[str]:
+    """False claims about our and their cards in a decision's reasoning, as short facts.
+
+    ``cast_ids``: instance ids of the cards the chosen option casts (a creature
+    cast now is summoning sick, and its cast triggers no noncreature-spell
+    ability). Each fact is a board fact, e.g. "Giant Cindermaw has no haste".
+    [] when nothing is contradicted or the board is unknown; never raises.
+    """
+    try:
+        return _decision_claim_notes(str(text or ""), state, set(cast_ids or ()))
+    except Exception as error:  # a claim check must never cost the decision
+        logger.debug("decision claim check failed: %s", error, exc_info=True)
+        return []
+
+
+def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[str]:
+    if not text or not isinstance(state, dict):
+        return []
+    local = _local_seat(state)
+    if local is None:
+        return []
+    battlefield = [c for c in state.get("battlefield") or [] if isinstance(c, dict)]
+    on_board = [c for c in battlefield if _is_creature_card(c) and c.get("name")]
+    ours = [c for c in on_board if (c.get("controller_seat_id") or c.get("owner_seat_id")) == local]
+    theirs = [c for c in on_board if (c.get("controller_seat_id") or c.get("owner_seat_id")) != local]
+    hand = [c for c in _castable_cards(state) if c.get("name")]
+    turn_info = state.get("turn") or {}
+    turn = _round(turn_info.get("turn_number"))
+    our_turn = turn_info.get("active_player") == local
+    notes: list[str] = []
+
+    # Keyword and blocking claims, as in the plan (#23).
+    _corrected, found = _claim_corrections(
+        text,
+        ours=ours,
+        theirs=theirs,
+        hand=[c for c in hand if _is_creature_card(c)],
+        battlefield=battlefield,
+        our_turn=our_turn,
+    )
+    notes.extend(found)
+
+    lowered = text.lower().replace("’", "'")
+    if len(lowered) != len(text):
+        return notes
+    creatures = [*ours, *theirs, *[c for c in hand if _is_creature_card(c)]]
+    spans = _name_spans(lowered, _claim_keys([*creatures, *hand]))
+    by_name: dict[str, list[dict]] = {}
+    for card in [*creatures, *hand]:
+        by_name.setdefault(str(card.get("name")), []).append(card)
+
+    def window(index: int) -> str:
+        """From after this name to the next name or the end of its clause."""
+        end = spans[index][1]
+        stop = spans[index + 1][0] if index + 1 < len(spans) else len(lowered)
+        part = lowered[end:stop]
+        cut = _CLAUSE_END.search(part)
+        return part[: cut.start()] if cut else part
+
+    # "hasty X", "X gives haste": X a creature without haste (no grant on the board).
+    for index, (start, _end, name) in enumerate(spans):
+        cards = [c for c in by_name.get(name, []) if _is_creature_card(c)]
+        if not cards:
+            continue
+        before = lowered[max(0, start - 12) : start]
+        # Close by and in the same phrase: "gives haste", "two hasty trampling attackers".
+        near = window(index)[:30].split(",")[0]
+        claimed = _HASTE_CLAIM.search(near) or re.search(r"\bhasty\s+(?:the\s+)?$", before)
+        if claimed and _keyword_truth(cards, "haste", battlefield) is False:
+            fact = f"{name} has no haste"
+            if fact not in notes and not any(n.startswith(f"{name} has no haste") for n in notes):
+                notes.append(fact)
+
+    # A creature cast now: no noncreature-spell trigger, and summoning sick.
+    cast = [c for c in hand if c.get("instance_id") in cast_ids]
+    for card in cast:
+        name = str(card.get("name"))
+        if not _is_creature_card(card):
+            continue
+        for sentence in re.split(r"[;.\n]", lowered):
+            keys = {key for key, owner in _claim_keys([card]) if owner == name}
+            if not any(re.search(rf"(?<![a-z0-9]){re.escape(key)}(?![a-z0-9])", sentence) for key in keys):
+                continue
+            other_spells = [
+                c
+                for c in hand
+                if not _is_creature_card(c)
+                and c.get("instance_id") not in cast_ids
+                and _named_creatures(sentence, [str(c.get("name"))])
+            ]
+            if _NONCREATURE_TRIGGER.search(sentence) and not other_spells:
+                fact = (
+                    f"{name} is a creature spell: casting it triggers no noncreature-spell ability (prowess)"
+                )
+                if fact not in notes:
+                    notes.append(fact)
+
+    # A summoning-sick creature of ours (or one cast now) attacking, pinging or tapping this turn.
+    phase = str(turn_info.get("phase") or "")
+    step = str(turn_info.get("step") or "")
+    before_attacks = our_turn and (
+        phase in ("Phase_Beginning", "Phase_Main1", "Beginning", "Main1")
+        or (phase in ("Phase_Combat", "Combat") and step in ("", "Step_BeginCombat", "Step_DeclareAttack"))
+    )
+    if before_attacks:
+        global_haste = _our_global_haste(state)
+        sick = {str(c.get("name")) for c in ours if _summoning_sick(c, turn, global_haste)} | {
+            str(c.get("name"))
+            for c in cast
+            if _is_creature_card(c)
+            and not global_haste
+            and _keyword_truth([c], "haste", battlefield) is False
+        }
+        able = {str(c.get("name")) for c in ours if not _summoning_sick(c, turn, global_haste)}
+        for index, (start, _end, name) in enumerate(spans):
+            if name not in sick or name in able:
+                continue
+            after = window(index)
+            before = lowered[max(0, start - 40) : start]
+            before = before[_last_clause_start(before) :]
+            claim = _ATTACK_CLAIM.search(after) or re.search(
+                r"\battack(?:s|ing)? with\s+(?:the\s+)?$", before
+            )
+            if claim and not _NOT_NOW.search(after) and not _NOT_NOW.search(before):
+                fact = f"{name} is summoning sick: it can't attack, tap or make an attack trigger this turn"
+                if fact not in notes:
+                    notes.append(fact)
+    return notes
+
+
+def _last_clause_start(text: str) -> int:
+    ends = list(_CLAUSE_END.finditer(text))
+    return ends[-1].end() if ends else 0
+
+
 def _check_kill_claims(plan: GamePlan, assessment: Any, state: dict, issues: list[str]) -> None:
     """Annotate false kill claims in the plan's text (see the comment above)."""
     try:
