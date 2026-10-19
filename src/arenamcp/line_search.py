@@ -14,7 +14,8 @@ outcome class or death/win timing, or by at least ``LINE_TOL`` in value.
 The opponent (``line_search_moves.ParanoidOpponent``) is paranoid but
 uninventive: if ANY of its attack policies kills us the line is dead there (a
 lethal attack is never filtered out); otherwise it takes the non-suicidal one
-worst for us. It deploys nothing, draws nothing and casts no tricks (v1); an
+worst for us. It deploys nothing, draws nothing and casts no tricks (v1), but
+plays a land each turn for its landfall creatures (since 2026-10-19); an
 unparsed or 'other' mode of a modal card is worth 0; no unknown card is ever
 invented. ``proxy_outcome`` replays a line with +2/+0 on their biggest attacker
 as a robustness check.

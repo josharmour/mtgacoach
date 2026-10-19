@@ -11,11 +11,13 @@ an attack (none / all / the ones that survive their best blocks / the evasive
 ones). Lifelink heals its side with the combat damage. A cast pays its additional
 mana cost and the life it costs; a set that would kill us is never cast, nor is
 a spell whose "can't cast unless" condition is unmet. Their turn: everything
-untaps, our held instants answer (a flash creature or token maker blocks only
-while blocks are still to come), and the opponent attacks with the policy worst
-for us (``ParanoidOpponent``). Mana, colours, summoning sickness and tapped
-creatures follow the rules the board assessment uses; all combat is
-``board_assessment._combat``. Pure: no I/O, no LLM, nothing logged.
+untaps, they play a land (one, plus one per "play an additional land"
+permanent) and their landfall creatures grow (``landfall_growth``), our held
+instants answer (a flash creature or token maker blocks only while blocks are
+still to come), and the opponent attacks with the policy worst for us
+(``ParanoidOpponent``). Mana, colours, summoning sickness and tapped creatures
+follow the rules the board assessment uses; all combat is
+``board_assessment._combat_life``. Pure: no I/O, no LLM, nothing logged.
 
 What a cast does: a creature's body; creature tokens a spell (or a mode, or a
 permanent's enters trigger) makes when their count, power/toughness and
@@ -52,6 +54,7 @@ from arenamcp.board_assessment import (
     _body_colors,
     _cast_text,
     _combat_life,
+    _controller,
     _enters_tapped,
     _flying,
     _int,
@@ -129,6 +132,8 @@ _ATTACK_RELEVANT = re.compile(
 )
 # Ids of countered bodies (a fresh id per body and count, below the token ids).
 _COUNTER_IDS = 800_000_000
+# Ids of their attackers pumped by landfall for one attack (``Moves._pumped``).
+_PUMP_IDS = 700_000_000
 # "For every 3 life you gained this game, create an additional one of those tokens."
 _LIFE_GAME_EXTRA = re.compile(
     r"\bfor (?:every|each) (\w+) life you(?:'ve)? gained this game, create an additional one of those tokens\b"
@@ -213,6 +218,35 @@ def attack_ping_line(line: str) -> tuple[int, str] | None:
     return amount, (re.sub(r"(?<!s)s$", "", kind) if kind else "any")
 
 
+# A creature that grows when a land enters under its controller's control: "Landfall — Whenever a
+# land you control enters, put a +1/+1 counter on this creature." (Sazh's Chocobo), or "... this
+# creature gets +2/+2 until end of turn".
+_LANDFALL = re.compile(
+    r"^(?:landfall\s*[—–-]\s*)?whenever a land (?:you control )?enters(?: the battlefield)?"
+    r"(?: under your control)?\s*,\s*(?:put (?P<n>a|an|one|two|three|\d+) \+1/\+1 counters? on "
+    r"(?:~|this creature|it)|(?:~|this creature|it) gets \+(?P<p>\d+)/\+(?P<t>\d+) until end of turn)\.?$"
+)
+# "You may play an additional land on each of your turns." (Icetill Explorer, Azusa, Exploration).
+_EXTRA_LAND = re.compile(r"\byou may play (?:an|one|two|\d+) additional lands?\b")
+
+
+def landfall_growth(card: dict) -> tuple[int, int, int]:
+    """(+1/+1 counters, temporary +power, temporary +toughness) the card's own landfall gives it per land."""
+    counters = power = toughness = 0
+    text = _QUOTED.sub("", _text(card))
+    if "land" not in text:
+        return 0, 0, 0
+    for line in _own_lines(text):
+        match = _LANDFALL.match(line)
+        if match is None:
+            continue
+        if match.group("n"):
+            counters += _COUNT_WORDS.get(match.group("n")) or _int(match.group("n")) or 0
+        else:
+            power, toughness = power + int(match.group("p")), toughness + int(match.group("t"))
+    return counters, power, toughness
+
+
 def attack_pings(card: dict) -> tuple[tuple[int, str], ...]:
     """The card's own fixed attack-trigger pings to players (``attack_ping_line``), () without one.
 
@@ -223,7 +257,16 @@ def attack_pings(card: dict) -> tuple[tuple[int, str], ...]:
     text = _QUOTED.sub("", _text(card))
     if "attack" not in text:
         return ()
-    return tuple(found for line in text.splitlines() if (found := attack_ping_line(line)) is not None)
+    return tuple(found for line in _own_lines(text) if (found := attack_ping_line(line)) is not None)
+
+
+def _own_lines(text: str) -> list[str]:
+    """The text's lines, whitespace-normalised, each once: Arena repeats a rules line in up to
+    three formats ("<i>Landfall</i><nobr> —</nobr> ..."), which must not count twice."""
+    seen: dict[str, None] = {}
+    for line in text.splitlines():
+        seen.setdefault(" ".join(line.split()), None)
+    return [line for line in seen if line]
 
 
 # The soft limit is a work budget, not a clock, so the same board always gets the same
@@ -874,6 +917,16 @@ class Moves:
         self._burn_memo: dict = {}
         self._strength_memo: dict = {}
         self._ping_memo: dict = {}
+        self._growth_memo: dict = {}
+        self._pump_memo: dict = {}
+        # Lands they play each of their turns, for their landfall creatures (ledger #27, match
+        # 92c09c7a: Sazh's Chocobo grew +1/+1 a turn while the lines attacked with a static 7/8).
+        # Paranoid: one a turn, plus their "play an additional land" permanents.
+        self.their_drops = 1 + sum(
+            1
+            for c in model.battlefield
+            if isinstance(c, dict) and _controller(c) == model.opponent and _EXTRA_LAND.search(_text(c))
+        )
         # Hushbringer / Torpor Orb on the battlefield: a creature we cast triggers nothing on entering.
         self.enters_triggers = not any(_NO_ENTERS_TRIGGERS.search(_text(c)) for c in model.battlefield)
         self._prepare()
@@ -1783,6 +1836,7 @@ class Moves:
             turn=node.abs_turn + 1,
             next_k=node.k + 1,
             next_abs=node.abs_turn + 2,
+            landfall=True,
         )
         after = Step(
             **step,
@@ -1892,6 +1946,43 @@ class Moves:
         words = f"{card.get('type_line') or ''} {' '.join(str(s) for s in card.get('subtypes') or [])}"
         return kind in re.findall(r"[a-z'-]+", words.lower().replace("subtype_", ""))
 
+    def growth(self, body: dict) -> tuple[int, int, int]:
+        """``landfall_growth`` of a body, memoised."""
+        found = self._growth_memo.get(id(body))
+        if found is None:
+            found = self._growth_memo[id(body)] = landfall_growth(body.get("_card") or body)
+        return found
+
+    def _landfall(self, bodies) -> list[dict]:
+        """``bodies`` (theirs) after their land drops: each landfall creature with its +1/+1 counters
+        (``_countered``: a fresh id, so the memos see a new body; it keeps growing every turn)."""
+        out = []
+        for body in bodies:
+            counters = self.growth(body)[0] * self.their_drops
+            out.append(self._countered(body, counters) if counters else body)
+        return out
+
+    def _pumped(self, attackers) -> tuple[list[dict], dict]:
+        """Their attackers with this turn's temporary landfall pumps, and pumped id -> original id."""
+        out, back = [], {}
+        for body in attackers:
+            _n, power, toughness = self.growth(body)
+            if not (power or toughness):
+                out.append(body)
+                continue
+            key = (body["instance_id"], self.their_drops)
+            found = self._pump_memo.get(key)
+            if found is None:
+                found = self._pump_memo[key] = {
+                    **body,
+                    "instance_id": _PUMP_IDS + len(self._pump_memo),
+                    "power": body["power"] + power * self.their_drops,
+                    "toughness": body["toughness"] + toughness * self.their_drops,
+                }
+            out.append(found)
+            back[found["instance_id"]] = body["instance_id"]
+        return out, back
+
     def _strength(self, var: Variant) -> float:
         """``_reach_strength`` memoised: re-reading the removal text on every attack of theirs
         was a sixth of a burn-heavy hand's search (2026-10-19)."""
@@ -1943,7 +2034,7 @@ class Moves:
     def their_attack(
         self, *, life, opp_life, ours, theirs, able, blockers, hand, entered, keep_tapped, spare, returning,
         index, turn, next_k, next_abs, fixed=None, variant="best", crack_exclude=frozenset(), tag="",
-        blocks_locked=False,
+        blocks_locked=False, landfall=False,
     ) -> dict:  # fmt: skip
         """Their attack: any lethal policy kills us; else the non-suicidal one worst for us.
 
@@ -1957,6 +2048,8 @@ class Moves:
         now can't block; it still enters for our next turn.
         """
         self.opponent.chance(self, life)  # v1: always NOTHING
+        if landfall:  # a later turn of theirs: their land drop(s) grow their landfall creatures first
+            theirs, able = self._landfall(theirs), self._landfall(able)
         removal, flash, left = self._held(hand, spare, life)
         flash_bodies = [b for v in flash for b in _bodies(v)]
         hand_left = tuple(i for i in hand if i not in {v.spell for v in flash})
@@ -1973,7 +2066,7 @@ class Moves:
             policies = [("declared", tuple(fixed))]
         else:
             policies = self.opponent.attack_policies(self, able, defenders, life)
-        context = (life, opp_life, ours_all, theirs, defenders, removal, entered, keep_tapped, returning, index, next_k, next_abs, tag, left)  # fmt: skip
+        context = (life, opp_life, ours_all, theirs, defenders, removal, entered, keep_tapped, returning, index, next_k, next_abs, tag, left, landfall)  # fmt: skip
         seen, outcomes = set(), []
         for name, attackers in policies:
             if ids_of(attackers) not in seen:
@@ -1994,7 +2087,7 @@ class Moves:
 
     def _policy(
         self, name, attackers, hand, life, opp_life, ours, theirs, defenders, removal, entered, keep_tapped,
-        returning, index, next_k, next_abs, tag, left=0,
+        returning, index, next_k, next_abs, tag, left=0, landfall=False,
     ) -> dict:  # fmt: skip
         declared = sorted(attackers, key=lambda b: b["instance_id"])
         removed: set[int] = set()
@@ -2016,10 +2109,13 @@ class Moves:
         if boost:
             big = max(declared, key=lambda b: (b["power"], b["toughness"], -b["instance_id"]))
             fighting = [self._boost(b) if b is big else b for b in declared]
+        back: dict = {}
+        if landfall:  # "gets +2/+2 until end of turn" per land: for this attack only
+            fighting, back = self._pumped(fighting)
         damage, dead_att, dead_blk, gained, healed = self.combat_life(
             fighting, defenders, life, first=index == 1, tag=tag + ("proxy" if boost else "")
         )
-        dead_att = {abs(i) for i in dead_att}
+        dead_att = {abs(back.get(i, i)) for i in dead_att}
         # Lifelink lands with the damage: our lifelink blockers heal us, their lifelink
         # attackers heal them (match 41753907 T7: Dawnwing Marshal's 4 a turn). Their attack
         # triggers' pings hit us too (unless the attack was declared before the snapshot).

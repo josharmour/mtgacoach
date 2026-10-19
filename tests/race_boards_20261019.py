@@ -106,7 +106,20 @@ CARDS: dict[str, dict[str, Any]] = {
     "Sazh's Chocobo": {
         "type_line": "Creature — Bird", "mana_cost": "{G}", "power": 0, "toughness": 1,
         "card_types": ["CardType_Creature"],
-        "oracle_text": "Landfall — Whenever a land you control enters, put a +1/+1 counter on this creature.",
+        # Arena's text repeats the line in its markup variant.
+        "oracle_text": "Landfall — Whenever a land you control enters, put a +1/+1 counter on this creature.\n"
+        "<i>Landfall</i><nobr> —</nobr> Whenever a land you control enters, put a +1/+1 counter on this creature.",
+    },
+    "Steppe Lynx": {
+        "type_line": "Creature — Cat", "mana_cost": "{W}", "power": 0, "toughness": 1,
+        "card_types": ["CardType_Creature"],
+        "oracle_text": "Landfall — Whenever a land you control enters, this creature gets +2/+2 until end of turn.",
+    },
+    "Icetill Explorer": {
+        "type_line": "Creature — Insect Scout", "mana_cost": "{2}{G}{G}", "power": 2, "toughness": 4,
+        "card_types": ["CardType_Creature"],
+        "oracle_text": "You may play an additional land on each of your turns.\nYou may play lands from your "
+        "graveyard.\nLandfall — Whenever a land you control enters, mill a card.",
     },
     "Grizzly Bears": {
         "type_line": "Creature — Bear", "mana_cost": "{1}{G}", "power": 2, "toughness": 2,
