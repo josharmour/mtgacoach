@@ -3711,7 +3711,11 @@ class ActionPlanner(_ActionLegalityMixin):
                     return [DECLINE_DECISION]
                 if decision.request_type == "CastingTimeOptions":
                     # 2026-10-06 G1 T14: "destroy" over "gain 4 life" at 4 life.
+                    picked = chosen
                     chosen = self._apply_mode_guard(decision, game_state, chosen)
+                    if chosen == picked:
+                        # Ledger #142 (970d9b41 T12): "mode 1 kills Ravenhill Flock", a 1/2.
+                        chosen = self._correct_mode_kill_claim(decision, game_state, chosen)
                     self._remember_chosen_x(decision, chosen)
                 return chosen
             chosen = [c for c in chosen if c in valid]
@@ -4688,6 +4692,76 @@ class ActionPlanner(_ActionLegalityMixin):
             verdict.applies and not verdict.contingent and decision.selection_is_valid([verdict.option_id])
         )
         return self._guard_outcome(decision, chosen, verdict, applies=applies)
+
+    def _correct_mode_kill_claim(
+        self, decision: Any, game_state: dict[str, Any], chosen: list[str]
+    ) -> list[str]:
+        """A mode pick whose reasoning claims a kill only another mode makes: take that mode.
+
+        Ledger #142 (2026-10-19 match 970d9b41 T12, 13:33:55): Iroh's
+        Demonstration, "Mode 1 kills Ravenhill Flock, the only blocker ...;
+        mode 2's 4 damage is wasted on a 1-toughness bird". The Flock was a
+        1/2: the 1 damage to each creature killed nothing, mode 2 (tagged
+        'LINE best') would have, and the Flock dealt 23 of the 29 damage we
+        took. A correctness check, not a judgment guard, so it is always on
+        (no env switch, no line search needed): see
+        :func:`arenamcp.mode_claims.mode_kill_check`. Without another mode that
+        kills every claimed creature, or when the pick sweeps away something
+        that mode would not, the pick stands and only its words are corrected
+        (as ledger #86 does for casts). The model's own words stay in the trace.
+        """
+        if decision.request_type != "CastingTimeOptions" or len(chosen) != 1:
+            return chosen
+        try:
+            from arenamcp.mode_claims import mode_kill_check
+            from arenamcp.play_safety import strip_kill_claims
+
+            check = mode_kill_check(game_state, decision, chosen, self._last_decision_reasoning)
+        except Exception as error:  # a check never blocks a decision
+            logger.debug("mode kill claim check skipped: %s", error)
+            return chosen
+        if check is None:
+            return chosen
+        said = self._last_decision_reasoning
+        missed = ", ".join(check.missed)
+        record = {**check.as_trace(), "model_reasoning": said, "applied": check.applies}
+        if isinstance(getattr(self, "_last_decision_trace", None), dict):
+            self._last_decision_trace["mode_kill_claim"] = record
+        if not check.applies:
+            extra = ", ".join(check.extra)
+            why = (
+                f"{check.replacement_mode} kills it, but {check.chosen_mode} also kills {extra}"
+                if check.replacement
+                else "no other mode kills it"
+            )
+            logger.warning(
+                "mode pick kept: %s claims kill %s; %s [model said: %s]",
+                check.chosen_mode,
+                missed,
+                why,
+                said[:160],
+            )
+            victims = [
+                card
+                for card in game_state.get("battlefield") or []
+                if isinstance(card, dict) and _as_int(card.get("instance_id")) in check.missed_ids
+            ]
+            kept = strip_kill_claims(said, victims)
+            correction = f"Board math: {check.chosen_mode} does not kill {missed}; {why}."
+            self._last_decision_reasoning = f"{kept} {correction}".strip()
+            return chosen
+        logger.warning(
+            "mode pick corrected: %s claims kill %s; %s kills it [model said: %s]",
+            check.chosen_mode,
+            missed,
+            check.replacement_mode,
+            said[:160],
+        )
+        replacement = check.replacement_mode[:1].upper() + check.replacement_mode[1:]
+        claimed = ", ".join(check.claimed)
+        self._last_decision_reasoning = f"{replacement} kills {claimed}; {check.chosen_mode} does not."
+        self._last_decision_option_ids = [check.replacement]
+        return [check.replacement]
 
     def _guard_outcome(self, decision: Any, chosen: list[str], verdict: Any, *, applies: bool) -> list[str]:
         """Trace and log a line/mode guard verdict; replace the pick only when it applies."""
@@ -5696,6 +5770,21 @@ class ActionPlanner(_ActionLegalityMixin):
         except Exception as error:  # the strategic layer never blocks a decision
             logger.debug("line target not read: %s", error)
             return "", 0
+
+    @staticmethod
+    def _searched_line_mode(game_state: dict[str, Any], name: str) -> str:
+        """The mode the searched best line casts ``name`` with this turn, as the line search names
+        it ('deals 4 damage to target creature'), or "" (no such cast, or no mode: ledger #144)."""
+        try:
+            from arenamcp.board_assessment import assess
+
+            result = getattr(assess(game_state), "line_search", None)
+            best = getattr(result, "best", None)
+            step = best.steps[0] if best is not None and best.steps else None
+            return str(dict(step.modes).get(name) or "") if step is not None else ""
+        except Exception as error:  # the strategic layer never blocks a decision
+            logger.debug("line mode not read: %s", error)
+            return ""
 
     def _line_target_agreement(self, decision: Any, game_state: dict[str, Any], chosen: list[str]) -> str:
         """Why a target answer is the searched line's own target for this cast, or "" (ledger #118).
@@ -7580,7 +7669,8 @@ def board_math_agreement(
     if picked != chosen:
         return ""
     option = decision.find(chosen[0])
-    name = str(find_source(game_state, (option.meta if option is not None else None) or {}).get("name") or "")
+    card = find_source(game_state, (option.meta if option is not None else None) or {})
+    name = str(card.get("name") or "")
     target, target_id = ActionPlanner._searched_line_target(game_state, name) if name else ("", 0)
     if target and not _reasoning_names_target(reasoning, target, target_id=target_id, game_state=game_state):
         logger.info(
@@ -7590,6 +7680,30 @@ def board_math_agreement(
             str(reasoning or "")[:160],
         )
         return ""
+    # Ledger #144 (2026-10-19 match 970d9b41 T12, 13:33:53): the line was "Iroh's Demonstration
+    # (deals 4 damage to target creature, on Ravenhill Flock)"; the low answer "Iroh's mode 1
+    # sweeps Ravenhill Flock" named the target, so the high leg was cancelled, and the mode
+    # menu then took mode 1. A low answer that speaks of another mode waits for the high one.
+    modal = "•" in str(card.get("oracle_text") or "")  # a 'choose one' card
+    mode = ActionPlanner._searched_line_mode(game_state, name) if name and modal else ""
+    if mode:
+        try:
+            from arenamcp.mode_claims import other_modes_named
+
+            others = other_modes_named(reasoning, card, mode)
+        except Exception as error:  # unread: the cast waits for the high answer
+            logger.debug("line mode check failed: %s", error)
+            return ""
+        if others:
+            logger.info(
+                "typed-decision: the low answer casts the line's %s but names %s, "
+                "not the line's mode (%s): %r",
+                name,
+                ", ".join(others),
+                mode,
+                str(reasoning or "")[:160],
+            )
+            return ""
     return why or "the board-math play"
 
 
