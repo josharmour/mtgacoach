@@ -1,0 +1,19 @@
+[Unit]
+Description=GLM-5.3 vLLM wedge watchdog (docker restart on a stuck TP engine, 2026-10-19 CUDA OOM hang)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+# root: needs the docker socket to inspect/exec/restart the container
+ExecStart=/usr/bin/python3 /usr/local/lib/glm53-watchdog/glm53_wedge_watchdog.py
+Restart=always
+RestartSec=15
+Environment=WD_CONTAINER=glm53-flash-2x-rtxpro6000
+Environment=WD_POLL_SEC=20
+Environment=WD_STUCK_SEC=120
+Environment=WD_COOLDOWN_SEC=420
+Environment=WD_MAX_PER_HOUR=3
+
+[Install]
+WantedBy=multi-user.target
