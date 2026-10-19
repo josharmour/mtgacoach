@@ -291,6 +291,14 @@ class _BridgeSubmitMixin:
             request_type = (
                 game_state.get("_bridge_request_type") or game_state.get("_bridge_request_class") or ""
             )
+            if "AssignDamage" in request_type:
+                # Arena's Done submits the assignment on screen; submit_pass is
+                # refused on AssignDamage (#102, 2026-10-19 12:22:20 MANUAL
+                # REQUIRED). Submit the deterministic split instead.
+                return self._try_gre_bridge_assign_damage(
+                    GameAction(action_type=ActionType.ASSIGN_DAMAGE, reasoning=action.reasoning),
+                    game_state,
+                )
             if action.action_type == ActionType.CLICK_BUTTON and request_type:
                 if "SelectReplacement" in request_type:
                     # Order Replacement's "Done" keeps Arena's first/default
@@ -1775,16 +1783,19 @@ class _BridgeSubmitMixin:
     def _try_gre_bridge_assign_damage(
         self, action: GameAction, game_state: dict[str, Any]
     ) -> ClickResult | None:
-        """Submit combat damage assignments via the GRE bridge.
+        """Submit combat damage assignments via the GRE bridge (damage_assignment).
 
-        The planner's GameAction carries `distribution` as a name → damage
-        map per attacker, but for AssignDamage we expect a richer structure:
-        the LLM ideally emits `target_names` listing the receivers in
-        order with `distribution` keyed by receiver name. When only one
-        attacker has damage to assign, we accept the simple form and
-        treat `distribution` as receiver_name → damage. Otherwise we
-        fall back to the bridge's existing assigner template.
+        The model's ``distribution`` (receiver -> damage) is used only for a
+        single attacker and only when Arena would accept it. Otherwise each
+        blocker gets lethal damage in Arena's order and the rest tramples over
+        (or stays on the last blocker). 2026-10-19 12:22:20 (#102): the plan was
+        a "Done" click, submit_pass is refused on AssignDamage, and the user
+        had to finish the assignment by hand. 2026-10-18 18:41: 5 damage put on a
+        lethal-3 blocker with the player's entry left out came back
+        FailureReason_InvalidDamageAssignment seven times.
         """
+        from arenamcp.damage_assignment import plan_assigners, submitted_distribution
+
         bridge = _progress_bridge_for(self, game_state)
         pending = bridge.get_pending_actions()
         if not pending or not pending.get("has_pending"):
@@ -1792,8 +1803,6 @@ class _BridgeSubmitMixin:
         req_class = pending.get("request_class") or pending.get("request_type") or ""
         if "AssignDamage" not in str(req_class):
             return None
-
-        battlefield = game_state.get("battlefield", []) or []
 
         bridge_assigners = pending.get("assigners") or []
         if not bridge_assigners:
@@ -1804,73 +1813,30 @@ class _BridgeSubmitMixin:
             )
             return None
 
-        assigners: list[dict[str, Any]] = []
-        dist_map = {k.lower(): v for k, v in (action.distribution or {}).items()}
-        for assigner in bridge_assigners:
-            try:
-                attacker_id = int(assigner.get("instanceId") or 0)
-                total = int(assigner.get("totalDamage") or 0)
-            except (TypeError, ValueError):
-                continue
-            if not attacker_id or total <= 0:
-                continue
-            assignments_in = assigner.get("assignments") or []
-            built: list[dict[str, int]] = []
-            remaining = total
-            # If the LLM gave us a per-receiver distribution, use that;
-            # otherwise dump everything onto the first legal receiver
-            # (typically the defending player or the only blocker).
-            if dist_map:
-                for entry in assignments_in:
-                    try:
-                        receiver_id = int(entry.get("instanceId") or 0)
-                    except (TypeError, ValueError):
-                        continue
-                    rname = ""
-                    for c in battlefield:
-                        try:
-                            if int(c.get("instance_id") or 0) == receiver_id:
-                                rname = str(c.get("name") or "").lower()
-                                break
-                        except (TypeError, ValueError):
-                            continue
-                    dmg = min(int(dist_map.get(rname, 0)), remaining)
-                    if dmg <= 0:
-                        continue
-                    built.append({"instanceId": receiver_id, "damage": dmg})
-                    remaining -= dmg
-                    if remaining <= 0:
-                        break
-            if not built:
-                # No usable split from the model: kill the most blockers we can
-                # (combat_solver._damage_order on Arena's lethal amounts).
-                built = _solver_damage_split(assignments_in, battlefield, total)
-                remaining = total - sum(int(b["damage"]) for b in built)
-            if not built:
-                # Default: dump all damage on the first listed assignment
-                # (bridge-supplied default order matches MTGA's blocker ordering).
-                if assignments_in:
-                    try:
-                        first_id = int(assignments_in[0].get("instanceId") or 0)
-                    except (TypeError, ValueError):
-                        first_id = 0
-                    if first_id:
-                        built.append({"instanceId": first_id, "damage": total})
-                        remaining = 0
-            # Spill any leftover damage to the last assignment slot.
-            if remaining > 0 and built:
-                built[-1]["damage"] = int(built[-1]["damage"]) + remaining
-            assigners.append({"instanceId": attacker_id, "assignments": built})
-
+        assigners, source = plan_assigners(bridge_assigners, game_state, action.distribution)
         if not assigners:
             logger.info("GRE bridge assign_damage: no assignments built; surfacing manual-required")
             return None
 
         if bridge.submit_assign_damage(assigners):
             self._log_execution_path(
-                ExecutionPath.GRE_AWARE, f"assign_damage: {len(assigners)} assigners via GRE bridge"
+                ExecutionPath.GRE_AWARE,
+                f"assign_damage: {len(assigners)} assigners via GRE bridge ({source}): {assigners}",
             )
-            return ClickResult(True, 0, 0, "assign_damage", "GRE bridge")
+            submitted = GameAction(
+                action_type=ActionType.ASSIGN_DAMAGE,
+                card_name=action.card_name,
+                distribution=submitted_distribution(assigners, game_state),
+                reasoning=action.reasoning,
+                model_choice=action.model_choice,
+                override_note=action.override_note
+                or (
+                    "the model's split was not legal, so each blocker got lethal damage first"
+                    if action.distribution and "model" not in source
+                    else ""
+                ),
+            )
+            return ClickResult(True, 0, 0, "assign_damage", "GRE bridge", submitted_action=submitted)
         self._gre_bridge_failed_methods.add("assign_damage")
         return None
 
@@ -2462,6 +2428,14 @@ class _BridgeSubmitMixin:
                 return _ok("up to N targets: none chosen")
             return False
 
+        # AssignDamage: lethal damage to each blocker, the rest tramples over (#102).
+        if dec_type == "assign_damage" or "AssignDamage" in btype + bclass:
+            res = self._try_gre_bridge_assign_damage(
+                GameAction(action_type=ActionType.ASSIGN_DAMAGE), game_state
+            )
+            if res is not None and res.success:
+                return _ok("deterministic damage assignment")
+
         # SelectReplacement: first replacement.
         if dec_type == "select_replacement" or "SelectReplacement" in btype or "SelectReplacement" in bclass:
             if bridge.submit_select_replacement(index=0):
@@ -2841,52 +2815,10 @@ def _solver_damage_split(
     """Split ``total`` damage over Arena's receivers to kill the most (and biggest) blockers.
 
     2026-10-18 pro game, match 2 turn 13: Ruric Thar (7/7 trample) into Tetsuko
-    (lethal 5), Voxmancer (2) and Heckler (3): 5 + 2 kills two. Each entry's
-    ``minDamage`` is Arena's lethal amount (marked damage and deathtouch
-    included); without it, the receiver's toughness. Leftover damage goes to a
-    receiver that is not a creature (the player or planeswalker trample reaches),
-    else onto the last blocker it kills. [] when no entry can be read.
+    (lethal 5), Voxmancer (2) and Heckler (3): 5 + 2 kills two. Now
+    damage_assignment.deterministic_split, which also keeps trample damage
+    off the player until every blocker has lethal damage (#102).
     """
-    from arenamcp.combat_solver import _damage_order, _has
+    from arenamcp.damage_assignment import deterministic_split
 
-    cards: dict[int, dict] = {}
-    for card in battlefield:
-        try:
-            cards[int(card.get("instance_id") or 0)] = card
-        except (TypeError, ValueError):
-            continue
-    blockers: list[dict] = []
-    others: list[int] = []
-    for entry in assignments:
-        try:
-            receiver = int(entry.get("instanceId") or 0)
-        except (TypeError, ValueError):
-            continue
-        if not receiver:
-            continue
-        card = cards.get(receiver)
-        if card is None or "creature" not in str(card.get("type_line") or "").lower():
-            others.append(receiver)
-            continue
-        try:
-            lethal = int(entry.get("minDamage") or card.get("toughness") or 0)
-        except (TypeError, ValueError):
-            continue
-        blockers.append({**card, "toughness": max(1, lethal), "_receiver": receiver})
-    if not blockers:
-        return [{"instanceId": others[0], "damage": total}] if others else []
-    built: list[dict[str, int]] = []
-    remaining = total
-    for blocker in _damage_order(total, blockers, deathtouch=False):
-        if remaining < blocker["toughness"] or _has(blocker, "indestructible"):
-            break
-        built.append({"instanceId": blocker["_receiver"], "damage": blocker["toughness"]})
-        remaining -= blocker["toughness"]
-    if remaining > 0:
-        if others:
-            built.append({"instanceId": others[0], "damage": remaining})
-        elif built:
-            built[-1]["damage"] += remaining
-        else:
-            built.append({"instanceId": blockers[0]["_receiver"], "damage": remaining})
-    return built
+    return deterministic_split(assignments, battlefield, total)

@@ -2395,37 +2395,58 @@ class MacBridgeAdapter:
         raise AdapterError("Target selection was not acknowledged complete; refusing to finalize")
 
     def _cmd_submit_assign_damage(self, command: dict, timeout: float | None) -> dict:
+        """Answer AssignDamage as Arena's Done button does: every attacker, every receiver.
+
+        Each attacker's entries keep Arena's order and template (Min/MaxDamage),
+        with AssignedDamage from the command and 0 for a receiver it leaves out.
+        An attacker the command leaves out keeps Arena's own assignment. Player.log
+        2026-10-18 18:41: an answer without the player's entry (5 on a lethal-3
+        blocker) was refused FailureReason_InvalidDamageAssignment seven times;
+        Arena's own answers always list every entry (2026-10-19 12:23:04).
+        """
         snapshot = self._require(timeout, "AssignDamageRequest")
-        existing = {num(field(a, "InstanceId")): a for a in items(field(snapshot.request, "Assigners"))}
-        plans = []
+        requested = [a for a in items(field(snapshot.request, "Assigners")) if isinstance(a, dict)]
+        attackers = {num(field(a, "InstanceId")) for a in requested}
+        wanted: dict[int, dict[int, int]] = {}
         for spec in command.get("assigners") or []:
-            assigner = existing.get(int(spec.get("instanceId") or 0))
-            if assigner is None:
-                logger.warning(
-                    "mac bridge submit_assign_damage: attacker %s not in request", spec.get("instanceId")
-                )
+            attacker = int(spec.get("instanceId") or 0)
+            if attacker not in attackers:
+                logger.warning("mac bridge submit_assign_damage: attacker %s not in request", attacker)
                 continue
-            templates = {num(field(a, "InstanceId")): a for a in items(field(assigner, "Assignments"))}
-            plans.append((assigner, spec.get("assignments") or [], templates))
+            damage = wanted.setdefault(attacker, {})
+            for assignment in spec.get("assignments") or []:
+                receiver = int(assignment.get("instanceId") or 0)
+                damage[receiver] = damage.get(receiver, 0) + int(assignment.get("damage") or 0)
+        if not wanted:
+            raise AdapterError("no attacker in the command is in the AssignDamage request")
+        plans = []
+        for assigner in requested:
+            attacker = num(field(assigner, "InstanceId"))
+            templates = [t for t in items(field(assigner, "Assignments")) if isinstance(t, dict)]
+            receivers = {num(field(t, "InstanceId")) for t in templates}
+            damage = wanted.get(attacker)
+            if damage is None:
+                damage = {num(field(t, "InstanceId")): num(field(t, "AssignedDamage")) for t in templates}
+            elif set(damage) - receivers:
+                raise AdapterError(
+                    f"receivers {sorted(set(damage) - receivers)} are not in attacker {attacker}'s assignments"
+                )
+            plans.append((assigner, templates, damage))
 
         def build(ops: _Ops, request: dict) -> None:
             built = []
-            for assigner, assignments, templates in plans:
+            for assigner, templates, damage in plans:
                 clone = ops.new(MESSAGING + "DamageAssigner")
                 ops.set(clone, "InstanceId", U(num(field(assigner, "InstanceId"))))
                 ops.set(clone, "TotalDamage", U(num(field(assigner, "TotalDamage"))))
                 target_list = ops.get(clone, "Assignments")
-                for assignment in assignments:
-                    receiver, damage = (
-                        int(assignment.get("instanceId") or 0),
-                        int(assignment.get("damage") or 0),
-                    )
-                    template = templates.get(receiver)
+                for template in templates:
+                    receiver = num(field(template, "InstanceId"))
                     entry = ops.new(MESSAGING + "DamageAssignment")
                     ops.set(entry, "InstanceId", U(receiver))
-                    ops.set(entry, "MinDamage", U(num(field(template, "MinDamage")) if template else 0))
-                    ops.set(entry, "MaxDamage", U(num(field(template, "MaxDamage")) if template else damage))
-                    ops.set(entry, "AssignedDamage", U(damage))
+                    ops.set(entry, "MinDamage", U(num(field(template, "MinDamage"))))
+                    ops.set(entry, "MaxDamage", U(num(field(template, "MaxDamage"))))
+                    ops.set(entry, "AssignedDamage", U(damage.get(receiver, 0)))
                     ops.call(target_list, "Add", entry)
                 built.append(clone)
             ops.call(request, "SubmitAssignment", LIST(built))
