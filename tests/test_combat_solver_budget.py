@@ -45,25 +45,19 @@ def test_seven_attacker_board_is_bounded(monkeypatch):
 
 
 def _exhaustive(candidates, blockers, opp_life, your_life, crack, spare):
-    """Every subset with the original rules: highest score, lowest bitmask on ties."""
+    """Every subset scored by evaluate_attack: highest score, lowest bitmask on ties.
+
+    evaluate_attack is the scoring rule (since 2026-10-19 its crackback drops
+    blockers killed in the attack and chumps the chump guard refuses); this
+    checks that the bounded subset walk finds the same best plan.
+    """
     best, best_mask = None, 0
     n = len(candidates)
     for size in range(n + 1):
         for subset in combinations(range(n), size):
             attacking = [candidates[i] for i in subset]
             held = [candidates[i] for i in range(n) if i not in subset]
-            blocks = solver.optimal_blocks(attacking, blockers, opp_life)
-            crackback = solver.optimal_blocks(crack, held + spare, your_life)
-            plan = solver.AttackPlan(
-                attacker_ids=[c["instance_id"] for c in attacking],
-                damage_through=blocks.damage_through if blocks else sum(c["power"] for c in attacking),
-                worst_case_crackback=crackback.damage_through
-                if crackback
-                else sum(c["power"] for c in crack),
-                attackers_lost_material=blocks.attackers_killed_material if blocks else 0,
-                blockers_killed_material=blocks.blockers_lost_material if blocks else 0,
-            )
-            plan.score = solver._score_attack_plan(plan, your_life, opp_life)
+            plan = solver.evaluate_attack(attacking, held + spare, blockers, opp_life, your_life, crack)
             mask = sum(1 << i for i in subset)
             if best is None or plan.score > best.score or (plan.score == best.score and mask < best_mask):
                 best, best_mask = plan, mask

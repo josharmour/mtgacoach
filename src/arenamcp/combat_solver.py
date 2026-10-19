@@ -53,6 +53,8 @@ def _card_key(c: dict) -> tuple:
         c.get("oracle_text"),
         tuple(c.get("keywords") or ()),
         c.get("cant_be_blocked"),
+        c.get("combat_hit_bonus"),
+        c.get("is_tapped"),
     )
 
 
@@ -155,6 +157,77 @@ def _can_block(attacker: dict, blocker: dict) -> bool:
     return True
 
 
+# --- Who is still there next turn --------------------------------------------
+#
+# 2026-10-19 T10 (match 92c09c7a): the safe-default attack kept Fleeting Effigy
+# home "to chump" the 7/8 Chocobo, but Effigy returns to its owner's hand at
+# our end step ("At the beginning of your end step, return this creature to
+# its owner's hand"); we had no blocker on T11 and died. 10:14:31 (match
+# 1e4ccb0c) the bridge's attack override cancelled a free Effigy attack for the
+# same reason, and counted Slumbering Cerberus ("doesn't untap during your
+# untap step", tapped) and Perforating Artist, which died blocking in the very
+# attack being scored, in the crackback.
+
+_LEAVES_AT_END_STEP = re.compile(
+    r"(?:^|\n)\s*at the beginning of (?:your|the|each) end step, (?:return|sacrifice|exile) "
+    r"(?P<who>[^,.\n]+?)(?: to (?:its|their) owner's hand| from the battlefield)?\s*(?:\.|$|\n)"
+)
+_DOESNT_UNTAP = re.compile(r"doesn't untap during (?:your|its controller's) untap step")
+_UNTAPS_ITSELF = re.compile(r"\buntap (?:this creature|this permanent|cardname|~|it)\b")
+_CANT_ATTACK = re.compile(r"(?m)^\s*(?:this creature |cardname |~ )?can't attack(?: or block)?\.?\s*$")
+
+
+def _plain_rules(card: dict) -> str:
+    """Lower-case rules text without markup or parenthesized reminder text."""
+    return _without_reminders(_text(card))
+
+
+@lru_cache(maxsize=2048)
+def _without_reminders(text: str) -> str:
+    text = re.sub(r"<[^>]*>", "", text)
+    while re.search(r"\([^()]*\)", text):
+        text = re.sub(r"\([^()]*\)", "", text)
+    return text
+
+
+def leaves_at_our_end_step(card: dict) -> bool:
+    """The creature returns to hand, is sacrificed or exiled at this turn's end step.
+
+    Only an unconditional clause on the creature itself counts (Fleeting
+    Effigy, Ball Lightning); "if ..." conditions and reminder text (unearth)
+    keep it as a blocker. Called on our turn, where "your end step" is today's.
+    """
+    match = _LEAVES_AT_END_STEP.search(_plain_rules(card))
+    if match is None:
+        return False
+    who = match.group("who").strip()
+    name = str(card.get("name") or "").lower()
+    return who in ("this creature", "this permanent", "cardname", "~", "it") or (
+        bool(name) and (who == name or who == name.split(",")[0])
+    )
+
+
+def can_attack_next_turn(card: dict, *, creature_died: bool | None = None) -> bool:
+    """Whether an opposing creature can attack on its controller's next turn.
+
+    Defenders and "can't attack" creatures never do. A tapped creature that
+    "doesn't untap during your untap step" stays tapped unless its own text
+    untaps it; a morbid untap ("if a creature died this turn") counts unless
+    ``creature_died`` is known to be False.
+    """
+    if _has(card, "defender"):
+        return False
+    text = _plain_rules(card)
+    if _CANT_ATTACK.search(text):
+        return False
+    if card.get("is_tapped") and _DOESNT_UNTAP.search(text):
+        if not _UNTAPS_ITSELF.search(text):
+            return False
+        if "died this turn" in text and creature_died is False:
+            return False
+    return True
+
+
 # --- Combat resolution for a single attacker + assigned blockers -------
 
 
@@ -211,6 +284,10 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
       - Deathtouch: any damage to a blocker is lethal; when choosing how
         to spread damage with deathtouch+trample, 1 point per blocker is
         "lethal" for spillover math.
+      - An attacker marked ``combat_hit_bonus`` (``combat_strategy.with_hit_bonus``:
+        a combat-damage-to-a-player trigger that adds damage this combat,
+        such as Shark Shredder's reanimation into an attacker) deals that
+        much more when it connects.
     """
     atk_p, atk_t = _pt(attacker)
     atk_dth = _has(attacker, "deathtouch")
@@ -225,6 +302,8 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
     if not assigned:
         out.damage_through = atk_p * (2 if atk_ds else 1)
         out.life_gained = out.damage_through if atk_lifelink else 0
+        if out.damage_through > 0 and "combat_hit_bonus" in attacker:
+            out.damage_through += int(attacker["combat_hit_bonus"] or 0)
         return out
 
     assigned = _damage_order(atk_p, assigned, atk_dth)
@@ -245,7 +324,7 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
             if dmg_left <= 0:
                 break
         if atk_trample and dmg_left > 0:
-            out.damage_through = dmg_left
+            out.damage_through = dmg_left + int(attacker.get("combat_hit_bonus") or 0)
         # All of its damage is dealt: excess without trample still goes on the blockers.
         out.life_gained = atk_p if atk_lifelink else 0
         back = sum(_pt(b)[0] for b in assigned)
@@ -293,6 +372,8 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
         returning_deathtouch = any(_has(b, "deathtouch") and _pt(b)[0] > 0 for b in fs_blockers)
         if attacker_dead():
             out.attacker_died = True
+            if out.damage_through > 0:
+                out.damage_through += int(attacker.get("combat_hit_bonus") or 0)
             return out
 
     # --- Regular step: what has no first strike, and double strikers again ---
@@ -305,6 +386,8 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
         _has(b, "deathtouch") and _pt(b)[0] > 0 for b in regular
     )
     out.attacker_died = attacker_dead()
+    if out.damage_through > 0:
+        out.damage_through += int(attacker.get("combat_hit_bonus") or 0)
     return out
 
 
@@ -324,6 +407,7 @@ class BlockPlan:
     blockers_lost_ids: frozenset[int] = frozenset()
     recovery_credit: float = 0.0
     attacker_life_gained: int = 0  # the attacking side's lifelink gain under these blocks
+    attackers_killed_ids: frozenset[int] = frozenset()
 
 
 def _can_block_this_attacker(attacker: dict, blocker: dict, allowed_ids: set[int] | None) -> bool:
@@ -498,6 +582,7 @@ def _search_blocks(
                 lost_blockers.append(dead)
     plan.score = _score_block_plan(plan, your_life)
     plan.blockers_lost_ids = frozenset(c.get("instance_id", 0) for c in lost_blockers)
+    plan.attackers_killed_ids = frozenset(c.get("instance_id", 0) for c in killed_attackers)
     if recovery_credit is not None and plan.damage_through < your_life:
         plan.recovery_credit = recovery_credit(plan.blockers_lost_ids)
         plan.score += plan.recovery_credit
@@ -632,6 +717,8 @@ def _greedy_block_plan(
         damage_through=total_damage,
         attackers_killed_material=atk_killed_material,
         blockers_lost_material=blocker_lost_material,
+        blockers_lost_ids=frozenset(c.get("instance_id", 0) for c in lost_blockers),
+        attackers_killed_ids=frozenset(c.get("instance_id", 0) for c in killed_attackers),
     )
     plan.score = _score_block_plan(plan, your_life)
     plan.explanation = "greedy: " + ", ".join(
@@ -678,6 +765,7 @@ def optimal_attacks(
     deadline_s: float = 2.0,
     *,
     our_walker_loyalties: tuple[int, ...] = (),
+    creature_died_this_turn: bool | None = None,
 ) -> AttackPlan | None:
     """Best attack (memoized; see `_search_attacks`)."""
     key = (
@@ -690,7 +778,13 @@ def optimal_attacks(
         _cards_key(your_remaining_blockers),
         budget,
         tuple(our_walker_loyalties),
+        creature_died_this_turn,
     )
+    extra: dict[str, Any] = {}
+    if our_walker_loyalties:
+        extra["our_walker_loyalties"] = tuple(our_walker_loyalties)
+    if creature_died_this_turn is not None:
+        extra["creature_died_this_turn"] = creature_died_this_turn
     return _memoized(
         key,
         lambda: _search_attacks(
@@ -702,7 +796,7 @@ def optimal_attacks(
             your_remaining_blockers,
             budget,
             deadline_s,
-            **({"our_walker_loyalties": tuple(our_walker_loyalties)} if our_walker_loyalties else {}),
+            **extra,
         ),
     )
 
@@ -718,6 +812,7 @@ def _search_attacks(
     deadline_s: float,
     *,
     our_walker_loyalties: tuple[int, ...] = (),
+    creature_died_this_turn: bool | None = None,
 ) -> AttackPlan | None:
     """Pick the attacker subset that maximizes damage while surviving crackback.
 
@@ -742,6 +837,11 @@ def _search_attacks(
     # than scored with a cruder model than its rivals.
     remaining = budget
     started = time.monotonic()
+    extra: dict[str, Any] = {}
+    if our_walker_loyalties:
+        extra["our_walker_loyalties"] = our_walker_loyalties
+    if creature_died_this_turn is not None:
+        extra["creature_died_this_turn"] = creature_died_this_turn
 
     for subset in _attack_subsets(n):
         # Wall-clock backstop for slow machines: the budget alone keeps a
@@ -757,7 +857,9 @@ def _search_attacks(
         attacking = [candidate_attackers[i] for i in subset]
         held_back = [candidate_attackers[i] for i in range(n) if i not in set(subset)]
         our_defenders = held_back + your_remaining_blockers
-        cost = _block_search_cost(len(attacking), len(opponent_blockers)) + _block_search_cost(
+        # The crackback search may run twice (combat_strategy.guarded_block_plan
+        # re-runs it once without the chumps the chump guard refuses).
+        cost = _block_search_cost(len(attacking), len(opponent_blockers)) + 2 * _block_search_cost(
             len(opponent_attackers_next_turn), len(our_defenders)
         )
         if cost > remaining:
@@ -770,7 +872,7 @@ def _search_attacks(
             opponent_life,
             your_life,
             opponent_attackers_next_turn,
-            **({"our_walker_loyalties": our_walker_loyalties} if our_walker_loyalties else {}),
+            **extra,
         )
         # Ties go to the lowest bitmask (no attack first), whatever order
         # the subsets were searched in.
@@ -791,11 +893,20 @@ def evaluate_attack(
     opponent_attackers_next_turn: list[dict],
     *,
     our_walker_loyalties: tuple[int, ...] = (),
+    creature_died_this_turn: bool | None = None,
 ) -> AttackPlan:
     """Score one attack: `our_defenders` are the creatures left home to block.
 
     ``our_walker_loyalties``: our planeswalkers' loyalty. Their crackback may
     finish one instead of hitting us (``walker_crackback_cost``).
+
+    The crackback is their next attack as we would really meet it: defenders
+    that leave at our end step (``leaves_at_our_end_step``) and attackers of
+    ours that die in this combat do not block; their creatures that die in it,
+    or cannot attack next turn (``can_attack_next_turn``: a tapped "doesn't
+    untap" creature unless a morbid untap applies; ``creature_died_this_turn``
+    None means unknown), do not attack; and we do not chump where the chump
+    guard would refuse to (``combat_strategy.guarded_block_plan``).
     """
     # Opponent blocks optimally — from THEIR perspective, lower
     # "damage_through" is good; we invert by using their life.
@@ -818,12 +929,26 @@ def evaluate_attack(
         blk_killed_mat = opp_block.blockers_lost_material
 
     # Crackback — the creatures we didn't attack with, plus whatever
-    # opponent will attack with next turn (we take this list in
-    # verbatim since we can't easily predict it).
-    crack_block = _search_blocks(opponent_attackers_next_turn, our_defenders, your_life)
-    crackback = (
-        crack_block.damage_through if crack_block else sum(_pt(a)[0] for a in opponent_attackers_next_turn)
-    )
+    # opponent will attack with next turn.
+    killed = opp_block.blockers_lost_ids if opp_block is not None else frozenset()
+    lost = opp_block.attackers_killed_ids if opp_block is not None else frozenset()
+    died = True if (atk_lost_mat > 0 or blk_killed_mat > 0) else creature_died_this_turn
+    crackers = [
+        card
+        for card in opponent_attackers_next_turn
+        if not (card.get("instance_id") and card.get("instance_id") in killed)
+        and can_attack_next_turn(card, creature_died=died)
+    ]
+    defenders = [
+        card
+        for card in our_defenders
+        if not leaves_at_our_end_step(card)
+        and not (card.get("instance_id") and card in attacking and card.get("instance_id") in lost)
+    ]
+    from arenamcp.combat_strategy import guarded_block_plan
+
+    crack_block = guarded_block_plan(crackers, defenders, your_life)
+    crackback = crack_block.damage_through if crack_block else sum(_pt(a)[0] for a in crackers)
 
     plan = AttackPlan(
         attacker_ids=[int(a.get("instance_id") or 0) for a in attacking],

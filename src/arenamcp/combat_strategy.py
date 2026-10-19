@@ -1,13 +1,15 @@
 """Bounded joint attack-recipient and defending-block assignment search."""
 
 import json
+import logging
 import math
 import re
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from itertools import product
+from itertools import combinations, product
 
+from arenamcp import combat_solver
 from arenamcp.combat_keywords import (
     annotate_cant_be_blocked,
     is_creature_modified,
@@ -16,14 +18,19 @@ from arenamcp.combat_keywords import (
 )
 from arenamcp.combat_solver import (
     _can_block,
+    _cards_key,
     _has,
     _material,
     _memoized,
     _resolve_attacker,
+    can_attack_next_turn,
+    leaves_at_our_end_step,
     optimal_blocks,
     walker_crackback_cost,
 )
 from arenamcp.combat_targets import attack_candidates, recipient_key, recipient_label
+
+logger = logging.getLogger(__name__)
 
 
 def unproductive_attackers(state: dict, pending: dict | None = None) -> set[int]:
@@ -233,19 +240,23 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
                 if outcome.attacker_died:
                     dead_attackers.add(attacker["instance_id"])
                 dead_blockers.update(card["instance_id"] for card in outcome.blockers_died)
+            # Fleeting Effigy returns to hand at our end step: no blocker next
+            # turn, so its attack is free (2026-10-19 T10, match 92c09c7a).
             defenders = [
                 card
                 for card in yours
                 if not card.get("is_tapped")
                 and card["instance_id"] not in dead_attackers
                 and (card["instance_id"] not in mapping or _has(card, "vigilance"))
+                and not leaves_at_our_end_step(card)
             ]
+            died = True if (dead_attackers or dead_blockers) else None
             survivors = [
                 card
                 for card in theirs
-                if card["instance_id"] not in dead_blockers and not _has(card, "defender")
+                if card["instance_id"] not in dead_blockers and can_attack_next_turn(card, creature_died=died)
             ]
-            response = optimal_blocks(survivors, defenders, your_life, max_options=2000)
+            response = guarded_block_plan(survivors, defenders, your_life, max_options=2000)
             crackback = response.damage_through if response else 0
             player_damage = damage[("player", opponent_id)]
             removed = []
@@ -328,6 +339,37 @@ _ATTACKER_PAYOFF = re.compile(
     r"|dethrone|mentor|training|renown|ninjutsu|undying|persist|skulk|shadow|horsemanship|fear|intimidate"
     r"|protection|daunt|[a-z]+walk)\b"
 )
+# An attack trigger that only pings is worth its number, not the creature.
+# 2026-10-19 10:25 T15 (match a51dea64): Hired Claw 2/3 ("Whenever you attack
+# with one or more Lizards, this creature deals 1 damage to target opponent")
+# attacked into two untapped Lyra Dawnbringers; one blocked, killed it and
+# gained 6. Its "attack" text had exempted it from the guard.
+_ATTACK_PING = re.compile(
+    r"^whenever (?:you attack with [^,.]+|[^,.]+? attacks?),\s*"
+    r"(?:(?:this creature|it|~|cardname|[^,.]+?) deals (?P<d>\d+) damage to "
+    r"(?:target opponent|each opponent|defending player|target player|the player it's attacking)"
+    r"|(?:each opponent|defending player|target opponent) loses (?P<l>\d+) life"
+    r"|you gain (?P<g>\d+) life)\.?$"
+)
+
+
+def _attack_payoff(card: dict) -> int | None:
+    """None when its own text has an attack/block/death payoff the guard can't price.
+
+    Otherwise the damage or life its attack triggers are worth (0: no payoff).
+    """
+    value = 0
+    for line in _rules_text(card).splitlines():
+        line = line.strip()
+        if not _ATTACKER_PAYOFF.search(line):
+            continue
+        ping = _ATTACK_PING.match(line)
+        if ping is None:
+            return None
+        value += int(ping.group("d") or ping.group("l") or ping.group("g"))
+    return value
+
+
 # Our other permanents: anything that pays off creatures attacking, blocking
 # restrictions, or creatures dying.
 _SIDE_PAYOFF = re.compile(
@@ -335,6 +377,38 @@ _SIDE_PAYOFF = re.compile(
     r"|\bwhenever (?:a|an|another|one or more|each)\b[^.]*?\b(?:dies|die)\b"
     r"|put into a graveyard from the battlefield"
 )
+# An attack payoff limited to a creature type rewards only attackers of that
+# type. 2026-10-19 (match f9e0ec3b): Hired Claw's "Whenever you attack with
+# one or more Lizards" switched the guard off for every attacker.
+_TYPED_ATTACK = re.compile(
+    r"\battack with (?:one or more |two or more |a |an |another )?(?P<a>[a-z]+?)s?\b"
+    r"|\b(?:one or more|a|an|another|each) (?:other )?(?P<b>[a-z]+?)s? you control attacks?\b"
+)
+_GENERIC_TYPES = frozenset({"creature", "creatures", "permanent", "token", "nontoken"})
+
+
+def _typed_attack_payoff(text: str) -> frozenset[str] | None:
+    """Creature types a side payoff is limited to; None when it rewards any attacker.
+
+    Empty when the text pays off nothing (``_SIDE_PAYOFF`` does not match).
+    """
+    if not _SIDE_PAYOFF.search(text):
+        return frozenset()
+    types, masked = set(), text
+    for match in _TYPED_ATTACK.finditer(text):
+        kind = match.group("a") or match.group("b")
+        if kind in _GENERIC_TYPES:
+            continue
+        types.add(kind)
+        masked = masked.replace(match.group(0), " ")
+    return None if _SIDE_PAYOFF.search(masked) else frozenset(types)
+
+
+def _has_type(card: dict, kind: str) -> bool:
+    words = set(re.findall(r"[a-z]+", _types(card)))
+    return kind in words or (kind.endswith("ve") and f"{kind[:-2]}f" in words)
+
+
 _HAND_PAYOFF = re.compile(r"\braid\b|\bmorbid\b|attacked this turn|died this turn")
 _CANT_BLOCK = re.compile(r"can(?:'|no)t block|can block only")
 _ANSWER_SEARCH_LIMIT = 20_000
@@ -596,6 +670,59 @@ def _modified_would_change_block(
     return not hyp_outcome.attacker_died or hyp_outcome.damage_through > 0
 
 
+def _names_any(sentence: str, cards: list[dict]) -> bool:
+    """The sentence names one of the cards (full name, or a distinctive word of it)."""
+    lowered = sentence.lower()
+    for card in cards:
+        name = str(card.get("name") or "").lower()
+        if not name:
+            continue
+        if name in lowered or name.split(",")[0] in lowered:
+            return True
+        if any(
+            len(word) >= 4 and re.search(rf"\b{re.escape(word)}\b", lowered)
+            for word in re.findall(r"[a-z']+", name)
+        ):
+            return True
+    return False
+
+
+def _false_evasion_trade(attacker: dict, group: list[dict], outcome, strategy_text: str) -> bool:
+    """A trade the plan did not price: its evasion claim is wrong against these blockers, and we lose more.
+
+    2026-10-19 08:09:19 (match a74bbc90): the plan said "flying" and the guard
+    held Slickshot Show-Off 1/2 back from Moseo, Vein's New Dean 2/1, a flier
+    that trades with it, as if Slickshot died for nothing. A claim counts only
+    when its sentence names the attacker or one of these blockers and these
+    blockers actually defeat it (a flying claim needs a flier or reach among
+    them, or an attacker that doesn't fly); and a trade that takes as much
+    material as it costs (blocker lifelink counted against us) is a trade,
+    whatever the plan said.
+    """
+    defeated = False
+    for sentence in re.split(r"(?<=[.!?;])\s+|\n", strategy_text or ""):
+        claim = _EVASION_CLAIM_RE.search(sentence)
+        if claim is None or not _names_any(sentence, [attacker, *group]):
+            continue
+        if re.match(r"(?i)fly|flyer|flier|in the air", claim.group(0)):
+            defeated = not _has(attacker, "flying") or any(
+                _has(blocker, "flying") or _has(blocker, "reach") for blocker in group
+            )
+        else:
+            defeated = True  # unblockable / can't block / uncontested: the block itself refutes it
+        if defeated:
+            break
+    if not defeated:
+        return False
+    gained = sum(_lifelink_gain(blocker) for blocker in group)
+    return _material(attacker) + gained > sum(_material(card) for card in outcome.blockers_died)
+
+
+def _lifelink_gain(blocker: dict) -> int:
+    """Life a blocker's lifelink gains its controller when it deals combat damage."""
+    return max(0, int(blocker.get("power") or 0)) if _has(blocker, "lifelink") else 0
+
+
 def _answers(
     attacker: dict,
     group: list[dict],
@@ -615,9 +742,7 @@ def _answers(
         return False
     if _modified_would_change_block(attacker, group, battlefield):
         return True
-    if strategy_text and _EVASION_CLAIM_RE.search(strategy_text):
-        return True
-    return False
+    return bool(strategy_text) and _false_evasion_trade(attacker, group, outcome, strategy_text)
 
 
 def _full_answer(
@@ -637,10 +762,10 @@ def _full_answer(
         [None, *(index for index, attacker in enumerate(attackers) if _can_block(attacker, blocker))]
         for blocker in blockers
     ]
-    combinations = 1
+    combinations_count = 1
     for choice in options:
-        combinations *= len(choice)
-    if combinations > _ANSWER_SEARCH_LIMIT:
+        combinations_count *= len(choice)
+    if combinations_count > _ANSWER_SEARCH_LIMIT:
         return None
     for selection in product(*options):
         groups: dict[int, list[dict]] = {}
@@ -658,6 +783,84 @@ def _full_answer(
         ):
             return groups
     return None
+
+
+def _answer_groups(
+    attacker: dict,
+    blockers: list[dict],
+    *,
+    battlefield: list[dict] | None = None,
+    strategy_text: str = "",
+) -> list[list[dict]]:
+    """The smallest blocker groups that answer the attacker (``_answers``), up to three creatures."""
+    largest = 3 if len(blockers) <= 10 else 2
+    for size in range(1, min(largest, len(blockers)) + 1):
+        groups = [
+            list(group)
+            for group in combinations(blockers, size)
+            if _answers(attacker, list(group), battlefield=battlefield, strategy_text=strategy_text)
+        ]
+        if groups:
+            return groups
+    return []
+
+
+def _best_through(attackers: list[dict], blockers: list[dict], opp_life: int) -> int:
+    """Damage our attackers get through the opponent's best blocks (combat solver, their view)."""
+    if not attackers:
+        return 0
+    plan = combat_solver._search_blocks(attackers, blockers, opp_life)
+    if plan is None:
+        return sum(_resolve_attacker(card, []).damage_through for card in attackers)
+    return plan.damage_through
+
+
+@dataclass
+class _Doomed:
+    group: list[dict]
+    shield: int  # extra damage the rest of the attack gets through while ``group`` eats it
+    gained: int  # the opponent's lifelink gain from the block
+    deficit: int  # its own damage minus what it buys (the larger, the worse the attack)
+
+
+def _doomed(
+    attacker: dict,
+    attacking: list[dict],
+    blockers: list[dict],
+    *,
+    opp_life: int,
+    battlefield: list[dict],
+    strategy_text: str,
+    removal_tricks: list[str],
+    payoff: int = 0,
+) -> _Doomed | None:
+    """Whether this attacker only feeds a blocker, judged on its own (``losing_attackers``).
+
+    The opponent can eat it with some group that answers it (``_answers``).
+    While that group is busy, the rest of the attack gets ``shield`` more damage
+    through their best blocks than it would with every blocker free; the
+    group's lifelink gain counts against that, and its own attack ping
+    (``payoff``, ``_attack_payoff``) for it. The attacker is doomed when what
+    it buys is less than the damage it would deal itself.
+    """
+    groups = _answer_groups(attacker, blockers, battlefield=battlefield, strategy_text=strategy_text)
+    if not groups:
+        return None
+    if any(_trick_changes_combat(text, [attacker], blockers) for text in removal_tricks):
+        return None
+    rest = [card for card in attacking if card is not attacker]
+    free = _best_through(rest, blockers, opp_life)
+    best = None
+    for group in groups:
+        others = [card for card in blockers if all(card is not member for member in group)]
+        busy = _best_through(rest, others, opp_life)
+        gained = sum(_lifelink_gain(card) for card in group)
+        verdict = _Doomed(group, busy - free, gained, 0)
+        if best is None or verdict.shield - verdict.gained < best.shield - best.gained:
+            best = verdict
+    own = max(1, _resolve_attacker(attacker, []).damage_through)
+    best.deficit = own - (best.shield + payoff - best.gained)
+    return best if best.deficit > 0 else None
 
 
 def _all_in(state: dict) -> bool:
@@ -680,23 +883,35 @@ def losing_attackers(
 ) -> dict[int, str]:
     """Planned attackers that only feed an untapped blocker, with the reason.
 
-    An attacker is dropped only when ALL of these hold:
-      - the opponent's untapped creatures can block every planned attacker at
-        once so that each attacker dies, no blocker dies (or the attack relies
-        on unmet 'modified' evasion / false evasion claims and dies for 0
-        damage) and no damage gets through, with flying/reach, menace, first
-        strike, deathtouch, trample and indestructible modelled by the combat
-        solver;
+    Each attacker is judged on its own (2026-10-19 T10, match f9e0ec3b: a 1/2
+    Hired Claw added to the attack kept Emberheart Challenger 3/3 in against
+    an untapped Lyra Dawnbringer 5/5 first strike lifelink, because Lyra could
+    not block both; she ate the Challenger and gained 5). An attacker is
+    dropped only when ALL of these hold:
+      - some group of the opponent's untapped creatures can block it so that
+        it dies, no blocker dies (or the attack relies on unmet 'modified'
+        evasion, or trades at a loss on a false evasion claim) and nothing
+        gets through, with flying/reach, menace, first strike, deathtouch,
+        trample and indestructible modelled by the combat solver;
+      - what it buys is less than its own damage: the rest of the attack
+        gets fewer extra points through their best blocks while that group
+        is busy, minus the group's lifelink gain (``_doomed``);
+      - the whole attack is not lethal through their best blocks;
       - it is not required to attack (GRE ``mustAttack`` in the state or the
         live ``pending`` bridge request);
       - its rules text names no attack/block/death payoff, evasion, or
-        damage-to-creature value;
-      - none of our other permanents rewards attacking, restricts blocking or
-        pays off creatures dying, and no raid/morbid card waits in hand;
+        damage-to-creature value, except an attack trigger that only deals
+        damage or changes life (Hired Claw's ping), which counts toward what
+        it buys;
+      - none of our other permanents rewards attacking with it (a payoff
+        limited to a creature type covers only that type), restricts
+        blocking or pays off creatures dying, and no raid/morbid card waits
+        in hand;
       - no spell we resolved this turn mentions blocking;
       - no instant, flash card, instant flashback, prepared spell or
         activated ability we control is affordable with our untapped mana
-        (free ones always count; colors are ignored, erring toward keeping).
+        and could save it (free ones always count; colors are ignored,
+        erring toward keeping).
     Unknown power/toughness or anything ambiguous keeps the attack.
     """
     players = state.get("players") or []
@@ -720,32 +935,30 @@ def losing_attackers(
         for card in attackers
     ):
         return {}
+    rewarded: set[str] = set()  # creature types a typed attack payoff rewards
     for card in battlefield:
-        if (
-            _controller(card) == local.get("seat_id")
-            and card.get("instance_id") not in attacker_ids
-            and _SIDE_PAYOFF.search(_rules_text(card))
-        ):
+        if _controller(card) != local.get("seat_id") or card.get("instance_id") in attacker_ids:
+            continue
+        payoff = _typed_attack_payoff(_rules_text(card))
+        if payoff is None:
             return {}
+        rewarded |= payoff
     if any(_HAND_PAYOFF.search(_rules_text(card)) for card in state.get("hand") or []):
         return {}
     if any("block" in _rules_text(card) for card in _resolved_this_turn(state)):
         return {}
     mana = _untapped_mana(state, local)
     blockers = _eligible_blockers(state, opponent.get("seat_id"))
-    answer = _full_answer(
-        attackers,
-        blockers,
-        battlefield=battlefield,
-        strategy_text=strategy_text,
-    )
-    if answer is None:
+    if not blockers:
         return {}
-    if any(
-        cost <= mana and _trick_changes_combat(text, attackers, blockers)
-        for _source, cost, text in _possible_tricks(state, local)
-    ):
+    affordable = [text for _source, cost, text in _possible_tricks(state, local) if cost <= mana]
+    if any(text is None or _SAVES_ATTACKER.search(text) for text in affordable):
         return {}
+    removal_tricks = [text for text in affordable if _REMOVES_BLOCKER.search(text)]
+    opp_life = opponent.get("life_total")
+    opp_life = opp_life if _is_int(opp_life) else 20
+    if _best_through(attackers, blockers, opp_life) >= opp_life:
+        return {}  # lethal through their best blocks: every attacker counts
     forced = {
         int(entry.get("attackerInstanceId") or 0)
         for entry in [
@@ -754,38 +967,107 @@ def losing_attackers(
         ]
         if entry.get("mustAttack")
     }
-    losing = {}
-    for index, attacker in enumerate(attackers):
-        identity = attacker["instance_id"]
-        if identity in forced or _ATTACKER_PAYOFF.search(_rules_text(attacker)):
-            continue
-        group = answer[index]
-        outcome = _resolve_attacker(attacker, group)
-        blocked_by = " and ".join(
-            f"{card.get('name') or 'a creature'} {card['power']}/{card['toughness']}" for card in group
+    payoffs = {card["instance_id"]: _attack_payoff(card) for card in attackers}
+    judged = [
+        card
+        for card in attackers
+        if card["instance_id"] not in forced
+        and payoffs[card["instance_id"]] is not None
+        and not any(_has_type(card, kind) for kind in rewarded)
+    ]
+    remaining = list(attackers)
+    losing: dict[int, str] = {}
+    while True:
+        worst = None
+        for attacker in judged:
+            if attacker not in remaining:
+                continue
+            verdict = _doomed(
+                attacker,
+                remaining,
+                blockers,
+                opp_life=opp_life,
+                battlefield=battlefield,
+                strategy_text=strategy_text,
+                removal_tricks=removal_tricks,
+                payoff=payoffs[attacker["instance_id"]] or 0,
+            )
+            if verdict is not None and (worst is None or verdict.deficit > worst[1].deficit):
+                worst = (attacker, verdict)
+        if worst is None:
+            break
+        attacker, verdict = worst
+        losing[attacker["instance_id"]] = _losing_reason(
+            attacker,
+            verdict,
+            battlefield,
+            several=len(remaining) > 1,
+            payoff=payoffs[attacker["instance_id"]] or 0,
         )
-        unmet_mod = unmet_modified_flag(attacker, battlefield=battlefield)
-        if outcome.blockers_died and unmet_mod:
-            reason = (
-                f"{attacker.get('name') or identity} {attacker['power']}/{attacker['toughness']} is "
-                f"{unmet_mod}, so {blocked_by} can legally block and kill it with 0 damage through"
-            )
-        elif outcome.blockers_died:
-            reason = (
-                f"{blocked_by} can legally block and kill {attacker.get('name') or identity} "
-                f"{attacker['power']}/{attacker['toughness']} with 0 damage through "
-                "(not evasive against untapped blockers)"
-            )
-        else:
-            reason = (
-                f"{blocked_by} can block {attacker.get('name') or identity} "
-                f"{attacker['power']}/{attacker['toughness']}, kill it and survive; nothing gets through, "
-                "it has no attack or death payoff, and no affordable trick could change that combat"
-            )
-        if len(attackers) > 1:
-            reason += "; the opponent can block every planned attacker this way"
-        losing[identity] = reason
+        remaining = [card for card in remaining if card is not attacker]
+    if strategy_text and _EVASION_CLAIM_RE.search(strategy_text):
+        for attacker in remaining:
+            trade = _trade_note(attacker, blockers)
+            if trade:
+                logger.info("Losing-attack guard: keeping %s: %s", attacker.get("name") or "attacker", trade)
     return losing
+
+
+def _losing_reason(
+    attacker: dict, verdict: _Doomed, battlefield: list[dict], *, several: bool, payoff: int = 0
+) -> str:
+    group = verdict.group
+    name = attacker.get("name") or attacker.get("instance_id")
+    body = f"{attacker['power']}/{attacker['toughness']}"
+    blocked_by = " and ".join(
+        f"{card.get('name') or 'a creature'} {card['power']}/{card['toughness']}" for card in group
+    )
+    outcome = _resolve_attacker(attacker, group)
+    unmet_mod = unmet_modified_flag(attacker, battlefield=battlefield)
+    if outcome.blockers_died and unmet_mod:
+        reason = (
+            f"{name} {body} is {unmet_mod}, so {blocked_by} can legally block and kill it "
+            "with 0 damage through"
+        )
+    elif outcome.blockers_died:
+        lost = sum(_material(card) for card in outcome.blockers_died)
+        reason = (
+            f"{blocked_by} can legally block {name} {body} and trade with it at a loss "
+            f"({_material(attacker)} for {lost} in material, 0 damage through): the plan counts on "
+            "evasion it does not have against that blocker"
+        )
+    else:
+        payoff_note = (
+            f"its attack trigger is worth only {payoff}" if payoff else "it has no attack or death payoff"
+        )
+        reason = (
+            f"{blocked_by} can block {name} {body}, kill it and survive; nothing gets through, "
+            f"{payoff_note}, and no affordable trick could change that combat"
+        )
+    if verdict.gained:
+        reason += f"; lifelink gains them {verdict.gained} life"
+    if several:
+        reason += (
+            f"; while it is blocked the rest of the attack gets only {verdict.shield} more damage through"
+            if verdict.shield > 0
+            else "; the rest of the attack gets nothing more through for it"
+        )
+    return reason
+
+
+def _trade_note(attacker: dict, blockers: list[dict]) -> str:
+    """'trades with X' when a single blocker trades with the attacker (kept: a trade is not a loss)."""
+    for blocker in blockers:
+        if not _group_can_block(attacker, [blocker]):
+            continue
+        outcome = _resolve_attacker(attacker, [blocker])
+        if outcome.attacker_died and outcome.blockers_died and outcome.damage_through == 0:
+            return (
+                f"{blocker.get('name') or 'a blocker'} {blocker['power']}/{blocker['toughness']} can block "
+                f"and trade with it ({_material(attacker)} for {_material(blocker)} in material): "
+                "a trade, not a loss"
+            )
+    return ""
 
 
 # --- Free-attack rule ----------------------------------------------------------
@@ -797,6 +1079,10 @@ def losing_attackers(
 # opponent's best blocks (worst case for us, tricks excluded) kill none of the
 # attackers, at least one point reaches a recipient, and the creatures left
 # home still stop every point of crackback that holding everything would stop.
+# Crackback is ``combat_solver.evaluate_attack``'s: a creature that leaves at our
+# end step (Fleeting Effigy) stops nothing at home, and a chump the chump guard
+# would refuse stops nothing either (2026-10-19 T10, match c36db3a3: Slickshot
+# Show-Off "held back to chump" Elenda at 18 life).
 # The autopilot attacks with that set whatever the model's plan says; the model
 # may add attackers but never drop free ones (``ActionPlanner._ensure_free_attacks``),
 # and a tap ability that would forfeit a free attack is withheld before combat
@@ -989,6 +1275,181 @@ def _local_player(state: dict) -> dict | None:
     return next((player for player in state.get("players") or [] if player.get("is_local")), None)
 
 
+def _refused_chumps(
+    plan, attackers: list[dict], defenders: dict[int, dict], life: int, clock: int
+) -> list[tuple[list[int], int]]:
+    """The chumps in ``plan`` that ``wasteful_chump_blocks`` would drop, as (blocker ids, attacker id).
+
+    Mirrors the guard without the board context a crackback forecast lacks
+    (planeswalkers, tricks in hand). Each is judged against the whole plan.
+    """
+    groups: dict[int, list[int]] = {}
+    for blocker, attacker in plan.assignments.items():
+        groups.setdefault(attacker, []).append(blocker)
+    refused = []
+    life_with = life - plan.damage_through
+    for attacker in attackers:
+        identity = int(attacker.get("instance_id") or 0)
+        blockers = groups.get(identity, [])
+        unit = 2 if _has(attacker, "menace") and len(blockers) == 2 else 1
+        if len(blockers) != unit:
+            continue
+        bodies = [defenders[blocker] for blocker in blockers]
+        outcome = _resolve_attacker(attacker, bodies)
+        if outcome.attacker_died or any(body not in outcome.blockers_died for body in bodies):
+            continue
+        if any(_BLOCKER_PAYOFF.search(_rules_text(body)) for body in bodies):
+            continue
+        if outcome.damage_through == 0 and _ATTACKER_HIT_PAYOFF.search(_rules_text(attacker)):
+            continue
+        life_without = life_with - (_resolve_attacker(attacker, []).damage_through - outcome.damage_through)
+        if life_without <= CHUMP_DANGER_LIFE or life_without <= clock < life_with:
+            continue
+        refused.append((blockers, identity))
+    return refused
+
+
+def guarded_block_plan(
+    attackers: list[dict], defenders: list[dict], life: int, *, max_options: int = 50_000
+):
+    """Our best blocks against ``attackers`` (a crackback forecast) without chumps the chump guard refuses.
+
+    2026-10-19 T10 (match c36db3a3): the free-attack rule held Slickshot
+    Show-Off back because, kept home, it would chump Elenda, Saint of Dusk
+    4/4 at 18 life and stop the whole crackback. ``wasteful_chump_blocks``
+    drops exactly that chump above CHUMP_DANGER_LIFE (on T11 we did not block
+    and took 4), so holding stopped nothing. The refused chumps are forbidden
+    and the search re-run once (at most two searches, as the attack budget
+    assumes); if dropping them all together leaves us at CHUMP_DANGER_LIFE or
+    less, the chumps stay.
+    """
+    if not attackers:
+        return None
+    key = ("guarded_blocks", _cards_key(attackers), _cards_key(defenders), life, max_options)
+    return _memoized(key, lambda: _guarded_block_plan(attackers, defenders, life, max_options))
+
+
+def _guarded_block_plan(attackers: list[dict], defenders: list[dict], life: int, max_options: int):
+    plan = combat_solver._search_blocks(attackers, defenders, life, max_options=max_options)
+    by_id = {int(card.get("instance_id") or 0): card for card in defenders}
+    attacker_ids = {int(card.get("instance_id") or 0) for card in attackers}
+    if (
+        plan is None
+        or not _is_int(life)
+        or 0 in by_id
+        or len(by_id) != len(defenders)
+        or 0 in attacker_ids
+        or len(attacker_ids) != len(attackers)
+        or not all(_known_body(card) for card in [*attackers, *defenders])
+    ):
+        return plan
+    clock = sum(max(0, int(card["power"])) for card in attackers)
+    refused = _refused_chumps(plan, attackers, by_id, life, clock)
+    if not refused:
+        return plan
+    forbidden: dict[int, set[int]] = {}
+    for blockers, attacker in refused:
+        for blocker in blockers:
+            forbidden.setdefault(blocker, set()).add(attacker)
+    allowed = {blocker: attacker_ids - ids for blocker, ids in forbidden.items()}
+    guarded = combat_solver._search_blocks(
+        attackers, defenders, life, blocker_allowed_attackers=allowed, max_options=max_options
+    )
+    if guarded is None or life - guarded.damage_through <= CHUMP_DANGER_LIFE:
+        return plan
+    return guarded
+
+
+# --- Combat-damage triggers that add damage this combat ----------------------
+#
+# 2026-10-19 T21 (match cd41ad5a, Brawl): "Whenever Shark Shredder deals combat
+# damage to a player, put up to one target creature card from that player's
+# graveyard onto the battlefield under your control. It enters tapped and
+# attacking that player." Shark has first strike, so the Hare Apparent it took
+# from our graveyard dealt 2 more in the regular damage step. The block guard
+# counted 12 into 14 life ("survival at 2"), Leonardo blocked the Hare, and the
+# real 14 was exactly lethal; Leonardo on Shark kept us at 4.
+
+_HIT_TRIGGER = re.compile(
+    r"\bwhenever (?P<who>[^,.\n]+?) deals? combat damage to (?:a player|an opponent|a player or planeswalker)"
+    r"\b,? (?P<effect>[^\n]*)"
+)
+_GROUP_SUBJECT = re.compile(r"^(?:a|an|one or more|another|each|equipped|enchanted|other)\b")
+_REANIMATE_ATTACKING = re.compile(
+    r"\b(?:put|return)s? (?:up to )?(?P<n>a|an|one|two|three|\d+)? ?(?:target )?creature cards? from "
+    r"(?P<whose>that player's|your|a|an opponent's|their) graveyards? (?:onto|to) the battlefield"
+    r"[^\n]*?\battacking\b"
+)
+_TOKEN_ATTACKING = re.compile(
+    r"\bcreate (?P<n>a|an|one|two|three|\d+) (?:tapped )?(?P<p>\d+)/\d+ [^.\n]*?tokens?[^.\n]*?\battacking\b"
+)
+_HIT_LOSS = re.compile(
+    r"\b(?:that player|defending player|each opponent|target (?:player|opponent)) loses (?P<n>\d+) life"
+    r"|\bdeals? (?P<d>\d+) damage to (?:that player|defending player|each opponent|target (?:player|opponent)"
+    r"|any target)"
+)
+_COUNT_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, None: 1}
+
+
+def _count(word: str | None) -> int:
+    return int(word) if word and word.isdigit() else _COUNT_WORDS.get(word, 1)
+
+
+def hit_bonus(attacker: dict, state: dict, defender_seat) -> int:
+    """Extra damage this combat when ``attacker`` deals combat damage to the defending player.
+
+    Its own trigger only: "that player loses N life" / "deals N damage to that
+    player" (twice with double strike); and, for a first or double striker
+    whose trigger resolves before the regular damage step, a creature card
+    returned from a graveyard (the biggest ones there) or tokens that enter
+    attacking. 0 when nothing applies.
+    """
+    total = 0
+    striker = _has(attacker, "first strike") or _has(attacker, "double strike")
+    for trigger in _HIT_TRIGGER.finditer(_rules_text(attacker)):
+        if _GROUP_SUBJECT.match(trigger.group("who").strip()):
+            continue
+        effect = trigger.group("effect")
+        for loss in _HIT_LOSS.finditer(effect):
+            total += int(loss.group("n") or loss.group("d")) * (2 if _has(attacker, "double strike") else 1)
+        if not striker:
+            continue
+        reanimate = _REANIMATE_ATTACKING.search(effect)
+        if reanimate:
+            whose = reanimate.group("whose")
+            seats = (
+                {defender_seat}
+                if whose in ("that player's", "an opponent's", "their")
+                else {_controller(attacker)}
+                if whose == "your"
+                else None
+            )
+            powers = sorted(
+                (
+                    int(card["power"])
+                    for card in state.get("graveyard") or []
+                    if "creature" in _types(card)
+                    and _is_int(card.get("power"))
+                    and (seats is None or card.get("owner_seat_id") in seats)
+                ),
+                reverse=True,
+            )
+            total += sum(max(0, power) for power in powers[: _count(reanimate.group("n"))])
+        token = _TOKEN_ATTACKING.search(effect)
+        if token:
+            total += _count(token.group("n")) * int(token.group("p"))
+    return total
+
+
+def with_hit_bonus(attackers: list[dict], state: dict, defender_seat) -> list[dict]:
+    """``attackers`` with ``combat_hit_bonus`` set where ``hit_bonus`` applies (copies; others unchanged)."""
+    marked = []
+    for card in attackers:
+        bonus = hit_bonus(card, state, defender_seat) if _known_body(card) else 0
+        marked.append({**card, "combat_hit_bonus": bonus} if bonus > 0 else card)
+    return marked
+
+
 def _legal_block_map(state: dict, pending: dict | None) -> dict[int, set[int]] | None:
     """Blocker id -> attacker ids it may block, from the live request or the logged one.
 
@@ -1009,7 +1470,11 @@ def _legal_block_map(state: dict, pending: dict | None) -> dict[int, set[int]] |
 def _incoming_attackers(
     state: dict, local_seat: int | None, legal: dict[int, set[int]] | None
 ) -> list[dict] | None:
-    """Opposing attackers this combat; None when one is named but not on the board."""
+    """Opposing attackers this combat; None when one is named but not on the board.
+
+    Attackers whose combat-damage trigger adds damage this combat carry
+    ``combat_hit_bonus`` (``with_hit_bonus``).
+    """
     cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
     ids: set[int] = set()
     for identity in (state.get("decision_context") or {}).get("attacker_ids") or []:
@@ -1022,7 +1487,57 @@ def _incoming_attackers(
             ids.add(card.get("instance_id"))
     if any(identity not in cards for identity in ids):
         return None
-    return [cards[identity] for identity in sorted(ids)]
+    ids -= phantom_attackers(state, ids)
+    return with_hit_bonus([cards[identity] for identity in sorted(ids)], state, local_seat)
+
+
+def phantom_attackers(state: dict, attacker_ids, raw_blockers: list | None = None) -> set[int]:
+    """Attacker ids Arena's DeclareBlockers request shows are not attacking.
+
+    2026-10-19 T9 (match 6175f002, Player.log gsid 268-270): the opponent
+    declared Momo, Playful Pet and Guiding Hydra, then withdrew the Hydra
+    before submitting; our log state kept Hydra attacking and the block
+    guard counted its 4 damage. The request's blockers list every attacker
+    each may block. An attacker missing from the list of a blocker that could
+    legally block it by keywords and text is not attacking. Menace attackers
+    and blockers with blocking restrictions prove nothing; an unblockable
+    attacker (a flyer against ground blockers) is never in the list and stays,
+    and so does any attacker while a "can't be blocked" effect may apply to it.
+    """
+    if raw_blockers is None:
+        raw_blockers = (state.get("decision_context") or {}).get("raw_blockers")
+    if not isinstance(raw_blockers, list):
+        return set()
+    battlefield = state.get("battlefield") or []
+    annotate_cant_be_blocked(battlefield)
+    if any(_UNBLOCKABLE_TEXT.search(_rules_text(card)) for card in _resolved_this_turn(state)):
+        return set()
+    cards = {card.get("instance_id"): card for card in battlefield}
+    phantoms: set[int] = set()
+    for entry in raw_blockers:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            blocker = cards.get(int(entry.get("blockerInstanceId") or entry.get("instanceId") or 0))
+            listed = {int(identity) for identity in entry.get("attackerInstanceIds") or []}
+        except (TypeError, ValueError):
+            continue
+        if blocker is None or not listed or _CANT_BLOCK.search(_rules_text(blocker)):
+            continue
+        for identity in attacker_ids:
+            attacker = cards.get(identity)
+            if (
+                attacker is not None
+                and identity not in listed
+                and not _has(attacker, "menace")
+                and not _UNBLOCKABLE_TEXT.search(_rules_text(attacker))
+                and _can_block(attacker, blocker)
+            ):
+                phantoms.add(identity)
+    return phantoms
+
+
+_UNBLOCKABLE_TEXT = re.compile(r"can(?:'|no)t be blocked|\bunblockable\b")
 
 
 def _known_body(card: dict | None) -> bool:
@@ -1403,3 +1918,97 @@ def safe_default_blocks(state: dict, pending: dict | None = None) -> tuple[dict[
 
     blocks = ", ".join(f"{label(b)} blocks {label(a)}" for b, a in assignments.items())
     return assignments, f"{blocks}: {through} damage at {life} life (no-block {unblocked})"
+
+
+# --- Free-block rule -------------------------------------------------------------
+#
+# 2026-10-19 T9 (match a74bbc90): a 1/1 Pest token and a 1/1 deathtouch Virulent
+# Emissary attacked; Slickshot Show-Off 1/2 could block the Pest, kill it and
+# survive, but the plan was "Preserve Slickshot as the sole wincon; absorb minor
+# damage" and nothing blocked. The mirror of the free-attack rule: a block
+# that kills its attacker while the blocker survives (combat solver, first
+# strike and deathtouch included) is always declared.
+
+# Combat math the solver does not model: triggers on being blocked.
+_BLOCKED_PAYOFF = re.compile(
+    r"becomes? blocked|blocks or becomes blocked|is blocked\b"
+    r"|\b(?:bushido|rampage|flanking|afflict|provoke)\b"
+)
+# Their visible instant-speed ways to win the fight: a pump or protection
+# ability on the battlefield (their hand is hidden, as for the free-attack rule).
+_FIGHT_TRICK = re.compile(
+    r"\bgets? \+(?:\d+|x)/\+(?:\d+|x)|\bgains? (?:first strike|double strike|deathtouch|indestructible)\b"
+    r"|\bprevent all combat damage\b"
+)
+
+
+def _their_fight_tricks(state: dict, seat) -> list[dict]:
+    """Their permanents with an affordable activated pump/protection ability."""
+    player = next((p for p in state.get("players") or [] if p.get("seat_id") == seat), None)
+    if player is None:
+        return []
+    mana = _untapped_mana(state, player)
+    sources = []
+    for card in state.get("battlefield") or []:
+        if _controller(card) != seat:
+            continue
+        for cost, effect in _activated_abilities(card):
+            if "t" in _mana_symbols(cost) and card.get("is_tapped"):
+                continue
+            if _FIGHT_TRICK.search(effect) and _mana_value(cost) <= mana:
+                sources.append(card)
+                break
+    return sources
+
+
+def free_blocks(state: dict, pending: dict | None = None) -> dict[int, tuple[int, str]]:
+    """Blocks that kill an attacker for free, as blocker id -> (attacker id, reason).
+
+    A free block is one legal blocker on one attacker (no menace) that kills
+    it and survives, by the combat solver. Attackers with a trigger on being
+    blocked, and every attacker while the attacking player has an affordable
+    pump or protection ability on the battlefield, are left alone. Each
+    attacker gets at most one free blocker, the most valuable attackers
+    first, each taking the cheapest body that does the job.
+    """
+    local = _local_player(state)
+    if local is None:
+        return {}
+    legal = _legal_block_map(state, pending)
+    if not legal:
+        return {}
+    cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
+    attackers = _incoming_attackers(state, local.get("seat_id"), legal)
+    if not attackers or not all(_known_body(card) for card in attackers):
+        return {}
+    tricky = {_controller(card) for card in attackers if _their_fight_tricks(state, _controller(card))}
+    used: set[int] = set()
+    found: dict[int, tuple[int, str]] = {}
+    for attacker in sorted(attackers, key=lambda card: -_material(card)):
+        if (
+            _has(attacker, "menace")
+            or _controller(attacker) in tricky
+            or _BLOCKED_PAYOFF.search(_rules_text(attacker))
+        ):
+            continue
+        options = []
+        for blocker_id, allowed in legal.items():
+            blocker = cards.get(blocker_id)
+            if blocker_id in used or attacker["instance_id"] not in allowed or not _known_body(blocker):
+                continue
+            if not _can_block(attacker, blocker):
+                continue
+            outcome = _resolve_attacker(attacker, [blocker])
+            if outcome.attacker_died and blocker not in outcome.blockers_died:
+                options.append((_material(blocker), -int(blocker["toughness"]), blocker_id, blocker))
+        if not options:
+            continue
+        _cost, _toughness, blocker_id, blocker = min(options, key=lambda option: option[:3])
+        used.add(blocker_id)
+        found[blocker_id] = (
+            attacker["instance_id"],
+            f"{blocker.get('name') or 'blocker'} {blocker['power']}/{blocker['toughness']} blocks "
+            f"{attacker.get('name') or 'attacker'} {attacker['power']}/{attacker['toughness']}, "
+            "kills it and survives",
+        )
+    return found

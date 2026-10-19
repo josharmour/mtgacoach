@@ -59,7 +59,6 @@ from arenamcp.coach_tracker import WordUsageTracker
 from arenamcp.coach_triggers import GameStateTrigger
 from arenamcp.combat_keywords import (
     annotate_cant_be_blocked,
-    can_be_blocked_by,
     is_creature_modified,
     modified_conditional_keywords,
     printed_combat_keywords,
@@ -1103,81 +1102,65 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         Returns (result_string, atk_dies, blk_dies), or None if the blocker
         cannot legally block the attacker (e.g. flying vs no fly/reach).
+
+        The combat solver resolves the fight, with the keywords each creature
+        has now (granted ones too: 2026-10-19 T9, match 6175f002, Momo had
+        double strike and lifelink from Practiced Offense and the prompt
+        counted neither).
         """
+        from arenamcp.combat_solver import _can_block, _resolve_attacker
+
+        if not _can_block(atk, blk):
+            return None  # flying vs no flying/reach, or "can't be blocked" (own text or a grant)
         atk_name = atk.get("name", "?")
         atk_pow = atk.get("power") or 0
         atk_tgh = atk.get("toughness") or 0
-        atk_keywords = printed_combat_keywords(atk.get("oracle_text") or "")
-        atk_has_fly = "flying" in atk_keywords
-        atk_has_dth = "deathtouch" in atk_keywords
-        atk_has_trample = "trample" in atk_keywords
-        atk_has_fs = "first strike" in atk_keywords or "double strike" in atk_keywords
-
         blk_name = blk.get("name", "?")
         blk_pow = blk.get("power") or 0
         blk_tgh = blk.get("toughness") or 0
-        blk_keywords = printed_combat_keywords(blk.get("oracle_text") or "")
-        blk_has_fly = "flying" in blk_keywords
-        blk_has_reach = "reach" in blk_keywords
-        blk_has_dth = "deathtouch" in blk_keywords
-        blk_has_fs = "first strike" in blk_keywords or "double strike" in blk_keywords
-
-        if atk_has_fly and not blk_has_fly and not blk_has_reach:
-            return None
-        if not can_be_blocked_by(atk, blk):
-            return None  # "can't be blocked": own text or a grant such as Tetsuko Umezawa's
-
-        atk_dies = (blk_pow >= atk_tgh) or blk_has_dth
-        blk_dies = (atk_pow >= blk_tgh) or atk_has_dth
-        if atk_has_fs and not blk_has_fs:
-            if atk_pow >= blk_tgh or atk_has_dth:
-                atk_dies = False
-        elif blk_has_fs and not atk_has_fs and (blk_pow >= atk_tgh or blk_has_dth):
-            blk_dies = False
+        outcome = _resolve_attacker(atk, [blk])
+        atk_dies, blk_dies = outcome.attacker_died, bool(outcome.blockers_died)
+        lifelink = f"; {atk_name}'s lifelink gains {outcome.life_gained} life" if outcome.life_gained else ""
 
         if atk_dies and blk_dies:
-            return "TRADE (both die)", True, True
+            return f"TRADE (both die){lifelink}", True, True
         elif atk_dies:
             return f"{atk_name} dies, {blk_name} lives ({blk_tgh - atk_pow} left)", True, False
         elif blk_dies:
-            trample_note = ""
-            if atk_has_trample:
-                spillover = atk_pow - blk_tgh
-                if spillover > 0:
-                    trample_note = f", {spillover} trample through"
-            return f"{blk_name} dies, {atk_name} lives ({atk_tgh - blk_pow} left){trample_note}", False, True
+            spill = outcome.damage_through
+            trample_note = f", {spill} trample through" if spill > 0 else ""
+            return (
+                f"{blk_name} dies, {atk_name} lives ({atk_tgh - blk_pow} left){trample_note}{lifelink}",
+                False,
+                True,
+            )
         else:
-            return "both live", False, False
+            return f"both live{lifelink}", False, False
 
     def _compute_optimal_blocking_damage(self, attackers: list[dict], blockers: list[dict]) -> int:
-        """Compute minimum damage through after optimal blocking assignment."""
+        """Compute minimum damage through after optimal blocking assignment.
+
+        Each attacker's damage comes from the combat solver (double strike,
+        trample over the chosen blocker, combat-damage triggers marked by
+        ``combat_strategy.with_hit_bonus``); a menace attacker needs two
+        blockers. The biggest hits are blocked first.
+        """
+        from arenamcp.combat_solver import _can_block, _has, _resolve_attacker
+
         available_blk = list(blockers)
         damage_through = 0
-        sorted_atk = sorted(attackers, key=lambda c: c.get("power") or 0, reverse=True)
-        for atk in sorted_atk:
-            atk_pow = atk.get("power") or 0
-            atk_keywords = printed_combat_keywords(atk.get("oracle_text") or "")
-            atk_has_fly = "flying" in atk_keywords
-            atk_has_trample = "trample" in atk_keywords
-            valid = []
-            for i, blk in enumerate(available_blk):
-                blk_keywords = printed_combat_keywords(blk.get("oracle_text") or "")
-                if atk_has_fly and "flying" not in blk_keywords and "reach" not in blk_keywords:
-                    continue
-                if not can_be_blocked_by(atk, blk):
-                    continue
-                valid.append((i, blk))
-            if valid:
-                if atk_has_trample:
-                    idx, blocker = max(valid, key=lambda x: x[1].get("toughness") or 0)
-                else:
-                    idx, blocker = min(valid, key=lambda x: x[1].get("toughness") or 0)
-                available_blk.pop(idx)
-                if atk_has_trample:
-                    spillover = max(0, atk_pow - (blocker.get("toughness") or 0))
-                    damage_through += spillover
-            else:
-                damage_through += atk_pow
+        unblocked = {id(atk): _resolve_attacker(atk, []).damage_through for atk in attackers}
+        for atk in sorted(attackers, key=lambda c: unblocked[id(c)], reverse=True):
+            valid = [blk for blk in available_blk if _can_block(atk, blk)]
+            need = 2 if _has(atk, "menace") else 1
+            if len(valid) < need:
+                damage_through += unblocked[id(atk)]
+                continue
+            tough = sorted(valid, key=lambda c: c.get("toughness") or 0, reverse=_has(atk, "trample"))
+            chosen = tough[:need]
+            for blocker in chosen:
+                available_blk.remove(blocker)
+            damage_through += _resolve_attacker(atk, chosen).damage_through
         return damage_through
 
     def _format_legal_moves(self, game_state: dict[str, Any], local_seat: int) -> tuple[list[str], str]:
@@ -1934,6 +1917,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         keywords = set(printed_combat_keywords(raw_oracle_for_kw))
         if is_creature and is_creature_modified(card, attached=attached):
             keywords |= set(modified_conditional_keywords(raw_oracle_for_kw))
+        # Keywords the game object has now, granted ones included (2026-10-19
+        # T9, match 6175f002: Momo's double strike and lifelink came from
+        # Practiced Offense and the board line showed neither).
+        if is_creature:
+            keywords |= {str(kw).lower() for kw in card.get("keywords") or ()}
         if "flying" in keywords:
             flags.append("FLY")
         if "reach" in keywords:
@@ -1948,6 +1936,14 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             flags.append("FS")
         if "deathtouch" in keywords:
             flags.append("DTH")
+        if "double strike" in keywords:
+            flags.append("DS")
+        if "lifelink" in keywords:
+            flags.append("LL")
+        if "menace" in keywords:
+            flags.append("MEN")
+        if "indestructible" in keywords:
+            flags.append("IND")
         if is_creature and card.get("cant_be_blocked"):
             flags.append("UNBLOCKABLE")
         if is_creature and card.get("turn_entered_battlefield") == turn_num and "haste" not in keywords:
@@ -2242,18 +2238,31 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             ctx_atk_ids = self._attacker_ids_from_decision_context(ctx)
             if ctx_atk_ids:
                 attacking = [c for c in opp_cards if int(c.get("instance_id") or 0) in ctx_atk_ids]
-        flying_atk = [c for c in attacking if "flying" in printed_combat_keywords(c.get("oracle_text") or "")]
-        ground_atk = [c for c in attacking if c not in flying_atk]
+        from arenamcp.combat_solver import _has, _resolve_attacker
+
+        if attacking:
+            # Arena's request is the authority on who attacks (a withdrawn
+            # attacker is no threat), and a combat-damage trigger that adds
+            # damage this combat counts (combat_strategy.with_hit_bonus).
+            from arenamcp.combat_strategy import phantom_attackers, with_hit_bonus
+
+            board = game_state or {"battlefield": your_cards + opp_cards}
+            phantoms = phantom_attackers(
+                board, [c.get("instance_id") for c in attacking], ctx.get("raw_blockers")
+            )
+            attacking = with_hit_bonus(
+                [c for c in attacking if c.get("instance_id") not in phantoms],
+                board,
+                (local_player or {}).get("seat_id"),
+            )
+        flying_atk = [c for c in attacking if _has(c, "flying")]
+        ground_atk = [c for c in attacking if not _has(c, "flying")]
         your_creatures = [
             c
             for c in your_cards
             if self._is_creature_now(c) and not c.get("is_tapped") and not self._is_impending(c)
         ]
-        flyer_blockers = [
-            c
-            for c in your_creatures
-            if any(kw in printed_combat_keywords(c.get("oracle_text") or "") for kw in ["flying", "reach"])
-        ]
+        flyer_blockers = [c for c in your_creatures if _has(c, "flying") or _has(c, "reach")]
 
         if not attacking:
             return lines
@@ -2270,13 +2279,20 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             )
             return lines
 
-        fly_dmg = sum(c.get("power") or 0 for c in flying_atk)
-        gnd_dmg = sum(c.get("power") or 0 for c in ground_atk)
+        # Each attacker's unblocked damage: double strike twice, plus any
+        # combat-damage trigger's extra (2026-10-19 T9, match 6175f002: "take 9"
+        # was really 10 from Momo's granted double strike alone).
+        def unblocked(card: dict) -> int:
+            return _resolve_attacker(card, []).damage_through
+
+        fly_dmg = sum(unblocked(c) for c in flying_atk)
+        gnd_dmg = sum(unblocked(c) for c in ground_atk)
         total_incoming = fly_dmg + gnd_dmg
         your_life = local_player.get("life_total", 20) if local_player else 20
 
         # Explicit attacker list so the LLM knows exactly which creatures
-        # are attacking (avoids confusion with same-named non-attackers).
+        # are attacking (avoids confusion with same-named non-attackers),
+        # with the combat keywords each has now (granted ones too).
         atk_names_raw = [c.get("name", "?") for c in attacking]
         _atk_counts = Counter(atk_names_raw)
         _atk_seen: dict[str, int] = {}
@@ -2284,11 +2300,14 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         for c, n in zip(attacking, atk_names_raw, strict=False):
             p = c.get("power") or 0
             t = c.get("toughness") or 0
+            tags = self._combat_keyword_flags(c)
+            if c.get("combat_hit_bonus"):
+                tags += f" (+{c['combat_hit_bonus']} more if it hits you: its combat-damage trigger)"
             if _atk_counts[n] > 1:
                 _atk_seen[n] = _atk_seen.get(n, 0) + 1
-                atk_labels.append(f"{n} #{_atk_seen[n]} {p}/{t}")
+                atk_labels.append(f"{n} #{_atk_seen[n]} {p}/{t}{tags}")
             else:
-                atk_labels.append(f"{n} {p}/{t}")
+                atk_labels.append(f"{n} {p}/{t}{tags}")
         lines.append(f"Blk: {fly_dmg}fly/{gnd_dmg}gnd dmg | {len(flyer_blockers)}FLY-blk avail")
         lines.append(f"Attackers: {', '.join(atk_labels)}")
         life_after_no_blocks = your_life - total_incoming
@@ -2302,11 +2321,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             )
         if flying_atk and not flyer_blockers:
             lines.append(f"\u26a0\ufe0f {fly_dmg} UNBLOCKABLE!")
-        dth_atk = [
-            c
-            for c in attacking
-            if "deathtouch" in self._remove_reminder_text(c.get("oracle_text", "")).lower()
-        ]
+        dth_atk = [c for c in attacking if _has(c, "deathtouch")]
         if dth_atk:
             lines.append(
                 f"\u26a0\ufe0f DEATHTOUCH: {', '.join(c.get('name', '?') for c in dth_atk)} \u2014 any blocker DIES regardless of toughness!"
@@ -2341,24 +2356,23 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                         f"  If {blk_name} {blk_pow}/{blk_tgh} blocks {atk_name} {atk_pow}/{atk_tgh}: {result}"
                     )
 
+        attacking_ids = {c.get("instance_id") for c in attacking}
         opp_non_attacking = [
             c
             for c in opp_cards
-            if self._is_creature_now(c) and c not in attacking and not self._is_impending(c)
+            if self._is_creature_now(c)
+            and c.get("instance_id") not in attacking_ids
+            and not self._is_impending(c)
         ]
-        opp_next_turn_power = sum(c.get("power") or 0 for c in attacking) + sum(
-            c.get("power") or 0 for c in opp_non_attacking
+        opp_next_turn_power = sum(unblocked(c) for c in attacking) + sum(
+            _resolve_attacker(c, []).damage_through for c in opp_non_attacking
         )
-        if opp_next_turn_power > 0 and life_after_blocks > 0:
-            if opp_next_turn_power >= life_after_blocks:
-                lines.append(
-                    f"\u26a0\ufe0f Next turn: opp can attack for up to {opp_next_turn_power}pwr \u2014 LETHAL if you're at {life_after_blocks} life after this combat! Preserve blockers!"
-                )
 
         # Deterministic block solver — grounds the LLM in the actual
         # material/life outcome of every legal block assignment rather
         # than letting it guess. The LLM should follow this unless it
         # has a specific reason (e.g. a combat trick in hand).
+        solver_plan = None
         try:
             from arenamcp.combat_solver import (
                 blocker_options,
@@ -2428,6 +2442,26 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                         lines.append(f"Mana restriction — {card.get('name', '?')}: {restriction}.")
         except Exception as e:
             logger.debug(f"combat solver (blocks) failed: {e}")
+
+        if 0 < life_after_blocks <= opp_next_turn_power:
+            warning = (
+                f"\u26a0\ufe0f Next turn: opp can attack for up to {opp_next_turn_power}pwr \u2014 "
+                f"LETHAL if you're at {life_after_blocks} life after this combat!"
+            )
+            # 2026-10-19 T9 (match 6175f002): "Preserve blockers!" talked the
+            # model out of the chump that was the survival line (the lethal
+            # block guard had to put it back). When the computed blocks block
+            # and not blocking leaves us within reach, blocking IS the line.
+            if (
+                solver_plan is not None
+                and solver_plan.assignments
+                and solver_plan.damage_through < total_incoming
+                and life_after_no_blocks <= opp_next_turn_power
+            ):
+                warning += " Not blocking is worse: follow the computed blocks."
+            else:
+                warning += " Preserve blockers!"
+            lines.append(warning)
 
         from arenamcp.commander_combat import commander_block_context
 

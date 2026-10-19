@@ -1445,12 +1445,13 @@ def combat_record(board: dict, attackers: list[int], **override) -> dict:
 def test_an_exchange_across_two_attackers_is_not_a_blunder(opp_life):
     """Giant blocks Bears (Bears die), Ogre blocks Wurm (Ogre dies): we lost a 2/2, they lost a 2/2.
 
-    The losing-attack guard keeps this attack (the opponent can't answer both
-    attackers for free; at 7 life it is lethal unblocked), so it is no Oops.
+    The losing-attack guard judges each attacker (2026-10-19): the Bears buy
+    nothing (the Ogre can chump the Wurm either way), but something of theirs
+    died in this combat, so it is an exchange and no Oops.
     """
     from arenamcp.combat_strategy import losing_attackers
 
-    assert losing_attackers(exchange_board(opp_life), [300, 301]) == {}
+    assert set(losing_attackers(exchange_board(opp_life), [300, 301])) == {300}
     facts = facts_of(
         [
             ann("DamageDealt", [310], 300, damage=2, type=1),
@@ -1479,13 +1480,21 @@ def test_an_exchange_across_two_attackers_is_not_a_blunder(opp_life):
 
 def test_an_attack_the_losing_attack_guard_kept_is_not_a_blunder():
     """Bears die to the Giant; the Wall holds off the Tortoise. Nothing of theirs died and nothing got through,
-    but the guard kept the attack (the Wall can't kill the Tortoise), so the Oops follows the guard."""
+    but the guard kept the attack (the Bears draw a card when they attack), so the Oops follows the guard.
+
+    The guard judges each attacker (2026-10-19, match f9e0ec3b): vanilla Bears
+    next to the walled Tortoise buy nothing, and the Oops follows that too.
+    """
     from arenamcp.combat_strategy import losing_attackers
 
     board = exchange_board()
     board["battlefield"][2] = creature(301, "Giant Tortoise", LOCAL, 1, 5)
     board["battlefield"][4] = creature(311, "Wall of Stone", OPP, 0, 7, "Defender")
+    vanilla = copy.deepcopy(board)
+    looter = "Whenever this creature attacks, draw a card."
+    board["battlefield"][1] = creature(300, "Grizzly Bears", LOCAL, 2, 2, looter)
     assert losing_attackers(copy.deepcopy(board), [300, 301]) == {}
+    assert set(losing_attackers(copy.deepcopy(vanilla), [300, 301])) == {300}
     facts = facts_of(
         [
             ann("PhaseOrStepModified", [LOCAL], phase=3, step=7),
@@ -1503,8 +1512,11 @@ def test_an_attack_the_losing_attack_guard_kept_is_not_a_blunder():
     )
     assert facts[0]["deaths"] == {300: "SBA_Damage"}
     assert attack_blunders(facts[0], combat_record(board, [300, 301]), facts) == []
+    # Vanilla Bears next to the walled Tortoise: the guard drops them, and so the Oops flags them.
+    ((attacker, _why),) = attack_blunders(facts[0], combat_record(vanilla, [300, 301]), facts)
+    assert attacker == 300
     # The same Bears attacking alone was a free kill the guard would have dropped.
-    alone = copy.deepcopy(board)
+    alone = copy.deepcopy(vanilla)
     del alone["battlefield"][2]
     ((attacker, _why),) = attack_blunders(facts[0], combat_record(alone, [300]), facts)
     assert attacker == 300
