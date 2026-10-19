@@ -165,7 +165,8 @@ def fast_hedge(monkeypatch):
     monkeypatch.setattr(ActionPlanner, "_CRITICAL_DECISION_BUDGET_S", 0.3)
     monkeypatch.setattr(ActionPlanner, "_HEDGE_GRACE_S", 0.1)
     monkeypatch.setattr(ActionPlanner, "_HIGH_AFTER_LOW_S", 0.05)
-    monkeypatch.delenv("ARENAMCP_LINE_GAP", raising=False)
+    # These tests exercise the guard itself; the shipped default is shadow (see below).
+    monkeypatch.setenv("ARENAMCP_LINE_GAP", "on")
 
 
 # --- #116: the recorded board, tags and concern -------------------------------------------------
@@ -373,3 +374,13 @@ def test_a_low_target_off_the_line_still_waits(fast_hedge, monkeypatch):
     _intent(planner)
     assert planner._llm_decision_options(decision, state) == ["tgt:299"]
     assert planner.get_last_decision_trace()["hedge"]["why"].startswith("high: no answer")
+
+
+def test_the_line_gap_guard_ships_in_shadow_mode(monkeypatch):
+    """Guards that replace the model's pick stay in shadow until the user reviews them."""
+    from arenamcp.line_guard import line_gap_mode
+
+    monkeypatch.delenv("ARENAMCP_LINE_GAP", raising=False)
+    assert line_gap_mode() == "shadow"
+    monkeypatch.setenv("ARENAMCP_LINE_GAP", "on")
+    assert line_gap_mode() == "on"

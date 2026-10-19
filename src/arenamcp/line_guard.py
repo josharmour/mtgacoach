@@ -87,14 +87,17 @@ def guard_mode(kind: str) -> str:
 
 
 def line_gap_mode() -> str:
-    """'off', 'shadow' or 'on' for the planner's line-gap second look (ledger #116); default 'on'.
+    """'off', 'shadow' or 'on' for the planner's line-gap second look (ledger #116); default 'shadow'.
+
+    Shadow by default like ARENAMCP_LINE_GUARD: guards that replace the
+    model's pick stay in shadow until the user reviews their logs.
 
     ``ARENAMCP_LINE_GAP``: 'on' doubts a cast tagged ``LINE_GUARD_MARGIN`` or
     more below the best line (the low answer waits for high effort, else the
     line's pick decides); 'shadow' only logs what it would replace.
     """
     value = str(os.environ.get("ARENAMCP_LINE_GAP", "") or "").strip().lower()
-    return value if value in GUARD_MODES else "on"
+    return value if value in GUARD_MODES else "shadow"
 
 
 @dataclass
