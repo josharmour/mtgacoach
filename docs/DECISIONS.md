@@ -10,7 +10,8 @@ records *why* and *how we know*). Newest entries first.
 ## 2026-10-18 — Chat/voice conversation modes removed
 
 - **User decision (test-suite cleanup):** remove the chat/voice conversation
-  modes. Turn advice stays; topic selection was to stay too (see last bullet).
+  modes. Turn advice stays; topic selection was to stay too, but it turned
+  out to be conversation-only (last bullet).
 - **Evidence:** unreachable from the desktop since 2026-10-04 (4d85418): the
   chat box and push-to-talk button left the sidebar, `desktop/coach_process.py`
   sets `ARENAMCP_PROACTIVE_ONLY=1` so `standalone.py` boots in `turn_advice`,
@@ -35,13 +36,24 @@ records *why* and *how we know*). Newest entries first.
   match-boundary detectors (now covered by `tests/test_standalone_coaching_loop.py`:
   `_match_number`, `_advice_history`, `clear_deck_strategy`, post-match
   staging), the stop button (`stop_speech` → engine voice stop → `speak_stop`).
-- **Topic selection:** `TopicSelector` and its cooldown/repetition gates run
-  only inside conversation mode (`standalone.py` calls `on_state` /
+- **Topic selection:** `TopicSelector` and its cooldown/repetition gates ran
+  only inside conversation mode (`standalone.py` called `on_state` /
   `speak_topic_if_any` only when `conversation.mode == "conversation"`), so
-  they are exactly as unreachable as the question channel. They are kept,
-  with the mode switch and `ARENAMCP_PROACTIVE_ONLY`, as a play-by-play
-  topic-commentary mode until the user confirms whether "topic selection
-  stays" meant this.
+  they were exactly as unreachable as the question channel; turn advice never
+  used them. With the question channel gone, conversation mode was nothing
+  but this play-by-play commentary, so it went too (a separate commit, to
+  revert if "topic selection stays" meant keeping it): `conversation.py`,
+  `voice_session.py` (the arbiter only ever arbitrated conversation speech;
+  turn advice used the raw sink), the `set_mode` pipe command and the
+  sidebar's start-up `set_mode turn_advice`, `ARENAMCP_PROACTIVE_ONLY`, the
+  settings keys `conversation_mode` / `conversation_cooldown_seconds`, the
+  coach's `conversational=` render and `_postprocess_advice(skip_legal_filter=)`,
+  and the `conversation-mode*.md` design docs. The stop button now calls the
+  engine's voice output directly. One mode remains: turn advice.
+- **Verify:** collected tests 4825 → 4726 after the question channel went →
+  4579 after the commentary mode went (242 test functions removed, 9 added,
+  4 renamed or moved); full suite 4575 passed, 2 skipped, 2 xfailed. Headless
+  `import arenamcp.desktop.main_window, arenamcp.standalone` succeeds.
 
 ---
 

@@ -487,7 +487,7 @@ def test_compact_coach_feed_is_chronological(panel):
     plain_text = panel.log_view.toPlainText().strip()
     lines = [line.strip() for line in plain_text.splitlines() if line.strip()]
 
-    # Same direction as the conversation transcript: newest at the bottom.
+    # Chronological: newest at the bottom.
     assert lines[0].endswith("First advice: Cast Lightning Bolt")
     assert lines[1].endswith("Second advice: Attack with Grizzly Bears")
     assert lines[2].endswith("Third advice: Pass the turn")

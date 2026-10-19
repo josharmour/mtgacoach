@@ -566,16 +566,14 @@ class TtsManager(QObject):
                 #
                 # Dormant-gating activation contract (Wave 5, comment only):
                 # these fallback paths speak _last_text when its captured
-                # generation still equals _generation. Generation semantics
-                # mirror VoiceSession's arbiter: _generation is bumped by
+                # generation still equals _generation. _generation is bumped by
                 # every accepted speak() request, by stop_speech(), and by
                 # shutdown(), so a stale _last_text (cancelled utterance,
                 # superseded request) can never re-speak after a stop. When
                 # playback is ACTIVE (AudioPlayback still playing the previous
                 # utterance), a newer generation has already been taken — the
                 # generation comparison against that active request is what
-                # suppresses the fallback, exactly as coerce_priority-based
-                # preemption would in the arbiter path.
+                # suppresses the fallback.
                 self._worker_failed = True
                 if (
                     sys.platform == "darwin"

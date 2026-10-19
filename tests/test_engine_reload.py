@@ -113,7 +113,7 @@ def child_runtime(tmp_path, monkeypatch):
     (package / "__init__.py").write_text("")
     (package / "standalone.py").write_text(
         "import json, os, sys, time\n"
-        "print(json.dumps({'reload': os.getenv('ARENAMCP_ENGINE_RELOAD'), 'proactive': os.getenv('ARENAMCP_PROACTIVE_ONLY'), 'args': sys.argv[1:]}), flush=True)\n"
+        "print(json.dumps({'reload': os.getenv('ARENAMCP_ENGINE_RELOAD'), 'args': sys.argv[1:]}), flush=True)\n"
         "for line in sys.stdin:\n"
         "    if json.loads(line).get('cmd') == 'prepare_engine_reload':\n"
         "        time.sleep(0.05)\n"
@@ -145,9 +145,7 @@ def test_child_env_and_no_overlap_during_reload(qapp, child_runtime, monkeypatch
         assert child.waitForFinished(3000)
         assert not process.is_running
         assert exits == [0]
-        assert events == [
-            {"reload": expected, "proactive": "1", "args": ["--pipe", "--autopilot", "--dry-run", "--afk"]}
-        ]
+        assert events == [{"reload": expected, "args": ["--pipe", "--autopilot", "--dry-run", "--afk"]}]
     finally:
         process.stop()
 

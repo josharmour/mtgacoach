@@ -23,7 +23,6 @@ Pinned behaviour, in ``standalone.py`` terms:
 - Delivered advice -> ``speak_advice(advice, blocking=False)``.
 - The 'Action Required' turn+phase dedup and the unresolved-decision
   signature dedup.
-- Conversation-mode additions stay inert in turn_advice mode.
 
 Scripted game coverage: new_turn, priority_gained (is_frequent=False
 suppression), land_played, combat_attackers (fresh-state staleness pass),
@@ -42,9 +41,7 @@ import pytest
 
 import arenamcp.match_packets as _match_packets
 import arenamcp.standalone as current_mod
-from arenamcp.conversation import TURN_ADVICE, ConversationController
 from arenamcp.standalone_tempo import _TempoTracker
-from arenamcp.voice_session import VoiceSession
 
 # ---------------------------------------------------------------------------
 # Scripted recorded game + shared fakes
@@ -331,13 +328,6 @@ def make_engine(
     coach._get_latest_replay_path = lambda: None
     coach._get_match_context = lambda: {}
     coach._win_plan_worker = lambda state: None
-
-    # Conversation wiring (mirror of the __init__ block), parked in turn_advice.
-    coach.last_match_id = None
-    coach.voice_session = VoiceSession(coach._voice_output)
-    coach.conversation = ConversationController(coach, snapshot_fn=lambda: dict(coach._mcp.snapshots[0]))
-    coach.conversation.set_mode(TURN_ADVICE, persist=False)
-    coach._conversation_speech_seq = 0
     return coach, sink, llm
 
 
@@ -528,119 +518,14 @@ def test_t5_dedup_action_required_suppression_matches(monkeypatch):
 
 def test_t5_match_boundary_parity(monkeypatch):
     """Match boundary (m1 -> m2): the boundary resets coaching state and
-    suppresses triggers for the 2s window (also covers the conversation reset
-    at the boundary being inert)."""
+    suppresses triggers for the 2s window."""
     coach, sink, llm = make_engine(snapshots=MAIN_SNAPSHOTS, batches=MAIN_BATCHES, threat=THREAT)
     run_scripted_game(monkeypatch, coach, iterations=len(MAIN_BATCHES))
 
-    # The boundary fired: match number bumped, match id mirrored.
+    # The boundary fired: match number bumped.
     assert coach._match_number == 1
-    assert coach.last_match_id == "m2"
     # Post-boundary: it11 suppressed (2s window), it12 suppressed by the
     # trivial-window gate (no legal actions), so the last spoken text is the
     # it8 decision advice.
     assert dispatch_record(sink, llm) == expected_main_dispatch()
     assert [c["text"] for c in sink.calls][-1] == "ADVICE[decision_required]"
-
-
-def test_t5_mode_switch_back_restores_parity(monkeypatch):
-    """Mode switch conversation -> turn_advice: after switching back, the
-    dispatch resumes on the raw sink path (same text, blocking and LLM calls
-    as a turn_advice-only run)."""
-    import arenamcp.conversation as conversation_mod
-
-    monkeypatch.setattr(conversation_mod, "get_settings", lambda: FakeSettings())
-
-    batches = [["land_played"]] * 4
-    snapshots = [
-        snap(turn=5),  # S0
-        snap(turn=5, legal_actions=["Play Mountain"]),  # S1 it0 (meaningful)
-        snap(turn=6, legal_actions=["Play Forest"]),  # S2 it1 (meaningful)
-        snap(turn=7, legal_actions=["Play Plains"]),  # S3 it2 (meaningful)
-        snap(turn=8, legal_actions=["Play Island"]),  # S4 it3 (meaningful)
-    ]
-
-    c_coach, c_sink, c_llm = make_engine(snapshots=snapshots, batches=batches)
-    # Two iterations in conversation mode: non-critical trigger is memory-only
-    # (no speech at all — the arbiter never touches the sink).
-    c_coach.conversation.set_mode("conversation", persist=False)
-    run_scripted_game(monkeypatch, c_coach, iterations=2)
-    c_coach._running = True
-    c_coach.conversation.set_mode(TURN_ADVICE, persist=False)
-    run_scripted_game(monkeypatch, c_coach, iterations=2)
-
-    # The conversation-mode match-start opener ("Conversation mode. Match
-    # underway...") is a mode indicator, not advice dispatch — it lands in
-    # the sink at the match boundary and must not count.
-    c_all = [
-        (c["text"], c["blocking"])
-        for c in c_sink.calls
-        if not str(c["text"]).startswith(("Conversation mode. Match underway.",))
-    ]
-    assert c_all == [("ADVICE[land_played]", False), ("ADVICE[land_played]", False)]
-    assert [c["trigger"] for c in c_llm.calls] == ["land_played", "land_played"]
-
-
-def test_t5_conversation_additions_inert_in_turn_advice(monkeypatch):
-    """Regression guards for the conversation additions on the legacy path:
-    controller never consulted (on_state/speak_topic_if_any), memory untouched,
-    raw sink calls (text, blocking) with no arbiter indirection, and no memory
-    residue after a transient conversation phase."""
-    import arenamcp.conversation as conversation_mod
-
-    monkeypatch.setattr(conversation_mod, "get_settings", lambda: FakeSettings())
-
-    batches = [["land_played"]] * 3
-    snapshots = [
-        snap(turn=5),  # S0
-        snap(turn=5, legal_actions=["Play Mountain"]),  # S1 it0 (meaningful)
-        snap(turn=6, legal_actions=["Play Forest"]),  # S2 it1 (meaningful)
-        snap(turn=7, legal_actions=["Play Plains"]),  # S3 it2 (meaningful)
-    ]
-
-    c_coach, c_sink, c_llm = make_engine(snapshots=snapshots, batches=batches)
-
-    on_state_calls: list = []
-    topic_calls: list = []
-    orig_on_state = c_coach.conversation.on_state
-    orig_topic = c_coach.conversation.speak_topic_if_any
-
-    def spy_on_state(curr, prev, triggers):
-        on_state_calls.append(list(triggers))
-        return orig_on_state(curr, prev, triggers)
-
-    def spy_topic(*a, **k):
-        topic_calls.append((a, k))
-        return orig_topic(*a, **k)
-
-    c_coach.conversation.on_state = spy_on_state  # type: ignore[method-assign]
-    c_coach.conversation.speak_topic_if_any = spy_topic  # type: ignore[method-assign]
-
-    run_scripted_game(monkeypatch, c_coach, iterations=2)
-
-    # Turn-advice never consults the controller (loop gate reads mode).
-    assert on_state_calls == []
-    assert topic_calls == []
-    assert c_coach.conversation.memory.turns == []
-    # Raw sink calls — the arbiter never mediated (raw path = text + blocking).
-    assert c_sink.calls == [
-        {"text": "ADVICE[land_played]", "blocking": False},
-        {"text": "ADVICE[land_played]", "blocking": False},
-    ]
-
-    # Transient conversation phase: on_state records harmlessly; back in
-    # turn_advice the raw sink path resumes with no arbitration residue. The
-    # third iteration ALSO fires the None->first-match boundary reset (the
-    # scripted loop starts with last_match_id=None), clearing the seeded
-    # memory — asserted below as the Wave-5 boundary behavior.
-    c_coach.conversation.set_mode("conversation", persist=False)
-    c_coach.conversation.on_state(dict(snapshots[0]), {}, ["land_played"])
-    assert len(c_coach.conversation.memory.turns) == 1
-    c_coach.conversation.set_mode(TURN_ADVICE, persist=False)
-    c_coach._running = True
-    run_scripted_game(monkeypatch, c_coach, iterations=1)
-    # The None -> "m1" boundary cleared the seeded memory (Wave-5 reset site)
-    # and the turn_advice iteration dispatched through the raw sink again.
-    assert c_coach.conversation.memory.turns == []
-    assert c_coach.last_match_id == "m1"
-    assert c_sink.calls[-1] == {"text": "ADVICE[land_played]", "blocking": False}

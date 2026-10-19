@@ -666,19 +666,6 @@ class PipeAdapter:
                 coach._running = False
             elif action == "toggle_fallback_mode":
                 self._handle_toggle_fallback_mode()
-            elif action == "set_mode":
-                # Tolerate BOTH payload shapes: {"cmd":"set_mode","mode":...}
-                # (contract) and {"cmd":"set_mode","text":...} (generic
-                # send_command transport). The key mismatch silently no-op'd
-                # every UI mode switch (2026-09-16 Mac session: clicks never
-                # reached the controller — no ack, no speech, no log line).
-                mode = str(cmd.get("mode") or cmd.get("text") or "")
-                conversation = getattr(coach, "conversation", None)
-                if mode and conversation is not None:
-                    with contextlib.suppress(Exception):
-                        conversation.set_mode(mode)
-                resulting = str(getattr(conversation, "mode", mode) if conversation is not None else mode)
-                self.status("MODE", resulting)
             elif action == "set_draft_commentary":
                 enabled = cmd.get("enabled") is True
                 coach.settings.set("draft_commentary", enabled)
@@ -692,15 +679,10 @@ class PipeAdapter:
             elif action == "stop_speech":
                 # The stop button is also "keep playing" during a concede countdown.
                 self._cancel_concede(coach, "stop_speech")
-                voice_session = getattr(coach, "voice_session", None)
-                if voice_session is not None:
+                voice_output = getattr(coach, "_voice_output", None)
+                if voice_output is not None and hasattr(voice_output, "stop"):
                     with contextlib.suppress(Exception):
-                        voice_session.stop_speaking("ui")
-                else:
-                    voice_output = getattr(coach, "_voice_output", None)
-                    if voice_output is not None and hasattr(voice_output, "stop"):
-                        with contextlib.suppress(Exception):
-                            voice_output.stop()
+                        voice_output.stop()
             else:
                 logger.warning("Unknown pipe command: %s", action)
         except Exception as e:

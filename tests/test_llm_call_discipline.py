@@ -26,7 +26,6 @@ from arenamcp import game_plan as game_plan_module
 from arenamcp import standalone
 from arenamcp.backend_health import BACKEND_ERROR_PREFIX, LOCAL_FALLBACK_PREFIX, BackendHealth, HealthState
 from arenamcp.coach import CoachEngine
-from arenamcp.conversation import TURN_ADVICE, ConversationController
 from arenamcp.deck_strategy import deck_identity
 from arenamcp.game_plan import (
     STRATEGIC_LANE,
@@ -36,7 +35,6 @@ from arenamcp.game_plan import (
     llm_available,
 )
 from arenamcp.standalone_tempo import _TempoTracker
-from arenamcp.voice_session import VoiceSession
 
 # ---------------------------------------------------------------------------
 # Shared fakes
@@ -315,10 +313,6 @@ def make_loop(state: dict, triggers: list[str], *, autopilot: bool, engine=None,
     coach._is_meaningful_advice_window = lambda *a, **k: True
     coach._get_match_context = lambda: {}
     coach._run_win_plan_worker = Mock()
-    coach.last_match_id = None
-    coach.voice_session = VoiceSession(None)
-    coach.conversation = ConversationController(coach, snapshot_fn=lambda: dict(state))
-    coach.conversation.set_mode(TURN_ADVICE, persist=False)
     return coach
 
 
@@ -547,9 +541,9 @@ def test_advice_calls_are_labelled_and_bounded_to_a_first_token():
     assert kwargs["first_token_timeout_s"] <= kwargs.get("request_timeout_s", 17.0) - 2.0
 
 
-def test_conversation_mode_renders_are_labelled_as_questions():
-    backend = BreakerBackend(["What a turn."])
-    _coach_with(backend).get_advice(_game(5), trigger="new_turn", conversational=True)
+def test_question_renders_are_labelled_as_questions():
+    backend = BreakerBackend(["Keep playing: you have lethal next turn."])
+    _coach_with(backend).get_advice(_game(5), question="Should I concede?")
     assert backend.calls[0][3]["call_class"] == "coach.question"
 
 

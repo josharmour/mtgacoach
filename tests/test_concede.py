@@ -1121,8 +1121,6 @@ class PipeCoach:
         self.armed = armed
         self._autopilot = None
         self._autopilot_enabled = False
-        self.conversation = None
-        self.voice_session = None
         self._voice_output = None
 
     def cancel_concede(self, source: str = "ui") -> bool:

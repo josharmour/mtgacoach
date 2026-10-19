@@ -743,8 +743,6 @@ class CompactCoachPanel(QWidget):
         self._session.errorOccurred.connect(self._on_error_occurred)
         self._session.mctsUpdated.connect(self._on_mcts_updated)
         self._session.bugReportSaved.connect(self._on_bug_report_saved)
-        self._session.modeChanged.connect(self._on_mode_changed)
-        self._session.started.connect(self._ensure_proactive_advice)
         startup_signal = getattr(self._session, "startupStatusChanged", None)
         if startup_signal is not None:
             startup_signal.connect(self._on_startup_status)
@@ -1147,8 +1145,6 @@ class CompactCoachPanel(QWidget):
             )
             self.ap_btn.setProperty("state", state)
             theme.repolish(self.ap_btn)
-        elif key == "MODE":
-            self._on_mode_changed(val)
         elif key == "AUTO_QUEUE":
             state = val.strip().upper()
             if state in {"ON", "OFF"}:
@@ -1192,12 +1188,8 @@ class CompactCoachPanel(QWidget):
         self.arena_status_label.setVisible(bool(message))
 
     # ------------------------------------------------------------------
-    # Proactive coaching and device selection
+    # Device selection
     # ------------------------------------------------------------------
-    def _ensure_proactive_advice(self) -> None:
-        """A saved chat preference must not silence the proactive desktop."""
-        self._session.set_mode("turn_advice")
-
     def _game_device(self) -> str:
         device = str(self._settings.get("game_device", "desktop") or "desktop")
         return device if device in GAME_DEVICES else "desktop"
@@ -1212,10 +1204,6 @@ class CompactCoachPanel(QWidget):
         self._refresh_status_dots()
         self.voice_style_popover.hide()
         self.restart_requested.emit()
-
-    def _on_mode_changed(self, mode: str) -> None:
-        if str(mode).strip() == "conversation":
-            self._ensure_proactive_advice()
 
     # ------------------------------------------------------------------
     # Feed, Now card, bug reports

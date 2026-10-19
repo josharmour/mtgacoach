@@ -37,9 +37,6 @@ class CoachSession(QObject):
     # Tactical-search result for the sidebar's tactical line
     mctsUpdated = Signal(object)
 
-    # Conversation Mode signal
-    modeChanged = Signal(str)
-
     # Lifecycle signals
     started = Signal()
     stopped = Signal()
@@ -247,17 +244,8 @@ class CoachSession(QObject):
     def cycle_voice(self) -> None:
         self.send_command("cycle_voice")
 
-    def set_mode(self, mode: str) -> None:
-        """Switch coaching mode ("turn_advice" | "conversation")."""
-        self._tts.stop_speech()
-        self.send_command("set_mode", mode)
-
     def stop_speaking(self) -> None:
-        """Stop current TTS playback.
-
-        Also notifies the engine (``stop_speech`` command) so the engine-side
-        arbiter channel is released too.
-        """
+        """Stop current TTS playback and tell the engine (``stop_speech``)."""
         self._tts.stop_speech()
         self.send_command("stop_speech")
 
@@ -507,8 +495,6 @@ class CoachSession(QObject):
                 elif key == "MUTE":
                     self._muted = "ON" in val
                 self.statusChanged.emit(key, val)
-                if key == "MODE":
-                    self.modeChanged.emit(val)
 
         elif ev_type == "speak_stop":
             # The engine stopped its voice output (stop command, urgent-topic

@@ -561,15 +561,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         trigger: str | None = None,
         threat: dict[str, Any] | None = None,
         question: str | None = None,
-        conversational: bool = False,
     ) -> str:
         """Advice while the model server's breaker is open: no prompt, no call.
 
-        Says "the model is offline" once per outage, not on every trigger.
-        Conversation-mode commentary stays silent; questions get an answer.
+        Says "the model is offline" once per outage, not on every trigger;
+        questions get an answer.
         """
-        if conversational and not question:
-            return ""
         first = not self._offline_announced
         self._offline_announced = True
         if first:
@@ -3864,7 +3861,6 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         trigger: str | None = None,
         style: str | None = None,
         threat: dict[str, Any] | None = None,
-        conversational: bool = False,
         narration_mode: str | None = None,
     ) -> str:
         """Get coaching advice for the current game state.
@@ -3875,12 +3871,6 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             trigger: Optional trigger name (e.g., "combat_attackers", "low_life")
             style: Advice style ("concise" or "verbose")
             threat: Optional threat card dict for threat_detected triggers
-            conversational: Conversation-mode render (topic commentary or
-                question answer). Bypasses the legal-action sanitizer: the
-                output is broadcast-style commentary for the audience, not an
-                action for the player, so forcing it to "match a legal action"
-                replaced conversational prose with boilerplate like
-                "Wait (Opponent has priority)" (live report 2026-09-16 20:08).
 
         Returns:
             Advice string from the LLM
@@ -3893,9 +3883,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         # Model server down (circuit breaker open): no prompt, no call, no
         # 17 s wait — deterministic advice, and "offline" said once.
         if not llm_available(self._backend):
-            return self._offline_advice(
-                game_state, trigger=trigger, threat=threat, question=question, conversational=conversational
-            )
+            return self._offline_advice(game_state, trigger=trigger, threat=threat, question=question)
         self._note_model_available()
         game_state = prepare_match_context(game_state)
         total_start = time.perf_counter()
@@ -4018,9 +4006,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         # Structured answer: number the legal actions and ask for
         # {"action": N, "say": ...} so the pick is legal by construction.
-        # Questions and conversation-mode renders stay free text.
+        # Questions stay free text.
         structured_choices: list[str] = []
-        if not conversational and not question and structured_advice_enabled():
+        if not question and structured_advice_enabled():
             structured_choices = build_choices(game_state)
             if structured_choices:
                 user_message += "\n\n" + format_choices(structured_choices)
@@ -4204,11 +4192,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         )
         # A saturated server sends no first token at all (18:52:59 on
         # 2026-10-06): give up then instead of after the whole budget.
-        # Questions and conversation-mode renders are coach.question.
+        # Questions are coach.question.
         complete_kwargs.update(
             accepted_call_kwargs(
                 self._backend,
-                call_class="coach.question" if (question or conversational) else "coach.advice",
+                call_class="coach.question" if question else "coach.advice",
                 first_token_timeout_s=min(self._ADVICE_FIRST_TOKEN_TIMEOUT_S, max(1.0, api_timeout - 2.0)),
             )
         )
@@ -4236,21 +4224,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         if is_unavailable_text(response):
             # The breaker opened while this call was being prepared.
-            return self._offline_advice(
-                game_state, trigger=trigger, threat=threat, question=question, conversational=conversational
-            )
+            return self._offline_advice(game_state, trigger=trigger, threat=threat, question=question)
 
         if trigger == "threat_detected" and threat and (not response or is_backend_error_text(response)):
             response = self._build_threat_fallback(game_state, threat)
 
         # POST-PROCESSING: Validate and fix common LLM issues (especially for smaller models)
-        # Conversational renders (topic commentary / question answers) are
-        # broadcast-style prose for the audience — they intentionally describe
-        # plays and strategy without being an executable action, so the
-        # legal-action sanitizer would misread them as "illegal advice" and
-        # replace them with boilerplate like "Wait (Opponent has priority)".
-        # Skip that filter; markdown/TTS cleanup still applies via the
-        # style-specific paths below.
         verified_action: str | None = None
         self.last_structured_choice = None
         if structured_choices and response and not is_backend_error_text(response):
@@ -4284,7 +4263,6 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 response,
                 game_state,
                 style=style_key,
-                skip_legal_filter=conversational,
                 verified_action=verified_action,
             )
 
@@ -4295,8 +4273,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         # Keep legal-action checks in their existing imperative vocabulary,
         # then frame only the resulting recommendation as an intended play.
-        # Commentary and direct answers retain their model-written phrasing.
-        if voice_mode == "autopilot" and not conversational and not question:
+        # Direct answers retain their model-written phrasing.
+        if voice_mode == "autopilot" and not question:
             response = action_narration(response, planned=True)
 
         self._word_tracker.record(response, exclude_words=card_words)
