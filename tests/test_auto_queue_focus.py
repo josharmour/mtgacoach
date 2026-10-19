@@ -31,16 +31,47 @@ class _Foreground:
         return self.current
 
 
-def _controller(idle: float, threshold: float | None = 20.0) -> NativeMacInput:
+ANY_INPUT, NULL_EVENT = 4294967295, 0
+# Quartz's CGEventType values for keyboard, mouse and trackpad input.
+USER_EVENTS = {
+    "kCGEventKeyDown": 10,
+    "kCGEventKeyUp": 11,
+    "kCGEventFlagsChanged": 12,
+    "kCGEventMouseMoved": 5,
+    "kCGEventLeftMouseDown": 1,
+    "kCGEventLeftMouseDragged": 6,
+    "kCGEventRightMouseDown": 3,
+    "kCGEventRightMouseDragged": 7,
+    "kCGEventOtherMouseDown": 25,
+    "kCGEventOtherMouseDragged": 27,
+    "kCGEventScrollWheel": 22,
+}
+
+
+def _quartz(idle: float, tickle: float | None = None) -> SimpleNamespace:
+    """HID idle times: ``idle`` since real input, ``tickle`` since an app's display-wake null event."""
+    tickle = idle if tickle is None else min(idle, tickle)
+
+    def seconds_since(state, kind):
+        assert state == 1
+        return tickle if kind in (ANY_INPUT, NULL_EVENT) else idle
+
+    return SimpleNamespace(
+        kCGEventSourceStateHIDSystemState=1,
+        kCGAnyInputEventType=ANY_INPUT,
+        kCGEventNull=NULL_EVENT,
+        CGEventSourceSecondsSinceLastEventType=seconds_since,
+        **USER_EVENTS,
+    )
+
+
+def _controller(idle: float, threshold: float | None = 20.0, tickle: float | None = None) -> NativeMacInput:
     controller = NativeMacInput.__new__(NativeMacInput)
     controller._raise_when_idle_s = threshold
     controller._foreground = _Foreground(TERMINAL)
     controller._game_window = Mock(return_value=ARENA)
-    controller._quartz = SimpleNamespace(
-        kCGEventSourceStateHIDSystemState=1,
-        kCGAnyInputEventType=4294967295,
-        CGEventSourceSecondsSinceLastEventType=lambda state, kind: idle,
-    )
+    controller._quartz = _quartz(idle, tickle)
+    controller.focus_wait = ""
     return controller
 
 
@@ -76,13 +107,46 @@ def test_an_active_user_keeps_the_wait(appkit):
     with pytest.raises(DesktopUnavailable, match=r"leave the keyboard and mouse for 20s"):
         controller._check_focus(ARENA)
     assert appkit.calls == []
+    # The reason is kept for auto-queue's still-waiting log line.
+    assert "keyboard/mouse used 3s ago" in controller.focus_wait
+    assert "after 20s idle" in controller.focus_wait
 
 
-def test_an_idle_user_gets_arena_brought_forward(appkit):
+def test_an_idle_user_gets_arena_brought_forward(appkit, caplog):
     controller = _controller(idle=25.0)
     appkit.controller = controller
+    controller.focus_wait = "stale"
+    with caplog.at_level("INFO", logger="arenamcp.native_mac_input"):
+        controller._check_focus(ARENA)  # no raise: Arena is in front now
+    assert appkit.calls == [("activate", 2)]
+    assert controller.focus_wait == ""
+    assert "Brought Arena forward" in caplog.text
+
+
+def test_display_wake_tickles_from_arena_do_not_count_as_the_user(appkit):
+    """2026-10-18 19:02:12-19:16:09: the Victory screen sat 14 minutes behind another app.
+
+    `pmset -g assertions` showed MTGA holding "...queue.tickle.nxevent
+    service:IOHIDSystem pid:58967 process:MTGA"; HID idle for
+    kCGAnyInputEventType (and kCGEventNull) reset every ~10 s while keyDown idle
+    was 4353 s and mouseMoved 318 s. Counting the tickle, the user never looked
+    idle for 20 s, so Arena was never brought forward (no /usr/bin/open ran).
+    """
+    controller = _controller(idle=840.0, tickle=3.0)
+    appkit.controller = controller
+    assert controller._idle_seconds() == 840.0
     controller._check_focus(ARENA)  # no raise: Arena is in front now
     assert appkit.calls == [("activate", 2)]
+
+
+def test_idle_uses_any_input_when_quartz_lacks_the_event_types():
+    controller = _controller(idle=7.0)
+    controller._quartz = SimpleNamespace(
+        kCGEventSourceStateHIDSystemState=1,
+        kCGAnyInputEventType=ANY_INPUT,
+        CGEventSourceSecondsSinceLastEventType=lambda state, kind: 7.0 if kind == ANY_INPUT else 0.0,
+    )
+    assert controller._idle_seconds() == 7.0
 
 
 def test_refused_activation_falls_back_to_launch_services(appkit, monkeypatch):
@@ -110,6 +174,7 @@ def test_arena_that_never_comes_forward_still_waits(appkit, monkeypatch):
     )
     with pytest.raises(DesktopUnavailable, match="foreground"):
         controller._check_focus(ARENA)
+    assert "macOS refused to bring Arena forward" in controller.focus_wait
 
 
 def test_without_the_option_nothing_is_activated(appkit):
