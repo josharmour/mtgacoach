@@ -18,10 +18,13 @@ cards.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from collections.abc import Iterable, Sequence
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 SUBJECTS = frozenset({"commander", "vehicle", "animation", "equipment", "library", "set_mechanics"})
 _ZONES = ("hand", "battlefield", "stack", "command", "graveyard", "exile")
@@ -45,10 +48,20 @@ def compose(parts: Sequence[tuple[str | None, str]], subjects: Iterable[str] = S
 
 
 def subjects_in_play(state: dict | None, decision: Any = None, extra_text: Iterable[str] = ()) -> frozenset[str]:
-    """The :data:`SUBJECTS` our visible cards, the pending decision or ``extra_text`` (menu lines) touch."""
+    """The :data:`SUBJECTS` our visible cards, the pending decision or ``extra_text`` (menu lines) touch.
+
+    A snapshot it cannot read gets every subject: a rule is never dropped by an error.
+    """
     if os.environ.get("ARENAMCP_SITUATIONAL_RULES") == "0":
         return SUBJECTS
-    state = state if isinstance(state, dict) else {}
+    try:
+        return _subjects_in_play(state if isinstance(state, dict) else {}, decision, extra_text)
+    except Exception as error:
+        logger.debug("situational rules: sending every rule (%s)", error)
+        return SUBJECTS
+
+
+def _subjects_in_play(state: dict, decision: Any, extra_text: Iterable[str]) -> frozenset[str]:
     local = state.get("local_seat_id") or next(
         (p.get("seat_id") for p in state.get("players") or [] if isinstance(p, dict) and p.get("is_local")), None
     )
@@ -78,14 +91,11 @@ def subjects_in_play(state: dict | None, decision: Any = None, extra_text: Itera
         found.add("animation")
     if _EQUIPMENT.search(text):
         found.add("equipment")
-    try:
-        from arenamcp.deck_strategy import commander_ids
-
-        if commander_ids(state):
-            found.add("commander")
-    except Exception:  # an odd snapshot never drops a rule
-        found.add("commander")
+    from arenamcp.deck_strategy import commander_ids
     from arenamcp.match_context import library_in_play
+
+    if commander_ids(state):
+        found.add("commander")
 
     if getattr(decision, "request_type", None) == "Search" or state.get("library_listed") or library_in_play(state):
         found.add("library")

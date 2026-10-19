@@ -192,6 +192,16 @@ def test_coach_advice_sends_the_rules_for_its_board():
     assert "SECRETS OF STRIXHAVEN" in backend.systems[-1]
 
 
+def test_an_unreadable_snapshot_keeps_every_rule_and_the_library():
+    from arenamcp.match_context import library_in_play
+
+    odd = _state(decision_context="Select Items", hand=["Grizzly Bears"], players=[None])
+    assert library_in_play(odd) is False  # unreadable entries are skipped, not fatal
+    broken = _state(battlefield=7)
+    assert subjects_in_play(broken) == SUBJECTS
+    assert library_in_play(broken) is True
+
+
 def test_the_kill_switch_sends_every_rule(monkeypatch):
     monkeypatch.setenv("ARENAMCP_SITUATIONAL_RULES", "0")
     assert subjects_in_play(_state(), _decision()) == SUBJECTS

@@ -269,17 +269,29 @@ def library_in_play(state: dict) -> bool:
     hand or the command zone, our object on the stack, or a permanent of ours
     with a library ability that is not a one-time enters trigger. Otherwise
     the inventory (up to ~1.2k tokens in Brawl) only restates the deck
-    reference minus the visible zones (2026-10-18 prompt audit).
+    reference minus the visible zones (2026-10-18 prompt audit). A snapshot
+    it cannot read lists the inventory.
     """
-    context = state.get("decision_context") or {}
+    try:
+        return _library_in_play(state)
+    except Exception as error:
+        logger.debug("library relevance unknown, listing the inventory: %s", error)
+        return True
+
+
+def _library_in_play(state: dict) -> bool:
+    context = state.get("decision_context")
+    context = context if isinstance(context, dict) else {}
     request = f"{context.get('type') or ''} {state.get('_bridge_request_type') or ''}".lower()
     if any(kind in request for kind in LIBRARY_DECISIONS):
         return True
     local = state.get("local_seat_id") or next(
-        (p.get("seat_id") for p in state.get("players", []) if p.get("is_local")), None
+        (p.get("seat_id") for p in state.get("players", []) if isinstance(p, dict) and p.get("is_local")), None
     )
 
-    def ours(card: dict) -> bool:
+    def ours(card: Any) -> bool:
+        if not isinstance(card, dict):
+            return False
         side = card.get("controller_seat_id") or card.get("owner_seat_id")
         return local is None or side in (None, local)
 
