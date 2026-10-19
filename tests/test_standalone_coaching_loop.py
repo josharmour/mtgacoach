@@ -135,6 +135,14 @@ class FakeServerGameState:
         self.game_ended_event.clear()
         return "loss", None
 
+    def take_game_end(self):
+        """The record form of consume_game_end; no match id: the loop's watched match owns it."""
+        result, snapshot = self.consume_game_end()
+        return {"match_id": None, "game_number": None, "result": result, "snapshot": snapshot}
+
+    def game_over_signalled(self):
+        return self.game_ended_event.is_set()
+
 
 @pytest.fixture
 def server_game_state(monkeypatch):

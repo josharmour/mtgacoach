@@ -92,6 +92,23 @@ class MatchHistory:
         self._save()
         logger.info(f"Recorded match: {record.result} vs {record.opponent_name or 'unknown'}")
 
+    def set_result(self, match_id: str, result: str) -> bool:
+        """Correct an already-recorded game's result in place (False when it isn't recorded).
+
+        A later authoritative result (MatchCompleted's finalMatchResult) can
+        disagree with the one recorded at the game end; the game keeps one record.
+        """
+        if not match_id or not result:
+            return False
+        for rec in self._records:
+            if rec.match_id == match_id:
+                if rec.result != result:
+                    logger.info(f"Corrected match {match_id}: {rec.result} -> {result}")
+                    rec.result = result
+                    self._save()
+                return True
+        return False
+
     def set_rating(self, match_id: str, rating: int | None, reason: str | None = None) -> None:
         """Backfill the best-effort coach rating for an already-recorded match.
 
