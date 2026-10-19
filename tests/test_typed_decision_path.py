@@ -66,6 +66,33 @@ def test_failed_target_submission_pauses_instead_of_retrying_legacy(monkeypatch)
 
 
 @pytest.mark.parametrize(
+    "after",
+    [
+        {"ok": True, "has_pending": False},  # the player clicked the target first
+        {**TARGET_POLL, "game_state_id": 241, "msg_id": 314},  # the GRE moved to the next slot
+    ],
+    ids=["answered-by-the-player", "advanced"],
+)
+def test_failed_target_submission_on_a_moved_on_request_is_not_manual(monkeypatch, after):
+    # Seam Rip, 2026-10-18 18:26:12: Player.log shows the player's own
+    # SelectTargetsResp for Llanowar Elves at 18:26:12.136; our submit 40 ms
+    # later failed ("ref does not name an object result") and MANUAL REQUIRED
+    # was announced for a spell that had already resolved.
+    bridge = TypedBridge({**TARGET_POLL, "game_state_id": 240, "msg_id": 312})
+
+    def player_answers_first(ids):
+        bridge.poll_resp = after
+        return False
+
+    bridge.submit_targets = player_answers_first
+    engine = make_engine(bridge, planner_with('{"option_ids": ["tgt:2"]}'))
+    pauses = []
+    monkeypatch.setattr(engine, "_pause_for_manual", lambda reason, state: pauses.append(reason))
+    assert engine._try_typed_decision_path(target_state(known_source=True), "decision_required") is True
+    assert pauses == []
+
+
+@pytest.mark.parametrize(
     ("answer", "submitted"),
     [
         ("pass", ("pass",)),

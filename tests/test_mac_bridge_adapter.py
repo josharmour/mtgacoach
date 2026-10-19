@@ -613,6 +613,76 @@ def test_mismatched_target_acknowledgment_never_finalizes():
     assert len(game.submits()) == 1
 
 
+def two_slot_request(handle: int, selected: tuple[int, ...] = (), second_min: int = 1) -> dict:
+    """Felling Blow / Smell Fear: slot 1 our creature (309 or 310), slot 2 theirs (289 or 290)."""
+
+    def target(instance_id: int) -> dict:
+        chosen = instance_id in selected
+        return {
+            "$c": MSG + "Target",
+            "$h": 1000 + instance_id,
+            "targetInstanceId_": instance_id,
+            "legalAction_": enum("Unselect", 2) if chosen else enum("Select", 1),
+            "highlight_": enum("Tepid", 3),
+        }
+
+    def slot(index: int, ids: tuple[int, int], minimum: int) -> dict:
+        return {
+            "$c": MSG + "TargetSelection",
+            "$h": 40 + index,
+            "targetIdx_": index,
+            "minTargets_": minimum,
+            "maxTargets_": 1,
+            "selectedTargets_": sum(instance_id in selected for instance_id in ids),
+            "targets_": listing(*(target(instance_id) for instance_id in ids)),
+        }
+
+    return {
+        "$c": "GreClient.Rules.SelectTargetsRequest",
+        "$h": handle,
+        "SourceId": 330,
+        "TargetSelections": listing(slot(1, (309, 310), 1), slot(2, (289, 290), second_min)),
+    }
+
+
+def sent_target_ids(batch: list[dict]) -> list[int]:
+    return [op["value"]["uint"] for op in batch if op.get("member") == "TargetInstanceId"]
+
+
+@pytest.mark.parametrize("second_min", [1, 0], ids=["felling-blow", "smell-fear-up-to-one"])
+def test_two_target_slots_go_one_per_round_trip_then_commit(second_min):
+    # 2026-10-18 18:31:40 (Felling Blow) and 15:18:11 / 18:40:49 (Smell Fear):
+    # both slots went in one batch, Arena took slot 1 only (Player.log shows a
+    # single SelectTargetsResp, targetIdx 1), and the adapter failed "not
+    # acknowledged complete" / "acknowledged different targets" -> MANUAL
+    # REQUIRED while slot 2 waited for an answer.
+    original = two_slot_request(5, second_min=second_min)
+    after_first = two_slot_request(9, (309,), second_min=second_min)
+    after_both = two_slot_request(12, (309, 289), second_min=second_min)
+    game = FakeGame(original)
+    game.requests = [original, original, after_first, after_first, after_both, after_both]
+    response = adapter_for(game).handle({"action": "submit_targets", "target_instance_ids": [309, 289]})
+    assert response["ok"] is True and response["finalized"] is True
+    first, second, commit = game.submits()
+    assert sent_target_ids(first) == [309]
+    assert sent_target_ids(second) == [289]
+    assert second[1] == {"op": "expect_pending", "target": {"h": 9}}  # on the GRE's updated request
+    assert commit[1] == {"op": "expect_pending", "target": {"h": 12}}
+    assert [op["value"]["enum"] for op in commit if op.get("member") == "Type"] == ["SubmitTargetsReq"]
+
+
+def test_a_later_slot_no_longer_offering_our_target_is_never_finalized():
+    original = two_slot_request(5)
+    after_first = two_slot_request(9, (309,))
+    after_first["TargetSelections"]["$items"][1]["targets_"]["$items"].pop(0)  # 289 left the battlefield
+    game = FakeGame(original)
+    game.requests = [original, original, after_first, after_first]
+    response = adapter_for(game).handle({"action": "submit_targets", "target_instance_ids": [309, 289]})
+    assert response["ok"] is False
+    assert "no longer offers" in response["error"]
+    assert len(game.submits()) == 1
+
+
 def test_target_shape_preserves_action_and_filters_selected_targets():
     game = FakeGame(counted_targets_request(5, (20,)))
     response = adapter_for(game).handle({"action": "get_pending_actions"})

@@ -267,6 +267,12 @@ class StandaloneCoach(
 
         self._bridge_poller = get_poller()
 
+        # Decision watchdog: autoplay never lets Arena's clock run out on a
+        # pending request, whatever the triggers did (decision_watchdog.py).
+        from arenamcp.decision_watchdog import DecisionWatchdog
+
+        self._decision_watchdog = DecisionWatchdog()
+
         # Deterministic "dead no matter what" check: recommend conceding, and
         # with autoplay on, concede after a cancellable countdown.
         self._init_concede()
@@ -1073,6 +1079,110 @@ class StandaloneCoach(
         with contextlib.suppress(Exception):
             self._bridge_poller.enrich_snapshot(judged)
         return judged
+
+    def _bridge_pending_label(self) -> str | None:
+        """Label of the request the bridge last saw pending ("Search Library"), else None."""
+        poller = getattr(self, "_bridge_poller", None)
+        latest = getattr(poller, "latest_pending", None)
+        if not callable(latest):
+            return None
+        try:
+            resp = latest()
+        except Exception as e:
+            logger.debug(f"bridge pending label failed: {e}")
+            return None
+        if not resp:
+            return None
+        from arenamcp.gre_bridge import _get_bridge_request_label
+
+        return _get_bridge_request_label(resp.get("request_type"), resp.get("request_class"))
+
+    def _tick_decision_watchdog(self, curr_state: dict[str, Any]) -> str | None:
+        """Escalate a bridge request that autoplay has left unanswered.
+
+        Runs every loop iteration, independent of triggers. Returns "replan"
+        (the caller forces decision_required), "submitted" (a safe default
+        went to Arena; this iteration's snapshot is stale), "alerted", or None.
+        See arenamcp.decision_watchdog for the thresholds.
+        """
+        watchdog = getattr(self, "_decision_watchdog", None)
+        if watchdog is None:
+            return None
+        engine = getattr(self, "_autopilot", None)
+        config = getattr(engine, "_config", None)
+        poller = getattr(self, "_bridge_poller", None)
+        if (
+            not getattr(self, "_autopilot_enabled", False)
+            or engine is None
+            or getattr(config, "dry_run", False)
+            or getattr(config, "land_drop_mode", False)
+            or poller is None
+            or not poller.connected
+        ):
+            watchdog.reset()
+            return None
+        try:
+            resp = poller.latest_pending()
+        except Exception as e:
+            logger.debug(f"watchdog: bridge read failed: {e}")
+            return None
+        bridge = getattr(poller, "_bridge", None)
+        last_answer = float(getattr(bridge, "last_submission_at", 0.0) or 0.0)
+        from arenamcp.decision_clock import seconds_remaining
+
+        remaining = seconds_remaining(
+            curr_state.get("timer_state"),
+            self._get_local_seat_from_state(curr_state),
+            not_before=watchdog.first_seen_wall - 3.0,
+        )
+        judged = curr_state
+        handed = False
+        if watchdog.may_act(resp, last_answer_at=last_answer, clock_remaining_s=remaining):
+            judged = self._bridge_judged_state(curr_state, True)
+            with contextlib.suppress(Exception):
+                cooling = getattr(engine, "in_manual_play_cooldown", None)
+                handed = bool(
+                    self._autopilot_control_status() != "AP:ON"
+                    or (callable(cooling) and cooling())
+                    or engine.is_window_given_up(judged)
+                )
+        step = watchdog.step(resp, last_answer_at=last_answer, clock_remaining_s=remaining, handed_to_user=handed)
+        if step is None:
+            return None
+        if step.action == "replan":
+            logger.warning(f"[WATCHDOG] {step.describe()} — forcing a re-plan")
+            return "replan"
+        if step.action == "safe_default":
+            logger.warning(f"[WATCHDOG] {step.describe()} — submitting a safe default")
+            submitted, detail = engine.watchdog_safe_default(judged, reason=step.describe())
+            if not submitted and detail in ("autopilot busy", "no request pending"):
+                # A plan holds the engine, or the request was just answered:
+                # look again next iteration instead of crying wolf.
+                logger.info(f"[WATCHDOG] safe default deferred for {step.label}: {detail}")
+                watchdog.retry_safe_default()
+                return None
+            watchdog.note_safe_default(submitted)
+            if submitted:
+                logger.warning(f"[WATCHDOG] safe default sent for {step.label}: {detail}")
+                text = f"Autoplay took too long on {step.label}, so it {detail}."
+                with contextlib.suppress(Exception):
+                    self.ui.advice(text, "AUTOPILOT")
+                self.speak_advice(text, blocking=False)
+                return "submitted"
+            logger.warning(f"[WATCHDOG] no safe default for {step.label}: {detail}")
+            step = watchdog.step(
+                resp, last_answer_at=last_answer, clock_remaining_s=remaining, handed_to_user=handed
+            )
+            if step is None:
+                return None
+        clock = f" — about {step.remaining_s:.0f} seconds left" if step.remaining_s is not None else ""
+        text = f"MANUAL REQUIRED: answer {step.label} in Arena now{clock}. Autoplay has no safe choice for it."
+        logger.warning(f"[WATCHDOG] {step.describe()} — {text}")
+        with contextlib.suppress(Exception):
+            self.ui.advice(text, "AUTOPILOT")
+            self.ui.log(f"[WATCHDOG] {text}")
+        self.speak_advice(text, blocking=False)
+        return "alerted"
 
     def _autopilot_control_status(self) -> str:
         if not self._autopilot_enabled:
@@ -2230,6 +2340,14 @@ class StandaloneCoach(
                     # Runs regardless of bridge status — the bridge detects
                     # *transitions* but the autopilot needs to act on *any*
                     # pending decision that hasn't been handled yet.
+                    # The bridge's live request counts even when the log has
+                    # none: a library search's GreToClientEvent exceeds
+                    # Player.log's 50-object limit and is summarized, so the
+                    # log never sees the SearchReq (all 7 Brawl searches on
+                    # 2026-10-18; at 18:35:41 nothing re-forced it and the
+                    # game was lost on time).
+                    if not pending_now and bridge_active:
+                        pending_now = self._bridge_pending_label()
                     if self._autopilot_enabled and self._autopilot and pending_now:
                         if "decision_required" not in triggers:
                             # The loop only overlays bridge fields when poll()
@@ -2279,6 +2397,15 @@ class StandaloneCoach(
                                 )
                     else:
                         self._last_forced_decision_sig = None
+
+                    # Decision watchdog: a request still unanswered after the
+                    # triggers above gets a re-plan, then a safe default,
+                    # then a loud MANUAL REQUIRED — never a silent clock.
+                    _watchdog = self._tick_decision_watchdog(curr_state)
+                    if _watchdog == "replan" and "decision_required" not in triggers:
+                        triggers.insert(0, "decision_required")
+                    elif _watchdog == "submitted":
+                        triggers = []
 
                     # Suppress stale triggers right after a match boundary
                     # reset. prev_state={} causes check_triggers to see the

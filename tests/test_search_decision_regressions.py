@@ -77,7 +77,8 @@ def test_native_search_resolves_only_offered_instances_and_preserves_bounds():
         {"instanceId": 538, "grpId": 102},
         {"instanceId": 539, "grpId": 103},
     ]
-    assert game.looked_up == [537, 538, 539]
+    # Each offered card is read from the GRE's latest state, then the shown one.
+    assert game.looked_up == [537, 537, 538, 538, 539, 539]
     assert not any(op.get("method", "").startswith("Submit") for batch in game.batches for op in batch)
 
 

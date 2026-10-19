@@ -1325,6 +1325,14 @@ class MacBridgeAdapter:
 
         Library choices need not appear in Player.log. Read each offered card
         from the client, without enumerating hidden zones or library order.
+
+        ``LatestGameState`` first: it is the GRE state the SearchReq arrived
+        with, which reveals the library to the searcher. ``CurrentGameState``
+        is what playback shows and trails it through combat-damage and
+        trigger animations, so a Search raised mid-combat read every
+        candidate as grpId 0 (seconds-long "unreadable" waits; 2026-10-18
+        18:35:41 the autopilot never answered and the game was lost on time).
+        The current state remains the fallback for each card.
         """
         ids = response["search_candidates"]
         if not ids:
@@ -1332,17 +1340,26 @@ class MacBridgeAdapter:
         ops = _Ops()
         ops.expect_pending(H(snapshot.handle))
         manager = ops.add("find", **{"class": "GameManager"}, depth=0, optional=True)
-        state = ops.get(manager, "CurrentGameState", optional=True)
+        states = [
+            ops.get(manager, "LatestGameState", optional=True),
+            ops.get(manager, "CurrentGameState", optional=True),
+        ]
         grp_refs = []
         for instance_id in ids:
-            card = ops.add(
-                "call", target=state, method="GetCardById", args=[U(instance_id)], depth=0, optional=True
-            )
-            grp_refs.append(ops.get(card, "GrpId", optional=True))
+            refs = []
+            for state in states:
+                card = ops.add(
+                    "call", target=state, method="GetCardById", args=[U(instance_id)], depth=0, optional=True
+                )
+                refs.append(ops.get(card, "GrpId", optional=True))
+            grp_refs.append(refs)
         results = self._run(ops, timeout)
         return [
-            {"instanceId": instance_id, "grpId": num(results[ref["ref"]])}
-            for instance_id, ref in zip(ids, grp_refs, strict=True)
+            {
+                "instanceId": instance_id,
+                "grpId": next((num(results[ref["ref"]]) for ref in refs if num(results[ref["ref"]])), 0),
+            }
+            for instance_id, refs in zip(ids, grp_refs, strict=True)
         ]
 
     def _shape_ActionsAvailableRequest(self, request: dict, getters: dict, response: dict) -> None:
@@ -2092,6 +2109,42 @@ class MacBridgeAdapter:
         if not chosen:
             raise AdapterError("No legal targets to fill")
 
+        # One target slot per GRE round trip, as the real client clicks them.
+        # Both slots in one batch reached Arena as the first slot only (the
+        # request is consumed by the first OnSubmit): Felling Blow 18:31:40 and
+        # Smell Fear 15:18:11 / 18:40:49 on 2026-10-18 sent slot 1, then failed
+        # "not acknowledged complete" / "acknowledged different targets" and
+        # announced MANUAL REQUIRED while slot 2 sat waiting.
+        first, later = (chosen[:1], chosen[1:]) if finalize else (chosen, [])
+        self._send_target_slots(snapshot, first, timeout)
+        required = sum(slot.needs > 0 for slot in slots)
+        result = {
+            **base,
+            "slots_required": required,
+            "slots_filled": len(chosen),
+            "required_filled": required,
+            "targets_selected": len(preferred),
+        }
+        if finalize:
+            expected = {
+                slot.target_idx: set(assigned) for slot, assigned in zip(slots, assignments, strict=True)
+            }
+            pending = [
+                (
+                    num(field(selection, "TargetIdx")),
+                    [num(field(target, "TargetInstanceId")) for target in targets],
+                )
+                for selection, targets in later
+            ]
+            advanced = self._deferred_commit_targets(snapshot, timeout, expected, pending)
+            return {"ok": True, **result, "finalized": True, "advanced_without_commit": advanced}
+        return {"ok": True, **result, "finalized": False}
+
+    def _send_target_slots(
+        self, snapshot: Snapshot, chosen: list[tuple[dict, list[dict]]], timeout: float | None
+    ) -> None:
+        """One SelectTargetsResp per (selection, targets) on ``snapshot``'s request."""
+
         def build(ops: _Ops, request: dict) -> None:
             for selection, targets in chosen:
                 sent_targets = []
@@ -2112,21 +2165,6 @@ class MacBridgeAdapter:
                 ops.on_submit(request, message)
 
         self._submit(snapshot, build, timeout)
-        required = sum(slot.needs > 0 for slot in slots)
-        result = {
-            **base,
-            "slots_required": required,
-            "slots_filled": len(chosen),
-            "required_filled": required,
-            "targets_selected": len(preferred),
-        }
-        if finalize:
-            expected = {
-                slot.target_idx: set(assigned) for slot, assigned in zip(slots, assignments, strict=True)
-            }
-            advanced = self._deferred_commit_targets(snapshot, timeout, expected)
-            return {"ok": True, **result, "finalized": True, "advanced_without_commit": advanced}
-        return {"ok": True, **result, "finalized": False}
 
     def _commit_targets(self, snapshot: Snapshot, timeout: float | None) -> None:
         def build(ops: _Ops, request: dict) -> None:
@@ -2134,15 +2172,58 @@ class MacBridgeAdapter:
 
         self._submit(snapshot, build, timeout)
 
+    def _send_next_target_slot(
+        self, current: Snapshot, slot: tuple[int, list[int]], timeout: float | None
+    ) -> bool:
+        """Send a later slot's targets on the GRE's updated request; False when already selected."""
+        target_idx, wanted = slot
+        selection = next(
+            (
+                item
+                for item in items(field(current.request, "TargetSelections"))
+                if num(field(item, "TargetIdx")) == target_idx
+            ),
+            None,
+        )
+        if selection is None:
+            raise AdapterError(f"Target slot {target_idx} is no longer offered; refusing to finalize")
+        targets = items(field(selection, "Targets"))
+        selected = {
+            num(field(target, "TargetInstanceId"))
+            for target in targets
+            if enum_name(field(target, "LegalAction")) == "Unselect" or num(field(target, "LegalAction")) == 2
+        }
+        if set(wanted) <= selected:
+            return False
+        offered = {
+            num(field(target, "TargetInstanceId")): target
+            for target in targets
+            if field(target, "LegalAction") is None
+            or enum_name(field(target, "LegalAction")) == "Select"
+            or num(field(target, "LegalAction")) == 1
+        }
+        if not set(wanted) <= set(offered):
+            raise AdapterError(f"Target slot {target_idx} no longer offers {wanted}; refusing to finalize")
+        self._send_target_slots(current, [(selection, [offered[instance_id] for instance_id in wanted])], timeout)
+        return True
+
     def _deferred_commit_targets(
-        self, original: Snapshot, timeout: float | None, expected: dict[int, set[int]]
+        self,
+        original: Snapshot,
+        timeout: float | None,
+        expected: dict[int, set[int]],
+        later: list[tuple[int, list[int]]] | None = None,
     ) -> bool:
         """Commit on the GRE's updated SelectTargetsReq, like the real client.
 
-        Returns True when the request disappeared without our commit (the client
-        auto-submitted). Mirrors Plugin.DeferredSubmitTargets.
+        ``later`` holds further slots, ``(target_idx, instance_ids)``, each sent
+        on the request the GRE returns for the previous one. Returns True when
+        the request disappeared without our commit (the client auto-submitted).
+        Mirrors Plugin.DeferredSubmitTargets.
         """
+        later = list(later or [])
         source = num(field(original.request, "SourceId"))
+        waiting_on = original.handle
         started = time.monotonic()
         gone_since: float | None = None
         while time.monotonic() - started < TARGET_COMMIT_TIMEOUT_S:
@@ -2157,8 +2238,15 @@ class MacBridgeAdapter:
                     return True
                 continue
             gone_since = None
-            if current.handle == original.handle:
+            if current.handle == waiting_on:
                 continue  # the GRE has not round-tripped our selection yet
+            sent = False
+            while later and not sent:
+                sent = self._send_next_target_slot(current, later.pop(0), timeout)
+            if sent:
+                waiting_on = current.handle
+                started = time.monotonic()
+                continue
             selections = items(field(current.request, "TargetSelections"))
             if selections and all(
                 num(field(s, "MinTargets")) == 0

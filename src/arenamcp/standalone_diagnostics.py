@@ -17,6 +17,28 @@ from arenamcp.standalone_ui import copy_to_clipboard
 logger = logging.getLogger(__name__)
 
 
+def _write_report(bug_dir: Path, stem: str, report: dict[str, Any]) -> Path:
+    """Write ``report`` to a name no other report holds, atomically.
+
+    Two reports in one second shared ``bug_<second>.json`` and were written
+    into the same file at once: bug_20261018_185204.json (two user-takeover
+    reports) is unparseable JSON, so that evidence was lost.
+    """
+    for attempt in range(100):
+        path = bug_dir / (f"{stem}.json" if attempt == 0 else f"{stem}_{attempt}.json")
+        try:
+            with open(path, "x"):
+                pass  # claim the name; the report lands by one atomic rename
+        except FileExistsError:
+            continue
+        tmp = path.with_name(path.name + ".tmp")
+        with open(tmp, "w") as f:
+            json.dump(report, f, indent=2, default=str)
+        tmp.replace(path)
+        return path
+    raise FileExistsError(f"no free bug report name for {stem}")
+
+
 class _DiagnosticsMixin:
     def save_bug_report(
         self,
@@ -45,9 +67,7 @@ class _DiagnosticsMixin:
                 extra_context=extra_context,
             )
             report["reason"] = reason
-
-            with open(bug_file, "w") as f:
-                json.dump(report, f, indent=2, default=str)
+            bug_file = _write_report(bug_dir, f"bug_{timestamp}", report)
 
             # Reports saved during a match ride along in its match bundle
             # (redacted there — arenamcp.match_bundle).

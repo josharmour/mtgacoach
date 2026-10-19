@@ -483,6 +483,10 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         game_state.pending_decision = "Search Library"
         game_state.decision_timestamp = _time.time()
         game_state.decision_context = {"type": "search", "zone_id": req.get("zoneId", 0), "raw": dict(req)}
+        if msg.get("_summarized"):
+            # Player.log summarized this event (LogParser._summary_line): the
+            # search is pending, its choices are only in the bridge.
+            game_state.decision_context["summarized"] = True
         return False
 
     elif msg_type == "GREMessageType_DistributionReq":

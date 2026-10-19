@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from arenamcp.card_db import is_unknown_card_name
 from arenamcp.combat_keywords import ability_keywords
+from arenamcp.decision_clock import event_wall_time, timeout_entry, timer_entry
 from arenamcp.gamestate_annotations import _GameStateAnnotationsMixin
 from arenamcp.gamestate_decisions import (
     _DECISION_RESPONSE_TYPES,
@@ -2820,10 +2821,28 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                     if game_state._record_ui_message_event(msg):
                         snapshot_dirty = True
 
+                elif msg_type == "GREMessageType_TimeoutMessage":
+                    # A seat's rope ran out (Arena takes control; the
+                    # inactivity timer then loses the game). The decision
+                    # watchdog reads this as "no time left".
+                    parsed = timeout_entry(msg.get("timeoutMessage") or {}, event_wall_time(payload))
+                    if parsed:
+                        seat, entry = parsed
+                        game_state.timer_state = {**(game_state.timer_state or {}), seat: entry}
+                        logger.warning(
+                            "Arena timeout: seat %s's %s ran out", seat, entry.get("timer_type") or "timer"
+                        )
+
                 elif msg_type == "GREMessageType_TimerStateMessage":
                     # ── Phase 1: Parse chess clock / timer data ──
                     timer_msg = msg.get("timerStateMessage", msg.get("timerState", {}))
-                    if isinstance(timer_msg, dict) and timer_msg:
+                    real = timer_entry(timer_msg, event_wall_time(payload)) if isinstance(timer_msg, dict) else None
+                    if real:
+                        # Arena's actual shape: seat at message level, one
+                        # message per seat; keep the other seat's reading.
+                        seat, entry = real
+                        game_state.timer_state = {**(game_state.timer_state or {}), seat: entry}
+                    elif isinstance(timer_msg, dict) and timer_msg:
                         timers = _ensure_dict_list(timer_msg.get("timers", []))
                         timer_data = {}
                         for timer in timers:
