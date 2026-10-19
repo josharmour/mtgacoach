@@ -30,7 +30,7 @@ from arenamcp.action_planner import (
     board_math_legacy_plan,
 )
 from arenamcp.autopilot_bridge import _BridgeSubmitMixin, bridge_shows_pending
-from arenamcp.autopilot_exec import _ActionExecMixin
+from arenamcp.autopilot_exec import _REQUEST_SCOPED_ACTIONS, _ActionExecMixin
 from arenamcp.autopilot_models import AutopilotConfig, AutopilotState, ClickResult, ExecutionPath
 from arenamcp.autopilot_modes import _AutopilotModesMixin
 from arenamcp.autopilot_progress import (
@@ -1151,15 +1151,44 @@ class AutopilotEngine(
             poll = self._gre_bridge.get_pending_actions() or {}
         except Exception:
             return None
-        if not poll.get("has_pending"):
+        return self._poll_window_identity(poll)
+
+    @classmethod
+    def _poll_window_identity(cls, poll: Any) -> tuple[Any, ...] | None:
+        """Window identity of a get_pending_actions() response, or None when idle."""
+        if not isinstance(poll, dict) or not poll.get("has_pending"):
             return None
-        gsid = int(poll.get("game_state_id") or 0)
-        rtype = self._normalize_request_type(poll.get("request_type") or poll.get("request_class"))
+        try:
+            gsid = int(poll.get("game_state_id") or 0)
+        except (TypeError, ValueError):
+            return None
+        rtype = cls._normalize_request_type(poll.get("request_type") or poll.get("request_class"))
         if not gsid or not rtype:
             return None
         actions = poll.get("actions")
         n = len(actions) if isinstance(actions, list) else -1
         return (gsid, rtype, n)
+
+    def _plan_window_identity(self, game_state: dict[str, Any]) -> tuple[Any, ...] | None:
+        """Identity of the window a strategic plan answers, or None.
+
+        The snapshot's when it carries the bridge board's id (Windows). The
+        Mac bridge never publishes one (its board lags the GRE), so there the
+        window checks never ran and a plan for a request Arena had replaced
+        was executed anyway (2026-10-18 18:18:26: assign_damage against the
+        commander's OptionalAction). The live request stands in for it while
+        it is still the snapshot's request family.
+        """
+        identity = self._snapshot_window_identity(game_state)
+        if identity is not None:
+            return identity
+        snapshot_type = self._normalize_request_type(
+            game_state.get("_bridge_request_type") or game_state.get("_bridge_request_class")
+        )
+        if not snapshot_type:
+            return None
+        live = self._live_window_identity()
+        return live if live is not None and live[1] == snapshot_type else None
 
     @staticmethod
     def _window_identities_match(pre: tuple[Any, ...] | None, fresh: tuple[Any, ...] | None) -> bool:
@@ -2188,6 +2217,15 @@ class AutopilotEngine(
             )
         if action.action_type == ActionType.CASTING_OPTIONS:
             return "CastingTimeOption" not in bridge_class and "CastingTimeOption" not in bridge_type
+
+        # Shape 7: an answer only one request family takes (its bridge
+        # handler submits nothing else) while another request is pending.
+        # 2026-10-18 18:18:26: assign_damage planned for AssignDamage reached
+        # the commander's return-to-command-zone OptionalAction and went
+        # MANUAL REQUIRED as a "Bridge gap: OptionalAction".
+        families = _REQUEST_SCOPED_ACTIONS.get(action.action_type)
+        if families is not None:
+            return not any(kw in bridge_class or kw in bridge_type for kw in families)
 
         # Shape 5: pass/resolve against a non-passable window. SubmitPass
         # only exists on ActionsAvailableRequest — if the window changed to
@@ -3253,7 +3291,7 @@ class AutopilotEngine(
             pre_active = pre_plan_turn.get("active_player", 0)
             # R1: bridge window identity beats the log-lagged turn counter
             # for staleness decisions (None when the bridge is offline).
-            pre_window_identity = self._snapshot_window_identity(game_state)
+            pre_window_identity = self._plan_window_identity(game_state)
             # Bridge state id we'll use to detect "the bridge has processed
             # our submit" after execution. If this id hasn't advanced when we
             # try to re-trigger, the post-plan continuation would race against
@@ -3295,7 +3333,28 @@ class AutopilotEngine(
 
             _plan_started_at = time.perf_counter()
             legal_actions = self._drop_exhausted_activations(legal_actions, game_state)
-            plan = self._planner.plan_actions(game_state, trigger, legal_actions, decision_context)
+            # A different request appearing mid-call cancels the model call,
+            # as on the typed path; the next cycle plans the new request.
+            cancel = threading.Event()
+            unwatch = self._cancel_on_window_change(pre_window_identity, cancel)
+            set_cancel = getattr(self._planner, "set_decision_cancel_event", None)
+            if callable(set_cancel):
+                set_cancel(cancel)
+            try:
+                plan = self._planner.plan_actions(game_state, trigger, legal_actions, decision_context)
+            finally:
+                if callable(set_cancel):
+                    set_cancel(None)
+                unwatch()
+            if cancel.is_set():
+                logger.info(
+                    "Autopilot: request changed during planning (%s gsid=%s); model call cancelled, "
+                    "yielding for a fresh decision",
+                    pre_window_identity[1],
+                    pre_window_identity[0],
+                )
+                self._state = AutopilotState.IDLE
+                return True
             reason = getattr(plan, "fallback_reason", "")
             self.last_plan_fallback_reason = reason if isinstance(reason, str) else ""
             llm_unavailable = self.last_plan_fallback_reason == FALLBACK_LLM_UNAVAILABLE
@@ -3433,6 +3492,7 @@ class AutopilotEngine(
                     fresh_state = self._get_game_state()
                     fresh_turn = fresh_state.get("turn", {})
                     stale = False
+                    superseded = False  # a different request is pending now
                     _plan_ms = (time.perf_counter() - _plan_started_at) * 1000.0
 
                     # R1: when the SAME bridge window is still pending, the
@@ -3452,7 +3512,7 @@ class AutopilotEngine(
                             f"{pre_window_identity} → {fresh_window_identity} "
                             f"(planning took {_plan_ms:.0f}ms)"
                         )
-                        stale = True
+                        stale = superseded = True
                     elif fresh_turn.get("turn_number", 0) != pre_turn_num:
                         logger.warning(
                             f"STALE: turn advanced {pre_turn_num} → "
@@ -3500,7 +3560,10 @@ class AutopilotEngine(
                             reason="plan_went_stale_after_llm",
                         )
                         self._state = AutopilotState.IDLE
-                        return False
+                        # Superseded: yield so the next cycle plans the new
+                        # request (the typed path's rule) instead of falling
+                        # through to a coaching call about it.
+                        return superseded
 
                     # Use the fresh state for execution (more accurate coordinates)
                     game_state = fresh_state
@@ -4216,9 +4279,6 @@ class AutopilotEngine(
         post-planning revalidation still rejects a consumed one. Runs the
         comparison on the prefetch thread; touches only ``cancel``.
         """
-        watch = self._request_watch_fn
-        if not callable(watch):
-            return lambda: None
         from arenamcp.decisions import build_pending_decision
         from arenamcp.request_tracker import decision_fingerprint
 
@@ -4233,6 +4293,37 @@ class AutopilotEngine(
             if live_fp != fp or (live is not None and live.request_id != decision.request_id):
                 cancel.set()
 
+        return self._watch_requests(listener)
+
+    def _cancel_on_window_change(
+        self, identity: tuple[Any, ...] | None, cancel: threading.Event
+    ) -> Callable[[], None]:
+        """The strategic path's _cancel_on_request_change: set ``cancel`` once
+        the bridge shows a different pending request than window ``identity``.
+
+        2026-10-18 18:18:21: assign_damage was planned for an AssignDamage
+        request, Arena moved on to the commander's return-to-command-zone
+        OptionalAction 2 s in, and the 5 s answer was still submitted against
+        it (MANUAL REQUIRED). Same rule as the post-planning window check;
+        an empty poll does not cancel.
+        """
+        if identity is None:
+            return lambda: None
+
+        def listener(resp: dict[str, Any]) -> None:
+            if cancel.is_set() or resp.get("ok") is False:
+                return
+            live = self._poll_window_identity(resp)
+            if live is not None and not self._window_identities_match(identity, live):
+                cancel.set()
+
+        return self._watch_requests(listener)
+
+    def _watch_requests(self, listener: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
+        """Register ``listener`` with the bridge request watch; returns the unsubscribe."""
+        watch = self._request_watch_fn
+        if not callable(watch):
+            return lambda: None
         try:
             return watch(listener) or (lambda: None)
         except Exception as error:

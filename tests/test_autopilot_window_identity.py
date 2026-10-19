@@ -6,9 +6,19 @@ stayed open), and the prompt's Legal: line advertising Cast Silkguard [OK]
 while the validator had X-cost-stripped it (6 propose→drop cycles).
 """
 
+from unittest.mock import MagicMock
+
+from tests.commander_return_states import (
+    ASSIGN_DAMAGE_POLL,
+    COMMANDER_RETURN_POLL,
+    assign_damage_state,
+    commander_return_state,
+)
+from tests.fakes import FakePlanner, make_engine
+
 import arenamcp.autopilot as autopilot_module
-from arenamcp.action_planner import ActionPlanner
-from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
+from arenamcp.action_planner import ActionPlan, ActionPlanner, ActionType, GameAction
+from arenamcp.autopilot import AutopilotConfig, AutopilotEngine, AutopilotState
 
 
 class _DummyBridge:
@@ -166,3 +176,56 @@ def test_reusable_advice_same_window_only(monkeypatch):
 
     eng._last_plan_advice = (eng._priority_window_signature(state), "Cast the thing.", _time.time() - 30)
     assert eng.get_reusable_advice(state) is None
+
+
+# --- the Mac bridge publishes no board id: the live request stands in -------
+
+
+def test_plan_identity_prefers_the_snapshot_board_id(monkeypatch):
+    eng = _engine(monkeypatch)
+    eng._gre_bridge = _PollBridge(COMMANDER_RETURN_POLL)
+    state = {"_bridge_game_state_id": 338, "_bridge_request_type": "AssignDamage"}
+    assert eng._plan_window_identity(state) == (338, "AssignDamage", -1)
+
+
+def test_plan_identity_without_a_board_id_is_the_live_request_of_the_same_family(monkeypatch):
+    eng = _engine(monkeypatch)
+    eng._gre_bridge = _PollBridge(ASSIGN_DAMAGE_POLL)
+    assert eng._plan_window_identity(assign_damage_state()) == (338, "AssignDamage", -1)
+    # The live request is already another family: no identity for this snapshot.
+    eng._gre_bridge = _PollBridge(COMMANDER_RETURN_POLL)
+    assert eng._plan_window_identity(assign_damage_state()) is None
+    # No bridge request in the snapshot: nothing to identify.
+    assert eng._plan_window_identity({}) is None
+
+
+def test_a_mac_plan_for_a_replaced_request_is_discarded_and_yields():
+    """18:18:21-26 without the mid-call cancel: the post-planning check catches it.
+
+    The Mac snapshot has no _bridge_game_state_id, so this check used to fall
+    back to the turn/phase counters (all unchanged) and the plan went on to
+    MANUAL REQUIRED against the OptionalAction.
+    """
+    bridge = MagicMock()
+    bridge.connected = True
+    bridge.get_pending_actions.return_value = ASSIGN_DAMAGE_POLL
+
+    class _Planner(FakePlanner):
+        def plan_actions(self, *args, **kwargs):
+            self.plan_calls += 1
+            bridge.get_pending_actions.return_value = COMMANDER_RETURN_POLL
+            return ActionPlan(
+                actions=[GameAction(action_type=ActionType.ASSIGN_DAMAGE, card_name="Mossborn Hydra")],
+                overall_strategy="All-in race",
+            )
+
+    engine = make_engine(bridge, _Planner(), game_state=commander_return_state)
+    engine._game_plan_mgr = None
+    engine._pause_for_manual = MagicMock()
+
+    assert engine.process_trigger(assign_damage_state(), "stack_spell_yours") is True
+
+    assert engine._planner.plan_calls == 1
+    bridge.submit_assign_damage.assert_not_called()
+    engine._pause_for_manual.assert_not_called()
+    assert engine._state == AutopilotState.IDLE
