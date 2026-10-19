@@ -1,11 +1,9 @@
 """Tests for the cross-platform HotkeyManager (arenamcp.desktop.hotkeys).
 
-The real ``keyboard`` package is never imported: it hard-aborts the process
-on macOS and requires root on Linux, so every test injects a stub into
-``sys.modules`` before any code path can reach ``import keyboard``.
+Hotkeys are Qt shortcuts (plus the macOS listener, switched off here);
+desktop/hotkeys.py never imports the ``keyboard`` package.
 """
 
-import sys
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,13 +15,6 @@ except ImportError:
     pytest.skip("PySide6 C-extensions not available", allow_module_level=True)
 
 from arenamcp.desktop.hotkeys import HotkeyManager
-
-
-@pytest.fixture
-def keyboard_stub(monkeypatch):
-    stub = MagicMock()
-    monkeypatch.setitem(sys.modules, "keyboard", stub)
-    return stub
 
 
 @pytest.fixture

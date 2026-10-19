@@ -55,8 +55,6 @@ class AutopilotConfig:
     # tail spikes (we've seen 6+s outliers) without forcing the retry cascade
     # that wastes a full call's worth of latency before recovery.
     planning_timeout: float = 30.0
-    enable_vision_fallback: bool = True
-    prefer_deterministic: bool = True  # When True, skip VLM for actions that have deterministic coordinates
     enable_tts_preview: bool = True
     dry_run: bool = False
     afk_mode: bool = False  # When True, auto-pass everything without LLM

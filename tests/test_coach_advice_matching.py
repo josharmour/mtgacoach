@@ -244,3 +244,67 @@ def test_spell_that_cannot_follow_the_land_drop_is_stripped(make_state, advice, 
 
     assert spell not in out
     assert land_play in out
+
+
+def test_combat_advice_override_matching(monkeypatch) -> None:
+    from unittest.mock import MagicMock
+
+    from arenamcp.backend_health import LOCAL_FALLBACK_PREFIX
+    from arenamcp.coach import CoachEngine
+    from arenamcp.rules_engine import RulesEngine
+
+    mock_backend = MagicMock()
+    coach = CoachEngine(backend=mock_backend)
+
+    class MockGameState:
+        def __init__(self, data):
+            self._data = data
+
+        def get(self, key, default=None):
+            return self._data.get(key, default)
+
+    # Monkeypatch RulesEngine.get_legal_actions to return our mock actions
+    mock_legal_actions = []
+    monkeypatch.setattr(RulesEngine, "get_legal_actions", lambda gs: mock_legal_actions)
+
+    # Setup a game state where we are in declare attackers
+    game_state_atk = MockGameState(
+        {
+            "pending_decision": "declare attackers",
+            "turn": {"phase": "Combat", "step": "DeclareAttack"},
+        }
+    )
+
+    # Case 1: Done (confirm attackers) matches positive attack advice
+    mock_legal_actions = ["Done (confirm attackers)"]
+    res = coach._postprocess_advice(
+        advice="Attack with all creatures.",
+        game_state=game_state_atk,  # type: ignore
+        style="quick",
+    )
+    assert res == "Attack with all creatures."
+
+    # Case 2: Irrelevant advice gets overridden to default "Don't attack".
+    # The override is generated locally by the deterministic scorer, so it
+    # carries the [LOCAL FALLBACK] tag (see tests/test_health_tag_visibility.py).
+    res = coach._postprocess_advice(
+        advice="Cast a random spell.",
+        game_state=game_state_atk,  # type: ignore
+        style="quick",
+    )
+    assert res == f"{LOCAL_FALLBACK_PREFIX} Don't attack"
+
+    # Case 3: Done (confirm blockers) matches positive block advice
+    game_state_blk = MockGameState(
+        {
+            "pending_decision": "declare blockers",
+            "turn": {"phase": "Combat", "step": "DeclareBlockers"},
+        }
+    )
+    mock_legal_actions = ["Done (confirm blockers)"]
+    res = coach._postprocess_advice(
+        advice="Block their 5/5 creature.",
+        game_state=game_state_blk,  # type: ignore
+        style="quick",
+    )
+    assert res == "Block their 5/5 creature."

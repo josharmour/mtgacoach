@@ -138,3 +138,51 @@ def test_mtga_colors_use_magic_letters_not_internal_enum_ids(raw, expected):
     adapter = MTGADatabaseAdapter(database)
     assert adapter.get_card_by_arena_id(123).colors == expected
     assert adapter.prewarm_cards([123])[123].colors == expected
+
+
+def test_scryfall_bulk_file_loads_in_the_background(tmp_path, monkeypatch):
+    (tmp_path / "default_cards.json").write_text(
+        json.dumps([{"name": "Llanowar Elves", "arena_id": 100, "oracle_text": "Add G"}]), encoding="utf-8"
+    )
+    monkeypatch.setattr(ScryfallCache, "_is_cache_stale", lambda self: False)  # no download
+    cache = ScryfallCache(cache_dir=tmp_path)
+    cache._thread.join(timeout=5)
+    assert cache._bulk_data_ready is True
+    card = cache.get_card_by_arena_id(100)
+    assert card is not None and (card.name, card.oracle_text) == ("Llanowar Elves", "Add G")
+
+
+SMITE = {
+    "name": "Smite the Deathless",
+    "oracle_text": "Deals 3 damage",
+    "type_line": "Instant",
+    "mana_cost": "{1}{R}",
+    "cmc": 2.0,
+    "colors": ["R"],
+    "scryfall_uri": "https://scryfall.com",
+}
+
+
+@pytest.mark.parametrize("bulk_ready", [False, True])
+@pytest.mark.parametrize("found", [True, False])
+def test_scryfall_api_fallback_for_a_card_missing_from_bulk(tmp_path, monkeypatch, bulk_ready, found):
+    """A miss in the bulk index asks the API, ready or not; a 404 is remembered."""
+    monkeypatch.setattr(ScryfallCache, "_run_background_load", lambda self: None)
+    cache = ScryfallCache(tmp_path)
+    cache._thread.join()
+    cache._bulk_data_ready = bulk_ready
+    asked = []
+
+    def fetch(arena_id):
+        asked.append(arena_id)
+        return {**SMITE, "arena_id": arena_id} if found else None
+
+    monkeypatch.setattr(cache, "_fetch_from_api", fetch)
+    card = cache.get_card_by_arena_id(12345)
+    if found:
+        assert card is not None and card.name == "Smite the Deathless"
+    else:
+        assert card is None and 12345 in cache._not_found_cache
+    cache.get_card_by_arena_id(12345)  # served from the session cache either way
+    assert asked == [12345]
+

@@ -8,7 +8,7 @@ slot the next decision needed.
 import threading
 from unittest.mock import MagicMock
 
-from test_ability_choice_matching import POLL, _typed_engine, _typed_state
+from tests.jace_states import POLL, jace_engine, jace_state
 
 from arenamcp.action_planner import ActionPlanner
 
@@ -33,7 +33,7 @@ class _WatchingBackend:
 
 def _engine_with_watch(update: dict | None):
     listeners: list = []
-    engine, bridge, _ = _typed_engine(ANSWER)
+    engine, bridge, _ = jace_engine(ANSWER)
     backend = _WatchingBackend(listeners, update)
     engine._planner._backend = backend
 
@@ -48,7 +48,7 @@ def _engine_with_watch(update: dict | None):
 def test_a_new_request_mid_call_cancels_it_and_nothing_is_submitted():
     newer = dict(POLL, msg_id=700, game_state_id=494)
     engine, bridge, backend, listeners = _engine_with_watch(newer)
-    assert engine._try_typed_decision_path(_typed_state(), "decision_required") is True
+    assert engine._try_typed_decision_path(jace_state(), "decision_required") is True
     events = [e for e in backend.cancel_events if e is not None]
     assert events and all(e.is_set() for e in events)
     bridge.submit_action_by_index.assert_not_called()
@@ -58,12 +58,12 @@ def test_a_new_request_mid_call_cancels_it_and_nothing_is_submitted():
 
 def test_the_same_request_or_an_empty_poll_does_not_cancel():
     engine, bridge, backend, _ = _engine_with_watch({"ok": True, "has_pending": False})
-    assert engine._try_typed_decision_path(_typed_state(), "decision_required") is True
+    assert engine._try_typed_decision_path(jace_state(), "decision_required") is True
     bridge.submit_action_by_index.assert_called_once()
     assert not any(e is not None and e.is_set() for e in backend.cancel_events)
 
     engine, bridge, backend, _ = _engine_with_watch(dict(POLL))
-    assert engine._try_typed_decision_path(_typed_state(), "decision_required") is True
+    assert engine._try_typed_decision_path(jace_state(), "decision_required") is True
     bridge.submit_action_by_index.assert_called_once()
 
 
@@ -96,6 +96,6 @@ def test_a_cancelled_call_raising_from_the_proxy_still_yields_without_submitting
         return ANSWER
 
     backend.complete = complete
-    assert engine._try_typed_decision_path(_typed_state(), "decision_required") is True
+    assert engine._try_typed_decision_path(jace_state(), "decision_required") is True
     bridge.submit_action_by_index.assert_not_called()
     assert engine._planner._memory().recent_actions_text() == ""

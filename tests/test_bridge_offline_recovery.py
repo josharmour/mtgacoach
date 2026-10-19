@@ -11,10 +11,11 @@ import logging
 import time
 
 import pytest
+from tests.fakes import VirtualClock, make_engine
 
 import arenamcp.autopilot as autopilot_module
 from arenamcp.action_planner import ActionType, GameAction
-from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
+from arenamcp.autopilot import AutopilotEngine
 from arenamcp.autopilot_models import ClickResult
 from arenamcp.gre_bridge import GREBridge
 
@@ -23,6 +24,14 @@ from arenamcp.gre_bridge import GREBridge
 def _desktop_bridge_environment(monkeypatch):
     monkeypatch.setenv("MTGACOACH_GAME_DEVICE", "desktop")
     monkeypatch.setattr("arenamcp.platform_integration.mac_bridge_installed", lambda: False)
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """The reconnect wait sleeps 0.25 s per attempt; run it on virtual time."""
+    clock = VirtualClock()
+    monkeypatch.setattr(autopilot_module, "time", clock)
+    return clock
 
 
 class _FlippingBridge:
@@ -51,74 +60,49 @@ class _DummyPlanner:
         return []
 
 
-class _DummyMapper:
-    window_rect = (0, 0, 100, 100)
-    cache_size = 0
-
-    def refresh_window(self):
-        return self.window_rect
-
-    def get_button_coord(self, name):
-        return None
-
-
-class _DummyController:
-    def focus_mtga_window(self):
-        return None
-
-
-def _make_engine(monkeypatch, bridge, **config_overrides) -> AutopilotEngine:
-    monkeypatch.setattr(autopilot_module, "get_bridge", lambda: bridge)
-    config_kwargs = {
-        "dry_run": False,
-        "bridge_only_when_connected": True,
+def _make_engine(bridge, **config_overrides) -> AutopilotEngine:
+    options = {
         "bridge_reconnect_wait": 1.0,
         "bridge_reconnect_wait_cooldown": 60.0,
         "post_action_delay": 0.0,
+        **config_overrides,
     }
-    config_kwargs.update(config_overrides)
-    config = AutopilotConfig(**config_kwargs)
-    return AutopilotEngine(
-        planner=_DummyPlanner(),
-        mapper=_DummyMapper(),
-        controller=_DummyController(),
-        get_game_state=lambda: {},
-        config=config,
-    )
+    return make_engine(bridge, _DummyPlanner(), **options)
 
 
-def test_wait_succeeds_when_plugin_reconnects(monkeypatch):
+def test_wait_succeeds_when_plugin_reconnects(clock):
     bridge = _FlippingBridge(succeed_after=2)
-    engine = _make_engine(monkeypatch, bridge)
+    engine = _make_engine(bridge)
     assert engine._wait_for_bridge_reconnect() is True
     assert bridge.connected
 
 
-def test_wait_cooldown_prevents_stacked_waits(monkeypatch):
+def test_wait_cooldown_prevents_stacked_waits(clock):
     bridge = _FlippingBridge(succeed_after=10_000)  # never connects
-    engine = _make_engine(monkeypatch, bridge, bridge_reconnect_wait=0.3)
-    start = time.monotonic()
+    engine = _make_engine(bridge, bridge_reconnect_wait=0.3)
+    start = clock.now
     assert engine._wait_for_bridge_reconnect() is False
-    first_duration = time.monotonic() - start
-    assert first_duration >= 0.25
+    assert clock.now - start >= 0.25
+    attempts = bridge.connect_calls
 
     # Second call must bail immediately — a dead plugin shouldn't add
     # seconds of latency to every subsequent action.
-    start = time.monotonic()
+    start = clock.now
     assert engine._wait_for_bridge_reconnect() is False
-    assert time.monotonic() - start < 0.1
+    assert clock.now == start
+    assert bridge.connect_calls == attempts
 
 
-def test_wait_disabled_in_dry_run(monkeypatch):
+def test_wait_disabled_in_dry_run():
     bridge = _FlippingBridge(succeed_after=1)
-    engine = _make_engine(monkeypatch, bridge, dry_run=True)
+    engine = _make_engine(bridge, dry_run=True)
     assert engine._wait_for_bridge_reconnect() is False
     assert bridge.connect_calls == 0
 
 
 def test_execute_action_retries_bridge_after_reconnect(monkeypatch):
     bridge = _FlippingBridge(succeed_after=10_000)
-    engine = _make_engine(monkeypatch, bridge)
+    engine = _make_engine(bridge)
 
     attempts = []
 
@@ -195,10 +179,10 @@ def test_android_bridge_warns_even_when_mac_bridge_is_not_installed(caplog, monk
     assert "DYLD_INSERT_LIBRARIES" not in caplog.text
 
 
-def test_mac_reconnect_timeout_reports_native_bridge_recovery(caplog, monkeypatch):
+def test_mac_reconnect_timeout_reports_native_bridge_recovery(caplog, monkeypatch, clock):
     monkeypatch.setattr("sys.platform", "darwin")
     monkeypatch.setattr("arenamcp.platform_integration.bridge_capable", lambda: False)
-    engine = _make_engine(monkeypatch, _FlippingBridge(10_000), bridge_reconnect_wait=0.01)
+    engine = _make_engine(_FlippingBridge(10_000), bridge_reconnect_wait=0.01)
     with caplog.at_level(logging.WARNING, logger="arenamcp.autopilot"):
         assert engine._wait_for_bridge_reconnect() is False
     assert "native macOS bridge" in caplog.text

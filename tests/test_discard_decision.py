@@ -9,13 +9,6 @@ def test_humanize_discard_action():
     assert planner._humanize_legal_action("Discard Forest") == "Discard Forest."
 
 
-def test_pick_preferred_legal_action_discard():
-    planner = ActionPlanner(backend=None)
-    actions = ["Pass", "Discard Mutavault", "Discard Forest"]
-    preferred = planner._pick_preferred_legal_action(actions)
-    assert preferred in ("Discard Mutavault", "Discard Forest")
-
-
 def test_legal_action_to_action_discard():
     planner = ActionPlanner(backend=None)
     action = planner._legal_action_to_action("Discard Mutavault")
@@ -116,10 +109,12 @@ def test_non_bridge_decision_backstop_forcing():
     assert "Discard" in sig
     assert "Mutavault" in sig
 
-    # When last advised sig is None or from an older decision, a trigger should be forced
-    last_advised_sig = "Optional Action||optional_action||||||"
-    assert sig != last_advised_sig
-
-    # Once advised, sig matches and duplicate advice is suppressed
-    last_advised_sig = sig
-    assert sig == last_advised_sig
+    # The same window keeps its signature, so advice is not repeated for it...
+    assert StandaloneCoach._build_pending_decision_signature(dict(state)) == sig
+    # ...and a different choice (or no decision at all) forces a new trigger.
+    other = {
+        **state,
+        "decision_context": {**state["decision_context"], "option_cards": ["Mutavault", "Island"]},
+    }
+    assert StandaloneCoach._build_pending_decision_signature(other) != sig
+    assert StandaloneCoach._build_pending_decision_signature({"pending_decision": ""}) is None

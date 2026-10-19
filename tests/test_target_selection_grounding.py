@@ -157,22 +157,16 @@ def test_rules_engine_earthbend_targets_your_lands_only():
     ]
 
 
-def test_autopilot_target_helpers_prefer_local_lands_and_resolve_ordinals():
+def test_find_instance_id_resolves_ordinals_on_the_owners_side():
     engine = AutopilotEngine.__new__(AutopilotEngine)
     battlefield = [
         {"instance_id": 20, "name": "Forest", "owner_seat_id": 2},
         {"instance_id": 10, "name": "Forest", "owner_seat_id": 1},
         {"instance_id": 11, "name": "Forest", "owner_seat_id": 1},
     ]
-    game_state = {
-        "decision_context": {
-            "type": "target_selection",
-            "source_oracle_text": "Earthbend 2.",
-        }
-    }
 
-    assert AutopilotEngine._get_target_owner_order(game_state, 1, 2) == [1, 2]
     assert engine._find_instance_id("Forest #2", battlefield, 1) == 11
+    assert engine._find_instance_id("Forest", battlefield, 2) == 20
 
 
 def test_rules_engine_prefers_explicit_bridge_targets_for_follow_up_trigger():

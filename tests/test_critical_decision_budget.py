@@ -12,7 +12,7 @@ import threading
 import time
 
 import pytest
-from test_ability_choice_matching import _typed_engine, _typed_state
+from tests.jace_states import jace_engine, jace_state
 
 from arenamcp import action_planner
 from arenamcp.game_plan import GamePlanManager, critical_decision_call, critical_decision_call_inflight
@@ -56,10 +56,10 @@ def critical(monkeypatch):
 
 
 def _run(backend):
-    engine, bridge, _ = _typed_engine(HIGH)
+    engine, bridge, _ = jace_engine(HIGH)
     engine._planner._backend = backend
     started = time.monotonic()
-    assert engine._try_typed_decision_path(_typed_state(), "decision_required") is True
+    assert engine._try_typed_decision_path(jace_state(), "decision_required") is True
     return engine, bridge, time.monotonic() - started
 
 
@@ -115,7 +115,7 @@ def test_no_game_plan_reform_starts_while_a_critical_call_is_in_flight(critical)
 
     mgr = GamePlanManager(_Backend())
     with critical_decision_call():
-        assert not mgr.request_reform(_typed_state())
+        assert not mgr.request_reform(jace_state())
     assert mgr._last_attempt_at is None  # nothing attempted: re-requested at the next window
 
 
@@ -139,17 +139,17 @@ def test_the_in_flight_mark_counts_overlapping_calls():
 
 def test_the_request_changing_cancels_both_legs(critical):
     backend = _Legs(high=(0.5, HIGH), low=(0.5, LOW))
-    engine, bridge, _ = _typed_engine(HIGH)
+    engine, bridge, _ = jace_engine(HIGH)
     engine._planner._backend = backend
     outer = threading.Event()
     engine._planner.set_decision_cancel_event(outer)
     threading.Timer(0.05, outer.set).start()
-    from test_ability_choice_matching import POLL
+    from tests.jace_states import POLL
 
     from arenamcp.decisions import build_pending_decision
 
     decision = build_pending_decision(POLL, resolve_instance=lambda _iid: "")
     started = time.monotonic()
-    engine._planner.plan_decision_options(decision, _typed_state())
+    engine._planner.plan_decision_options(decision, jace_state())
     assert time.monotonic() - started < 0.4
     assert backend.cancels["high"].is_set() and backend.cancels[None].is_set()

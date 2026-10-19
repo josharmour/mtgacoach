@@ -1116,21 +1116,21 @@ def test_mac_emote_guards_the_click_in_the_same_frame():
 
 
 def test_the_self_cancel_guard_reports_an_oops_incident(monkeypatch):
-    from test_graveyard_recursion_and_modal_targets import (
+    from tests.necromancer_states import (
         NECRO_IDS,
-        _actions_poll,
-        _engine,
-        _loop_state,
-        _targets_poll,
+        actions_poll,
+        loop_engine,
+        loop_state,
+        targets_poll,
     )
 
-    engine, bridge, _ = _engine(monkeypatch)
+    engine, bridge, _ = loop_engine()
     reports: list[tuple] = []
     engine._oops_fn = lambda *args: reports.append(args)
-    state = _loop_state()
-    bridge.get_pending_actions.return_value = _actions_poll()
+    state = loop_state()
+    bridge.get_pending_actions.return_value = actions_poll()
     assert engine._try_typed_decision_path(state, "decision_required")
-    bridge.get_pending_actions.return_value = _targets_poll(NECRO_IDS, game_state_id=460, msg_id=648)
+    bridge.get_pending_actions.return_value = targets_poll(NECRO_IDS, game_state_id=460, msg_id=648)
     assert engine._try_typed_decision_path(state, "decision_required")
     ((kind, key, text, reported_state),) = reports
     # One incident per play per game, whatever the turn (see the recurring Necromancer test).
@@ -1140,14 +1140,14 @@ def test_the_self_cancel_guard_reports_an_oops_incident(monkeypatch):
 
 
 def test_manual_required_reports_its_reason(monkeypatch):
-    from test_graveyard_recursion_and_modal_targets import _engine, _loop_state
+    from tests.necromancer_states import loop_engine, loop_state
 
-    engine, _bridge, _ = _engine(monkeypatch)
+    engine, _bridge, _ = loop_engine()
     engine._try_submit_plan_advancing_play = lambda state: False
     engine._try_auto_respond_escape = lambda state, why: False
     reports: list[tuple] = []
     engine._oops_fn = lambda *args: reports.append(args)
-    state = _loop_state()
+    state = loop_state()
     engine._pause_for_manual("SelectTargets: no safe automatic choice — pick manually", state)
     ((kind, key, text, _state),) = reports
     assert kind == STUCK_MANUAL and text == "SelectTargets: no safe automatic choice — pick manually"
@@ -1158,17 +1158,18 @@ def test_manual_required_reports_its_reason(monkeypatch):
 
 
 def test_the_semantic_guard_reports_before_the_capture_turns_autoplay_off(monkeypatch):
-    from arenamcp.autopilot_progress import DecisionProgressGuard
-    from test_graveyard_recursion_and_modal_targets import NECRO_IDS, _engine, _loop_state, _targets_poll
+    from tests.necromancer_states import NECRO_IDS, loop_engine, loop_state, targets_poll
 
-    engine, _bridge, _ = _engine(monkeypatch)
+    from arenamcp.autopilot_progress import DecisionProgressGuard
+
+    engine, _bridge, _ = loop_engine()
     now = [0.0]
     engine._progress_guard = DecisionProgressGuard(clock=lambda: now[0])
     order: list[str] = []
     engine._oops_fn = lambda kind, *rest: order.append(kind)
     engine._stuck_report_fn = lambda reason, context: order.append("capture")
-    state = _loop_state()
-    poll = _targets_poll(NECRO_IDS, game_state_id=460, msg_id=648)
+    state = loop_state()
+    poll = targets_poll(NECRO_IDS, game_state_id=460, msg_id=648)
     for _ in range(3):
         assert not engine._observe_decision_progress(poll, state)
         engine._progress_guard.note_attempt("submit_targets", {"args": ([271],)})
@@ -1178,9 +1179,9 @@ def test_the_semantic_guard_reports_before_the_capture_turns_autoplay_off(monkey
 
 
 def test_submitted_targets_and_declared_attacks_become_evidence(monkeypatch):
-    from test_graveyard_recursion_and_modal_targets import _engine
+    from tests.necromancer_states import loop_engine
 
-    engine, bridge, _ = _engine(monkeypatch)
+    engine, bridge, _ = loop_engine()
     bridge.submit_targets.return_value = True
     state = live_state(decision_context={"type": "target_selection", "source_id": 395})
     poll = {"has_pending": True, "request_type": "SelectTargets", "decision_context": {"sourceId": 395}}
@@ -1205,12 +1206,6 @@ def test_submitted_targets_and_declared_attacks_become_evidence(monkeypatch):
 
 
 # --- coach wiring: setting, pipe, mixin, diagnostics ----------------------------------------------
-
-
-def test_the_setting_defaults_on():
-    from arenamcp.settings import DEFAULTS
-
-    assert DEFAULTS["oops_emote"] is True
 
 
 def test_set_oops_emote_reaches_the_engine_and_falls_back_to_settings():
@@ -1329,7 +1324,9 @@ def test_the_tools_menu_toggles_the_oops_emote(qapp, monkeypatch):
     from PySide6.QtGui import QAction
 
     from arenamcp.desktop.main_window import MainWindow
+    from arenamcp.settings import DEFAULTS
 
+    assert DEFAULTS["oops_emote"] is True
     window = MainWindow()
     try:
         sent: list[dict] = []
@@ -1498,11 +1495,15 @@ def test_same_game_tells_bo3_games_apart():
 
 
 @pytest.mark.parametrize("games", [(1, 2), (None, None)])
-def test_bo3_game_two_never_resends_game_ones_attack_blunder(games):
+@pytest.mark.parametrize("game2_combat", ["trade", "quiet"])
+def test_bo3_game_two_never_rejudges_game_one(games, game2_combat):
     """Match 3da54de9 was a Bo3: game 2 shares the match id and restarts turn numbers.
 
-    Game 1's Fblthp Oops on turn 6, then game 2's turn-6 trade (our 2/2 for
-    their 2/2) while the engine still holds game 1's attack record: nothing.
+    Game 1's Fblthp Oops on turn 6, then game 2's turn 6 while the engine still
+    holds game 1's attack record: a real trade (our 2/2 for their 2/2) or a
+    quiet damage step (a wall holds our attacker off, nothing dies). Neither
+    resends game 1's blunder or re-reads its Fblthp death from the controller's
+    fact history.
     """
     first, second = games
     h = Harness()
@@ -1515,17 +1516,13 @@ def test_bo3_game_two_never_resends_game_ones_attack_blunder(games):
     h.now += 600
     game2 = live_state(turn=6, match=FBLTHP_MATCH, game_number=second)
     h.observe(game2, game=(FBLTHP_MATCH, 2))
-    board2 = {
-        **fblthp_board(),
-        "game_number": second,
-        "battlefield": [creature(400, "Bear", LOCAL, 2, 2), creature(401, "Bear", OPP, 2, 2)],
-    }
-    bears = {
-        400: {"controller": LOCAL, "grp_id": 9, "types": ["CardType_Creature"]},
-        401: {"controller": OPP, "grp_id": 9, "types": ["CardType_Creature"]},
-    }
-    trade = facts_of(
-        [
+    if game2_combat == "trade":
+        ours, theirs = creature(400, "Bear", LOCAL, 2, 2), creature(401, "Bear", OPP, 2, 2)
+        objects = {
+            400: {"controller": LOCAL, "grp_id": 9, "types": ["CardType_Creature"]},
+            401: {"controller": OPP, "grp_id": 9, "types": ["CardType_Creature"]},
+        }
+        annotations = [
             ann("PhaseOrStepModified", [LOCAL], phase=3, step=7),
             ann("DamageDealt", [401], 400, damage=2, type=1),
             ann("DamageDealt", [400], 401, damage=2, type=1),
@@ -1533,60 +1530,30 @@ def test_bo3_game_two_never_resends_game_ones_attack_blunder(games):
             ann("ZoneTransfer", [410], zone_src=28, zone_dest=37, category="SBA_Damage"),
             ann("ObjectIdChanged", [401], orig_id=401, new_id=411),
             ann("ZoneTransfer", [411], zone_src=28, zone_dest=33, category="SBA_Damage"),
-        ],
-        bears,
-        turn=6,
-        phase="Phase_Combat",
-        step="Step_CombatDamage",
-        match=FBLTHP_MATCH,
-        game=second,
-    )
-    g2_attack = combat_record(board2, [400])
-    h.observe(game2, game=(FBLTHP_MATCH, 2), facts=trade, evidence={"attacks": [g1_attack, g2_attack]})
-    assert len(h.sent) == 1 and h.outcomes() == [(ATTACK_BLUNDER, "sent")]
-
-
-@pytest.mark.parametrize("games", [(1, 2), (None, None)])
-def test_bo3_game_two_quiet_combat_never_rejudges_game_one(games):
-    """Game 2, turn 6: our attacker is held off by a wall and nothing dies. That regular damage step is
-    judged too, and must not re-read game 1's turn-6 Fblthp death from the controller's fact history."""
-    first, second = games
-    h = Harness()
-    g1_attack = fblthp_attack(game_number=first)
-    game1 = live_state(turn=6, match=FBLTHP_MATCH, game_number=first)
-    h.observe(
-        game1, game=(FBLTHP_MATCH, 1), facts=fblthp_facts(game=first), evidence={"attacks": [g1_attack]}
-    )
-    h.now += 600
-    game2 = live_state(turn=6, match=FBLTHP_MATCH, game_number=second)
-    h.observe(game2, game=(FBLTHP_MATCH, 2))
-    quiet = facts_of(
-        [
-            ann("PhaseOrStepModified", [LOCAL], phase=3, step=7),
-            ann("DamageDealt", [701], 700, damage=2, type=1),
-        ],
-        {
+        ]
+    else:
+        ours, theirs = creature(700, "Bear", LOCAL, 2, 2), creature(701, "Wall", OPP, 0, 4)
+        objects = {
             700: {"controller": LOCAL, "grp_id": 9, "types": ["CardType_Creature"]},
             701: {"controller": OPP, "grp_id": 8, "types": ["CardType_Creature"]},
-        },
+        }
+        annotations = [
+            ann("PhaseOrStepModified", [LOCAL], phase=3, step=7),
+            ann("DamageDealt", [701], 700, damage=2, type=1),
+        ]
+    facts = facts_of(
+        annotations,
+        objects,
         turn=6,
         phase="Phase_Combat",
         step="Step_CombatDamage",
         match=FBLTHP_MATCH,
         game=second,
     )
-    board2 = {
-        **fblthp_board(),
-        "game_number": second,
-        "battlefield": [creature(700, "Bear", LOCAL, 2, 2), creature(701, "Wall", OPP, 0, 4)],
-    }
-    h.observe(
-        game2,
-        game=(FBLTHP_MATCH, 2),
-        facts=quiet,
-        evidence={"attacks": [g1_attack, combat_record(board2, [700])]},
-    )
-    assert len(h.sent) == 1
+    board2 = {**fblthp_board(), "game_number": second, "battlefield": [ours, theirs]}
+    g2_attack = combat_record(board2, [ours["instance_id"]])
+    h.observe(game2, game=(FBLTHP_MATCH, 2), facts=facts, evidence={"attacks": [g1_attack, g2_attack]})
+    assert len(h.sent) == 1 and h.outcomes() == [(ATTACK_BLUNDER, "sent")]
 
 
 def test_bo3_game_one_facts_never_hide_a_game_two_blunder():
@@ -1614,9 +1581,9 @@ def test_bo3_game_one_facts_never_hide_a_game_two_blunder():
 
 
 def test_the_engine_keeps_only_this_games_evidence(monkeypatch):
-    from test_graveyard_recursion_and_modal_targets import _engine
+    from tests.necromancer_states import loop_engine
 
-    engine, bridge, _ = _engine(monkeypatch)
+    engine, bridge, _ = loop_engine()
     engine._note_declared_attack({**fblthp_board(), "game_number": 1}, [{"attackerInstanceId": 288}], None)
     game2 = {**fblthp_board(), "game_number": 2}
     game2["turn"] = {**game2["turn"], "turn_number": 6}
@@ -1694,9 +1661,10 @@ def test_get_game_state_carries_the_game_number(monkeypatch):
 
 def test_no_oops_while_the_auto_concede_is_being_sent():
     """The countdown claims itself (armed turns False) before the concede is sent and confirmed."""
-    import test_concede as tc
+    from tests.bug_180436_states import bug_state
+    from tests.concede_fakes import Harness as ConcedeHarness
 
-    conc = tc.Harness(tc.bug_state())
+    conc = ConcedeHarness(bug_state())
     key = (conc.state["match_id"], 1)
     h = Harness()
     h.controller._concede_active = conc.controller.concede_in_progress
@@ -1725,9 +1693,10 @@ def test_no_oops_while_the_auto_concede_is_being_sent():
 
 
 def test_a_cancelled_countdown_frees_the_oops():
-    import test_concede as tc
+    from tests.bug_180436_states import bug_state
+    from tests.concede_fakes import Harness as ConcedeHarness
 
-    conc = tc.Harness(tc.bug_state())
+    conc = ConcedeHarness(bug_state())
     key = (conc.state["match_id"], 1)
     h = Harness()
     h.controller._concede_active = conc.controller.concede_in_progress
@@ -1793,22 +1762,22 @@ def test_a_stale_trick_fact_still_counts_for_its_combat():
 
 def test_a_recurring_self_cancel_is_one_incident_per_game(monkeypatch):
     """Theoretical Necromancer was activated and cancelled for the same reason at 17:51, 17:52 and 18:57."""
-    from test_graveyard_recursion_and_modal_targets import (
+    from tests.necromancer_states import (
         NECRO_IDS,
-        _actions_poll,
-        _engine,
-        _loop_state,
-        _targets_poll,
+        actions_poll,
+        loop_engine,
+        loop_state,
+        targets_poll,
     )
 
-    engine, bridge, _ = _engine(monkeypatch)
+    engine, bridge, _ = loop_engine()
     reports: list[tuple] = []
     engine._oops_fn = lambda *args: reports.append(args)
     for turn, gsid in ((16, 459), (18, 500)):
-        bridge.get_pending_actions.return_value = _actions_poll(gsid)
-        assert engine._try_typed_decision_path(_loop_state(turn=turn), "decision_required")
-        bridge.get_pending_actions.return_value = _targets_poll(NECRO_IDS, game_state_id=gsid + 1, msg_id=648)
-        assert engine._try_typed_decision_path(_loop_state(turn=turn), "decision_required")
+        bridge.get_pending_actions.return_value = actions_poll(gsid)
+        assert engine._try_typed_decision_path(loop_state(turn=turn), "decision_required")
+        bridge.get_pending_actions.return_value = targets_poll(NECRO_IDS, game_state_id=gsid + 1, msg_id=648)
+        assert engine._try_typed_decision_path(loop_state(turn=turn), "decision_required")
     assert [r[0] for r in reports] == [SELF_CANCEL, SELF_CANCEL] and reports[0][1] == reports[1][1]
 
     h = Harness()
@@ -1846,12 +1815,12 @@ def test_declining_a_resolved_creatures_trigger_target_is_no_self_cancel(monkeyp
     trigger 320 (AbilityInstanceCreated, parent 316) asking for a mode, then SelectTargetsReq sourceId 320.
     18:11:46 the autopilot declined tgt:243 and cancelled: the GRE re-sent the trigger's
     CastingTimeOptionsReq; the cast itself stood. No Oops, and the cast is not withheld."""
-    from test_graveyard_recursion_and_modal_targets import _engine, _loop_state, _targets_poll
+    from tests.necromancer_states import loop_engine, loop_state, targets_poll
 
-    engine, bridge, _ = _engine(monkeypatch)
+    engine, bridge, _ = loop_engine()
     reports: list[tuple] = []
     engine._oops_fn = lambda *args: reports.append(args)
-    state = _loop_state(turn=15)
+    state = loop_state(turn=15)
     bridge.get_pending_actions.return_value = _duelist_cast_poll()
     assert engine._try_typed_decision_path(state, "decision_required")
     assert bridge.submit_action_by_index.call_count == 1
@@ -1871,7 +1840,7 @@ def test_declining_a_resolved_creatures_trigger_target_is_no_self_cancel(monkeyp
         "source_id": 320,
         "source_parent_instance_id": 316,
     }
-    bridge.get_pending_actions.return_value = _targets_poll((214, 243, 278), game_state_id=360, msg_id=470)
+    bridge.get_pending_actions.return_value = targets_poll((214, 243, 278), game_state_id=360, msg_id=470)
     assert engine._try_typed_decision_path(trigger, "decision_required")
     bridge.cancel_action.assert_called_once()
     assert reports == []
@@ -1883,12 +1852,12 @@ def test_declining_a_resolved_creatures_trigger_target_is_no_self_cancel(monkeyp
 
 
 def test_declining_the_spells_own_targets_still_counts_as_a_self_cancelled_cast(monkeypatch):
-    from test_graveyard_recursion_and_modal_targets import _engine, _loop_state, _targets_poll
+    from tests.necromancer_states import loop_engine, loop_state, targets_poll
 
-    engine, bridge, _ = _engine(monkeypatch)
+    engine, bridge, _ = loop_engine()
     reports: list[tuple] = []
     engine._oops_fn = lambda *args: reports.append(args)
-    state = _loop_state(turn=15)
+    state = loop_state(turn=15)
     bridge.get_pending_actions.return_value = _duelist_cast_poll()
     assert engine._try_typed_decision_path(state, "decision_required")
     spell = dict(state)
@@ -1902,7 +1871,7 @@ def test_declining_the_spells_own_targets_still_counts_as_a_self_cancelled_cast(
         }
     ]
     spell["decision_context"] = {"type": "target_selection", "source_id": 316}
-    bridge.get_pending_actions.return_value = _targets_poll((214, 243, 278), game_state_id=360, msg_id=470)
+    bridge.get_pending_actions.return_value = targets_poll((214, 243, 278), game_state_id=360, msg_id=470)
     assert engine._try_typed_decision_path(spell, "decision_required")
     ((kind, key, text, _state),) = reports
     assert kind == SELF_CANCEL and key == ("ActionType_Cast", "divining duelist", 0)
@@ -1974,9 +1943,9 @@ def test_an_attacker_killed_by_a_first_striker_is_judged():
 
 def test_a_single_candidate_auto_target_is_recorded_as_evidence(monkeypatch):
     """autopilot.py's single-candidate auto-submit passes the target as a bare int."""
-    from test_graveyard_recursion_and_modal_targets import _engine
+    from tests.necromancer_states import loop_engine
 
-    engine, bridge, _ = _engine(monkeypatch)
+    engine, bridge, _ = loop_engine()
     bridge.submit_targets.return_value = True
     state = live_state(decision_context={"type": "target_selection", "source_id": 395})
     assert engine._progress_bridge(state).submit_targets(266)

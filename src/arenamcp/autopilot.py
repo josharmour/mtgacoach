@@ -73,8 +73,8 @@ class AutopilotEngine(
 ):
     """Core autopilot orchestration engine.
 
-    Coordinates action planning, screen mapping, input control, and
-    human confirmation to execute MTGA actions automatically.
+    Coordinates action planning, GRE bridge submission, and human
+    confirmation to execute MTGA actions automatically.
     """
 
     _MAX_CONTINUATION_DEPTH: int = 5
@@ -107,8 +107,6 @@ class AutopilotEngine(
     def __init__(
         self,
         planner: ActionPlanner,
-        mapper: Any | None = None,
-        controller: Any | None = None,
         get_game_state: Callable[[], dict[str, Any]] | None = None,
         config: AutopilotConfig | None = None,
         speak_fn: Callable[[str, bool], None] | None = None,
@@ -119,8 +117,6 @@ class AutopilotEngine(
     ):
         """Initialize the autopilot engine."""
         self._planner = planner
-        self._mapper = mapper
-        self._controller = controller
         self._game_state_fn = get_game_state or (lambda: {})
         self._config = config or AutopilotConfig()
         self._speak_fn = speak_fn
@@ -197,9 +193,6 @@ class AutopilotEngine(
         # Land-drop dedup: track last turn we played a land to prevent
         # double-triggers when game state hasn't updated yet
         self._land_drop_last_turn: int = -1
-
-        # Vision scan: track if mapper supports layout scanning
-        self._has_vision_scan = hasattr(self._mapper, "scan_layout")
 
         # GRE bridge for direct action submission (bypasses mouse clicks)
         self._gre_bridge: GREBridge = get_bridge()
@@ -3674,16 +3667,6 @@ class AutopilotEngine(
             self._state = AutopilotState.EXECUTING
             self._gre_bridge_failed_methods = set()
 
-            # Legacy mouse path only: bridge-only mode should not steal focus.
-            if (
-                not self._config.dry_run
-                and not self._config.bridge_only_when_connected
-                and not self._gre_bridge.connected
-                and self._controller is not None
-            ):
-                self._controller.focus_mtga_window()
-                time.sleep(0.06)
-
             for i, action in enumerate(plan.actions):
                 if self._abort_event.is_set():
                     self._state = AutopilotState.IDLE
@@ -3977,15 +3960,9 @@ class AutopilotEngine(
 
                 # Delay between actions
                 if i < len(plan.actions) - 1:
-                    via_bridge = "GRE bridge" in str(getattr(click_result, "error", "") or "")
-                    if self._controller is not None and not via_bridge:
-                        # Clicks need the UI to settle; keep the fixed wait.
-                        self._controller.wait(self._config.action_delay, "between actions")
-                    else:
-                        # Bridge submissions (and bridge-only macOS engines):
-                        # the next action can go as soon as MTGA shows the
-                        # next request; action_delay is only the upper bound.
-                        self._poll_bridge_for_pending(self._config.action_delay)
+                    # The next action can go as soon as MTGA shows the next
+                    # request; action_delay is only the upper bound.
+                    self._poll_bridge_for_pending(self._config.action_delay)
 
             if self._abort_event.is_set() or self._state == AutopilotState.PAUSED:
                 return False

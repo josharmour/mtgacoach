@@ -4,10 +4,10 @@ from copy import deepcopy
 from unittest.mock import Mock
 
 import pytest
+from tests.fakes import TypedBridge, make_engine, planner_with
 
 from arenamcp.action_planner import ActionType, GameAction
 from arenamcp.autopilot import AutopilotState
-from test_typed_decision_path import _engine, _planner_with, _TypedBridge
 
 OPTIONAL = {
     "ok": True,
@@ -32,7 +32,7 @@ SEARCH = {
 }
 
 
-class WorldwagonBridge(_TypedBridge):
+class WorldwagonBridge(TypedBridge):
     def submit_optional(self, accept, **kwargs):
         self.submitted.append(("optional", accept))
         return True
@@ -58,12 +58,12 @@ def optional_state():
     }
 
 
-def test_accepted_worldwagon_etb_then_idle_tick_then_search_never_replans_accept(monkeypatch):
-    planner = _planner_with('{"option_ids":["optional:accept"]}')
+def test_accepted_worldwagon_etb_then_idle_tick_then_search_never_replans_accept():
+    planner = planner_with('{"option_ids":["optional:accept"]}')
     planner.plan_actions = Mock(side_effect=AssertionError("Never re-plan the stale Accept menu"))
     planner.plan_decision_options = Mock(wraps=planner.plan_decision_options)
     bridge = WorldwagonBridge(deepcopy(OPTIONAL))
-    engine = _engine(monkeypatch, bridge, planner)
+    engine = make_engine(bridge, planner)
     engine._game_plan_mgr = None
     engine._pause_for_manual = Mock()
     stale = optional_state()
@@ -88,7 +88,7 @@ def test_accepted_worldwagon_etb_then_idle_tick_then_search_never_replans_accept
     planner.plan_actions.assert_not_called()
 
 
-def test_vorinclex_search_uses_fresh_two_forest_options_after_cast_snapshot(monkeypatch):
+def test_vorinclex_search_uses_fresh_two_forest_options_after_cast_snapshot():
     search = deepcopy(SEARCH)
     search.update(
         select_n_max=2,
@@ -97,11 +97,11 @@ def test_vorinclex_search_uses_fresh_two_forest_options_after_cast_snapshot(monk
         ],
         decision_context={"type": "search", "min": 0, "max": 2, "options": [480, 475]},
     )
-    planner = _planner_with('{"option_ids":["sel:480","sel:475"]}')
+    planner = planner_with('{"option_ids":["sel:480","sel:475"]}')
     planner.plan_decision_options = Mock(wraps=planner.plan_decision_options)
     planner.plan_actions = Mock(side_effect=AssertionError("Search owns the new decision"))
     bridge = WorldwagonBridge(search)
-    engine = _engine(monkeypatch, bridge, planner)
+    engine = make_engine(bridge, planner)
     engine._game_plan_mgr = None
     stale = optional_state()
     stale.update(
@@ -122,9 +122,9 @@ def test_vorinclex_search_uses_fresh_two_forest_options_after_cast_snapshot(monk
 
 @pytest.mark.parametrize("poll", [{}, {"ok": False, "error": "transition"}, {"has_pending": False}])
 def test_unavailable_connected_bridge_never_plans_an_old_optional_snapshot(monkeypatch, poll):
-    planner = _planner_with("must not ask model")
+    planner = planner_with("must not ask model")
     planner.plan_actions = Mock(side_effect=AssertionError("No legacy planning on unavailable live state"))
-    engine = _engine(monkeypatch, WorldwagonBridge(poll), planner)
+    engine = make_engine(WorldwagonBridge(poll), planner)
     assert engine.process_trigger(optional_state(), "stack_spell_yours")
     assert planner._backend.calls == 0
     planner.plan_actions.assert_not_called()
@@ -132,9 +132,9 @@ def test_unavailable_connected_bridge_never_plans_an_old_optional_snapshot(monke
 
 def test_connected_idle_arbiter_owns_stale_trigger_without_coaching_fallback(monkeypatch):
     monkeypatch.setattr("arenamcp.autopilot.time.sleep", lambda _: None)
-    planner = _planner_with("must not ask model")
+    planner = planner_with("must not ask model")
     planner.plan_actions = Mock(side_effect=AssertionError("Idle bridge must suppress stale coaching"))
-    engine = _engine(monkeypatch, WorldwagonBridge({"has_pending": False}), planner)
+    engine = make_engine(WorldwagonBridge({"has_pending": False}), planner)
     stale = optional_state()
     stale.update(
         _bridge_has_pending=False,
@@ -152,7 +152,7 @@ def test_connected_idle_arbiter_owns_stale_trigger_without_coaching_fallback(mon
 @pytest.mark.parametrize("button", ["accept", "yes", "decline", "no"])
 def test_legacy_optional_button_displaced_by_search_silently_yields_without_submission(monkeypatch, button):
     bridge = WorldwagonBridge(deepcopy(SEARCH))
-    engine = _engine(monkeypatch, bridge, _planner_with("must not ask model"))
+    engine = make_engine(bridge, planner_with("must not ask model"))
     engine._pause_for_manual = Mock()
     action = GameAction(ActionType.CLICK_BUTTON, card_name=button)
     result = engine._execute_action(action, optional_state())
@@ -162,10 +162,10 @@ def test_legacy_optional_button_displaced_by_search_silently_yields_without_subm
     engine._pause_for_manual.assert_not_called()
 
 
-def test_still_pending_optional_accept_keeps_request_bound_submission(monkeypatch):
+def test_still_pending_optional_accept_keeps_request_bound_submission():
     bridge = WorldwagonBridge(deepcopy(OPTIONAL))
     bridge.submit_optional = Mock(wraps=bridge.submit_optional)
-    engine = _engine(monkeypatch, bridge, _planner_with("must not ask model"))
+    engine = make_engine(bridge, planner_with("must not ask model"))
     result = engine._execute_action(GameAction(ActionType.CLICK_BUTTON, card_name="accept"), optional_state())
     assert result.success
     bridge.submit_optional.assert_called_once_with(True, expected_request_id=(73, 100))

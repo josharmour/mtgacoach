@@ -202,12 +202,12 @@ def _bug_report(tmp_path: Path, name: str = "bug_20261007_180300.json") -> Path:
         "settings": {
             "license_key": LICENSE,
             "local_api_key": "vllm",
-            "autopilot_vision_api_key": "sk-visionkey12345678",
+            "tts_api_key": "sk-visionkey12345678",
             "tts_server_url": "http://10.0.0.5:8880",
             "mtga_install_dir": "C:\\Users\\joshu\\MTGA",
             "autopilot_enabled": True,
             "install_id": "inst_" + "a" * 32,
-            "model": "deepseek-v4-flash",
+            "model": "glm-5.3-flash",
         },
         "system": {"platform": "macOS-15", "python_version": "3.11.9", "machine": "arm64"},
         "mtga_log": {"path": "/Users/joshu/Library/Logs/Wizards Of The Coast/MTGA/Player.log"},
@@ -286,7 +286,7 @@ def _build(world, **kw) -> dict:
         packet_path=world["packet_path"],
         advice_history=[{"turn": 1, "advice": f"Attack {OPP_NAME}'s face; key {LICENSE}"}],
         settings=_settings(),
-        config={"served_model": "deepseek-v4-flash", "draft_mode": False},
+        config={"served_model": "glm-5.3-flash", "draft_mode": False},
         bug_dir=world["bug_dir"],
     )
     args.update(kw)
@@ -386,14 +386,14 @@ def test_bundle_is_fully_redacted(world):
     assert report["settings_subset"] == {
         k: v for k, v in report["settings_subset"].items() if k in mb.SETTINGS_WHITELIST
     }
-    assert report["settings_subset"]["model"] == "deepseek-v4-flash"
+    assert report["settings_subset"]["model"] == "glm-5.3-flash"
     assert report["reporter"]["install_id"] == "inst_" + "a" * 32
     assert bundle["bug_reports"][0]["file"] == world["bug_path"].name
     # the shipped match_review detectors are the post-match path's job (and
     # the offline reviewer's); running them here double-logged calibration
     assert "match_review_findings" not in bundle
     assert bundle["arena_match_id"] == MATCH_ID and bundle["game_number"] == 1
-    assert bundle["config"]["served_model"] == "deepseek-v4-flash"
+    assert bundle["config"]["served_model"] == "glm-5.3-flash"
 
 
 def test_bundle_never_touches_the_calibration_log(world, monkeypatch, tmp_path):
@@ -449,7 +449,7 @@ def test_redact_scrubs_keys_tokens_emails_and_paths():
     out = mb.redact(
         {
             "license_key": LICENSE,
-            "autopilot_vision_api_key": "sk-visionkey12345678",
+            "tts_api_key": "sk-visionkey12345678",
             "tts_server_url": "http://x",
             "access_token": "ghp_" + "b" * 30,
             "token_count": 12,
@@ -462,7 +462,7 @@ def test_redact_scrubs_keys_tokens_emails_and_paths():
         },
         names,
     )
-    assert out["license_key"] == "[redacted]" and out["autopilot_vision_api_key"] == "[redacted]"
+    assert out["license_key"] == "[redacted]" and out["tts_api_key"] == "[redacted]"
     assert out["tts_server_url"] == "[redacted]" and out["access_token"] == "[redacted]"
     assert out["token_count"] == 12 and out["install_id"] == "inst_keep" and out["empty_key"] == ""
     assert out["note"] == "mail [redacted] path ~\\x and ~/y Bearer [redacted] by opponent"

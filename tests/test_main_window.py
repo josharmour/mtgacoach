@@ -34,12 +34,6 @@ def test_main_window_init(qapp, monkeypatch):
     win.close()
 
 
-def test_restart_exit_code_is_defined():
-    from arenamcp.desktop.app import RESTART_EXIT_CODE
-
-    assert RESTART_EXIT_CODE == 42
-
-
 def test_watchdog_ping_bridge_delivers_pong(qapp):
     from arenamcp.desktop.ui_watchdog import WatchdogPingBridge
 

@@ -291,25 +291,6 @@ def detect_win_prob_misses(log_slice: str, match_result: str) -> list[Finding]:
     return []
 
 
-def detect_platform_noise(log_slice: str) -> list[Finding]:
-    hits = re.findall(r"All screenshot methods failed.*", log_slice)
-    if len(hits) >= 2:
-        return [
-            Finding(
-                category="platform",
-                title=f"Vision fallback attempted screenshots {len(hits)}x on a platform where capture fails",
-                detail=(
-                    "Screen capture failed every time (Wayland/no input backend). "
-                    "The vision fallback should be disabled on this platform "
-                    "instead of burning cycles per decision."
-                ),
-                severity="low",
-                evidence=hits[:3],
-            )
-        ]
-    return []
-
-
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
@@ -331,7 +312,6 @@ def run_match_review(
         lambda: detect_rejected_decisions(packet),
         lambda: detect_advice_repetition(advice_history),
         lambda: detect_win_prob_misses(log_slice, match_result),
-        lambda: detect_platform_noise(log_slice),
     )
     for det in detectors:
         try:

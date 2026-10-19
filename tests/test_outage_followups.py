@@ -179,38 +179,6 @@ def test_worker_still_tries_three_turns_after_a_non_viable_two(monkeypatch):
     assert asked == [2, 3]
 
 
-class _SyncThread:
-    def __init__(self, target=None, daemon=None, **kwargs):
-        self._target = target
-
-    def start(self):
-        self._target()
-
-
-def test_manual_win_plan_is_a_labelled_foreground_call(monkeypatch):
-    monkeypatch.setattr(hotkeys_module, "threading", NS(Thread=_SyncThread))
-    seen = {}
-
-    class _Coach:
-        def get_win_plan(self, game_state, turns, library_summary, **kwargs):
-            seen.update(kwargs)
-            return CIRCUIT_OPEN
-
-    coach = StandaloneCoach.__new__(StandaloneCoach)
-    coach._coach = _Coach()
-    coach._mcp = Mock()
-    coach._mcp.get_game_state.return_value = {"turn": {"turn_number": 4}}
-    coach._compute_library_summary = lambda state: ""
-    coach.ui = Mock()
-    coach.speak_advice = Mock()
-    coach._record_advice = Mock()
-    coach._on_win_plan_hotkey(3)
-    assert seen == {"call_class": "coach.win_plan"}
-    # An error sentinel is never shown or spoken as a plan.
-    coach.ui.advice.assert_not_called()
-    coach.speak_advice.assert_not_called()
-
-
 # ---------------------------------------------------------------------------
 # 2. Call-class labels on the remaining call sites
 # ---------------------------------------------------------------------------
@@ -469,7 +437,11 @@ def test_a_primer_whose_answers_were_invalid_is_still_persisted(monkeypatch, tmp
 _LEAK_URL = "http://leak-check.invalid/v1"
 
 
-def test_leak_check_part_1_trips_breaker_and_rejects_priority():
+def test_the_per_test_reset_clears_breaker_priority_and_lane():
+    # One test, not a part 1 / part 2 pair: under xdist the two halves can run
+    # on different workers, and part 2 then passes without checking anything.
+    from conftest import _reset_llm_gates
+
     breaker = health.get_circuit(_LEAK_URL, "glm-5.3-flash")
     for _ in range(5):
         breaker.record_failure("Connection error")
@@ -478,8 +450,8 @@ def test_leak_check_part_1_trips_breaker_and_rejects_priority():
     assert not proxy.priority_enabled()
     proxy._BACKGROUND_LANE._holder = proxy._CallHandle("background.leak")
 
+    _reset_llm_gates()  # what the autouse _isolate_llm_gates fixture runs around every test
 
-def test_leak_check_part_2_starts_clean():
     assert health.get_circuit(_LEAK_URL, "glm-5.3-flash").available()
     assert proxy.priority_enabled()
     assert proxy._BACKGROUND_LANE.holder_class() is None

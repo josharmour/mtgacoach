@@ -17,10 +17,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import arenamcp.autopilot as autopilot_module
+from tests.fakes import TypedBridge, make_engine, planner_with, target_state
+
 from arenamcp import decisions
 from arenamcp.action_planner import ActionPlanner
-from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
+from arenamcp.autopilot import AutopilotEngine
 from arenamcp.decisions import (
     build_pending_decision,
     default_group_choice,
@@ -284,11 +285,9 @@ def test_default_scry_choice_is_a_valid_assignment():
 
 
 def test_legacy_safe_default_no_longer_bins_the_surveilled_card(monkeypatch):
-    from tests.test_autopilot_safe_default_group import _engine as legacy_engine
-
     monkeypatch.setattr(decisions, "_default_instance_card", CARDS.get)
     bridge = _GroupBridge(SURVEIL_BRIDGE_POLL)
-    engine, _ = legacy_engine(bridge)
+    engine = make_engine(bridge)
     result = engine._try_gre_bridge_group_default(_board(4, []), SURVEIL_BRIDGE_POLL)
     assert result is not None and result.success
     assert bridge.groups == [
@@ -302,30 +301,11 @@ def test_legacy_safe_default_no_longer_bins_the_surveilled_card(monkeypatch):
 # --- typed path end to end ---------------------------------------------------
 
 
-class _Backend:
-    def __init__(self, response):
-        self.response = response
-        self.prompts = []
-
-    def complete(self, system, user, *args, **kwargs):
-        self.prompts.append(user)
-        return self.response
-
-
 def test_typed_path_lets_the_model_keep_the_sphinx(monkeypatch):
     monkeypatch.setattr(decisions, "_default_instance_card", CARDS.get)
     bridge = _GroupBridge(SURVEIL_BRIDGE_POLL)
-    planner = ActionPlanner.__new__(ActionPlanner)
-    planner._backend = _Backend('{"option_ids": ["grp:298:top"], "reasoning": "Sphinx is my best threat."}')
-    planner._timeout = 5.0
-    monkeypatch.setattr(autopilot_module, "get_bridge", lambda: bridge)
-    engine = AutopilotEngine(
-        planner=planner,
-        mapper=MagicMock(),
-        controller=MagicMock(),
-        get_game_state=lambda: {},
-        config=AutopilotConfig(dry_run=False),
-    )
+    planner = planner_with('{"option_ids": ["grp:298:top"], "reasoning": "Sphinx is my best threat."}')
+    engine = make_engine(bridge, planner)
     state = {
         "turn": {"turn_number": 7, "phase": "Phase_Main1"},
         "players": [{"seat_id": 2, "is_local": True}, {"seat_id": 1}],
@@ -509,16 +489,14 @@ def test_planner_follows_reasoning_when_it_names_a_different_card(monkeypatch):
 
 
 def test_typed_path_surveil_uses_the_safe_default_when_the_model_answer_is_unusable(monkeypatch):
-    from tests.test_typed_decision_path import _engine, _planner_with, _state, _TypedBridge
-
-    bridge = _TypedBridge(SURVEIL_BRIDGE_POLL)
+    bridge = TypedBridge(SURVEIL_BRIDGE_POLL)
     bridge.groups = None
     bridge.submit_group = lambda groups: (setattr(bridge, "groups", groups), True)[1]
     monkeypatch.setattr(
         "arenamcp.decisions.default_group_choice", lambda decision, state=None: ["grp:298:top"]
     )
-    engine = _engine(monkeypatch, bridge, _planner_with("nonsense"))
-    assert engine._try_typed_decision_path(_state(), "decision_required") is True
+    engine = make_engine(bridge, planner_with("nonsense"))
+    assert engine._try_typed_decision_path(target_state(), "decision_required") is True
     assert bridge.groups[0]["ids"] == [298] and bridge.groups[1]["ids"] == []
 
 
@@ -554,14 +532,7 @@ def test_typed_path_surveil_bins_flooded_land_without_the_model(monkeypatch):
 
     planner._backend = MagicMock(complete=never)
     planner._timeout = 5.0
-    monkeypatch.setattr(autopilot_module, "get_bridge", lambda: bridge)
-    engine = AutopilotEngine(
-        planner=planner,
-        mapper=MagicMock(),
-        controller=MagicMock(),
-        get_game_state=lambda: {},
-        config=AutopilotConfig(dry_run=False),
-    )
+    engine = make_engine(bridge, planner)
     state = {
         **_board(6, [MOUNTAIN]),
         "turn": {"turn_number": 18, "phase": "Phase_Main1"},
@@ -615,203 +586,3 @@ def test_surveil_with_a_spell_in_the_group_goes_to_the_model(monkeypatch):
     monkeypatch.setattr(planner, "_llm_decision_options", answer, raising=False)
     assert planner.plan_decision_options(_surveil(), _board(14, [MOUNTAIN])) == ["grp:298:top"]
     assert asked == ["Group"]
-
-
-# --- unmet modified evasion & losing-attack guard (bug_20261013_210748) -------
-
-
-def _skyward_spider_turn9_state(*, modified: bool = False) -> dict:
-    spider = {
-        "instance_id": 302,
-        "grp_id": 97964,
-        "name": "Skyward Spider",
-        "type_line": "Creature — Spider Human Hero",
-        "card_types": ["CardType_Creature"],
-        "owner_seat_id": 2,
-        "controller_seat_id": 2,
-        "power": 3 if modified else 2,
-        "toughness": 3 if modified else 2,
-        "is_tapped": False,
-        "turn_entered_battlefield": 4,
-        "oracle_text": "Ward {o2}\nThis creature has flying as long as it's modified.",
-        "counters": {"CounterType_P1P1": 1} if modified else {},
-    }
-    gev = {
-        "instance_id": 326,
-        "grp_id": 91750,
-        "name": "Gev, Scaled Scorch",
-        "type_line": "Legendary Creature — Lizard Mercenary",
-        "card_types": ["CardType_Creature"],
-        "owner_seat_id": 1,
-        "controller_seat_id": 1,
-        "power": 3,
-        "toughness": 2,
-        "is_tapped": False,
-        "turn_entered_battlefield": 8,
-        "oracle_text": (
-            "Ward—Pay 2 life.\n"
-            "Other creatures you control enter with an additional +1/+1 counter on them "
-            "for each opponent who lost life this turn.\n"
-            "Whenever you cast a Lizard spell, Gev deals 1 damage to target opponent."
-        ),
-        "counters": {},
-    }
-    plains_tapped = {
-        "instance_id": 300,
-        "name": "Plains",
-        "type_line": "Basic Land — Plains",
-        "card_types": ["CardType_Land"],
-        "owner_seat_id": 2,
-        "controller_seat_id": 2,
-        "is_tapped": True,
-        "oracle_text": "{oT}: Add {oW}.",
-    }
-    plains_untapped = [
-        {
-            "instance_id": 310 + i,
-            "name": "Plains",
-            "type_line": "Basic Land — Plains",
-            "card_types": ["CardType_Land"],
-            "owner_seat_id": 2,
-            "controller_seat_id": 2,
-            "is_tapped": False,
-            "oracle_text": "{oT}: Add {oW}.",
-        }
-        for i in range(3)
-    ]
-    air_temple = {
-        "instance_id": 309,
-        "name": "Abandoned Air Temple",
-        "type_line": "Land",
-        "card_types": ["CardType_Land"],
-        "owner_seat_id": 2,
-        "controller_seat_id": 2,
-        "is_tapped": False,
-        "oracle_text": (
-            "This land enters tapped unless you control a basic land.\n"
-            "{oT}: Add {oW}.\n"
-            "{o3oW}, {oT}: Put a +1/+1 counter on each creature you control."
-        ),
-    }
-    return {
-        "turn": {"turn_number": 9, "active_player": 2, "priority_player": 2, "phase": "Phase_Combat", "step": "Step_DeclareAttack"},
-        "local_seat_id": 2,
-        "players": [
-            {"seat_id": 2, "life": 18, "is_local": True, "mana_pool": {}},
-            {"seat_id": 1, "life": 18, "is_local": False, "mana_pool": {}},
-        ],
-        "battlefield": [spider, gev, plains_tapped, *plains_untapped, air_temple],
-        "hand": [],
-        "graveyard": [],
-        "exile": [],
-    }
-
-
-def test_unmet_modified_flag_and_board_card_formatting():
-    from arenamcp.coach import CoachEngine
-    from arenamcp.combat_keywords import (
-        has_combat_keyword,
-        is_creature_modified,
-        modified_conditional_keywords,
-        unmet_modified_flag,
-    )
-
-    state_unmod = _skyward_spider_turn9_state(modified=False)
-    spider_unmod = state_unmod["battlefield"][0]
-    assert modified_conditional_keywords(spider_unmod["oracle_text"]) == frozenset({"flying"})
-    assert not is_creature_modified(spider_unmod)
-    assert not has_combat_keyword(spider_unmod, "flying")
-    assert unmet_modified_flag(spider_unmod) == "NOT MODIFIED — NO FLYING"
-
-    engine = CoachEngine.__new__(CoachEngine)
-    lines_unmod = engine._format_board_card(
-        spider_unmod,
-        attachments={},
-        name_counts={"Skyward Spider": 1},
-        name_seen={},
-        turn_num=9,
-        local_seat=2,
-        is_local=True,
-    )
-    assert "NOT MODIFIED — NO FLYING" in lines_unmod[0]
-    assert "[FLY" not in lines_unmod[0]
-
-    state_mod = _skyward_spider_turn9_state(modified=True)
-    spider_mod = state_mod["battlefield"][0]
-    assert is_creature_modified(spider_mod)
-    assert has_combat_keyword(spider_mod, "flying")
-    assert unmet_modified_flag(spider_mod) == ""
-    lines_mod = engine._format_board_card(
-        spider_mod,
-        attachments={},
-        name_counts={"Skyward Spider": 1},
-        name_seen={},
-        turn_num=9,
-        local_seat=2,
-        is_local=True,
-    )
-    assert "FLY" in lines_mod[0]
-    assert "NOT MODIFIED" not in lines_mod[0]
-
-
-def test_losing_attackers_blocks_unmodified_skyward_spider_into_gev():
-    from arenamcp.action_planner import ActionPlan, ActionType, GameAction
-    from arenamcp.combat_strategy import losing_attackers
-
-    state = _skyward_spider_turn9_state(modified=False)
-    losing = losing_attackers(
-        state,
-        [302],
-        strategy_text="Chip with evasive ward Spider while holding Rips for their next MV<=2 permanent.",
-    )
-    assert 302 in losing
-    assert "NOT MODIFIED — NO FLYING" in losing[302]
-
-    planner = ActionPlanner.__new__(ActionPlanner)
-    plan = ActionPlan(
-        actions=[
-            GameAction(
-                action_type=ActionType.DECLARE_ATTACKERS,
-                attacker_names=["Skyward Spider"],
-                attacker_instance_ids=[302],
-                reasoning="DeclareAttackers: Skyward Spider",
-            )
-        ],
-        overall_strategy="Chip with evasive ward Spider while holding Rips for their next MV<=2 permanent.",
-        voice_advice="Attack with Skyward Spider.",
-    )
-    planner._check_losing_attacks(
-        plan,
-        state,
-        {"type": "declare_attackers", "legal_attacker_ids": [302]},
-    )
-    assert plan.actions[0].attacker_names == []
-    assert plan.actions[0].attacker_instance_ids == []
-    assert plan.fallback_reason == "planner_losing_attack"
-
-    # Once Skyward Spider IS modified (3/3 with flying), Gev (no reach/flying) cannot block it.
-    state_mod = _skyward_spider_turn9_state(modified=True)
-    assert losing_attackers(state_mod, [302]) == {}
-
-
-def test_game_plan_validate_strips_unmodified_skyward_spider_attack():
-    from arenamcp.board_assessment import assess
-    from arenamcp.game_plan import GamePlan, validate_plan
-
-    state = _skyward_spider_turn9_state(modified=False)
-    assessment = assess(state)
-    raw_plan = GamePlan(
-        turn_formed=8,
-        role="aggressor",
-        role_reason="Opponent is locked off board; Spider swings uncontested each turn",
-        win_conditions=["Evasive ward Spider chips until drawn Armor snowballs"],
-        path="Opponent is locked off board; Spider swings uncontested each turn",
-        turn_plan=[
-            {"turn": "T", "land": "", "cast": [], "attack": "Skyward Spider", "hold": ""},
-            {"turn": "T+1", "land": "", "cast": [], "attack": "Skyward Spider", "hold": ""},
-        ],
-    )
-    validated = validate_plan(raw_plan, assessment, state)
-    assert validated.turn_plan[0]["attack"] == ""
-    assert any("held back Skyward Spider" in issue for issue in validated.issues)
-

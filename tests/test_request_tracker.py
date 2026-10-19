@@ -86,23 +86,16 @@ def test_escape_requires_real_rejections(monkeypatch):
     assert t.may_escape(fp)  # two real rejections: escape allowed
 
 
-def test_rollback_settles_in_flight():
+def test_reset_clears_history(monkeypatch):
     t = RequestTracker()
-    fp = decision_fingerprint(_decision())
-    t.note_submitted(fp)
-    t.note_rolled_back(fp)
-    assert t.may_submit(fp)
-
-
-def test_reset_clears_history():
-    t = RequestTracker()
+    monkeypatch.setattr(t, "REJECT_GRACE_S", 0.0)
     fp = decision_fingerprint(_decision())
     for _ in range(t.MAX_SUBMISSIONS_PER_REQUEST):
         t.note_submitted(fp)
-        t.note_rolled_back(fp)
+        t.observe(fp)  # rejected each time
     assert not t.may_submit(fp)
     t.reset()
-    assert t.may_submit(fp)
+    assert t.may_submit(fp) and t.rejections(fp) == 0
 
 
 def test_mulligan_fingerprint_distinguishes_rounds_when_ids_available():

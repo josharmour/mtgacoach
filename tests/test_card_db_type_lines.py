@@ -1,7 +1,7 @@
 """A card lookup that produced nothing must not look like one that succeeded.
 
-Regression tests for the defect that silently corrupted 20.4% of the on-disk
-play-decision gate corpus: ``MTGADatabaseAdapter`` handed callers MTGA's raw
+Regression tests for a defect that silently corrupted prompts:
+``MTGADatabaseAdapter`` handed callers MTGA's raw
 ``Cards.Types`` column ("5", "1,2") as ``CardInfo.type_line``. Every consumer
 in the codebase tests type lines by substring (``"land" in type_line``), so a
 Plains whose type line read "5" was not a land: it produced no mana, the
@@ -11,15 +11,17 @@ prompt to tell it apart from a genuinely empty board.
 """
 
 import sqlite3
+from unittest.mock import Mock
 
 import pytest
 
 from arenamcp.card_db import (
     CardInfo,
+    FallbackCardDatabase,
     MTGADatabaseAdapter,
     create_card_database,
     is_bogus_type_line,
-    is_hidden_card_id,
+    is_unknown_card_name,
 )
 from arenamcp.mtgadb import MTGADatabase
 from arenamcp.rules_engine import RulesEngine
@@ -269,22 +271,6 @@ def test_numeric_type_line_would_produce_no_mana():
 
 
 # ---------------------------------------------------------------------------
-# Hidden cards are not lookup failures
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("grp_id", [3, 4])
-def test_well_known_catalog_ids_are_hidden_not_missing(grp_id):
-    """MTGA's StandardCardBack/Obscured placeholders are hidden by the rules."""
-    assert is_hidden_card_id(grp_id) is True
-
-
-@pytest.mark.parametrize("grp_id", [None, 0, 1, 2, PLAINS])
-def test_ordinary_ids_are_not_hidden(grp_id):
-    assert is_hidden_card_id(grp_id) is False
-
-
-# ---------------------------------------------------------------------------
 # Fallback chain
 # ---------------------------------------------------------------------------
 
@@ -310,3 +296,27 @@ def test_fallback_prefers_a_real_type_line_over_a_numeric_one(tmp_path):
     assert info is not None
     assert not is_bogus_type_line(info.type_line)
     assert "Land" in info.type_line
+
+
+# ---------------------------------------------------------------------------
+# Placeholder names (moved from test_card_audit)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name", ["Unknown", "Unknown_123", "Unknown(123)", "Unknown (123)", "Unknown Card #123", "", None]
+)
+def test_only_placeholder_names_are_unresolved(name):
+    assert is_unknown_card_name(name)
+    assert not is_unknown_card_name("Unknown Shores")
+
+
+def test_unknown_shores_can_be_enriched_by_name():
+    source = Mock()
+    source.get_card_by_arena_id.return_value = CardInfo(name="Unknown Shores", arena_id=42)
+    source.get_card_by_name.return_value = CardInfo(
+        name="Unknown Shores", type_line="Land", oracle_text="{T}: Add {C}."
+    )
+    card = FallbackCardDatabase([source]).get_card_by_arena_id(42)
+    assert card.type_line == "Land"
+    assert card.oracle_text

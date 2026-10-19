@@ -1,5 +1,4 @@
 from arenamcp.action_planner import ActionPlanner, ActionType
-from arenamcp.autopilot import AutopilotEngine
 from arenamcp.gamestate import GameState, create_game_state_handler
 from arenamcp.rules_engine import RulesEngine
 
@@ -120,68 +119,6 @@ def test_action_planner_rejects_uncastable_spell_and_falls_back_to_pass():
     assert len(plan.actions) == 1
     assert plan.actions[0].action_type == ActionType.PASS_PRIORITY
     assert plan.actions[0].card_name == ""
-
-
-def test_pay_cost_source_selection_prefers_specific_then_least_flexible_sources():
-    game_state = {
-        "turn": {"turn_number": 6},
-        "battlefield": [
-            {
-                "instance_id": 11,
-                "name": "Forest",
-                "type_line": "Basic Land — Forest",
-                "oracle_text": "{T}: Add {G}.",
-                "owner_seat_id": 1,
-                "controller_seat_id": 1,
-                "is_tapped": False,
-                "turn_entered_battlefield": 1,
-                "color_production": ["5"],
-            },
-            {
-                "instance_id": 12,
-                "name": "Plains",
-                "type_line": "Basic Land — Plains",
-                "oracle_text": "{T}: Add {W}.",
-                "owner_seat_id": 1,
-                "controller_seat_id": 1,
-                "is_tapped": False,
-                "turn_entered_battlefield": 1,
-                "color_production": ["1"],
-            },
-            {
-                "instance_id": 13,
-                "name": "Blossoming Sands",
-                "type_line": "Land",
-                "oracle_text": "{T}: Add {G} or {W}.",
-                "owner_seat_id": 1,
-                "controller_seat_id": 1,
-                "is_tapped": False,
-                "turn_entered_battlefield": 1,
-            },
-            {
-                "instance_id": 14,
-                "name": "Island",
-                "type_line": "Basic Land — Island",
-                "oracle_text": "{T}: Add {U}.",
-                "owner_seat_id": 1,
-                "controller_seat_id": 1,
-                "is_tapped": False,
-                "turn_entered_battlefield": 1,
-                "color_production": ["2"],
-            },
-        ],
-    }
-    decision_context = {
-        "type": "pay_costs",
-        "mana_requirements": {"generic": 1, "G": 1},
-    }
-
-    selected = AutopilotEngine._select_pay_cost_sources(game_state, decision_context, local_seat=1)
-
-    selected_ids = [card["instance_id"] for card in selected]
-    assert selected_ids[0] == 11
-    assert 13 not in selected_ids
-    assert len(selected_ids) == 2
 
 
 def _untapped_land(name: str, type_line: str, oracle_text: str) -> dict:

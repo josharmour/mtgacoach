@@ -13,7 +13,6 @@ from arenamcp.match_review import (
     detect_advice_repetition,
     detect_manual_required,
     detect_matcher_dead_ends,
-    detect_platform_noise,
     detect_rejected_decisions,
     detect_unresolved_cards,
     detect_validator_dropped_legal,
@@ -32,8 +31,6 @@ LOG = """\
 2026-06-10 12:45:34 | WARNING  | arenamcp.action_planner | Dropping illegal planner action: click_button (Auto-pay) bridge_request='PayCostsReq' decision='pay_costs' not in ['Pay costs for Card#194020', 'Auto-pay']
 2026-06-10 12:47:50 | INFO     | arenamcp.coach | [WIN-PROB] WIN: 15%
 2026-06-10 12:49:33 | INFO     | arenamcp.autopilot | [AUTOPILOT] MANUAL REQUIRED: Bridge couldn't handle declare_blockers (?) — take this action manually. [Bridge gap: DeclareBlockers (type=declare_blockers)]
-2026-06-10 12:39:05 | ERROR    | arenamcp.screen_capture | All screenshot methods failed: cannot identify image file '/tmp/a.png'
-2026-06-10 12:41:37 | ERROR    | arenamcp.screen_capture | All screenshot methods failed: cannot identify image file '/tmp/b.png'
 """
 
 
@@ -73,11 +70,6 @@ def test_win_prob_miss_on_low_estimate_win(tmp_path, monkeypatch):
     assert (tmp_path / "cal.jsonl").exists()
     # 15% then a loss is NOT a miss
     assert detect_win_prob_misses(LOG, "loss") == []
-
-
-def test_platform_noise_needs_two_hits():
-    assert len(detect_platform_noise(LOG)) == 1
-    assert detect_platform_noise(LOG.splitlines()[8]) == []
 
 
 def test_rejected_decisions_from_packet():

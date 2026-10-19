@@ -476,8 +476,6 @@ def test_autopilot_submits_no_targets_for_the_reported_stun(monkeypatch):
     monkeypatch.setattr(autopilot_module, "get_bridge", lambda: _Bridge())
     engine = AutopilotEngine(
         planner=_planner('{"option_ids": ["tgt:226"], "reasoning": "stun Hortimancer"}'),
-        mapper=None,
-        controller=None,
         get_game_state=lambda: {},
         config=AutopilotConfig(dry_run=False),
     )

@@ -41,15 +41,6 @@ def test_outlook_moves_with_life_board_clocks_and_lethal():
     assert outlook(facts(opp_lethal_on_board=True))["label"] == "losing"
 
 
-@pytest.mark.parametrize(
-    "pct,label", [(97, "winning"), (60, "ahead"), (46, "even"), (35, "behind"), (3, "losing")]
-)
-def test_outlook_labels(pct, label):
-    from arenamcp.outlook import LABELS
-
-    assert next(name for floor, name, _tone in LABELS if pct >= floor) == label
-
-
 def test_sidebar_renders_outlook_bar_and_ledger_rows():
     pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QApplication

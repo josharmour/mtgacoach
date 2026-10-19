@@ -92,8 +92,22 @@ DEFAULTS = {
     "game_device": "desktop",
 }
 
-# Keys from the old multi-provider settings that should be migrated/removed
+# Keys of removed features, stripped from settings.json on load: the old
+# multi-provider backend settings (online-only since 2026-06-11), and from
+# 2026-10-18 the dev-only local backend's endpoint, the conversation mode, the
+# vision model of the screenshot-driven native Mac autopilot and the desktop
+# runtime's never-shown "restart MTGA" config baseline. local_api_key stays:
+# it is the remote TTS server's token.
 _OLD_KEYS = {
+    "conversation_mode",
+    "conversation_verbosity",
+    "conversation_cooldown_seconds",
+    "local_url",
+    "local_model",
+    "autopilot_vision_model",
+    "autopilot_vision_url",
+    "autopilot_vision_api_key",
+    "config_mtimes",
     "backend",
     "ollama_url",
     "lmstudio_url",
@@ -110,38 +124,17 @@ def _generate_install_id() -> str:
     return f"inst_{uuid4().hex}"
 
 
-def _migrate_settings(data: dict) -> bool:
-    """Migrate old multi-provider settings to two-mode architecture.
+def _migrate_settings(data: dict) -> set[str]:
+    """Strip the keys of removed features from loaded settings, in place.
 
-    Returns True if migration happened (caller should save).
+    Returns the keys removed (the caller saves when there are any). The old
+    "backend" used to be mapped to a "local"/"auto" mode; the app is
+    online-only and get()/set() force "online", so only the stripping is left.
     """
-    changed = False
-
-    # Migrate old backend to mode
-    old_backend = data.get("backend")
-    if old_backend is not None:
-        if old_backend in ("ollama", "lmstudio", "lm-studio", "lm_studio", "local"):
-            data["mode"] = "local"
-            # Preserve the URL they were using
-            if old_backend == "ollama" and data.get("ollama_url"):
-                data["local_url"] = data["ollama_url"]
-                data["local_api_key"] = "ollama"
-            elif old_backend in ("lmstudio", "lm-studio", "lm_studio") and data.get("lmstudio_url"):
-                data["local_url"] = data["lmstudio_url"]
-                data["local_api_key"] = "lm-studio"
-        elif old_backend == "auto":
-            data["mode"] = "auto"
-        else:
-            data["mode"] = "online"
-        changed = True
-
-    # Clean up old keys
-    for key in _OLD_KEYS:
-        if key in data:
-            del data[key]
-            changed = True
-
-    return changed
+    removed = {key for key in _OLD_KEYS if key in data}
+    for key in removed:
+        del data[key]
+    return removed
 
 
 class Settings:
@@ -160,6 +153,8 @@ class Settings:
         # Keys this instance changed via set() — the only keys allowed to
         # override newer on-disk values at save time (audit #19).
         self._dirty: set[str] = set()
+        # Legacy keys stripped on load: save() must not copy them back from disk.
+        self._removed: set[str] = set()
         self._load()
         if self._ensure_install_id():
             self._dirty.add("install_id")
@@ -173,14 +168,14 @@ class Settings:
         try:
             with open(SETTINGS_FILE) as f:
                 loaded = json.load(f)
-                # Merge with defaults (new settings get defaults)
-                for key, value in loaded.items():
-                    self._data[key] = value
+            self._removed = _migrate_settings(loaded)
+            # Merge with defaults (new settings get defaults)
+            for key, value in loaded.items():
+                self._data[key] = value
 
-            # Run migration if old keys are present
-            if any(k in self._data for k in _OLD_KEYS) and _migrate_settings(self._data):
+            if self._removed:
                 self.save()
-                logger.info("Migrated settings to two-mode architecture")
+                logger.info("Migrated settings: removed %s", ", ".join(sorted(self._removed)))
 
             logger.debug(f"Loaded settings from {SETTINGS_FILE}")
         except Exception as e:
@@ -218,7 +213,7 @@ class Settings:
             try:
                 on_disk = json.loads(SETTINGS_FILE.read_text())
                 for key, value in on_disk.items():
-                    if key not in self._dirty:
+                    if key not in self._dirty and key not in self._removed:
                         self._data[key] = value
             except Exception:
                 pass

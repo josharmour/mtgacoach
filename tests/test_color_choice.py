@@ -12,6 +12,8 @@ the stale "Play Land: Swamp" menu was re-planned three times.
 from __future__ import annotations
 
 import pytest
+from tests.fakes import TypedBridge, make_engine, planner_with
+from tests.mac_bridge_fakes import FakeGame, adapter_for, enum, listing, submitted_uint_values
 
 from arenamcp.action_planner import ActionPlanner, ActionType
 from arenamcp.color_choice import color_ids_for_names, color_selection_ids, pick_color
@@ -20,8 +22,6 @@ from arenamcp.gamestate import GameState
 from arenamcp.gamestate_decisions import _handle_decision_message
 from arenamcp.gre_bridge import enrich_snapshot_from_pending_response
 from arenamcp.rules_engine import RulesEngine
-from test_mac_bridge_adapter import FakeGame, adapter_for, enum, listing, submitted_uint_values
-from test_typed_decision_path import _engine, _planner_with, _TypedBridge
 
 # --- the live shapes ------------------------------------------------------------
 
@@ -289,7 +289,7 @@ def test_an_even_split_is_not_obvious_and_never_defaults_to_white():
 
 
 def test_planner_picks_the_obvious_colour_without_the_model(monkeypatch):
-    planner = _planner_with("{}")
+    planner = planner_with("{}")
 
     def no_model(*_a, **_k):
         raise AssertionError("the model must not be asked for an obvious colour")
@@ -306,7 +306,7 @@ def test_planner_asks_the_model_when_the_colour_is_not_obvious_and_falls_back_to
         _card("B", "{1}{B}", card_types=["Creature"]),
     ]
     decision = build_pending_decision(mac_poll())
-    planner = _planner_with("{}")
+    planner = planner_with("{}")
     monkeypatch.setattr(planner, "_llm_decision_options", lambda *_a, **_k: ["sel:3"])
     assert planner.plan_decision_options(decision, state) == ["sel:3"]
 
@@ -318,15 +318,10 @@ def test_planner_asks_the_model_when_the_colour_is_not_obvious_and_falls_back_to
     assert planner.plan_decision_options(decision, state)[0] in {"sel:2", "sel:3"}
 
 
-def test_deterministic_pick_alone_would_have_said_white():
-    """Why the colour fallback exists: the mechanical pick is positional."""
-    assert ActionPlanner.deterministic_option_pick(build_pending_decision(mac_poll())) == ["sel:1"]
-
-
-def test_autopilot_submits_the_colour_id_through_the_typed_path(monkeypatch):
-    bridge = _TypedBridge(mac_poll(game_state_id=9, msg_id=27))
-    planner = _planner_with("{}")
-    engine = _engine(monkeypatch, bridge, planner)
+def test_autopilot_submits_the_colour_id_through_the_typed_path():
+    bridge = TypedBridge(mac_poll(game_state_id=9, msg_id=27))
+    planner = planner_with("{}")
+    engine = make_engine(bridge, planner)
     # The turn-1 "first plan" reform would call this backend from its own thread (the
     # test backend has no breaker, so the game-plan gate is open) and race the count below.
     engine._game_plan_mgr = None
@@ -374,7 +369,7 @@ def test_rules_engine_offers_the_colours_instead_of_the_old_land_drops():
 
 
 def test_colour_menu_entry_is_a_selection_never_a_target():
-    action = ActionPlanner._legal_action_to_action(_planner_with("{}"), "Choose color: Blue")
+    action = ActionPlanner._legal_action_to_action(planner_with("{}"), "Choose color: Blue")
     assert action.action_type == ActionType.SELECT_N
     assert action.select_card_names == ["Blue"]
 
@@ -406,17 +401,6 @@ def test_bridge_request_other_than_actions_available_drops_stale_priority_action
     enrich_snapshot_from_pending_response(snapshot, poll, bridge_connected=True)
     assert snapshot["legal_actions"] == []
     assert snapshot["legal_actions_raw"] == []
-
-
-def test_log_derived_selection_menu_survives_the_same_family_overlay():
-    snapshot = {
-        "decision_context": {"type": "discard", "option_cards": ["Forest"]},
-        "legal_actions": ["Choose Forest"],
-    }
-    enrich_snapshot_from_pending_response(
-        snapshot, {"has_pending": True, "request_type": "SelectN"}, bridge_connected=True
-    )
-    assert snapshot["legal_actions"] == ["Choose Forest"]
 
 
 def test_actions_available_overlay_keeps_the_live_priority_menu():

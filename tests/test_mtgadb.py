@@ -177,3 +177,27 @@ def test_mtgadb_serializes_shared_connection_access(tmp_path, monkeypatch):
         assert sum(conn.conflicts for conn in guarded_connections) == 0
     finally:
         db.close()
+
+
+def test_find_mtga_database_checks_settings_dir(tmp_path, monkeypatch) -> None:
+    from arenamcp.mtgadb import find_mtga_database
+    from arenamcp.settings import Settings
+
+    # Set up a mock settings instance
+    mock_settings = Settings()
+    mock_settings._data = {"mtga_install_dir": str(tmp_path)}
+
+    # Monkeypatch get_settings to return our mock
+    monkeypatch.setattr("arenamcp.settings.get_settings", lambda: mock_settings)
+
+    # Set up a mock database file under the mock install dir
+    raw_dir = tmp_path / "MTGA_Data" / "Downloads" / "Raw"
+    raw_dir.mkdir(parents=True)
+    db_file = raw_dir / "Raw_CardDatabase_mock.mtga"
+    db_file.touch()
+
+    # Empty standard search paths to ensure only our settings path is used
+    monkeypatch.setattr("arenamcp.mtgadb.MTGA_PATHS", [])
+
+    resolved = find_mtga_database()
+    assert resolved == db_file

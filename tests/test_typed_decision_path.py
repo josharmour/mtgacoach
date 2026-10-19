@@ -5,131 +5,29 @@ LLM answers with option ids; submission is by id; legacy string planning
 never runs for these families when the bridge serves them.
 """
 
-import arenamcp.autopilot as autopilot_module
-from arenamcp.action_planner import ActionPlanner
-from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
+import pytest
+from tests.fakes import TARGET_POLL, TypedBridge, make_engine, planner_with, target_state
+
 from arenamcp.decisions import build_pending_decision
 
 
-class _Backend:
-    def __init__(self, response):
-        self.response = response
-        self.calls = 0
-
-    def complete(self, system, user, *a, **k):
-        self.calls += 1
-        return self.response
-
-
-def _planner_with(response) -> ActionPlanner:
-    p = ActionPlanner.__new__(ActionPlanner)
-    p._backend = _Backend(response)
-    p._timeout = 5.0
-    return p
-
-
-class _TypedBridge:
-    def __init__(self, poll):
-        self.connected = True
-        self.poll_resp = poll
-        self.submitted = []
-
-    def connect(self):
-        return True
-
-    def get_pending_actions(self):
-        return self.poll_resp
-
-    def submit_targets(self, iid):
-        self.submitted.append(("targets", iid))
-        return True
-
-    def submit_mulligan(self, keep):
-        self.submitted.append(("mulligan", keep))
-        return True
-
-    def submit_selection(self, ids):
-        self.submitted.append(("selection", ids))
-        return True
-
-    def submit_pass(self):
-        self.submitted.append(("pass",))
-        return True
-
-
-class _DummyMapper:
-    window_rect = (0, 0, 100, 100)
-    cache_size = 0
-
-    def refresh_window(self):
-        return self.window_rect
-
-    def get_button_coord(self, name):
-        return None
-
-
-class _DummyController:
-    def focus_mtga_window(self):
-        return None
-
-
-_TARGET_POLL = {
-    "has_pending": True,
-    "request_type": "SelectTargets",
-    "target_candidates": [
-        {"targetInstanceId": 2, "grpId": 0},
-        {"targetInstanceId": 161, "grpId": 91644},
-    ],
-    "target_selections": [{"minTargets": 1, "maxTargets": 1}],
-}
-
-
-def _engine(monkeypatch, bridge, planner) -> AutopilotEngine:
-    monkeypatch.setattr(autopilot_module, "get_bridge", lambda: bridge)
-    return AutopilotEngine(
-        planner=planner,
-        mapper=_DummyMapper(),
-        controller=_DummyController(),
-        get_game_state=lambda: {},
-        config=AutopilotConfig(dry_run=False),
-    )
-
-
-def _state(*, known_source=False):
-    state = {
-        "turn": {"turn_number": 5, "phase": "Phase_Main1"},
-        "players": [{"seat_id": 1, "is_local": True}, {"seat_id": 2}],
-        "_bridge_connected": True,
-        "_bridge_request_type": "SelectTargets",
-        "pending_decision": "Select Targets",
-        "battlefield": [],
-        "hand": [],
-    }
-
-    if known_source:
-        state["stack"] = [
-            {"instance_id": 900, "name": "Shock", "oracle_text": "Shock deals 2 damage to target player."}
-        ]
-    return state
-
-
-def test_typed_path_submits_llm_choice_by_id(monkeypatch):
-    bridge = _TypedBridge(_TARGET_POLL)
-    planner = _planner_with('{"option_ids": ["tgt:2"], "reasoning": "opponent"}')
-    eng = _engine(monkeypatch, bridge, planner)
-    handled = eng._try_typed_decision_path(_state(known_source=True), "decision_required")
+def test_typed_path_submits_llm_choice_by_id():
+    bridge = TypedBridge(TARGET_POLL)
+    planner = planner_with('{"option_ids": ["tgt:2"], "reasoning": "opponent"}')
+    eng = make_engine(bridge, planner)
+    handled = eng._try_typed_decision_path(target_state(known_source=True), "decision_required")
     assert handled is True
 
     assert bridge.submitted == [("targets", [2])]
 
 
-def test_typed_path_surfaces_reason_for_the_submitted_choice(monkeypatch):
-    bridge = _TypedBridge(_TARGET_POLL)
-    planner = _planner_with('{"option_ids": ["tgt:2"], "reasoning": "Remove the opposing threat."}')
-    engine = _engine(monkeypatch, bridge, planner)
+def test_typed_path_surfaces_reason_for_the_submitted_choice():
+    bridge = TypedBridge(TARGET_POLL)
+    planner = planner_with('{"option_ids": ["tgt:2"], "reasoning": "Remove the opposing threat."}')
+    engine = make_engine(bridge, planner)
     notifications = []
     engine._ui_advice_fn = lambda text, label: notifications.append(text)
-    assert engine._try_typed_decision_path(_state(known_source=True), "decision_required") is True
+    assert engine._try_typed_decision_path(target_state(known_source=True), "decision_required") is True
     assert "Remove the opposing threat." in notifications[-1]
     assert planner.get_decision_reasoning(["tgt:2"]) == "Remove the opposing threat."
     assert planner.get_decision_reasoning(["tgt:161"]) == ""
@@ -137,86 +35,98 @@ def test_typed_path_surfaces_reason_for_the_submitted_choice(monkeypatch):
 
 
 def test_typed_path_pauses_for_unknown_effect_on_garbage_llm(monkeypatch):
-    bridge = _TypedBridge(_TARGET_POLL)
-    planner = _planner_with("completely invalid")
-    eng = _engine(monkeypatch, bridge, planner)
+    bridge = TypedBridge(TARGET_POLL)
+    planner = planner_with("completely invalid")
+    eng = make_engine(bridge, planner)
     pauses = []
     monkeypatch.setattr(eng, "_pause_for_manual", lambda reason, state: pauses.append(reason))
-    handled = eng._try_typed_decision_path(_state(), "decision_required")
+    handled = eng._try_typed_decision_path(target_state(), "decision_required")
     assert handled is True
     assert bridge.submitted == []
     assert pauses and "no safe automatic choice" in pauses[0]
 
 
-def test_typed_path_rejects_hallucinated_ids_without_blind_target_fallback(monkeypatch):
-    bridge = _TypedBridge(_TARGET_POLL)
-    planner = _planner_with('{"option_ids": ["tgt:9999"], "reasoning": "x"}')
-    eng = _engine(monkeypatch, bridge, planner)
-    handled = eng._try_typed_decision_path(_state(), "decision_required")
+def test_typed_path_rejects_hallucinated_ids_without_blind_target_fallback():
+    bridge = TypedBridge(TARGET_POLL)
+    planner = planner_with('{"option_ids": ["tgt:9999"], "reasoning": "x"}')
+    eng = make_engine(bridge, planner)
+    handled = eng._try_typed_decision_path(target_state(), "decision_required")
     assert handled is True
     assert bridge.submitted == []
 
 
 def test_failed_target_submission_pauses_instead_of_retrying_legacy(monkeypatch):
-    bridge = _TypedBridge(_TARGET_POLL)
+    bridge = TypedBridge(TARGET_POLL)
     bridge.submit_targets = lambda ids: False
-    engine = _engine(monkeypatch, bridge, _planner_with('{"option_ids": ["tgt:2"]}'))
+    engine = make_engine(bridge, planner_with('{"option_ids": ["tgt:2"]}'))
     pauses = []
     monkeypatch.setattr(engine, "_pause_for_manual", lambda reason, state: pauses.append(reason))
-    assert engine._try_typed_decision_path(_state(known_source=True), "decision_required") is True
+    assert engine._try_typed_decision_path(target_state(known_source=True), "decision_required") is True
     assert pauses and "not verified" in pauses[0]
 
 
-def test_typed_path_handles_actions_available(monkeypatch):
+@pytest.mark.parametrize(
+    ("answer", "submitted"),
+    [
+        ("pass", ("pass",)),
+        # The chosen action's identity travels with its index, for bridges that check it.
+        ("idx:0", ("action", 0, {"grpId": 123})),
+    ],
+)
+def test_typed_path_handles_actions_available(answer, submitted):
     poll = {
         "has_pending": True,
         "request_type": "ActionsAvailable",
-        "actions": [{"actionType": "ActionType_Pass"}],
+        "actions": [
+            {"actionType": "ActionType_Cast", "grpId": 123, "autoTapSolution": {}},
+            {"actionType": "ActionType_Pass"},
+        ],
         "can_pass": True,
     }
-    bridge = _TypedBridge(poll)
-    planner = _planner_with('{"option_ids": ["pass"]}')
-    eng = _engine(monkeypatch, bridge, planner)
+    bridge = TypedBridge(poll)
+    bridge.submit_action_by_index = lambda index, expected=None, **_: (
+        bridge.submitted.append(("action", index, expected)) or True
+    )
+    planner = planner_with(f'{{"option_ids": ["{answer}"]}}')
+    eng = make_engine(bridge, planner)
     # ActionsAvailable migrated to typed decision path in Phase E.
-    assert eng._try_typed_decision_path(_state(), "decision_required") is True
-    assert bridge.submitted == [("pass",)]
+    assert eng._try_typed_decision_path(target_state(), "decision_required") is True
+    assert bridge.submitted == [submitted]
 
 
-def test_typed_path_handles_mulligan(monkeypatch):
-    bridge = _TypedBridge({"has_pending": True, "request_type": "Mulligan"})
-    planner = _planner_with('{"option_ids": ["mull:keep"], "reasoning": "fine hand"}')
-    eng = _engine(monkeypatch, bridge, planner)
-    handled = eng._try_typed_decision_path(_state(), "decision_required")
+def test_typed_path_handles_mulligan():
+    bridge = TypedBridge({"has_pending": True, "request_type": "Mulligan"})
+    planner = planner_with('{"option_ids": ["mull:keep"], "reasoning": "fine hand"}')
+    eng = make_engine(bridge, planner)
+    handled = eng._try_typed_decision_path(target_state(), "decision_required")
     assert handled is True
     assert bridge.submitted == [("mulligan", True)]
 
 
-def test_optional_accept_keeps_request_identity_and_reasoning(monkeypatch):
+def test_optional_accept_keeps_request_identity_and_reasoning():
     poll = {"has_pending": True, "request_type": "OptionalAction", "game_state_id": 42, "msg_id": 5}
-    bridge = _TypedBridge(poll)
+    bridge = TypedBridge(poll)
     bridge.submit_optional = lambda accept, **kwargs: bridge.submitted.append((accept, kwargs)) or True
-    engine = _engine(
-        monkeypatch,
-        bridge,
-        _planner_with('{"option_ids":["optional:accept"],"reasoning":"Take the free card."}'),
+    engine = make_engine(
+        bridge, planner_with('{"option_ids":["optional:accept"],"reasoning":"Take the free card."}')
     )
-    assert engine._try_typed_decision_path(_state(), "decision_required")
+    assert engine._try_typed_decision_path(target_state(), "decision_required")
     assert bridge.submitted == [(True, {"expected_request_id": (42, 5)})]
 
 
-def test_changed_optional_window_does_not_accept_the_next_prompt(monkeypatch):
+def test_changed_optional_window_does_not_accept_the_next_prompt():
     poll = {"has_pending": True, "request_type": "OptionalAction", "game_state_id": 42, "msg_id": 5}
-    bridge = _TypedBridge(poll)
+    bridge = TypedBridge(poll)
     bridge.submit_optional = lambda accept, **kwargs: bridge.submitted.append((accept, kwargs)) or True
-    planner = _planner_with('{"option_ids":["optional:accept"]}')
+    planner = planner_with('{"option_ids":["optional:accept"]}')
 
     def changed_during_reasoning(*args, **kwargs):
         bridge.poll_resp = {**poll, "msg_id": 6}
         return '{"option_ids":["optional:accept"]}'
 
     planner._backend.complete = changed_during_reasoning
-    engine = _engine(monkeypatch, bridge, planner)
-    assert engine._try_typed_decision_path(_state(), "decision_required")
+    engine = make_engine(bridge, planner)
+    assert engine._try_typed_decision_path(target_state(), "decision_required")
     assert bridge.submitted == []
 
 
@@ -224,25 +134,25 @@ def test_typed_path_fsm_blocks_double_submit_and_exhausts(monkeypatch):
     """One in-flight submission per request; after the cap the path
     declares MANUAL REQUIRED once and owns the trigger (no legacy replan,
     no coaching fall-through)."""
-    bridge = _TypedBridge(_TARGET_POLL)
-    planner = _planner_with('{"option_ids": ["tgt:2"], "reasoning": "x"}')
-    eng = _engine(monkeypatch, bridge, planner)
+    bridge = TypedBridge(TARGET_POLL)
+    planner = planner_with('{"option_ids": ["tgt:2"], "reasoning": "x"}')
+    eng = make_engine(bridge, planner)
     monkeypatch.setattr(eng._request_tracker, "REJECT_GRACE_S", 0.0)
 
     # 1st call: submits.
-    assert eng._try_typed_decision_path(_state(known_source=True), "decision_required") is True
+    assert eng._try_typed_decision_path(target_state(known_source=True), "decision_required") is True
     assert bridge.submitted == [("targets", [2])]
 
     # 2nd/3rd calls: window re-presented (same poll) → rejection counted,
     # resubmit allowed up to the cap.
-    assert eng._try_typed_decision_path(_state(known_source=True), "decision_required") is True
-    assert eng._try_typed_decision_path(_state(known_source=True), "decision_required") is True
+    assert eng._try_typed_decision_path(target_state(known_source=True), "decision_required") is True
+    assert eng._try_typed_decision_path(target_state(known_source=True), "decision_required") is True
     assert len(bridge.submitted) == 3
 
     # 4th call: cap reached → owns the trigger, no 4th submission.
     pauses = []
     monkeypatch.setattr(eng, "_pause_for_manual", lambda reason, gs=None: pauses.append(reason))
-    assert eng._try_typed_decision_path(_state(known_source=True), "decision_required") is True
+    assert eng._try_typed_decision_path(target_state(known_source=True), "decision_required") is True
     assert len(bridge.submitted) == 3
     # Submissions remain capped while the semantic 8s settlement gate runs.
     assert not pauses
@@ -250,13 +160,13 @@ def test_typed_path_fsm_blocks_double_submit_and_exhausts(monkeypatch):
     monkeypatch.setattr("arenamcp.autopilot.time.monotonic", lambda: first + 9)
     captures = []
     eng._stuck_report_fn = lambda reason, context: captures.append(context)
-    assert eng._try_typed_decision_path(_state(known_source=True), "decision_required") is True
+    assert eng._try_typed_decision_path(target_state(known_source=True), "decision_required") is True
     assert len(bridge.submitted) == 3
     assert captures[0]["semantic_progress"]["attempts"] == 3
 
 
 def test_planner_respects_max_select():
-    planner = _planner_with('{"option_ids": ["sel:10", "sel:11", "sel:12"], "reasoning": "all"}')
+    planner = planner_with('{"option_ids": ["sel:10", "sel:11", "sel:12"], "reasoning": "all"}')
     d = build_pending_decision(
         {
             "has_pending": True,
@@ -316,19 +226,19 @@ def test_group_submit_builds_keep_and_bottom_groups():
     assert 103 not in keep["ids"] and len(keep["ids"]) == 7
 
 
-def test_typed_path_group_uses_llm_or_defers_to_legacy(monkeypatch):
-    bridge = _TypedBridge(_GROUP_POLL)
+def test_typed_path_group_uses_llm_or_defers_to_legacy():
+    bridge = TypedBridge(_GROUP_POLL)
     bridge.groups = None
     bridge.submit_group = lambda groups: (setattr(bridge, "groups", groups), True)[1]
 
     # Valid LLM pick → typed path owns it.
-    planner = _planner_with('{"option_ids": ["grp:105"], "reasoning": "worst card"}')
-    eng = _engine(monkeypatch, bridge, planner)
-    assert eng._try_typed_decision_path(_state(), "decision_required") is True
+    planner = planner_with('{"option_ids": ["grp:105"], "reasoning": "worst card"}')
+    eng = make_engine(bridge, planner)
+    assert eng._try_typed_decision_path(target_state(), "decision_required") is True
     assert bridge.groups[1]["ids"] == [105]
 
     # Garbage LLM → defer to legacy smart default (None, no submission).
-    bridge2 = _TypedBridge(_GROUP_POLL)
-    planner2 = _planner_with("nonsense")
-    eng2 = _engine(monkeypatch, bridge2, planner2)
-    assert eng2._try_typed_decision_path(_state(), "decision_required") is None
+    bridge2 = TypedBridge(_GROUP_POLL)
+    planner2 = planner_with("nonsense")
+    eng2 = make_engine(bridge2, planner2)
+    assert eng2._try_typed_decision_path(target_state(), "decision_required") is None

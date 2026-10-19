@@ -5,7 +5,7 @@ whole turn was skipped)."""
 
 from unittest.mock import MagicMock
 
-from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
+from tests.fakes import make_engine
 
 
 def _poll(state_id: int) -> dict:
@@ -23,14 +23,10 @@ def _engine(boards: list[dict]):
     planner = MagicMock()
     planner.plan_decision_options.return_value = ["pass"]
     feed = iter(boards)
-    engine = AutopilotEngine(
-        planner=planner,
-        config=AutopilotConfig(dry_run=False),
-        get_game_state=lambda: next(feed, boards[-1]),
-    )
-    engine._gre_bridge = MagicMock()
-    engine._gre_bridge.connected = True
-    engine._LOG_CATCH_UP_TIMEOUT_S = 0.5
+    bridge = MagicMock()
+    bridge.connected = True
+    engine = make_engine(bridge, planner, game_state=lambda: next(feed, boards[-1]))
+    engine._LOG_CATCH_UP_TIMEOUT_S = 0.05
     return engine
 
 

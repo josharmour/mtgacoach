@@ -8,30 +8,20 @@ the final packet file on match boundaries.
 from __future__ import annotations
 
 import json
-import shutil
-import tempfile
-from pathlib import Path
 
-import pytest
+from tests.fakes import TARGET_POLL, TypedBridge, make_engine, planner_with, target_state
 
-from arenamcp.decisions import DecisionOption, PendingDecision, build_pending_decision
+import arenamcp.match_packets as mp
+from arenamcp.decisions import DecisionOption, PendingDecision
 from arenamcp.match_packets import (
     get_current_packet,
     start_match_packet,
     stop_match_packet,
 )
 from arenamcp.request_tracker import decision_fingerprint
-from test_typed_decision_path import _TARGET_POLL, _engine, _planner_with, _state, _TypedBridge
 
 
-@pytest.fixture
-def temp_packets_dir():
-    tmpdir = tempfile.mkdtemp()
-    yield Path(tmpdir)
-    shutil.rmtree(tmpdir)
-
-
-def test_match_packet_lifecycle(temp_packets_dir):
+def test_match_packet_lifecycle(tmp_path):
     # Ensure starting/stopping sets global singleton
     assert get_current_packet() is None
 
@@ -69,7 +59,7 @@ def test_match_packet_lifecycle(temp_packets_dir):
     assert stopped is packet
     assert get_current_packet() is None
 
-    saved_path = packet.save(packets_dir=temp_packets_dir)
+    saved_path = packet.save(packets_dir=tmp_path)
     assert saved_path is not None
     assert saved_path.exists()
 
@@ -84,16 +74,16 @@ def test_match_packet_lifecycle(temp_packets_dir):
     assert saved_data["decisions"][0]["outcome"] == "ADVANCED"
 
 
-def test_autopilot_integration_records_packets(monkeypatch):
+def test_autopilot_integration_records_packets():
     # Ensure packet is active
     packet = start_match_packet("test_integration_match")
 
-    bridge = _TypedBridge(_TARGET_POLL)
-    planner = _planner_with('{"option_ids": ["tgt:2"], "reasoning": "opponent"}')
-    eng = _engine(monkeypatch, bridge, planner)
+    bridge = TypedBridge(TARGET_POLL)
+    planner = planner_with('{"option_ids": ["tgt:2"], "reasoning": "opponent"}')
+    eng = make_engine(bridge, planner)
 
     # Execute decision
-    handled = eng._try_typed_decision_path(_state(known_source=True), "decision_required")
+    handled = eng._try_typed_decision_path(target_state(known_source=True), "decision_required")
     assert handled is True
 
     # Verify decision logged in packet
@@ -101,23 +91,17 @@ def test_autopilot_integration_records_packets(monkeypatch):
     assert packet.decisions[0]["chosen_options"] == ["tgt:2"]
     assert packet.decisions[0]["outcome"] == "pending"
 
-    # Simulate observing a different state (ADVANCED)
-    decision_fingerprint(build_pending_decision(_TARGET_POLL))
-    # RequestTracker note_submitted is called by autopilot
-    # Now simulate observe with None (advancing)
+    # The autopilot noted the submission; the window closing settles it as ADVANCED.
     eng._request_tracker.observe(None)
 
     assert packet.decisions[0]["outcome"] == "ADVANCED"
     stop_match_packet()
 
 
-def test_unfinalized_packet_salvaged_as_abandoned(temp_packets_dir, monkeypatch):
+def test_unfinalized_packet_salvaged_as_abandoned(tmp_path, monkeypatch):
     """A packet whose game-end never fired must not be silently discarded
     when the next match starts — it saves as result='abandoned'."""
-    import arenamcp.match_packets as mp
-
-    monkeypatch.setattr(mp, "PACKETS_DIR", temp_packets_dir)
-    stop_match_packet()  # clean slate
+    monkeypatch.setattr(mp, "PACKETS_DIR", tmp_path)
 
     first = start_match_packet("match_A")
     d = PendingDecision(
@@ -130,7 +114,7 @@ def test_unfinalized_packet_salvaged_as_abandoned(temp_packets_dir, monkeypatch)
     # Next match starts without match_A ever being finalized.
     start_match_packet("match_B")
 
-    saved = list(temp_packets_dir.glob("packet_*match_A.json"))
+    saved = list(tmp_path.glob("packet_*match_A.json"))
     assert len(saved) == 1
     data = json.loads(saved[0].read_text(encoding="utf-8"))
     assert data["result"] == "abandoned"
@@ -138,16 +122,61 @@ def test_unfinalized_packet_salvaged_as_abandoned(temp_packets_dir, monkeypatch)
     stop_match_packet()
 
 
-def test_opponent_name_extracted_from_real_replay_header():
-    """The replay cosmetic header is {Local, Opponent:{ScreenName,...}} —
-    the original hook read a nonexistent 'opponentPlayerName' key and
-    silently recorded None for every match."""
-    cosmetics = {
+def test_opponent_name_comes_from_the_replay_header(tmp_path):
+    """The .rply cosmetic header is {Local, Opponent:{ScreenName,...}} — the
+    original hook read a nonexistent 'opponentPlayerName' key and silently
+    recorded None for every match."""
+    from arenamcp.match_history import parse_replay_cosmetics
+
+    header = {
         "Local": {"ScreenName": "armour"},
         "Opponent": {"ScreenName": "Primal", "RankingClass": "Gold"},
         "BattlefieldId": 1,
     }
+    replay = tmp_path / "mtgacoach_Replay1.rply"
+    replay.write_text("#Version 3\n" + json.dumps(header) + "\n{}\n", encoding="utf-8")
+    cosmetics = parse_replay_cosmetics(str(replay))
     assert (cosmetics.get("Opponent") or {}).get("ScreenName") == "Primal"
+    not_a_replay = tmp_path / "notes.txt"
+    not_a_replay.write_text("hello\n", encoding="utf-8")
+    assert parse_replay_cosmetics(str(not_a_replay)) is None
+
+
+# --- P0-9 (2026-07-05): packets record executor actions; finalized matches never restart.
+# Match 1 saved decisions=0 despite 8 bridge submissions; a junk
+# decisions=0/result=unknown packet was saved after the server re-surfaced the
+# finished match id and recording restarted. (conftest resets the module state.)
+
+
+def test_executed_actions_recorded_in_packet(tmp_path):
+    packet = mp.start_match_packet("m-1")
+    packet.add_executed_action("cast_spell", card_name="Talisman of Unity", turn=3, path="GRE bridge")
+    packet.add_executed_action("pass_priority", turn=3)
+    assert len(packet.decisions) == 2
+    packet.result = "win"
+    path = packet.save(tmp_path)
+    data = json.loads(path.read_text())
+    assert len(data["decisions"]) == 2
+    exec0 = data["decisions"][0]["executed_action"]
+    assert exec0["action_type"] == "cast_spell"
+    assert exec0["card_name"] == "Talisman of Unity"
+    assert data["decisions"][0]["outcome"] == "executed"
+
+
+def test_finalized_match_never_restarts_recording(tmp_path):
+    packet = mp.start_match_packet("m-2")
+    packet.add_executed_action("play_land", card_name="Forest", turn=1)
+    packet.result = "loss"
+    packet.save(tmp_path)
+    mp.stop_match_packet()
+
+    # The server's late "Completed match event for unseen match" re-surfaces
+    # the finished id — recording must NOT restart.
+    assert mp.start_match_packet("m-2") is None
+    assert mp.get_current_packet() is None
+
+    # A genuinely new match still records.
+    assert mp.start_match_packet("m-3") is not None
 
 
 def test_recent_decisions_summarize_options_pick_and_trace():

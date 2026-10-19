@@ -3083,62 +3083,17 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         question: str = "",
         *,
         for_planner: bool = False,
-        legacy_render: bool | None = None,
     ) -> str:
         """Format the game state into a COMPACT context for the LLM.
 
         Orchestrator that delegates to focused helper methods for each section.
+        Unknown facts are represented by omission or an explicit UNKNOWN
+        marker, never by zero.
 
         Args:
             for_planner: If True, omit heavy GRE JSON dumps. Preserve all
                 strategically relevant card rules and public zones.
-            legacy_render: Explicit legacy-render opinion (task 11). Only
-                offline training builders may pass this; live production
-                callers leave it unset and render byte-identically.
-                ``True`` = annotate assumed defaults in the prompt;
-                ``False`` = fail hard on an observation marked unknown
-                (``game_state["_render_unknown"]``) instead of rendering a
-                fabricated fact. Unknown/omitted facts are represented by
-                omission or an explicit UNKNOWN marker, never by zero.
-
-        When omitted (None), the marker ``game_state["_legacy_render_mode"]``
-        (set by gate_play_decisions.build_user_message) is honoured if
-        present; otherwise this renders with production opinion
-        (assume-absent defaults) exactly as before.
         """
-        # Legacy-render mode: prefer the explicit argument, then the game_state
-        # marker (offline builders), then default (production opinion).
-        ls_render = game_state.get("_legacy_render_mode")
-        if legacy_render is None:
-            legacy_render = ls_render
-        annotate: bool = bool(legacy_render)
-        strict: bool = legacy_render is False
-
-        # Observation-fact declaration (task 11): offline builders declare
-        # the fields their source log cannot establish. Only four render
-        # opinions exist (coach.py render, unknown-managed, unknown-owned,
-        # fail hard) — anything else is a builder contract violation.
-        fact_meta = game_state.get("_render_unknown") or {}
-        UNKNOWN_STACK = fact_meta.get("stack", False)
-        UNKNOWN_ACTIVE = fact_meta.get("active_player", False)
-        UNKNOWN_OPP_HAND_COUNT = fact_meta.get("opponent_hand_size", False)
-        UNKNOWN_ETB = fact_meta.get("turn_entered_battlefield", False)
-        if strict and (UNKNOWN_STACK or UNKNOWN_ACTIVE or UNKNOWN_OPP_HAND_COUNT or UNKNOWN_ETB):
-            unknown_keys = sorted(
-                k
-                for k, v in (
-                    ("stack", UNKNOWN_STACK),
-                    ("active_player", UNKNOWN_ACTIVE),
-                    ("opponent_hand_size", UNKNOWN_OPP_HAND_COUNT),
-                    ("turn_entered_battlefield", UNKNOWN_ETB),
-                )
-                if v
-            )
-            raise AssertionError(
-                "strict legacy render: refusing to render a state with "
-                f"unknown facts as established (unknown: {', '.join(unknown_keys)})"
-            )
-
         # Determine local player seat and active turn
         players = game_state.get("players", [])
         local_player = next((p for p in players if p.get("is_local")), None)
@@ -3183,10 +3138,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         opp_seat = opponent_player.get("seat_id") if opponent_player else None
 
         is_your_turn = active_seat == local_seat
-        # An explicit seat from an authoritative builder (combat rows get
-        # active_player=OPP_SEAT assigned) overrides the declared-unknown
-        # marker; the marker only controls the fallback rendering of a
-        # MISSING value (None).
+        # A missing or unrecognised active seat renders as UNKNOWN, not as
+        # the opponent's turn.
         active_unknown_effective = active_seat not in (local_seat, opp_seat) or active_seat is None
         if active_unknown_effective:
             active_label = "UNKNOWN"
@@ -3262,21 +3215,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             total_mana, mana_pool = 0, {}
         else:
             mana_lines, total_mana, mana_pool = self._format_mana_info(your_cards, turn_num)
-        # task 11: mana pool size is only established when the controller's
-        # permanent-entry turns are known. With unknown ETB turns, "Mana: N"
-        # could be high or low — emit the ASSUMED label instead of a bare number
-        # (strict opinion: refuse rather than label). Known sources are still
-        # listed on the annotated line.
-        mana_is_assumed = self._engine_cast_actions(game_state) is None and bool(UNKNOWN_ETB)
-        if annotate and mana_is_assumed:
-            lines.append(f"Mana: {total_mana} (assumed pool — sources may be missing)")
-        elif strict and mana_is_assumed:
-            raise AssertionError(
-                "strict legacy render: mana pool assumed from cards with "
-                "unestablished ETB facts (turn_entered_battlefield unknown)"
-            )
-        else:
-            lines.extend(mana_lines)
+        lines.extend(mana_lines)
         haste_mana = haste_equipment_mana_hint(battlefield, local_seat, turn_num)
         if haste_mana:
             lines.append(haste_mana)
@@ -3285,22 +3224,19 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         # lags for seconds after a drop — the CURRENT window's menu is the
         # authority. "Land: AVAILABLE" with no "Play Land:" entry produced
         # play_land hallucinations (Forest #3, 2026-07-05 22:50).
-        if UNKNOWN_ACTIVE and active_seat is None:
-            lines.append("Land: UNKNOWN (active player unknown)")
+        lands_played = local_player.get("lands_played", 0) if local_player else 0
+        has_land_entry = any(
+            str(la).strip().lower().startswith(("play land:", "action: playmdfc"))
+            for la in (game_state.get("legal_actions") or [])
+        )
+        if is_your_turn and lands_played == 0 and has_land_entry:
+            lines.append("Land: AVAILABLE")
+        elif is_your_turn and lands_played == 0:
+            lines.append("Land: not playable in this window (no Play Land action)")
+        elif is_your_turn:
+            lines.append(f"Land: USED ({lands_played})")
         else:
-            lands_played = local_player.get("lands_played", 0) if local_player else 0
-            has_land_entry = any(
-                str(la).strip().lower().startswith(("play land:", "action: playmdfc"))
-                for la in (game_state.get("legal_actions") or [])
-            )
-            if is_your_turn and lands_played == 0 and has_land_entry:
-                lines.append("Land: AVAILABLE")
-            elif is_your_turn and lands_played == 0:
-                lines.append("Land: not playable in this window (no Play Land action)")
-            elif is_your_turn:
-                lines.append(f"Land: USED ({lands_played})")
-            else:
-                lines.append("Land: N/A (opp turn)")
+            lines.append("Land: N/A (opp turn)")
 
         # Build attachment map
         _attachments: dict[int, list[dict]] = {}
@@ -3382,8 +3318,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
             # Combat analysis — the zero-priority recommendation ("Atk: None
             # (T/SS)") is a direct machine decision from tapped/ETB facts, so
-            # under legacy-render opinions it runs only when the attacker's
-            # freshness is actually established (task 11).
+            # it runs only when whose turn it is is known.
             combat_derivable = not active_unknown_effective
             if ("Combat" in phase or "Main" in phase) and is_your_turn and combat_derivable:
                 your_creatures = [
@@ -3443,11 +3378,6 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             opp_hs = zones.get("opponent_hand_count", game_state.get("opponent_hand_count"))
         known_opp_hand = opp_hs if isinstance(opp_hs, int) else None
         if known_opp_hand is None:
-            if strict:
-                raise AssertionError(
-                    "strict legacy render: opponent hand size is not "
-                    "established — refusing to render a hand-size fact"
-                )
             lines.append("Opp hand: UNKNOWN")
         else:
             lines.append(f"Opp hand: {int(known_opp_hand)} card(s)")

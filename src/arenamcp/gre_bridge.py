@@ -28,19 +28,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Named pipe path (Windows named pipe)
-# Python is the SERVER, BepInEx plugin is the CLIENT.
-# This avoids MTGA internals grabbing the pipe and scene transitions
-# killing the pipe server inside the game process.
-PIPE_NAME = r"\\.\pipe\mtgacoach_bridge_v2"
-PIPE_TIMEOUT_MS = 3000
 COMMAND_TIMEOUT = 5.0
-# TCP loopback ports the plugin / probe dial. Read when a server is created, so
-# the test suite can point them at ephemeral ports (tests/conftest.py): a hung
-# pytest once held 44222 for two hours and the live coach could not start its
-# bridge (2026-10-18, "[Errno 48] Address already in use").
+# TCP loopback port the plugin / probe dial; Python is the server, the plugin
+# the client (scene transitions cannot kill a server inside the game process).
+# Read when a server is created, so the test suite can point it at an
+# ephemeral port (tests/conftest.py): a hung pytest once held 44222 for two
+# hours and the live coach could not start its bridge (2026-10-18, "[Errno 48]
+# Address already in use").
 BRIDGE_PORT = 44222
-BOT_BATTLE_PORT = 44223
 UNMAPPED_INTERACTION_TYPE = "unmapped_interaction"
 # First BepInEx plugin version with the "concede" command (PluginInfo.Version).
 CONCEDE_PLUGIN_VERSION = "0.6.4"
@@ -980,31 +975,6 @@ class GREBridge:
                 return False
         except GREBridgeError as e:
             logger.warning(f"GRE bridge pass error: {e}")
-            return False
-
-    def queue_bot_match(self, deck_id: str | None = None) -> bool:
-        """Queue for a bot match (AIBotMatch event).
-
-        Args:
-            deck_id: Optional UUID string of the deck to use.
-                     If omitted, the default deck will be used by the client.
-
-        Returns:
-            True if the match was queued successfully.
-        """
-        try:
-            req = {"action": "queue_bot_match"}
-            if deck_id:
-                req["deck_id"] = deck_id
-
-            resp = self._send_safe(req, timeout=10.0)
-            if resp.get("ok"):
-                logger.info("GRE bridge queued bot match successfully")
-                return True
-            logger.warning(f"GRE bridge queue_bot_match failed: {resp.get('error')}")
-            return False
-        except GREBridgeError as e:
-            logger.warning(f"GRE bridge queue_bot_match error: {e}")
             return False
 
     def queue_match(self, event: str = "AIBotMatch", deck_id: str | None = None) -> bool:
@@ -3115,76 +3085,3 @@ def get_poller() -> BridgeDecisionPoller:
     if _poller is None:
         _poller = BridgeDecisionPoller(get_bridge())
     return _poller
-
-
-class BotBattlePipeServer:
-    """A synchronous TCP server for bot battles.
-
-    Accepts connections from the BepInEx client (BridgeStrategy) on
-    127.0.0.1:44223, reads a decision request JSON line,
-    passes it to a decision handler callback, and writes the response JSON line.
-    """
-
-    def __init__(self, port: int | None = None):
-        self.port = BOT_BATTLE_PORT if port is None else int(port)
-        self.running = False
-        self._server_socket = None
-
-    def start(self, handler_callback):
-        """Starts the server loop, blocking until stop() is called or connection fails.
-
-        handler_callback is a function: callback(request_dict) -> response_dict
-        """
-        self.running = True
-        logger.info(f"Starting BotBattle TCP Server on 127.0.0.1:{self.port}")
-
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(("127.0.0.1", self.port))
-            s.listen(5)
-            self._server_socket = s
-        except Exception as e:
-            logger.error(f"Failed to start BotBattle TCP server on port {self.port}: {e}")
-            self.running = False
-            return
-
-        while self.running:
-            try:
-                # Use select with 1s timeout to check self.running regularly
-                r, _, _ = select.select([self._server_socket], [], [], 1.0)
-                if not r:
-                    continue
-                client_sock, addr = self._server_socket.accept()
-            except Exception as e:
-                if self.running:
-                    logger.error(f"BotBattle server accept failed: {e}")
-                time.sleep(1.0)
-                continue
-
-            client_sock.setblocking(True)
-            pipe_file = client_sock.makefile("rwb", buffering=0)
-
-            try:
-                line = pipe_file.readline()
-                if line:
-                    req_json = json.loads(line.decode("utf-8").strip())
-                    resp_dict = handler_callback(req_json)
-                    resp_line = json.dumps(resp_dict) + "\n"
-                    pipe_file.write(resp_line.encode("utf-8"))
-                    pipe_file.flush()
-            except Exception as e:
-                logger.warning(f"Error handling bot battle request: {e}")
-            finally:
-                with contextlib.suppress(Exception):
-                    pipe_file.close()
-                with contextlib.suppress(Exception):
-                    client_sock.close()
-
-        self._server_socket = None
-
-    def stop(self):
-        self.running = False
-        if self._server_socket:
-            with contextlib.suppress(Exception):
-                self._server_socket.close()

@@ -10,101 +10,14 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from tests.bug_180436_states import DARKNESS, ISLAND, TAPPED, bug_state
+from tests.concede_fakes import Harness
 from tests.mac_world import Obj, World
 
-from arenamcp.concede import ConcedeController, estimate_loss, normalize_phases
+from arenamcp.concede import estimate_loss, normalize_phases
 from arenamcp.gre_bridge import GREBridge, GREBridgeError
 from arenamcp.mac_bridge_adapter import MacBridgeAdapter
 from arenamcp.pipe_adapter import PipeAdapter
-from test_all_in import BOARD
-
-# Our lands tapped during our turn 21, as in the report.
-TAPPED = frozenset({255, 264, 279, 294, 305, 329})
-PROFT_TEXT = (
-    "Threshold — You can't cast this spell unless there are seven or more cards in your graveyard.\n"
-    "Menace\n"
-    "{oB}, Discard this card: Target creature gets -3/-1 until end of turn.\n"
-    "{oB}, Discard this card: Target creature gets <nobr>-3/-1</nobr> until end of turn."
-)
-ISLAND = {
-    "instance_id": 447,
-    "name": "Island",
-    "type_line": "Basic Land — Island",
-    "oracle_text": "({T}: Add {U}.)",
-    "mana_cost": "",
-    "card_types": ["Land"],
-    "owner_seat_id": 1,
-    "controller_seat_id": 1,
-}
-DARKNESS = {
-    "instance_id": 900,
-    "name": "Darkness",
-    "type_line": "Instant",
-    "oracle_text": "Prevent all combat damage that would be dealt this turn.",
-    "mana_cost": "{oB}",
-    "card_types": ["Instant"],
-    "owner_seat_id": 1,
-    "controller_seat_id": 1,
-}
-
-
-def bug_state(
-    life: int = 3,
-    *,
-    phase: str = "Phase_Main1",
-    step: str = "",
-    active: int = 2,
-    hand: list[dict] | None = None,
-    tapped: frozenset[int] = TAPPED,
-    opp_life: int = 18,
-    turn: int = 22,
-) -> dict[str, Any]:
-    battlefield = []
-    for iid, name, ctrl, power, toughness, type_line, text in BOARD:
-        battlefield.append(
-            {
-                "instance_id": iid,
-                "name": name,
-                "controller_seat_id": ctrl,
-                "owner_seat_id": ctrl,
-                "power": power,
-                "toughness": toughness,
-                "type_line": type_line,
-                "oracle_text": PROFT_TEXT if name.startswith("Proft") else text,
-                "keywords": ["flying"] if name == "Thopter" else [],
-                "is_tapped": iid in tapped,
-                "turn_entered_battlefield": 1,
-            }
-        )
-    return {
-        "match_id": "fra-3da54de9",
-        "local_seat_id": 1,
-        "opponent_seat_id": 2,
-        "turn": {
-            "turn_number": turn,
-            "active_player": active,
-            "priority_player": active,
-            "phase": phase,
-            "step": step,
-        },
-        "players": [
-            {"seat_id": 1, "life_total": life, "is_local": True, "status": "InGame", "mana_pool": {}},
-            {"seat_id": 2, "life_total": opp_life, "is_local": False, "status": "InGame", "mana_pool": {}},
-        ],
-        "battlefield": battlefield,
-        "hand": [dict(ISLAND)] if hand is None else hand,
-        "graveyard": [],
-        "exile": [],
-        "stack": [],
-        "action_history": [],
-        "pending_decision": None,
-        "controlled_turn": {"opponent_controlled_by_you": False, "you_controlled_by_opponent": False},
-        "zones": {
-            "library_count": 12,
-            "library_count_source": "log_zone_membership",
-            "opponent_hand_count": 1,
-        },
-    }
 
 
 def swamps_tapped() -> frozenset[int]:
@@ -784,88 +697,6 @@ def test_log_attack_targets_and_summoning_sickness():
 # --- the countdown ----------------------------------------------------------------
 
 
-class Harness:
-    def __init__(
-        self,
-        state: dict,
-        *,
-        autopilot: bool = True,
-        bridge: bool = True,
-        result: Any = None,
-        ends_on_concede: bool = True,
-    ):
-        self.state = state
-        self.autopilot = autopilot
-        self.bridge = bridge
-        self.game_over = False
-        self.ends_on_concede = ends_on_concede
-        self.settings: dict[str, Any] = {}
-        self.result = {"ok": True} if result is None else result
-        self.advice: list[str] = []
-        self.announced: list[str] = []
-        self.events: list[dict] = []
-        self.concedes: list[dict] = []
-        self.threads: list = []
-        self.waits: list[float] = []
-        self.on_concede = None
-        self.on_announce = None
-        self.now = 0.0
-        self.controller = ConcedeController(
-            get_state=lambda: self.state,
-            concede_fn=self._concede,
-            advise=lambda text, state=None: self.advice.append(text),
-            emit=self._emit,
-            settings_get=lambda key, default=None: self.settings.get(key, default),
-            autopilot_on=lambda: self.autopilot,
-            bridge_ready=lambda: self.bridge,
-            game_over=lambda: self.game_over,
-            announce=self._announce,
-            start_thread=lambda target, armed: self.threads.append((target, armed)),
-            wait=self._wait,
-            clock=lambda: self.now,
-        )
-        self.on_emit = None
-
-    def _emit(self, payload: dict) -> None:
-        self.events.append(payload)
-        if self.on_emit:
-            self.on_emit(payload)
-
-    def _announce(self, text: str, state: Any, cancelled: Any) -> bool:
-        # The countdown must not have started while the offer is being heard.
-        assert "armed" not in self.states
-        self.announced.append(text)
-        if self.on_announce:
-            self.on_announce()
-        return not cancelled()
-
-    def _wait(self, event: Any, seconds: float) -> bool:
-        self.waits.append(seconds)
-        return event.is_set()
-
-    def _concede(self, state: dict) -> Any:
-        self.concedes.append(state)
-        if self.on_concede:
-            self.on_concede()
-        if self.ends_on_concede and self.result.get("ok"):
-            self.game_over = True
-        return self.result
-
-    def observe(self, key: Any = ("fra", 1), times: int = 2) -> None:
-        """Observe like the coaching loop: the verdict must hold on two polls."""
-        for _ in range(times):
-            self.now += 1.0
-            self.controller.observe(self.state, key)
-
-    def run_countdown(self) -> None:
-        target, armed = self.threads.pop(0)
-        target(armed)
-
-    @property
-    def states(self) -> list[str]:
-        return [event["state"] for event in self.events]
-
-
 def test_one_snapshot_is_not_enough():
     harness = Harness(bug_state(), autopilot=False)
     harness.observe(times=1)
@@ -886,7 +717,7 @@ def test_autopilot_off_recommends_once_and_never_arms():
     assert harness.events == [] and harness.threads == [] and harness.concedes == []
 
 
-def test_autopilot_on_concedes_after_the_offer_is_heard_and_the_countdown():
+def test_autopilot_on_concedes_after_announcing_the_offer_and_the_countdown():
     harness = Harness(bug_state())
     harness.observe()
     assert harness.states == ["offering"] and harness.events[0]["seconds"] == 3
@@ -1047,7 +878,7 @@ def test_a_cancel_on_another_thread_waits_for_the_armed_event():
             return
         canceller = threading.Thread(target=harness.controller.cancel, args=("ui",))
         canceller.start()
-        canceller.join(0.2)
+        canceller.join(0.05)
         blocked.append(canceller.is_alive())  # waiting on the emit lock
         harness._joins = canceller  # type: ignore[attr-defined]
 
@@ -1159,6 +990,7 @@ def pipe(coach: PipeCoach) -> tuple[PipeAdapter, list[dict]]:
         ({"cmd": "force_stop"}, "force_stop"),
         ({"cmd": "stop_speech"}, "stop_speech"),
         ({"cmd": "autopilot_abort"}, "autopilot_abort"),
+        ({"cmd": "autopilot_cancel"}, "autopilot_cancel"),
     ],
 )
 def test_pipe_commands_cancel_the_countdown(command, source):
@@ -1187,6 +1019,7 @@ def test_autopilot_cancel_falls_back_to_escape():
     coach._autopilot = Engine()
     adapter, events = pipe(coach)
     adapter._dispatch({"cmd": "autopilot_cancel"})
+    assert coach.cancels == ["autopilot_cancel"]  # any countdown is cancelled too
     assert Engine.escaped == 1 and not [e for e in events if e.get("type") == "error"]
 
 
@@ -1495,37 +1328,6 @@ def test_turning_auto_concede_off_saves_and_cancels():
     runtime.settings.set.assert_called_once_with("auto_concede", False)
     runtime._concede.cancel.assert_called_once_with("auto-concede turned off", decline=True)
     assert runtime._concede_autopilot_on() is False  # a dry run never concedes
-
-
-def test_the_engine_reload_record_reaches_the_new_engine(monkeypatch, tmp_path):
-    import json
-    import time
-    from unittest.mock import Mock
-
-    import arenamcp.standalone_startup as startup
-    from arenamcp.standalone_concede import _ConcedeMixin
-
-    record = {
-        "match_id": "fra-3da54de9",
-        "turn": 22,
-        "recommended": True,
-        "declined": True,
-        "conceded": False,
-    }
-    path = tmp_path / "engine_resume.json"
-    path.write_text(json.dumps({"saved_at": time.time(), "match_id": "fra-3da54de9", "concede": record}))
-    monkeypatch.setattr(startup, "ENGINE_RESUME_PATH", path)
-    monkeypatch.setenv("ARENAMCP_ENGINE_RELOAD", "1")
-
-    class Runtime(_ConcedeMixin, startup._StartupMixin):
-        def __init__(self) -> None:
-            self.settings = Mock()
-            self.ui = Mock()
-            self._concede = Mock()
-
-    runtime = Runtime()
-    runtime._load_engine_resume()
-    runtime._concede.resume_from.assert_called_once_with(record)
 
 
 def test_printed_stats_are_added_on_our_turn_only(monkeypatch):

@@ -44,6 +44,10 @@ LIVE_SHAPES = {
 }
 
 
+# The search's wall-clock hard cap never truncates these lines on a loaded machine.
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
+
+
 @pytest.fixture(autouse=True)
 def _fresh_caches(monkeypatch):
     monkeypatch.delenv("ARENAMCP_LINE_SEARCH", raising=False)
@@ -55,17 +59,10 @@ def _fresh_caches(monkeypatch):
 
 
 def _searched(state: dict) -> dict:
-    """``state`` with an untruncated search in the assessment cache.
-
-    The search is reproducible unless its wall-clock hard cap cut it short
-    (machine load, a GC pause): then it runs again, as tests/test_board_assessment.py
-    does.
-    """
-    for _attempt in range(3):
-        ba._CACHE.clear()
-        if searched_lines(state):
-            return state
-    pytest.fail("the line search was truncated three times")
+    """``state`` with its (untruncated) search in the assessment cache."""
+    ba._CACHE.clear()
+    assert searched_lines(state)
+    return state
 
 
 def _context(state: dict) -> str:

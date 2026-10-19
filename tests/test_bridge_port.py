@@ -21,22 +21,20 @@ def _close(bridge: gre_bridge.GREBridge) -> None:
         sock.close()
 
 
-def test_production_defaults_are_the_live_ports():
+def test_production_default_is_the_live_port():
     source = Path(gre_bridge.__file__).read_text(encoding="utf-8")
     assert "\nBRIDGE_PORT = 44222\n" in source
-    assert "\nBOT_BATTLE_PORT = 44223\n" in source
     assert gre_bridge.GREBridge()._port is None  # resolved from BRIDGE_PORT at bind time
 
 
 def test_a_bridge_built_under_pytest_binds_an_ephemeral_port():
-    assert gre_bridge.BRIDGE_PORT == 0 and gre_bridge.BOT_BATTLE_PORT == 0
+    assert gre_bridge.BRIDGE_PORT == 0
     bridge = gre_bridge.GREBridge()
     try:
         assert bridge.connect() is False  # nothing dials in
         assert bridge.bound_port and bridge.bound_port not in (44222, 44223)
     finally:
         _close(bridge)
-    assert gre_bridge.BotBattlePipeServer().port == 0
 
 
 def test_binding_a_live_bridge_port_fails_inside_the_suite():

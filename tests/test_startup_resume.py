@@ -66,6 +66,10 @@ def test_reload_checkpoints_then_exits_and_restores_strategy_without_model_call(
     monkeypatch.setattr(server, "watcher", SimpleNamespace(file_position=25, log_path="Player.log"))
     save = Mock(side_effect=lambda *a, **k: runtime._autopilot.on_abort.assert_called_once())
     monkeypatch.setattr("arenamcp.gamestate_persistence.save_match_state", save)
+    concede_record = {"match_id": "match-one", "turn": 4, "recommended": True, "declined": True}
+    oops_record = {"match_id": "match-one", "sent": 1}
+    runtime._concede_export = Mock(return_value=concede_record)
+    runtime._oops_export = Mock(return_value=oops_record)
     runtime.prepare_engine_reload()
     assert not runtime._running and not runtime._autopilot_enabled
     assert resume_path.exists()
@@ -74,7 +78,12 @@ def test_reload_checkpoints_then_exits_and_restores_strategy_without_model_call(
 
     resumed = Runtime()
     resumed._coach._deck_strategy = None
+    resumed._concede_resume_from = Mock()
+    resumed._oops_resume_from = Mock()
     resumed._load_engine_resume()
+    # What was recommended, declined, conceded or sent rides along to the new engine.
+    resumed._concede_resume_from.assert_called_once_with(concede_record)
+    resumed._oops_resume_from.assert_called_once_with(oops_record)
     assert not resumed._autopilot_enabled  # paused before reload stays inactive
     assert not resume_path.exists()  # handoff consumed once
     resumed._try_restore_engine_resume(state())

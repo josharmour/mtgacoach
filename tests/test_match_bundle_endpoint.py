@@ -12,66 +12,23 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
-import importlib.util
 import json
 import sys
 import time
 import types
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 
 pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
-
-WEBSITE_DIR = Path(__file__).resolve().parents[1] / "website"
+from tests.website_app import load_website_app
 
 INSTALL_ID = "inst_" + "a" * 32
 OTHER_INSTALL_ID = "inst_" + "b" * 32
 MATCH_ID = "3f4b9d8e-1111-2222-3333-444455556666"
 ADMIN = {"X-Admin-Key": "test-admin"}
-
-
-def _load_proxy_app(tmp_path: Path, monkeypatch):
-    config_path = tmp_path / "config.yaml"
-    (tmp_path / "static").mkdir()
-    (tmp_path / "templates").mkdir()
-    config_path.write_text(
-        """
-server:
-  host: "127.0.0.1"
-  port: 8443
-providers: []
-default_model: "gpt-5.4"
-admin:
-  username: "admin"
-  password: "test-admin"
-database:
-  path: "./data/mtgacoach.db"
-""".strip()
-        + "\n",
-        encoding="utf-8",
-    )
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("CONFIG_PATH", str(config_path))
-    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-master-test")
-    monkeypatch.syspath_prepend(str(WEBSITE_DIR))
-
-    for name in ("db", "providers", "patreon", "match_bundles"):
-        sys.modules.pop(name, None)
-
-    module_name = "proxy_app_match_bundle_test"
-    sys.modules.pop(module_name, None)
-    spec = importlib.util.spec_from_file_location(module_name, WEBSITE_DIR / "app.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-
-    return module, sys.modules["db"], sys.modules["patreon"], sys.modules["match_bundles"]
 
 
 class _FakeResp:
@@ -110,7 +67,8 @@ class FakeKeyInfo:
 
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
-    proxy_app, proxy_db, patreon, mb = _load_proxy_app(tmp_path, monkeypatch)
+    proxy_app, proxy_db, patreon = load_website_app(tmp_path, monkeypatch, "proxy_app_match_bundle_test")
+    mb = sys.modules["match_bundles"]
     fake = FakeKeyInfo()
     monkeypatch.setattr(patreon, "_http", lambda: fake)
     mb._key_info_cache.clear()
@@ -409,15 +367,6 @@ def test_oversized_upload_is_413(env, monkeypatch):
     assert _post(client, key, body=big).status_code == 413
 
 
-def test_decompression_bomb_is_413(env, monkeypatch):
-    _, proxy_db, _p, mb, _fake, client, _tmp = env
-    key = _subscriber(proxy_db)
-    monkeypatch.setattr(mb, "MAX_JSON_BYTES", 4096)
-    bomb = gzip.compress(json.dumps(_bundle(filler="z" * 100_000)).encode())
-    assert len(bomb) < mb.MAX_BODY_BYTES
-    assert _post(client, key, body=bomb).status_code == 413
-
-
 def test_download_id_validation(env):
     *_, client, _tmp = env
     assert client.get("/api/match-bundle/inst%20x/" + MATCH_ID, headers=ADMIN).status_code == 422
@@ -537,8 +486,10 @@ def test_full_data_volume_is_507(env, monkeypatch, tmp_path):
 
 
 def test_body_cap_matches_the_client_cap(env):
+    from arenamcp import match_bundle
+
     *_, mb, _fake, _client, _tmp = env
-    assert mb.MAX_BODY_BYTES == 8 * 1024 * 1024
+    assert mb.MAX_BODY_BYTES == match_bundle.GZIP_CAP
     assert mb.MAX_JSON_BYTES <= 32 * 1024 * 1024
 
 
@@ -576,6 +527,10 @@ def test_decompression_bomb_stops_inflating_at_the_cap(env, monkeypatch):
     assert len(bomb) < mb.MAX_BODY_BYTES
     assert _post(client, key, body=bomb).status_code == 413
     assert sum(reads) <= mb.MAX_JSON_BYTES + mb.DECOMPRESS_CHUNK
+    # A real bundle padded past the cap is refused the same way.
+    padded = gzip.compress(json.dumps(_bundle(filler="z" * (8 * mb.DECOMPRESS_CHUNK))).encode())
+    assert len(padded) < mb.MAX_BODY_BYTES
+    assert _post(client, key, body=padded).status_code == 413
 
 
 @pytest.mark.parametrize("since", ["nan", "inf", "-inf", "1e400"])

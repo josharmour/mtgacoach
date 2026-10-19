@@ -637,7 +637,7 @@ def test_fallbacks_leave_no_search_facts(mode, monkeypatch):
 
 @pytest.mark.parametrize("mode", [None, *SEARCH_FALLBACKS])
 def test_all_in_boards_keep_their_verdict_in_every_mode(mode, monkeypatch):
-    from tests.test_all_in import _state
+    from tests.bug_180436_states import attack_state as _state
 
     if mode is not None:
         SEARCH_FALLBACKS[mode](monkeypatch)

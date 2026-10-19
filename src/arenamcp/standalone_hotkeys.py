@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import sys
-import threading
 import time
 import traceback
 
@@ -13,12 +12,6 @@ from arenamcp.coach import get_models_for_mode
 from arenamcp.game_plan import is_skipped_call_text
 
 logger = logging.getLogger(__name__)
-
-# A win-in-N plan the player asked for. Not "background.": that class waits
-# behind (or is dropped by) the proxy's background lane and is skipped while
-# the server is down. The automatic worker uses get_win_plan's
-# "background.win_plan" default.
-MANUAL_WIN_PLAN_CALL_CLASS = "coach.win_plan"
 
 # The `keyboard` package must never be imported on macOS: its darwin backend
 # calls abort() during import when the process lacks root/Accessibility
@@ -92,59 +85,6 @@ class _StandaloneHotkeysMixin:
         except Exception as e:
             self.ui.error(f"Seat swap failed: {e}")
             logger.error(f"Seat swap error: {e}")
-
-    def _on_win_plan_hotkey(self, turns: int) -> None:
-        """Handle win-in-N-turns hotkey press (keys 2-8)."""
-        if not self._coach or not self._mcp:
-            return
-
-        # 5-second cooldown to prevent spam
-        now = time.time()
-        last = getattr(self, "_last_win_plan_time", 0.0)
-        if now - last < 5.0:
-            self.ui.status("WIN-PLAN", "Cooldown — wait a few seconds")
-            return
-        self._last_win_plan_time = now
-
-        def _do():
-            try:
-                # Ensure latest log data is processed
-                self._mcp.poll_log()
-                game_state = self._mcp.get_game_state()
-
-                turn_num = game_state.get("turn", {}).get("turn_number", 0)
-                if turn_num <= 0:
-                    self.ui.status("WIN-PLAN", "No active game")
-                    logger.info("Win plan: no active game (turn=0)")
-                    return
-
-                self.ui.status("WIN-PLAN", f"Planning win in {turns} turns...")
-                self.ui.log(f"\n[bold cyan]--- WIN-IN-{turns} PLAN (generating...) ---[/]")
-                logger.info(f"Win plan: requesting {turns}-turn plan")
-
-                library_summary = self._compute_library_summary(game_state)
-                # Asked for by the player, so a foreground class (never queued
-                # behind or dropped by the background lane); low effort still.
-                plan = self._coach.get_win_plan(
-                    game_state, turns, library_summary, call_class=MANUAL_WIN_PLAN_CALL_CLASS
-                )
-                if is_backend_error_text(plan):
-                    logger.warning(f"Win plan: model call failed: {str(plan)[:160]}")
-                    plan = ""
-
-                logger.info(f"Win plan: got response, {len(plan)} chars")
-                if plan:
-                    self.ui.advice(plan, f"WIN-IN-{turns}")
-                    self._record_advice(plan, f"win_in_{turns}", game_state=game_state)
-                    self.speak_advice(plan, blocking=False)
-                else:
-                    self.ui.status("WIN-PLAN", "No plan generated (timeout or error)")
-                    self.ui.log("[yellow]Win plan returned empty — API may have timed out[/]")
-            except Exception as e:
-                logger.error(f"Win plan error: {e}", exc_info=True)
-                self.ui.error(f"Win plan failed: {e}")
-
-        threading.Thread(target=_do, daemon=True).start()
 
     def _win_plan_worker(self, game_state: dict) -> None:
         """Background worker: compute win-in-2 and win-in-3 plans using a thinking model.

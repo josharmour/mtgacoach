@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from tests.fakes import VirtualClock
 
 import arenamcp.native_mac_input as native_mac_input
 from arenamcp.native_mac_input import DesktopUnavailable, GameWindow, NativeMacInput
@@ -63,7 +64,9 @@ def appkit(monkeypatch):
         NSRunningApplication=SimpleNamespace(runningApplicationWithProcessIdentifier_=lambda pid: _App()),
     )
     monkeypatch.setitem(sys.modules, "AppKit", fake)
-    monkeypatch.setattr(native_mac_input.time, "sleep", lambda seconds: None)
+    # The foreground wait polls every 0.1 s up to its deadline: run it on
+    # virtual time (a no-op sleep alone spun the CPU for the full 0.8 s).
+    monkeypatch.setattr(native_mac_input, "time", VirtualClock())
     return state
 
 
@@ -105,8 +108,6 @@ def test_arena_that_never_comes_forward_still_waits(appkit, monkeypatch):
     monkeypatch.setattr(
         native_mac_input.subprocess, "run", lambda args, **kwargs: SimpleNamespace(returncode=1)
     )
-    clock = iter(range(0, 1000))
-    monkeypatch.setattr(native_mac_input.time, "monotonic", lambda: next(clock))
     with pytest.raises(DesktopUnavailable, match="foreground"):
         controller._check_focus(ARENA)
 
@@ -119,9 +120,28 @@ def test_without_the_option_nothing_is_activated(appkit):
     assert appkit.calls == []
 
 
-def test_auto_queue_opts_in():
+def test_auto_queue_opts_in(monkeypatch):
+    """The navigator builds its screen input with the idle-raise option on."""
     import arenamcp.auto_queue as auto_queue
 
-    source = open(auto_queue.__file__).read()
-    assert "NativeMacInput(raise_when_idle_s=FOCUS_WHEN_IDLE_S)" in source
+    built: list[dict] = []
+
+    class _Input:
+        def __init__(self, **kwargs):
+            built.append(kwargs)
+
+        def capture(self):
+            raise DesktopUnavailable("bring Arena to the foreground.")
+
+    monkeypatch.setattr(auto_queue, "NativeMacInput", _Input)
+    monkeypatch.setattr(auto_queue.sys, "platform", "darwin")
+    nav = auto_queue.AutoQueueNavigator(
+        backend=SimpleNamespace(complete_with_image=Mock()),
+        get_game_state=lambda: {"match_id": "ended"},
+        bridge=SimpleNamespace(connected=False),
+    )
+    nav.set_enabled(True)
+    assert nav.note_match_end({"match_id": "ended", "event_id": "Ladder"}, confirmed_match_end=True)
+    nav._step(nav._generation, nav._abort)
+    assert built == [{"raise_when_idle_s": auto_queue.FOCUS_WHEN_IDLE_S}]
     assert auto_queue.FOCUS_WHEN_IDLE_S >= 10

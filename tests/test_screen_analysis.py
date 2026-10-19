@@ -112,3 +112,34 @@ def test_find_mtga_hwnd_is_none_off_windows(monkeypatch):
 
     monkeypatch.setattr(screen_capture, "_IS_WINDOWS", False)
     assert screen_capture.find_mtga_hwnd() is None
+
+
+@pytest.mark.parametrize(
+    "bbox",
+    [(10, 10, 10, 20), (20, 10, 10, 20), (None, 10, 20, 20)],
+    ids=["zero-width", "left-past-right", "missing-edge"],
+)
+def test_screen_capture_bbox_validation(monkeypatch: pytest.MonkeyPatch, bbox) -> None:
+    """An invalid bbox is never handed to ImageGrab; the full-screen grab runs instead."""
+    from PIL import Image, ImageGrab
+
+    from arenamcp import screen_capture
+
+    # The kill switch is module-global: never let this test (or an earlier
+    # one) leave capture disabled for the rest of the worker.
+    monkeypatch.setattr(screen_capture, "_CAPTURE_DEAD", False)
+    calls: list[dict] = []
+
+    def mock_grab(*args, **kwargs):
+        calls.append({"args": args, **kwargs})
+        if args or "bbox" in kwargs:
+            raise AssertionError(f"ImageGrab.grab got the invalid bbox {bbox}")
+        return Image.new("RGB", (8, 8), (200, 120, 40))
+
+    monkeypatch.setattr(ImageGrab, "grab", mock_grab)
+
+    res = screen_capture.capture_mtga_png(hwnd=None, bbox=bbox)
+
+    assert calls == [{"args": ()}]
+    assert res is not None and res.startswith(b"\x89PNG")
+    assert screen_capture._CAPTURE_DEAD is False
