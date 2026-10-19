@@ -1000,19 +1000,22 @@ class _BridgeSubmitMixin:
         candidates = {int(entry["attackerInstanceId"]): entry for entry in raw or []}
         entries = []
         seen = set()
-        from arenamcp.combat_identity import resolve_combatant
+        from arenamcp.combat_identity import resolve_combatants
 
         locked_ids = action.attacker_instance_ids
         if locked_ids and len(locked_ids) != len(names):
             raise ValueError("Attacker identities no longer match the planned declaration")
+        resolved = (
+            resolve_combatants(names, state, list(candidates), local_side=True)
+            if not locked_ids and raw is not None
+            else None
+        )
         for index, name in enumerate(names):
             identity = (
                 locked_ids[index]
                 if locked_ids
                 else (
-                    resolve_combatant(name, state, list(candidates), local_side=True)
-                    if raw is not None
-                    else self._find_instance_id(name, battlefield, local)
+                    resolved[index] if raw is not None else self._find_instance_id(name, battlefield, local)
                 )
             )
             if not identity or identity in seen or (raw is not None and identity not in candidates):
@@ -1406,7 +1409,16 @@ class _BridgeSubmitMixin:
             return None
 
         bridge_blockers = pending.get("blockers") or []
-        if not getattr(action, "blocker_assignments", None):
+        from arenamcp.combat_solver import blocker_allowed_attackers_map, blocker_options, selected_blocks
+
+        # The plan is the whole declaration: a selection the request already
+        # shows and the plan does not make is withdrawn or moved. 2026-10-19:
+        # Arena rejected a declaration but kept Rabbit 484 on 468; the safe
+        # default's six blocks were accepted next to it, the finalize refused
+        # the "extra" block (MANUAL REQUIRED), and at 07:35:15 the watchdog
+        # logged "[No Blocks]" while its confirm committed all seven.
+        shown = selected_blocks(bridge_blockers)
+        if not getattr(action, "blocker_assignments", None) and not shown:
             logger.info("GRE bridge blockers: submitting empty blockers (no blockers to assign)")
             if bridge.submit_blockers([]):
                 self._log_execution_path(
@@ -1416,127 +1428,177 @@ class _BridgeSubmitMixin:
                 return ClickResult(True, 0, 0, "declare_blockers", "GRE bridge")
             return None
 
-        game_state = self._get_game_state()
+        game_state = self._get_game_state() or {}
         from arenamcp.combat_identity import blocker_id_assignments
 
+        planned_labels = dict(getattr(action, "blocker_assignments", None) or {})
         try:
-            identities = action.blocker_instance_assignments or blocker_id_assignments(
-                action.blocker_assignments, game_state, bridge_blockers
+            identities = (
+                action.blocker_instance_assignments
+                or blocker_id_assignments(planned_labels, game_state, bridge_blockers)
+                if planned_labels
+                else {}
             )
-            if len(identities) != len(action.blocker_assignments):
+            if len(identities) != len(planned_labels):
                 raise ValueError("Missing or duplicate blocker identities")
-            legal = {
-                int(blocker["blockerInstanceId"]): set(blocker.get("attackerInstanceIds") or [])
-                for blocker in bridge_blockers
-            }
-            assignments = []
+            options = blocker_options(
+                bridge_blockers, (game_state.get("decision_context") or {}).get("blocker_options")
+            )
             for blocker_id, attacker_id in identities.items():
-                if blocker_id not in legal or attacker_id not in legal[blocker_id]:
+                if attacker_id not in options.get(blocker_id, ()):
                     raise ValueError(f"Block {blocker_id}->{attacker_id} is no longer legal")
-                assignments.append({"blockerInstanceId": blocker_id, "attackerInstanceIds": [attacker_id]})
         except (ValueError, TypeError, KeyError) as error:
             logger.warning("GRE bridge blockers: %s; manual choice required", error)
             return None
 
-        # Last check before the declaration leaves: drop chump blocks that buy
-        # little (2026-10-06: a 2/1 chumped a trampling 4/4 at 20 life to save
-        # one damage). Blocks that prevent lethal or near-lethal stay.
-        from arenamcp.combat_strategy import wasteful_chump_blocks
+        # Last checks before the declaration leaves. Drop chump blocks that
+        # buy little (2026-10-06: a 2/1 chumped a trampling 4/4 at 20 life to
+        # save one damage); blocks that prevent lethal or near-lethal stay.
+        # Then make it legal against menace (2026-10-19 07:34:34: one Rabbit
+        # on menace Biting-Palm Ninja; Arena rejected the whole declaration
+        # with CombatRestrictionViolated).
+        from arenamcp.combat_strategy import repair_menace_blocks, wasteful_chump_blocks
+
+        chumps = wasteful_chump_blocks(game_state, dict(identities), pending)
+        for blocker_id, reason in chumps.items():
+            logger.warning("Chump-block guard: not blocking with [%d]: %s", blocker_id, reason)
+        final, menace_notes = repair_menace_blocks(
+            game_state, {b: a for b, a in identities.items() if b not in chumps}, pending
+        )
+        for note in menace_notes:
+            logger.warning("Menace guard: %s", note)
 
         submitted_action = None
-        chumps = wasteful_chump_blocks(game_state, dict(identities), pending)
-        if chumps:
-            for blocker_id, reason in chumps.items():
-                logger.warning("Chump-block guard: not blocking with [%d]: %s", blocker_id, reason)
+        added = [blocker for blocker in final if blocker not in identities]
+        if chumps or menace_notes or added:
+            names = {
+                card.get("instance_id"): card.get("name") for card in game_state.get("battlefield") or []
+            }
+
+            def label(identity: int) -> str:
+                return f"{names.get(identity) or 'Creature'} [id:{identity}]"
+
             kept = [
-                (names, ids)
-                for names, ids in zip(action.blocker_assignments.items(), identities.items(), strict=True)
-                if ids[0] not in chumps
+                (labels, ids)
+                for labels, ids in zip(planned_labels.items(), identities.items(), strict=True)
+                if final.get(ids[0]) == ids[1]
             ]
+            kept += [((label(b), label(final[b])), (b, final[b])) for b in added]
             action = submitted_action = replace(
                 action,
-                blocker_assignments=dict(names for names, _ in kept),
+                blocker_assignments=dict(labels for labels, _ in kept),
                 blocker_instance_assignments=dict(ids for _, ids in kept),
-                reasoning="; ".join(chumps.values()),
+                reasoning="; ".join([*dict.fromkeys(chumps.values()), *menace_notes]),
             )
-            assignments = [entry for entry in assignments if entry["blockerInstanceId"] not in chumps]
-            if not assignments:
-                if bridge.submit_blockers([]):
-                    self._log_execution_path(
-                        ExecutionPath.GRE_AWARE,
-                        "declare_blockers: [No Blocks] submitted via GRE bridge (chump blocks dropped)",
-                    )
-                    return ClickResult(
-                        True, 0, 0, "declare_blockers", "GRE bridge", submitted_action=submitted_action
-                    )
-                return None
+        desc = ", ".join(f"{b}->{a}" for b, a in action.blocker_assignments.items()) or "[No Blocks]"
 
-        if bridge.submit_blockers(assignments):
-            # Blockers are a two-step server round-trip, like attackers: the
-            # DeclareBlockersResp update makes the GRE re-issue a fresh
-            # DeclareBlockersRequest carrying the selection, and the
-            # SubmitBlockersReq confirm must go against THAT request. The
-            # plugin fires its confirm immediately against the stale request,
-            # which the GRE ignores (live 2026-06-11: blocker shown selected
-            # in-game, "1 Blocker" confirm never fired, autopilot escaped to
-            # manual-required). Finalize here against the refreshed request —
-            # empty assignments make the plugin call SubmitBlockers() on it,
-            # confirming the pending selection.
+        # The update: new selections, plus an empty selection for every shown
+        # one the plan withdraws (Arena's own "cancel block"). A blocker moved
+        # off its shown attacker lists no attackers until that selection is
+        # withdrawn, so on the Mac bridge it is selected in a second update
+        # once Arena lists them again; BepInEx sets it directly.
+        listed = blocker_allowed_attackers_map(bridge_blockers)
+        staged = pending.get("bridge_runtime") in ("il2cpp-macos", "il2cpp-android")
+        update, later = [], []
+        for blocker_id, attacker_id in final.items():
+            if shown.get(blocker_id) == {attacker_id}:
+                continue  # already selected
+            entry = {"blockerInstanceId": blocker_id, "attackerInstanceIds": [attacker_id]}
+            if attacker_id in listed.get(blocker_id, ()) or not staged:
+                update.append(entry)
+            else:
+                update.append({"blockerInstanceId": blocker_id, "attackerInstanceIds": []})
+                later.append(entry)
+        withdrawn = [blocker_id for blocker_id in shown if blocker_id not in final]
+        update += [{"blockerInstanceId": blocker_id, "attackerInstanceIds": []} for blocker_id in withdrawn]
+        if withdrawn:
+            logger.info(
+                "Bridge declare_blockers: withdrawing selected blocks not in the plan: %s",
+                ", ".join(f"[{b}]->{sorted(shown[b])}" for b in withdrawn),
+            )
+        expected = {blocker_id: {attacker_id} for blocker_id, attacker_id in final.items()}
+        moved = {entry["blockerInstanceId"] for entry in later}
+        phases = [(update, {b: a for b, a in expected.items() if b not in moved})]
+        if later:
+            phases.append((later, expected))
+        if not update:
+            # Arena already shows exactly this declaration: confirm it.
+            if bridge.submit_blockers([]):
+                self._log_execution_path(
+                    ExecutionPath.GRE_AWARE,
+                    f"declare_blockers: {desc} submitted via GRE bridge"
+                    + (" (chump blocks dropped)" if chumps else ""),
+                )
+                return ClickResult(
+                    True, 0, 0, "declare_blockers", "GRE bridge", submitted_action=submitted_action
+                )
+            return None
+
+        # Blockers are a two-step server round-trip, like attackers: the
+        # DeclareBlockersResp update makes the GRE re-issue a fresh
+        # DeclareBlockersRequest carrying the selection, and the
+        # SubmitBlockersReq confirm must go against THAT request. The plugin
+        # fires its confirm immediately against the stale request, which the
+        # GRE ignores (live 2026-06-11: blocker shown selected in-game, "1
+        # Blocker" confirm never fired, autopilot escaped to manual-required).
+        # Finalize here against the refreshed request — empty assignments make
+        # the plugin call SubmitBlockers() on it, confirming the selection.
+        request = pending
+        for index, (assignments, want) in enumerate(phases):
+            if not bridge.submit_blockers(assignments):
+                logger.info("GRE bridge submit_blockers failed, surfacing manual-required to caller")
+                self._gre_bridge_failed_methods.add("declare_blockers")
+                return None
             try:
-                still = _await_blockers_refresh(bridge, pending)
-                if (
+                still = _await_blockers_refresh(bridge, request)
+                if not (
                     still
                     and still.get("has_pending")
                     and "DeclareBlockers" in str(still.get("request_class", ""))
                 ):
-                    refreshed_blockers = still.get("blockers") or []
-                    if still.get("bridge_runtime") in ("il2cpp-macos", "il2cpp-android") or any(
-                        "selectedAttackerInstanceIds" in blocker for blocker in refreshed_blockers
-                    ):
-                        original_request = (pending.get("game_state_id"), pending.get("msg_id"))
-                        refreshed_request = (still.get("game_state_id"), still.get("msg_id"))
-                        if any(value is not None for value in original_request) and (
-                            refreshed_request == original_request
-                        ):
-                            logger.warning("Bridge declare_blockers: still awaiting server acknowledgment")
-                            return None
-                        expected = {
-                            entry["blockerInstanceId"]: set(entry["attackerInstanceIds"])
-                            for entry in assignments
-                        }
-                        selected = {
-                            int(blocker["blockerInstanceId"]): set(blocker["selectedAttackerInstanceIds"])
-                            for blocker in refreshed_blockers
-                            if blocker.get("selectedAttackerInstanceIds")
-                        }
-                        if selected != expected:
-                            logger.warning(
-                                "Bridge declare_blockers: selection not accepted; refusing to finalize "
-                                "(expected=%s, selected=%s)",
-                                expected,
-                                selected,
-                            )
-                            return None
-                    if bridge.submit_blockers([]):
-                        logger.info("Bridge declare_blockers: finalized on refreshed request")
-                    else:
-                        logger.warning("Bridge declare_blockers: finalize step failed")
+                    if index + 1 < len(phases):
+                        logger.warning("Bridge declare_blockers: request closed before the second update")
                         return None
+                    break
+                refreshed_blockers = still.get("blockers") or []
+                if still.get("bridge_runtime") in ("il2cpp-macos", "il2cpp-android") or any(
+                    "selectedAttackerInstanceIds" in blocker for blocker in refreshed_blockers
+                ):
+                    original_request = (request.get("game_state_id"), request.get("msg_id"))
+                    refreshed_request = (still.get("game_state_id"), still.get("msg_id"))
+                    if any(value is not None for value in original_request) and (
+                        refreshed_request == original_request
+                    ):
+                        logger.warning("Bridge declare_blockers: still awaiting server acknowledgment")
+                        return None
+                    selected = selected_blocks(refreshed_blockers)
+                    if selected != want:
+                        logger.warning(
+                            "Bridge declare_blockers: selection not accepted; refusing to finalize "
+                            "(expected=%s, selected=%s)",
+                            want,
+                            selected,
+                        )
+                        return None
+                request = still
             except Exception as e:
                 logger.debug(f"Bridge declare_blockers finalize check failed: {e}")
                 return None
-            desc = ", ".join(f"{b}->{a}" for b, a in action.blocker_assignments.items())
-            self._log_execution_path(
-                ExecutionPath.GRE_AWARE,
-                f"declare_blockers: {desc} submitted via GRE bridge (bridge-authoritative ids)",
-            )
-            return ClickResult(
-                True, 0, 0, "declare_blockers", "GRE bridge", submitted_action=submitted_action
-            )
-
-        logger.info("GRE bridge submit_blockers failed, surfacing manual-required to caller")
-        self._gre_bridge_failed_methods.add("declare_blockers")
-        return None
+        else:
+            try:
+                finalized = bridge.submit_blockers([])
+            except Exception as e:
+                logger.debug(f"Bridge declare_blockers finalize failed: {e}")
+                return None
+            if not finalized:
+                logger.warning("Bridge declare_blockers: finalize step failed")
+                return None
+            logger.info("Bridge declare_blockers: finalized on refreshed request")
+        self._log_execution_path(
+            ExecutionPath.GRE_AWARE,
+            f"declare_blockers: {desc} submitted via GRE bridge (bridge-authoritative ids)",
+        )
+        return ClickResult(True, 0, 0, "declare_blockers", "GRE bridge", submitted_action=submitted_action)
 
     def _try_gre_bridge_select_target(self, action: GameAction) -> ClickResult | None:
         """Submit target selection via bridge.

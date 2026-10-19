@@ -1180,6 +1180,9 @@ class ActionPlanner(_ActionLegalityMixin):
                     f"{len(effective_legal_actions)} legal actions"
                 )
 
+        self._check_block_menace(
+            plan, game_state, decision_context or game_state.get("decision_context") or {}
+        )
         self._check_block_survival(
             plan, game_state, decision_context or game_state.get("decision_context") or {}
         )
@@ -1227,6 +1230,50 @@ class ActionPlanner(_ActionLegalityMixin):
         logger.info(f"Planned {len(plan.actions)} actions: {plan.overall_strategy}")
         return plan
 
+    def _check_block_menace(self, plan: ActionPlan, state: dict, context: dict) -> None:
+        """Make planned blocks legal against menace before the survival check weighs them.
+
+        2026-10-19 07:34:34 (match cd41ad5a): the plan put one Rabbit on
+        Biting-Palm Ninja, menace from a counter. Every check counted it as a
+        block and Arena rejected the declaration (CombatRestrictionViolated).
+        ``combat_strategy.repair_menace_blocks`` drops such a block (or adds a
+        partner when dropping it is lethal); the bridge repeats the check on
+        the final declaration.
+        """
+        if len(plan.actions) != 1 or plan.actions[0].action_type != ActionType.DECLARE_BLOCKERS:
+            return
+        action = plan.actions[0]
+        identities = dict(action.blocker_instance_assignments or {})
+        if not identities or len(identities) != len(action.blocker_assignments):
+            return
+        from arenamcp.combat_strategy import repair_menace_blocks
+
+        raw = context.get("raw_blockers")
+        final, notes = repair_menace_blocks(
+            state, identities, {"blockers": raw} if isinstance(raw, list) else None
+        )
+        if not notes:
+            return
+        cards = {c.get("instance_id"): c for c in state.get("battlefield", [])}
+
+        def label(iid):
+            card = cards.get(iid, {})
+            token = card.get("is_token") or "token" in str(card.get("object_kind", "")).lower()
+            return f"{'*' if token else ''}{card.get('name', 'Creature')} [id:{iid}]"
+
+        kept = [
+            (labels, ids)
+            for labels, ids in zip(action.blocker_assignments.items(), identities.items(), strict=True)
+            if final.get(ids[0]) == ids[1]
+        ]
+        kept += [((label(b), label(a)), (b, a)) for b, a in final.items() if b not in identities]
+        for note in notes:
+            logger.warning("Menace guard: %s", note)
+        action.blocker_assignments = dict(labels for labels, _ in kept)
+        action.blocker_instance_assignments = dict(ids for _, ids in kept)
+        action.reasoning = "; ".join(part for part in (action.reasoning, *notes) if part)
+        plan.voice_advice = plan.spoken_actions()
+
     def _check_block_survival(self, plan: ActionPlan, state: dict, context: dict) -> None:
         """Never submit blocks that let lethal damage through when a legal block survives.
 
@@ -1248,7 +1295,7 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         if plan.actions[0].action_type != ActionType.DECLARE_BLOCKERS and not declined:
             return
-        from arenamcp.combat_solver import _resolve_attacker, blocker_allowed_attackers_map, optimal_blocks
+        from arenamcp.combat_solver import _resolve_attacker, blocker_options, optimal_blocks
 
         local = next((p for p in state.get("players", []) if p.get("is_local")), None)
         life = (local or {}).get("life_total")
@@ -1278,7 +1325,7 @@ class ActionPlanner(_ActionLegalityMixin):
         lethal = through >= life
         if not lethal and life - through > BLOCK_DANGER_LIFE:
             return
-        allowed = blocker_allowed_attackers_map(context.get("raw_blockers") or [])
+        allowed = blocker_options(context.get("raw_blockers") or [], context.get("blocker_options"))
         survival = optimal_blocks(attackers, blockers, life, blocker_allowed_attackers=allowed or None)
         if survival is None or survival.damage_through >= life or not survival.assignments:
             return
@@ -1328,7 +1375,7 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         if str(context.get("type") or "").lower() != "declare_attackers":
             return
-        from arenamcp.combat_identity import resolve_combatant
+        from arenamcp.combat_identity import resolve_combatants
         from arenamcp.combat_strategy import losing_attackers
 
         eligible = [int(i) for i in context.get("legal_attacker_ids") or [] if str(i).isdigit()] or [
@@ -1340,10 +1387,7 @@ class ActionPlanner(_ActionLegalityMixin):
             identities = list(action.attacker_instance_ids)
             if len(identities) != len(action.attacker_names):
                 try:
-                    identities = [
-                        resolve_combatant(name, state, eligible, local_side=True)
-                        for name in action.attacker_names
-                    ]
+                    identities = resolve_combatants(action.attacker_names, state, eligible, local_side=True)
                 except (ValueError, TypeError, KeyError):
                     continue  # cannot tell which creatures attack: keep the plan
             strategy_text = f"{plan.overall_strategy or ''} {action.reasoning or ''}".strip()
@@ -2788,7 +2832,7 @@ class ActionPlanner(_ActionLegalityMixin):
 
     @staticmethod
     def _bind_combat_identities(action: GameAction, state: dict, context: dict) -> None:
-        from arenamcp.combat_identity import blocker_id_assignments, resolve_combatant
+        from arenamcp.combat_identity import blocker_id_assignments, resolve_combatants
 
         if action.action_type == ActionType.DECLARE_BLOCKERS and context.get("raw_blockers"):
             action.blocker_instance_assignments = blocker_id_assignments(
@@ -2799,12 +2843,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 a["attackerInstanceId"] for a in context.get("raw_attackers") or []
             ]
             if identities:
-                action.attacker_instance_ids = [
-                    resolve_combatant(name, state, identities, local_side=True)
-                    for name in action.attacker_names
-                ]
-                if len(set(action.attacker_instance_ids)) != len(action.attacker_instance_ids):
-                    raise ValueError("The same attacker was selected more than once")
+                action.attacker_instance_ids = resolve_combatants(
+                    action.attacker_names, state, identities, local_side=True
+                )
 
     def _record_diagnostic(self, diag: dict[str, Any]) -> None:
         """Append a planning diagnostic entry to the ring buffer."""

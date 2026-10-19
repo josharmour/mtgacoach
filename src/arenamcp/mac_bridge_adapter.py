@@ -2086,7 +2086,11 @@ class MacBridgeAdapter:
             legal_attackers = {
                 num(instance_id) for instance_id in items(field(blocker, "AttackerInstanceIds"))
             }
-            if not attacker_ids or not set(attacker_ids).issubset(legal_attackers):
+            # No attackers withdraws the blocker's selection, as Arena's own UI
+            # does (DeclareBlockersWorkflow: SelectedAttackerInstanceIds.Clear()
+            # then UpdateBlockers(blocker)); 2026-10-19 a block kept from a
+            # rejected declaration was otherwise committed with the next one.
+            if not set(attacker_ids).issubset(legal_attackers):
                 raise AdapterError(f"Illegal attackers for blocker {blocker_id}: {attacker_ids}")
             selected.append((blocker, attacker_ids))
 

@@ -2335,7 +2335,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         # has a specific reason (e.g. a combat trick in hand).
         try:
             from arenamcp.combat_solver import (
-                blocker_allowed_attackers_map,
+                blocker_options,
                 combat_resource_roles,
                 mana_spending_restriction,
                 optimal_blocks,
@@ -2357,7 +2357,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 ]
                 if gre_blockers:
                     usable_blockers = gre_blockers
-            allowed_map = blocker_allowed_attackers_map(ctx.get("raw_blockers") or [])
+            allowed_map = blocker_options(ctx.get("raw_blockers") or [], ctx.get("blocker_options"))
             from arenamcp.combat_recovery import CombatRecovery
 
             recovery = CombatRecovery(game_state or {})
@@ -3632,9 +3632,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 except (TypeError, ValueError):
                     continue
         try:
-            from arenamcp.combat_solver import blocker_allowed_attackers_map
+            from arenamcp.combat_solver import blocker_options
 
-            allowed_map = blocker_allowed_attackers_map(raw_blockers)
+            allowed_map = blocker_options(raw_blockers, decision_context.get("blocker_options"))
         except Exception:
             allowed_map = {}
         all_attacker_ids = set(label_by_id)
