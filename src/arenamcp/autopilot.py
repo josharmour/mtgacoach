@@ -4947,10 +4947,17 @@ class AutopilotEngine(
             # 2026-10-18 18:26:12 — the player clicked the only target 40 ms
             # before our submit, and MANUAL REQUIRED was announced for a
             # resolved spell.
+            # The bridge can also tell that the player answered first while the
+            # request is still pending (its OnSubmit spent, the GRE's reply not
+            # in yet): Silkguard 21:15:30, the reply took 1.7 s.
+            answered = getattr(self._gre_bridge, "last_targets_answered_by_player", False) is True
             latest = self._gre_bridge.get_pending_actions() or {}
             current = build_pending_decision(latest, resolve_instance=_resolve_instance)
-            if current is None or current.request_id != decision.request_id:
-                logger.info("typed-decision: SelectTargets moved on after a failed submit; yielding")
+            if current is None or current.request_id != decision.request_id or answered:
+                logger.info(
+                    "typed-decision: SelectTargets %s after a failed submit; yielding",
+                    "was answered by the player" if answered else "moved on",
+                )
                 self._request_tracker.observe(decision_fingerprint(current) if current else None)
                 self._state = AutopilotState.IDLE
                 return True

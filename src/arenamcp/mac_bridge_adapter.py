@@ -69,6 +69,9 @@ SNAPSHOT_GETTERS = [
 MAX_NUMERIC_INPUT_ENTRIES = 20
 TARGET_COMMIT_TIMEOUT_S = 1.2
 TARGET_GONE_GRACE_S = 0.6
+# The player's own selection began its round trip before we noticed it; the
+# one live case took 1.72 s (2026-10-18 21:15:30.263 -> 21:15:31.981).
+TARGET_ANSWERED_WAIT_S = 3.0
 
 # Commands answered by the injected library directly.
 PASSTHROUGH = {"ping", "reflect_batch"}
@@ -135,6 +138,16 @@ INTERESTING_NAME_KEYWORDS = (
 
 class AdapterError(Exception):
     """A reflection batch failed; the message is reported as the command error."""
+
+
+class RequestAlreadyAnswered(AdapterError):
+    """The pending request's OnSubmit is spent: it was answered (by the player) before our submit.
+
+    BaseUserRequest.Submit() invokes OnSubmit and then sets it to null; the
+    request object stays pending until the GRE's reply replaces it. Invoking
+    the null delegate fails in the probe as "ref does not name an object
+    result" (2026-10-18 Seam Rip 18:26:12, Silkguard 21:15:30).
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +261,7 @@ class _Ops:
 
     def __init__(self) -> None:
         self.ops: list[dict[str, Any]] = []
+        self.submit_invokes: set[int] = set()
 
     def add(self, op: str, **fields: Any) -> dict:
         self.ops.append({"op": op, **fields})
@@ -306,7 +320,7 @@ class _Ops:
 
     def on_submit(self, request: dict, message: dict) -> None:
         delegate = self.get(request, "OnSubmit")
-        self.call(delegate, "Invoke", message)
+        self.submit_invokes.add(self.call(delegate, "Invoke", message)["ref"])
 
 
 class Snapshot:
@@ -342,7 +356,12 @@ class MacBridgeAdapter:
     def _run(self, ops: _Ops, timeout: float | None = None) -> list[Any]:
         response = self._send({"action": "reflect_batch", "ops": ops.ops}, timeout)
         if not response.get("ok"):
-            raise AdapterError(response.get("error") or "reflect_batch failed")
+            error = response.get("error") or "reflect_batch failed"
+            if response.get("failed_op") in ops.submit_invokes and "does not name an object" in error:
+                raise RequestAlreadyAnswered(
+                    "the request was already answered (its OnSubmit is spent): the player acted first"
+                )
+            raise AdapterError(error)
         return response.get("results") or []
 
     def snapshot(self, depth: int = SNAPSHOT_DEPTH, timeout: float | None = None) -> Snapshot:
@@ -386,6 +405,8 @@ class MacBridgeAdapter:
             result = handler(command, timeout)
         except AdapterError as exc:
             logger.info("mac bridge %s failed: %s", action, exc)
+            if isinstance(exc, RequestAlreadyAnswered):
+                return {"ok": False, "error": str(exc), "already_answered": True}
             return {"ok": False, "error": str(exc)}
         if action not in self._READ_ONLY_COMMANDS and action != "submit_action":
             # submit_action logs its own line; everything else that changes the
@@ -2135,7 +2156,20 @@ class MacBridgeAdapter:
         # "not acknowledged complete" / "acknowledged different targets" and
         # announced MANUAL REQUIRED while slot 2 sat waiting.
         first, later = (chosen[:1], chosen[1:]) if finalize else (chosen, [])
-        self._send_target_slots(snapshot, first, timeout)
+        player_selected = False
+        try:
+            self._send_target_slots(snapshot, first, timeout)
+        except RequestAlreadyAnswered:
+            # 2026-10-18 21:15:30.263: the player clicked Evolution Sage for
+            # Silkguard 230 ms before the model's identical pick was sent; our
+            # submit hit the spent OnSubmit and MANUAL REQUIRED was announced
+            # while the player finished the spell. Their selection is still on
+            # its way: if Arena acknowledges exactly our targets, commit them.
+            # Never add our own slots on top of a player's choice in progress.
+            if not finalize or later:
+                raise
+            logger.info("mac bridge submit_targets: the player selected first; commit only matching targets")
+            player_selected = True
         required = sum(slot.needs > 0 for slot in slots)
         result = {
             **base,
@@ -2155,7 +2189,9 @@ class MacBridgeAdapter:
                 )
                 for selection, targets in later
             ]
-            advanced = self._deferred_commit_targets(snapshot, timeout, expected, pending)
+            advanced = self._deferred_commit_targets(
+                snapshot, timeout, expected, pending, player_selected=player_selected
+            )
             return {"ok": True, **result, "finalized": True, "advanced_without_commit": advanced}
         return {"ok": True, **result, "finalized": False}
 
@@ -2232,20 +2268,24 @@ class MacBridgeAdapter:
         timeout: float | None,
         expected: dict[int, set[int]],
         later: list[tuple[int, list[int]]] | None = None,
+        player_selected: bool = False,
     ) -> bool:
         """Commit on the GRE's updated SelectTargetsReq, like the real client.
 
         ``later`` holds further slots, ``(target_idx, instance_ids)``, each sent
         on the request the GRE returns for the previous one. Returns True when
         the request disappeared without our commit (the client auto-submitted).
-        Mirrors Plugin.DeferredSubmitTargets.
+        Mirrors Plugin.DeferredSubmitTargets. ``player_selected``: the player's
+        own selection is the one in flight (our send found OnSubmit spent), so
+        wait longer for it, and a request that vanishes confirms nothing of ours.
         """
         later = list(later or [])
         source = num(field(original.request, "SourceId"))
         waiting_on = original.handle
+        limit = TARGET_ANSWERED_WAIT_S if player_selected else TARGET_COMMIT_TIMEOUT_S
         started = time.monotonic()
         gone_since: float | None = None
-        while time.monotonic() - started < TARGET_COMMIT_TIMEOUT_S:
+        while time.monotonic() - started < limit:
             time.sleep(0.03)
             current = self.snapshot(depth=SNAPSHOT_DEPTH, timeout=timeout)
             if (
@@ -2254,6 +2294,9 @@ class MacBridgeAdapter:
             ):
                 gone_since = gone_since or time.monotonic()
                 if time.monotonic() - gone_since >= TARGET_GONE_GRACE_S:
+                    if player_selected:
+                        # The player's answer, not ours, ended it: nothing we sent was confirmed.
+                        raise RequestAlreadyAnswered("the player answered this target request")
                     return True
                 continue
             gone_since = None
@@ -2283,9 +2326,16 @@ class MacBridgeAdapter:
                     if any(
                         field(target, "LegalAction") is not None for target in targets
                     ) and not expected.get(num(field(selection, "TargetIdx")), set()).issubset(acknowledged):
+                        if player_selected:
+                            raise RequestAlreadyAnswered("the player chose other targets; left to the player")
                         raise AdapterError("GRE acknowledged different targets; refusing to finalize")
-                self._commit_targets(current, timeout)
+                try:
+                    self._commit_targets(current, timeout)
+                except RequestAlreadyAnswered:
+                    return True  # the player confirmed these same targets first
                 return False
+        if player_selected:
+            raise RequestAlreadyAnswered("the player's target selection was not acknowledged in time")
         raise AdapterError("Target selection was not acknowledged complete; refusing to finalize")
 
     def _cmd_submit_assign_damage(self, command: dict, timeout: float | None) -> dict:

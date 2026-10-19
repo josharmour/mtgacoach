@@ -1283,6 +1283,9 @@ class GREBridge:
             # when given no ids, which could aim a stun at our own creature.
             logger.warning("GRE bridge submit_targets: no target ids given")
             return False
+        # Set when the adapter found the request already answered (the
+        # player's click spent its OnSubmit first); the autopilot yields.
+        self.last_targets_answered_by_player = False
         try:
             # timeout=8: the plugin defers the SubmitTargetsReq commit until
             # the GRE round-trips the updated request (up to ~3s), so this
@@ -1298,6 +1301,7 @@ class GREBridge:
             if resp.get("ok"):
                 logger.info(f"GRE bridge submitted target(s): instance_ids={ids}")
                 return True
+            self.last_targets_answered_by_player = resp.get("already_answered") is True
             logger.warning(f"GRE bridge submit_targets failed: {resp.get('error')}")
         except GREBridgeError as e:
             logger.warning(f"GRE bridge submit_targets error: {e}")
