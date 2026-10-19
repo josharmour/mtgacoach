@@ -969,14 +969,20 @@ class BoardAssessment:
         return self.line_search.prompt_line(max_chars, unmodelled=self.unmodelled, pending=self.pending)
 
     def planning_block(self) -> str:
-        """Fuller facts for the background strategic plan call."""
-        lines = [self.prompt_block().replace("recomputed now", "at plan time")]
+        """Fuller facts for the background strategic plan call.
+
+        The CANDIDATE LINES list the searched lines in full, so the block's
+        one-line "LINES ..." summary of the first two is left out; the plan
+        prompt's game view states the library count.
+        """
+        searched = self.line_search is not None and bool(self.lines)
+        lines = [self.prompt_block(with_lines=not searched).replace("recomputed now", "at plan time")]
         if self.lookahead:
             lines.append(
                 "BOARD-MATH PROJECTION (we deploy the best castable plays and block; they attack every turn): "
                 + self._lookahead_text()
             )
-        if self.line_search is not None and self.lines:
+        if searched:
             lines.append(
                 "CANDIDATE LINES (2-turn search + greedy third turn; they attack each turn with their "
                 "worst-for-us attack; their new cards and tricks are not modelled):"
@@ -1000,8 +1006,6 @@ class BoardAssessment:
             )
         if self.deck_curve is not None:
             lines.append(f"Our deck curve: average mana value {self.deck_curve:.1f}.")
-        if self.library_count is not None:
-            lines.append(f"Our library: {self.library_count} cards.")
         if self.card_advantage is not None:
             lines.append(f"Cards in hand advantage: {self.card_advantage:+d}.")
         if self.unknowns:

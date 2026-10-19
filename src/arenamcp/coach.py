@@ -1029,27 +1029,17 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         """Make oracle text safe and compact for the model prompt.
 
         MTGA-derived oracle text frequently ships raw HTML (``<nobr>``, ``<i>``,
-        ``<br>``) and can carry the same ability line repeated 3-4x (e.g. once
-        raw, once ``<nobr>``-wrapped, then raw again) because forged/local DB
-        rows concatenate multiple renderings into one field. Strip the tags and
-        drop consecutive duplicate lines so each ability appears exactly once
-        and no raw markup leaks into the model input.
+        ``<br>``) and can carry the same ability repeated 2-3x (once raw, once
+        ``<nobr>``-wrapped, then raw again), a modal ability together with its
+        "•" modes. Strip the tags and drop the repeats so each ability appears
+        exactly once and no raw markup leaks into the model input
+        (:func:`arenamcp.match_context.oracle_lines`).
         """
-        import re
+        from arenamcp.match_context import oracle_lines
 
         if not text:
             return text
-        out: list[str] = []
-        prev: str | None = None
-        for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-            norm = " ".join(re.sub(r"<[^>]+>", "", line).split())
-            if not norm:
-                continue
-            if norm == prev:  # drop consecutive duplicate line
-                continue
-            out.append(norm)
-            prev = norm
-        return "\n".join(out)
+        return "\n".join(oracle_lines(text))
 
     @staticmethod
     def _land_has_abilities(oracle_text: str, type_line: str) -> bool:
@@ -1818,7 +1808,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
     @staticmethod
     def _rules_in_deck_reference(card: dict, game_state: dict[str, Any]) -> bool:
-        """Omit repeated rules only when the exact text is in the shared prefix."""
+        """Omit repeated rules only when the same text is in the shared prefix.
+
+        "Same" ignores markup and Arena's repeated renderings (the reference
+        quotes the card database's text, a zone the bridge's), the way both
+        are rendered (:func:`arenamcp.match_context.oracle_lines`).
+        """
         if not game_state.get("deck_reference"):
             return False
         catalog = game_state.get("deck_catalog") or {}
@@ -1828,10 +1823,23 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         quoted = game_state.get("deck_rules_grp_ids")
         if quoted is not None and card.get("grp_id") not in quoted:
             return False  # the reference lists this card by name only
+        from arenamcp.match_context import oracle_lines
+
         return bool(card.get("oracle_text")) and (
             (card.get("modified_name") or card.get("name")) == entry.get("name")
-            and card.get("oracle_text") == entry.get("oracle_text")
+            and oracle_lines(card.get("oracle_text")) == oracle_lines(entry.get("oracle_text"))
         )
+
+    @staticmethod
+    def _rules_shown_before(card: dict, shown: set[tuple[str, str]]) -> bool:
+        """True for a later copy (same name and rules) on the same side; records a first copy in ``shown``."""
+        key = (str(card.get("name") or ""), str(card.get("oracle_text") or ""))
+        if not key[1]:
+            return False
+        if key in shown:
+            return True
+        shown.add(key)
+        return False
 
     def _format_board_card(
         self,
@@ -2592,6 +2600,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         can_play_land = (lands_played == 0) and is_my_turn and "Main" in phase and len(stack) == 0
         hand_name_counts = Counter(c.get("name", "Unknown") for c in hand)
         hand_name_seen: dict[str, int] = {}
+        hand_rules_shown: set[tuple[str, str]] = set()
         engine_casts = self._engine_cast_actions(game_state)
 
         for card in hand:
@@ -2731,7 +2740,17 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 "basic" in type_line or name in ["Plains", "Island", "Swamp", "Mountain", "Forest"]
             )
             oracle_stripped = self._remove_reminder_text(oracle_text) if oracle_text else ""
-            show_oracle = bool(oracle_text) and not is_basic_land
+            # Rules once per card: the deck reference quotes every card seen
+            # this game, hand included, and a second copy repeats the first.
+            rules_key = (name, oracle_stripped)
+            show_oracle = (
+                bool(oracle_text)
+                and not is_basic_land
+                and rules_key not in hand_rules_shown
+                and not self._rules_in_deck_reference(card, game_state)
+            )
+            if show_oracle:
+                hand_rules_shown.add(rules_key)
 
             type_tag = ""
             if "creature" not in type_line and "land" not in type_line:
@@ -2950,8 +2969,13 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             for c in your_cmds:
                 cost_str = f" {c.get('mana_cost', '')}" if c.get("mana_cost") else ""
                 cmd_parts.append(f"  YOUR CMD: {c.get('name', 'Unknown')}{cost_str}")
+                # The deck reference's COMMANDER REFERENCE quotes these rules.
                 oracle = (
-                    self._clean_oracle_for_prompt(c.get("oracle_text", "") or "").replace("\n", " ").strip()
+                    ""
+                    if self._rules_in_deck_reference(c, game_state)
+                    else self._clean_oracle_for_prompt(c.get("oracle_text", "") or "")
+                    .replace("\n", " ")
+                    .strip()
                 )
                 if oracle:
                     cmd_parts.append(f"    {oracle}")
@@ -2968,8 +2992,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         library_summary = game_state.get("library_summary", "")
         if library_summary:
+            from arenamcp.match_context import LIBRARY_POINTER
+
             lines.append("")
-            lines.append(library_summary)
+            # Without a search/scry/surveil/mill effect in play the inventory
+            # only restates the deck reference minus the visible zones.
+            lines.append(library_summary if game_state.get("library_listed", True) else LIBRARY_POINTER)
         return lines
 
     def _resolve_raw_legal_actions(self, game_state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3252,6 +3280,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             if your_cards:
                 your_name_counts = Counter(c.get("name", "Unknown") for c in your_cards)
                 your_name_seen: dict[str, int] = {}
+                your_rules_shown: set[tuple[str, str]] = set()
                 for card in your_cards:
                     lines.extend(
                         self._format_board_card(
@@ -3263,7 +3292,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                             your_name_seen,
                             is_local=True,
                             for_planner=for_planner,
-                            rules_in_reference=self._rules_in_deck_reference(card, game_state),
+                            rules_in_reference=self._rules_in_deck_reference(card, game_state)
+                            or self._rules_shown_before(card, your_rules_shown),
                         )
                     )
             else:
@@ -3295,6 +3325,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             if opp_cards:
                 opp_name_counts = Counter(c.get("name", "Unknown") for c in opp_cards)
                 opp_name_seen: dict[str, int] = {}
+                opp_rules_shown: set[tuple[str, str]] = set()
                 for card in opp_cards:
                     # Add inferred ATK flag before formatting
                     if card.get("instance_id") in _inferred_atk_ids and not card.get("is_attacking"):
@@ -3310,7 +3341,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                             opp_name_seen,
                             is_local=False,
                             for_planner=for_planner,
-                            rules_in_reference=self._rules_in_deck_reference(card, game_state),
+                            rules_in_reference=self._rules_in_deck_reference(card, game_state)
+                            or self._rules_shown_before(card, opp_rules_shown),
                         )
                     )
             else:
@@ -3806,7 +3838,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             Advice string from the LLM
         """
 
-        from arenamcp.match_context import STRATEGIC_POLICY, prepare_match_context, with_deck_reference
+        from arenamcp.match_context import prepare_match_context, strategic_policy, with_deck_reference
         from arenamcp.narration import action_narration, narration_policy
 
         voice_mode = narration_mode or getattr(self, "narration_mode", "advisor")
@@ -3815,7 +3847,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if not llm_available(self._backend):
             return self._offline_advice(game_state, trigger=trigger, threat=threat, question=question)
         self._note_model_available()
-        game_state = prepare_match_context(game_state)
+        # A question ("what are my outs?") gets the library inventory; advice
+        # gets it when a search/scry/surveil/mill effect is in play.
+        game_state = prepare_match_context(game_state, library=True if question else None)
         total_start = time.perf_counter()
 
         # Build context. _build_context honors MTGACOACH_PROMPT_VARIANT
@@ -4010,7 +4044,17 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             "pirate": "You are a ruthless pirate captain coaching a swabby! Speak like a pirate! Yarr! Keep it short!",
         }
 
-        effective_system_prompt = prompts.get(style_key, _quick_prompt) + "\n" + STRATEGIC_POLICY
+        from arenamcp.coach_prompts import situational_coach_prompt
+        from arenamcp.situational_rules import subjects_in_play
+
+        # Rules whose subject is absent (the Strixhaven keyword primer, the
+        # Equipment rule, the policy's tutor and fetch-land rules) stay out.
+        subjects = subjects_in_play(game_state, extra_text=game_state.get("legal_actions") or [])
+        effective_system_prompt = (
+            situational_coach_prompt(prompts.get(style_key, _quick_prompt), subjects)
+            + "\n"
+            + strategic_policy(subjects)
+        )
         effective_system_prompt += "\n\n" + narration_policy(voice_mode)
         dynamic_context = ""
 

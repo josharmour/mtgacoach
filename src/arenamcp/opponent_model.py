@@ -24,6 +24,9 @@ class OpponentProfile:
     sweeper_risk: float = 0.0
     sweeper_warning: str = ""
     combat_trick_warning: str = ""
+    # Revealed cards matching the archetype's signature cards; 0 means the
+    # archetype is the no-match default ("Standard Midrange", 40%).
+    signature_matches: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -276,4 +279,5 @@ class OpponentModel:
             sweeper_risk=sweeper_risk,
             sweeper_warning=sweeper_warning,
             combat_trick_warning=combat_trick_warning,
+            signature_matches=best_score,
         )

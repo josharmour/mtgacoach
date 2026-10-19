@@ -2642,7 +2642,8 @@ class GamePlanManager:
         from arenamcp.board_assessment import assess
         from arenamcp.match_context import prepare_match_context, with_deck_reference
 
-        game_state = prepare_match_context(game_state)
+        # A plan spans turns: it lists the library's remaining cards (outs).
+        game_state = prepare_match_context(game_state, library=True)
         context = self._build_context(game_state)
         assessment = assess(game_state)
         # Stable text first, for the server's prefix cache: system prompt,

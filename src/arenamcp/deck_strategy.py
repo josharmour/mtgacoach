@@ -371,8 +371,14 @@ class DeckPlaybook:
             f"  Unless: {rule['unless']}",
         ]
 
-    def decision_context(self, state: dict) -> str:
-        """Keep the relevant learned exceptions close to the immediate choice."""
+    def decision_context(self, state: dict, *, request_type: str | None = None) -> str:
+        """Keep the relevant learned exceptions close to the immediate choice.
+
+        ``request_type``: the pending request's type when the caller knows it
+        (a typed decision), e.g. "SelectTargets". Rules whose scope matches
+        none of the window's kinds are left out; a window no hint classifies
+        gets every rule.
+        """
         context = state.get("decision_context") or {}
         request = " ".join(
             str(value)
@@ -385,6 +391,13 @@ class DeckPlaybook:
             )
         ).lower()
         kinds = {kind for needle, kind in _DECISION_HINTS if needle in request}
+        if not kinds:
+            # Player.log's "actions_available" / "assign_damage" and the typed
+            # request ("SelectTargets") classify a window nothing above did:
+            # 2026-10-18 an upkeep or end-step priority window matched no hint
+            # and every rule was sent.
+            flat = f"{request} {request_type or ''}".lower().replace("_", "")
+            kinds = {kind for needle, kind in _DECISION_HINTS + _REQUEST_HINTS if needle in flat}
         if "combat" in kinds:
             # Trading a body changes the same resources as sacrifices and
             # recovery choices, though the actual trigger events still differ.
@@ -440,26 +453,47 @@ class DeckPlaybook:
 
         ``omit_oracle_for``: cards whose rules the prompt already quotes (the
         deck reference's seen cards); their evidence lines collapse to a
-        pointer so the rules are not sent twice.
+        pointer so the rules are not sent twice. A card cited by several
+        mechanisms is quoted under the first one and pointed to after that.
         """
+        from arenamcp.match_context import plain_rule, unique_abilities
+
         omit = {int(gid) for gid in omit_oracle_for}
+        quoted_above: dict[int, set[str]] = {}
 
         def name(gid):
             return f"{self.catalog[gid].get('name', 'Unknown')} [grp:{gid}]"
 
+        def cited(gid, numbers):
+            # Arena's card data repeats each ability in up to three markup
+            # variants; a cited rule that repeats an earlier one is dropped.
+            rules = oracle_rules(self.catalog[gid])
+            texts = [plain_rule(rules[number - 1]) for number in numbers]
+            return [(numbers[index], texts[index]) for index in unique_abilities(texts)]
+
         def evidence_lines(mechanism):
             # One line per card (its cited rules in order), not one per rule:
             # the 2026-10-10 Brawl playbook spent 7k chars repeating names.
-            quoted: dict[int, list[int]] = {}
-            pointed: dict[int, list[int]] = {}
+            by_card: dict[int, list[int]] = {}
             for e in mechanism["evidence"]:
-                bucket = pointed if e["card"] in omit else quoted
-                bucket.setdefault(e["card"], []).append(e["rule"])
-            for gid, rules in quoted.items():
-                text = "; ".join(f"rule {r}: {oracle_rules(self.catalog[gid])[r - 1]}" for r in rules)
-                yield f"  Oracle — {name(gid)}: {text}"
-            for gid, rules in pointed.items():
-                yield f"  Oracle — {name(gid)}, rule {', '.join(str(r) for r in rules)}: quoted in the deck reference"
+                by_card.setdefault(e["card"], []).append(e["rule"])
+            for gid, numbers in by_card.items():
+                rules = cited(gid, numbers)
+                listed = ", ".join(str(number) for number, _ in rules)
+                if gid in omit:
+                    yield f"  Oracle — {name(gid)}, rule {listed}: quoted in the deck reference"
+                    continue
+                seen = quoted_above.setdefault(gid, set())
+                new = [(number, rule) for number, rule in rules if rule not in seen]
+                if not new:
+                    yield f"  Oracle — {name(gid)}, rule {listed}: quoted above"
+                    continue
+                seen.update(rule for _, rule in new)
+                text = "; ".join(f"rule {number}: {rule}" for number, rule in new)
+                earlier = len(new) < len(rules)
+                yield f"  Oracle — {name(gid)}: {text}" + (
+                    "; its other cited rules are quoted above" if earlier else ""
+                )
 
         data = self.data
         lines = [
@@ -543,4 +577,9 @@ _DECISION_HINTS = (
     ("target", "targeting"),
     ("search", "tutor"),
     ("mulligan", "mulligan"),
+)
+# Request names (underscores removed) that only classify a window the hints above left open.
+_REQUEST_HINTS = (
+    ("assigndamage", "combat"),
+    ("distribut", "targeting"),
 )

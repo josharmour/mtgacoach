@@ -184,8 +184,9 @@ def test_typed_prompt_uses_current_decision_instead_of_stale_snapshot():
     )
     backend = CapturingBackend()
     assert ActionPlanner(backend=backend).plan_decision_options(decision, state) == ["idx:0"]
-    assert "Arena confirms payable now" in backend.prompt
-    assert "Legal: Cast Test Spell [OK]" in backend.prompt
+    assert "- idx:0: Cast Test Spell  [Arena confirms payable now]" in backend.prompt
+    # The OPTIONS list is the menu; the game view does not restate it.
+    assert "Legal:" not in backend.prompt and "GRE_Request" not in backend.prompt
     assert "[S,OK]" in backend.prompt
     assert "NEED:" not in backend.prompt
     assert "payable individually now" in backend.system

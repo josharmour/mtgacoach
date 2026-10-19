@@ -171,9 +171,14 @@ class MCTSTreePayload:
         ]
         if self.format_summary:
             lines.append(f"• Format: {self.format_summary}")
-        if self.opponent_profile and self.opponent_profile.revealed_cards:
-            lines.append(f"• Opponent Archetype: {self.opponent_profile.format_summary()}")
-        elif self.opponent_threat_summary:
+        # With no signature card seen the classifier's answer is its default
+        # ("Standard Midrange (40% confidence)", every Limited and Brawl game
+        # of 2026-10-10..18): it says nothing about this opponent.
+        profile = self.opponent_profile
+        classified = profile is None or profile.signature_matches > 0
+        if classified and profile and profile.revealed_cards:
+            lines.append(f"• Opponent Archetype: {profile.format_summary()}")
+        elif classified and self.opponent_threat_summary:
             lines.append(f"• Opponent Threat Candidates (Hypothesized Pool): {self.opponent_threat_summary}")
         lines.append("")
 

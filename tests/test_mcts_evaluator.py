@@ -241,6 +241,44 @@ def test_mcts_decision_packet_format_for_llm_prompt():
     assert "Win Expectancy" not in prompt_text
     assert "Tactical score" not in prompt_text
     assert "======================================" in prompt_text
+    # No signature card seen: the classifier's default guess is left out
+    # (before: "Opponent Threat Candidates (Hypothesized Pool): Standard Midrange (40% confidence)").
+    assert "Opponent" not in prompt_text and "Standard Midrange" not in prompt_text
+
+
+def test_a_classified_opponent_reaches_the_hints():
+    state = _swiftspear_board()
+    state["turn"]["active_player"] = 1
+    text = MCTSEvaluator.evaluate(state, force=True).format_for_llm_prompt()
+    assert "• Opponent Archetype: Standard Mono-Red Aggro" in text
+
+
+def _swiftspear_board() -> dict[str, Any]:
+    return {
+        "local_seat_id": 1,
+        "turn": {"turn_number": 2, "phase": "Phase_Main1"},
+        "players": [
+            {"seat_id": 1, "life_total": 20, "is_local": True},
+            {"seat_id": 2, "life_total": 20, "is_local": False},
+        ],
+        "battlefield": [
+            {
+                "name": "Mountain",
+                "type_line": "Basic Land — Mountain",
+                "controller_seat_id": 2,
+                "is_tapped": False,
+            },
+            {
+                "name": "Monastery Swiftspear",
+                "type_line": "Creature — Human Monk",
+                "controller_seat_id": 2,
+                "power": 1,
+                "toughness": 2,
+                "is_tapped": False,
+            },
+        ],
+        "graveyard": [{"name": "Monstrous Rage", "type_line": "Instant", "owner_seat_id": 2}],
+    }
 
 
 def test_opponent_model_classification():

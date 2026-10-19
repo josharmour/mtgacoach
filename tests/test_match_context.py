@@ -49,10 +49,13 @@ def test_full_catalog_and_library_have_more_than_fifteen_distinct_cards():
     for gid in range(100, 140):
         assert f"Rules for card {gid}." in result["deck_reference"]
         assert f"[grp:{gid}]" in result["library_summary"]
-    assert "3x Card 100" in result["deck_reference"]
+    assert "3x Card 100 [grp:100] {2}{G} Creature — Test 2/3" in result["deck_reference"]
     assert "3x Card 100" in result["library_summary"]
-    assert "{2}{G}" in result["deck_reference"]
-    assert "printed 2/3" in result["deck_reference"]
+    # A rules line adds MV and rules; count, cost, type and stats stay on the
+    # deck-list line (2026-10-18: each quoted card's facts were sent twice).
+    assert "\nCard 100 [grp:100] | MV 3 | Rules for card 100." in result["deck_reference"]
+    assert result["deck_reference"].count("{2}{G}") == 40
+    assert result["deck_reference"].count("Creature — Test") == 40
 
 
 def test_library_cards_are_listed_by_name_and_rules_quoted_only_once_seen():

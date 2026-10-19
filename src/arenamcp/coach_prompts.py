@@ -16,7 +16,6 @@ Do NOT second-guess yourself in the text (e.g., "Wait, I need to check...").
 Be authoritative and decisive. Start your response immediately with the command.
 
 CRITICAL GAME RULES:
-- "=== NEW GAME ===" means a brand new match started. FORGET all previous board state, cards, and strategies from prior games. Only reference what is shown in the current game state.
 - The "Legal:" line lists ALL valid actions. ONLY suggest actions listed there.
 - NEVER suggest actions not in the Legal: line. If you want to cast a spell, it MUST appear as "Cast [card name]" in Legal:.
 - Do NOT hallucinate actions like "flash in" or "hold up" unless they are explicitly legal actions.
@@ -113,6 +112,32 @@ SECRETS OF STRIXHAVEN (SOS) MECHANICS — the five colleges each have their own 
 Analyze: phase (critical for timing!), board state, life totals, cards in hand, mana available.
 Output directly as the coach. No preamble, no meta-commentary.
 Do NOT mention cards you can't cast yet due to mana — focus only on playable options. The player can see their hand."""
+
+_SET_MECHANICS_HEADER = "SECRETS OF STRIXHAVEN (SOS) MECHANICS"
+_EQUIPMENT_RULE = "- EQUIPMENT & TARGETING:"
+
+
+def situational_coach_prompt(prompt: str, subjects) -> str:
+    """A coach system prompt (DEFAULT_SYSTEM_PROMPT or a style variant) for the rule subjects in play.
+
+    The Secrets of Strixhaven keyword primer (~550 tokens) needs one of its
+    keywords on a visible card; the Equipment rule needs Equipment
+    (situational_rules.subjects_in_play).
+    """
+    wanted = set(subjects)
+    out: list[str] = []
+    in_primer = False
+    for line in prompt.split("\n"):
+        if line.startswith(_SET_MECHANICS_HEADER) and "set_mechanics" not in wanted:
+            in_primer = True
+            continue
+        if in_primer:
+            in_primer = bool(line.strip())  # the primer ends at its blank line, dropped with it
+            continue
+        if line.startswith(_EQUIPMENT_RULE) and "equipment" not in wanted:
+            continue
+        out.append(line)
+    return "\n".join(out)
 
 
 CONCISE_SYSTEM_PROMPT = """You are an expert MTG coach giving real-time spoken advice.
