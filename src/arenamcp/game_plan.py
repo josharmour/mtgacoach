@@ -734,9 +734,26 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
                 continue
             identity = id(card)
             if identity in used or identity in this_turn:
-                when = "this turn" if identity in this_turn else "earlier in the plan"
-                issues.append(f"{label}: dropped {card.get('name')} (already cast {when})")
-                continue
+                # Another copy of the same card (ledger #164, 2026-10-19 14:46-14:48: five
+                # Hare Apparents in hand, every plan turn after the first said "no cast"):
+                # the name lookup keeps only the first copy, so look for an unused twin.
+                twin = next(
+                    (
+                        other
+                        for other in list(hand or []) + list(graveyard or [])
+                        if isinstance(other, dict)
+                        and other is not card
+                        and _plain(other.get("name")) == _plain(card.get("name"))
+                        and id(other) not in used
+                        and id(other) not in this_turn
+                    ),
+                    None,
+                )
+                if twin is None:
+                    when = "this turn" if identity in this_turn else "earlier in the plan"
+                    issues.append(f"{label}: dropped {card.get('name')} (already cast {when})")
+                    continue
+                card, identity = twin, id(twin)
             this_turn.add(identity)
             info = hand_card(dict(card, mana_cost=cost_text or card.get("mana_cost") or ""))
             stored = str(card.get("name")) + (f" ({note})" if note else "")
