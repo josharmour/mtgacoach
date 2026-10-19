@@ -23,7 +23,7 @@ ward, or kills together with other burn what no one spell kills
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 # Decisions kept per match; the prompt shows only the current turn's.
@@ -641,7 +641,12 @@ _UNTARGETABLE_RE = re.compile(r"\b(?:hexproof|shroud)\b", re.IGNORECASE)
 
 
 def burn_combo(
-    state: dict, burns: list[Burn], *, required: Burn | None = None, mana: int | None = None
+    state: dict,
+    burns: list[Burn],
+    *,
+    required: Burn | None = None,
+    mana: int | None = None,
+    victim_id: int | None = None,
 ) -> BurnCombo | None:
     """The best kill two or more of ``burns`` make together within this turn's mana, or None.
 
@@ -652,7 +657,7 @@ def burn_combo(
     spell count against ``mana`` (default :func:`mana_available`); hexproof
     or shroud creatures are skipped. ``required`` (a spell on the stack)
     must be part of the kill. The biggest victim wins, then the fewest
-    spells and the least mana.
+    spells and the least mana; ``victim_id`` limits it to that creature.
     """
     from itertools import combinations, product
 
@@ -667,6 +672,8 @@ def burn_combo(
     best: tuple[tuple, BurnCombo] | None = None
     for victim in _theirs(state):
         if "creature" not in _types(victim):
+            continue
+        if victim_id is not None and victim.get("instance_id") != victim_id:
             continue
         text = f"{victim.get('oracle_text') or ''} {' '.join(str(k) for k in victim.get('keywords') or [])}"
         if _UNTARGETABLE_RE.search(_REMINDER_RE.sub(" ", text)):
@@ -727,12 +734,23 @@ def _castable_burns(decision: Any, state: dict) -> list[Burn]:
     return burns
 
 
-def _stack_burn_combo(card: dict, state: dict) -> BurnCombo | None:
-    """A kill the burn on the stack (``card``) makes with burn still castable from hand."""
+def _stack_burn_combo(
+    card: dict, state: dict, *, victim_id: int | None = None, damage: int | None = None
+) -> BurnCombo | None:
+    """A kill the burn on the stack (``card``) makes with burn still castable from hand.
+
+    ``damage``: what the stack spell deals in the mode chosen for it (its
+    largest amount otherwise); ``victim_id``: only a kill of that creature.
+    """
     required = burn_reach(str(card.get("oracle_text") or ""), card, state, check_kicker=False)
     if required is None:
         return None
-    sorcery_ok = turn_window(state) in (_TURN_STEPS.index("main1"), _TURN_STEPS.index("main2"))
+    if damage is not None:
+        required = replace(required, variants=((required.variants[0][0], damage),))
+    active, local = (state.get("turn") or {}).get("active_player"), _local_seat(state)
+    sorcery_ok = turn_window(state) in (_TURN_STEPS.index("main1"), _TURN_STEPS.index("main2")) and (
+        active is None or local is None or active == local
+    )
     hand: list[Burn] = []
     for other in state.get("hand") or []:
         if not isinstance(other, dict) or other.get("instance_id") == card.get("instance_id"):
@@ -743,7 +761,34 @@ def _stack_burn_combo(card: dict, state: dict) -> BurnCombo | None:
         burn = burn_reach(str(other.get("oracle_text") or ""), other, state)
         if burn is not None:
             hand.append(burn)
-    return burn_combo(state, [required, *hand], required=required) if hand else None
+    return burn_combo(state, [required, *hand], required=required, victim_id=victim_id) if hand else None
+
+
+def stack_burn_combo_on(
+    state: dict | None, victim_id: int, *, source_id: int = 0, source_name: str = "", damage: int | None = None
+) -> BurnCombo | None:
+    """The kill of ``victim_id`` our burn on the stack makes with burn still castable from hand.
+
+    Ledger #110 (2026-10-19 12:29:01): Iroh's Demonstration's 4 at a 4/5 Hearth
+    Elemental, with Tectonic Hazard (1 to each of their creatures) castable
+    for the mana left, was declined as "kills no legal opposing target" because
+    the target-step reasoning did not name the Hazard. The stack spell is
+    found by instance id, else by name; every spell's cost, the victim's ward
+    and the timing (sorceries only in our main phase) count. Never raises.
+    """
+    if not isinstance(state, dict) or not victim_id:
+        return None
+    try:
+        stack = [card for card in state.get("stack") or [] if isinstance(card, dict)]
+        card = next((c for c in stack if source_id and c.get("instance_id") == source_id), None)
+        if card is None and source_name:
+            wanted = source_name.strip().lower()
+            card = next((c for c in stack if str(c.get("name") or "").strip().lower() == wanted), None)
+        if card is None:
+            return None
+        return _stack_burn_combo(card, state, victim_id=victim_id, damage=damage)
+    except Exception:  # a hint, never a reason to fail the decision
+        return None
 
 
 def burn_combo_for(decision: Any, state: dict | None) -> BurnCombo | None:

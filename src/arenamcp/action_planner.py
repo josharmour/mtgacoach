@@ -4829,14 +4829,18 @@ class ActionPlanner(_ActionLegalityMixin):
     def _planned_follow_up_kills(
         self, decision: Any, game_state: dict[str, Any], card: dict[str, Any] | None, damage: int
     ) -> bool:
-        """The model's reasoning names more burn in hand that finishes this target.
+        """More burn in hand finishes this target: burn the reasoning names, or a burn combo.
 
         2026-10-19 12:31:22 (ledger #103): "Mode 2 puts 4 damage on a Hearth
         Elemental so Lightning Strike finishes it" — 4 + 3 kills the 4/5, but
         the 4 alone does not, so the target was declined, the cast cancelled,
         and the Strike then went at an undamaged Elemental. A two-spell kill is
-        a kill, as in _reject_false_kill_claim.
+        a kill, as in _reject_false_kill_claim. 12:29:01 (ledger #110): the
+        reasoning named no follow-up, but Tectonic Hazard (1 to each of their
+        creatures) was castable for the mana left: the combo
+        (:func:`decision_memory.stack_burn_combo_on`) on this target counts too.
         """
+        from arenamcp.decision_memory import stack_burn_combo_on
         from arenamcp.play_safety import damage_would_kill, named_burn_damage
 
         if card is None:
@@ -4847,14 +4851,24 @@ class ActionPlanner(_ActionLegalityMixin):
         }
         reasoning = str(getattr(self, "_last_decision_reasoning", "") or "")
         follow_up = named_burn_damage(reasoning, game_state, played)
-        if follow_up <= 0 or not damage_would_kill(card, damage + follow_up):
-            return False
-        logger.info(
-            "Keeping the target: %d damage plus %d from the burn the reasoning names kills %s",
-            damage,
-            follow_up,
-            card.get("name"),
+        if follow_up > 0 and damage_would_kill(card, damage + follow_up):
+            logger.info(
+                "Keeping the target: %d damage plus %d from the burn the reasoning names kills %s",
+                damage,
+                follow_up,
+                card.get("name"),
+            )
+            return True
+        combo = stack_burn_combo_on(
+            game_state,
+            _as_int(card.get("instance_id")),
+            source_id=played["instance_id"],
+            source_name=played["name"],
+            damage=damage,
         )
+        if combo is None:
+            return False
+        logger.info("Keeping the target: burn combo %s", combo.text())
         return True
 
     def _prefer_lethal_damage_target(
