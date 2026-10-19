@@ -1,0 +1,55 @@
+```json
+{
+  "role": "aggressor",
+  "role_reason": "Facts confirm race ahead: our flying clock runs while theirs has none yet.",
+  "turns": [
+    {
+      "turn": "T",
+      "land": "",
+      "cast": [],
+      "attack": "Slickshot Show-Off at the player (Ajani if their ground board starts racing us)",
+      "hold": "Hand empty; if drawn: burn spell goes face or kills a lifelink flyer; if drawn: creature deploys",
+      ""
+    },
+    {
+      "turn": "T+1",
+      "land": "",
+      "cast": [],
+      "attack": "Slickshot Show-Off at the player",
+      "hold": "All mana flexible for drawn instants post-blocks; if drawn: Emberheart+Spend spell same turn for growth"
+    },
+    {
+      "turn": "T+2",
+      "land": "",
+      "cast": [],
+      "attack": "Slickshot Show-Off at the player",
+      "hold": "Keep one instant up for their first resolved lifelink creature; if drawn: Cindermaw resolves before burning out"
+    }
+  ],
+  "win_conditions": ["Grown flying Slickshot plus topdecked burn reach", "Resolve Giant Cindermaw to freeze their lifegain"],
+  "path": "Slickshot flies over every turn; each drawn spell pumps him; burn finishes from <=7",
+  "threat": "Ajani's lifegain engine grows Hortimancer and spawns cat tokens faster than topdecks",
+  "develop_next": "Draw any burn spell or prowess creature to fuel Slickshot",
+  "switch_if": ["They resolve a flying lifelink creature -> kill it on sight", "Their tokens threaten lethal -> pivot defender, sweep with Iroh's Demonstration", "Cindermaw drawn -> resolve it before spending reach"],
+  "active_mechanisms": [
+    "engine_1 ACTIVE: Slickshot on board converts every drawn noncreature spell into +2/+0 flying damage",
+    "engine_3 reachable: ~20 face damage left in library fits their shrinking window",
+    "engine_5 contingency vs Authority/lifegain if Cindermaw is drawn"
+  ],
+  "resource_priorities": [
+    "Protect Slickshot at all costs - it is our only clock and evasion",
+    "Save burn for face or lifelink flyers; ignore ground Hortimancer while our flier evades it"
+  ],
+  "assumptions": [
+    "Nothing kills Slickshot on their turn - recheck after T12 resolves",
+    "One land drop per turn continues (none in hand)",
+    "Ajani's token/lifegain output stays slower than our flying clock"
+  ],
+  "lessons": [
+    "Killing lifelink creatures on sight has worked every time",
+    "Three straight turns without damage - pressure line stalled on empty hand",
+    "Plan only cards actually in hand; two planned casts were missed",
+    "Burn-only topdecking is too slow vs Ajani's lifegain engine"
+  ]
+}
+```
