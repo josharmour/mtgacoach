@@ -214,12 +214,7 @@ namespace MtgaCoachBridge
                     // This is critical because Update() stops after OnDestroy (scene transitions).
                     if (action == "ping")
                     {
-                        var pingResp = new JObject
-                        {
-                            ["ok"] = true,
-                            ["version"] = PluginInfo.Version
-                        };
-                        writer.WriteLine(pingResp.ToString(Formatting.None));
+                        writer.WriteLine(PingResponse().ToString(Formatting.None));
                         continue;
                     }
 

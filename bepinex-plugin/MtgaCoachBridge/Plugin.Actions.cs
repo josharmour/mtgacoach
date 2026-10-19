@@ -29,13 +29,7 @@ namespace MtgaCoachBridge
             switch (action)
             {
                 case "ping":
-                    cmd.SetResponse(new JObject
-                    {
-                        ["ok"] = true,
-                        ["version"] = PluginInfo.Version,
-                        ["runtime"] = "bepinex",
-                        ["protocols"] = new JArray(ReflectProtocol)
-                    });
+                    cmd.SetResponse(PingResponse());
                     break;
 
                 case "reflect_batch":

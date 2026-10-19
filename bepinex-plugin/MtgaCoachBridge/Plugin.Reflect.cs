@@ -11,6 +11,15 @@ namespace MtgaCoachBridge
 
         private ReflectBatch _reflect;
 
+        // One ping reply for the socket-thread fast path and the main-thread case.
+        internal static JObject PingResponse() => new JObject
+        {
+            ["ok"] = true,
+            ["version"] = PluginInfo.Version,
+            ["runtime"] = "bepinex",
+            ["protocols"] = new JArray(ReflectProtocol)
+        };
+
         private void HandleReflectBatch(PipeCommand cmd)
         {
             if (_reflect == null)
