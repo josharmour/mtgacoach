@@ -227,6 +227,25 @@ class FirstTokenTimeout(TimeoutError):
     """No reasoning or content token arrived within ``first_token_timeout_s``."""
 
 
+class StreamStalled(TimeoutError):
+    """A stream that had sent its first token sent nothing for ``STREAM_STALL_S``."""
+
+
+# 2026-10-19 09:33:52: vLLM hung mid-generation (CUDA OOM in a TP worker). Both
+# decision legs got a first token at 5.1 s and then nothing; the socket read
+# timeout (8 s per read) fired at 14.5 s, past the 12 s budget, the coaching
+# loop stalled 22 s, and the stall did not count toward the circuit ("slow but
+# alive"). While vLLM generates, chunks arrive every few tens of ms.
+STREAM_STALL_S = 4.0
+
+
+def _is_saturation(err: "BackendError") -> bool:
+    """The server took the request and generated nothing: no first token, or a stalled stream."""
+    if err.kind in ("first_token_timeout", "stream_stall"):
+        return True
+    return err.kind == "timeout" and err.first_token_seen is False
+
+
 class _CallCancelled(Exception):
     """Internal: unwinds a request whose handle was cancelled."""
 
@@ -310,6 +329,8 @@ def _counts_for_circuit(err: BackendError) -> bool:
         return False
     if err.status_code is not None:
         return err.status_code in CIRCUIT_FAILURE_STATUS_CODES
+    if err.kind == "stream_stall":
+        return True  # a first token, then silence: hung, not slow
     if err.kind in ("timeout", "first_token_timeout"):
         return not err.first_token_seen
     return err.kind == "connection"
@@ -544,6 +565,47 @@ class _CallHandle:
         # The httpcore network stream this call last read or wrote (see
         # _TrackingNetworkBackend); None outside the call.
         self._network = None
+        # How long this call's socket reads may wait (see read_limit), as
+        # perf_counter times; set per attempt by _complete_once_tracked.
+        self.deadline: float | None = None
+        self.first_token_deadline: float | None = None
+        self.stall_s: float | None = None
+        self.token_seen = False
+        # Which limit cut the last read short: "deadline", "first_token" or "stall".
+        self.read_cut: str | None = None
+
+    def arm_reads(
+        self,
+        *,
+        deadline: float | None,
+        first_token_deadline: float | None = None,
+        stall_s: float | None = None,
+    ) -> None:
+        self.deadline = deadline
+        self.first_token_deadline = first_token_deadline
+        self.stall_s = stall_s
+        self.token_seen = False
+        self.read_cut = None
+
+    def read_limit(self) -> tuple[float, str] | None:
+        """The longest the next socket read may wait, and the limit that sets it (None: no limit).
+
+        The budget is a wall-clock deadline; before the first token the
+        first-token deadline applies, after it each read may wait at most
+        ``stall_s``. httpx's own read timeout restarts on every read, so a
+        stream that stalls after its first token outran the budget by the
+        whole read timeout.
+        """
+        now = time.perf_counter()
+        limits: list[tuple[float, str]] = []
+        if self.deadline is not None:
+            limits.append((self.deadline - now, "deadline"))
+        if self.token_seen:
+            if self.stall_s is not None:
+                limits.append((self.stall_s, "stall"))
+        elif self.first_token_deadline is not None:
+            limits.append((self.first_token_deadline - now, "first_token"))
+        return min(limits) if limits else None
 
     def cancel(self, reason: str = "cancelled") -> None:
         with self._lock:
@@ -646,14 +708,23 @@ class _TrackedNetworkStream(_NetworkStreamBase):
     def __init__(self, inner) -> None:
         self._inner = inner
 
-    def _note(self) -> None:
+    def _note(self):
         handle = getattr(_ACTIVE_CALL, "handle", None)
         if handle is not None:
             handle.note_network(self._inner)
+        return handle
 
     def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
-        self._note()
-        return self._inner.read(max_bytes, timeout)
+        handle = self._note()
+        limit = handle.read_limit() if handle is not None else None
+        if limit is None or (timeout is not None and timeout <= limit[0]):
+            return self._inner.read(max_bytes, timeout)
+        try:
+            return self._inner.read(max_bytes, max(limit[0], 0.01))
+        except Exception as error:
+            if "Timeout" in type(error).__name__:
+                handle.read_cut = limit[1]
+            raise
 
     def write(self, buffer: bytes, timeout: float | None = None) -> None:
         self._note()
@@ -742,6 +813,9 @@ class _CallContext:
     first_token_timeout_s: float | None = None
     priority: int | None = None
     first_token_at: float | None = None
+    # Background work at low priority can be preempted by vLLM and resume
+    # later: no stall limit for it (its budget still applies).
+    background: bool = False
 
 
 # ARENAMCP_LLM_BACKGROUND_LANE=0 lets background calls run concurrently again.
@@ -813,6 +887,21 @@ class _BackgroundLane:
             if self._holder is handle:
                 self._holder = None
                 self._cond.notify_all()
+
+    def cancel_all(self, reason: str, keep: _CallHandle | None = None) -> int:
+        """Cancel the background call in flight and every waiting one (not ``keep``); returns how many."""
+        with self._cond:
+            handles = [
+                other
+                for other in ([self._holder] if self._holder is not None else []) + self._waiting
+                if other is not keep and not other.is_cancelled
+            ]
+        for other in handles:
+            logger.info("[PROXY] Background %s cancelled: model server %s", other.call_class, reason)
+            other.cancel(reason)
+        with self._cond:
+            self._cond.notify_all()
+        return len(handles)
 
     def holder_class(self) -> str | None:
         with self._cond:
@@ -1071,6 +1160,7 @@ class ProxyBackend:
             budget_s=budget,
             handle=_CallHandle(resolved_class, cancel_event),
             first_token_timeout_s=_positive_or_none(first_token_timeout_s),
+            background=is_background,
         )
         lane_held = False
         watch_done: threading.Event | None = None
@@ -1207,13 +1297,19 @@ class ProxyBackend:
                 params,
                 request_started=request_started,
                 attempt=attempt,
-                status="ttft_timeout" if last_err.kind == "first_token_timeout" else "error",
+                status={"first_token_timeout": "ttft_timeout", "stream_stall": "stalled"}.get(
+                    last_err.kind, "error"
+                ),
                 first_token_at=call.first_token_at,
                 call=call,
             )
             logger.error(f"API error: {last_err}")
             if _counts_for_circuit(last_err):
-                breaker.record_failure(str(last_err), token=token)
+                breaker.record_failure(str(last_err), token=token, saturation=_is_saturation(last_err))
+                if breaker.degraded() and background_lane_enabled():
+                    # A hung or saturated server: free the slots background
+                    # work holds (09:34 a game plan held one for 57 s).
+                    _BACKGROUND_LANE.cancel_all("degraded", keep=call.handle)
             BackendHealth.instance().record_failure(error=str(last_err), status_code=last_err.status_code)
             if raise_on_error:
                 raise last_err
@@ -1302,6 +1398,10 @@ class ProxyBackend:
     @staticmethod
     def _classify_call_error(e: Exception, call: _CallContext) -> BackendError:
         """BackendError plus whether a token arrived (first-token timeouts are their own kind)."""
+        if isinstance(e, StreamStalled):
+            stalled = BackendError(str(e), retryable=False, kind="stream_stall")
+            stalled.first_token_seen = True
+            return stalled
         err = _classify_api_error(e)
         token_seen = call.first_token_at is not None
         ftt = call.first_token_timeout_s
@@ -1379,8 +1479,12 @@ class ProxyBackend:
         return self._circuit().available()
 
     def background_blocked(self) -> bool:
-        """True while background work would be skipped: breaker open, or 3 fresh failures."""
+        """True while background work would be skipped: breaker open, degraded, or 3 fresh failures."""
         return self._circuit().background_blocked()
+
+    def degraded(self) -> bool:
+        """The server is not generating: breaker open, or a fresh no-first-token / stalled-stream failure."""
+        return self._circuit().degraded()
 
     def circuit_snapshot(self) -> dict:
         """Breaker state for UI/logs: state, retry_in_s, consecutive_failures, last_error, ..."""
@@ -1609,6 +1713,12 @@ class ProxyBackend:
         # Try streaming first. Usage is delivered in an extra chunk with no
         # choices; it must be collected separately from text/finish chunks.
         stream = None
+        if handle is not None:
+            handle.arm_reads(
+                deadline=deadline,
+                first_token_deadline=attempt_started + ftt if ftt is not None else None,
+                stall_s=None if call is None or call.background else STREAM_STALL_S,
+            )
         try:
             stream_options = (
                 {"stream_options": {"include_usage": True}} if self._stream_usage_supported else {}
@@ -1667,6 +1777,8 @@ class ProxyBackend:
                         first_content_at = now
                 if call is not None and call.first_token_at is None and first_token_at is not None:
                     call.first_token_at = first_token_at
+                if handle is not None and first_token_at is not None and not handle.token_seen:
+                    handle.token_seen = True
 
             self._note_served_model(served_model)
             content = "".join(chunks)
@@ -1702,6 +1814,16 @@ class ProxyBackend:
             reason = handle.cancelled() if handle is not None else None
             if reason:
                 raise _CallCancelled(reason) from stream_err
+            # A read cut short by the call's own limits (_TrackedNetworkStream.read).
+            cut = handle.read_cut if handle is not None else None
+            if cut == "stall":
+                raise StreamStalled(
+                    f"stream stalled: no data for {STREAM_STALL_S:.0f}s after the first token"
+                ) from stream_err
+            if cut == "first_token" and ftt is not None:
+                raise FirstTokenTimeout(f"no first token within {ftt:.1f}s") from stream_err
+            if cut == "deadline":
+                raise TimeoutError("LLM streaming time budget exhausted") from stream_err
             # Real API/network errors belong to the bounded outer retry loop.
             err = _classify_api_error(stream_err)
             if err.retryable or err.status_code is not None:
@@ -1714,6 +1836,9 @@ class ProxyBackend:
             # keep generating on the server.
             _close_quietly(stream)
 
+        if handle is not None:
+            # A non-streamed answer sends nothing until it is done: only the budget applies.
+            handle.arm_reads(deadline=deadline)
         response = request()
         message = response.choices[0].message
         content = message.content or ""
@@ -1851,6 +1976,18 @@ class ProxyBackend:
                 self._record_request_metrics(
                     params, request_started=request_start, attempt=1, status="error", call=call
                 )
+            failure = _classify_api_error(e)
+            if (
+                failure.kind == "timeout"
+                or failure.status_code in CIRCUIT_FAILURE_STATUS_CODES
+                or breaker.degraded()
+            ):
+                # A timeout or a 5xx is the server being busy or down, not an
+                # endpoint that cannot read images (a tunnel that resets big
+                # payloads still counts): 2026-10-16 19:59:17-19:59:40 three
+                # "Request timed out." navigation calls disabled image
+                # completions, and with them auto-queue, for the session.
+                return f"{BACKEND_ERROR_PREFIX} vision analysis failed: {e}"
             self._vision_fail_count = getattr(self, "_vision_fail_count", 0) + 1
             if self._vision_fail_count >= self._VISION_DISABLE_AFTER:
                 self._vision_dead = True

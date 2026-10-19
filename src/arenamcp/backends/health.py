@@ -14,9 +14,18 @@ planner and each re-initialised backend all build their own instance.
 Rules (one record per ``complete()`` call, never per HTTP attempt):
 
 * **Counted failures**: connection errors; HTTP 408/429/500/502/503/504/524;
-  timeouts that never received a first token.
-* **Not counted**: 4xx auth/client errors; timeouts after the first token
-  (slow but alive); empty or unparseable answers; cancelled or dropped calls.
+  timeouts that never received a first token; streams that stop sending
+  after their first token (2026-10-19 09:33:57: vLLM hung after CUDA OOM
+  mid-generation, so both decision legs got a first token at 5.1 s and then
+  nothing).
+* **Not counted**: 4xx auth/client errors; a budget that runs out while
+  tokens still flow (slow but alive); empty or unparseable answers;
+  cancelled or dropped calls.
+* **Degraded**: a fresh streak holding a saturation failure (no first token,
+  or a stalled stream) means the server is not generating. Background work
+  stops and in-flight background calls are cancelled at once (09:34 the game
+  plan held a slot for 57 s into the hang), and the decision hedge sends one
+  leg instead of two. A success or a stale streak ends it.
 * **Trip**: 3 consecutive counted failures whose first and last are at least
   5 s apart, or 5 consecutive failures. One slow call can never trip it, and
   a burst of concurrent calls failing in the same second needs 5 to trip it.
@@ -111,6 +120,8 @@ class CircuitBreaker:
         self._lock = threading.Lock()
         self._open = False
         self._consecutive = 0
+        # The current streak holds a saturation failure (see "Degraded").
+        self._saturated = False
         self._streak_started: float | None = None
         self._last_failure_at: float | None = None
         self._last_error = ""
@@ -202,9 +213,16 @@ class CircuitBreaker:
         with self._lock:
             if self._open:
                 return True
-            return self._consecutive >= self.BACKGROUND_STOP_FAILURES and not self._streak_stale_locked(
-                self._clock()
-            )
+            return (
+                self._consecutive >= self.BACKGROUND_STOP_FAILURES or self._saturated
+            ) and not self._streak_stale_locked(self._clock())
+
+    def degraded(self) -> bool:
+        """Open, or the fresh failure streak holds a saturation failure (the server is not generating)."""
+        if not circuit_enabled():
+            return False
+        with self._lock:
+            return self._open or (self._saturated and not self._streak_stale_locked(self._clock()))
 
     def retry_allowed(self) -> bool:
         """The proxy's one in-call retry: allowed unless the breaker is open.
@@ -231,6 +249,7 @@ class CircuitBreaker:
         with self._lock:
             now = self._clock()
             self._consecutive = 0
+            self._saturated = False
             self._streak_started = None
             self._last_failure_at = None
             if detail:
@@ -256,7 +275,7 @@ class CircuitBreaker:
         )
         return True
 
-    def record_failure(self, error: str = "", *, token: int | None = None) -> bool:
+    def record_failure(self, error: str = "", *, token: int | None = None, saturation: bool = False) -> bool:
         """Record one counted failure. Returns True when this call opened it.
 
         ``token`` is the generation the call was admitted in (None = current).
@@ -264,6 +283,8 @@ class CircuitBreaker:
         generation) pushes the next trial back; a call admitted before the
         breaker opened changes nothing. While closed, a failure from a call
         admitted before the latest open/close is old news and not counted.
+        ``saturation``: the server took the request but generated nothing
+        (no first token, or a stream that stalled): the endpoint is degraded.
         """
         with self._lock:
             now = self._clock()
@@ -278,8 +299,10 @@ class CircuitBreaker:
                 return False
             if self._streak_stale_locked(now):
                 self._consecutive = 0
+                self._saturated = False
                 self._streak_started = None
             self._consecutive += 1
+            self._saturated = self._saturated or bool(saturation)
             if self._streak_started is None:
                 self._streak_started = now
             self._last_failure_at = now
@@ -397,6 +420,7 @@ class CircuitBreaker:
             "state": "open" if self._open else "closed",
             "enabled": circuit_enabled(),
             "probation": (not self._open) and self._in_probation_locked(now),
+            "degraded": self._open or (self._saturated and not self._streak_stale_locked(now)),
             "consecutive_failures": self._consecutive,
             "trips": self._trips,
             "last_error": self._last_error,

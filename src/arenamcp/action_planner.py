@@ -239,6 +239,19 @@ def llm_circuit_open(backend: Any) -> bool:
     return state is False
 
 
+def llm_degraded(backend: Any) -> bool:
+    """True while the proxy's breaker reports the server not generating (no first token / stalled).
+
+    Only an explicit ``True`` from ``backend.degraded()`` counts.
+    """
+    probe = getattr(backend, "degraded", None)
+    try:
+        return callable(probe) and probe() is True
+    except Exception as error:  # a broken health probe must never block a decision
+        logger.debug("backend degraded probe failed: %s", error)
+        return False
+
+
 def is_time_budget_error(error: BaseException) -> bool:
     """The call ran out of its own time budget (the model was too slow), not a dead server.
 
@@ -5094,6 +5107,16 @@ class ActionPlanner(_ActionLegalityMixin):
             return data, [str(option_id) for option_id in ids]
 
         normal_budget = min(self._timeout, 12.0)
+        if critical and llm_degraded(getattr(self, "_backend", None)):
+            # 2026-10-19 09:34:06-09:34:23: during the vLLM hang each critical
+            # decision sent both legs into the hung server (6 requests before
+            # the circuit opened). While the last calls got no token, one
+            # low-effort call answers or fails as fast as two would.
+            logger.info("typed-decision: model server degraded; one low-effort call, no high-effort leg")
+            trace = getattr(self, "_last_decision_trace", None)
+            if isinstance(trace, dict):
+                trace["hedge"] = {"winner": "low", "why": "high not sent: server degraded"}
+            critical = ""
         if critical:
             low_agrees = None
             if decision.request_type == "ActionsAvailable" and line_source is not None and not unmodelled:
