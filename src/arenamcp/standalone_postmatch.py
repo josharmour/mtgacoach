@@ -121,13 +121,25 @@ class _PostMatchMixin:
         Game n of a Bo3 gets ``<match>-g<n>``, like the turn-drop path. A game
         whose end is already recorded (Arena re-binds the finished match id
         after MatchCompleted) or that is already being recorded (Arena resumes
-        a game after a mid-start reset) is left alone.
+        a game after a mid-start reset) is left alone. So is a game whose
+        packet an earlier coach saved: 2026-10-19 09:53:35 and 10:06:23 the
+        restarted coach restored the finished matches 92c09c7a and 6175f002,
+        armed a packet and a bundle for each, and at the next match boundary
+        saved and uploaded an empty "unknown" bundle over the real one (#29).
         """
         from arenamcp.match_bundle import game_bundle_id
 
         game_id = game_bundle_id(match_id, game_number)
         if game_id in self._recorded_games():
             return
+        try:
+            from arenamcp.match_packets import is_match_finalized
+
+            if is_match_finalized(game_id):
+                logger.info(f"Not recording {game_id} again: its packet was saved before (finished game)")
+                return
+        except Exception as e:
+            logger.debug(f"finalized-game check failed for {game_id}: {e}")
         try:
             from arenamcp.match_packets import get_current_packet, start_match_packet
 
@@ -253,7 +265,7 @@ class _PostMatchMixin:
 
             current = get_current_packet()
             if current is not None and current.match_id == game_id:
-                packet_path = self._finalize_match_packet(stop_match_packet(), result)
+                packet_path = self._finalize_match_packet(stop_match_packet(), result, final_state)
         except Exception as e:
             logger.warning(f"Failed to save match packet on event-signal: {e}")
         ctx = getattr(self, "_match_bundle_ctx", None)
@@ -266,8 +278,16 @@ class _PostMatchMixin:
             )
         return True
 
-    def _finalize_match_packet(self, packet, result: str | None) -> Path | None:
-        """Fill the packet's end-of-match fields and save it; returns the saved path."""
+    def _finalize_match_packet(
+        self, packet, result: str | None, final_state: dict | None = None
+    ) -> Path | None:
+        """Fill the packet's end-of-match fields and save it; returns the saved path.
+
+        The opponent comes from the final state, as in the match history
+        (Arena's room event, reservedPlayers playerName). 2026-10-19 (#47):
+        it was only read from replay cosmetics, so every packet that day said
+        None while the history named the opponent ("aaronkp" for a51dea64).
+        """
         if packet is None:
             return None
         packet.result = result or "unknown"
@@ -275,6 +295,10 @@ class _PostMatchMixin:
         coach = getattr(self, "_coach", None)
         if coach is not None:
             packet.deck_strategy = getattr(coach, "_deck_strategy", None)
+        if isinstance(final_state, dict):
+            name = final_state.get("opponent_name") or final_state.get("opponent_screen_name")
+            if isinstance(name, str) and name.strip():
+                packet.opponent_name = name
         if packet.replay_path:
             try:
                 from arenamcp.match_history import parse_replay_cosmetics
@@ -282,7 +306,8 @@ class _PostMatchMixin:
                 cosmetics = parse_replay_cosmetics(packet.replay_path)
                 if cosmetics:
                     # Header shape: {Local, Opponent:{ScreenName,...}, BattlefieldId}
-                    packet.opponent_name = (cosmetics.get("Opponent") or {}).get("ScreenName")
+                    screen_name = (cosmetics.get("Opponent") or {}).get("ScreenName")
+                    packet.opponent_name = screen_name or packet.opponent_name
             except Exception:
                 pass
         return packet.save()

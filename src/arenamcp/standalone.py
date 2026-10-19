@@ -2045,7 +2045,9 @@ class StandaloneCoach(
                         try:
                             from arenamcp.match_packets import stop_match_packet
 
-                            packet_path = self._finalize_match_packet(stop_match_packet(), boundary_result)
+                            packet_path = self._finalize_match_packet(
+                                stop_match_packet(), boundary_result, dict(prev_state) if prev_state else None
+                            )
                         except Exception as e:
                             logger.warning(f"Failed to save match packet on match-boundary: {e}")
                         self._finish_match_bundle(

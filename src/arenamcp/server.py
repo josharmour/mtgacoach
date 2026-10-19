@@ -618,6 +618,16 @@ def _queue_selection_from_log() -> dict[str, Any] | None:
     return None
 
 
+_MATCH_COMPLETED_TOKEN = "MatchGameRoomStateType_MatchCompleted"
+
+
+def _match_completed_in_tail(tail: bytes, match_id: str) -> bool:
+    """A MatchCompleted room event for *match_id* is in this chunk of Player.log."""
+    needle = match_id.encode()
+    token = _MATCH_COMPLETED_TOKEN.encode()
+    return any(token in line and needle in line for line in tail.splitlines())
+
+
 def _match_event_from_log(match_id: str) -> str:
     """The eventId Arena logged for this match's room (when the watcher missed its start)."""
     pattern = re.compile(r'"eventId":\s*"([^"]+)"')
@@ -949,6 +959,7 @@ def start_watching() -> None:
         # the saved offset points into an older game we should not replay.
         saved_match_id = saved_state.get("match_id")
         live_tail_match_id: str | None = None
+        tail_bytes = b""
         if saved_match_id:
             try:
                 from pathlib import Path
@@ -969,6 +980,13 @@ def start_watching() -> None:
                 f"Discarding saved resume state: live tail match {live_tail_match_id} "
                 f"differs from saved match {saved_match_id} "
                 f"(saved offset would replay an older game)"
+            )
+            saved_state = None
+        elif saved_match_id and _match_completed_in_tail(tail_bytes, saved_match_id):
+            # 2026-10-19 09:53:35 / 10:06:23 (#29): a finished match saved as
+            # "active" was resumed, re-recorded and its bundle overwritten.
+            logger.info(
+                f"Discarding saved resume state: match {saved_match_id} already completed in Player.log"
             )
             saved_state = None
         elif resume_decision in ("resume_same_session", "resume_no_identity"):
