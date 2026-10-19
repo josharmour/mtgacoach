@@ -313,9 +313,10 @@ class StandaloneCoach(
         return "||".join(parts)
 
     def _queue_screenshot_analysis(self) -> None:
-        """Run screenshot analysis in the background."""
+        """Run screenshot analysis in the background (an automatic read, not the user's button)."""
         threading.Thread(
             target=self.take_screenshot_analysis,
+            kwargs={"automatic": True},
             daemon=True,
         ).start()
 
@@ -356,6 +357,18 @@ class StandaloneCoach(
             logger.info(
                 "Resolved generic selection to %s without vision",
                 decision_type,
+            )
+            return curr_state, False
+        # The autopilot answers this selection through the bridge itself. A
+        # screenshot read beside it is ~4 s of model time whose spoken advice
+        # can contradict the submitted pick (ledger #81, 2026-10-19 11:35:29:
+        # "Exile one of your duplicate Tectonic Hazards" 18 ms after the
+        # autopilot exiled Shock). Coaching without the autopilot keeps it.
+        if self._autopilot_drives(curr_state):
+            logger.info(
+                "Generic selection (%s/%s) is the autopilot's to answer — no screenshot analysis",
+                pending,
+                decision_type or "unknown",
             )
             return curr_state, False
 
