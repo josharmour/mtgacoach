@@ -2190,7 +2190,7 @@ def hand_loss(decision: Any, state: dict[str, Any]) -> HandLoss | None:
         texts = [rules, str(getattr(decision, "source_label", "") or "")]
         texts += [
             f"{item.get('name') or ''}: {item.get('oracle_text') or ''}"
-            for item in reversed(state.get("stack") or [])
+            for item in state.get("stack") or []  # top first (arenamcp.stack_order)
             if isinstance(item, dict)
         ]
         for text in texts:

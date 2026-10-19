@@ -48,6 +48,7 @@ from arenamcp.gre_bridge import (
     enrich_snapshot_from_pending_response,
     get_bridge,
 )
+from arenamcp.stack_order import stack_top
 from arenamcp.target_effects import source_effect_text, target_effect_is_harmful
 
 logger = logging.getLogger(__name__)
@@ -1550,7 +1551,7 @@ class AutopilotEngine(
                 except (TypeError, ValueError):
                     continue
         if picked is None and stack:
-            picked = stack[-1]  # top of stack
+            picked = stack_top(game_state)  # index 0 (arenamcp.stack_order)
 
         if picked:
             matched = bool(source_id) and str(picked.get("instance_id")) == str(source_id)

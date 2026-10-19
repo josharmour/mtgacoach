@@ -1593,6 +1593,7 @@ class GameState(_GameStateAnnotationsMixin):
                 "opponent_library_count": (
                     self.get_zone_card_count(ZoneType.LIBRARY, opponent_seat) if opponent_seat else None
                 ),
+                # Top-first: the Stack zone's own id order (arenamcp.stack_order).
                 "stack": [obj.to_dict() for obj in self.stack],
                 "graveyard": [obj.to_dict() for obj in self.graveyard],
                 "exile": [obj.to_dict() for obj in self.get_objects_in_zone(ZoneType.EXILE)],

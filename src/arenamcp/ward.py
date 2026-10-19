@@ -533,7 +533,7 @@ def pending_ward_triggers(state: dict[str, Any], source_id: int = 0) -> list[War
     battlefield = [card for card in state.get("battlefield") or [] if isinstance(card, dict)]
     entry = next((item for item in stack if source_id and item.get("instance_id") == source_id), None)
     if entry is None and not source_id and stack:
-        entry = stack[-1]
+        entry = stack[0]  # the top (arenamcp.stack_order)
     if entry is not None and _controller(entry) not in (None, seat):
         named = _as_ward_trigger(entry, battlefield, seat)
         if named is None:

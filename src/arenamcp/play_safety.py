@@ -223,7 +223,7 @@ def numeric_option_source(state: dict, decision: Any) -> dict:
     return next(
         (
             card
-            for card in reversed(state.get("stack") or [])
+            for card in state.get("stack") or []  # the topmost first (arenamcp.stack_order)
             if "{X}" in str(card.get("mana_cost") or "").upper()
             and (card.get("controller_seat_id") or card.get("owner_seat_id")) == local
         ),

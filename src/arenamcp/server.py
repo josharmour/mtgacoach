@@ -42,6 +42,7 @@ from arenamcp.mtgadb import MTGADatabase
 from arenamcp.parser import LogParser
 from arenamcp.scryfall import ScryfallCache
 from arenamcp.sealed_eval import analyze_sealed_pool, format_sealed_detailed, format_sealed_recommendation
+from arenamcp.stack_order import order_top_first
 from arenamcp.watcher import DRAFT_ACTIVITY_TOKENS, MTGALogWatcher
 
 # Defer voice/audio imports — sounddevice initializes PortAudio on import
@@ -1843,7 +1844,16 @@ def _get_bridge_overlay(
     local_graveyard = _bridge_zone_cards("local_graveyard")
     opponent_graveyard = _bridge_zone_cards("opponent_graveyard")
     graveyard = local_graveyard + opponent_graveyard
-    stack = _bridge_zone_cards("stack")
+    # The bridge's VisibleCards come in insertion order (roughly bottom-first);
+    # every snapshot's stack is top-first like the log's (arenamcp.stack_order).
+    stack_zone = bridge_zones.get("stack") if isinstance(bridge_zones.get("stack"), dict) else {}
+    stack = order_top_first(
+        _bridge_zone_cards("stack"),
+        zone_ids=stack_zone.get("card_ids"),
+        reference_ids=[
+            card.get("instance_id") for card in fallback_zones.get("stack") or [] if isinstance(card, dict)
+        ],
+    )
     exile = _bridge_zone_cards("exile")
     command = _bridge_zone_cards("command")
 
@@ -1962,7 +1972,7 @@ def get_game_state() -> dict[str, Any]:
     ]
     hand = [_serialize_snapshot_obj(o) for o in zones.get("my_hand", [])]
     graveyard = [_serialize_snapshot_obj(o) for o in zones.get("graveyard", [])]
-    stack = [_serialize_snapshot_obj(o) for o in zones.get("stack", [])]
+    stack = [_serialize_snapshot_obj(o) for o in zones.get("stack", [])]  # top-first (arenamcp.stack_order)
     exile = [_serialize_snapshot_obj(o) for o in zones.get("exile", [])]
     command = [_serialize_snapshot_obj(o) for o in zones.get("command", [])]
 

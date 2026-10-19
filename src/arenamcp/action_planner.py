@@ -4669,7 +4669,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 if picked_entry is not None:
                     break
         if picked_entry is None and stack and not source_id:
-            picked_entry = stack[-1]
+            from arenamcp.stack_order import stack_top
+
+            picked_entry = stack_top(game_state)
         context = game_state.get("decision_context") or {}
         context_source = _as_int(context.get("source_id") or context.get("sourceId"))
         context_matches = not source_id or source_id == context_source
@@ -6739,7 +6741,7 @@ def own_stack_only(decision: Any, state: dict[str, Any]) -> str:
             card = find_source(state, meta)
             if card.get("type_line") and not hand_card(card).instant_speed:
                 return ""
-    return str(stack[-1].get("name") or "spell")
+    return str(stack[0].get("name") or "spell")  # the top (arenamcp.stack_order)
 
 
 def _controller_seat(card: dict[str, Any]) -> Any:

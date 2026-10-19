@@ -364,7 +364,24 @@ namespace MtgaCoachBridge
             }
 
             try { AddZone("battlefield", gs.Battlefield); } catch { }
-            try { AddZone("stack", gs.Stack); } catch { }
+            try
+            {
+                AddZone("stack", gs.Stack);
+                // VisibleCards follow the order the client's merged state gained
+                // its objects (roughly bottom-first); CardIds is the GRE zone's own
+                // objectInstanceIds, top-first. Python orders the stack by it
+                // (src/arenamcp/stack_order.py).
+                if (gs.Stack?.CardIds != null && zones["stack"] is JObject stackZone)
+                {
+                    var cardIds = new JArray();
+                    foreach (var id in gs.Stack.CardIds)
+                    {
+                        cardIds.Add((int)id);
+                    }
+                    stackZone["card_ids"] = cardIds;
+                }
+            }
+            catch { }
             try { AddZone("local_hand", gs.LocalHand); } catch { }
             try { AddZone("opponent_hand", gs.OpponentHand); } catch { }
             try { AddZone("local_graveyard", gs.LocalGraveyard); } catch { }
