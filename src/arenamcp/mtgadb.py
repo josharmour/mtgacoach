@@ -701,10 +701,12 @@ class MTGADatabase:
     def get_prompt_text(self, prompt_id: int) -> str | None:
         """English template of a GRE prompt id (the ``Prompts`` table), or None.
 
-        GRE requests carry ``prompt.promptId`` ("Exile a card." is 1117); the
-        text is an ICU message ("{1, plural, =1 {Discard a card.} ...}") whose
-        parameters ``arena_prompts.render_prompt`` fills. A DB build without the
-        table answers None without counting as a lookup error.
+        GRE requests carry ``prompt.promptId`` ("Exile a card." is 1117), and a
+        SelectN of IdType_PromptParameterIndex names each choice only by a prompt
+        id ("Lose 3 life" is 1218). The text can be an ICU message
+        ("{1, plural, =1 {Discard a card.} ...}") whose parameters
+        ``arena_prompts.render_prompt`` fills; markup is removed here. A DB
+        build without the table answers None without counting as a lookup error.
         """
         prompt_id = int(prompt_id or 0)
         if prompt_id <= 0:
@@ -720,10 +722,10 @@ class MTGADatabase:
                     "WHERE p.Id = ? ORDER BY l.Formatted = 1 DESC LIMIT 1",
                     (prompt_id,),
                 ).fetchone()
-            except sqlite3.Error as e:
+            except Exception as e:  # older builds without a Prompts table
                 logger.debug(f"Prompt lookup failed for id {prompt_id}: {e}")
                 return None
-            text = re.sub(r"</?nobr>", "", str(row["Loc"] or "")) if row else ""
+            text = re.sub(r"<[^>]*>", "", str(row["Loc"] or "")).strip() if row else ""
             self._prompt_cache[prompt_id] = text or None
             return text or None
 

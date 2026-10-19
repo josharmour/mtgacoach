@@ -33,12 +33,13 @@ from arenamcp.target_effects import (
     target_effect_is_harmful,
 )
 from arenamcp.ward import (
+    pay_decision_facts,
+    pending_ward_payment,
     targeting_mana,
     untapped_land_drop,
     ward_cast_note,
     ward_of,
     ward_payable,
-    ward_trigger_source,
 )
 
 logger = logging.getLogger(__name__)
@@ -414,7 +415,7 @@ class TurnPlan:
 # JSON schema embedded in the system prompt for constrained output
 ACTION_SCHEMA = """{
   "actions": [{
-    "pick": 0,
+    "pick": "integer: the 1-based number of a Legal: menu entry; OMIT for structured actions",
     "action_type": "play_land|cast_spell|declare_attackers|declare_blockers|select_target|select_n|modal_choice|mulligan_keep|mulligan_mull|pass_priority|resolve|draft_pick|click_button|activate_ability|order_blockers|assign_damage|order_combat_damage|pay_costs|search_library|distribute|numeric_input|choose_starting_player|select_replacement|select_counters|casting_options|order_triggers",
     "card_name": "string (card name, empty if not applicable)",
     "target_names": ["string (target card/player names)"],
@@ -2840,6 +2841,8 @@ class ActionPlanner(_ActionLegalityMixin):
             # hallucination is structurally impossible on this path.
             action = None
             pick = action_data.get("pick") if isinstance(action_data, dict) else None
+            if pick is not None and self._structured_combat_declaration(action_data):
+                pick = None  # an echoed pick never replaces a declaration (#44)
             if pick is not None:
                 try:
                     idx = int(pick) - 1
@@ -2853,7 +2856,7 @@ class ActionPlanner(_ActionLegalityMixin):
                             continue
                         action = self._parse_action({**action_data, "action_type": "declare_blockers"})
                     else:
-                        action = self._legal_action_to_action(entry)
+                        action = self._menu_entry_action(entry, action_data)
                     if action is not None:
                         action.reasoning = str(action_data.get("reasoning", "") or "")
                         logger.debug(f"Menu pick {pick} → {self._last_menu[idx]!r}")
@@ -3071,6 +3074,10 @@ class ActionPlanner(_ActionLegalityMixin):
                 [
                     f"Optional cost from: {source_name or 'unknown source'}",
                     f"Effect text: {oracle_text or 'unknown'}",
+                    # The amount and, for a ward tax, whose ward and what it
+                    # counters: without them Burst Lightning's {2} ward tax read
+                    # as its "{4} kicker" and was declined (2026-10-19 10:38:30).
+                    *pay_decision_facts(game_state),
                     self._decision_game_context(game_state),
                     self._strategy_context(game_state),
                     "",
@@ -3395,13 +3402,14 @@ class ActionPlanner(_ActionLegalityMixin):
         if decision.request_type == "OptionalAction" and accept is not None:
             # An opposing ward trigger asking us to pay: we aimed at that
             # permanent on purpose, and declining counters our whole effect.
-            warded = ward_trigger_source(game_state, _as_int(accept.meta.get("sourceId")))
-            ward = ward_of(warded)
+            # Every ward trigger still pending counts (ward.pending_ward_payment).
+            payment = pending_ward_payment(game_state, _as_int(accept.meta.get("sourceId")))
+            ward = payment.ward if payment else None
             if (
                 ward is not None
                 and ward_payable(ward, game_state, targeting_mana(game_state, None)) is not False
             ):
-                name = (warded or {}).get("name") or "their permanent"
+                name = payment.names
                 self._last_decision_option_ids = ["optional:accept"]
                 self._last_decision_reasoning = f"Pay {name}'s {ward.label} so our effect is not countered."
                 self._last_decision_trace = {"policy": "ward_payment", "validated_ids": ["optional:accept"]}

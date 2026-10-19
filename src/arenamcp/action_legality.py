@@ -127,10 +127,48 @@ class _ActionLegalityMixin:
             name = re.sub(r"\s*\[[^\]]*\]\s*$", "", name).strip()
         return name
 
+    @staticmethod
+    def _structured_combat_declaration(action_data: Any) -> bool:
+        """A declare_attackers/declare_blockers answer that carries its own declaration.
+
+        Its "pick" is an echo, not a menu choice: the schema's old ``"pick": 0``
+        placeholder came back 35 times on combat windows on 2026-10-19 ("Planner
+        pick 0 out of menu range", a51dea64 10:24:51), and an in-range echo would
+        have replaced the declared attackers or blocks with one menu line.
+        """
+        if not isinstance(action_data, dict):
+            return False
+        kind = str(action_data.get("action_type") or "").strip().lower()
+        if kind == "declare_attackers":
+            return bool(action_data.get("attacker_names") or action_data.get("attacker_targets"))
+        if kind == "declare_blockers":
+            # An empty mapping beside a "Block with: X" pick is an incomplete
+            # block, not "no blocks"; the pick path rejects it.
+            return bool(action_data.get("blocker_assignments"))
+        return False
+
+    def _menu_entry_action(self, entry: str, action_data: dict[str, Any]) -> GameAction | None:
+        """The action a menu pick stands for.
+
+        "Assign damage (order targets by priority)" names the request, not an
+        assignment: the pick means assign_damage with the same answer's
+        distribution and target order (2026-10-19 11:23:58 it had "no
+        executable mapping" and only the structured fallback answered).
+        """
+        if entry.strip().lower().startswith("assign damage"):
+            return self._parse_action({**action_data, "action_type": ActionType.ASSIGN_DAMAGE.value})
+        return self._legal_action_to_action(entry)
+
     def _legal_action_to_action(self, legal_action: str) -> GameAction | None:
         """Convert a rules-engine legal action string into a GameAction."""
         act = self._normalize_action_text(legal_action)
         lower = act.lower()
+
+        mode = re.match(r"mode (\d+):", lower)
+        if mode:
+            # Casting-time modal entry ("Mode 1: deals 4 damage to target
+            # creature") — the bridge's optionIndex (#73).
+            return GameAction(action_type=ActionType.MODAL_CHOICE, modal_index=int(mode.group(1)))
 
         if lower.startswith("play land:"):
             return GameAction(

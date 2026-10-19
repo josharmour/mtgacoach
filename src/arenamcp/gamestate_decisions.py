@@ -598,6 +598,20 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
     elif msg_type == "GREMessageType_CastingTimeOptionsReq":
         req = dict(msg.get("castingTimeOptionsReq", {}))
         source_id = _coerce_int(req.get("sourceId", 0), 0)
+        if not source_id:
+            # The request names the spell only per option (affectedId; it is
+            # on the stack while being cast). Source 0 is never on the stack,
+            # so the auto-clear dropped the modes after 5 s (2026-10-19
+            # 11:14:30, Iroh's Demonstration) and the menu fell back to a
+            # generic "alternative cost" choice (#73).
+            source_id = next(
+                (
+                    _coerce_int(option.get("affectedId", 0), 0)
+                    for option in req.get("castingTimeOptionReq") or []
+                    if isinstance(option, dict) and option.get("affectedId")
+                ),
+                0,
+            )
         source_ctx = _resolve_request_source_context(game_state, source_id)
         source_card = source_ctx.get("source_card") or ""
         label = f"Choose Casting Option ({source_card})" if source_card else "Choose Casting Option"
@@ -767,9 +781,30 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
         option_ids = color_ids
         id_type = "Color"
 
+    # An effect's alternatives named by prompt id, not cards (Perforating
+    # Artist: sacrifice / discard / lose 3 life) — decisions.prompt_choice_ids.
+    prompt_choices: list[dict[str, Any]] = []
+    prompt_source: dict[str, Any] = {}
+    if color_ids is None and "promptparameterindex" in str(id_type).lower().replace("_", ""):
+        from arenamcp.decisions import prompt_choice_ids, prompt_text
+
+        pairing = prompt_choice_ids(req)
+        for oid in option_ids:
+            pid = pairing.get(oid, 0)
+            prompt_choices.append({"id": oid, "prompt_id": pid, "text": prompt_text(pid) if pid else ""})
+        prompt_source_id = _coerce_int(req.get("sourceId", 0), 0)
+        if prompt_source_id:
+            # Not "source_id": that key arms the stack-based auto-clear, and
+            # the asking permanent is on the battlefield.
+            prompt_source = {
+                **_resolve_request_source_context(game_state, prompt_source_id),
+                "prompt_source_id": prompt_source_id,
+            }
+
     # Resolve option IDs to card names (handles both game objects and direct grp_ids from library searches)
     option_cards: list[str] = [option["name"] for option in color_options(color_ids or [])]
-    for oid in option_ids[:20] if color_ids is None else []:  # colours are named above
+    option_cards += [choice["text"] or f"Choice #{choice['id']}" for choice in prompt_choices]
+    for oid in option_ids[:20] if color_ids is None and not prompt_choices else []:  # named above
         grp_id = 0
         obj = game_state.game_objects.get(oid)
         if obj and obj.grp_id:
@@ -814,6 +849,9 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
         "static_list": req.get("staticList") or "",
         **prompt_info,
     }
+    if prompt_choices:
+        game_state.decision_context["prompt_choices"] = prompt_choices
+        game_state.decision_context.update(prompt_source)
     return False
 
 
@@ -844,8 +882,10 @@ def _select_n_prompt_info(
                 info["prompt_text"] = text
         source_id = _coerce_int(req.get("sourceId", 0), 0)
         if source_id:
-            info["source_id"] = source_id
+            # Not "source_id": that key arms the stack-based auto-clear, and the
+            # asking card (the Agent) is on the battlefield, not the stack.
             info.update(_resolve_request_source_context(game_state, source_id))
+            info["prompt_source_id"] = source_id
         text = info.get("prompt_text") or ""
         hand_ids = {obj.instance_id for obj in game_state.hand}
         if text and option_ids and all(i in hand_ids for i in option_ids):
@@ -1139,6 +1179,11 @@ def _handle_actions_available(game_state: "GameState", msg: dict) -> bool:
     return False
 
 
+def _mana_count(option: dict) -> int:
+    """Mana one ManaPaymentOption makes."""
+    return sum(_coerce_int(mana.get("count", 1), 1) for mana in _ensure_dict_list(option.get("mana", [])))
+
+
 def _handle_pay_costs(game_state: "GameState", msg: dict) -> bool:
     """Handle PayCostsReq messages."""
     import time as _time
@@ -1227,14 +1272,18 @@ def _handle_pay_costs(game_state: "GameState", msg: dict) -> bool:
         options = _ensure_dict_list(action.get("manaPaymentOptions", []))
         mana = [m for option in options for m in _ensure_dict_list(option.get("mana", []))]
         specs = {str(s.get("type")) for m in mana for s in _ensure_dict_list(m.get("specs", []))}
-        payment_sources.append(
-            {
-                "instance_id": _coerce_int(action.get("instanceId", 0), 0),
-                "ability_grp_id": _coerce_int(action.get("abilityGrpId", 0), 0),
-                "colors": sorted({_MANA_ABBREV.get(str(m.get("color")), str(m.get("color"))) for m in mana}),
-                "treasure": "ManaSpecType_FromTreasure" in specs,
-            }
-        )
+        payment_source = {
+            "instance_id": _coerce_int(action.get("instanceId", 0), 0),
+            "ability_grp_id": _coerce_int(action.get("abilityGrpId", 0), 0),
+            "colors": sorted({_MANA_ABBREV.get(str(m.get("color")), str(m.get("color"))) for m in mana}),
+            "treasure": "ManaSpecType_FromTreasure" in specs,
+        }
+        # A source making more than one mana at once (Sol Ring's {C}{C}):
+        # mana_payment.payment_shortfall must not count it as one.
+        amount = max((_mana_count(option) for option in options), default=1)
+        if amount > 1:
+            payment_source["amount"] = amount
+        payment_sources.append(payment_source)
     # Hybrid/Phyrexian requirements only reach mana_str; a payment plan built
     # from mana_requirements alone would not cover them.
     requirements_modeled = all(

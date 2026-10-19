@@ -1484,13 +1484,18 @@ class GREBridge:
             logger.warning(f"GRE bridge submit_auto_tap error: {e}")
         return False
 
+    # The CLR enum names (Wotc.Mtgo.Gre.External.Messaging.ManaColor.Red), not
+    # the protobuf ones Player.log prints ("ManaColor_Red"): the plugin's
+    # Enum.TryParse and the Mac adapter's IL2CPP enum names both read "Red".
+    # 2026-10-19 11:17:34: "Instance 283 cannot make ManaColor_Red" for a
+    # Mountain — every manual mana payment failed and the cast was cancelled.
     _MANA_COLOR_NAMES = {
-        "W": "ManaColor_White",
-        "U": "ManaColor_Blue",
-        "B": "ManaColor_Black",
-        "R": "ManaColor_Red",
-        "G": "ManaColor_Green",
-        "C": "ManaColor_Colorless",
+        "W": "White",
+        "U": "Blue",
+        "B": "Black",
+        "R": "Red",
+        "G": "Green",
+        "C": "Colorless",
     }
 
     def submit_payment_action(self, instance_id: int, ability_grp_id: int, color: str) -> bool:

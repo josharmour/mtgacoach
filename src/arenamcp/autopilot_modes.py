@@ -47,16 +47,25 @@ class _AutopilotModesMixin:
 
     def _should_decline_optional_cost(self, game_state: dict[str, Any]) -> str | None:
         """Reason to decline this PayCosts window instead of blind auto-pay."""
-        if self._last_cast_submitted and (
-            time.monotonic() - self._last_cast_submitted_ts <= self._OPTIONAL_COST_OWN_ACTION_WINDOW_S
-        ):
-            return None
         if not game_state.get("_bridge_can_cancel"):
             return None
-        if self._ward_payment_source(game_state) is not None:
-            # Paying an opposing ward keeps the spell we aimed at it; its
-            # card text (even a harmful ETB) says nothing about this cost.
-            logger.info("Optional cost is a ward payment; paying it")
+        payment = self._ward_payment(game_state)
+        if payment is not None:
+            # A ward tax, not an optional cost: unpaid, the spell or ability
+            # we aimed at that permanent is countered (match a9cd5a2e T10: our
+            # Burst Lightning's {2} read as an optional cost of Burst itself,
+            # declined, countered). Its card text says nothing about this cost.
+            # Several wards are paid one trigger at a time: when the rest can't
+            # be paid too, the spell is countered anyway, so keep the mana (T8:
+            # {2} paid into a second {2}, Impractical Joke countered regardless).
+            from arenamcp.ward import ward_payable, ward_payment_mana
+
+            mana = ward_payment_mana(game_state)
+            if ward_payable(payment.ward, game_state, mana) is False:
+                return f"unpayable ward tax: {payment.describe()}, and only {mana} mana is available"
+            logger.info("Optional cost is a ward tax (%s); paying it", payment.describe())
+            return None
+        if self._paying_for_own_play(game_state):
             return None
         if not self._source_spell_is_harmful_to_target(game_state, None, None):
             return None
@@ -72,10 +81,28 @@ class _AutopilotModesMixin:
             return f"harmful optional cost ({name or 'unknown'}): LLM chose decline"
         return f"harmful optional cost ({name or 'unknown'}): LLM unavailable, declining conservatively"
 
+    def _paying_for_own_play(self, game_state: dict[str, Any]) -> bool:
+        """The cost belongs to the cast/activation the autopilot submitted moments ago.
+
+        Typed-path plays (every priority window since Phase E) count too, when
+        the request names that play (or nothing): an opponent's trigger asking
+        right after our cast is not our cost.
+        """
+        if self._last_cast_submitted and (
+            time.monotonic() - self._last_cast_submitted_ts <= self._OPTIONAL_COST_OWN_ACTION_WINDOW_S
+        ):
+            return True
+        recent = getattr(self, "_recent_own_play_name", None)
+        name = str(recent(game_state) if callable(recent) else "").strip().lower()
+        if not name:
+            return False
+        source = str((game_state.get("decision_context") or {}).get("source_card") or "").strip().lower()
+        return source in ("", "unknown") or name in source
+
     @staticmethod
-    def _ward_payment_source(game_state: dict[str, Any]) -> dict[str, Any] | None:
-        """The opposing warded permanent whose ward trigger is asking us to pay, if any."""
-        from arenamcp.ward import ward_trigger_source
+    def _ward_payment(game_state: dict[str, Any]) -> Any:
+        """The opposing ward triggers asking us to pay now (``ward.WardPayment``), if any."""
+        from arenamcp.ward import pending_ward_payment
 
         context = game_state.get("decision_context") or {}
         payload = game_state.get("_bridge_request_payload") or {}
@@ -85,7 +112,7 @@ class _AutopilotModesMixin:
             )
         except (TypeError, ValueError):
             source_id = 0
-        return ward_trigger_source(game_state, source_id)
+        return pending_ward_payment(game_state, source_id)
 
     def _handle_afk(self, game_state: dict[str, Any], trigger: str) -> bool:
         """Handle a trigger in AFK mode — auto-pass without LLM."""

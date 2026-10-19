@@ -13,7 +13,8 @@ namespace MtgaCoachBridge
         // bot does (PayCostsGoldfishHandler). The chosen color is submitted the
         // way the client's ManaSelectionFlow does: a copy of the action holding
         // only that ManaPaymentOption.
-        // Payload: {"instance_id", "ability_grp_id" (0 = any), "color": "ManaColor_Red"}.
+        // Payload: {"instance_id", "ability_grp_id" (0 = any), "color": "Red"} — the
+        // CLR enum name; the protobuf name "ManaColor_Red" is accepted too.
         private void HandleSubmitPaymentAction(PipeCommand cmd)
         {
             var request = FindPendingInteraction() as PayCostsRequest;
@@ -44,7 +45,8 @@ namespace MtgaCoachBridge
             string colorName = cmd.Json.Value<string>("color");
             if (!string.IsNullOrEmpty(colorName))
             {
-                if (!Enum.TryParse(colorName, out ManaColor color))
+                string clrName = colorName.StartsWith("ManaColor_") ? colorName.Substring("ManaColor_".Length) : colorName;
+                if (!Enum.TryParse(clrName, out ManaColor color))
                 {
                     cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = $"Unknown mana color {colorName}" });
                     return;

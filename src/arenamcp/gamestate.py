@@ -902,6 +902,11 @@ class GameState(_GameStateAnnotationsMixin):
                             str(item) for item in obj_data.get("color_production", []) if item is not None
                         ],
                         keywords=[str(item) for item in obj_data.get("keywords", []) if item],
+                        ability_grp_ids=[
+                            _coerce_int(item, 0)
+                            for item in obj_data.get("ability_grp_ids", [])
+                            if _coerce_int(item, 0)
+                        ],
                     )
                     self.game_objects[instance_id] = game_object
 
@@ -2094,6 +2099,7 @@ class GameState(_GameStateAnnotationsMixin):
             object_kind = existing_obj.object_kind
             counters = existing_obj.counters.copy()
             keywords = list(existing_obj.keywords)
+            ability_grp_ids = list(existing_obj.ability_grp_ids)
             damage = existing_obj.damage
         else:
             grp_id = 0
@@ -2116,6 +2122,7 @@ class GameState(_GameStateAnnotationsMixin):
             object_kind = GameObjectKind.UNKNOWN
             counters = {}
             keywords = []
+            ability_grp_ids = []
             damage = 0
 
         # 2. Overwrite with present data
@@ -2253,6 +2260,16 @@ class GameState(_GameStateAnnotationsMixin):
                 raw_id = entry.get("grpId") if isinstance(entry, dict) else entry
                 ability_ids.append(_coerce_int(raw_id, 0))
             keywords = ability_keywords(ability_ids)
+            # One entry per ability instance: ward counts each (ward.py). The
+            # uniqueAbilities list is the per-instance one when both are sent.
+            instances = _ensure_list(obj_data.get("uniqueAbilities")) or _ensure_list(
+                obj_data.get("abilities")
+            )
+            ability_grp_ids = [
+                grp
+                for entry in instances
+                if (grp := _coerce_int(entry.get("grpId") if isinstance(entry, dict) else entry, 0))
+            ]
 
         game_object = GameObject(
             instance_id=instance_id,
@@ -2276,6 +2293,7 @@ class GameState(_GameStateAnnotationsMixin):
             object_kind=object_kind,
             counters=counters,
             keywords=keywords,
+            ability_grp_ids=ability_grp_ids,
             damage=damage,
         )
 

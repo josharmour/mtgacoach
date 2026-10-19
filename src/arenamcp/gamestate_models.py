@@ -116,6 +116,10 @@ class GameObject:
     color_production: list[str] = field(default_factory=list)
     # Combat keywords the object has now (printed or granted), from its GRE abilities
     keywords: list[str] = field(default_factory=list)
+    # Every ability grpId the object has now, printed and granted alike, one
+    # entry per instance (GameObjectInfo.uniqueAbilities). A Skyward Spider
+    # wearing Sheltered by Ghosts lists ward {2} (141939) twice (2026-10-19).
+    ability_grp_ids: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Convert to simple dict for snapshot serialization."""
@@ -161,6 +165,8 @@ class GameObject:
             result["granted_abilities"] = self.granted_abilities
         if self.keywords:
             result["keywords"] = list(self.keywords)
+        if self.ability_grp_ids:
+            result["ability_grp_ids"] = list(self.ability_grp_ids)
         if self.removed_abilities:
             result["removed_abilities"] = self.removed_abilities
         if self.damaged_this_turn:

@@ -20,17 +20,20 @@ import sqlite3
 import pytest
 from tests.fakes import planner_with
 
-from arenamcp import arena_prompts
+from arenamcp import arena_prompts, decisions
 from arenamcp.decisions import (
+    DecisionOption,
+    PendingDecision,
     build_pending_decision,
     decision_from_dict,
     decision_to_dict,
     hand_loss,
     hand_loss_choice,
+    select_n_discard_note,
     select_n_note,
 )
 from arenamcp.gamestate import GameObject, GameState
-from arenamcp.gamestate_decisions import _handle_decision_message
+from arenamcp.gamestate_decisions import _auto_clear_stale_decision, _handle_decision_message
 from arenamcp.gamestate_models import Zone, ZoneType
 
 AGENT_TEXT = "When Unscrupulous Agent enters, target opponent exiles a card from their hand."
@@ -232,6 +235,48 @@ def test_an_unknown_hand_choice_still_says_it_casts_nothing(monkeypatch):
     assert "choosing one does NOT cast or play it" in select_n_note(decision, state)
 
 
+def test_named_alternatives_and_hand_losses_each_get_their_own_note():
+    """#40's prompt-parameter choices keep "CHOICE FROM <card>" alone; a hand loss keeps the loss framing."""
+    state = live_state()
+    state["battlefield"].append(
+        _card(
+            351,
+            "Perforating Artist",
+            "Creature — Devil",
+            "{1}{B}{R}",
+            "Raid — ... loses 3 life unless ...",
+            seat=2,
+        )
+    )
+    choice = PendingDecision(
+        (351, 455),
+        "SelectN",
+        tuple(
+            DecisionOption(f"sel:{oid}", text, meta={"choice": "prompt", "promptId": pid, "sourceId": 351})
+            for oid, pid, text in ((9, 1217, "Discard a card"), (11, 1218, "Lose 3 life"))
+        ),
+        source_label="Perforating Artist",
+    )
+    for note in (select_n_note(choice, state), select_n_discard_note(choice, state)):
+        assert note.startswith("CHOICE FROM Perforating Artist (OPPONENT's card")
+        assert "LOSS" not in note and "SELECTION:" not in note and "DISCARD" not in note
+    assert hand_loss(choice, state) is None and hand_loss_choice(choice, state) == ([], "")
+    assert select_n_discard_note(_decision(state), state).startswith("THIS IS A LOSS, NOT A CAST")
+
+
+def test_a_single_prompt_id_reads_as_plain_text_not_an_icu_template(monkeypatch):
+    from types import SimpleNamespace
+
+    from arenamcp import card_db
+
+    raw = SimpleNamespace(get_prompt_text=lambda pid: PROMPTS.get(pid))
+    monkeypatch.setattr(card_db, "get_card_database", lambda: SimpleNamespace(get_raw_mtgadb=lambda: raw))
+    assert decisions.prompt_text(14) == "Discard a card."
+    assert decisions.prompt_text(1117) == "Exile a card."
+    assert decisions.prompt_text(1) == ""  # "#Deprecated ..." says nothing
+    assert decisions.prompt_text(4242) == ""
+
+
 def test_their_hand_is_not_our_loss():
     # A Duress-style choice over the opponent's hand: the options are not our cards.
     state = live_state()
@@ -401,10 +446,15 @@ def test_the_log_keeps_the_prompt_the_source_and_calls_it_an_exile(monkeypatch):
     assert state.pending_decision == "Exile"
     assert context["type"] == "exile" and context["hand_loss"] == "exile"
     assert (context["prompt_id"], context["prompt_text"]) == (1117, "Exile a card.")
-    assert (context["source_id"], context["source_card"]) == (353, "Unscrupulous Agent")
+    assert (context["prompt_source_id"], context["source_card"]) == (353, "Unscrupulous Agent")
     assert context["source_oracle_text"] == AGENT_TEXT
     assert context["request_id"] == [68, 102]
     assert context["option_cards"][4] == "Shock"
+    # The Agent is on the battlefield, not the stack: "source_id" would arm the
+    # stack-based auto-clear and drop the decision after its 5 s hold.
+    assert "source_id" not in context
+    state.decision_timestamp -= 6
+    assert _auto_clear_stale_decision(state) is False and state.pending_decision == "Exile"
 
 
 def test_the_log_context_alone_frames_and_decides_the_loss(monkeypatch):
