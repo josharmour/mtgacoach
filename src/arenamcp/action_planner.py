@@ -155,6 +155,9 @@ class GameAction:
     model_choice: bool = False
     # Why a deterministic override replaced what was asked for; spoken after the action.
     override_note: str = ""
+    # A combat guard (crackback, losing attack) emptied this attack declaration on
+    # purpose: a decided hold, which the bridge must not refill with the solver's pick.
+    guard_hold: bool = False
 
     def __str__(self) -> str:
         parts = [self.action_type.value]
@@ -1506,6 +1509,7 @@ class ActionPlanner(_ActionLegalityMixin):
             }
             if not kept:
                 action.target_names = []
+                action.guard_hold = True
             from arenamcp.narration import spoken_list, spoken_name
 
             held = spoken_list([spoken_name(name) for name, _ in dropped])
@@ -1678,6 +1682,7 @@ class ActionPlanner(_ActionLegalityMixin):
             if (identity in kept_ids if identity is not None else name.lower() in kept_names)
         ]
         declared.attacker_names = [name for name, _ in keep]
+        declared.guard_hold = not keep
         if declared.attacker_instance_ids:
             declared.attacker_instance_ids = [identity for _, identity in keep]
         declared.attacker_targets = {
