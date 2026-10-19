@@ -1890,9 +1890,6 @@ class GameState(_GameStateAnnotationsMixin):
             for player_data in players:
                 self._update_player(player_data)
 
-            # Ensure lands_played is correct even when Arena omits player data
-            self._infer_lands_played()
-
             # ConnectResp often omits commanderGrpIds. Learn physical cards
             # from our command zone once, retaining their identity after they
             # move to the stack/battlefield. Emblems and abilities also live
@@ -1932,6 +1929,14 @@ class GameState(_GameStateAnnotationsMixin):
             self._track_attachments(message, persistent_annotations)
             if persistent_annotations:
                 self._process_annotations(persistent_annotations)
+
+            # Ensure lands_played is correct even when Arena omits player data.
+            # After the annotations: their PlayLand zone transfer is what marks a
+            # land entered_via_play_land, and the GSM that plays a land never
+            # carries player data. Run before them, the drop counted one GSM
+            # late (2026-10-19 T6, match abde2a07: the line search planned a
+            # second Mountain with the land already played).
+            self._infer_lands_played()
 
             # Clear untap step flag after processing all objects in this message
             self._in_untap_step = False
