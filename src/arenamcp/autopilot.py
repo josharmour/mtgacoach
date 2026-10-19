@@ -219,6 +219,7 @@ class AutopilotEngine(
         self._last_cast_submitted: tuple[int, str] | None = None
         self._last_cast_submitted_ts: float = 0.0
         self._max_seen_turn: int = 0
+        self._max_seen_turn_match: Any = None
         self._window_first_seen_at: float = 0.0
         self._given_up_window_sig: tuple[Any, ...] | None = None
         self._recent_submission_times: deque = deque(maxlen=32)
@@ -716,22 +717,81 @@ class AutopilotEngine(
             self._play_name(option.label)[1],
         )
 
+    @classmethod
+    def _cancelled_request_spell(cls, game_state: dict[str, Any]) -> str:
+        """Lowercased name of OUR spell on the stack that the pending request belongs to, else "".
+
+        The request's source instance is exact; abilities (triggers,
+        activations) and other players' spells give "".
+        """
+        source = 0
+        for container in (game_state.get("_bridge_request_payload"), game_state.get("decision_context")):
+            if isinstance(container, dict) and not source:
+                try:
+                    source = int(container.get("sourceId") or container.get("source_id") or 0)
+                except (TypeError, ValueError):
+                    source = 0
+        if not source:
+            return ""
+        local_seat = game_state.get("local_seat_id") or next(
+            (p.get("seat_id") for p in game_state.get("players") or [] if p.get("is_local")), None
+        )
+        for entry in game_state.get("stack") or []:
+            if not isinstance(entry, dict) or int(entry.get("instance_id") or 0) != source:
+                continue
+            name = str(entry.get("name") or "").strip()
+            if (
+                local_seat is None
+                or (entry.get("controller_seat_id") or entry.get("owner_seat_id")) != local_seat
+                or str(entry.get("object_kind") or "").upper() == "ABILITY"
+                or int(entry.get("parent_instance_id") or 0) > 0
+                or not name
+                or name.lower().startswith("ability (id:")
+            ):
+                return ""
+            return cls._plain_card_name(name).lower()
+        return ""
+
     def _withhold_after_self_cancel(self, game_state: dict[str, Any], why: str) -> None:
         note = getattr(self, "_last_typed_play", None)
         self._last_typed_play = None
+        # 2026-10-19 (#71, match 115944ce): every way out below used to be
+        # silent, and the guard said nothing through 11 cast/cancel loops of
+        # Iroh's Demonstration (its memory had been wiped, see process_trigger).
+        # Say why nothing is withheld, and when the memory is gone but the
+        # cancelled request belongs to our own spell on the stack (a cast the
+        # previous coach process submitted), withhold that spell instead.
+        missing = ""
         if not note:
-            return
+            missing = "no cast or activation of ours is on record"
+        else:
+            age = time.monotonic() - note[0]
+            if age > self._ACTIVATION_ROLLBACK_MAX_AGE_S:
+                missing = f"the last recorded play ({note[5] or note[3]!r}) is {age:.0f}s old"
+            elif note[1] != self._turn_number(game_state):
+                missing = f"the last recorded play ({note[5] or note[3]!r}) was on turn {note[1]}"
+        if missing:
+            spell = self._cancelled_request_spell(game_state)
+            if not spell:
+                logger.info("Self-cancel guard: nothing withheld for the cancelled %s (%s)", why, missing)
+                return
+            logger.info(
+                "Self-cancel guard: %s; the cancelled %s belongs to our spell %r on the stack", missing, why, spell
+            )
+            note = (time.monotonic(), self._turn_number(game_state), "ActionType_Cast", 0, 0, spell)
         noted_at, turn, kind, instance_id, ability_id, name = note
-        if time.monotonic() - noted_at > self._ACTIVATION_ROLLBACK_MAX_AGE_S:
-            return
-        if turn != self._turn_number(game_state):
-            return
         context = game_state.get("decision_context") or {}
         try:
             parent = int(context.get("source_parent_instance_id") or 0)
         except (TypeError, ValueError):
             parent = 0
         if kind == "ActionType_Activate" and parent and instance_id and parent != instance_id:
+            logger.info(
+                "Self-cancel guard: the cancelled %s belonged to another source (%s), not to the activation of %r",
+                why,
+                parent,
+                name or instance_id,
+            )
             return
         if kind == "ActionType_Cast" and (parent or self._request_source_is_ability(game_state, context)):
             # The declined request belongs to an ability, not to the spell: a
@@ -2619,9 +2679,26 @@ class AutopilotEngine(
                 return True
 
             turn_num = int((game_state.get("turn") or {}).get("turn_number", 0) or 0)
-            if turn_num and turn_num < self._max_seen_turn:
-                # Turn counter went backwards → new match. Drop per-match
-                # livelock memories.
+            # A later game of the same match restarts the turn count; another
+            # match is a new game whatever its turn (game_number can still be
+            # unset early in a game, so it is not compared).
+            match_id = game_state.get("match_id")
+            last_match = getattr(self, "_max_seen_turn_match", None)
+            new_game = bool(match_id and last_match and match_id != last_match)
+            if (turn_num and turn_num < self._max_seen_turn) or new_game:
+                # Turn counter went backwards (or the match changed) → new
+                # game. Drop per-game livelock memories, and start counting
+                # turns again from this one. 2026-10-19 (match 115944ce): the
+                # previous game ended on turn 9 and the high-water mark stayed
+                # 9, so every trigger of turns 1-8 of the next game wiped these
+                # memories again — the cast noted at 11:12:55 was gone by its
+                # SelectTargets cancel at 11:13:04 and the self-cancel guard
+                # stayed silent through 11 cast/cancel loops (#71).
+                logger.info(
+                    "Autopilot: new game (turn %s after %s); per-game livelock memories cleared",
+                    turn_num,
+                    self._max_seen_turn,
+                )
                 self._cast_rollback_counts.clear()
                 self._cast_rollback_totals.clear()
                 self._last_cast_submitted = None
@@ -2630,7 +2707,10 @@ class AutopilotEngine(
                 self._runaway_tripped_turn = None
                 self._request_tracker.reset()
                 self._progress_guard.reset()
+                self._max_seen_turn = 0
             self._max_seen_turn = max(self._max_seen_turn, turn_num)
+            if match_id:
+                self._max_seen_turn_match = match_id
 
             # P1-4: the user casting manually while autopilot runs. On
             # 2026-07-06 01:02 the bot fought the user's manual plays for
