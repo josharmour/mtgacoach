@@ -38,6 +38,7 @@ def trial_service(tmp_path, monkeypatch):
         _http=lambda: SimpleNamespace(post=post),
     )
     monkeypatch.setitem(sys.modules, "patreon", gateway)
+    monkeypatch.setenv("LITELLM_ARENAONAIR_KEY", "sk-arenaonair-test")
     service = load("arena_trial_router_test", "arenaonair.py")
     app = FastAPI()
     app.include_router(service.router)
@@ -103,6 +104,17 @@ def test_failure_refunds_match_and_blocks_client_routing(trial_service):
     sent = calls[-1][1]["json"]
     assert sent["model"] == "glm-5.3-flash" and sent["max_tokens"] == 1800
     assert "api_base" not in sent and "api_key" not in sent
+    # Commentary spends the dedicated ArenaOnAir gateway key, not the admin key.
+    assert calls[-1][1]["headers"] == {"Authorization": "Bearer sk-arenaonair-test"}
+
+
+def test_missing_gateway_key_is_503_and_refunds_match(trial_service, monkeypatch):
+    client, *_ = trial_service
+    signup(client)
+    monkeypatch.delenv("LITELLM_ARENAONAIR_KEY")
+    response = chat(client)
+    assert response.status_code == 503
+    assert signup(client).json()["matches_remaining"] == 5
 
 
 def test_expired_match_cannot_be_reused_forever(trial_service):

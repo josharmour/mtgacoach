@@ -1,0 +1,62 @@
+"""Persistent, atomic trial issuance limits. Stores digests, never credentials."""
+import hashlib
+import ipaddress
+import time
+
+from fastapi import HTTPException
+
+# The existing Cloudflare tunnel runs on this verified NAS peer. Never trust
+# forwarding headers from arbitrary callers, other LAN hosts, or X-Forwarded-For.
+TRUSTED_TUNNEL_PEERS = {"10.0.0.2"}
+TRIAL_LIMITS = {"rpm_limit": 30, "tpm_limit": 500_000, "max_parallel_requests": 3}
+PATRON_LIMITS = {"rpm_limit": 60, "tpm_limit": 1_000_000, "max_parallel_requests": 4}
+
+
+def network_identity(request):
+    peer = request.client.host if request.client else ""
+    try:
+        address = ipaddress.ip_address(peer)
+        if peer in TRUSTED_TUNNEL_PEERS:
+            forwarded = request.headers.get("cf-connecting-ip", "")
+            # Missing/invalid headers fail closed; do not collapse all public
+            # signups onto the tunnel's address or accept a client-chosen ID.
+            address = ipaddress.ip_address(forwarded)
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        network = ipaddress.ip_network(f"{address}/{'64' if address.version == 6 else '32'}", strict=False)
+    except ValueError:
+        raise HTTPException(400, "Unable to verify signup network") from None
+    return hashlib.sha256(str(network).encode()).hexdigest()
+
+
+def _reject(detail, retry):
+    raise HTTPException(429, detail, headers={"Retry-After": str(max(1, int(retry)))})
+
+
+def reserve_signup(get_db, machine_id, network, now=None):
+    now = time.time() if now is None else now
+    with get_db() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS trial_signup_reservations (id INTEGER PRIMARY KEY, machine_id TEXT NOT NULL, network_hash TEXT NOT NULL, created REAL NOT NULL, status TEXT NOT NULL)")
+        conn.execute("CREATE INDEX IF NOT EXISTS trial_signup_network_time ON trial_signup_reservations(network_hash, created)")
+        conn.execute("CREATE INDEX IF NOT EXISTS trial_signup_machine_time ON trial_signup_reservations(machine_id, created)")
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        pending = conn.execute("SELECT created, status FROM trial_signup_reservations WHERE machine_id=? ORDER BY created DESC LIMIT 1", (machine_id,)).fetchone()
+        if pending and (pending[1] == "issued" or pending[0] > now - 300):
+            _reject("Trial signup is already recorded or in progress. Retry shortly.", 60)
+        # Count failed and pending attempts too. Rotating IDs or upstream failure
+        # must not grant an unbounded mint/retry loop. No audit rows are deleted.
+        # Global signup volume is alert-only in the protection monitor. This
+        # loop must never impose a shared growth ceiling across networks.
+        for window, limit, per_network in [(3600, 3, True), (86400, 6, True)]:
+            where = "created>?" + (" AND network_hash=?" if per_network else "")
+            args = (now - window, network) if per_network else (now - window,)
+            count, oldest = conn.execute("SELECT count(*), min(created) FROM trial_signup_reservations WHERE " + where, args).fetchone()
+            if count >= limit:
+                _reject("Trial signup limit reached. Please try later.", oldest + window - now + 1)
+        conn.execute("INSERT INTO trial_signup_reservations(machine_id,network_hash,created,status) VALUES(?,?,?,'pending')", (machine_id, network, now))
+
+
+def finish_signup(get_db, machine_id, success):
+    with get_db() as conn:
+        conn.execute("UPDATE trial_signup_reservations SET status=? WHERE machine_id=? AND status='pending'", ("issued" if success else "failed", machine_id))

@@ -240,7 +240,7 @@ def _build_provider_state() -> dict:
     cfgs = _resolved_provider_configs()
     overridden = _get_db().get_config_value("providers") is not None
     default_model = _resolved_default_model()
-    yaml_default = config.get("default_model", "")
+    yaml_default = state.config.get("default_model", "")
 
     # Index live providers by name for runtime status.
     live_by_name = {p.name: p for p in state.router.providers}

@@ -12,6 +12,7 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
+from abuse_protection import finish_signup, network_identity, reserve_signup
 from fastapi import APIRouter, HTTPException, Request
 from state import _get_db
 
@@ -83,14 +84,19 @@ async def request_trial(request: Request):
             }
         raise HTTPException(403, "trial_expired")
 
+    # Per-machine and per-network issuance limits (429 + Retry-After).
+    reserve_signup(_get_db().get_db, machine_id, network_identity(request))
+
     try:
         key = await _get_patreon().mint_trial_key(machine_id)
     except Exception as e:
+        finish_signup(_get_db().get_db, machine_id, False)
         logger.error(f"Trial mint failed for machine {machine_id[:12]}...: {e}")
         raise HTTPException(503, "Trial provisioning is temporarily unavailable. Try again later.")
 
     expires_at = _trial_iso(now + timedelta(days=TRIAL_DAYS))
     _get_db().create_trial(machine_id, key, _trial_iso(now), expires_at)
+    finish_signup(_get_db().get_db, machine_id, True)
     logger.info(
         f"Trial key issued for machine {machine_id[:12]}... "
         f"(app_version={app_version or 'unknown'}, expires {expires_at})"
