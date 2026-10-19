@@ -107,6 +107,25 @@ Return ONLY JSON: {"found":true,"label":"visible label","point":[0.5,0.5]}
 # Bring Arena forward after this long without keyboard/mouse input, rather than
 # waiting on a Victory or Reward screen until someone clicks Arena.
 FOCUS_WHEN_IDLE_S = 20.0
+# A wait is logged again at these intervals while it lasts. _status logs each
+# distinct detail once, so 2026-10-18 19:02:12-19:16:11 a foreground wait retried
+# every 3 s for 14 minutes without a single log line.
+_HEARTBEAT_S = 30.0
+# No navigation progress (the match end, a delivered click, a new screen) for
+# this long after a match ended: log the whole state and re-observe Arena.
+_WATCHDOG_S = 60.0
+# Past five minutes both repeat less often, so a long wait is never silent for
+# more than a minute but does not flood the log either.
+_SLOW_AFTER_S = 300.0
+_HEARTBEAT_SLOW_S = 60.0
+_WATCHDOG_SLOW_S = 300.0
+# A step's own waits are bounded (bridge 8 s, screencapture 5 s, bringing Arena
+# forward 7.3 s, model and refinement 8 s each); one running this long is
+# abandoned so a fresh step can observe the screen.
+_STEP_LIMIT_S = 90.0
+# Screenshots that keep answering "wait" on a loading or unrecognised screen (not
+# matchmaking) pause after this long instead of polling the model forever.
+_SCREEN_WAIT_LIMIT_S = 180.0
 _REFINE_CROP = 0.3
 # Observed 23:15:20: a crop held two "Play" buttons and refinement hopped
 # ~160px to another Recently Played tile, joining the wrong deck and queue.
@@ -346,14 +365,105 @@ class AutoQueueNavigator:
         self._last_click: tuple[Any, DesktopAction, dict] | None = None
         self._survey_skips = 0
         self._survey_waits = 0
+        # Stall evidence: how long the current status has held, when navigation
+        # last progressed, and what the running step is doing.
+        self._status_since = 0.0
+        self._last_heartbeat = 0.0
+        self._armed_at = 0.0
+        self._progress_at = 0.0
+        self._progress_note = ""
+        self._last_watchdog = 0.0
+        self._recheck_pending = False
+        self._step_started = 0.0
+        self._step_phase = ""
+        self._screen_wait_since = 0.0
 
     def _status(self, detail: str) -> None:
+        if self._recheck_pending:
+            # A watchdog re-observation reports its outcome even when unchanged.
+            self._recheck_pending = False
+            logger.info("Auto queue watchdog re-check: %s", detail)
         if detail == self._last_status:
             return
         self._last_status = detail
+        self._status_since = self._last_heartbeat = time.monotonic()
         logger.info("Auto queue: %s", detail)
         if self._status_fn:
             self._status_fn(detail)
+
+    def _progress(self, note: str) -> None:
+        """Navigation moved forward; the watchdog measures stalls from here."""
+        self._progress_at = time.monotonic()
+        self._progress_note = note
+
+    def _situation(self, now: float) -> str:
+        """One line of what navigation is doing, for the still-waiting and watchdog logs."""
+        parts = [f"stage={self._stage}"]
+        if self._armed_at:
+            parts.append(f"{now - self._armed_at:.0f}s since match {self._ended_match_id} ended")
+        worker = self._worker
+        if worker is not None and worker.is_alive():
+            parts.append(f"step in {self._step_phase or 'start'} for {now - self._step_started:.0f}s")
+        focus = getattr(self._controller, "focus_wait", "")
+        if isinstance(focus, str) and focus:
+            parts.append(focus)
+        return "; ".join(parts)
+
+    def _heartbeat(self, now: float) -> None:
+        """Log a lasting wait again; _status alone logs each distinct detail only once."""
+        if not self._last_status:
+            return
+        waited = now - self._status_since
+        interval = _HEARTBEAT_S if waited < _SLOW_AFTER_S else _HEARTBEAT_SLOW_S
+        if waited < _HEARTBEAT_S or now - self._last_heartbeat < interval:
+            return
+        self._last_heartbeat = now
+        logger.info(
+            "Auto queue still waiting %.0fs on: %s [%s]", waited, self._last_status, self._situation(now)
+        )
+
+    def _watchdog(self, now: float) -> None:
+        """Re-observe Arena, and say why, when a finished match stops making navigation progress."""
+        worker = self._worker
+        busy = worker is not None and worker.is_alive()
+        if busy and now - self._step_started >= _STEP_LIMIT_S:
+            logger.warning(
+                "Auto queue watchdog: abandoning a navigation step stuck in %s for %.0fs [%s]",
+                self._step_phase or "start",
+                now - self._step_started,
+                self._situation(now),
+            )
+            # The stuck thread cannot be killed; a new generation discards
+            # whatever it returns and its abort event stops any input.
+            self._abort.set()
+            self._abort = threading.Event()
+            self._generation += 1
+            self._worker = None
+            self._next_poll = 0.0
+            self._recheck_pending = True
+            return
+        if self.paused_reason or self._queue_observed:
+            # A pause awaits the user and matchmaking awaits Arena; the
+            # still-waiting log covers both.
+            return
+        stalled = now - self._progress_at
+        interval = _WATCHDOG_S if stalled < _SLOW_AFTER_S else _WATCHDOG_SLOW_S
+        if stalled < _WATCHDOG_S or now - self._last_watchdog < interval:
+            return
+        self._last_watchdog = self._last_heartbeat = now
+        logger.warning(
+            "Auto queue watchdog: no navigation progress for %.0fs since %s; status %r for %.0fs [%s]."
+            " Re-observing Arena.",
+            stalled,
+            self._progress_note or "the match ended",
+            self._last_status,
+            now - self._status_since,
+            self._situation(now),
+        )
+        if busy:
+            return  # Its own bounded waits end it; the next step re-observes.
+        self._next_poll = 0.0
+        self._recheck_pending = True
 
     def set_enabled(self, enabled: bool) -> None:
         with self._lock:
@@ -376,6 +486,8 @@ class AutoQueueNavigator:
                 self._attempts.clear()
                 self._next_poll = 0
                 self._stage = "resuming"
+                self._screen_wait_since = self._last_watchdog = 0.0
+                self._progress("navigation was retried")
                 self._status("Retrying navigation for the finished match")
             else:
                 self._stage = "waiting_for_match_end" if enabled else "off"
@@ -420,6 +532,10 @@ class AutoQueueNavigator:
             self._awaiting_result_dismissal = False
             self._last_click = None
             self._next_poll = 0
+            self._screen_wait_since = self._last_watchdog = 0.0
+            self._recheck_pending = False
+            self._progress(f"match {match_id} ended")
+            self._armed_at = self._progress_at
             self._status("Match finished; returning to Recently Played")
             return True
 
@@ -450,10 +566,14 @@ class AutoQueueNavigator:
             if self._new_match(state):
                 self._handoff()
                 return False
-            if self.paused_reason or time.monotonic() < self._next_poll:
+            now = time.monotonic()
+            self._watchdog(now)
+            self._heartbeat(now)
+            if self.paused_reason or now < self._next_poll:
                 return True
             if self._worker and self._worker.is_alive():
                 return True
+            self._step_started, self._step_phase = now, "start"
             self._worker = threading.Thread(
                 target=self._step, args=(self._generation, self._abort), daemon=True
             )
@@ -582,6 +702,7 @@ class AutoQueueNavigator:
 
             # The post-match survey blocks every result-screen control, so it
             # goes first; the client's own Skip handler beats a screenshot click.
+            self._step_phase = "bridge survey check"
             if self._skip_survey_via_bridge(bridge, generation, aborted):
                 return
 
@@ -607,6 +728,7 @@ class AutoQueueNavigator:
             if not callable(getattr(self._backend, "complete_with_image", None)):
                 self._pause("Auto queue needs a model that accepts screenshots")
                 return
+            self._step_phase = "screenshot"
             frame = self._controller.capture()
             if not self._current(generation, aborted):
                 return
@@ -647,6 +769,7 @@ class AutoQueueNavigator:
                     "previous_rejection": self._last_rejection,
                 }
             )
+            self._step_phase = "navigation model"
             response = self._backend.complete_with_image(
                 QUEUE_PROMPT,
                 user,
@@ -673,7 +796,9 @@ class AutoQueueNavigator:
                 expected_event=(self._expected_queue or {}).get("event_id"),
             )
             self._last_proposal = data
-            self._stage = data.get("screen", "blocked")
+            previous_stage, self._stage = self._stage, data.get("screen", "blocked")
+            if self._stage != previous_stage:
+                self._progress(f"Arena showed {self._stage}")
             if (
                 self._awaiting_result_dismissal
                 and self._stage in {"home", "reward", "play", "recent", "deck", "queue"}
@@ -741,6 +866,22 @@ class AutoQueueNavigator:
                     )
                     if matchmaking:
                         self._queue_observed = True
+                        self._screen_wait_since = 0.0
+                    else:
+                        now = time.monotonic()
+                        self._screen_wait_since = self._screen_wait_since or now
+                        if now - self._screen_wait_since >= _SCREEN_WAIT_LIMIT_S:
+                            logger.warning(
+                                "Auto queue: screenshots answered wait for %.0fs (screen=%s, reason=%r)",
+                                now - self._screen_wait_since,
+                                self._stage,
+                                data.get("reason"),
+                            )
+                            self._pause(
+                                f"Arena stayed on a {self._stage} screen with nothing to click for "
+                                f"{now - self._screen_wait_since:.0f}s."
+                            )
+                            return
                     self._failures = 0
                     self._next_poll = time.monotonic() + (30 if matchmaking else 3)
                     self._status(
@@ -758,11 +899,13 @@ class AutoQueueNavigator:
                 self._pause("Arena navigation stopped making progress")
                 return
             estimate = action.point
+            self._step_phase = "click refinement"
             action = self._refine_target(frame, data, action)
             if not self._current(generation, aborted):
                 return
             if time.monotonic() - frame.captured_at > 12:
                 raise ValueError("Navigation screenshot expired")
+            self._step_phase = "pre-click screenshot"
             fresh = self._controller.capture()
             if frame_changed(frame, fresh, action):
                 self._next_poll = time.monotonic() + 1
@@ -773,6 +916,7 @@ class AutoQueueNavigator:
             if self._new_match(self._get_game_state() or {}):
                 self._handoff(generation, aborted)
                 return
+            self._step_phase = "click"
             if self._controller.execute(fresh, action, aborted):
                 # Statuses are deduplicated; log every click so a miss is diagnosable.
                 logger.info(
@@ -797,6 +941,8 @@ class AutoQueueNavigator:
                 self._failures = 0
                 self._result_waits = 0
                 self._last_rejection = None
+                self._screen_wait_since = 0.0
+                self._progress(f"clicked {data['action']} {data['label']!r}")
                 self._next_poll = time.monotonic() + (
                     3 if clicked_result else 5 if data["action"] == "start_queue" else 1.5
                 )
@@ -857,6 +1003,7 @@ class AutoQueueNavigator:
             return True
         result = dismiss() or {}
         if result.get("ok") and result.get("closed"):
+            self._progress("the bridge skipped the match survey")
             self._status("Skipped the match survey; checking the current screen")
         else:
             logger.info(
@@ -885,6 +1032,7 @@ class AutoQueueNavigator:
                 ok = bridge.return_to_home()
                 if ok:
                     self._stage = "home"
+                    self._progress("the bridge returned to Home")
                     self._failures = 0
                     self._next_poll = time.monotonic() + 2.5
                     self._status("Returned to Home screen; preparing to re-queue...")
@@ -906,6 +1054,7 @@ class AutoQueueNavigator:
                     self._queue_started = True
                     self._queue_observed = True
                     self._stage = "queue"
+                    self._progress(f"the bridge queued {event_name}")
                     self._failures = 0
                     self._next_poll = time.monotonic() + 5.0
                     self._status(f"Queued for {event_name}; waiting for match to start...")
@@ -937,6 +1086,7 @@ class AutoQueueNavigator:
 
     def get_debug_info(self) -> dict:
         with self._lock:
+            now = time.monotonic()
             return {
                 "enabled": self.enabled,
                 "active": self.active,
@@ -954,6 +1104,11 @@ class AutoQueueNavigator:
                 "survey_skips": self._survey_skips,
                 "survey_waits": self._survey_waits,
                 "worker_running": bool(self._worker and self._worker.is_alive()),
+                "status": self._last_status,
+                "status_for_s": round(now - self._status_since, 1) if self._status_since else None,
+                "since_progress_s": round(now - self._progress_at, 1) if self._progress_at else None,
+                "last_progress": self._progress_note,
+                "step_phase": self._step_phase,
             }
 
     def get_debug_screenshot(self) -> bytes | None:
