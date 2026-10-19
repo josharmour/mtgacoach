@@ -80,7 +80,8 @@ class _AutoQueueMixin:
                     queue_selection=get_last_queue_selection,
                 )
             navigator.set_enabled(True)
-            if not navigator.paused_reason:
+            # A pause that retries by itself still needs the Mac awake.
+            if not navigator.paused_reason or navigator.retry_scheduled:
                 inhibitor.start()
             completed = get_completed_match_for_navigation()
             match_id = completed.get("match_id")
@@ -103,7 +104,7 @@ class _AutoQueueMixin:
                 navigator.note_match_end(completed, confirmed_match_end=True)
                 self._auto_queue_last_noted = match_id
             owns_input = navigator.process_tick(state)
-            if navigator.paused_reason:
+            if navigator.paused_reason and not navigator.retry_scheduled:
                 inhibitor.stop()
             return owns_input
         except Exception as exc:

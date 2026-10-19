@@ -101,6 +101,19 @@ def test_explicit_toggle_preserves_trusted_completion_for_retry(monkeypatch):
     assert nav.get_debug_info()["stage"] == "resuming"
 
 
+@pytest.mark.parametrize("retry_scheduled", [True, False])
+def test_mac_stays_awake_through_a_pause_that_retries_by_itself(navigator, retry_scheduled):
+    # An unattended Mac that idle-sleeps during the 30 s cooldown never retries.
+    nav, _ = navigator
+    nav.paused_reason = "Could not verify the next Arena navigation step"
+    nav.retry_scheduled = retry_scheduled
+    runtime = Runtime()
+    runtime._poll_auto_queue({"match_id": None})
+    inhibitor = runtime._auto_queue_sleep_inhibitor
+    assert inhibitor.start.called is retry_scheduled
+    assert inhibitor.stop.called is not retry_scheduled
+
+
 @pytest.mark.parametrize(
     "scope,result,completed",
     [
