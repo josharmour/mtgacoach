@@ -235,6 +235,17 @@ class GREBridge:
     def connected(self) -> bool:
         return self._connected
 
+    @property
+    def limited_hands(self) -> bool:
+        """The client can drive draft, sealed, event and deck screens (reflect-1)."""
+        return self._connected and self._mac_adapter is not None
+
+    @property
+    def _adapter_plays(self) -> bool:
+        """In-game commands run through the reflection adapter (native Mac/Android),
+        not the BepInEx plugin's own handlers."""
+        return self._mac_adapter is not None and getattr(self._mac_adapter, "plays_matches", True)
+
     def connect(self) -> bool:
         """Create a TCP server socket and wait for the BepInEx plugin to connect."""
         if self._connected:
@@ -307,13 +318,16 @@ class GREBridge:
                         self.disconnect()
                         return False
                     self.client_runtime = runtime or "bepinex"
-                    if runtime in ("il2cpp-macos", ANDROID_RUNTIME) and "reflect-1" in (
+                    if runtime in ("il2cpp-macos", ANDROID_RUNTIME, "bepinex") and "reflect-1" in (
                         resp.get("protocols") or []
                     ):
                         from arenamcp.mac_bridge_adapter import MacBridgeAdapter
 
                         self._mac_adapter = MacBridgeAdapter(self._send_command_raw, runtime)
-                        logger.info(f"GRE bridge: {runtime} client; plugin commands run via reflection")
+                        if runtime == "bepinex":
+                            logger.info("GRE bridge: BepInEx client; limited-event commands run via reflection")
+                        else:
+                            logger.info(f"GRE bridge: {runtime} client; plugin commands run via reflection")
                     return True
                 else:
                     logger.warning(f"GRE bridge ping failed: {resp}")
@@ -1262,7 +1276,7 @@ class GREBridge:
             ids = [int(x) for x in target_instance_id if x]
         else:
             ids = [int(target_instance_id)] if target_instance_id else []
-        if not ids and not (target_instance_id == [] and self._mac_adapter is not None):
+        if not ids and not (target_instance_id == [] and self._adapter_plays):
             # An explicit empty list commits an "up to N" request with no
             # (more) targets. Only the native Mac/Android adapter does that;
             # the BepInEx plugin fills each slot with its first legal target
@@ -1559,7 +1573,7 @@ class GREBridge:
         DLL has no concede command)."""
         if not self._connected or self._concede_unsupported:
             return False
-        if self._mac_adapter is not None:
+        if self._adapter_plays:
             return True
         return _version_tuple(self.plugin_version) >= _version_tuple(CONCEDE_PLUGIN_VERSION)
 
@@ -1619,7 +1633,7 @@ class GREBridge:
         BepInEx plugin at EMOTE_PLUGIN_VERSION or later."""
         if not self._connected or getattr(self, "_emote_unsupported", False):
             return False
-        if self._mac_adapter is not None:
+        if self._adapter_plays:
             return True
         return _version_tuple(self.plugin_version) >= _version_tuple(EMOTE_PLUGIN_VERSION)
 

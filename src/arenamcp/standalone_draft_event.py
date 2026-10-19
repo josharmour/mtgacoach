@@ -233,17 +233,15 @@ class _DraftEventMixin:
 
     @staticmethod
     def _draft_bridge_ready() -> bool:
-        """Only the native bridge (il2cpp runtimes) has the draft, deck and event hands."""
+        """Only a reflect-1 bridge (native Mac/Android library, or a BepInEx plugin
+        that advertises it) has the draft, deck and event hands."""
         try:
             from arenamcp.gre_bridge import get_bridge
 
             bridge = get_bridge()
         except Exception:
             return False
-        runtime = str(getattr(bridge, "client_runtime", "") or "")
-        return bool(
-            bridge is not None and getattr(bridge, "connected", False) and runtime.startswith("il2cpp")
-        )
+        return bool(bridge is not None and getattr(bridge, "limited_hands", False))
 
     def _poll_draft_event(self, draft_pack: dict | None = None) -> bool:
         """True while draft autoplay owns the limited-event screens this iteration.
