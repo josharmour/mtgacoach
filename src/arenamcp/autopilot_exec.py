@@ -11,6 +11,13 @@ from arenamcp.gre_bridge import _ACTIONS_AVAILABLE_BRIDGE_REQUESTS
 
 logger = logging.getLogger(__name__)
 
+# Answers only one request family takes (its bridge handler submits nothing
+# else): against any other pending request the plan is stale, not a bridge gap.
+_REQUEST_SCOPED_ACTIONS: dict[ActionType, tuple[str, ...]] = {
+    ActionType.ASSIGN_DAMAGE: ("AssignDamage",),
+    ActionType.DISTRIBUTE: ("Distribution",),
+}
+
 
 class _ActionExecMixin:
     """Action execution mixin routing commands directly through the GRE bridge."""
@@ -104,6 +111,7 @@ class _ActionExecMixin:
                     )
                     is_displaced_numeric = action.action_type == ActionType.NUMERIC_INPUT
                     is_displaced_casting = action.action_type == ActionType.CASTING_OPTIONS
+                    is_displaced_answer = action.action_type in _REQUEST_SCOPED_ACTIONS
 
                     if (
                         is_combat_stale
@@ -136,6 +144,7 @@ class _ActionExecMixin:
                         or is_displaced_pass
                         or is_displaced_numeric
                         or is_displaced_casting
+                        or is_displaced_answer
                     ):
                         if is_combat_stale:
                             reason = "bridge not in combat step yet"
@@ -149,6 +158,11 @@ class _ActionExecMixin:
                             )
                         elif is_displaced_casting:
                             reason = f"window is now {bridge_type or bridge_class} — casting options resolved"
+                        elif is_displaced_answer:
+                            reason = (
+                                f"window is now {bridge_type or bridge_class or 'nothing'} — "
+                                f"no {_REQUEST_SCOPED_ACTIONS[action.action_type][0]} request to answer"
+                            )
                         else:
                             reason = (
                                 f"bridge has no SelectN/Search pending "

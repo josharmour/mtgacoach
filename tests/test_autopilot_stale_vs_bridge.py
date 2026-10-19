@@ -16,6 +16,9 @@ REQUIRED and auto-filing bridge_submit_failed noise. Shapes:
   3. DECLARE_ATTACKERS against a non-combat request.
   5. PASS/RESOLVE against a request that has no pass (bug_20260610_121152:
      a PayCostsReq opened mid-plan when the user cast Sapling Nursery).
+  7. ASSIGN_DAMAGE/DISTRIBUTE against any other request: only one request
+     family takes them (2026-10-18 18:18:26: assign_damage reached the
+     commander's return-to-command-zone OptionalAction).
 
 A step against the request that takes it is never stale: a failure there is
 a real bridge problem and must still surface MANUAL REQUIRED.
@@ -26,6 +29,7 @@ from __future__ import annotations
 from unittest.mock import Mock
 
 import pytest
+from tests.commander_return_states import COMMANDER_RETURN_POLL, assign_damage_state
 from tests.fakes import FakeBridge, make_engine
 
 from arenamcp.action_planner import ActionType, GameAction
@@ -41,6 +45,9 @@ PAY_COSTS_REQ = ("PayCosts", "PayCostsReq")
 CASTING_TIME = ("CastingTimeOptions", "CastingTimeOptionRequest")
 DECLARE_ATTACKERS = ("DeclareAttackersReq", "DeclareAttackersRequest")
 DECLARE_ATTACKER = ("DeclareAttackers", "DeclareAttackerRequest")
+ASSIGN_DAMAGE = ("AssignDamage", "AssignDamageRequest")
+DISTRIBUTION = ("Distribution", "DistributionRequest")
+OPTIONAL_ACTION = ("OptionalAction", "OptionalActionMessageRequest")
 
 PLAY_LAND = GameAction(action_type=ActionType.PLAY_LAND, card_name="Escape Tunnel")
 CAST = GameAction(action_type=ActionType.CAST_SPELL, card_name="Lightning Bolt")
@@ -53,6 +60,8 @@ RESOLVE = GameAction(action_type=ActionType.RESOLVE)
 ACTIVATE = GameAction(
     action_type=ActionType.ACTIVATE_ABILITY, card_name="Mutagen", target_names=["Michelangelo"]
 )
+ASSIGN = GameAction(action_type=ActionType.ASSIGN_DAMAGE, card_name="Mossborn Hydra")
+DISTRIBUTE = GameAction(action_type=ActionType.DISTRIBUTE, distribution={"Llanowar Elves": 2})
 
 WITH_PLAY = [{"actionType": "Play", "grpId": 12345}, {"actionType": "Cast", "grpId": 67890}]
 CAST_ONLY = [{"actionType": "Cast", "grpId": 67890}]
@@ -84,6 +93,11 @@ CASES = [
     ("5-pass-pay_costs", PASS, PAY_COSTS_REQ, None, True),
     ("5-resolve-casting_time", RESOLVE, CASTING_TIME, None, True),
     ("ok-pass-actions_available", PASS, ACTIONS_AVAILABLE, None, False),
+    ("7-assign_damage-optional_action", ASSIGN, OPTIONAL_ACTION, None, True),
+    ("7-assign_damage-actions_available", ASSIGN, ACTIONS_AVAILABLE, None, True),
+    ("ok-assign_damage-assign_damage", ASSIGN, ASSIGN_DAMAGE, None, False),
+    ("7-distribute-select_targets", DISTRIBUTE, SELECT_TARGETS, None, True),
+    ("ok-distribute-distribution", DISTRIBUTE, DISTRIBUTION, None, False),
 ]
 
 
@@ -138,3 +152,20 @@ def test_a_combat_step_in_a_main_phase_window_passes_toward_combat(can_pass):
     else:
         bridge.submit_pass.assert_not_called()
         assert result.error == "GRE bridge (stale-skip)"
+
+
+# --- a damage split that reaches a different request ------------------------
+
+
+def test_assign_damage_against_the_commander_return_is_skipped_for_a_replan():
+    """18:18:26: the live request is the OptionalAction; the plan is stale, not a bridge gap."""
+    engine = make_engine(FakeBridge(COMMANDER_RETURN_POLL, connected=True))
+    engine._pause_for_manual = Mock()
+    engine._report_fallback_bug = Mock()
+
+    result = engine._execute_action(ASSIGN, assign_damage_state())
+
+    assert result.success
+    assert result.error == "GRE bridge (stale-skip)"
+    engine._pause_for_manual.assert_not_called()
+    engine._report_fallback_bug.assert_not_called()

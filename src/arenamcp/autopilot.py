@@ -30,7 +30,7 @@ from arenamcp.action_planner import (
     board_math_legacy_plan,
 )
 from arenamcp.autopilot_bridge import _BridgeSubmitMixin, bridge_shows_pending
-from arenamcp.autopilot_exec import _ActionExecMixin
+from arenamcp.autopilot_exec import _REQUEST_SCOPED_ACTIONS, _ActionExecMixin
 from arenamcp.autopilot_models import AutopilotConfig, AutopilotState, ClickResult, ExecutionPath
 from arenamcp.autopilot_modes import _AutopilotModesMixin
 from arenamcp.autopilot_progress import (
@@ -2217,6 +2217,15 @@ class AutopilotEngine(
             )
         if action.action_type == ActionType.CASTING_OPTIONS:
             return "CastingTimeOption" not in bridge_class and "CastingTimeOption" not in bridge_type
+
+        # Shape 7: an answer only one request family takes (its bridge
+        # handler submits nothing else) while another request is pending.
+        # 2026-10-18 18:18:26: assign_damage planned for AssignDamage reached
+        # the commander's return-to-command-zone OptionalAction and went
+        # MANUAL REQUIRED as a "Bridge gap: OptionalAction".
+        families = _REQUEST_SCOPED_ACTIONS.get(action.action_type)
+        if families is not None:
+            return not any(kw in bridge_class or kw in bridge_type for kw in families)
 
         # Shape 5: pass/resolve against a non-passable window. SubmitPass
         # only exists on ActionsAvailableRequest — if the window changed to
