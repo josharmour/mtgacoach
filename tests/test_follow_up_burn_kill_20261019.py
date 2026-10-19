@@ -85,3 +85,22 @@ def test_a_named_card_that_is_not_burn_does_not_count():
     }
     planner = _planner("4 damage now, then Fleeting Effigy attacks to finish the Elemental.")
     assert planner._prefer_lethal_damage_target(_decision(), _state([effigy]), ["tgt:401"]) == [DECLINE_DECISION]
+
+
+def test_negated_kill_sentences_are_not_kill_claims():
+    """Ledger #86b: 'Strike can't kill a 4/5 Elemental, so aim it at the face' claims no kill."""
+    from arenamcp.play_safety import claimed_kills
+
+    elemental = {"name": "Hearth Elemental", "power": 4, "toughness": 5}
+    gearhulk = {"name": "Pyrewood Gearhulk", "power": 7, "toughness": 7}
+    for text in (
+        "Strike can't kill a 4/5 Elemental, so aim it at the opponent's face.",
+        "Neither Hearth Elemental dies to a lone Strike (needs 5), so point it at the opponent.",
+        "Neither spell kills the 7/7 Gearhulk, so take the line that also pings the opponent.",
+        "Lightning Strike's 3 damage cannot kill a 4/5 Hearth Elemental.",
+    ):
+        assert claimed_kills(text, [elemental, gearhulk]) == [], text
+    assert claimed_kills("Shock kills the Hearth Elemental.", [elemental]) == [elemental]
+    assert claimed_kills(
+        "Strike can't kill the Gearhulk, but Iroh's kills the Hearth Elemental.", [elemental, gearhulk]
+    ) == [elemental]

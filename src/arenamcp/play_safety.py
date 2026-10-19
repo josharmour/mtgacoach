@@ -1144,10 +1144,25 @@ def claimed_kills(reasoning: str, creatures: list[dict]) -> list[dict]:
                 rf"(?:[\w'’/+-]+,\s+(?:the|their|that|its)\s+(?:[\w'’/+-]+\s+){{0,3}})?{re.escape(name)}"
                 rf"|{re.escape(name)}\b[^.;]{{0,40}}\b(?:dies|die)\b"
             )
-            if re.search(pattern, text):
+            if any(not _negated_claim(text, match.start()) for match in re.finditer(pattern, text)):
                 found.append(creature)
                 break
     return found
+
+
+# 2026-10-19 12:21:42 / 12:30:34 (ledger #86b): "Neither spell kills the 7/7
+# Gearhulk" and "Strike can't kill a 4/5 Elemental, so aim it at the face" were
+# read as kill claims, and correct face burn was thrown out three times in a game.
+_NEGATION = re.compile(
+    r"\b(?:neither|nor|not|no|never|cannot|can't|can’t|won't|won’t|doesn't|doesn’t|don't|don’t|"
+    r"isn't|isn’t|wouldn't|wouldn’t|couldn't|couldn’t|fails? to|unable to|too small to|short of)\b"
+)
+
+
+def _negated_claim(text: str, start: int) -> bool:
+    """The kill claim starting at ``start`` sits in a negated clause."""
+    clause = re.split(r"[.;:!?,—–]|\bso\b|\bbut\b|\bwhile\b|\binstead\b", text[:start])[-1]
+    return bool(_NEGATION.search(clause[-40:]))
 
 
 def shrink_note(state: dict, card: dict, *, activation: bool, metadata: dict | None = None) -> str:
