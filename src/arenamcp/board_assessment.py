@@ -695,6 +695,66 @@ def _attack_round_life(
     return full if full[0] - full[4] > held[0] - held[4] else held
 
 
+def _racers(
+    attackers: list[dict],
+    defenders: list[dict],
+    life: int,
+    first_attackers,
+    first_blockers,
+    clock: int | None,
+) -> frozenset[int]:
+    """Ids of the creatures a side's clock attacks with (``_attack_plan`` of its first attack),
+    without vigilance; none when it has no clock."""
+    if clock is None or not attackers:
+        return frozenset()
+    able = (
+        list(first_attackers) if first_attackers is not None else [a for a in attackers if a["_can_attack"]]
+    )
+    blockers = (
+        list(first_blockers) if first_attackers is not None and first_blockers is not None else defenders
+    )
+    return frozenset(
+        a["instance_id"]
+        for a in _attack_plan(able, list(blockers), life)
+        if not has_combat_keyword(a, "vigilance")
+    )
+
+
+def _attack_plan(attackers: list[dict], blockers: list[dict], life: int) -> list[dict]:
+    """The attackers ``_attack_round_life`` sends: everyone, or the survivors of everyone's
+    attack, or nobody when that held-back attack would do nothing."""
+    full = _combat_life(attackers, blockers, life)
+    if not full[1]:
+        return list(attackers)
+    survivors = [a for a in attackers if a["instance_id"] not in full[1]]
+    held = _combat_life(survivors, blockers, life) if survivors else (0, set(), set(), 0, 0)
+    if held[0] <= 0 and not held[2]:
+        held, survivors = (0, set(), set(), 0, 0), []
+    return list(attackers) if full[0] - full[4] > held[0] - held[4] else survivors
+
+
+# Permanents whose effects the board-only clocks don't play (ledger #98): an attack trigger
+# ("Whenever enchanted creature attacks, put a +1/+1 counter on it ...", Ordeal of Nylea; "Whenever
+# you attack ...") and an Aura's other triggers.
+_ATTACK_TRIGGER = re.compile(r"\bwhenever\b[^.,:]*?\battacks?\b|\bwhenever you attack\b")
+_TRIGGER = re.compile(r"\b(?:whenever|at the beginning of)\b")
+
+
+def clock_unmodelled(battlefield: list[dict]) -> list[str]:
+    """'Ordeal of Nylea (attack trigger)' for each permanent on the battlefield with an attack
+    trigger or an Aura with a triggered ability: what the clocks leave out."""
+    found: dict[str, str] = {}
+    for card in battlefield:
+        if not isinstance(card, dict) or _is_land(card):
+            continue
+        text = _QUOTED.sub("", _text(card))
+        if _ATTACK_TRIGGER.search(text):
+            found.setdefault(_name(card), "attack trigger")
+        elif "aura" in _types(card) and _TRIGGER.search(text):
+            found.setdefault(_name(card), "aura trigger")
+    return [f"{name} ({why})" for name, why in found.items()]
+
+
 def lifelink_drain(attackers: list[dict], blockers: list[dict], life: int) -> int:
     """Life the attacking side gains from its lifelink attackers in one ``_attack_round``.
 
@@ -716,9 +776,13 @@ def _simulate_attacks(
     first_blockers: list[dict] | None,
     horizon: int = _HORIZON,
     drain: int = 0,
+    racing: frozenset = frozenset(),
 ) -> tuple[int | None, list[int]]:
     """Attacks needed to kill the defender (None when the board stalls) and life after each
     of the first ``horizon`` attacks.
+
+    ``racing``: the defender's creatures that attack on its own turns (``_attack_plan``,
+    no vigilance): from the second attack on they are tapped and don't block.
 
     Board-only: no new creatures on either side. ``first_attackers`` /
     ``first_blockers`` restrict the immediate attack to creatures that can act
@@ -745,7 +809,7 @@ def _simulate_attacks(
             blockers = list(first_blockers if first_blockers is not None else alive_def)
         else:
             able = [a for a in alive_att if a["_can_attack"]]
-            blockers = list(alive_def)
+            blockers = [d for d in alive_def if d["instance_id"] not in racing] if index else list(alive_def)
         damage, dead_att, dead_def, _gain, healed = _attack_round_life(able, blockers, life)
         life -= damage - healed
         if index < horizon:
@@ -907,6 +971,12 @@ class BoardAssessment:
     # Commander games: per commander of ours in the command zone, its cost now (tax included)
     # and when the lookahead can cast it (``_commander_facts``); empty elsewhere.
     commander: list[str] = field(default_factory=list)
+    # Their clock while our clock's attackers keep attacking (they can't block: the race's);
+    # their next attack on the board-only clock: (damage, our life after), None when it does
+    # nothing; and the permanents whose triggers the clocks leave out (``clock_unmodelled``).
+    their_clock_racing: int | None = None
+    their_next_attack: tuple[int, int] | None = None
+    clock_unmodelled: list[str] = field(default_factory=list)
 
     @property
     def survival_mode(self) -> bool:
@@ -963,11 +1033,20 @@ class BoardAssessment:
         return text
 
     def facts_line(self) -> str:
+        notes = []
+        if self.their_clock_racing != self.their_clock:
+            notes.append(f"{self._clock_text(self.their_clock_racing)} while ours attack")
+        if self.their_next_attack is not None:
+            damage, after = self.their_next_attack
+            notes.append(f"their next attack: {damage} -> {f'you at {after}' if after > 0 else 'lethal'}")
+        nxt = f" ({'; '.join(notes)})" if notes else ""
         line = (
-            f"they kill us in {self._clock_text(self.their_clock)} attack(s), we kill them in "
+            f"they kill us in {self._clock_text(self.their_clock)} attack(s){nxt}, we kill them in "
             f"{self._clock_text(self.our_clock)} | race {self.race.upper()} ({self.race_detail}) "
             f"| life {self.our_life} vs {self.opp_life}"
         )
+        if self.clock_unmodelled:
+            line += " | clock leaves out: " + ", ".join(self.clock_unmodelled[:4])
         if self.flags:
             line += " | !! " + "; ".join(self.flags)
         return line
@@ -1345,6 +1424,22 @@ def _clock_facts(model: Any) -> SimpleNamespace:
         first_blockers=list(model.our_first_blockers),
         drain=our_drain,
     )
+    # Their clock while our clock's attackers keep attacking: those (no vigilance) can't block
+    # their later attacks (ledger #98, match 18b1601a T10: "they kill us in 5" counted chump
+    # blocks by the fliers "we kill in 2" attacked with). The race compares the two; the
+    # documented clocks (each side blocking with everything) stay as they are.
+    racing_clock = their_clock
+    our_racers = _racers(ours, theirs, model.opp_life, first_our_attackers, model.untapped_theirs, our_clock)
+    if our_racers:
+        racing_clock, _racing_lives = _simulate_attacks(
+            theirs,
+            ours,
+            model.our_life,
+            first_attackers=first_their_attackers,
+            first_blockers=list(model.our_first_blockers),
+            drain=our_drain,
+            racing=our_racers,
+        )
     # Their first attack with no blocks at all: when our best blocks stop none
     # of it, their clock is evasive and "hold blockers" is an empty lane
     # (2026-10-08 game 1 T8-T12: Tetsuko made every 1-power attacker
@@ -1385,14 +1480,14 @@ def _clock_facts(model: Any) -> SimpleNamespace:
 
     if our_clock is None and their_clock is None:
         race, race_detail = "stalled", "neither side gets damage through the other's blocks"
-    elif their_clock is None:
+    elif racing_clock is None:
         race = "ahead"
         race_detail = f"we kill in {our_clock}, {_stalled_text('they', their_lives, model.our_life)}"
     elif our_clock is None:
         race = "behind"
         race_detail = f"they kill in {their_clock}, {_stalled_text('we', our_lives, model.opp_life)}"
     else:
-        ours_at, theirs_at = attack_time(our_clock, True), attack_time(their_clock, False)
+        ours_at, theirs_at = attack_time(our_clock, True), attack_time(racing_clock, False)
         if ours_at < theirs_at:
             race = "ahead"
         elif theirs_at < ours_at:
@@ -1400,7 +1495,8 @@ def _clock_facts(model: Any) -> SimpleNamespace:
         else:
             race = "even"
         first = "we strike first" if attack_time(1, True) < attack_time(1, False) else "they strike first"
-        race_detail = f"our clock {our_clock} vs their {their_clock}, {first}"
+        attacking = " while ours attack" if racing_clock != their_clock else ""
+        race_detail = f"our clock {our_clock} vs their {racing_clock}{attacking}, {first}"
     survival_hint = (
         opp_lethal_on_board
         or race == "behind"
@@ -1410,11 +1506,18 @@ def _clock_facts(model: Any) -> SimpleNamespace:
             and sum(b["power"] for b in theirs) > sum(b["power"] for b in ours) + 2
         )
     )
+    # Their next attack, said outright: "they kill us in 5" hid a first hit of 9 -> 4.
+    their_next = None
+    if their_lives and their_lives[0] < model.our_life:
+        their_next = (model.our_life - their_lives[0], their_lives[0])
     return SimpleNamespace(
         our_clock=our_clock,
         our_lives=our_lives,
         their_clock=their_clock,
         their_lives=their_lives,
+        their_clock_racing=racing_clock,
+        their_next=their_next,
+        unmodelled=clock_unmodelled(list(model.battlefield)),
         lethal_now=lethal_now,
         lethal_next_turn=lethal_next_turn,
         opp_lethal_on_board=opp_lethal_on_board,
@@ -1766,6 +1869,9 @@ def _assess(state: dict) -> BoardAssessment | None:
         unmodelled=unmodelled,
         pending=pending,
         commander=commander,
+        their_clock_racing=getattr(clocks, "their_clock_racing", their_clock),
+        their_next_attack=getattr(clocks, "their_next", None),
+        clock_unmodelled=list(getattr(clocks, "unmodelled", ()) or ()),
     )
     result.elapsed_ms = (time.perf_counter() - started) * 1000
     return result

@@ -42,6 +42,59 @@ def has_cast_trigger(card: dict) -> bool:
     return "prowess" in keywords or bool(_PROWESS_LINE.search(text)) or bool(_CAST_TRIGGER.search(text))
 
 
+# The pump itself: "Whenever you cast a noncreature spell, this creature gets +2/+0 until end of
+# turn." (Slickshot Show-Off), "... instant or sorcery spell, creatures you control get +1/+0 ...".
+# Only an unconditional "a/an <kind> spell" trigger whose effect is the pump: "your second spell
+# each turn", "a spell that targets ~", an intervening "if" and +1/+1 counters are not read.
+_CAST_PUMP = re.compile(
+    r"\bwhenever you cast (?:or copy )?(?:a|an) (?:(?P<kind>noncreature|instant or sorcery|instant|sorcery) )?"
+    r"spell(?: from your hand)?,\s*(?P<who>~|cardname|this [a-z]+|it|(?:other )?creatures you control) gets? "
+    r"\+(?P<p>\d+)/\+(?P<t>\d+) until end of turn\b"
+)
+# Spell kinds a cast pump names (``cast_pumps``), each a set of the kinds one spell is.
+CREATURE_SPELL = frozenset({"any"})
+NONCREATURE_SPELL = frozenset({"any", "noncreature"})
+
+
+def spell_kinds(card: dict) -> frozenset[str]:
+    """The cast-trigger kinds (``cast_pumps``) casting ``card`` counts as."""
+    types = f"{card.get('type_line') or ''} {' '.join(str(t) for t in card.get('card_types') or ())}".lower()
+    if "creature" in types:
+        return CREATURE_SPELL
+    kinds = set(NONCREATURE_SPELL)
+    for kind in ("instant", "sorcery"):
+        if kind in types:
+            kinds |= {kind, "instant or sorcery"}
+    return frozenset(kinds)
+
+
+def cast_pumps(card: dict) -> tuple[tuple[str, int, int, str], ...]:
+    """(spell kind, +power, +toughness, who) for each of the card's own "until end of turn" pumps
+    on casting a spell: prowess ("noncreature", 1, 1, "self") and the written-out triggers. ``who``
+    is "self", "team" (creatures you control) or "others" (other creatures you control); the kind
+    is "any", "noncreature", "instant or sorcery", "instant" or "sorcery" (``spell_kinds``).
+
+    Ledger #94 (match 18b1601a T9, 2026-10-19): Tectonic Hazard plus two
+    Slickshot Show-Offs at +2/+0 each was exactly lethal in the air; the line
+    search never applied the pumps and played Fleeting Effigy instead.
+    """
+    keywords = {str(k).lower() for k in card.get("keywords") or ()}
+    text = _text(card)
+    name = str(card.get("name") or "").lower()
+    if name:
+        text = text.replace(name, "~")
+    found: list[tuple[str, int, int, str]] = []
+    if "prowess" in keywords or _PROWESS_LINE.search(text):
+        found.append(("noncreature", 1, 1, "self"))
+    for line in dict.fromkeys(" ".join(line.split()) for line in text.splitlines()):
+        for match in _CAST_PUMP.finditer(line):
+            who = match.group("who")
+            who = "team" if who.endswith("you control") else "self"
+            who = "others" if who == "team" and match.group("who").startswith("other") else who
+            found.append((match.group("kind") or "any", int(match.group("p")), int(match.group("t")), who))
+    return tuple(found)
+
+
 def _local_seat(state: dict) -> Any:
     seat = state.get("local_seat_id")
     if seat is not None:
