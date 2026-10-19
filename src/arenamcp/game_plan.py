@@ -3052,6 +3052,26 @@ def _repair_at(text: str, error: json.JSONDecodeError) -> str | None:
         if rest.startswith("}"):
             return text[:pos] + text[rest_at:]
         return None
+    if msg.startswith("Expecting value") and text[:pos].rstrip().endswith(("[", ",")):
+        # An unquoted list item (2026-10-19 16:21:40: '"assumptions": [ "...",
+        # no instant trick or fog disrupts the committed T13 swing, Thalia blocks
+        # at most one attacker ]'): quote the rest of its line, keeping its comma.
+        if _KEY_NAME.match(text, pos) is None:
+            return None
+        eol = text.find("\n", pos)
+        eol = len(text) if eol == -1 else eol
+        line = text[pos:eol]
+        cut = len(line)
+        for stop in ("]", "}"):
+            at = line.find(stop)
+            if at != -1:
+                cut = min(cut, at)
+        body = line[:cut].rstrip()
+        comma = body.endswith(",")
+        body = body[:-1].rstrip() if comma else body
+        if not body:
+            return None
+        return text[:pos] + json.dumps(body) + ("," if comma else "") + line[cut:] + text[eol:]
     if msg.startswith("Expecting ':' delimiter"):
         # A bare string where a key belongs: drop it and the comma before it.
         close = len(head) - 1
