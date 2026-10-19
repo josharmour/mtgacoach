@@ -86,3 +86,72 @@ def test_other_sentences_survive_the_correction(monkeypatch):
     assert planner.get_decision_reasoning(chosen) == (
         "Pump the Preserver before combat. Board math: not lethal this turn (they are at 6)."
     )
+
+
+# --- 2026-10-19: only OUR lethal THIS turn is a claim ----------------------------
+
+MARSHAL = (
+    "Dawnwing Marshal alone is lethal next attack and can't be burned down with 3 mana, so race with "
+    "maximum face damage now — cast Lightning Strike to the face, leaving {R} to deploy Fleeting Effigy "
+    "as a second hasty attacker this turn."
+)
+
+
+@pytest.mark.parametrize(
+    "reasoning",
+    [
+        # match 41753907 T13: the opponent's lethal, not ours.
+        MARSHAL,
+        "We're dead to their lethal crackback regardless, so converting mana into 3 face damage with "
+        "Boltwave advances the only realistic path—burn reach—while a land drop doesn't affect this turn.",
+        "Deploy the first Fleeting Effigy now so both haste attackers come down this turn per the T12 "
+        "lethal line; Boltwave is better saved as face reach since opponents sit at 8.",
+        "Playing the fourth Mountain follows the lethal line without spending mana, keeping Strike banked "
+        "as reach and leaving burst options open this turn.",
+        "With 1 mana and no enemy creatures, a second hasty Fleeting Effigy swings for 2 this turn versus "
+        "Tectonic Hazard's single face damage, advancing the lethal race.",
+        "Playing the Mountain first unlocks a second red mana so I can cast a Fleeting Effigy this turn and "
+        "attack alongside Slickshot, advancing the lethal-on-T10 line.",
+        "Attacking is not lethal this turn, so the blockers stay home.",
+    ],
+)
+def test_reasoning_that_claims_no_lethal_of_ours_this_turn_is_left_alone(monkeypatch, reasoning):
+    planner = _planner(monkeypatch, reasoning, _facts(opp_life=15))
+    chosen = planner.plan_decision_options(_decision(), {"turn": {}})
+    assert planner.get_decision_reasoning(chosen) == reasoning
+    assert "false_lethal_claim" not in planner.get_last_decision_trace()
+    remembered = planner._memory().this_turn({"turn": {}})[-1].reasoning
+    assert reasoning.startswith(remembered)  # the model's words, capped at 40
+
+
+@pytest.mark.parametrize(
+    "reasoning",
+    [
+        "Cast Boltwave first (opponent to 5), leaving exactly {R} to also cast Fleeting Effigy, then attack "
+        "with all three hasty creatures for 6 — lethal this turn.",
+        "Strike to face drops them to 1, and the pumped flying Slickshot plus Hired Claw's attack ping "
+        "finishes lethal this turn.",
+    ],
+)
+def test_our_lethal_this_turn_is_still_checked(monkeypatch, reasoning):
+    planner = _planner(monkeypatch, reasoning, _facts(opp_life=8))
+    chosen = planner.plan_decision_options(_decision(), {"turn": {}})
+    assert planner.get_decision_reasoning(chosen) == "Board math: not lethal this turn (they are at 8)."
+    assert planner.get_last_decision_trace()["false_lethal_claim"] == [reasoning]
+
+
+def test_decision_memory_keeps_the_original_reasoning_after_a_correction(monkeypatch):
+    line = SimpleNamespace(win_at=2, win_turn=27)
+    planner = _planner(monkeypatch, CLAIM, _facts(lines=[line]))
+    planner.plan_decision_options(_decision(), {"turn": {}})
+    remembered = planner._memory().this_turn({"turn": {}})[-1].reasoning
+    correction = "Board math: not lethal this turn (they are at 6; the best line is lethal on T27)."
+    assert remembered == f"{CLAIM} {correction}"
+    # A long reasoning keeps its opening words (the target, the sequencing) and the correction.
+    long_claim = "Cast Lightning Strike to the face " + "and keep swinging " * 12 + "for exactly lethal now."
+    planner = _planner(monkeypatch, long_claim, _facts())
+    planner.plan_decision_options(_decision(), {"turn": {}})
+    remembered = planner._memory().this_turn({"turn": {}})[-1].reasoning
+    assert remembered.startswith("Cast Lightning Strike to the face")
+    assert remembered.endswith("Board math: not lethal this turn (they are at 6).")
+    assert len(remembered.split()) <= 40

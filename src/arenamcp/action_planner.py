@@ -3099,8 +3099,12 @@ class ActionPlanner(_ActionLegalityMixin):
         cancel_event = getattr(self, "_decision_cancel_event", None)
         if cancel_event is not None and cancel_event.is_set():
             return chosen  # superseded: the caller discards it, memory must not keep it
+        reasoning = self._last_decision_reasoning
+        corrected = getattr(self, "_false_lethal_memory", None)
+        if corrected is not None and corrected[0] == reasoning:
+            reasoning = corrected[1]  # the model's own words survive a lethal correction
         try:
-            self._memory().record(game_state, decision, chosen, self._last_decision_reasoning)
+            self._memory().record(game_state, decision, chosen, reasoning)
         except Exception as error:  # memory never blocks a decision
             logger.debug("decision memory skipped: %s", error)
         return chosen
@@ -3201,6 +3205,7 @@ class ActionPlanner(_ActionLegalityMixin):
         then a deterministic pick from the same option set.
         """
         self._last_decision_reasoning = ""
+        self._false_lethal_memory = None
         self._last_decision_option_ids = []
         self._last_decision_target_controllers = {}
         self._last_decision_unusual_targets = {}
@@ -4076,16 +4081,35 @@ class ActionPlanner(_ActionLegalityMixin):
 
     # A sentence claiming the kill is now: "exactly lethal", "lethal this turn",
     # "lethal now"; never "lethal next turn", "lethal on T27", "toward lethal".
+    # 2026-10-19: "lethal" and "this turn"/"now" must share one clause, and
+    # "lethal" must not modify another noun. Six of ten corrections that day
+    # were not claims: "the T12 lethal line", "We're dead to their lethal
+    # crackback", "advancing the lethal race", "the lethal-on-T10 line" and
+    # (match 41753907 T13) "Dawnwing Marshal alone is lethal next attack" —
+    # the opponent's lethal, which wiped the Lightning Strike's "to the face".
+    _LETHAL_WORD = (
+        r"(?<!not )(?<!n't )(?<!no )(?<![-‑])\blethal\b"
+        r"(?![-‑]|\s+(?:line|race|crackback|clock|setup|set-up|plan|path|threat|range|pressure)\b)"
+    )
+    _CLAUSE_GAP = r"(?:(?!\b(?:so|because|since|while|but|whereas)\b)[^.!?;:,—–])*?"
+    _NOW_WORD = r"\b(?:this turn|this combat|right now|now|immediately)\b"
     _LETHAL_NOW = re.compile(
-        r"\b(?:exactly|precisely)\s+lethal\b|\blethal\s+(?:this turn|now|right now|immediately)\b"
-        r"|\b(?:this turn|now)\b[^.!?]*\blethal\b|\blethal\b[^.!?]*\bthis turn\b",
+        rf"(?<!not )\b(?:exactly|precisely)\s+lethal\b"
+        rf"|{_LETHAL_WORD}{_CLAUSE_GAP}{_NOW_WORD}|{_NOW_WORD}{_CLAUSE_GAP}{_LETHAL_WORD}",
         re.I,
     )
     _LETHAL_LATER = re.compile(
-        r"\b(?:next turn|following turn|on T\+?\d|T\+\d|in \d|toward|towards|set(?:s|ting)? up|threaten|"
-        r"clock|if (?:they|the opponent)|unless|would be lethal)\b",
+        r"\b(?:next turn|following turn|on T\+?\d|T\+\d|T\d+|in \d|toward|towards|set(?:s|ting)? up|threaten|"
+        r"clock|if (?:they|the opponent)|unless|would be lethal|next (?:attack|combat|swing)|"
+        # The opponent's lethal, not ours.
+        r"their (?:next )?(?:turn|attack|combat|swing)|their (?:\w+ )?lethal|opponent'?s (?:\w+ )?lethal|"
+        r"(?:they|the opponent) (?:has|have|had|threatens?|presents?|represents?) lethal|"
+        r"lethal (?:to|against|on|at) (?:us|me)|crack ?back|swing back|dead to|we(?:'re| are) dead|we die|"
+        r"kills? us)\b",
         re.I,
     )
+    # DecisionMemory keeps a decision's first 40 reasoning words.
+    _MEMORY_REASONING_WORDS = 40
 
     def _correct_false_lethal_claim(self, game_state: dict[str, Any]) -> None:
         """Strip a "lethal this turn" claim the deterministic board facts contradict.
@@ -4096,7 +4120,9 @@ class ActionPlanner(_ActionLegalityMixin):
         (it had just looted), so 4 power attacked into 6 life. The board facts
         (``BoardAssessment.lethal_now``, the lethal posture, a line winning on T)
         decide; the pick stands, the narration loses the false sentence and
-        says what the math found, and the trace records the claim.
+        says what the math found, and the trace records the claim. Only a
+        claim that WE kill them THIS turn counts (``_LETHAL_NOW`` without
+        ``_LETHAL_LATER``); the decision memory keeps the original reasoning.
         """
         reasoning = self._last_decision_reasoning
         if not reasoning or "lethal" not in reasoning.lower():
@@ -4124,6 +4150,15 @@ class ActionPlanner(_ActionLegalityMixin):
         correction = f"Board math: not lethal this turn (they are at {facts.opp_life}{when})."
         kept = [sentence for sentence in sentences if sentence not in claims]
         self._last_decision_reasoning = " ".join(kept + [correction]).strip()
+        # The decision memory keeps what the model meant (its target, its
+        # sequencing) with the correction after it: 2026-10-19 T13 the memory
+        # held only "Board math: not lethal…", and the target step that read it
+        # sent Lightning Strike into a 5/5 instead of "to the face".
+        budget = max(0, self._MEMORY_REASONING_WORDS - len(correction.split()))
+        self._false_lethal_memory = (
+            self._last_decision_reasoning,
+            " ".join(reasoning.split()[:budget] + [correction]),
+        )
         if isinstance(self._last_decision_trace, dict):
             self._last_decision_trace["false_lethal_claim"] = claims
         logger.warning(
