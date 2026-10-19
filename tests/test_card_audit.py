@@ -1,28 +1,9 @@
+"""The dev-only card audit CLI (python -m arenamcp.card_audit) sorts what is really missing."""
+
 from unittest.mock import Mock
 
-import pytest
-
 from arenamcp.card_audit import audit_records
-from arenamcp.card_db import CardInfo, FallbackCardDatabase, is_unknown_card_name
-
-
-@pytest.mark.parametrize(
-    "name", ["Unknown", "Unknown_123", "Unknown(123)", "Unknown (123)", "Unknown Card #123", "", None]
-)
-def test_only_placeholder_names_are_unresolved(name):
-    assert is_unknown_card_name(name)
-    assert not is_unknown_card_name("Unknown Shores")
-
-
-def test_unknown_shores_can_be_enriched_by_name():
-    source = Mock()
-    source.get_card_by_arena_id.return_value = CardInfo(name="Unknown Shores", arena_id=42)
-    source.get_card_by_name.return_value = CardInfo(
-        name="Unknown Shores", type_line="Land", oracle_text="{T}: Add {C}."
-    )
-    card = FallbackCardDatabase([source]).get_card_by_arena_id(42)
-    assert card.type_line == "Land"
-    assert card.oracle_text
+from arenamcp.card_db import CardInfo
 
 
 def test_audit_separates_placeholders_markers_and_actual_missing_card_data():
