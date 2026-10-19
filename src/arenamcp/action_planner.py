@@ -54,6 +54,13 @@ def _as_int(value: Any) -> int:
         return 0
 
 
+def _walker_loyalty(card: dict[str, Any]) -> int | None:
+    """A planeswalker's current loyalty (its loyalty counters first), None when unknown (#130)."""
+    from arenamcp.combat_strategy import loyalty
+
+    return loyalty(card)
+
+
 def _is_opponent_turn(game_state: dict[str, Any], local_seat: Any) -> bool:
     """Whether the opponent is the active player (False when either seat is unknown)."""
     active = _as_int((game_state.get("turn") or {}).get("active_player"))
@@ -1616,7 +1623,15 @@ class ActionPlanner(_ActionLegalityMixin):
                 except (ValueError, TypeError, KeyError):
                     continue  # cannot tell which creatures attack: keep the plan
             strategy_text = f"{plan.overall_strategy or ''} {action.reasoning or ''}".strip()
-            losing = losing_attackers(state, identities, strategy_text=strategy_text)
+            # #127 (2026-10-19 T15): an attack at a planeswalker is judged by what it does to the walker.
+            shared = action.target_names[0] if len(action.target_names) == 1 else ""
+            recipients = {
+                identity: action.attacker_targets.get(name) or shared
+                for name, identity in zip(action.attacker_names, identities, strict=True)
+            }
+            losing = losing_attackers(
+                state, identities, strategy_text=strategy_text, attacker_targets=recipients
+            )
             if not losing:
                 continue
             kept = [
@@ -1653,6 +1668,11 @@ class ActionPlanner(_ActionLegalityMixin):
 
             held = spoken_list([spoken_name(name) for name, _ in dropped])
             outcome = "they would die to blocks" if len(dropped) > 1 else "it would die to a block"
+            outcome += " for nothing"
+            if all("for free:" in losing[i] for _, i in dropped):  # ledger #120: nothing dies
+                outcome = ("they" if len(dropped) > 1 else "it") + " would be blocked for nothing"
+            elif all("keep the engine" in losing[i] for _, i in dropped):  # ledger #113
+                outcome = "our burn can kill that blocker instead of a trade"
             action.reasoning = f"Held back {held}: " + "; ".join(losing[i] for _, i in dropped) + "."
             action.model_reasoning = action.model_reasoning or original
             # 2026-10-19 10:56:24 (ledger #60): nothing recorded the hold, and the
@@ -1663,8 +1683,8 @@ class ActionPlanner(_ActionLegalityMixin):
                 "; ".join(losing[i] for _, i in dropped),
             )
             plan.fallback_reason = "planner_losing_attack"
-            plan.overall_strategy = f"Hold back {held}: {outcome} for nothing."
-            plan.voice_advice = f"Not attacking with {held}: {outcome} for nothing." + (
+            plan.overall_strategy = f"Hold back {held}: {outcome}."
+            plan.voice_advice = f"Not attacking with {held}: {outcome}." + (
                 f" {plan.spoken_actions()}" if kept else ""
             )
 
@@ -3237,6 +3257,9 @@ class ActionPlanner(_ActionLegalityMixin):
                     # counters: without them Burst Lightning's {2} ward tax read
                     # as its "{4} kicker" and was declined (2026-10-19 10:38:30).
                     *pay_decision_facts(game_state),
+                    # Ledger #104 (12:23:49): Spell Pierce's {2} on our Burst was
+                    # taken for its kicker, which had been declined at the cast.
+                    *filter(None, [self._kicker_answered_fact(game_state)]),
                     self._decision_game_context(game_state),
                     self._strategy_context(game_state),
                     "",
@@ -3272,6 +3295,31 @@ class ActionPlanner(_ActionLegalityMixin):
             logger.info(f"plan_pay_or_decline: pay={pay} ({str(data.get('reasoning', ''))[:100]})")
             return pay
         return None
+
+    def _kicker_answered_fact(self, game_state: dict[str, Any]) -> str:
+        """A pay-prompt line when the kicker of our spell on the stack was already chosen at its cast ('' otherwise)."""
+        try:
+            local_seat = _local_seat(game_state)
+            ours = {
+                str(item.get("name") or "").strip().casefold()
+                for item in game_state.get("stack") or []
+                if isinstance(item, dict)
+                and item.get("controller_seat_id") == local_seat
+                and str(item.get("object_kind") or "").upper() != "ABILITY"
+            } - {""}
+            for record in reversed(self._memory().this_turn(game_state)):
+                if record.request_type != "CastingTimeOptions" or record.source.strip().casefold() not in ours:
+                    continue
+                if not any("kick" in str(label).casefold() for label in record.option_labels.values()):
+                    continue
+                kicked = any("kick" in str(label).casefold() for label in record.chosen_labels)
+                return (
+                    f"The kicker of {record.source} was already answered when it was cast "
+                    f"({'kicked' if kicked else 'not kicked'}): this cost is not its kicker."
+                )
+        except Exception as error:  # a prompt fact never blocks the decision
+            logger.debug("kicker fact unavailable: %s", error)
+        return ""
 
     # The decision rules, each tagged with the subject it needs in the game
     # (situational_rules.SUBJECTS; None: always). With every subject in play
@@ -3810,6 +3858,22 @@ class ActionPlanner(_ActionLegalityMixin):
             picked,
             f" [line pick; board math: {board_pick}]" if source == "line" else "",
         )
+        gap = trace.get("line_gap") if isinstance(trace, dict) else None
+        if (
+            failure == "set_aside"
+            and isinstance(gap, dict)
+            and gap.get("mode") == "on"
+            and picked
+            and picked != [gap.get("chosen")]
+        ):
+            # Ledger #116: the doubted low answer had no high-effort answer to replace it.
+            gap["applied"] = list(picked)
+            logger.warning(
+                "line_gap: did replace %s with %s (%s)",
+                gap.get("card"),
+                _option_text(decision, picked[0]),
+                why,
+            )
         return picked
 
     def _second_look(
@@ -4047,7 +4111,10 @@ class ActionPlanner(_ActionLegalityMixin):
         - "face_burn" (ledger #59, #77): burn that only goes face, with no
           lethal, that the line search rates below its best line or not at all;
         - "attack_only" (ledger #37): a haste creature that leaves at end step,
-          cast before combat, whose attack the losing-attack guard would hold.
+          cast before combat, whose attack the losing-attack guard would hold;
+        - "line_gap" (ledger #116): any cast the line search rates
+          ``LINE_GUARD_MARGIN`` or more below its best line, with no lethal and
+          that line playable now (not repeated when "face_burn" already cites it).
         """
         if (
             decision.request_type != "ActionsAvailable"
@@ -4060,7 +4127,10 @@ class ActionPlanner(_ActionLegalityMixin):
             ("false_lethal", self._false_lethal_concern),
             ("face_burn", self._face_burn_concern),
             ("attack_only", self._attack_only_cast_concern),
+            ("line_gap", self._line_gap_concern),
         ):
+            if kind == "line_gap" and any(seen == "face_burn" for seen, _text in found):
+                continue
             try:
                 text = check(
                     decision, game_state, str(chosen[0]), str(reasoning or ""), line_source, line_tags or {}
@@ -4245,6 +4315,108 @@ class ActionPlanner(_ActionLegalityMixin):
             if victim is not None and kill_verdict(reach, victim) is True:
                 return f"{name} kills {target}, which the best line kills with {spell_name} at sorcery speed"
         return ""
+
+    def _line_gap_concern(
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        option_id: str,
+        _reasoning: str,
+        source: Any,
+        tags: dict,
+    ) -> str:
+        """A cast the line search rates ``LINE_GUARD_MARGIN`` or more below its best line (ledger #116).
+
+        2026-10-19 12:49:36 (match 2c67eed8 T8): Iroh's Demonstration on a
+        Dazzling Angel was tagged "[LINE: -8 vs best]"; the best line was
+        "Mountain + Giant Cindermaw; then Mountain + Iroh's Demonstration",
+        which kept Iroh's for the Herald of Faith that later dealt 8. The low
+        answer took 9.9 s, the high one never came, and the low pick stood:
+        outside survival mode no guard reads a value gap. Our main phase, a
+        payable cast with that tag, no lethal this turn or within reach (the
+        search missed such a kill before, ledger #100), and a best line that
+        casts this turn, its spells offered, starting with the board-math
+        fallback's own pick (its land, or a cast Arena confirms). With
+        ``ARENAMCP_LINE_GAP`` 'shadow' it only logs what it would replace.
+        """
+        from arenamcp.decision_memory import _TURN_STEPS, turn_window
+        from arenamcp.line_guard import LINE_GUARD_MARGIN, line_gap_mode
+        from arenamcp.line_search import action_key
+
+        setting = line_gap_mode()
+        gap = re.match(r"\[LINE: -(\d+) vs best", str(tags.get(option_id) or ""))
+        if setting == "off" or not gap or int(gap.group(1)) < LINE_GUARD_MARGIN:
+            return ""
+        option = decision.find(option_id)
+        meta = (option.meta if option is not None else None) or {}
+        if meta.get("actionType") != "ActionType_Cast" or option.payable is False:
+            return ""
+        if turn_window(game_state) not in (_TURN_STEPS.index("main1"), _TURN_STEPS.index("main2")):
+            return ""
+        best = getattr(source, "best", None)
+        step = best.steps[0] if best is not None and getattr(best, "steps", None) else None
+        if step is None or not step.casts or getattr(source, "posture", "") == "lethal":
+            return ""
+        offered = {
+            str(find_source(game_state, o.meta or {}).get("name") or "")
+            for o in decision.options
+            if (o.meta or {}).get("actionType") == "ActionType_Cast" and o.payable is not False
+        }
+        if any(name not in offered for name in step.casts):
+            return ""
+        if _lethal_this_turn(game_state) is not False or lethal_reach(decision, game_state) is not None:
+            return ""
+        picked, _why = board_math_option_pick(decision, game_state)
+        line = line_fallback_option_pick(decision, game_state, picked)
+        if line is not None:
+            picked = line[0]
+        replacement = decision.find(picked[0]) if len(picked) == 1 else None
+        if replacement is None or replacement.option_id in (option_id, "pass"):
+            return ""
+        kind = (replacement.meta or {}).get("actionType")
+        if kind != "ActionType_Play" and replacement.payable is not True:
+            return ""
+        if action_key(replacement, game_state) not in best.first_actions:
+            return ""
+        name = str(find_source(game_state, meta).get("name") or _option_text(decision, option_id))
+        instead = _option_text(decision, replacement.option_id)
+        summary = best.summary(90)
+        logged = (tuple(getattr(decision, "request_id", ()) or ()), option_id, setting)
+        if getattr(self, "_line_gap_logged", None) != logged:
+            self._line_gap_logged = logged
+            if setting == "on":
+                logger.info(
+                    "line_gap: %s is %s below the best line (%s); high effort decides, else %s replaces it",
+                    name,
+                    gap.group(1),
+                    summary,
+                    instead,
+                )
+            else:
+                logger.info(
+                    "line_gap [shadow]: would replace %s with %s (%s below the best line: %s)",
+                    name,
+                    instead,
+                    gap.group(1),
+                    summary,
+                )
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict):
+            trace["line_gap"] = {
+                "chosen": option_id,
+                "card": name,
+                "gap": int(gap.group(1)),
+                "replacement": replacement.option_id,
+                "with": instead,
+                "mode": setting,
+            }
+        if setting != "on":
+            return ""
+        return (
+            f"The line search rates {name} {gap.group(1)} below its best line ({summary}), and nothing is "
+            f"lethal this turn. Play the best line ({instead} first) unless you can name what casting {name} "
+            "now gains that the search misses."
+        )
 
     _LEAVES_AT_END_RE = re.compile(
         r"at the beginning of (?:your|the next) end step,? (?:return (?:this creature|it|~)[^.]*hand"
@@ -4903,14 +5075,18 @@ class ActionPlanner(_ActionLegalityMixin):
     def _planned_follow_up_kills(
         self, decision: Any, game_state: dict[str, Any], card: dict[str, Any] | None, damage: int
     ) -> bool:
-        """The model's reasoning names more burn in hand that finishes this target.
+        """More burn in hand finishes this target: burn the reasoning names, or a burn combo.
 
         2026-10-19 12:31:22 (ledger #103): "Mode 2 puts 4 damage on a Hearth
         Elemental so Lightning Strike finishes it" — 4 + 3 kills the 4/5, but
         the 4 alone does not, so the target was declined, the cast cancelled,
         and the Strike then went at an undamaged Elemental. A two-spell kill is
-        a kill, as in _reject_false_kill_claim.
+        a kill, as in _reject_false_kill_claim. 12:29:01 (ledger #110): the
+        reasoning named no follow-up, but Tectonic Hazard (1 to each of their
+        creatures) was castable for the mana left: the combo
+        (:func:`decision_memory.stack_burn_combo_on`) on this target counts too.
         """
+        from arenamcp.decision_memory import stack_burn_combo_on
         from arenamcp.play_safety import damage_would_kill, named_burn_damage
 
         if card is None:
@@ -4921,14 +5097,24 @@ class ActionPlanner(_ActionLegalityMixin):
         }
         reasoning = str(getattr(self, "_last_decision_reasoning", "") or "")
         follow_up = named_burn_damage(reasoning, game_state, played)
-        if follow_up <= 0 or not damage_would_kill(card, damage + follow_up):
-            return False
-        logger.info(
-            "Keeping the target: %d damage plus %d from the burn the reasoning names kills %s",
-            damage,
-            follow_up,
-            card.get("name"),
+        if follow_up > 0 and damage_would_kill(card, damage + follow_up):
+            logger.info(
+                "Keeping the target: %d damage plus %d from the burn the reasoning names kills %s",
+                damage,
+                follow_up,
+                card.get("name"),
+            )
+            return True
+        combo = stack_burn_combo_on(
+            game_state,
+            _as_int(card.get("instance_id")),
+            source_id=played["instance_id"],
+            source_name=played["name"],
+            damage=damage,
         )
+        if combo is None:
+            return False
+        logger.info("Keeping the target: burn combo %s", combo.text())
         return True
 
     def _prefer_lethal_damage_target(
@@ -4973,7 +5159,9 @@ class ActionPlanner(_ActionLegalityMixin):
             if card is None or controllers.get(iid) == local_seat:
                 return None
             if "planeswalker" in str(card.get("type_line") or "").lower():
-                return True
+                # #130: a walker the damage doesn't finish keeps a pick but is no kill to retarget to.
+                remaining = _walker_loyalty(card)
+                return True if remaining is None or damage >= remaining else None
             if "creature" not in str(card.get("type_line") or "").lower():
                 return None
             return damage_would_kill(card, damage)
@@ -5091,7 +5279,10 @@ class ActionPlanner(_ActionLegalityMixin):
                 continue
             type_line = str(other.get("type_line") or "").lower()
             if "planeswalker" in type_line:
-                alternatives.append((0, 0, oid, other.get("name")))
+                # #130: "dies instead" only for a walker the damage finishes.
+                remaining = _walker_loyalty(other)
+                if remaining is None or sure_damage >= remaining:
+                    alternatives.append((0, 0, oid, other.get("name")))
             elif (
                 "creature" in type_line
                 and damage_would_kill(other, sure_damage) is True
@@ -5420,7 +5611,13 @@ class ActionPlanner(_ActionLegalityMixin):
     @staticmethod
     def _searched_line_target(game_state: dict[str, Any], name: str) -> tuple[str, int]:
         """The searched best line's target for ``name`` this turn: ("opponent" or a creature's
-        name, that creature's instance id or 0), or ("", 0)."""
+        name, that creature's instance id or 0), or ("", 0).
+
+        The id is the one this cast aims at in the line (its plays, in cast
+        order like ``step.casts``); only without that record, the first body
+        of that name. 2026-10-19 12:31:40 (ledger #111): two Hearth Elementals,
+        the line's Iroh's Demonstration aimed at the one Strike had damaged.
+        """
         try:
             from arenamcp.board_assessment import assess
 
@@ -5431,7 +5628,18 @@ class ActionPlanner(_ActionLegalityMixin):
             if not target or target == "opponent":
                 return target, 0
             plays = step.plays[1] if len(step.plays) == 3 else ()
-            target_id = next(
+            casts = tuple(getattr(step, "casts", ()) or ())
+            bodies = [body for variant, body in plays if getattr(variant, "kind", "") != "cycle"]
+            exact = (
+                [
+                    _as_int(body.get("instance_id"))
+                    for cast, body in zip(casts, bodies, strict=True)
+                    if cast == name and isinstance(body, dict) and body.get("name") == target
+                ]
+                if casts and len(bodies) == len(casts)
+                else []
+            )
+            target_id = exact[-1] if exact else next(
                 (
                     _as_int(body.get("instance_id"))
                     for _variant, body in plays
@@ -5443,6 +5651,33 @@ class ActionPlanner(_ActionLegalityMixin):
         except Exception as error:  # the strategic layer never blocks a decision
             logger.debug("line target not read: %s", error)
             return "", 0
+
+    def _line_target_agreement(self, decision: Any, game_state: dict[str, Any], chosen: list[str]) -> str:
+        """Why a target answer is the searched line's own target for this cast, or "" (ledger #118).
+
+        2026-10-19 12:48:55 (match 2c67eed8 T6): the line was "Burst Lightning
+        (on Helpful Hunter)"; the low answer picked Helpful Hunter at 2.1 s and
+        the hedge waited 3 s more for a high answer that never came. The line's
+        target is the one :meth:`_searched_line_target` gave when the cast was
+        chosen (:meth:`_remember_cast_intent`); without that, its answer for the
+        source card now. A single offered target only.
+        """
+        chosen = [str(option_id) for option_id in chosen or []]
+        if decision.request_type != "SelectTargets" or len(chosen) != 1:
+            return ""
+        intent = self._cast_intent_for(decision)
+        if intent is None:
+            card = str(getattr(decision, "source_label", "") or "").strip()
+            target, target_id = self._searched_line_target(game_state, card) if card else ("", 0)
+            intent = {"card": card, "line_target": target, "line_target_id": target_id}
+        target = str(intent.get("line_target") or "")
+        if not target:
+            return ""
+        wanted = self._line_target_option(decision, game_state, intent)
+        if not wanted or chosen != [wanted]:
+            return ""
+        where = "the opponent" if target == "opponent" else target
+        return f"the searched line aims {intent['card']} at {where}"
 
     def _cast_intent_for(self, decision: Any) -> dict[str, Any] | None:
         """The remembered intent of the cast whose targets ``decision`` chooses, or None."""
@@ -5531,6 +5766,44 @@ class ActionPlanner(_ActionLegalityMixin):
             None,
         )
         if life is None or life <= parsed[0] or _lethal_this_turn(game_state) is not False:
+            return chosen
+        # #126 (2026-10-19 13:14:15): the line wanted Burst Lightning on a 1/1 Callous Inspector; the
+        # model went face because the kill "only feeds its death trigger and gives a Clue". The line
+        # search does not model death triggers: when the target has one that pays its controller,
+        # the model's face pick stands.
+        from arenamcp.play_safety import death_trigger_benefit
+
+        line_card = next(
+            (
+                card
+                for card in game_state.get("battlefield", []) or []
+                if f"tgt:{_as_int(card.get('instance_id'))}" == line_option
+            ),
+            {},
+        )
+        trigger = death_trigger_benefit(line_card)
+        if trigger:
+            said = self._last_decision_reasoning or ""
+            cited = bool(re.search(r"\bdeath\b|\bdies\b|\bclue\b|\btoken\b", said, re.I))
+            logger.warning(
+                "Not retargeting: the searched line aims %s at %s, but its death trigger (%s) gives its "
+                "controller something the line search does not model; keeping %s%s [model: %s]",
+                intent["card"],
+                intent["line_target"],
+                trigger[:120],
+                chosen,
+                " (the model cited it)" if cited else "",
+                said[:160],
+            )
+            trace = getattr(self, "_last_decision_trace", None)
+            if isinstance(trace, dict):
+                trace["line_over_face_deferred"] = {
+                    "model": chosen,
+                    "line": line_option,
+                    "card": intent["card"],
+                    "death_trigger": trigger[:200],
+                    "model_cited": cited,
+                }
             return chosen
         reason = (
             f"The searched line aims {intent['card']} at {intent['line_target']}; {parsed[0]} damage to the "
@@ -5975,7 +6248,8 @@ class ActionPlanner(_ActionLegalityMixin):
 
         A valid low answer waits at most ``_HIGH_AFTER_LOW_S`` for the high one,
         and not at all when ``low_agrees`` (the board-math line's own play,
-        :func:`board_math_agreement`) names it: two independent ways to the
+        :func:`board_math_agreement`; at a target step the line's own target,
+        :meth:`_line_target_agreement`) names it: two independent ways to the
         same play leave the high leg nothing to add. A low answer that
         ``low_doubt`` questions (face burn the line search rates below its best
         line, a false lethal claim: :meth:`_second_look_concerns`) waits for
@@ -6261,6 +6535,14 @@ class ActionPlanner(_ActionLegalityMixin):
                     from arenamcp.play_safety import creature_state_facts
 
                     facts.update(creature_state_facts(card, mine=ctrl is not None and ctrl == local_seat))
+                # #130 (2026-10-19, match 3e545401): Ajani Resolute at loyalty 1 was a bare name.
+                if _as_int(o.option_id[4:]) in battlefield_ids and (
+                    "planeswalker" in str(card.get("type_line") or "").lower()
+                    or "CardType_Planeswalker" in (card.get("card_types") or [])
+                ):
+                    from arenamcp.play_safety import planeswalker_state_facts
+
+                    facts.update(planeswalker_state_facts(card))
                 ward = ward_of(card) if _as_int(o.option_id[4:]) in battlefield_ids else None
                 if ward is not None and ctrl not in (None, local_seat) and ward_mana is not None:
                     warded_targets = True
@@ -6502,6 +6784,11 @@ class ActionPlanner(_ActionLegalityMixin):
                 # The searched line valued every option: its own play needs no second opinion.
                 def low_agrees(ids: list[str], data: dict) -> str:
                     return board_math_agreement(decision, tag_state, ids, reasoning_of(data))
+
+            elif decision.request_type == "SelectTargets":
+                # The searched line's own target for this cast needs none either (ledger #118).
+                def low_agrees(ids: list[str], data: dict) -> str:
+                    return self._line_target_agreement(decision, tag_state, ids)
 
             def low_doubt(ids: list[str], data: dict) -> str:
                 kinds = [kind for kind, _text in concerns_for(ids, data)]
@@ -7181,8 +7468,8 @@ def board_math_agreement(
         return ""
     option = decision.find(chosen[0])
     name = str(find_source(game_state, (option.meta if option is not None else None) or {}).get("name") or "")
-    target = ActionPlanner._searched_line_target(game_state, name)[0] if name else ""
-    if target and not _reasoning_names_target(reasoning, target):
+    target, target_id = ActionPlanner._searched_line_target(game_state, name) if name else ("", 0)
+    if target and not _reasoning_names_target(reasoning, target, target_id=target_id, game_state=game_state):
         logger.info(
             "typed-decision: the low answer casts the line's %s but not at its target (%s): %r",
             name,
@@ -7200,13 +7487,26 @@ _FACE_TARGET_RE = re.compile(
 )
 
 
-def _reasoning_names_target(reasoning: str, target: str) -> bool:
+_ID_MENTION_RE = re.compile(r"(?:\[id:\s*|\bid[: ]\s*|#)(\d+)", re.IGNORECASE)
+_UNDAMAGED_RE = re.compile(r"\b(?:undamaged|unhurt|unwounded)\b", re.IGNORECASE)
+_DAMAGED_RE = re.compile(r"\b(?:\d+-)?(?:damaged|wounded|injured)\b", re.IGNORECASE)
+
+
+def _reasoning_names_target(
+    reasoning: str, target: str, *, target_id: int = 0, game_state: dict[str, Any] | None = None
+) -> bool:
     """Whether ``reasoning`` aims the cast where the searched line does ("opponent" or a creature's name).
 
     A creature counts when its full name or a distinctive word of it (four
     letters or more, "Nullpriest") appears and the reasoning does not send
     the spell at the opponent instead; the opponent counts when the
     reasoning names the face/opponent and no creature as the spell's mark.
+
+    With the line's instance (``target_id``) and another opposing creature of
+    the same name, the name alone does not say which: the reasoning must name
+    that instance's id, or call it damaged/undamaged when only it is (ledger
+    #111, 2026-10-19 12:31:40: "on the undamaged Hearth Elemental" agreed with
+    a line aimed at the damaged one). Without the id, the name decides.
     """
     text = str(reasoning or "")
     if not text:
@@ -7220,7 +7520,28 @@ def _reasoning_names_target(reasoning: str, target: str) -> bool:
     name = target.casefold()
     words = [word for word in re.findall(r"[a-z0-9']+", name.split(",")[0]) if len(word) >= 4]
     named = name in folded or any(re.search(rf"\b{re.escape(word)}\b", folded) for word in words)
-    return named and not face
+    if not named or face:
+        return False
+    if not target_id or not isinstance(game_state, dict):
+        return True
+    local_seat = _local_seat(game_state)
+    bodies = {
+        _as_int(card.get("instance_id")): card
+        for card in game_state.get("battlefield", []) or []
+        if card.get("name") == target and card.get("controller_seat_id") != local_seat
+    }
+    if target_id not in bodies or len(bodies) == 1:
+        return True
+    mentioned = {int(found) for found in _ID_MENTION_RE.findall(aimed)}
+    if mentioned & set(bodies):
+        return target_id in mentioned
+    damaged = {iid: _as_int(card.get("damage")) > 0 for iid, card in bodies.items()}
+    if list(damaged.values()).count(damaged[target_id]) != 1:
+        return False  # its twins look the same: nothing in the text can single it out
+    says_damaged, says_undamaged = bool(_DAMAGED_RE.search(aimed)), bool(_UNDAMAGED_RE.search(aimed))
+    if says_damaged == says_undamaged:
+        return False
+    return says_damaged == damaged[target_id]
 
 
 def board_math_legacy_plan(

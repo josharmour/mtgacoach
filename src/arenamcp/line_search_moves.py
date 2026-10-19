@@ -86,6 +86,7 @@ from arenamcp.board_assessment import (
     ward_cost,
 )
 from arenamcp.board_model import BoardModel, _regular_damage_part, cast_bans, spell_banned
+from arenamcp.cast_triggers import cast_pumps, spell_kinds
 from arenamcp.combat_keywords import has_combat_keyword
 from arenamcp.combat_solver import walker_value
 from arenamcp.combat_strategy import loyalty
@@ -236,6 +237,33 @@ _LANDFALL = re.compile(
 )
 # "You may play an additional land on each of your turns." (Icetill Explorer, Azusa, Exploration).
 _EXTRA_LAND = re.compile(r"\byou may play (?:an|one|two|\d+) additional lands?\b")
+# "Landfall — Whenever a land you control enters, double Tifa Lockhart's power until end of turn."
+_LANDFALL_DOUBLE = re.compile(
+    r"^(?:landfall\s*[—–-]\s*)?whenever a land (?:you control )?enters(?: the battlefield)?"
+    r"(?: under your control)?\s*,\s*double (?:~|cardname|this [a-z]+|its)(?:'s)? power until end of turn\.?$"
+)
+# "If a land or Bird you control entering the battlefield causes a triggered ability of a permanent
+# you control to trigger, that ability triggers an additional time." (Traveling Chocobo)
+_LANDFALL_DOUBLER = re.compile(
+    r"\bif a land (?:or [a-z]+ )?you control entering(?: the battlefield)? causes a triggered ability of a "
+    r"permanent you control to trigger, that ability triggers an additional time\b"
+)
+# Basic lands an effect puts onto the battlefield: "Search your library for a basic land card, put it
+# onto the battlefield tapped" (Escape Tunnel), "... up to two basic land cards, put them onto ...".
+_LAND_FETCH = re.compile(
+    r"\bsearch your library for (?:up to )?(?P<n>a|an|one|two|three|\d+) basic land cards?,? (?:and )?"
+    r"put (?:it|them|those cards) onto the battlefield\b"
+)
+# The card itself: its name ('~'), Arena's CARDNAME, "this Aura", "this land", ...
+_SELF = r"(?:~|cardname\b|this [a-z]+\b)"
+# Ordeal of Nylea: "Whenever enchanted creature attacks, put a +1/+1 counter on it. Then if it has
+# three or more +1/+1 counters on it, sacrifice this Aura." and "When you sacrifice this Aura, ...".
+_ORDEAL = re.compile(
+    r"\bwhenever enchanted creature attacks, put a \+1/\+1 counter on it\. then if it has "
+    r"(?P<k>two|three|four|five|\d+) or more \+1/\+1 counters on it, sacrifice " + _SELF
+)
+_ON_SACRIFICE = re.compile(r"^when you sacrifice " + _SELF + r",\s*(?P<effect>.*)$")
+_SACRIFICE_SELF = re.compile(r"\bsacrifice " + _SELF)
 # A creature that grows when its controller casts a spell: "Whenever you cast a black spell from
 # your hand, Baron Helmut Zemo connives." (a nonland discard puts a +1/+1 counter on it), "Whenever
 # you cast a noncreature spell, put a +1/+1 counter on this creature." Only an unconditional "a/an
@@ -263,6 +291,74 @@ def landfall_growth(card: dict) -> tuple[int, int, int]:
         else:
             power, toughness = power + int(match.group("p")), toughness + int(match.group("t"))
     return counters, power, toughness
+
+
+def landfall_doubles(card: dict) -> int:
+    """How many times the card's own landfall doubles its power per land (Tifa Lockhart: 1).
+
+    Ledger #96 (match 18b1601a T10, 2026-10-19): Tifa's two doublings (1 -> 4)
+    and Sazh's Chocobo's counters met our 9 life; neither was in the lines.
+    """
+    text = _QUOTED.sub("", _text(card))
+    if "double" not in text:
+        return 0
+    return sum(1 for line in _own_lines(text) if _LANDFALL_DOUBLE.match(line))
+
+
+def landfall_doubler(card: dict) -> bool:
+    """A land entering under its controller makes their triggered abilities trigger an additional
+    time (Traveling Chocobo): each land is two landfall triggers."""
+    return bool(_LANDFALL_DOUBLER.search(_QUOTED.sub("", _text(card))))
+
+
+def land_fetch(card: dict, host: dict | None = None) -> int:
+    """Basic lands the permanent can put onto the battlefield on its controller's next turn: an
+    activated "Sacrifice ~: Search your library for a basic land card, put it onto the battlefield"
+    (Escape Tunnel), or Ordeal of Nylea's sacrifice once ``host`` (the enchanted creature) reaches
+    its counters on its next attack (it then also gets that attack's +1/+1 counter: ``ordeal_host``).
+    0 when it can't, or when that is not written in a form read here."""
+    text = _QUOTED.sub("", _text(card))
+    if "search your library" not in text:
+        return 0
+
+    def count(effect: str) -> int:
+        match = _LAND_FETCH.search(effect)
+        return (_COUNT_WORDS.get(match.group("n")) or _int(match.group("n")) or 0) if match else 0
+
+    total = 0
+    for line in _own_lines(text):
+        head, colon, effect = line.partition(":")
+        if colon and _SACRIFICE_SELF.search(head) and "." not in head and not re.search(r"\bonly\b", effect):
+            total += count(effect)
+            continue
+        sacrifice = _ON_SACRIFICE.match(line)
+        if sacrifice is not None and ordeal_host(card, host):
+            total += count(sacrifice.group("effect"))
+    return total
+
+
+def ordeal_host(card: dict, host: dict | None) -> bool:
+    """``card`` is an Ordeal (``_ORDEAL``) on ``host`` and the +1/+1 counter of the host's next
+    attack makes it sacrificed: the host has the counters it needs but one."""
+    if host is None:
+        return False
+    match = _ORDEAL.search(_QUOTED.sub("", _text(card)))
+    if match is None:
+        return False
+    need = _COUNT_WORDS.get(match.group("k")) or _int(match.group("k")) or 0
+    return need > 0 and plus_counters(host) + 1 >= need
+
+
+def plus_counters(card: dict) -> int:
+    """+1/+1 counters on a card ("P1P1" from the GRE, "+1/+1", "CounterType_P1P1")."""
+    counters = card.get("counters") or {}
+    if not isinstance(counters, dict):
+        return 0
+    return sum(
+        _int(count) or 0
+        for kind, count in counters.items()
+        if str(kind).lower().replace("countertype_", "") in ("p1p1", "+1/+1")
+    )
 
 
 def cast_growth(card: dict) -> int:
@@ -509,6 +605,7 @@ class Mid:
         "node", "land", "casts", "sources", "base_sources", "used_mv", "used_pips", "our_life", "opp_life",
         "ours", "theirs", "our_tapped", "entered", "hand", "lands", "played", "rocks", "returning",
         "attack_first", "applied", "modes", "targets", "cycles", "cast_names", "keys", "gained", "walkers",
+        "pumps",
     )  # fmt: skip
 
     def copy(self) -> Mid:
@@ -1006,6 +1103,10 @@ class Moves:
         self._growth_memo: dict = {}
         self._spell_growth_memo: dict = {}
         self._pump_memo: dict = {}
+        self._cast_pump_memo: dict = {}  # id(body) -> its cast pumps (``cast_triggers.cast_pumps``)
+        self._cast_pumped_memo: dict = {}  # (id(body), power, toughness) -> (body, its pumped copy)
+        self._kinds_memo: dict = {}
+        self._next_memo: dict = {}
         # Lands they play each of their turns, for their landfall creatures (ledger #27, match
         # 92c09c7a: Sazh's Chocobo grew +1/+1 a turn while the lines attacked with a static 7/8).
         # Paranoid: one a turn, plus their "play an additional land" permanents.
@@ -1014,6 +1115,32 @@ class Moves:
             for c in model.battlefield
             if isinstance(c, dict) and _controller(c) == model.opponent and _EXTRA_LAND.search(_text(c))
         )
+        # Ledger #96 (match 18b1601a T10): lands their permanents fetch once ((lands, Ordeal host id
+        # or 0): Escape Tunnel; Ordeal of Nylea when its creature's next attack sacrifices it), on
+        # their first turn in a line whose attack isn't declared yet; and their noncreature
+        # permanents that make each land trigger landfall again (their creatures count while alive).
+        by_id = {_int(c.get("instance_id")): c for c in model.battlefield if isinstance(c, dict)}
+        self.fetches: list[tuple[int, int]] = []
+        for c in model.battlefield:
+            if not isinstance(c, dict) or _controller(c) != model.opponent:
+                continue
+            host = by_id.get(_int(c.get("attached_to_id")))
+            lands = land_fetch(c, host)
+            if lands:
+                self.fetches.append(
+                    (lands, (_int(host.get("instance_id")) or 0) if ordeal_host(c, host) else 0)
+                )
+        self.board_doublers = sum(
+            1
+            for c in model.battlefield
+            if isinstance(c, dict)
+            and _controller(c) == model.opponent
+            and not _is_creature(c)
+            and landfall_doubler(c)
+        )
+        self.fetch_index = 2 if (model.their_attack_pending and model.any_theirs_attacking) else 1
+        self._doubler_memo: dict = {}
+        self._double_memo: dict = {}
         # Their planeswalkers (ledger #42, a51dea64 10:19–10:25: Kaito and Ajani Resolute were
         # invisible; face burn was "~best" while Strike on Youthful Valkyrie let Slickshot kill Ajani).
         self._walker_memo: dict = {}
@@ -1031,6 +1158,13 @@ class Moves:
         # Hushbringer / Torpor Orb on the battlefield: a creature we cast triggers nothing on entering.
         self.enters_triggers = not any(_NO_ENTERS_TRIGGERS.search(_text(c)) for c in model.battlefield)
         self._prepare()
+        # compare_modes: the spell whose mode it applies before T is being cast now, so its cast
+        # triggers pump T's attack like any cast of the line's (ledger #94).
+        self.root_pumps: dict = {}
+        source = (root_effect or {}).get("source")
+        if isinstance(source, dict) and self.pumps_possible and self.our_turn and model.our_attack_pending:
+            scratch = SimpleNamespace(ours=list(model.ours), pumps=self.root_pumps)
+            self._pump_kinds(scratch, spell_kinds(source))
 
     # -- precomputation ------------------------------------------------------------------
 
@@ -1064,6 +1198,21 @@ class Moves:
                 Land(_int(card.get("instance_id")) or 0, _name(card), colors, _enters_tapped(card), source)
             )
         self.lands0 = tuple(sorted(lands, key=lambda land: (land.tapped, land.name, land.iid)))
+        # Our "whenever you cast a noncreature spell, ~ gets +2/+0" creatures and prowess (ledger
+        # #94): a team pump on a noncreature permanent of ours, or any creature of ours (on the
+        # battlefield, on the stack or in hand) with one. Without any, casts pump nothing.
+        self.board_pumps = tuple(
+            pump
+            for card in model.our_permanents
+            if isinstance(card, dict) and not _is_creature(card)
+            for pump in cast_pumps(card)
+            if pump[3] == "team"
+        )
+        self.pumps_possible = (
+            bool(self.board_pumps)
+            or any(self.cast_pump(body) for body in (*model.ours, *model.our_stack_bodies))
+            or any(cast_pumps(hs.spell.card) for hs in self.spells if _is_creature(hs.spell.card))
+        )
 
     def _walker_vars(self, hs: HandSpell) -> tuple:
         """Its damage aimed at one of their planeswalkers, one per cast variant (per mode)."""
@@ -1796,7 +1945,19 @@ class Moves:
     def begin(self, node: Node, land: Land | None, casts: tuple) -> Mid:
         """Our turn ``node.k`` with this land and these casts (cast now unless we attack first)."""
         mid = Mid.__new__(Mid)
-        if any(v.life_tokens or self.spells[v.spell].reduction is not None for v, _ in casts):
+        if self.pumps_possible and len(casts) > 1:
+            # Creature spells first, then the noncreature spells whose casts pump them (ledger #94:
+            # Slickshot Show-Off, then Tectonic Hazard); the order below still comes first.
+            casts = tuple(
+                sorted(
+                    casts,
+                    key=lambda c: (
+                        bool(c[0].life_tokens or self.spells[c[0].spell].reduction is not None),
+                        c[0].kind == "cast" and "noncreature" in self.kinds(c[0].spell),
+                    ),
+                )
+            )
+        elif any(v.life_tokens or self.spells[v.spell].reduction is not None for v, _ in casts):
             # Gain life first, then cast what scales with the life gained this turn (pro game
             # 2026-10-18, YFRA match 1 T11: Something Worth Saving, then Germinate Recruits);
             # bodies and counters before a spell they make cheaper (T15: Seed Suture, then Ghalta).
@@ -1824,6 +1985,7 @@ class Moves:
         mid.applied = False
         mid.modes, mid.targets, mid.cycles, mid.cast_names = [], [], [], []
         mid.walkers = {iid: (name, loyal) for iid, name, loyal in node.walkers}
+        mid.pumps = dict(self.root_pumps) if node.k == 0 else {}
         mid.keys = self.play_keys(land, casts)
         if not mid.attack_first:
             self._apply_casts(mid)
@@ -1844,6 +2006,8 @@ class Moves:
                 mid.lands.append(Land(-hs.iid - 1_000_000, _BASICS[color], colors, False, source))
                 continue
             mid.cast_names.append(hs.name)
+            if self.pumps_possible:  # its cast triggers resolve first: the bodies already in play
+                self._cast_triggers(mid, var.spell)
             if var.mode_text:
                 mid.modes.append((hs.name, var.mode_text))
             if var.aim and not var.walker:  # (a planeswalker target is named below)
@@ -1854,6 +2018,8 @@ class Moves:
                 old = max(mid.ours, key=lambda b: (b["power"], b["toughness"], -b["instance_id"]))
                 new = self._countered(old, var.counter)
                 mid.ours = [new if b is old else b for b in mid.ours]
+                if old["instance_id"] in mid.pumps:
+                    mid.pumps[new["instance_id"]] = mid.pumps[old["instance_id"]]
                 if old["instance_id"] in mid.entered:
                     mid.entered[new["instance_id"]] = mid.entered[old["instance_id"]]
                 if old["instance_id"] in mid.our_tapped:
@@ -1894,6 +2060,78 @@ class Moves:
             if var.rock:
                 mid.rocks.append(SimpleNamespace(produces=frozenset("WUBRGC"), name=hs.name))
 
+    def cast_pump(self, body: dict) -> tuple:
+        """``cast_triggers.cast_pumps`` of a body, memoised."""
+        found = self._cast_pump_memo.get(id(body))
+        if found is None:
+            found = self._cast_pump_memo[id(body)] = (body, cast_pumps(body.get("_card") or body))
+        return found[1]
+
+    def kinds(self, index: int) -> frozenset:
+        """The cast-trigger kinds hand spell ``index`` counts as (``cast_triggers.spell_kinds``)."""
+        found = self._kinds_memo.get(index)
+        if found is None:
+            found = self._kinds_memo[index] = spell_kinds(self.spells[index].spell.card)
+        return found
+
+    def _cast_triggers(self, mid: Mid, index: int) -> None:
+        """Casting hand spell ``index`` pumps our creatures until end of turn (``mid.pumps``).
+
+        Prowess and "whenever you cast a noncreature spell, ~ gets +2/+0 until
+        end of turn" (Slickshot Show-Off) trigger on the cast, before it
+        resolves: every body already on the battlefield, those cast earlier
+        this turn included, gets its pump; a spell whose removal finds its
+        target gone was still cast. Ledger #94 (match 18b1601a T9, 2026-10-19).
+        """
+        self._pump_kinds(mid, self.kinds(index))
+
+    def _pump_kinds(self, mid: Any, kinds: frozenset) -> None:
+        """``_cast_triggers`` for a cast of these kinds (``cast_triggers.spell_kinds``)."""
+        adds: dict[int, tuple[int, int]] = {}
+
+        def add(bodies, power: int, toughness: int) -> None:
+            for body in bodies:
+                p, t = adds.get(body["instance_id"], (0, 0))
+                adds[body["instance_id"]] = (p + power, t + toughness)
+
+        for kind, power, toughness, _who in self.board_pumps:
+            if kind in kinds:
+                add(mid.ours, power, toughness)
+        for body in mid.ours:
+            for kind, power, toughness, who in self.cast_pump(body):
+                if kind not in kinds:
+                    continue
+                if who == "self":
+                    add([body], power, toughness)
+                else:
+                    add([b for b in mid.ours if who == "team" or b is not body], power, toughness)
+        for iid, (power, toughness) in adds.items():
+            p, t = mid.pumps.get(iid, (0, 0))
+            mid.pumps[iid] = (p + power, t + toughness)
+
+    def cast_pumped(self, bodies, pumps: dict) -> tuple[list[dict], str]:
+        """``bodies`` with this turn's cast pumps (``_cast_triggers``) for our attack, and a
+        combat-memo tag naming them (a pumped body keeps its id: entered, tapped and the attack
+        keys still find it, so the tag keeps the memo apart)."""
+        if not pumps:
+            return list(bodies), ""
+        out, sig = [], []
+        for body in bodies:
+            pump = pumps.get(body["instance_id"])
+            if not pump or pump == (0, 0):
+                out.append(body)
+                continue
+            key = (id(body), pump)
+            found = self._cast_pumped_memo.get(key)
+            if found is None:
+                found = self._cast_pumped_memo[key] = (
+                    body,
+                    {**body, "power": body["power"] + pump[0], "toughness": body["toughness"] + pump[1]},
+                )
+            out.append(found[1])
+            sig.append(f"{body['instance_id']}+{pump[0]}/{pump[1]}")
+        return out, ("cp" + ",".join(sorted(sig))) if sig else ""
+
     def _needed_color(self, hand) -> str:
         have = set().union(*(s.produces for s in self.model.sources_all)) if self.model.sources_all else set()
         counts: dict[str, float] = {}
@@ -1923,7 +2161,8 @@ class Moves:
         if not able:
             return [("none", ())], True
         blockers = [b for b in mid.theirs if b["instance_id"] not in node.their_tapped]
-        _damage, dead, _ = self.combat(able, blockers, mid.opp_life)
+        fighting, tag = self.cast_pumped(able, mid.pumps)
+        _damage, dead, _ = self.combat(fighting, blockers, mid.opp_life, tag=tag)
         air = any(_reach_or_flying(b) and b["_can_block"] for b in blockers)
         options = [
             ("none", ()),
@@ -1936,7 +2175,8 @@ class Moves:
             if ids not in seen and (ids or name == "none"):
                 seen.add(ids)
                 out.append((name, ids))
-        out += self._walker_attacks(mid, [a for a in able if a["instance_id"] not in dead], air)
+        # (pumped: a Slickshot Strike pumped finishes a planeswalker its printed power can't)
+        out += self._walker_attacks(mid, [a for a in fighting if a["instance_id"] not in dead], air)
         return out, True
 
     def _walker_attacks(self, mid: Mid, survivors: list[dict], air: bool) -> list[tuple[str, tuple]]:
@@ -1986,6 +2226,9 @@ class Moves:
             if attack[0] == "declared" and self.model.step == "Step_FirstStrikeDamage":
                 # Their life already shows our first-strike damage: only the regular part is left.
                 fighting, tag = _regular_damage_part(attackers), "fs"
+            if mid.pumps:  # this turn's cast triggers (ledger #94)
+                fighting, pumped = self.cast_pumped(fighting, mid.pumps)
+                tag += pumped
             walker_id = next(iter(at.values()), None)
             if walker_id in mid.walkers:
                 # Their blockers protect the planeswalker first (its loyalty is the "life" they
@@ -2209,37 +2452,112 @@ class Moves:
             found = self._spell_growth_memo[id(body)] = cast_growth(body.get("_card") or body)
         return found
 
-    def _landfall(self, bodies) -> list[dict]:
+    def _landfall(
+        self, bodies, entries: int | None = None, extra: dict | None = None, *, spells: bool = True
+    ) -> list[dict]:
         """``bodies`` (theirs) after their land drops and their spell: each landfall creature with its
-        +1/+1 counters, and each creature that grows when they cast a spell with one spell's worth
+        +1/+1 counters (``entries`` landfall triggers, default ``their_drops``; ``extra`` counters by
+        id: an Ordeal's), and each creature that grows when they cast a spell with one spell's worth
         (paranoid: they cast one a turn; ledger #82) (``_countered``: a fresh id, so the memos see a
         new body; it keeps growing every turn)."""
+        entries = self.their_drops if entries is None else entries
         out = []
         for body in bodies:
-            counters = self.growth(body)[0] * self.their_drops + self.spell_growth(body)
+            counters = (
+                self.growth(body)[0] * entries
+                + (self.spell_growth(body) if spells else 0)
+                + (extra.get(body["instance_id"], 0) if extra else 0)
+            )
             out.append(self._countered(body, counters) if counters else body)
         return out
 
-    def _pumped(self, attackers) -> tuple[list[dict], dict]:
-        """Their attackers with this turn's temporary landfall pumps, and pumped id -> original id."""
+    def _pumped(self, attackers, entries: int | None = None) -> tuple[list[dict], dict]:
+        """Their attackers with this turn's temporary landfall pumps (``entries`` triggers: +N/+N each,
+        then power doubled each, Tifa Lockhart), and pumped id -> original id."""
+        entries = self.their_drops if entries is None else entries
         out, back = [], {}
         for body in attackers:
             _n, power, toughness = self.growth(body)
-            if not (power or toughness):
+            doubles = self.doubles(body)
+            if not (power or toughness or doubles):
                 out.append(body)
                 continue
-            key = (body["instance_id"], self.their_drops)
+            key = (body["instance_id"], entries)
             found = self._pump_memo.get(key)
             if found is None:
                 found = self._pump_memo[key] = {
                     **body,
                     "instance_id": _PUMP_IDS + len(self._pump_memo),
-                    "power": body["power"] + power * self.their_drops,
-                    "toughness": body["toughness"] + toughness * self.their_drops,
+                    "power": (body["power"] + power * entries) * 2 ** min(doubles * entries, 10),
+                    "toughness": body["toughness"] + toughness * entries,
                 }
             out.append(found)
             back[found["instance_id"]] = body["instance_id"]
         return out, back
+
+    def _next_turn_spells(self, hand: tuple, sources) -> tuple[int, tuple[int, ...]]:
+        """(damage at their face, spells cast) of our next turn's spells: the hand's face damage
+        ('any target' at the opponent) most first, then, with cast triggers of ours, the cheapest
+        other noncreature spells, up to three, within the mana and colours of ``sources``."""
+        if not hand or not sources:
+            return 0, ()
+        key = (hand, tuple(sorted("".join(sorted(s.produces)) for s in sources)))
+        found = self._next_memo.get(key)
+        if found is not None:
+            return found
+        options = []
+        for index in hand:
+            hs = self.spells[index]
+            casts = [v for v in hs.variants if v.kind == "cast"]
+            if not casts:
+                continue
+            face = max(v.face for v in casts)
+            if face > 0 or (self.pumps_possible and "noncreature" in self.kinds(index)):
+                options.append((-face, hs.spell.mana_value, index, hs.spell.pips, face))
+        damage, cast, mana, pips = 0, [], 0, ()
+        for _neg, mana_value, index, spell_pips, face in sorted(options, key=lambda o: o[:3]):
+            if len(cast) == _MAX_SPELLS_PER_TURN:
+                break
+            if mana + mana_value > len(sources) or (
+                spell_pips and not _pip_matching(pips + spell_pips, sources)
+            ):
+                continue
+            damage, mana, pips = damage + face, mana + mana_value, pips + spell_pips
+            cast.append(index)
+        found = self._next_memo[key] = (damage, tuple(cast))
+        return found
+
+    def _land_entries(self, theirs, able, drops: int, fetch: bool) -> tuple[int, dict]:
+        """(landfall triggers per landfall ability, {their creature id: extra +1/+1 counters}) for one
+        turn of theirs: ``drops`` land drops plus, with ``fetch``, the lands their permanents fetch
+        (``fetches``; an Ordeal only when its creature can attack, which also gets the attack's
+        counter), each triggering once more per doubler of theirs (Traveling Chocobo)."""
+        lands, extra = drops, {}
+        if fetch and self.fetches:
+            ready = {b["instance_id"] for b in able}
+            for count, host in self.fetches:
+                if host and host not in ready:
+                    continue
+                lands += count
+                if host:
+                    extra[host] = extra.get(host, 0) + 1
+        if not lands:
+            return 0, extra
+        doublers = self.board_doublers + sum(1 for b in theirs if self._doubler(b))
+        return lands * (1 + doublers), extra
+
+    def _doubler(self, body: dict) -> bool:
+        found = self._doubler_memo.get(id(body))
+        if found is None:
+            found = self._doubler_memo[id(body)] = (body, landfall_doubler(body.get("_card") or body))
+        return found[1]
+
+    def doubles(self, body: dict) -> int:
+        """``landfall_doubles`` of a body, memoised."""
+        found = self._double_memo.get(id(body))
+        if found is None:
+            found = self._double_memo[id(body)] = (body, landfall_doubles(body.get("_card") or body))
+        return found[1]
 
     def _strength(self, var: Variant) -> float:
         """``_reach_strength`` memoised: re-reading the removal text on every attack of theirs
@@ -2292,9 +2610,10 @@ class Moves:
     def their_attack(
         self, *, life, opp_life, ours, theirs, able, blockers, hand, entered, keep_tapped, spare, returning,
         index, turn, next_k, next_abs, fixed=None, variant="best", crack_exclude=frozenset(), tag="",
-        blocks_locked=False, landfall=False,
+        blocks_locked=False, landfall=False, drops=None, crack_sources=None, spells=True,
     ) -> dict:  # fmt: skip
-        """Their attack: any lethal policy kills us; else the non-suicidal one worst for us.
+        """Their attack: any lethal policy kills us; else the non-suicidal one worst for us, and
+        their most damaging one when every policy leaves them dead to our next turn anyway.
 
         Our held instants answer first: a flash creature joins our blockers,
         removal takes the biggest killable declared attacker before blocks.
@@ -2304,10 +2623,22 @@ class Moves:
         ``blocks_locked``: blocks are already being declared (their attack under
         way at declare blockers / first-strike damage), so a flash creature cast
         now can't block; it still enters for our next turn.
+        ``landfall``: their turn's growth comes first (their ``drops`` land drops,
+        default ``their_drops``, and the lands their permanents fetch; with ``spells``,
+        their spell's growth too).
+        ``crack_sources``: our mana on our next turn (default ``spare``'s sources).
         """
         self.opponent.chance(self, life)  # v1: always NOTHING
-        if landfall:  # a later turn of theirs: their land drop(s) grow their landfall creatures first
-            theirs, able = self._landfall(theirs), self._landfall(able)
+        entries = 0
+        if landfall:  # their turn: their land drop(s) grow their landfall creatures first
+            entries, extra = self._land_entries(
+                theirs,
+                able,
+                self.their_drops if drops is None else drops,
+                index == self.fetch_index and fixed is None,
+            )
+            theirs = self._landfall(theirs, entries, extra, spells=spells)
+            able = self._landfall(able, entries, extra, spells=spells)
         removal, flash, left = self._held(hand, spare, life)
         flash_bodies = [b for v in flash for b in _bodies(v)]
         hand_left = tuple(i for i in hand if i not in {v.spell for v in flash})
@@ -2324,7 +2655,8 @@ class Moves:
             policies = [("declared", tuple(fixed))]
         else:
             policies = self.opponent.attack_policies(self, able, defenders, life)
-        context = (life, opp_life, ours_all, theirs, defenders, removal, entered, keep_tapped, returning, index, next_k, next_abs, tag, left, landfall)  # fmt: skip
+        crack_sources = spare[0] if crack_sources is None else crack_sources
+        context = (life, opp_life, ours_all, theirs, defenders, removal, entered, keep_tapped, returning, index, next_k, next_abs, tag, left, entries, crack_sources)  # fmt: skip
         seen, outcomes = set(), []
         for name, attackers in policies:
             if ids_of(attackers) not in seen:
@@ -2340,12 +2672,17 @@ class Moves:
             none = self._policy("none", (), hand_left, *context)
             outcomes.append(none)
             safe = [] if none["suicidal"] else [none]
-        chosen = min(enumerate(safe or outcomes), key=lambda item: (item[1]["v"], item[0]))[1]
+        if safe:
+            chosen = min(enumerate(safe), key=lambda item: (item[1]["v"], item[0]))[1]
+        else:
+            # Dead to our next turn whatever they do, holding back included: they race with their
+            # most damage (ledger #95, match 18b1601a T9: the softened attack left us "at 8").
+            chosen = min(enumerate(outcomes), key=lambda item: (item[1]["life"], item[1]["v"], item[0]))[1]
         return {**chosen, "held": held + chosen["used"]}
 
     def _policy(
         self, name, attackers, hand, life, opp_life, ours, theirs, defenders, removal, entered, keep_tapped,
-        returning, index, next_k, next_abs, tag, left=0, landfall=False,
+        returning, index, next_k, next_abs, tag, left=0, landfall=0, crack_sources=(),
     ) -> dict:  # fmt: skip
         declared = sorted(attackers, key=lambda b: b["instance_id"])
         removed: set[int] = set()
@@ -2368,8 +2705,8 @@ class Moves:
             big = max(declared, key=lambda b: (b["power"], b["toughness"], -b["instance_id"]))
             fighting = [self._boost(b) if b is big else b for b in declared]
         back: dict = {}
-        if landfall:  # "gets +2/+2 until end of turn" per land: for this attack only
-            fighting, back = self._pumped(fighting)
+        if landfall:  # "gets +2/+2 until end of turn" per land (``landfall`` entries): this attack only
+            fighting, back = self._pumped(fighting, landfall)
         damage, dead_att, dead_blk, gained, healed = self.combat_life(
             fighting, defenders, life, first=index == 1, tag=tag + ("proxy" if boost else "")
         )
@@ -2404,11 +2741,22 @@ class Moves:
         )
         crack = [b for b in ours_after if b["_can_attack"] and not self.sick(b, next_k, next_abs, entered)]
         crack_blockers = [b for b in theirs_after if b["instance_id"] not in their_tapped]
+        # Our next turn: the burn in hand at their face and the cast triggers of the spells we
+        # cast then (ledger #95: a crackback without them softened a lethal attack of theirs).
+        burn, cast = self._next_turn_spells(hand, crack_sources)
+        fighting, crack_tag = crack, ""
+        if cast and crack and self.pumps_possible:
+            scratch = SimpleNamespace(ours=crack, pumps={})
+            for spell in cast:
+                self._cast_triggers(scratch, spell)
+            fighting, crack_tag = self.cast_pumped(crack, scratch.pumps)
         crack_damage, crack_dead_ours, crack_dead_theirs, crack_gained, crack_healed = (
-            self.combat_life(crack, crack_blockers, opp_life) if crack else (0, set(), set(), 0, 0)
+            self.combat_life(fighting, crack_blockers, opp_life, tag=crack_tag)
+            if crack
+            else (0, set(), set(), 0, 0)
         )
         crack_net = crack_damage - crack_healed + self.pinged(ours_after, crack)
-        suicidal = bool(crack) and crack_net >= opp_life
+        suicidal = (bool(crack) or burn > 0) and crack_net + burn >= opp_life
         # Worst for us means after our reply too: their attackers can't block on our
         # turn, so a policy is valued at the better of our holding and our crackback
         # (bug_20261007_182945: all-out 1/4 fliers every turn "took" 24 life to 5).
@@ -2498,6 +2846,11 @@ class Moves:
             first_ids |= dict(node.entered).keys()
         blockers = [b for b in node.ours if b["instance_id"] in first_ids]
         variants, crack = ["best"], frozenset()
+        # Their attack still to come (ledger #97, match 18b1601a T10 main 1): their land drop, if they
+        # have not played it and are still in a main phase, and their fetches come before it.
+        drops = 0
+        if fixed is None and model.phase in ("Phase_Beginning", "Phase_Main1"):
+            drops = max(0, self.their_drops - model.their_lands_played)
         if fixed is not None:
             # Their attackers are declared: our block variants (advisory).
             attacking = {b["instance_id"] for b in fixed}
@@ -2530,6 +2883,10 @@ class Moves:
                 crack_exclude=crack,
                 tag="root",  # at a first-strike step the attackers are regular-damage copies
                 blocks_locked=locked,
+                landfall=fixed is None,  # land entries only: their spell this turn stays the snapshot's
+                spells=False,
+                drops=drops,
+                crack_sources=model.sources_all,
             )
             block = variant if fixed is not None else ""
             if hit["dead"]:
@@ -2588,7 +2945,8 @@ class Moves:
             everyone = next((o for o in options if o[0] == "all"), options[0])
             attackers = [b for b in mid.ours if b["instance_id"] in everyone[1]]
             blockers = [b for b in mid.theirs if b["instance_id"] not in node.their_tapped]
-            lethal = self.combat(attackers, blockers, mid.opp_life)[0] >= mid.opp_life
+            fighting, tag = self.cast_pumped(attackers, mid.pumps)
+            lethal = self.combat(fighting, blockers, mid.opp_life, tag=tag)[0] >= mid.opp_life
             options = [everyone if lethal else options[0]]
         children = [self.finish(mid, option, greedy=True) for option in options]
         return max(enumerate(children), key=lambda item: (self.score(item[1]), -item[0]))[1]

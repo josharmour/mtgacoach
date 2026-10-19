@@ -36,6 +36,11 @@ _COLOR_NAMES = {
 _BASIC_TYPES = {"plains": "W", "island": "U", "swamp": "B", "mountain": "R", "forest": "G"}
 # The i-th kept land's worth when choosing which cards to bottom.
 _LAND_VALUES = (3.0, 3.0, 2.0, 1.0, 0.3, 0.0, 0.0)
+# Keeping 6, the third land outweighs any spell (at most 4.0: a cheap castable rare), as the
+# bottom prompt says ("3 when keeping 6"). Ledger #101 (match 18b1601a, 2026-10-19): the
+# suggestion bottomed the third Mountain of Slickshot x2, Burst, Iroh's Demonstration and
+# three Mountains, and the 20-land deck sat on three lands T5-T9.
+_SIX_CARD_LAND_VALUES = (3.0, 3.0, 4.5, 1.0, 0.3, 0.0, 0.0)
 
 MULLIGAN_POLICY = (
     "MULLIGAN POLICY (London): Arena shows 7 cards; after N mulligans you keep 7-N and bottom N. "
@@ -265,9 +270,14 @@ def _card_value(card: HandCard, lands: list[HandCard], copies: int) -> float:
     return value
 
 
-def hand_score(kept: list[HandCard]) -> float:
+def _keep_land_values(keep: int) -> tuple[float, ...]:
+    """The kept lands' worths (``hand_score``) for an opening hand of ``keep`` cards."""
+    return _SIX_CARD_LAND_VALUES if keep == 6 else _LAND_VALUES
+
+
+def hand_score(kept: list[HandCard], land_values: tuple[float, ...] = _LAND_VALUES) -> float:
     lands = [card for card in kept if card.is_land]
-    score = sum(_LAND_VALUES[index] for index in range(min(len(lands), len(_LAND_VALUES))))
+    score = sum(land_values[index] for index in range(min(len(lands), len(land_values))))
     seen: Counter = Counter()
     for card in kept:
         if card.is_land:
@@ -285,7 +295,7 @@ def best_keep(cards: list[HandCard], keep: int) -> tuple[list[HandCard], list[Ha
     for chosen in combinations(range(len(cards)), keep):
         kept = [cards[i] for i in chosen]
         key = (
-            round(hand_score(kept), 6),
+            round(hand_score(kept, _keep_land_values(keep)), 6),
             sum(card.role for card in kept),
             -sum(card.mana_value for card in kept),
             [-i for i in chosen],
@@ -608,7 +618,8 @@ def kept_score(state: dict, instance_ids: list[int], bottomed: list[int]) -> flo
     }
     if any(i not in by_id for i in instance_ids):
         return None
-    return hand_score([hand_card(by_id[i]) for i in instance_ids if i not in set(bottomed)])
+    kept = [hand_card(by_id[i]) for i in instance_ids if i not in set(bottomed)]
+    return hand_score(kept, _keep_land_values(len(kept)))
 
 
 def kept_land_count(state: dict, instance_ids: list[int], bottomed: list[int]) -> int:

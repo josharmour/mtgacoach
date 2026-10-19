@@ -110,12 +110,26 @@ def _parse_block_state(value: Any) -> bool:
     return str(value) in ("BlockState_Declared", "BlockState_Blocking")
 
 
-# GRE CounterType numbers (Wotc.Mtgo.Gre.External.Messaging.CounterType) that
-# Player.log counter annotations are decoded to. Only counters that change how
-# game state is tracked get a name; the rest keep the legacy "unknown" bucket.
-# Loyalty (7) is deliberately left out: the object's ``loyalty`` field already
-# sets it absolutely, so also applying the CounterAdded delta would double it.
-_DECODED_COUNTER_TYPES = {172: "Stun"}
+# GRE CounterType numbers (Wotc.Mtgo.Gre.External.Messaging.CounterType, re-output
+# GreProtobuf/.../CounterType.cs) that Player.log counter annotations are decoded
+# to, under the enum's own names (the Mac bridge reads the same names). The rest
+# keep the legacy "unknown" bucket. Loyalty (7) is deliberately left out: the
+# object's ``loyalty`` field already sets it absolutely, so also applying the
+# CounterAdded delta would double it. An object's power/toughness already
+# include its +1/+1 and -1/-1 counters: the names are for what reads counters
+# (``concede._counter_delta`` against printed P/T, an Ordeal's threshold in the
+# line search, the prompt's "[4P1P1]"), never added to P/T again. Ledger #99
+# (match 18b1601a): Sazh's Chocobo's four +1/+1 counters were "unknown".
+_DECODED_COUNTER_TYPES = {
+    1: "P1P1",
+    2: "M1M1",
+    5: "Time",
+    19: "Charge",
+    86: "Shield",
+    108: "Lore",
+    172: "Stun",
+    173: "Oil",
+}
 
 
 def _counter_type_name(detail_map: dict[str, Any]) -> str:

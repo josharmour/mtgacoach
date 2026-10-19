@@ -14,6 +14,14 @@ boards are the games' own, read from Player.log and the coach log:
   the Marshal, nothing else stops it.
 - match 92c09c7a (vs mono-G landfall), T10: Sazh's Chocobo grows +1/+1 per land
   they play; the line projected a static 7/8.
+- match 18b1601a (vs G landfall, ledger #94-#97), Player.log: T9 12:05:03 we are
+  at 9 with two Slickshot Show-Offs and Emberheart Challenger, one Mountain
+  open, Fleeting Effigy and Tectonic Hazard in hand; they are at 7, every Forest
+  tapped, no flier or reach. Hazard (1) + two pumped 3/2 fliers (6) was exact
+  lethal; the line search played Effigy. T10 12:05:38 (their main 1): Ordeal of
+  Nylea on the 4/5 Sazh's Chocobo; its attack sacrificed the Ordeal, fetched two
+  Forests, and Tifa Lockhart's doubled power with the Chocobo's counters (11)
+  met our 9 life. Arena's card text is the MTGA card database's.
 """
 
 from __future__ import annotations
@@ -150,6 +158,26 @@ CARDS: dict[str, dict[str, Any]] = {
         "type_line": "Creature — Giant", "mana_cost": "{3}{R}", "power": 3, "toughness": 3,
         "card_types": ["CardType_Creature"], "oracle_text": "",
     },
+    # Match 18b1601a: Arena's text (MTGA card database, grpIds 96074, 96078, 94069).
+    "Tifa Lockhart": {
+        "type_line": "Legendary Creature — Human Monk", "mana_cost": "{1}{G}", "power": 1, "toughness": 2,
+        "keywords": ["trample"], "card_types": ["CardType_Creature"],
+        "oracle_text": "Trample\n<i>Landfall</i> — Whenever a land you control enters, double Tifa Lockhart's "
+        "power until end of turn.",
+    },
+    "Traveling Chocobo": {
+        "type_line": "Creature — Bird", "mana_cost": "{2}{G}", "power": 3, "toughness": 2,
+        "card_types": ["CardType_Creature"],
+        "oracle_text": "You may look at the top card of your library any time.\nYou may play lands and cast Bird "
+        "spells from the top of your library.\nIf a land or Bird you control entering the battlefield causes a "
+        "triggered ability of a permanent you control to trigger, that ability triggers an additional time.",
+    },
+    "Ordeal of Nylea": {
+        "type_line": "Enchantment — Aura", "mana_cost": "{1}{G}", "card_types": ["CardType_Enchantment"],
+        "oracle_text": "Enchant creature\nWhenever enchanted creature attacks, put a +1/+1 counter on it. Then if "
+        "it has three or more +1/+1 counters on it, sacrifice this Aura.\nWhen you sacrifice this Aura, search "
+        "your library for up to two basic land cards, put them onto the battlefield tapped, then shuffle.",
+    },
 }  # fmt: skip
 
 
@@ -248,4 +276,42 @@ MARSHAL_T11 = board(
             (314, "Unflinching Courage", False, 6, {"attached_to_id": 294}),
             (346, "Good-Fortune Unicorn", False, 10)],
     hand=[(343, "Fleeting Effigy"), (336, "Shock"), (318, "Burst Lightning"), (350, "Lightning Strike")],
+)  # fmt: skip
+
+# 18b1601a (local seat 2 in the game, 1 here). Their Forests 345/358/439 are all tapped on T9.
+_MOUNTAINS_18B = [(340, "Mountain", True, 1), (349, "Mountain", True, 3), (411, "Mountain", False, 5)]
+_FORESTS_18B = [(345, "Forest", True, 2), (358, "Forest", True, 4), (439, "Forest", True, 8)]
+_CHOCOBO_45 = {"power": 4, "toughness": 5, "counters": {"P1P1": 4}}
+
+# T9 12:05:03: Slickshot #2 (447) resolved off two Mountains; one Mountain open.
+SLICKSHOTS_T9 = board(
+    turn=9, life=9, their_life=7, lands_played=0, opponent_hand=4,
+    ours=[*_MOUNTAINS_18B, (350, "Slickshot Show-Off", False, 3), (430, "Emberheart Challenger", False, 7),
+          (447, "Slickshot Show-Off", False, 9)],
+    theirs=[*_FORESTS_18B, (346, "Sazh's Chocobo", True, 2, _CHOCOBO_45), (426, "Tifa Lockhart", True, 6),
+            (442, "Traveling Chocobo", False, 8)],
+    hand=[(436, "Fleeting Effigy"), (446, "Tectonic Hazard")],
+)  # fmt: skip
+
+# T9 12:04:57, before Slickshot #2: three Mountains open, Slickshot + Effigy + Hazard in hand.
+SLICKSHOTS_T9_START = board(
+    turn=9, life=9, their_life=7, lands_played=0, opponent_hand=4,
+    ours=[(340, "Mountain", False, 1), (349, "Mountain", False, 3), (411, "Mountain", False, 5),
+          (350, "Slickshot Show-Off", False, 3), (430, "Emberheart Challenger", False, 7)],
+    theirs=[*_FORESTS_18B, (346, "Sazh's Chocobo", True, 2, _CHOCOBO_45), (426, "Tifa Lockhart", True, 6),
+            (442, "Traveling Chocobo", False, 8)],
+    hand=[(280, "Slickshot Show-Off"), (436, "Fleeting Effigy"), (446, "Tectonic Hazard")],
+)  # fmt: skip
+
+# T10 12:05:38, their main 1: Ordeal of Nylea on the Chocobo (two Forests tapped for it), our
+# three creatures tapped from the T9 attack, Hazard in hand. They had played no land.
+ORDEAL_T10 = board(
+    turn=10, life=9, their_life=3, lands_played=0, opponent_hand=4, active=OPPONENT,
+    ours=[(340, "Mountain", False, 1), (349, "Mountain", False, 3), (411, "Mountain", False, 5),
+          (350, "Slickshot Show-Off", True, 3), (430, "Emberheart Challenger", True, 7),
+          (447, "Slickshot Show-Off", True, 9)],
+    theirs=[(345, "Forest", True, 2), (358, "Forest", True, 4), (439, "Forest", False, 8),
+            (346, "Sazh's Chocobo", False, 2, _CHOCOBO_45), (426, "Tifa Lockhart", False, 6),
+            (455, "Ordeal of Nylea", False, 10, {"attached_to_id": 346})],
+    hand=[(446, "Tectonic Hazard")],
 )  # fmt: skip

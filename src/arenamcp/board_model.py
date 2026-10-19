@@ -420,6 +420,9 @@ class BoardModel:
     # ModifiedLife annotations): X for "where X is the amount of life you gained this turn".
     life_gained_turn: int = 0
     life_gained_game: int = 0
+    # Lands the opponent played this turn (``Player.lands_played``): on their turn, whether
+    # their land drop (and its landfall) is still to come before their attack (ledger #97).
+    their_lands_played: int = 0
     # Our own spells on the stack (``play_safety.our_stack_damage``, ledger #122): their
     # creatures (instance ids) the pending damage kills and the damage it deals the opponent.
     # The line search resolves them at its root; the assessment's own facts do not.
@@ -512,6 +515,7 @@ def build_board_model(state: dict) -> BoardModel | None:
     lands_played = _int(_player(state, local).get("lands_played")) or 0
     life_gained_turn = _int(_player(state, local).get("life_gained_this_turn")) or 0
     life_gained_game = _int(_player(state, local).get("life_gained_this_game")) or 0
+    their_lands_played = _int(_player(state, opponent).get("lands_played")) or 0
     land_drop_now = (not our_turn) or lands_played == 0
     colors_all = set().union(*(s.produces for s in sources_all)) if sources_all else set()
     for land in hand_lands:
@@ -611,6 +615,7 @@ def build_board_model(state: dict) -> BoardModel | None:
         t_instant_only=our_turn and phase == "Phase_Ending",
         commanders=tuple(commanders),
         life_gained_turn=max(0, life_gained_turn), life_gained_game=max(0, life_gained_game),
+        their_lands_played=max(0, their_lands_played),
         our_stack_doomed=pending.doomed if pending else frozenset(),
         our_stack_face=pending.face if pending else 0,
     )  # fmt: skip

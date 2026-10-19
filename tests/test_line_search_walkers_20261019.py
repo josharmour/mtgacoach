@@ -62,9 +62,10 @@ def test_lightning_strike_kills_kaito_rather_than_going_face():
 
 def test_strike_the_valkyrie_so_slickshot_finishes_ajani():
     # The review's right play: Youthful Valkyrie (1/3 flier) would block Slickshot to save Ajani;
-    # Strike kills the Valkyrie and the Slickshot (3 power here) finishes Ajani at 3.
+    # Strike kills the Valkyrie and the Slickshot finishes Ajani at 3: its printed 1/2, 3/2 once
+    # Strike's cast pumps it (ledger #94; the board said 3 power while the search couldn't see that).
     source = board(
-        turn=11, life=20, their_life=16, ours=[*_LANDS, (320, "Slickshot Show-Off", False, 7, {"power": 3})],
+        turn=11, life=20, their_life=16, ours=[*_LANDS, (320, "Slickshot Show-Off", False, 7)],
         theirs=[_ajani(3), (345, "Youthful Valkyrie", False, 10)], hand=[(338, "Lightning Strike")],
     )  # fmt: skip
     result = _search(source)

@@ -628,9 +628,111 @@ def _cost_text(context: dict[str, Any]) -> str:
     return text
 
 
+# What an opposing "unless ... pays" effect does to its target when the
+# payment is declined: Spell Pierce's "Counter target noncreature spell unless
+# its controller pays {2}".
+_UNLESS_PAYS = re.compile(
+    r"\b(?P<verb>counter|destroy|exile|tap|return)s?\b[^.]*?\bunless\b[^.]*?\bpays?\b\s*"
+    r"(?P<cost>(?:\{[^}]+\})+)?",
+    re.IGNORECASE,
+)
+_TAX_EFFECTS = {
+    "counter": ("counters", "countered"),
+    "destroy": ("destroys", "destroyed"),
+    "exile": ("exiles", "exiled"),
+    "tap": ("taps", "tapped"),
+    "return": ("returns", "returned to hand"),
+}
+
+
+def _request_source_id(state: dict[str, Any]) -> int:
+    context = state.get("decision_context") or {}
+    payload = state.get("_bridge_request_payload") or {}
+    try:
+        return int(context.get("source_id") or context.get("sourceId") or payload.get("sourceId") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def tax_asker_fact(state: dict[str, Any]) -> str:
+    """Who asks for this payment and what declining it costs ('' when no opposing
+    spell or ability on the stack demands it of what the cost is charged to).
+
+    2026-10-19 12:23:49 (match 5d5d32f8, ledger #104): their Spell Pierce asked
+    {2} for our lethal Burst Lightning; the prompt read "Optional cost from:
+    Burst Lightning ... Should you pay this optional cost?", the model took it
+    for Burst's kicker, declined, and Burst was countered. The request names
+    either our spell or permanent (then the opposing stack entry targeting it
+    asks) or their spell itself (then what it targets of ours is charged).
+    Ward triggers are :func:`pending_ward_payment`'s.
+    """
+    seat = _seat(state)
+    if seat is None:
+        return ""
+    stack = [item for item in state.get("stack") or [] if isinstance(item, dict)]
+    objects = {
+        item.get("instance_id"): item
+        for item in [*(state.get("battlefield") or []), *stack]
+        if isinstance(item, dict) and item.get("instance_id")
+    }
+    source_id = _request_source_id(state)
+    named = objects.get(source_id) if source_id else None
+    theirs = [
+        item
+        for item in stack
+        if _controller(item) not in (None, seat) and _UNLESS_PAYS.search(str(item.get("oracle_text") or ""))
+    ]
+
+    def charged_by(asker: dict[str, Any]) -> dict[str, Any] | None:
+        return next(
+            (
+                objects[iid]
+                for iid in asker.get("targeting") or ()
+                if iid in objects and _controller(objects[iid]) == seat
+            ),
+            None,
+        )
+
+    if named is not None and _controller(named) not in (None, seat):
+        asker = named if named in theirs else None
+        charged = charged_by(named) if asker is not None else None
+    elif named is not None:
+        asker = next((item for item in reversed(theirs) if source_id in (item.get("targeting") or ())), None)
+        if asker is None and named in stack:
+            # Our spell on the stack, their targets unknown (no TargetSpec seen):
+            # their topmost counter-unless-you-pay spell is the one asking.
+            asker = next(
+                (
+                    item
+                    for item in reversed(theirs)
+                    if not item.get("targeting")
+                    and _UNLESS_PAYS.search(str(item.get("oracle_text") or "")).group("verb").lower() == "counter"
+                ),
+                None,
+            )
+        charged = named
+    else:  # the request names nothing we can see: their top "unless ... pays" spell aimed at ours
+        asker = next((item for item in reversed(theirs) if charged_by(item) is not None), None)
+        charged = charged_by(asker) if asker is not None else None
+    if asker is None:
+        return ""
+    found = _UNLESS_PAYS.search(str(asker.get("oracle_text") or ""))
+    does, done = _TAX_EFFECTS[found.group("verb").lower()]
+    context = state.get("decision_context") or {}
+    cost = _cost_text(context) or str(context.get("mana_cost") or "") or found.group("cost") or "the cost"
+    what = str((charged or {}).get("name") or "your spell or permanent")
+    who = str(asker.get("name") or "their spell")
+    kind = "ability" if _is_ability(asker) else "spell"
+    return (
+        f"{who} (their {kind}) is resolving: it {does} {what} unless you pay {cost}; "
+        f"declining = {what} is {done}. This is not an optional extra of {what}."
+    )
+
+
 def pay_decision_facts(state: dict[str, Any]) -> list[str]:
     """Prompt lines for a pay-or-decline choice: the amount, the mana to pay
-    it with, and when it is a ward tax, whose ward and what it counters."""
+    it with, and when it is a ward tax, whose ward and what it counters;
+    otherwise the opposing spell that demands it (:func:`tax_asker_fact`)."""
     try:
         context = state.get("decision_context") or {}
         facts = []
@@ -640,6 +742,10 @@ def pay_decision_facts(state: dict[str, Any]) -> list[str]:
         payment = pending_ward_payment(state, int(context.get("source_id") or context.get("sourceId") or 0))
         if payment is not None:
             facts.append(f"This is a WARD TAX, not an optional extra: pay {payment.describe()}.")
+        else:
+            asker = tax_asker_fact(state)
+            if asker:
+                facts.append(asker)
         return facts
     except Exception as error:  # a prompt fact must never break the decision
         logger.debug("pay_decision_facts failed: %s", error)

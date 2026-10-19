@@ -24,7 +24,7 @@ from tests.strategic_states import actions_decision, cast, cpu_ms, latency_bound
 from arenamcp import board_assessment as ba
 from arenamcp.board_model import build_board_model
 from arenamcp.line_guard import option_note
-from arenamcp.line_search import DEAD, evaluate_plan, search_lines
+from arenamcp.line_search import DEAD, WIN, evaluate_plan, search_lines
 from arenamcp.line_search_moves import Moves
 
 
@@ -116,18 +116,34 @@ def test_our_lifelink_attack_heals_us_in_the_line():
 
 def test_t7_strike_and_burst_on_the_marshal_is_a_line():
     result = _search(MARSHAL_T7)
+    # Since ledger #94 the casts pump Emberheart Challenger (prowess) and the Slickshot cast
+    # with them, and burn at the face is lethal on T9 (no line said that before): the race
+    # lines are now the best for every action key. The combined kill is still one of the T
+    # step's own cast sets, and its line still clears the Marshal.
+    search = result._search
+    root = search.root_node()
+    _base, sources = search.sources(root, None)
     combined = [
-        line
-        for line in _lines(result)
-        if _first_targets(line)
+        choice
+        for choice in search.cast_sets(root, sources, instant_only=False)
+        if sorted((search.spells[var.spell].name, target["name"]) for var, target in choice if target)
         == [("Burst Lightning", "Dawnwing Marshal"), ("Lightning Strike", "Dawnwing Marshal")]
     ]
-    assert combined, [line.summary() for line in result.lines]
+    assert combined, "Strike + Burst on the Marshal is not a T-step cast set"
+    plan = [
+        {
+            "label": "T",
+            "cast": ["Burst Lightning (on Dawnwing Marshal)", "Lightning Strike (on Dawnwing Marshal)"],
+        }
+    ]
+    line = evaluate_plan(result, plan).line
+    assert line is not None and _first_targets(line) == [
+        ("Burst Lightning", "Dawnwing Marshal"),
+        ("Lightning Strike", "Dawnwing Marshal"),
+    ]
     # The Marshal is gone after the T step: nothing of theirs attacks on T8.
-    assert all(
-        line.steps[0].their_creatures_after == 0 for line in combined if line.steps[0].life_after is not None
-    )
-    assert all(line.steps[0].life_after == 16 for line in combined if line.steps[0].life_after is not None)
+    assert line.steps[0].their_creatures_after == 0 and line.steps[0].life_after == 16, line.summary()
+    assert result.best.cls == WIN and result.best.win_turn == 9, result.best.summary()
 
 
 def test_t11_the_only_way_to_live_is_two_burn_spells_on_the_marshal():
