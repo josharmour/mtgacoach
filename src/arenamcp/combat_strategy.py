@@ -370,6 +370,16 @@ def _attack_payoff(card: dict) -> int | None:
     return value
 
 
+def _attack_ping_damage(card: dict) -> int:
+    """Damage or life loss its attack triggers deal the opponent (lifegain left out)."""
+    total = 0
+    for line in _rules_text(card).splitlines():
+        ping = _ATTACK_PING.match(line.strip())
+        if ping is not None:
+            total += int(ping.group("d") or ping.group("l") or 0)
+    return total
+
+
 # Our other permanents: anything that pays off creatures attacking, blocking
 # restrictions, or creatures dying.
 _SIDE_PAYOFF = re.compile(
@@ -486,6 +496,57 @@ _REMOVES_BLOCKER = re.compile(
     r"|deals? (?:\d+|x) damage to (?:any target|target (?:[a-z]+ )*?creature)"
     r"|target creature can't block|return target (?:[a-z]+ )*?creature to its owner's hand"
 )
+# A pump that only makes a creature bigger. It saves an attacker only when the
+# bigger creature is no longer answered: Hired Claw's own {1}{R} +1/+1 counter
+# made it a 2/3, and an untapped 4/4 still ate it (2026-10-19 T10, match
+# abde2a07), yet the guard stepped aside for it as for any pump.
+_PUMP = re.compile(
+    r"\bgets? \+(?P<p>\d+)/\+(?P<t>\d+)"
+    r"|\b(?P<n>a|an|one|two|three|\d+) \+1/\+1 counters?\b"
+)
+# Arena's ability text says "this" alone ("Put a +1/+1 counter on this.").
+_PUMP_SELF = re.compile(r"\b(?:this creature|this permanent|cardname)\b|~|\bthis(?=\s*(?:[.,;]|$|gets?\b))")
+_PUMP_OTHERS = re.compile(r"\btarget\b|\beach (?:other )?creature|\bcreatures you control\b|\banother\b")
+
+
+def _pump_only(text: str | None) -> tuple[int, int, bool] | None:
+    """(power, toughness, self only) when a play's only attacker-saving effect is a plain pump.
+
+    None when there is no pump or it comes with anything else that could save
+    an attacker (indestructible, first strike, protection, a shrink ...).
+    """
+    if not text:
+        return None
+    pumps = list(_PUMP.finditer(text))
+    if not pumps or _SAVES_ATTACKER.search(_PUMP.sub(" ", text)):
+        return None
+    power = toughness = 0
+    for pump in pumps:
+        if pump.group("p"):
+            power += int(pump.group("p"))
+            toughness += int(pump.group("t"))
+        else:
+            count = pump.group("n")
+            amount = int(count) if count.isdigit() else _COUNT_WORDS[count]
+            power += amount
+            toughness += amount
+    return power, toughness, bool(_PUMP_SELF.search(text)) and not _PUMP_OTHERS.search(text)
+
+
+def _pumped(card: dict, power: int, toughness: int) -> dict:
+    return {**card, "power": int(card["power"]) + power, "toughness": int(card["toughness"]) + toughness}
+
+
+_ONCE_EACH_TURN = re.compile(r"\bonly once each turn\b|\bactivate only once\b")
+
+
+def _pump_activations(text: str, cost: int, mana: int, *, ability: bool) -> int | None:
+    """How many times an affordable pump can be used now; None when it is free and repeatable."""
+    if not ability or _ONCE_EACH_TURN.search(text):
+        return 1
+    if cost <= 0:
+        return None
+    return max(1, mana // cost)
 
 
 def _prepared_spell(card: dict) -> dict | None:
@@ -523,11 +584,13 @@ def _untapped_mana(state: dict, local: dict) -> int:
     return total
 
 
-def _possible_tricks(state: dict, local: dict) -> list[tuple[str, int, str | None]]:
-    """Instant-speed plays visible to us now, as (source, mana value, effect text).
+def _possible_tricks(state: dict, local: dict) -> list[tuple[str, int, str | None, int | None]]:
+    """Instant-speed plays visible to us now, as (source, mana value, effect text, permanent id).
 
     0 means free; the text is None when the effect is unknown (treated as a
-    trick that could matter).
+    trick that could matter). The id is the battlefield permanent whose
+    ability it is (None for cards in hand or graveyard): a self-pump helps
+    only that creature.
     """
     seat = local.get("seat_id")
     tricks = []
@@ -540,7 +603,7 @@ def _possible_tricks(state: dict, local: dict) -> list[tuple[str, int, str | Non
             continue
         alternative = re.search(r"rather than pay|without paying|\bconvoke\b|\bdelve\b|\bimprovise\b", text)
         cost = 0 if alternative else _mana_value(card.get("mana_cost") or "")
-        tricks.append((card.get("name") or "an instant", cost, text))
+        tricks.append((card.get("name") or "an instant", cost, text, None))
     for card in state.get("graveyard") or []:
         if card.get("owner_seat_id", seat) != seat or "instant" not in _types(card):
             continue
@@ -548,7 +611,7 @@ def _possible_tricks(state: dict, local: dict) -> list[tuple[str, int, str | Non
         if re.search(r"\b(?:flashback|jump-start|retrace|escape)\b", text):
             flashback = re.search(r"flashback\s*\S?\s*((?:\{[^}]*\})+)", text)
             cost = flashback.group(1) if flashback else card.get("mana_cost") or "{1}"
-            tricks.append((card.get("name") or "a graveyard instant", max(1, _mana_value(cost)), text))
+            tricks.append((card.get("name") or "a graveyard instant", max(1, _mana_value(cost)), text, None))
     for card in state.get("battlefield") or []:
         if _controller(card) != seat or "planeswalker" in _types(card):
             continue
@@ -556,10 +619,10 @@ def _possible_tricks(state: dict, local: dict) -> list[tuple[str, int, str | Non
         if re.search(r"\bprepared\b", _rules_text(card)):
             spell = _prepared_spell(card)
             if spell is None:
-                tricks.append((name, 1, None))  # unknown spell: assume it could matter
+                tricks.append((name, 1, None, None))  # unknown spell: assume it could matter
             elif "instant" in str(spell.get("type_line") or "").lower():
                 text = str(spell.get("oracle_text") or "").lower()
-                tricks.append((name, max(1, _mana_value(spell.get("mana_cost") or "{1}")), text))
+                tricks.append((name, max(1, _mana_value(spell.get("mana_cost") or "{1}")), text, None))
             # A prepared sorcery cannot be cast in combat.
         raw = (card.get("oracle_text") or "").lower()
         is_mana_source = not card.get("is_tapped") and (
@@ -570,7 +633,14 @@ def _possible_tricks(state: dict, local: dict) -> list[tuple[str, int, str | Non
             if "t" in symbols and card.get("is_tapped"):
                 continue
             tap_self_mana = 1 if ("t" in symbols and is_mana_source) else 0
-            tricks.append((name, _mana_value(cost) + tap_self_mana, f"{cost}: {effect}".lower()))
+            tricks.append(
+                (
+                    name,
+                    _mana_value(cost) + tap_self_mana,
+                    f"{cost}: {effect}".lower(),
+                    card.get("instance_id"),
+                )
+            )
     return tricks
 
 
@@ -833,21 +903,43 @@ def _doomed(
     strategy_text: str,
     removal_tricks: list[str],
     payoff: int = 0,
+    pumps: list[tuple[int | None, int, int]] = (),
 ) -> _Doomed | None:
     """Whether this attacker only feeds a blocker, judged on its own (``losing_attackers``).
 
-    The opponent can eat it with some group that answers it (``_answers``).
-    While that group is busy, the rest of the attack gets ``shield`` more damage
-    through their best blocks than it would with every blocker free; the
-    group's lifelink gain counts against that, and its own attack ping
-    (``payoff``, ``_attack_payoff``) for it. The attacker is doomed when what
-    it buys is less than the damage it would deal itself.
+    The opponent can eat it with some group that answers it (``_answers``),
+    also after any affordable pump of ours (``pumps``: (only this creature's id
+    or None, power, toughness)). While that group is busy, the rest of the
+    attack gets ``shield`` more damage through their best blocks than it would
+    with every blocker free; the group's lifelink gain counts against that, and
+    its own attack ping (``payoff``, ``_attack_payoff``) for it: the trigger
+    fires on attack whether or not it is blocked. The attacker is doomed when
+    what it buys is less than the creature it loses, priced at what it deals
+    each attack: its damage plus that same ping, which every later attack
+    fires again. (#78, 2026-10-19 T10 match abde2a07: Hired Claw 1/2 pinging
+    1 into an untapped 4/4 was "1 damage for 1 damage" and attacked; it bought
+    the ping once and lost the creature that pings every turn.)
     """
     groups = _answer_groups(attacker, blockers, battlefield=battlefield, strategy_text=strategy_text)
     if not groups:
         return None
     if any(_trick_changes_combat(text, [attacker], blockers) for text in removal_tricks):
         return None
+    mine = [pump for pump in pumps if pump[0] in (None, attacker.get("instance_id"))]
+    variants = [(power, toughness) for _source, power, toughness in mine]
+    if len(variants) > 1:
+        variants.append((sum(p for p, _t in variants), sum(t for _p, t in variants)))
+    for power, toughness in variants:
+        bigger = _pumped(attacker, power, toughness)
+        groups = [
+            group
+            for group in groups
+            if _answers(bigger, group, battlefield=battlefield, strategy_text=strategy_text)
+        ]
+        if not groups:
+            # The pumped attacker is answered by none of the smallest groups; a
+            # larger one may still eat it, but this guard only holds clear losers.
+            return None
     rest = [card for card in attacking if card is not attacker]
     free = _best_through(rest, blockers, opp_life)
     best = None
@@ -859,7 +951,9 @@ def _doomed(
         if best is None or verdict.shield - verdict.gained < best.shield - best.gained:
             best = verdict
     own = max(1, _resolve_attacker(attacker, []).damage_through)
-    best.deficit = own - (best.shield + payoff - best.gained)
+    bought = best.shield + payoff - best.gained
+    body = own + payoff
+    best.deficit = body - bought
     return best if best.deficit > 0 else None
 
 
@@ -951,14 +1045,29 @@ def losing_attackers(
     blockers = _eligible_blockers(state, opponent.get("seat_id"))
     if not blockers:
         return {}
-    affordable = [text for _source, cost, text in _possible_tricks(state, local) if cost <= mana]
-    if any(text is None or _SAVES_ATTACKER.search(text) for text in affordable):
-        return {}
-    removal_tricks = [text for text in affordable if _REMOVES_BLOCKER.search(text)]
+    affordable = [
+        (text, cost, identity)
+        for _source, cost, text, identity in _possible_tricks(state, local)
+        if cost <= mana
+    ]
+    # A plain pump is judged per attacker (_doomed): it saves one only if the
+    # bigger creature (every affordable activation of it) is no longer
+    # answered. Anything else that could save it keeps the whole attack.
+    pumps: list[tuple[int | None, int, int]] = []
+    for text, cost, identity in affordable:
+        pump = _pump_only(text)
+        times = _pump_activations(text, cost, mana, ability=identity is not None) if pump else None
+        if pump is not None and times is not None:
+            power, toughness, self_only = pump
+            pumps.append((identity if self_only else None, power * times, toughness * times))
+        elif text is None or _SAVES_ATTACKER.search(text):
+            return {}
+    removal_tricks = [text for text, _cost, _identity in affordable if text and _REMOVES_BLOCKER.search(text)]
     opp_life = opponent.get("life_total")
     opp_life = opp_life if _is_int(opp_life) else 20
-    if _best_through(attackers, blockers, opp_life) >= opp_life:
-        return {}  # lethal through their best blocks: every attacker counts
+    pings = sum(_attack_ping_damage(card) for card in attackers)
+    if _best_through(attackers, blockers, opp_life) + pings >= opp_life:
+        return {}  # lethal through their best blocks (attack pings included): every attacker counts
     forced = {
         int(entry.get("attackerInstanceId") or 0)
         for entry in [
@@ -991,6 +1100,7 @@ def losing_attackers(
                 strategy_text=strategy_text,
                 removal_tricks=removal_tricks,
                 payoff=payoffs[attacker["instance_id"]] or 0,
+                pumps=pumps,
             )
             if verdict is not None and (worst is None or verdict.deficit > worst[1].deficit):
                 worst = (attacker, verdict)
@@ -1068,6 +1178,62 @@ def _trade_note(attacker: dict, blockers: list[dict]) -> str:
                 "a trade, not a loss"
             )
     return ""
+
+
+def pump_before_blocks_wasted(state: dict, source: dict, effect: str, cost: str = "") -> str:
+    """Why pumping our attacking ``source`` now, before blockers, buys nothing; '' otherwise (#78).
+
+    2026-10-19 T10 (match abde2a07, 11:31:39): Hired Claw 1/2 attacked alone
+    past an untapped Creakwood Safewright 4/4; after its ping the planner spent
+    {1}{R} on its +1/+1 counter "to improve its odds against non-deathtouch
+    blockers", and the 4/4 blocked the 2/3 and killed it. Before blocks, a
+    self-pump the opponent can still answer (some untapped group of theirs
+    blocks the bigger creature, kills it and loses nothing) changes nothing;
+    the same mana still pumps it after blocks, when it is unblocked or the
+    pump wins the fight it got. Only a pump of the source itself is judged,
+    with every activation our open mana (``cost`` each) pays for.
+    """
+    effect = str(effect or "").lower()
+    pump = _pump_only(effect)
+    local = _local_player(state)
+    if pump is None or not pump[2] or local is None or not source:
+        return ""
+    times = _pump_activations(effect, _mana_value(cost), _untapped_mana(state, local), ability=True)
+    if times is None:
+        return ""  # repeatable at no known cost: no clear verdict
+    if _controller(source) != local.get("seat_id") or not source.get("is_attacking"):
+        return ""
+    if not _is_int(source.get("power")) or not _is_int(source.get("toughness")):
+        return ""
+    from arenamcp.board_model import canonical_phase_step
+
+    turn = state.get("turn") or {}
+    if turn.get("active_player") != local.get("seat_id"):
+        return ""
+    if canonical_phase_step(turn)[1] != "Step_DeclareAttack":
+        return ""
+    battlefield = state.get("battlefield") or []
+    if any(card.get("is_blocking") for card in battlefield):
+        return ""  # blocks are in: the pump decides a known fight
+    opponent = next((player for player in state.get("players") or [] if not player.get("is_local")), None)
+    if opponent is None:
+        return ""
+    annotate_cant_be_blocked(battlefield)
+    blockers = _eligible_blockers(state, opponent.get("seat_id"))
+    bigger = _pumped(source, pump[0] * times, pump[1] * times)
+    groups = _answer_groups(bigger, blockers, battlefield=battlefield)
+    if not groups:
+        return ""
+    group = groups[0]
+    blocked_by = " and ".join(
+        f"{card.get('name') or 'a creature'} {card['power']}/{card['toughness']}" for card in group
+    )
+    name = source.get("name") or "the attacker"
+    return (
+        f"pumping the attacking {name} to {bigger['power']}/{bigger['toughness']} before blocks saves "
+        f"nothing: {blocked_by} can still block it, kill it and survive; after blocks the same mana "
+        "pumps it if it is unblocked or the pump wins its fight"
+    )
 
 
 # --- Free-attack rule ----------------------------------------------------------
