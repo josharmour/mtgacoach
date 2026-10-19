@@ -307,3 +307,76 @@ def test_the_step_tag_says_the_plan_was_not_refreshed():
     block = compose_strategy_block(assess(state), plan, state=state, refresh_failed=(8, "call failed"))
     assert "[game plan T8, not refreshed (re-plan on turn 8 failed)]" in block
     assert "PLAN NOT REFRESHED: the re-plan on turn 8 failed (call failed)" in block
+
+
+# --- #92: our planned attacker died ------------------------------------------------------------
+#
+# 2026-10-19 match c8ea2b6c: the plan formed on turn 11 (11:52:10) attacked with Giant Cindermaw,
+# our only creature, on T12/T14/T16; Elspeth, Storm Slayer destroyed it later on turn 11 and T12
+# ran on that plan.
+
+CINDERMAW = {
+    "type_line": "Creature — Dinosaur", "mana_cost": "{2}{R}", "power": 4, "toughness": 4,
+    "oracle_text": "Trample", "card_types": ["CardType_Creature"], "keywords": ["trample"],
+}  # fmt: skip
+ELSPETH = {
+    "type_line": "Legendary Planeswalker — Elspeth", "mana_cost": "{3}{W}{W}", "loyalty": 5,
+    "oracle_text": "+1: Create a 1/1 white Soldier creature token.", "card_types": ["CardType_Planeswalker"],
+}  # fmt: skip
+
+
+def _cindermaw_board(*, alive: bool, turn: int = 11, active: int = THEM, hand: list | None = None) -> dict:
+    battlefield = [*lands(400, 5, US), *lands(500, 5, THEM, "Plains"),
+                   {"instance_id": 600, "name": "Elspeth, Storm Slayer", "owner_seat_id": THEM,
+                    "controller_seat_id": THEM, **ELSPETH}]  # fmt: skip
+    if alive:
+        battlefield.append({"instance_id": 377, "name": "Giant Cindermaw", "owner_seat_id": US,
+                            "controller_seat_id": US, "turn_entered_battlefield": 6, **CINDERMAW})  # fmt: skip
+    state = board(turn, active, battlefield, hand or [], life={US: 17, THEM: 12})
+    return state
+
+
+def _cindermaw_plan() -> GamePlan:
+    from arenamcp.game_plan import board_basis
+
+    plan = GamePlan(
+        win_conditions=["Uncontested Cindermaw attacks close by T16"],
+        path="Attack T12/T14/T16 for 4 each (12->8->4->0)", turn_formed=11, role="aggressor",
+        turn_plan=[{"turn": 12, "label": "T", "land": "", "cast": [], "attack": "Giant Cindermaw (face)", "hold": ""},
+                   {"turn": 14, "label": "T+1", "land": "", "cast": [], "attack": "Giant Cindermaw", "hold": ""}],
+    )  # fmt: skip
+    plan.basis = board_basis(_cindermaw_board(alive=True))
+    return plan
+
+
+def test_a_dead_planned_attacker_is_named():
+    from arenamcp.game_plan import plan_attackers_gone
+
+    plan = _cindermaw_plan()
+    assert plan_attackers_gone(plan, _cindermaw_board(alive=True)) == []
+    assert plan_attackers_gone(plan, _cindermaw_board(alive=False)) == ["Giant Cindermaw"]
+    # Back in hand (bounced, or Fleeting Effigy's end step) it can be cast again: not gone.
+    in_hand = [{"instance_id": 377, "name": "Giant Cindermaw", "owner_seat_id": US, **CINDERMAW}]
+    assert plan_attackers_gone(plan, _cindermaw_board(alive=False, hand=in_hand)) == []
+
+
+def test_a_dead_planned_attacker_reforms_the_plan_even_on_our_turn():
+    from arenamcp.game_plan import board_basis
+
+    mgr = GamePlanManager(Backend([]))
+    mgr._plan = _cindermaw_plan()
+    mgr._last_sig = mgr._signature(_cindermaw_board(alive=True))
+    mgr._last_reform_turn = 11
+    mgr._last_seed = mgr._seed
+    after = _cindermaw_board(alive=False, turn=12, active=US)
+    sig = mgr._signature(after)
+    assert mgr._should_reform(sig, our_turn=True, board=board_basis(after)) == "planned attacker gone"
+    assert "planned attacker gone" in mgr._OUR_TURN_REASONS
+    assert mgr._should_reform(sig, our_turn=True, board=board_basis(_cindermaw_board(alive=True, turn=12))) == ""
+
+
+def test_the_decision_prompt_says_the_attacks_are_void():
+    after = _cindermaw_board(alive=False, turn=12, active=US)
+    block = compose_strategy_block(assess(after), _cindermaw_plan(), state=after)
+    assert "Giant Cindermaw left the battlefield: its attacks are void" in block
+    assert "PLAN ATTACKER GONE: Giant Cindermaw (in the game plan's attacks) is no longer on our battlefield" in block

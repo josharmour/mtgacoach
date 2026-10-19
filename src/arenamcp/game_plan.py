@@ -2290,7 +2290,9 @@ def board_basis(state: dict | None) -> dict:
     and whether it is modified (counters or an attached Aura/Equipment, so a
     size change is lasting, not a combat trick); ``engines``: noncreature
     permanents (as the cadence's "new opposing permanent"); ``opp_life``;
-    ``our_power``: the power of our biggest creature.
+    ``our_power``: the power of our biggest creature; ``ours``: our creatures
+    (id, name) and ``our_hand``: the creature cards in our hand, for
+    :func:`plan_attackers_gone`.
     """
     if not isinstance(state, dict):
         return {}
@@ -2300,12 +2302,13 @@ def board_basis(state: dict | None) -> dict:
     from arenamcp.combat_keywords import has_combat_keyword, is_creature_modified
 
     battlefield = [c for c in state.get("battlefield") or [] if isinstance(c, dict)]
-    creatures, engines = [], []
+    creatures, engines, ours = [], [], []
     our_power = 0
     for card in battlefield:
         controller = card.get("controller_seat_id") or card.get("owner_seat_id")
         if controller == local and _is_creature_card(card):
             our_power = max(our_power, _round(card.get("power")))
+            ours.append({"id": str(card.get("instance_id") or ""), "name": str(card.get("name") or "?")})
         if controller is None or controller == local:
             continue
         identity = str(card.get("instance_id") or card.get("name") or "")
@@ -2339,6 +2342,14 @@ def board_basis(state: dict | None) -> dict:
         "creatures": creatures,
         "engines": engines,
         "our_power": our_power,
+        "ours": ours,
+        "our_hand": sorted(
+            {
+                str(c.get("name"))
+                for c in state.get("hand") or []
+                if isinstance(c, dict) and c.get("name") and _is_creature_card(c)
+            }
+        ),
     }
 
 
@@ -2402,6 +2413,39 @@ def board_changes(old: dict | None, new: dict | None, *, threats_only: bool = Fa
     ):
         minor.append(f"the opponent gained {after_life - before_life} life ({before_life} -> {after_life})")
     return threats + minor
+
+
+def plan_attackers_gone(
+    plan: GamePlan | None, state: dict | None = None, *, basis: dict | None = None
+) -> list[str]:
+    """Our creatures the plan's attacks still name that have left our battlefield since it was formed.
+
+    2026-10-19 match c8ea2b6c (ledger #92): the T12 plan (formed on turn 11)
+    attacked with Giant Cindermaw, our only creature; Elspeth, Storm Slayer
+    destroyed it later that turn and T12 ran on the plan anyway. Names from
+    the plan's board (``basis["ours"]``) mentioned in a remaining step's
+    attack, not on our battlefield now (``basis`` or ``state``) and not in our
+    hand to be cast again (Fleeting Effigy returns there every end step).
+    """
+    if plan is None or plan.is_empty() or not isinstance(plan.basis, dict):
+        return []
+    then = list(
+        dict.fromkeys(str(c.get("name")) for c in plan.basis.get("ours") or [] if isinstance(c, dict))
+    )
+    now_basis = basis if basis is not None else board_basis(state)
+    if not then or not now_basis or "ours" not in now_basis:
+        return []
+    present = {str(c.get("name")) for c in now_basis.get("ours") or [] if isinstance(c, dict)}
+    present |= {str(name) for name in now_basis.get("our_hand") or []}
+    turn = _round(now_basis.get("turn"))
+    gone: list[str] = []
+    for step in plan.turn_plan:
+        if _round(step.get("turn")) < turn:
+            continue
+        for name in _named_creatures(str(step.get("attack") or ""), then):
+            if name not in present and name not in gone:
+                gone.append(name)
+    return gone
 
 
 def plan_board_changes(plan: GamePlan | None, state: dict | None, *, threats_only: bool = False) -> list[str]:
@@ -2476,12 +2520,15 @@ def compose_strategy_block(
     this_turn = next_turns = None
     role_note = ""
     changes = plan_board_changes(plan, state) if plan is not None and not plan.is_empty() else []
+    gone = plan_attackers_gone(plan, state) if state is not None else []
     if plan is not None and not plan.is_empty():
         step = plan.step_for(assessment.plan_turn)
         if step is not None:
             tag = f"game plan T{plan.turn_formed}"
             if refresh:
                 tag += f", not refreshed (re-plan on turn {refresh_failed[0]} failed)"
+            if gone:
+                tag += f", {' and '.join(gone)} left the battlefield: its attacks are void"
             if changes:
                 tag += ", written before the opponent's board changed: re-check its attacks"
             this_turn = f"{step_text(_with_progress(step, assessment, state))} [{tag}]"
@@ -2505,6 +2552,11 @@ def compose_strategy_block(
             block += "\n" + plan_board_note(plan, changes)
         if refresh:
             block += "\n" + refresh
+        if gone:
+            block += (
+                f"\n  PLAN ATTACKER GONE: {', '.join(gone)} (in the game plan's attacks) is no longer on our "
+                "battlefield. Every plan line that attacks with it is void; plan from the board facts above."
+            )
         losses = plan_card_losses(plan, state)
         if losses:
             block += "\n" + losses
@@ -2735,9 +2787,10 @@ class GamePlanManager:
             "resumed after a decision",
         }
     )
-    # The only reform that may start during our own turn: without any plan,
-    # one is worth more than one faster decision (2026-10-10 Brawl game).
-    _OUR_TURN_REASONS = frozenset({"first plan"})
+    # The reforms that may start during our own turn: without any plan, one is
+    # worth more than one faster decision (2026-10-10 Brawl game); nor is a plan
+    # whose attacker has died one (ledger #92).
+    _OUR_TURN_REASONS = frozenset({"first plan", "planned attacker gone"})
     # A board-math role change between these two alone, with the lethal and
     # dead-soon flags unchanged, is noise (2026-10-07 replay: turn 6 went
     # aggressor -> race -> defender and turn 7 defender -> race on ordinary
@@ -2817,6 +2870,9 @@ class GamePlanManager:
             # "swing 4 unblocked". A reform whose snapshot has a threat the
             # current plan was not written from replaces a stale plan: it runs on.
             newer = board_changes(self._plan.basis, getattr(self, "_inflight_basis", None), threats_only=True)
+            gone = plan_attackers_gone(self._plan, basis=getattr(self, "_inflight_basis", None) or None)
+            if gone:
+                newer = [*newer, f"{' and '.join(gone)} left our battlefield"]
             if newer:
                 logger.info(
                     "Game plan reform keeps running alongside a decision call: the current plan predates %s",
@@ -3579,6 +3635,8 @@ class GamePlanManager:
         """
         if self._plan is None or self._last_sig is None:
             return "first plan"
+        if board and plan_attackers_gone(self._plan, basis=board):
+            return "planned attacker gone"
         if self._seed != self._last_seed:
             return "deck playbook changed"
         if getattr(self, "_resume_after_yield", False):
