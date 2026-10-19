@@ -101,6 +101,27 @@ def _samples_to_wav_bytes(samples, sample_rate: int) -> bytes:
     return buf.getvalue()
 
 
+def _with_lead_in(samples, sample_rate: int):
+    """Prepend LEAD_IN_SECONDS of silence to the samples."""
+    _ensure_numpy()
+    silence = np.zeros(int(sample_rate * LEAD_IN_SECONDS), dtype=np.float32)
+    return np.concatenate([silence, samples])
+
+
+def _trim_leading_quiet(samples, sample_rate: int):
+    """Cut the near-silence before the first word (see ONSET_DB)."""
+    _ensure_numpy()
+    window = max(1, sample_rate // 100)
+    count = len(samples) // window
+    if count == 0:
+        return samples
+    rms = np.sqrt(np.mean(np.square(samples[: count * window].reshape(count, window)), axis=1))
+    loud = np.flatnonzero(rms > np.max(np.abs(samples)) * 10 ** (ONSET_DB / 20))
+    if len(loud) == 0:
+        return samples
+    return samples[max(0, loud[0] * window - int(sample_rate * ONSET_MARGIN_SECONDS)) :]
+
+
 # Temp WAV file for winsound file-based playback (avoids SND_MEMORY focus bug)
 _winsound_tmp_path: str | None = None
 
@@ -150,6 +171,26 @@ def _winsound_play_samples(samples, sample_rate: int, blocking: bool = True) -> 
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "kokoro"
 MODEL_FILE = "kokoro-v1.0.onnx"
 VOICES_FILE = "voices-v1.0.bin"
+
+# A Kokoro v1.0 voice is one style vector per input length (shape (510, 1, 256))
+# and kokoro_onnx speaks with voice[len(tokens)], so short lines got a different
+# voice: for am_fenrir, "Passing." (7 tokens) used a row with cosine 0.32 to row
+# 90 and 2.6x its norm, and was spoken faster. Every line now uses this length's
+# row. Coaching lines run a median ~100 tokens (standalone.log 2026-10-18); row
+# 90 is central to rows 60-260 for all 28 voices (mean cosine 0.98) and keeps
+# their pace (29.5 tokens/s for am_fenrir vs 30.3 natively).
+STYLE_TOKENS = 90
+
+# Silence before each line so the output stream is running when speech starts;
+# Kokoro's trimmed audio already opens with 20-50 ms of quiet. Was 0.5 s, which
+# delayed every line by half a second.
+LEAD_IN_SECONDS = 0.1
+
+# Kokoro's own trim (60 dB under the peak) can leave ~140 ms of inaudible noise
+# before the first word ("Passing."); audio quieter than this is cut, keeping
+# ONSET_MARGIN_SECONDS of it.
+ONSET_DB = -50.0
+ONSET_MARGIN_SECONDS = 0.02
 
 # Model download URLs for error messages
 MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
@@ -231,6 +272,7 @@ class KokoroTTS:
         # Lazy-loaded model
         self._kokoro: object | None = None
         self._load_lock = threading.Lock()
+        self._style = None  # the voice's STYLE_TOKENS row, shaped as a full voice
 
     def _ensure_model_loaded(self) -> None:
         """Lazy-load the Kokoro model on first use.
@@ -308,12 +350,21 @@ class KokoroTTS:
         # Generate audio using Kokoro
         samples, sample_rate = self._kokoro.create(
             text,
-            voice=self._voice,
+            voice=self._voice_style(),
             speed=self._speed,
             lang=self._lang,
         )
 
-        return samples, sample_rate
+        return _trim_leading_quiet(samples, sample_rate), sample_rate
+
+    def _voice_style(self):
+        """The voice with its STYLE_TOKENS row at every length (see STYLE_TOKENS)."""
+        if self._style is None:
+            if self._voice not in self._kokoro.voices:
+                return self._voice  # kokoro_onnx reports the unknown voice
+            pack = np.asarray(self._kokoro.get_voice_style(self._voice))
+            self._style = np.broadcast_to(pack[min(STYLE_TOKENS, len(pack) - 1)], pack.shape)
+        return self._style
 
 
 class VoiceOutput:
@@ -655,12 +706,9 @@ class VoiceOutput:
             if len(samples) == 0:
                 return None
 
-            # Keep the same lead-in used for direct playback so the first word
-            # is not clipped when the parent process starts the stream.
-            silence_len = int(sample_rate * 0.5)
-            _ensure_numpy()
-            silence = np.zeros(silence_len, dtype=np.float32)
-            samples = np.concatenate([silence, samples])
+            # Same lead-in as direct playback, so the first word is not
+            # clipped when the parent process starts the stream.
+            samples = _with_lead_in(samples, sample_rate)
 
             fd, path = tempfile.mkstemp(suffix=".wav", prefix="mtgacoach_pipe_")
             os.close(fd)
@@ -780,13 +828,9 @@ class VoiceOutput:
             if len(samples) == 0:
                 return
 
-            # Add leading silence (500ms) to prevent cutting off the first word.
-            # Audio devices (especially Bluetooth/USB) need time to wake up after
-            # sd.stop() or when the stream first opens.  200ms was not enough.
-            silence_len = int(sample_rate * 0.5)
-            _ensure_numpy()
-            silence = np.zeros(silence_len, dtype=np.float32)
-            samples = np.concatenate([silence, samples])
+            # Leading silence so the first word is not cut off while the
+            # device starts the stream after sd.stop().
+            samples = _with_lead_in(samples, sample_rate)
 
             with self._lock:
                 self._is_speaking = True
@@ -842,11 +886,7 @@ class VoiceOutput:
             if len(samples) == 0:
                 return
 
-            # Add leading silence (500ms) to prevent cutting off the first word.
-            silence_len = int(sample_rate * 0.5)
-            _ensure_numpy()
-            silence = np.zeros(silence_len, dtype=np.float32)
-            samples = np.concatenate([silence, samples])
+            samples = _with_lead_in(samples, sample_rate)
 
             def _playback_worker():
                 with self._lock:
