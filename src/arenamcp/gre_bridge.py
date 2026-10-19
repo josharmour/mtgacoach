@@ -1482,6 +1482,35 @@ class GREBridge:
             logger.warning(f"GRE bridge submit_auto_tap error: {e}")
         return False
 
+    _MANA_COLOR_NAMES = {
+        "W": "ManaColor_White",
+        "U": "ManaColor_Blue",
+        "B": "ManaColor_Black",
+        "R": "ManaColor_Red",
+        "G": "ManaColor_Green",
+        "C": "ManaColor_Colorless",
+    }
+
+    def submit_payment_action(self, instance_id: int, ability_grp_id: int, color: str) -> bool:
+        """Activate one mana ability of a PayCostsRequest that has no Auto Pay,
+        making ``color`` (W/U/B/R/G/C); the server asks again for what is left."""
+        try:
+            resp = self._send_safe(
+                {
+                    "action": "submit_payment_action",
+                    "instance_id": int(instance_id),
+                    "ability_grp_id": int(ability_grp_id),
+                    "color": self._MANA_COLOR_NAMES.get(color, color),
+                }
+            )
+            if resp.get("ok"):
+                logger.info(f"GRE bridge paid one mana: {color} from instance {instance_id}")
+                return True
+            logger.warning(f"GRE bridge submit_payment_action failed: {resp.get('error')}")
+        except GREBridgeError as e:
+            logger.warning(f"GRE bridge submit_payment_action error: {e}")
+        return False
+
     def submit_select_from_groups(self, groups: list[dict[str, Any]]) -> bool:
         """Submit select-from-groups request.
 

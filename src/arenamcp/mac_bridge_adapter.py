@@ -2430,6 +2430,50 @@ class MacBridgeAdapter:
         )
         return {"ok": True, "submitted_type": "AutoTap", "solution_index": index}
 
+    def _cmd_submit_payment_action(self, command: dict, timeout: float | None) -> dict:
+        """Activate one mana ability of a PayCostsRequest that has no Auto Pay
+        (Plugin.Payment.cs): a copy of the action keeping only the option that
+        makes the requested color, as the client's ManaSelectionFlow submits it."""
+        snapshot = self._require(timeout, "PayCostsRequest")
+        payment = field(snapshot.request, "PaymentActions")
+        instance_id = int(command.get("instance_id") or 0)
+        ability = int(command.get("ability_grp_id") or 0)
+        source = next(
+            (
+                action
+                for action in items(field(payment, "Actions"))
+                if num(field(action, "InstanceId")) == instance_id
+                and (not ability or num(field(action, "AbilityGrpId")) == ability)
+            ),
+            None,
+        )
+        if handle(payment) is None or source is None or handle(source) is None:
+            raise AdapterError(f"No payment action for instance {instance_id}")
+        color = str(command.get("color") or "")
+        option = None
+        if color:
+            option = next(
+                (
+                    candidate
+                    for candidate in items(field(source, "ManaPaymentOptions"))
+                    if any(enum_name(field(mana, "Color")) == color for mana in items(field(candidate, "Mana")))
+                ),
+                None,
+            )
+            if option is None or handle(option) is None:
+                raise AdapterError(f"Instance {instance_id} cannot make {color}")
+
+        def build(ops: _Ops, request: dict) -> None:
+            action = ops.new(MESSAGING + "Action", H(handle(source)))
+            if option is not None:
+                options = ops.get(action, "ManaPaymentOptions")
+                ops.call(options, "Clear")
+                ops.call(options, "Add", H(handle(option)))
+            ops.call(H(handle(payment)), "SubmitAction", action, B(False))
+
+        self._submit(snapshot, build, timeout)
+        return {"ok": True, "submitted_type": "PaymentAction", "instance_id": instance_id}
+
     def _cmd_submit_select_from_groups(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout, "SelectFromGroupsRequest")
         specs = command.get("groups") or []

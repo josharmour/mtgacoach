@@ -36,6 +36,10 @@ namespace MtgaCoachBridge
                     HandleReflectBatch(cmd);
                     break;
 
+                case "submit_payment_action":
+                    HandleSubmitPaymentAction(cmd);
+                    break;
+
                 case "get_pending_actions":
                     HandleGetPendingActions(cmd);
                     break;

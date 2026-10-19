@@ -2991,6 +2991,23 @@ class AutopilotEngine(
                             summary="submitted AutoTap solution via bridge",
                         )
                         return True
+                    # No Auto Pay (an X spell taking every source, 2026-10-18
+                    # 21:40): pay one mana source per round as Arena's bot does;
+                    # the server's next PayCostsReq asks for what is left.
+                    from arenamcp.mana_payment import choose_payment_source
+
+                    step = choose_payment_source(pay_context)
+                    if step and self._progress_bridge(game_state).submit_payment_action(
+                        step["instance_id"], step["ability_grp_id"], step["color"]
+                    ):
+                        self._log_execution_path(ExecutionPath.GRE_AWARE, "manual mana via submit_payment_action")
+                        self._record_autopilot_decision(
+                            game_state,
+                            trigger,
+                            action_type="pay_costs",
+                            summary=f"paid {step['color']} from instance {step['instance_id']} (no Auto Pay)",
+                        )
+                        return True
                     # Issue #414: our own just-submitted cast reaching a
                     # PayCosts with no autotap child is a LEGAL cast that
                     # MTGA wants paid manually (observed on every command-

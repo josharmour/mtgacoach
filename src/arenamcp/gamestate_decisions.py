@@ -1141,6 +1141,29 @@ def _handle_pay_costs(game_state: "GameState", msg: dict) -> bool:
     payment_action_count = (
         len(_ensure_dict_list(payment_actions.get("actions", []))) if isinstance(payment_actions, dict) else 0
     )
+    # Each mana ability Arena offers for a manual payment: what it can make and
+    # whether it spends a treasure. Without Auto Pay (an X spell taking every
+    # source, 2026-10-18 21:40) the autopilot pays from these one at a time.
+    payment_sources = []
+    for action in _ensure_dict_list(payment_actions.get("actions", []) if isinstance(payment_actions, dict) else []):
+        options = _ensure_dict_list(action.get("manaPaymentOptions", []))
+        mana = [m for option in options for m in _ensure_dict_list(option.get("mana", []))]
+        specs = {str(s.get("type")) for m in mana for s in _ensure_dict_list(m.get("specs", []))}
+        payment_sources.append(
+            {
+                "instance_id": _coerce_int(action.get("instanceId", 0), 0),
+                "ability_grp_id": _coerce_int(action.get("abilityGrpId", 0), 0),
+                "colors": sorted({_MANA_ABBREV.get(str(m.get("color")), str(m.get("color"))) for m in mana}),
+                "treasure": "ManaSpecType_FromTreasure" in specs,
+            }
+        )
+    # Hybrid/Phyrexian requirements only reach mana_str; a payment plan built
+    # from mana_requirements alone would not cover them.
+    requirements_modeled = all(
+        len(_coerce_str_list(mc.get("color", []))) <= 1
+        or all(c == "ManaColor_Generic" for c in _coerce_str_list(mc.get("color", [])))
+        for mc in mana_cost
+    )
     payment_selection = req.get("paymentSelection")
     pool_mana_count = len(payment_selection.get("ids") or []) if isinstance(payment_selection, dict) else 0
     has_effect_cost = bool(req.get("effectCostReq"))
@@ -1174,6 +1197,8 @@ def _handle_pay_costs(game_state: "GameState", msg: dict) -> bool:
         "mana_requirements": {k: v for k, v in mana_requirements.items() if v},
         "autotap_solution": autotap_info,
         "payment_action_count": payment_action_count,
+        "payment_sources": payment_sources,
+        "requirements_modeled": requirements_modeled,
         "pool_mana_count": pool_mana_count,
         "has_effect_cost": has_effect_cost,
         "no_payment_route": no_payment_route,
