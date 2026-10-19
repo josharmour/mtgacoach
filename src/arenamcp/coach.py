@@ -2973,7 +2973,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 oracle = (
                     ""
                     if self._rules_in_deck_reference(c, game_state)
-                    else self._clean_oracle_for_prompt(c.get("oracle_text", "") or "").replace("\n", " ").strip()
+                    else self._clean_oracle_for_prompt(c.get("oracle_text", "") or "")
+                    .replace("\n", " ")
+                    .strip()
                 )
                 if oracle:
                     cmd_parts.append(f"    {oracle}")

@@ -285,7 +285,9 @@ def test_repeated_board_copies_quote_their_rules_once():
         "controller_seat_id": 2,
         "turn_entered_battlefield": 3,
     }
-    state = _state(battlefield=[{**token, "instance_id": iid, "is_tapped": iid == 52} for iid in (51, 52, 53)])
+    state = _state(
+        battlefield=[{**token, "instance_id": iid, "is_tapped": iid == 52} for iid in (51, 52, 53)]
+    )
     context = CoachEngine.__new__(CoachEngine)._format_game_context(state, for_planner=True)
     assert context.count("When this token dies, you gain 1 life.") == 1  # before: 3
     for number in (1, 2, 3):
@@ -331,7 +333,9 @@ def test_library_effects_in_play_list_the_inventory():
         "a recurring scry": _library_state(
             battlefield=[_card(21, 101, oracle_text="Whenever you cast an instant spell, scry 1.")]
         ),
-        "our spell on the stack": _library_state(stack=[_card(40, 101, oracle_text="Surveil 2. Draw a card.")]),
+        "our spell on the stack": _library_state(
+            stack=[_card(40, 101, oracle_text="Surveil 2. Draw a card.")]
+        ),
         "a search decision": _library_state(decision_context={"type": "search"}),
         "a scry decision": _library_state(decision_context={"type": "scry"}),
     }
@@ -348,7 +352,9 @@ def test_library_effects_in_play_list_the_inventory():
     for why, text in not_listed.items():
         entered = _library_state(battlefield=[_card(21, 100, oracle_text=text)])
         assert "MY LIBRARY (" not in _context(entered), why
-    theirs = _library_state(stack=[_card(40, 101, oracle_text="Scry 2.", controller_seat_id=2, owner_seat_id=2)])
+    theirs = _library_state(
+        stack=[_card(40, 101, oracle_text="Scry 2.", controller_seat_id=2, owner_seat_id=2)]
+    )
     assert "MY LIBRARY (" not in _context(theirs)
 
 
@@ -379,7 +385,9 @@ def _scoped_playbook():
         {**base, "id": f"rule_{kinds[0]}", "decisions": kinds, "prefer": f"Prefer for {kinds[0]}."}
         for kinds in (["development"], ["combat"], ["targeting"], ["tutor"], ["all"])
     ]
-    return state, DeckPlaybook.parse(json.dumps(response), catalog, commander_ids(state), deck_identity(state))
+    return state, DeckPlaybook.parse(
+        json.dumps(response), catalog, commander_ids(state), deck_identity(state)
+    )
 
 
 def _rules_shown(text):
@@ -390,11 +398,18 @@ def test_playbook_rules_follow_the_window_including_log_decision_types():
     state, book = _scoped_playbook()
     # An upkeep priority window, as Player.log names it ("actions_available"):
     # before, no hint matched the underscore form and all five rules were sent.
-    upkeep = {**state, "turn": {"phase": "Phase_Beginning"}, "decision_context": {"type": "actions_available"}}
+    upkeep = {
+        **state,
+        "turn": {"phase": "Phase_Beginning"},
+        "decision_context": {"type": "actions_available"},
+    }
     assert _rules_shown(book.decision_context(upkeep)) == ["rule_all", "rule_development"]
     # A typed decision names its request.
     plain = {**state, "turn": {"phase": "Phase_Ending"}, "decision_context": None}
-    assert _rules_shown(book.decision_context(plain, request_type="SelectTargets")) == ["rule_all", "rule_targeting"]
+    assert _rules_shown(book.decision_context(plain, request_type="SelectTargets")) == [
+        "rule_all",
+        "rule_targeting",
+    ]
     assert _rules_shown(book.decision_context(plain, request_type="Search")) == ["rule_all", "rule_tutor"]
     damage = {**plain, "decision_context": {"type": "assign_damage"}}
     assert "rule_combat" in _rules_shown(book.decision_context(damage))

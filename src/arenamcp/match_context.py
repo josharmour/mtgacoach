@@ -286,7 +286,8 @@ def _library_in_play(state: dict) -> bool:
     if any(kind in request for kind in LIBRARY_DECISIONS):
         return True
     local = state.get("local_seat_id") or next(
-        (p.get("seat_id") for p in state.get("players", []) if isinstance(p, dict) and p.get("is_local")), None
+        (p.get("seat_id") for p in state.get("players", []) if isinstance(p, dict) and p.get("is_local")),
+        None,
     )
 
     def ours(card: Any) -> bool:

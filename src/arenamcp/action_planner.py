@@ -5002,7 +5002,9 @@ class ActionPlanner(_ActionLegalityMixin):
             if context and context.strip():
                 if options_listed:
                     context = "\n".join(
-                        line for line in context.split("\n") if not line.startswith(self._RESTATED_REQUEST_LINES)
+                        line
+                        for line in context.split("\n")
+                        if not line.startswith(self._RESTATED_REQUEST_LINES)
                     )
                 return context
         except Exception as e:

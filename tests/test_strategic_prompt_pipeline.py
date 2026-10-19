@@ -106,7 +106,9 @@ def test_typed_and_legacy_prompts_share_complete_stable_deck(state):
     second = backend.calls[-1][1]
     assert first.split("PENDING DECISION:")[0] == second.split("PENDING DECISION:")[0]
     assert first != second
-    assert_full_context(planner._build_action_prompt(state, "new_turn", legal_actions=["Pass"]), library=False)
+    assert_full_context(
+        planner._build_action_prompt(state, "new_turn", legal_actions=["Pass"]), library=False
+    )
     # A library effect in hand: the inventory is listed, after the same deck prefix.
     scry = deepcopy(state)
     scry["hand"][0]["oracle_text"] = "Scry 2, then draw a card."

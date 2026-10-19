@@ -491,7 +491,9 @@ class DeckPlaybook:
                 seen.update(rule for _, rule in new)
                 text = "; ".join(f"rule {number}: {rule}" for number, rule in new)
                 earlier = len(new) < len(rules)
-                yield f"  Oracle — {name(gid)}: {text}" + ("; its other cited rules are quoted above" if earlier else "")
+                yield f"  Oracle — {name(gid)}: {text}" + (
+                    "; its other cited rules are quoted above" if earlier else ""
+                )
 
         data = self.data
         lines = [

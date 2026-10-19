@@ -88,7 +88,13 @@ def test_a_board_without_the_subjects_gets_the_core_rules_only():
     plan = autopilot_system_prompt(frozenset())
     for absent in ("- ANIMATION:", "- EQUIPMENT:", "- TUTORS & SEARCH LIBRARY:", TUTORS):
         assert absent not in plan, absent
-    for kept in ("- ZERO-POWER ATTACKERS:", "- BLOCKERS:", "- COMBAT SOLVER:", "SCHEMA:", "A plan is conditional"):
+    for kept in (
+        "- ZERO-POWER ATTACKERS:",
+        "- BLOCKERS:",
+        "- COMBAT SOLVER:",
+        "SCHEMA:",
+        "A plan is conditional",
+    ):
         assert kept in plan, kept
     assert strategic_policy(frozenset()).startswith("Follow the deck's win conditions")
 
@@ -109,7 +115,11 @@ def test_each_subject_is_recognised_wherever_our_cards_show_it():
             {"equipment"},
         ),
         "equip option": (_state(), _decision(labels=("Activate: Sword [Equip {2}]",)), {"equipment"}),
-        "our command zone": (_state(command=[_card("Fixture Captain", "Legendary Creature")]), None, {"commander"}),
+        "our command zone": (
+            _state(command=[_card("Fixture Captain", "Legendary Creature")]),
+            None,
+            {"commander"},
+        ),
         "designated commander": (_state(commander_grp_ids=[81845]), None, {"commander"}),
         "tutor in hand": (
             _state(hand=[_card("Tutor", "Sorcery", "Search your library for a card.")]),
@@ -137,7 +147,9 @@ def test_the_typed_and_plan_calls_send_the_rules_for_their_board():
     decision = PendingDecision((1, 1), "ActionsAvailable", (DecisionOption("pass", "Pass"),), can_pass=True)
     ActionPlanner(backend)._llm_decision_options(decision, _state())
     assert CREW not in backend.calls[-1] and "payable individually now" in backend.calls[-1]
-    ActionPlanner(backend)._llm_decision_options(decision, _state(hand=[BEAR, _card("Copter", "Artifact — Vehicle")]))
+    ActionPlanner(backend)._llm_decision_options(
+        decision, _state(hand=[BEAR, _card("Copter", "Artifact — Vehicle")])
+    )
     assert CREW in backend.calls[-1] and EQUIPMENT not in backend.calls[-1]
     plan_backend = Capture('{"actions": [{"pick": 1}]}')
     planner = ActionPlanner(plan_backend, timeout=10.0, land_drop_first=False)
@@ -156,14 +168,22 @@ def test_the_coach_prompt_drops_the_strixhaven_primer_and_equipment_rule_without
 
     assert situational_coach_prompt(DEFAULT_SYSTEM_PROMPT, SUBJECTS) == DEFAULT_SYSTEM_PROMPT
     plain = situational_coach_prompt(DEFAULT_SYSTEM_PROMPT, frozenset())
-    for absent in ("SECRETS OF STRIXHAVEN", "- PREPARE", "- PARADIGM", "- CONVERGE", "- EQUIPMENT & TARGETING"):
+    for absent in (
+        "SECRETS OF STRIXHAVEN",
+        "- PREPARE",
+        "- PARADIGM",
+        "- CONVERGE",
+        "- EQUIPMENT & TARGETING",
+    ):
         assert absent not in plain, absent
     for kept in ("- HEURISTIC HINTS:", "- Bounce/removal spells", "- ORACLE TEXT:", "CRITICAL MANA RULES:"):
         assert kept in plain, kept
     assert "\n\n\n" not in plain
     assert len(plain) < len(DEFAULT_SYSTEM_PROMPT) - 2000
     # An opponent's prepared creature is enough for the primer.
-    prepared = _card("Hallway Heckler", "Creature — Elemental Sorcerer", "This creature enters prepared.", owner=OPP)
+    prepared = _card(
+        "Hallway Heckler", "Creature — Elemental Sorcerer", "This creature enters prepared.", owner=OPP
+    )
     assert subjects_in_play(_state(battlefield=[FOREST, prepared])) == {"set_mechanics"}
 
 

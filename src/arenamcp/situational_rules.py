@@ -47,7 +47,9 @@ def compose(parts: Sequence[tuple[str | None, str]], subjects: Iterable[str] = S
     return "".join(text for subject, text in parts if subject is None or subject in wanted)
 
 
-def subjects_in_play(state: dict | None, decision: Any = None, extra_text: Iterable[str] = ()) -> frozenset[str]:
+def subjects_in_play(
+    state: dict | None, decision: Any = None, extra_text: Iterable[str] = ()
+) -> frozenset[str]:
     """The :data:`SUBJECTS` our visible cards, the pending decision or ``extra_text`` (menu lines) touch.
 
     A snapshot it cannot read gets every subject: a rule is never dropped by an error.
@@ -63,7 +65,8 @@ def subjects_in_play(state: dict | None, decision: Any = None, extra_text: Itera
 
 def _subjects_in_play(state: dict, decision: Any, extra_text: Iterable[str]) -> frozenset[str]:
     local = state.get("local_seat_id") or next(
-        (p.get("seat_id") for p in state.get("players") or [] if isinstance(p, dict) and p.get("is_local")), None
+        (p.get("seat_id") for p in state.get("players") or [] if isinstance(p, dict) and p.get("is_local")),
+        None,
     )
     texts: list[str] = [str(text) for text in extra_text]
     for option in getattr(decision, "options", ()) or ():
@@ -97,6 +100,10 @@ def _subjects_in_play(state: dict, decision: Any, extra_text: Iterable[str]) -> 
     if commander_ids(state):
         found.add("commander")
 
-    if getattr(decision, "request_type", None) == "Search" or state.get("library_listed") or library_in_play(state):
+    if (
+        getattr(decision, "request_type", None) == "Search"
+        or state.get("library_listed")
+        or library_in_play(state)
+    ):
         found.add("library")
     return frozenset(found)

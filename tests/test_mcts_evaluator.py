@@ -262,7 +262,12 @@ def _swiftspear_board() -> dict[str, Any]:
             {"seat_id": 2, "life_total": 20, "is_local": False},
         ],
         "battlefield": [
-            {"name": "Mountain", "type_line": "Basic Land — Mountain", "controller_seat_id": 2, "is_tapped": False},
+            {
+                "name": "Mountain",
+                "type_line": "Basic Land — Mountain",
+                "controller_seat_id": 2,
+                "is_tapped": False,
+            },
             {
                 "name": "Monastery Swiftspear",
                 "type_line": "Creature — Human Monk",
