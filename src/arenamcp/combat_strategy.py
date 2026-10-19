@@ -881,6 +881,113 @@ def _best_through(attackers: list[dict], blockers: list[dict], opp_life: int) ->
     return plan.damage_through
 
 
+class _TheirBlocks:
+    """Their best blocks (combat solver, their view) against parts of one declaration, cached (#168).
+
+    2026-10-19 match 639c5fe1 T11: the losing-attack guard charged Lathiel's
+    2 lifelink to every Rabbit, though she blocks one, and re-judged the
+    shrinking attack one creature at a time: 10 attackers getting 6 through
+    their best blocks became Leonardo alone, for 0. What an attacker adds is
+    read from the blocks they actually make: the damage through with it minus
+    without it, less the lifelink of the blockers on it in that plan, so each
+    blocker's lifelink counts once.
+    """
+
+    def __init__(self, blockers: list[dict], opp_life: int):
+        self.blockers = blockers
+        self.opp_life = opp_life
+        self._by_id = {card.get("instance_id"): card for card in blockers}
+        self._plans: dict[frozenset, tuple[int, dict[int, list[dict]]]] = {}
+
+    def blocks(self, attackers: list[dict]) -> tuple[int, dict[int, list[dict]]]:
+        """(damage through, their blockers on each attacker id) under their best blocks."""
+        key = frozenset(card["instance_id"] for card in attackers)
+        found = self._plans.get(key)
+        if found is None:
+            plan = (
+                combat_solver._search_blocks(attackers, self.blockers, self.opp_life) if attackers else None
+            )
+            on: dict[int, list[dict]] = {}
+            if plan is None:
+                found = (sum(_resolve_attacker(card, []).damage_through for card in attackers), on)
+            else:
+                for blocker_id, attacker_id in plan.assignments.items():
+                    if blocker_id in self._by_id:
+                        on.setdefault(attacker_id, []).append(self._by_id[blocker_id])
+                found = (plan.damage_through, on)
+            self._plans[key] = found
+        return found
+
+    def net(self, attackers: list[dict]) -> int:
+        """Damage through their best blocks less what their lifelink blockers gain in them."""
+        through, on = self.blocks(attackers)
+        return through - sum(_lifelink_gain(blocker) for group in on.values() for blocker in group)
+
+    def marginal(self, attacker: dict, attacking: list[dict]) -> tuple[int, int, list[dict]]:
+        """(damage through with it minus without it, the lifelink its own blockers gain, those blockers)."""
+        through, on = self.blocks(attacking)
+        without, _on = self.blocks([card for card in attacking if card is not attacker])
+        mine = on.get(attacker["instance_id"], [])
+        return through - without, sum(_lifelink_gain(blocker) for blocker in mine), mine
+
+
+def _copy_key(card: dict) -> tuple:
+    """Identical copies for the guard's copy cap (#168): same name and power/toughness."""
+    return (str(card.get("name") or ""), card.get("power"), card.get("toughness"))
+
+
+def _copies_answered(
+    attacker: dict, blockers: list[dict], *, battlefield: list[dict], strategy_text: str
+) -> int:
+    """How many copies of ``attacker`` their blockers stop at once: disjoint answering groups (#168).
+
+    With no group that answers it (``_answers``), the single blockers that stop
+    it with nothing through (``_wasted_attack``'s free blocks and trades).
+    """
+    groups = _answer_groups(attacker, blockers, battlefield=battlefield, strategy_text=strategy_text)
+    if not groups:
+        groups = [
+            [blocker]
+            for blocker in blockers
+            if _group_can_block(attacker, [blocker])
+            and not _resolve_attacker(attacker, [blocker]).damage_through
+        ]
+    used: set = set()
+    count = 0
+    for group in groups:
+        ids = {card.get("instance_id") for card in group}
+        if ids & used:
+            continue
+        used |= ids
+        count += 1
+    return count
+
+
+def _line_search_attackers(state: dict) -> frozenset[int] | None:
+    """The attackers the line search's best line sends this turn (#168), or None.
+
+    None when there is no usable search before our attack, when its best line
+    dies, or when its attackers can't be told from its names.
+    """
+    try:
+        from arenamcp import line_guard
+        from arenamcp.board_assessment import assess
+
+        result = getattr(assess(state), "line_search", None)
+        if not line_guard._usable(result) or not line_guard._our_turn(state):
+            return None
+        if (
+            not result.model.our_turn
+            or not result.model.our_attack_pending
+            or result.best.cls == line_guard.DEAD
+        ):
+            return None
+        return line_guard._attack_ids(result.best)
+    except Exception:  # the strategic layer never decides a guard on its own failure
+        logger.debug("line search attackers unavailable", exc_info=True)
+        return None
+
+
 @dataclass
 class _Doomed:
     group: list[dict]
@@ -1007,8 +1114,12 @@ def _doomed(
     pumps: list[tuple[int | None, int, int]] = (),
     exposure: combat_solver.TrickExposure | None = None,
     burn: list[tuple[str, int]] = (),
+    fed: bool = True,
 ) -> _Doomed | None:
     """Whether this attacker only feeds a blocker, judged on its own (``losing_attackers``).
+
+    ``fed=False`` judges only the blocks with no answering group
+    (``_wasted_attack``): an attacker some group answers is then None.
 
     The opponent can eat it with some group that answers it (``_answers``),
     also after any affordable pump of ours (``pumps``: (only this creature's id
@@ -1039,7 +1150,7 @@ def _doomed(
             exposure=exposure,
             burn=burn,
         )
-    if any(_trick_changes_combat(text, [attacker], blockers) for text in removal_tricks):
+    if not fed or any(_trick_changes_combat(text, [attacker], blockers) for text in removal_tricks):
         return None
     mine = [pump for pump in pumps if pump[0] in (None, attacker.get("instance_id"))]
     variants = [(power, toughness) for _source, power, toughness in mine]
@@ -1191,6 +1302,17 @@ def losing_attackers(
       - what it buys is less than its own damage: the rest of the attack
         gets fewer extra points through their best blocks while that group
         is busy, minus the group's lifelink gain (``_doomed``);
+      - (#168, match 639c5fe1 T11) their best blocks against the attack
+        block it, and it adds nothing through them: the damage through
+        with it minus without it, less the lifelink of its own blockers in
+        those blocks (each blocker's lifelink counted once), is 0 or less;
+        or it adds less than its own damage and the line search's best line
+        keeps it, and every attacker the guard leaves in, at home. The
+        attack is re-judged after each hold, and the holds stand only if
+        the thinned attack gets at least as much through their best blocks
+        (net of lifelink) as the declaration, or matches that best line;
+        never more identical copies than their blockers answer at once,
+        unless every copy is held (``_thinned_declaration``);
       - the whole attack is not lethal through their best blocks;
       - it is not required to attack (GRE ``mustAttack`` in the state or the
         live ``pending`` bridge request);
@@ -1294,6 +1416,18 @@ def losing_attackers(
         and payoffs[card["instance_id"]] is not None
         and not any(_has_type(card, kind) for kind in rewarded)
     ]
+    common = {
+        "opp_life": opp_life,
+        "battlefield": battlefield,
+        "strategy_text": strategy_text,
+        "removal_tricks": removal_tricks,
+        "pumps": pumps,
+        "exposure": exposure,
+        "burn": burn,
+    }
+    # Blocks that cost us nothing to refuse (#120's free bounce under their tricks, #113's
+    # engine trade into a blocker our burn kills) are judged as before: what they risk if
+    # they block, whatever their best blocks are.
     remaining = list(attackers)
     losing: dict[int, str] = {}
     while True:
@@ -1305,14 +1439,9 @@ def losing_attackers(
                 attacker,
                 remaining,
                 blockers,
-                opp_life=opp_life,
-                battlefield=battlefield,
-                strategy_text=strategy_text,
-                removal_tricks=removal_tricks,
                 payoff=payoffs[attacker["instance_id"]] or 0,
-                pumps=pumps,
-                exposure=exposure,
-                burn=burn,
+                fed=False,
+                **common,
             )
             if verdict is not None and (worst is None or verdict.deficit > worst[1].deficit):
                 worst = (attacker, verdict)
@@ -1327,12 +1456,152 @@ def losing_attackers(
             payoff=payoffs[attacker["instance_id"]] or 0,
         )
         remaining = [card for card in remaining if card is not attacker]
+    # #168 (match 639c5fe1 T11): an attacker their blockers eat is held only for what it adds
+    # through the blocks they actually make, net of the lifelink of its own blockers there
+    # (each blocker counted once): nothing at all ("useless"), or less than its own damage
+    # when the line search's best line keeps it home ("costly"). The shrinking attack is
+    # re-judged after each hold, then the holds must beat the declaration (_thinned_declaration).
+    theirs = _TheirBlocks(blockers, opp_life)
+    line_attack = _line_search_attackers(state)
+    if line_attack is not None and any(
+        card not in judged
+        or not _answer_groups(card, blockers, battlefield=battlefield, strategy_text=strategy_text)
+        for card in remaining
+        if card["instance_id"] not in line_attack
+    ):
+        line_attack = None  # it keeps home a creature this guard never holds: no costly hold can match it
+    removed: list[tuple[dict, str, bool]] = []  # (attacker, reason, costly)
+    nets = [theirs.net(remaining)]
+    thinning = list(remaining)
+    while True:
+        _through, on = theirs.blocks(thinning)
+        worst = None
+        for attacker in judged:
+            identity = attacker["instance_id"]
+            if attacker not in thinning or identity not in on:
+                continue  # unblocked in their best blocks: it deals its damage
+            marginal, taken, mine = theirs.marginal(attacker, thinning)
+            added = marginal - taken
+            costly = added > 0
+            if costly and (line_attack is None or identity in line_attack):
+                continue  # it adds damage, and no line search says to keep it home
+            verdict = _doomed(attacker, thinning, blockers, payoff=payoffs[identity] or 0, **common)
+            if verdict is None or verdict.kind != "fed":
+                continue
+            if {card.get("instance_id") for card in mine} == {
+                card.get("instance_id") for card in verdict.group
+            }:
+                verdict.shield, verdict.gained = marginal, taken  # the blocks they make
+            rank = (added, -verdict.deficit)
+            if worst is None or rank < worst[0]:
+                worst = (rank, attacker, verdict, costly)
+        if worst is None:
+            break
+        _rank, attacker, verdict, costly = worst
+        reason = _losing_reason(
+            attacker,
+            verdict,
+            battlefield,
+            several=len(thinning) > 1,
+            payoff=payoffs[attacker["instance_id"]] or 0,
+        )
+        removed.append((attacker, reason, costly))
+        thinning = [card for card in thinning if card is not attacker]
+        nets.append(theirs.net(thinning))
+    keep = _thinned_declaration(
+        remaining,
+        removed,
+        nets,
+        blockers,
+        line_attack=line_attack,
+        battlefield=battlefield,
+        strategy_text=strategy_text,
+    )
+    for attacker, reason, _costly in removed[:keep]:
+        losing[attacker["instance_id"]] = reason
+    remaining = [card for card in remaining if card["instance_id"] not in losing]
     if strategy_text and _EVASION_CLAIM_RE.search(strategy_text):
         for attacker in remaining:
             trade = _trade_note(attacker, blockers)
             if trade:
                 logger.info("Losing-attack guard: keeping %s: %s", attacker.get("name") or "attacker", trade)
     return losing
+
+
+def _thinned_declaration(
+    attackers: list[dict],
+    removed: list[tuple[dict, str, bool]],
+    nets: list[int],
+    blockers: list[dict],
+    *,
+    line_attack: frozenset[int] | None,
+    battlefield: list[dict],
+    strategy_text: str,
+) -> int:
+    """How many of the guard's removals (in order) to apply: the thinned attack must beat the declaration (#168).
+
+    ``removed`` holds (attacker, reason, costly) in removal order and
+    ``nets[i]`` the damage the attack less its first ``i`` removals gets
+    through their best blocks, net of their lifelink. Never chosen:
+      - a count that holds more identical copies (same name and
+        power/toughness) than their blockers can answer at once, unless every
+        copy in the declaration is held: the copies past that number get
+        through whatever they block (match 639c5fe1 T11: 7 Rabbits held
+        against 4 blockers);
+      - a count with a "costly" hold (one that adds damage, less than its
+        own) unless what still attacks is no more than the line search's
+        best line sends: that line is what says the damage is not worth the
+        creature (#127's face attack into Hortimancer: hold both, as the
+        search does), never a half-thinned attack (T13: Leonardo alone).
+    The count with the most net damage wins; on a tie, the one that holds
+    more (holding loses no creature). A count whose costly holds the line
+    search backs wins outright: the damage it gives up is the line's choice.
+    """
+    declared = Counter(_copy_key(card) for card in attackers)
+    caps: dict[tuple, int] = {}
+    held: Counter = Counter()
+    left = {card["instance_id"] for card in attackers}
+    admissible, backed = [0], []
+    any_costly = False
+    for count, (attacker, _reason, costly) in enumerate(removed, start=1):
+        key = _copy_key(attacker)
+        held[key] += 1
+        left.discard(attacker["instance_id"])
+        any_costly = any_costly or costly
+        if key not in caps:
+            caps[key] = _copies_answered(
+                attacker, blockers, battlefield=battlefield, strategy_text=strategy_text
+            )
+        if not all(held[k] <= caps[k] or held[k] == declared[k] for k in held):
+            continue
+        if not any_costly:
+            admissible.append(count)
+        elif line_attack is not None and left <= line_attack:
+            backed.append(count)
+    if backed:
+        best = max(backed)
+        logger.info(
+            "Losing-attack guard: holding %s as the line search's best line does: %d through their best "
+            "blocks net of lifelink with them, %d without",
+            ", ".join(
+                str(attacker.get("name") or attacker["instance_id"]) for attacker, *_ in removed[:best]
+            ),
+            nets[0],
+            nets[best],
+        )
+        return best
+    best = max(admissible, key=lambda count: (nets[count], count))
+    if best < len(removed):
+        logger.info(
+            "Losing-attack guard: keeping %s: with them the attack gets %d through their best blocks net of "
+            "lifelink, holding them %d",
+            ", ".join(
+                str(attacker.get("name") or attacker["instance_id"]) for attacker, *_ in removed[best:]
+            ),
+            nets[best],
+            nets[len(removed)],
+        )
+    return best
 
 
 def _losing_reason(
@@ -1663,19 +1932,133 @@ def _local_player(state: dict) -> dict | None:
     return next((player for player in state.get("players") or [] if player.get("is_local")), None)
 
 
+def _next_attack_damage(threats: list[dict], blockers: list[dict], factors: dict | None = None) -> int:
+    """Their next attack's damage through our ``blockers``, each chumping one of their biggest attackers (#171).
+
+    2026-10-19 match 2b77f14d T9: the chump guard compared our life with their
+    whole board's power (47 against our 19), so every chump looked worthless
+    and all four were dropped (19 -> 6; the next attack was lethal). A blocker
+    absorbs an attacker it can block (flying/reach, two for menace; a
+    trampler's excess over the blockers' toughness still gets through), their
+    biggest attackers first and our least flexible blocker first. No first
+    strike, deathtouch or pump: a forecast. ``factors``: controller seat ->
+    damage multiplier (``_damage_factors``).
+    """
+    factors = factors or {}
+
+    def hits(card: dict) -> int:
+        return max(0, int(card["power"])) * factors.get(_controller(card), 1)
+
+    reach = {id(blocker): sum(1 for threat in threats if _can_block(threat, blocker)) for blocker in blockers}
+    free = sorted(blockers, key=lambda blocker: reach[id(blocker)])
+    total = 0
+    for threat in sorted(threats, key=hits, reverse=True):
+        need = 2 if _has(threat, "menace") else 1
+        able = [blocker for blocker in free if _can_block(threat, blocker)][:need]
+        if len(able) < need:
+            total += hits(threat)
+            continue
+        used = {id(blocker) for blocker in able}
+        free = [blocker for blocker in free if id(blocker) not in used]
+        if _has(threat, "trample"):
+            excess = max(0, int(threat["power"]) - sum(max(0, int(blocker["toughness"])) for blocker in able))
+            total += excess * factors.get(_controller(threat), 1)
+    return total
+
+
+def _after_combat(
+    attackers: list[dict], plan: dict[int, int], cards: dict, ours: list[dict], threats: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """(our creatures, their attackers) left for their next attack after this combat under ``plan`` (#171)."""
+    died: set = set()
+    killed: set = set()
+    for attacker in attackers:
+        identity = attacker.get("instance_id")
+        group = [
+            cards[blocker] for blocker, target in plan.items() if target == identity and blocker in cards
+        ]
+        if not group:
+            continue
+        outcome = _resolve_attacker(attacker, group)
+        died |= {card.get("instance_id") for card in outcome.blockers_died}
+        if outcome.attacker_died:
+            killed.add(identity)
+    return (
+        [card for card in ours if card.get("instance_id") not in died],
+        [card for card in threats if card.get("instance_id") not in killed],
+    )
+
+
+def _chump_for_next_attack(
+    life_with: int,
+    life_without: int,
+    next_with: int,
+    next_without: int,
+    *,
+    wider: bool,
+    line_survives=None,
+) -> bool:
+    """Whether a chump stays for their next attack (#171).
+
+    ``next_with`` / ``next_without``: that attack's damage through our blockers
+    left with the chump (its blocker dead) and without it (``_next_attack_damage``).
+    It stays when it is what keeps us out of lethal range then. When we are dead
+    then either way, it stays if they have more creatures than we do (``wider``:
+    each body we keep absorbs only one of many attackers, the life it saves now
+    is the scarcer resource), else as the line search says: its best line
+    living through that attack (``line_survives()``, None without a search)
+    counts on the life.
+    """
+    dead_with, dead_without = life_with <= next_with, life_without <= next_without
+    if not dead_without:
+        return False
+    if not dead_with:
+        return True
+    return wider or bool(line_survives is not None and line_survives())
+
+
+def _line_search_survives_their_next_attack(state: dict) -> bool | None:
+    """Whether the line search's best line lives through their next attack (#171); None without a search."""
+    try:
+        from arenamcp import line_guard
+        from arenamcp.board_assessment import assess
+
+        result = getattr(assess(state), "line_search", None)
+        if not line_guard._usable(result):
+            return None
+        best = result.best
+        if best.cls != line_guard.DEAD or best.dead_turn is None:
+            return True
+        turn = state.get("turn") or {}
+        number = turn.get("turn_number")
+        local = _local_player(state)
+        if not _is_int(number) or local is None:
+            return None
+        ours_now = turn.get("active_player") == local.get("seat_id")
+        return best.dead_turn > number + (1 if ours_now else 2)
+    except Exception:  # the strategic layer never decides a guard on its own failure
+        logger.debug("line search death turn unavailable", exc_info=True)
+        return None
+
+
 def _refused_chumps(
-    plan, attackers: list[dict], defenders: dict[int, dict], life: int, clock: int
+    plan, attackers: list[dict], defenders: dict[int, dict], life: int
 ) -> list[tuple[list[int], int]]:
     """The chumps in ``plan`` that ``wasteful_chump_blocks`` would drop, as (blocker ids, attacker id).
 
     Mirrors the guard without the board context a crackback forecast lacks
-    (planeswalkers, tricks in hand). Each is judged against the whole plan.
+    (planeswalkers, tricks in hand, the rest of their board, a line search):
+    their next attack is these attackers again. Each is judged against the
+    whole plan.
     """
     groups: dict[int, list[int]] = {}
     for blocker, attacker in plan.assignments.items():
         groups.setdefault(attacker, []).append(blocker)
     refused = []
     life_with = life - plan.damage_through
+    ours = list(defenders.values())
+    threats = [card for card in attackers if can_attack_next_turn(card)]
+    wider = len(attackers) > len(ours)
     for attacker in attackers:
         identity = int(attacker.get("instance_id") or 0)
         blockers = groups.get(identity, [])
@@ -1691,7 +2074,18 @@ def _refused_chumps(
         if outcome.damage_through == 0 and _ATTACKER_HIT_PAYOFF.search(_rules_text(attacker)):
             continue
         life_without = life_with - (_resolve_attacker(attacker, []).damage_through - outcome.damage_through)
-        if life_without <= CHUMP_DANGER_LIFE or life_without <= clock < life_with:
+        if life_without <= CHUMP_DANGER_LIFE:
+            continue
+        without = {b: a for b, a in plan.assignments.items() if b not in blockers}
+        left_with, coming_with = _after_combat(attackers, plan.assignments, defenders, ours, threats)
+        left_without, coming_without = _after_combat(attackers, without, defenders, ours, threats)
+        if _chump_for_next_attack(
+            life_with,
+            life_without,
+            _next_attack_damage(coming_with, left_with),
+            _next_attack_damage(coming_without, left_without),
+            wider=wider,
+        ):
             continue
         refused.append((blockers, identity))
     return refused
@@ -1731,8 +2125,7 @@ def _guarded_block_plan(attackers: list[dict], defenders: list[dict], life: int,
         or not all(_known_body(card) for card in [*attackers, *defenders])
     ):
         return plan
-    clock = sum(max(0, int(card["power"])) for card in attackers)
-    refused = _refused_chumps(plan, attackers, by_id, life, clock)
+    refused = _refused_chumps(plan, attackers, by_id, life)
     if not refused:
         return plan
     forbidden: dict[int, set[int]] = {}
@@ -2101,8 +2494,14 @@ def wasteful_chump_blocks(
     illegal; Arena rejects the declaration). A chump is dropped only when
     everything below holds:
       - without it we are still above CHUMP_DANGER_LIFE after this combat
-        (not lethal or near-lethal) and still out of reach of the opponent's
-        surviving creatures next turn if the block kept us out of reach;
+        (not lethal or near-lethal), and it is not what keeps us out of
+        lethal range of their next attack: every creature of theirs that can
+        attack then and survives this combat, into the creatures this combat
+        leaves us, each absorbing one of their biggest attackers
+        (``_next_attack_damage``; #171, match 2b77f14d T9: their raw board
+        power, 47 against our 19, dropped all four chumps). Dead then either
+        way, it stays when they have more creatures than we do, or when the
+        line search's best line lives through that attack;
       - the blocker has no death/block payoff or self-pump ability;
       - the attacker has no damage-to-player payoff (or infect/toxic) that the
         block fully stops;
@@ -2129,17 +2528,41 @@ def wasteful_chump_blocks(
     groups: dict[int, list[int]] = {}
     for blocker, attacker in assignments.items():
         groups.setdefault(attacker, []).append(blocker)
-    # Every opposing creature (combat deaths ignored): roughly next turn's attack.
-    threats = [
+    # Their next attack (#171): every opposing creature that can attack then, less those this
+    # combat kills, into our creatures this combat leaves (_next_attack_damage).
+    theirs = [
         card
         for card in cards.values()
         if _controller(card) not in (None, local_seat)
         and "creature" in _types(card)
         and _is_int(card.get("power"))
     ]
+    threats = [card for card in theirs if can_attack_next_turn(card)]
+    ours = [
+        card
+        for card in cards.values()
+        if _controller(card) == local_seat
+        and "creature" in _types(card)
+        and _known_body(card)
+        and not _CANT_BLOCK.search(_rules_text(card))
+        and not leaves_at_our_end_step(card)
+    ]
+    wider = len(theirs) > sum(
+        1 for card in cards.values() if _controller(card) == local_seat and "creature" in _types(card)
+    )
     factors = _damage_factors(state, attackers + threats, local_seat)
     through = _damage_through(attackers, assignments, cards, factors)
-    clock = sum(max(0, card["power"]) * factors.get(_controller(card), 1) for card in threats)
+    line_survives: list = []  # the line search's verdict, asked once and only when needed
+
+    def survives() -> bool | None:
+        if not line_survives:
+            line_survives.append(_line_search_survives_their_next_attack(state))
+        return line_survives[0]
+
+    def next_attack(plan: dict[int, int]) -> int:
+        left, coming = _after_combat(attackers, plan, cards, ours, threats)
+        return _next_attack_damage(coming, left, factors)
+
     # Candidates first, judged one at a time against the full plan; then dropped
     # cumulatively (smallest saving first) against what is still kept. 2026-10-19
     # 13:48 (match bd34f972 T9, ledger #149): two chumps were each "not needed"
@@ -2172,8 +2595,15 @@ def wasteful_chump_blocks(
         life_without, life_with = life - through_without, life - kept_through
         if life_without <= CHUMP_DANGER_LIFE:
             continue  # lethal or near-lethal (with the other drops): the chump buys survival
-        if life_without <= clock < life_with:
-            continue  # the block keeps us out of lethal range next turn
+        if _chump_for_next_attack(
+            life_with,
+            life_without,
+            next_attack(kept),
+            next_attack(without),
+            wider=wider,
+            line_survives=survives,
+        ):
+            continue  # it keeps us out of lethal range next turn, or we are dead then either way
         saved = through_without - kept_through
         kept, kept_through = without, through_without
         who = " and ".join(
