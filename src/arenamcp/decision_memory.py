@@ -299,6 +299,8 @@ class DecisionMemory:
         label = labels.get(option_id)
         if not label:
             return None
+        if _their_end_step_instant(state, decision, option_id):
+            return None
         signature = board_signature(state)
         for record in reversed(self.this_turn(state)):
             if record.request_type != "ActionsAvailable" or record.chosen != ["pass"]:
@@ -350,6 +352,35 @@ class DecisionMemory:
     def recent_actions_text(self, limit: int = REFORM_ACTIONS) -> str:
         """The latest decisions, one per line, for the game-plan reform prompt."""
         return "\n".join(f"  - {record.line()}" for record in self._records[-limit:])
+
+
+def _their_end_step_instant(state: dict, decision: Any, option_id: str) -> bool:
+    """An instant-speed cast at the opponent's end step (or cleanup): never a reversal of an earlier pass.
+
+    Ledger #153 (2026-10-19 14:02:30, f5bc17dc T4): Burst Lightning at their
+    end step "reversed" a pass from their main phase on the same board; the
+    re-ask passed on a false premise ("saving the single red mana for my own
+    curve-out next turn") and the held Burst and Shock were stranded. This is
+    the last window for that mana, which untaps at our next turn either way.
+    """
+    local = _local_seat(state)
+    active = (state.get("turn") or {}).get("active_player")
+    if local is None or active is None or active == local:
+        return False
+    if turn_window(state) not in (_TURN_STEPS.index("end"), _TURN_STEPS.index("cleanup")):
+        return False
+    option = next((o for o in getattr(decision, "options", ()) or () if o.option_id == option_id), None)
+    if option is None or (getattr(option, "meta", None) or {}).get("actionType") != "ActionType_Cast":
+        return False
+    card = _source_card(option, state)
+    if not card:
+        return False
+    from arenamcp.mulligan_policy import hand_card
+
+    try:
+        return bool(hand_card(card).instant_speed)
+    except Exception:
+        return False
 
 
 def _source_card(option: Any, state: dict) -> dict:
@@ -586,7 +617,8 @@ def burn_kills_nothing(
     them against a 4/4 Bristly Bill or a 4-toughness Dawnwing Marshal the burn
     could not kill. Burning face is the race the board math and the game plan
     already count, not removal. Destroy, exile and -N/-N effects, X damage,
-    an opposing planeswalker, a creature the damage kills (marked damage
+    an opposing planeswalker the damage kills (its loyalty, or unknown
+    loyalty), a creature the damage kills (marked damage
     counted) or one in combat keep the decision critical. The kicked amount
     counts unless ``castable`` (the card about to be cast) shows the mana
     for the kicker cannot be there this turn; a spell already on the stack
@@ -602,10 +634,15 @@ def burn_kills_nothing(
     if burn is None:
         return False
     mana = mana_available(state)
+    from arenamcp.combat_strategy import loyalty
+
     for card in _theirs(state):
         types = _types(card)
-        if burn.walkers and "planeswalker" in types and _reachable(burn, card, state, mana):
-            return False
+        if burn.walkers and "planeswalker" in types:
+            # Ledger #139 (d9a33232 T4): Shock's 2 at a 3-loyalty Jace killed nothing.
+            left = loyalty(card)
+            if any(left is None or damage >= left for damage in _reachable(burn, card, state, mana)):
+                return False
         if burn.creatures and "creature" in types:
             if any(_damage_may_kill(card, damage) for damage in _reachable(burn, card, state, mana)):
                 return False
