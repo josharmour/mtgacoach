@@ -1091,6 +1091,20 @@ class AttackPlan:
     walker_crackback_cost: float = 0.0  # crackback that finishes one of our planeswalkers
 
 
+# Attack searches with more candidates than this are "big" for the callers that only show the
+# solver's pick (the sidebar's tactical line, the coach's main-phase prompt): they get
+# ``QUICK_DEADLINE_S`` instead of the declaration's full 2 s (ledger #162/#182, 2026-10-19
+# 15:50:04-15:50:24: 13-17 attackers against 31 creatures, every main-phase state change of
+# ours spent the full 2.0 s on the coaching thread, five times in 20 s).
+BIG_ATTACK_SEARCH = 12
+QUICK_DEADLINE_S = 0.25
+
+
+def display_deadline(attackers: int) -> float:
+    """The attack-search deadline for a caller that only displays the pick: short on big boards."""
+    return QUICK_DEADLINE_S if attackers > BIG_ATTACK_SEARCH else 2.0
+
+
 def optimal_attacks(
     candidate_attackers: list[dict],
     opponent_blockers: list[dict],
@@ -1103,8 +1117,11 @@ def optimal_attacks(
     *,
     our_walker_loyalties: tuple[int, ...] = (),
     creature_died_this_turn: bool | None = None,
+    caller: str = "",
 ) -> AttackPlan | None:
-    """Best attack (memoized; see `_search_attacks`)."""
+    """Best attack (memoized; see `_search_attacks`). ``caller`` names the asker in the deadline
+    log; a deadline under a second is the caller's own cap (``display_deadline``) and logs at
+    DEBUG."""
     key = (
         "attacks",
         _cards_key(candidate_attackers),
@@ -1114,6 +1131,8 @@ def optimal_attacks(
         _cards_key(opponent_attackers_next_turn),
         _cards_key(your_remaining_blockers),
         budget,
+        # A search cut by a short deadline must not answer a caller that allows the full one.
+        deadline_s,
         tuple(our_walker_loyalties),
         creature_died_this_turn,
     )
@@ -1122,6 +1141,8 @@ def optimal_attacks(
         extra["our_walker_loyalties"] = tuple(our_walker_loyalties)
     if creature_died_this_turn is not None:
         extra["creature_died_this_turn"] = creature_died_this_turn
+    if caller:
+        extra["caller"] = caller
     return _memoized(
         key,
         lambda: _search_attacks(
@@ -1150,6 +1171,7 @@ def _search_attacks(
     *,
     our_walker_loyalties: tuple[int, ...] = (),
     creature_died_this_turn: bool | None = None,
+    caller: str = "",
 ) -> AttackPlan | None:
     """Pick the attacker subset that maximizes damage while surviving crackback.
 
@@ -1160,6 +1182,13 @@ def _search_attacks(
     the opponent's next turn. Opponent will attack with what they have
     (including the candidates still on their board plus next-turn
     attackers we model), and we block optimally with what's left.
+
+    Past ``deadline_s`` the search stops (the crackback reserve's own
+    computation included). A big board's seeds (all-in, all-in less the
+    reserve) are scored first; when the deadline stops the search with "attack
+    with nobody" ahead of them only by the no-attack tie-break, the best seed is
+    returned instead (2026-10-19 15:50:04: "best so far: attack with nobody",
+    tied with the all-in at -1000 and 0 through, with the opponent at 5).
     """
     if not candidate_attackers:
         return None
@@ -1187,18 +1216,27 @@ def _search_attacks(
         # weakest bodies their crackback needs us to keep home, are scored before anything else.
         seeds = [tuple(range(n))]
         reserve = _crackback_reserve(
-            candidate_attackers, your_remaining_blockers, opponent_attackers_next_turn, your_life
+            candidate_attackers,
+            your_remaining_blockers,
+            opponent_attackers_next_turn,
+            your_life,
+            deadline=started + deadline_s,
         )
         if reserve is not None:
             seeds.append(reserve)
+    seed_masks = {sum(1 << i for i in seed) for seed in seeds}
+    seeded: list[tuple[AttackPlan, int]] = []
     for subset in _attack_order(candidate_attackers, seeds):
         if seeds and best is not None and best.score >= 10_000.0:
             break  # a big board's all-in (the first seed) is lethal through their best blocks
         # Wall-clock backstop for slow machines: the budget alone keeps a
         # normal board well under a second.
         if best is not None and time.monotonic() - started > deadline_s:
-            logger.warning(
-                "attack search hit its %.1fs deadline with %d attackers; best so far: %s",
+            best, best_mask = _deadline_pick(best, best_mask, seeded)
+            logger.log(
+                logging.WARNING if deadline_s >= 1.0 else logging.DEBUG,
+                "attack search%s hit its %gs deadline with %d attackers; best so far: %s",
+                f" ({caller})" if caller else "",
                 deadline_s,
                 n,
                 best.explanation,
@@ -1229,6 +1267,8 @@ def _search_attacks(
         # (-1000), the one dealing the most damage now is the better loss (board_assessment's
         # ALL-IN: holding blockers back changes nothing).
         mask = sum(1 << i for i in subset)
+        if mask in seed_masks:
+            seeded.append((plan, mask))
         if best is None or _attack_rank(plan, mask) > _attack_rank(best, best_mask):
             best = plan
             best_mask = mask
@@ -1241,11 +1281,32 @@ def _attack_rank(plan: AttackPlan, mask: int) -> tuple:
     return (plan.score, plan.damage_through if doomed else 0, -mask)
 
 
+def _deadline_pick(
+    best: AttackPlan, best_mask: int, seeded: list[tuple[AttackPlan, int]]
+) -> tuple[AttackPlan, int]:
+    """At the deadline: "attack with nobody" ahead of the scored seeds only by the no-attack
+    tie-break (same score, same damage when doomed) gives way to the best seed. A finished search
+    keeps the tie-break (``test_big_board_combat_20261019``: nobody, not a timeout)."""
+    if best_mask != 0 or not seeded:
+        return best, best_mask
+    plan, mask = max(seeded, key=lambda item: _attack_rank(*item))
+    if _attack_rank(plan, mask)[:2] >= _attack_rank(best, best_mask)[:2]:
+        return plan, mask
+    return best, best_mask
+
+
 def _crackback_reserve(
-    candidates: list[dict], remaining: list[dict], crackers: list[dict], your_life: int
+    candidates: list[dict],
+    remaining: list[dict],
+    crackers: list[dict],
+    your_life: int,
+    *,
+    deadline: float | None = None,
 ) -> tuple[int, ...] | None:
     """Everyone attacks but the fewest weakest bodies (least power, then most toughness) whose
-    staying home keeps their crackback below our life; None when even keeping all home dies."""
+    staying home keeps their crackback below our life; None when even keeping all home dies, or
+    when the search's ``deadline`` (a ``time.monotonic`` instant) passes first (15:50:04: 0.55 s
+    of crackback block searches, 31 of their creatures against our 13)."""
     from arenamcp.combat_strategy import guarded_block_plan
 
     def crackback(home: list[dict]) -> int:
@@ -1254,11 +1315,16 @@ def _crackback_reserve(
 
     order = sorted(range(len(candidates)), key=lambda i: (_pt(candidates[i])[0], -_pt(candidates[i])[1], i))
     home: list[int] = []
+    step = 0.0  # the last crackback search's time: the next one is about as long
     for i in [None, *order]:
+        now = time.monotonic()
+        if deadline is not None and now + step > deadline:
+            return None
         if i is not None:
             home.append(i)
         if crackback([candidates[j] for j in home] + list(remaining)) < your_life:
             return tuple(j for j in range(len(candidates)) if j not in home)
+        step = time.monotonic() - now
     return None
 
 
