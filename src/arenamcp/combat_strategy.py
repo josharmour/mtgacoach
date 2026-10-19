@@ -2143,7 +2143,12 @@ def wasteful_chump_blocks(
     ]
     factors = _damage_factors(state, attackers + threats, local_seat)
     through = _damage_through(attackers, assignments, cards, factors)
-    wasteful: dict[int, str] = {}
+    clock = sum(max(0, card["power"]) * factors.get(_controller(card), 1) for card in threats)
+    # Candidates first, judged one at a time against the full plan; then dropped
+    # cumulatively (smallest saving first) against what is still kept. 2026-10-19
+    # 13:48 (match bd34f972 T9, ledger #149): two chumps were each "not needed"
+    # (stay at 8 / stay at 6) and together exactly lethal at 14; both were dropped.
+    candidates: list[tuple[int, int, list[int], dict, list[dict]]] = []
     for attacker_id, blockers in groups.items():
         attacker = cards.get(attacker_id)
         bodies = [cards.get(blocker) for blocker in blockers]
@@ -2159,15 +2164,22 @@ def wasteful_chump_blocks(
             continue
         if _may_guard_planeswalker(attacker, outcome.damage_through, cards, local_seat):
             continue
-        without = {b: a for b, a in assignments.items() if b not in blockers}
+        alone = {b: a for b, a in assignments.items() if b not in blockers}
+        saved_alone = _damage_through(attackers, alone, cards, factors) - through
+        candidates.append((saved_alone, attacker_id, blockers, attacker, bodies))
+    wasteful: dict[int, str] = {}
+    kept = dict(assignments)
+    kept_through = through
+    for _saved_alone, _attacker_id, blockers, attacker, bodies in sorted(candidates, key=lambda c: (c[0], c[1])):
+        without = {b: a for b, a in kept.items() if b not in blockers}
         through_without = _damage_through(attackers, without, cards, factors)
-        life_without, life_with = life - through_without, life - through
+        life_without, life_with = life - through_without, life - kept_through
         if life_without <= CHUMP_DANGER_LIFE:
-            continue  # lethal or near-lethal: the chump buys survival
-        clock = sum(max(0, card["power"]) * factors.get(_controller(card), 1) for card in threats)
+            continue  # lethal or near-lethal (with the other drops): the chump buys survival
         if life_without <= clock < life_with:
             continue  # the block keeps us out of lethal range next turn
-        saved = through_without - through
+        saved = through_without - kept_through
+        kept, kept_through = without, through_without
         who = " and ".join(
             f"{body.get('name') or 'blocker'} {body['power']}/{body['toughness']}" for body in bodies
         )
