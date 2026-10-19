@@ -1121,8 +1121,6 @@ class PipeCoach:
         self.armed = armed
         self._autopilot = None
         self._autopilot_enabled = False
-        self.conversation = None
-        self.voice_session = None
         self._voice_output = None
 
     def cancel_concede(self, source: str = "ui") -> bool:
@@ -1176,14 +1174,6 @@ def test_set_auto_concede_reaches_the_engine():
     adapter._dispatch({"cmd": "set_auto_concede", "enabled": False})
     adapter._dispatch({"cmd": "set_auto_concede", "enabled": True})
     assert coach.auto_concede == [False, True]
-
-
-def test_chat_cancel_only_intercepts_while_a_countdown_runs():
-    coach = PipeCoach(armed=True)
-    adapter, _ = pipe(coach)
-    assert adapter._try_concede_cancel_reply("Cancel!") and coach.cancels == ["chat"]
-    assert not adapter._try_concede_cancel_reply("cancel")  # nothing running any more
-    assert not PipeAdapter._try_concede_cancel_reply(pipe(PipeCoach(armed=True))[0], "what now?")
 
 
 def test_autopilot_cancel_falls_back_to_escape():

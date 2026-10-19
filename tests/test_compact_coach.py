@@ -487,7 +487,7 @@ def test_compact_coach_feed_is_chronological(panel):
     plain_text = panel.log_view.toPlainText().strip()
     lines = [line.strip() for line in plain_text.splitlines() if line.strip()]
 
-    # Same direction as the conversation transcript: newest at the bottom.
+    # Chronological: newest at the bottom.
     assert lines[0].endswith("First advice: Cast Lightning Bolt")
     assert lines[1].endswith("Second advice: Attack with Grizzly Bears")
     assert lines[2].endswith("Third advice: Pass the turn")
@@ -545,18 +545,24 @@ class _FakeSettings:
         self.data[key] = value
 
 
-def test_auto_queue_button_reaches_engine_with_boolean_payload(panel, monkeypatch):
+def test_auto_queue_is_opt_in_and_each_click_reaches_the_engine(panel, monkeypatch):
     import json
     from types import SimpleNamespace
 
+    from arenamcp import settings
     from arenamcp.pipe_adapter import PipeAdapter
 
-    panel._settings = _FakeSettings(auto_queue_enabled=False)
-    panel._auto_queue_enabled = False
+    assert panel.auto_queue_btn.text() == "Auto-queue: Off"
+    assert panel.auto_queue_status_label.isHidden()
     payloads, received = [], []
     monkeypatch.setattr(panel.session._process, "send_payload", payloads.append)
+
     panel.auto_queue_btn.click()
+    assert panel.auto_queue_btn.text() == "Auto-queue: On"
+    assert not panel.auto_queue_status_label.isHidden()
+    assert settings.get_settings().get("auto_queue_enabled") is True
     panel.auto_queue_btn.click()
+    assert settings.get_settings().get("auto_queue_enabled") is False
     assert payloads == [
         {"cmd": "set_auto_queue", "enabled": True},
         {"cmd": "set_auto_queue", "enabled": False},
@@ -566,7 +572,52 @@ def test_auto_queue_button_reaches_engine_with_boolean_payload(panel, monkeypatc
     for payload in payloads:
         adapter._dispatch(json.loads(json.dumps(payload)))
     assert received == [True, False]
-    assert panel._settings.data["auto_queue_enabled"] is False
+
+
+def test_saved_auto_queue_choice_is_shown_but_not_sent_at_startup(qapp, monkeypatch):
+    from arenamcp import settings
+    from arenamcp.desktop.coach_session import CoachSession
+
+    settings.get_settings().set("auto_queue_enabled", True)
+    sent: list[bool] = []
+    monkeypatch.setattr(CoachSession, "set_auto_queue", lambda self, enabled: sent.append(enabled))
+    restored = CompactCoachPanel()
+    try:
+        assert restored.auto_queue_btn.text() == "Auto-queue: On"
+        restored.session.started.emit()
+        assert sent == []
+    finally:
+        restored.close()
+
+
+def test_auto_queue_status_detail_never_toggles_queueing_or_autoplay(panel, monkeypatch):
+    sent: list = []
+    monkeypatch.setattr(panel.session._process, "send_payload", sent.append)
+    monkeypatch.setattr(panel.session._process, "send_command", lambda *a: sent.append(a))
+
+    panel.session.statusChanged.emit("AUTO_QUEUE", "ON")
+    panel.session.statusChanged.emit("AUTO_QUEUE_DETAIL", "Paused: turn on Autoplay to continue.")
+    assert panel.auto_queue_btn.text() == "Auto-queue: On"
+    assert "turn on Autoplay" in panel.auto_queue_status_label.text()
+    assert panel.ap_btn.text() == "Autoplay: Off"
+    panel.session.statusChanged.emit("AUTO_QUEUE_DETAIL", "Continuing the result screen.")
+    assert "result screen" in panel.auto_queue_status_label.text()
+    panel.session.statusChanged.emit("AUTO_QUEUE", "OFF")
+    assert panel.auto_queue_btn.text() == "Auto-queue: Off"
+    assert panel.auto_queue_status_label.isHidden()
+    assert sent == []
+
+
+def test_stop_button_silences_the_desktop_voice_and_tells_the_engine(panel, monkeypatch):
+    stops: list[bool] = []
+    commands: list[str] = []
+    monkeypatch.setattr(panel.session._tts, "stop_speech", lambda: stops.append(True))
+    monkeypatch.setattr(panel.session._process, "send_command", lambda cmd, *a: commands.append(cmd))
+
+    panel.stop_speech_btn.click()
+
+    assert stops == [True]
+    assert commands == ["stop_speech"]
 
 
 def test_source_chip_shows_the_android_phone_and_bridge_state(panel):

@@ -22,8 +22,6 @@ class TtsManager(QObject):
     log_line = Signal(str)
     status_line = Signal(str)
     error_line = Signal(str)
-    speechStarted = Signal()
-    speechStopped = Signal()
     # (speech_id, state) for utterances the engine waits on: "started", then
     # one of "finished" / "stopped" / "superseded" / "failed".
     speechStatus = Signal(str, str)
@@ -122,8 +120,6 @@ class TtsManager(QObject):
         voice_id: str,
         voice_name: str,
         speed: float,
-        priority: str | None = None,
-        identity: dict[str, Any] | None = None,
         speech_id: str | None = None,
     ) -> None:
         if self._closing or not text or not text.strip():
@@ -142,8 +138,6 @@ class TtsManager(QObject):
                 voice_id=voice_id,
                 voice_name=voice_name,
                 speed=float(speed),
-                priority=priority,
-                identity=identity,
             )
             self._track(speech_id)
             return
@@ -166,34 +160,8 @@ class TtsManager(QObject):
                 self._track_fallback(speech_id)
                 return
 
-        # Conversation-mode arbitration (contract: "question" > "urgent" >
-        # "advice" > "proactive"). A proactive request never displaces a
-        # pending question.
-        pending = self._pending_request
-        if pending is not None:
-            pending_priority = str(pending.get("priority") or "")
-            if priority == "proactive" and pending_priority == "question":
-                if speech_id:
-                    self.speechStatus.emit(speech_id, "superseded")
-                return
-            # Mode-change effect: an identity whose session_id differs from
-            # the last one we stored makes the older pending request stale —
-            # bump the generation so its late "rendered" is discarded.
-            pending_identity = pending.get("identity")
-            if identity is not None and pending_identity is not None:
-                try:
-                    last_session_id = int(pending_identity.get("session_id"))
-                    new_session_id = int(identity.get("session_id"))
-                except (TypeError, ValueError):
-                    last_session_id = new_session_id = None
-                if (
-                    new_session_id is not None
-                    and last_session_id is not None
-                    and new_session_id != last_session_id
-                ):
-                    self._generation += 1
-                    self._pending_request = None
-
+        # A newer request replaces any pending one; the generation bump makes
+        # the old request's late "rendered" line a no-op.
         self._resolve_tracked("superseded")
         self._generation += 1
         self._pending_request = {
@@ -203,8 +171,6 @@ class TtsManager(QObject):
             "voice_id": voice_id,
             "voice_name": voice_name,
             "speed": float(speed),
-            "priority": priority,
-            "identity": identity,
         }
         self._stop_playback()
         self._stop_say()
@@ -246,7 +212,6 @@ class TtsManager(QObject):
                 return
             path, self._current_audio_path = self._current_audio_path, None
             self._cleanup_path(path)
-            self.speechStopped.emit()
             self._complete(self._playing_generation, "finished")
         elif self._say_process is not None:
             if self._say_process.poll() is None:
@@ -398,8 +363,6 @@ class TtsManager(QObject):
         voice_id: str,
         voice_name: str,
         speed: float,
-        priority: str | None = None,
-        identity: dict[str, Any] | None = None,
     ) -> None:
         self._generation += 1
         gen = self._generation
@@ -456,9 +419,7 @@ class TtsManager(QObject):
                 logger.warning("Remote TTS request failed: %s", exc)
                 QTimer.singleShot(
                     0,
-                    lambda: self._on_remote_failed(
-                        gen, text, voice_id, voice_name, speed, priority, identity, err_msg
-                    ),
+                    lambda: self._on_remote_failed(gen, text, voice_id, voice_name, speed, err_msg),
                 )
 
         t = threading.Thread(target=_worker, daemon=True, name="remote-tts")
@@ -471,7 +432,6 @@ class TtsManager(QObject):
             self._stop_say()
             if AudioPlayback.play_file(path):
                 self._current_audio_path = Path(path)
-                self.speechStarted.emit()
                 self._playback_started(generation)
                 self.status_line.emit(f"Speech ready ({elapsed:.2f}s remote)")
             else:
@@ -488,8 +448,6 @@ class TtsManager(QObject):
         voice_id: str,
         voice_name: str,
         speed: float,
-        priority: str | None,
-        identity: dict[str, Any] | None,
         err_msg: str,
     ) -> None:
         self._busy = False
@@ -509,8 +467,6 @@ class TtsManager(QObject):
                 "voice_id": voice_id,
                 "voice_name": voice_name,
                 "speed": float(speed),
-                "priority": priority,
-                "identity": identity,
             }
             self._dispatch_pending()
 
@@ -582,7 +538,6 @@ class TtsManager(QObject):
                 self._stop_say()
                 if AudioPlayback.play_file(path):
                     self._current_audio_path = Path(path)
-                    self.speechStarted.emit()
                     self._playback_started(generation)
                 else:
                     self.error_line.emit(f"Kokoro audio playback failed: {path}")
@@ -611,16 +566,14 @@ class TtsManager(QObject):
                 #
                 # Dormant-gating activation contract (Wave 5, comment only):
                 # these fallback paths speak _last_text when its captured
-                # generation still equals _generation. Generation semantics
-                # mirror VoiceSession's arbiter: _generation is bumped by
+                # generation still equals _generation. _generation is bumped by
                 # every accepted speak() request, by stop_speech(), and by
                 # shutdown(), so a stale _last_text (cancelled utterance,
                 # superseded request) can never re-speak after a stop. When
                 # playback is ACTIVE (AudioPlayback still playing the previous
                 # utterance), a newer generation has already been taken — the
                 # generation comparison against that active request is what
-                # suppresses the fallback, exactly as coerce_priority-based
-                # preemption would in the arbiter path.
+                # suppresses the fallback.
                 self._worker_failed = True
                 if (
                     sys.platform == "darwin"
@@ -681,13 +634,10 @@ class TtsManager(QObject):
             self.error_line.emit(self._process.errorString())
 
     def _stop_playback(self) -> None:
-        had_audio = self._current_audio_path is not None
         AudioPlayback.stop()
         if self._current_audio_path is not None:
             self._cleanup_path(self._current_audio_path)
             self._current_audio_path = None
-        if had_audio:
-            self.speechStopped.emit()
 
     @staticmethod
     def _cleanup_path(path: Path) -> None:

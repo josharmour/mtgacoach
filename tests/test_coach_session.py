@@ -47,3 +47,37 @@ def test_coach_session_offline_debug_report(qapp, tmp_path, monkeypatch):
     assert data["reason"] == "Desktop Bug Report (offline)"
     assert data["screenshots"] == screenshots
     session.shutdown()
+
+
+def test_speak_request_reaches_the_desktop_voice(qapp, monkeypatch):
+    session = CoachSession()
+    captured: dict = {}
+    spoken: list[str] = []
+    monkeypatch.setattr(session._tts, "request_speech", lambda **kw: captured.update(kw))
+    session.spokenLine.connect(spoken.append)
+
+    session._handle_process_event(
+        {
+            "type": "speak_request",
+            "text": "Play a land.",
+            "voice_id": "am_adam",
+            "voice_name": "Adam",
+            "speed": 1.2,
+        }
+    )
+
+    assert captured == {"text": "Play a land.", "voice_id": "am_adam", "voice_name": "Adam", "speed": 1.2}
+    assert spoken == ["Play a land."]
+    session.shutdown()
+
+
+def test_engine_speak_stop_halts_desktop_speech(qapp, monkeypatch):
+    session = CoachSession()
+    stops: list[bool] = []
+    monkeypatch.setattr(session._tts, "stop_speech", lambda: stops.append(True))
+
+    session._handle_process_event({"type": "speak_stop"})
+    session._handle_process_event({"type": "speak_stop"})  # idempotent
+
+    assert stops == [True, True]
+    session.shutdown()

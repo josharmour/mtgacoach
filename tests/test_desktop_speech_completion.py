@@ -148,12 +148,30 @@ def test_pipe_adapter_carries_speech_ids_both_ways():
     adapter._coach = SimpleNamespace()
     adapter.emit_speech_request(text="Two decks.", voice_id="v", voice_name="V", speed=1.0, speech_id="x1")
     assert events[-1]["speech_id"] == "x1"
-    adapter.emit_speech_request(text="Advice.", voice_id="v", voice_name="V", speed=1.0)
-    assert "speech_id" not in events[-1]
+    adapter.emit_speech_request(text="[bold]Advice.[/]", voice_id="v", voice_name="V", speed=1.0)
+    assert events[-1] == {
+        "type": "speak_request",
+        "text": "Advice.",
+        "voice_id": "v",
+        "voice_name": "V",
+        "speed": 1.0,
+    }
 
     speech_id = adapter.speech_completion.begin()
     adapter._dispatch({"cmd": "speech_status", "speech_id": speech_id, "state": "finished"})
     assert adapter.speech_completion.wait(speech_id, seconds_to_speak=1, accept_timeout=0.1) == "finished"
+
+
+def test_pipe_stop_speech_stops_the_engine_voice():
+    adapter = PipeAdapter()
+    adapter._emit = lambda event: None  # type: ignore[method-assign]
+    voice = Mock()
+    adapter._coach = SimpleNamespace(_voice_output=voice)
+    adapter._dispatch({"cmd": "stop_speech"})
+    voice.stop.assert_called_once_with()
+
+    adapter._coach = SimpleNamespace()  # voice not initialised yet: nothing to stop
+    adapter._dispatch({"cmd": "stop_speech"})
 
 
 def test_audio_playback_reports_when_a_clip_ends(tmp_path, monkeypatch):

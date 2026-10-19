@@ -133,9 +133,9 @@ def test_paused_or_explicit_advisor_override_does_not_claim_bot_control(monkeypa
     assert response == "Cast Murder."
 
 
-def test_autopilot_conversation_retains_model_written_observation(monkeypatch):
+def test_autopilot_answer_retains_model_written_observation(monkeypatch):
     coach, backend = make_coach(monkeypatch, "The opponent is holding two cards.")
-    response = coach.get_advice({}, conversational=True, narration_mode="autopilot")
+    response = coach.get_advice({}, question="What do they have?", narration_mode="autopilot")
     assert response == "The opponent is holding two cards."
     assert len(backend.calls) == 1
     assert "sportscaster" in backend.calls[0][0]

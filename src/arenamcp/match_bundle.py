@@ -66,8 +66,6 @@ SETTINGS_WHITELIST = (
     "draft_research_online",
     "auto_deck_strategy",
     "auto_post_match_analysis",
-    "conversation_mode",
-    "conversation_verbosity",
     "voice_mode",
     "game_device",
     "language",

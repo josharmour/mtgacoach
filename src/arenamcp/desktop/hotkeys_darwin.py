@@ -1,7 +1,7 @@
 """Native macOS Global Hotkey Listener using PyObjC NSEvent.
 
 Monitors global and local KeyDown events for registered hotkeys on macOS.
-Primary target keys: F3 (VLM Analyze), F6 (PTT), F12 (AP Toggle).
+Primary target keys: F3 (VLM Analyze), F12 (AP Toggle).
 Falls back gracefully if PyObjC (AppKit) is unavailable or if event monitoring fails.
 """
 
@@ -29,7 +29,6 @@ MACOS_KEY_CODES: dict[str, int] = {
 
 HOTKEY_PURPOSES: dict[str, str] = {
     "F3": "VLM Analyze",
-    "F6": "PTT (Push-To-Talk)",
     "F12": "AP Toggle (Autopilot)",
 }
 

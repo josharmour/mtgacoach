@@ -10,7 +10,7 @@ colour, ``QColor(`` or ``font-size`` outside this module.
 
 Colour meaning is fixed across themes:
   * status (``good`` / ``warn`` / ``bad``) answers "is this OK?" only;
-  * identity (``you`` / ``opp`` / ``convo``) says whose turn / which mode;
+  * identity (``you`` / ``opp``) says whose turn it is;
   * ``accent`` marks interactive state (focus, primary action, selection).
 """
 
@@ -68,7 +68,6 @@ class Tokens:
     bad: str
     you: str
     opp: str
-    convo: str
     line: int = 1
     radius: int = 6
     radius_card: int = 10
@@ -78,7 +77,7 @@ class Tokens:
         return mix(getattr(self, tone), self.surface, amount)
 
 
-TONES: Final = ("text", "muted", "accent", "good", "warn", "bad", "you", "opp", "convo")
+TONES: Final = ("text", "muted", "accent", "good", "warn", "bad", "you", "opp")
 
 _PALETTES: Final[dict[str, Tokens]] = {
     THEME_DARK: Tokens(
@@ -97,7 +96,6 @@ _PALETTES: Final[dict[str, Tokens]] = {
         bad="#f85149",
         you="#39c5cf",
         opp="#f0883e",
-        convo="#bc8cff",
     ),
     THEME_LIGHT: Tokens(
         name=THEME_LIGHT,
@@ -115,7 +113,6 @@ _PALETTES: Final[dict[str, Tokens]] = {
         bad="#cf222e",
         you="#1b7c83",
         opp="#bc4c00",
-        convo="#8250df",
     ),
     THEME_HIGH_CONTRAST: Tokens(
         name=THEME_HIGH_CONTRAST,
@@ -133,7 +130,6 @@ _PALETTES: Final[dict[str, Tokens]] = {
         bad="#ff6b6b",
         you="#00e5ff",
         opp="#ff9e3d",
-        convo="#ff7cff",
         line=2,
         radius=0,
         radius_card=0,
@@ -465,7 +461,6 @@ QLabel[chip="true"] {{
     color: {t.muted}; border: {b} {t.border}; border-radius: 9px;
     padding: 1px 8px; font-size: {fs["caption"]}px;
 }}
-QLabel[chip="true"][tone="convo"] {{ color: {t.convo}; border-color: {t.convo}; background: {t.tint("convo", 0.12)}; font-weight: 600; }}
 QLabel#turnStrip {{
     background: {t.surface_2}; color: {t.text};
     border: {b} {t.border}; border-radius: {t.radius_card}px;

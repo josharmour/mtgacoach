@@ -78,7 +78,6 @@ class CoachProcess(QObject):
             env.insert("PYTHONPATH", src_dir)
             env.insert("MTGACOACH_RUNTIME_ROOT", runtime_root)
             env.insert("MTGACOACH_FRONTEND", "pyside")
-            env.insert("ARENAMCP_PROACTIVE_ONLY", "1")
             env.insert("PYTHONUNBUFFERED", "1")
             env.insert("PYTHONIOENCODING", "utf-8")
             # Never inherit a stale reload flag from the desktop environment.
