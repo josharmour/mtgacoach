@@ -2476,11 +2476,11 @@ namespace MtgaCoachBridge
                 cmd.SetResponse(Fail($"Stale concede: the game changed ({wantGame} -> {info.GameNumber})"));
                 return;
             }
-            long wantTurn = cmd.Json.Value<long?>("expected_turn") ?? 0;
-            if (wantTurn > 0 && gs.GameWideTurn != (uint)wantTurn)
+            string turnError = CheckExpectedTurn(cmd, "concede", gm, gs.GameWideTurn, expiresMs);
+            if (turnError != null)
             {
-                cmd.SetResponse(Fail($"Stale concede: the turn changed ({wantTurn} -> {gs.GameWideTurn})"));
-                return;
+                if (turnError.Length > 0) cmd.SetResponse(Fail(turnError));
+                return;  // "": runs again next frame
             }
             var gre = mm.GreInterface;
             if (gre == null) { cmd.SetResponse(Fail("No GreInterface")); return; }
@@ -2497,6 +2497,47 @@ namespace MtgaCoachBridge
                 ["game_number"] = info.GameNumber,
                 ["turn"] = gs.GameWideTurn
             });
+        }
+
+        // Arena's duel scene sets GameManager.CurrentGameState only when it starts
+        // playing a state back (GameStatePlaybackController.StartPlayback), behind its
+        // animations; LatestGameState is the newest state received. So GameWideTurn can
+        // trail Player.log, where the coach's expected turn comes from, by seconds:
+        // 2026-10-19 two auto-concedes were refused as "Stale concede: the turn changed
+        // (15 -> 14)" and "(14 -> 13)" while the log had been on the newer turn for
+        // 3.0 s and 1.5 s. A turn ahead of the expected one is still refused at once
+        // (the game moved past the evidence); one behind it is re-checked every frame
+        // until it catches up, for up to TurnCatchUpMs and never past expires_in_ms.
+        // Mirrors MacBridgeAdapter._await_live_game.
+        private const long TurnCatchUpMs = 3000;
+        private const long TurnSendMarginMs = 500;
+
+        // Null: no expected turn, or Arena is on it. "": still behind, and the command
+        // was queued to run again next frame (no response yet). Otherwise the refusal.
+        private string CheckExpectedTurn(PipeCommand cmd, string what, GameManager gm, uint liveTurn, long expiresMs)
+        {
+            long wantTurn = cmd.Json.Value<long?>("expected_turn") ?? 0;
+            if (wantTurn <= 0)
+                return null;
+            long newest = Math.Max(liveTurn, gm.LatestGameState?.GameWideTurn ?? 0);
+            if (newest > wantTurn)
+                return $"Stale {what}: the turn changed ({wantTurn} -> {newest})";
+            if (liveTurn == wantTurn)
+                return null;
+            long budgetMs = Math.Min(TurnCatchUpMs, expiresMs - TurnSendMarginMs);
+            var host = MtgaCoachHost.Instance;
+            if (host == null || cmd.AgeMs >= budgetMs)
+                return $"Stale {what}: Arena is still on turn {liveTurn}, behind the expected turn {wantTurn} after {cmd.AgeMs} ms";
+            if (cmd.Deferrals++ == 0)
+                _log.LogInfo($"{what}: Arena is still playing back turn {liveTurn} (expected {wantTurn}); waiting up to {budgetMs} ms for it to catch up");
+            host.StartCoroutine(RunAgainNextFrame(cmd));
+            return "";
+        }
+
+        private IEnumerator RunAgainNextFrame(PipeCommand cmd)
+        {
+            yield return null;
+            ExecutePipeCommand(cmd);
         }
 
         // Send Arena's "Oops" emote exactly the way a click on the emote wheel does:
@@ -2556,11 +2597,11 @@ namespace MtgaCoachBridge
                 cmd.SetResponse(Fail($"Stale emote: the game changed ({wantGame} -> {info.GameNumber})"));
                 return;
             }
-            long wantTurn = cmd.Json.Value<long?>("expected_turn") ?? 0;
-            if (wantTurn > 0 && gs.GameWideTurn != (uint)wantTurn)
+            string turnError = CheckExpectedTurn(cmd, "emote", gm, gs.GameWideTurn, expiresMs);
+            if (turnError != null)
             {
-                cmd.SetResponse(Fail($"Stale emote: the turn changed ({wantTurn} -> {gs.GameWideTurn})"));
-                return;
+                if (turnError.Length > 0) cmd.SetResponse(Fail(turnError));
+                return;  // "": runs again next frame
             }
             if (gm.NpeDirector != null) { cmd.SetResponse(Fail("No emotes in the tutorial")); return; }
             var gre = mm.GreInterface;

@@ -278,6 +278,9 @@ namespace MtgaCoachBridge
         // waited for Unity's main thread when its handler finally runs.
         private readonly System.Diagnostics.Stopwatch _age = System.Diagnostics.Stopwatch.StartNew();
         public long AgeMs => _age.ElapsedMilliseconds;
+        // Times the handler put this command back on the main thread for a later
+        // frame (main thread only; see Plugin.CheckExpectedTurn).
+        public int Deferrals { get; set; }
 
         public PipeCommand(JObject json)
         {

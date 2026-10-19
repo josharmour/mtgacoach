@@ -66,3 +66,25 @@ class World:
 class Obj:
     def __init__(self, handle: int) -> None:
         self.handle = handle
+
+
+class FakeTime:
+    """Instant adapter waits: sleep() advances clock() and then runs ``on_sleep(now)``."""
+
+    def __init__(self, on_sleep: Any = None) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+        self.on_sleep = on_sleep
+
+    def clock(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+        if self.on_sleep is not None:
+            self.on_sleep(self.now)
+
+    def kwargs(self) -> dict[str, Any]:
+        """MacBridgeAdapter(send, **fake.kwargs())."""
+        return {"sleep": self.sleep, "clock": self.clock}

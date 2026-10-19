@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from tests.bug_180436_states import DARKNESS, ISLAND, TAPPED, bug_state
 from tests.concede_fakes import Harness
-from tests.mac_world import Obj, World
+from tests.mac_world import FakeTime, Obj, World
 
 from arenamcp.concede import estimate_loss, normalize_phases
 from arenamcp.gre_bridge import GREBridge, GREBridgeError
@@ -1033,12 +1033,12 @@ def test_concede_countdown_event_shape():
 
 
 def concede_world(
-    match_state="GameInProgress", scene="DuelScene", stage="Play", manager=True
+    match_state="GameInProgress", scene="DuelScene", stage="Play", manager=True, turn=22
 ) -> tuple[World, int]:
     world = World()
     gre = world.add(40, "GreInterface", _disposed=False)
     info = world.add(50, "GameInfo", MatchID="fra-3da54de9", GameNumber=1)
-    game = world.add(60, "MtgGameState", Stage=stage, GameWideTurn=22, GameInfo=Obj(info))
+    game = world.add(60, "MtgGameState", Stage=stage, GameWideTurn=turn, GameInfo=Obj(info))
     scenes = world.add(70, "MatchSceneManager", Current=scene)
     match = world.add(20, "MatchManager", MatchState=match_state, GreInterface=Obj(gre))
     if manager:
@@ -1068,16 +1068,135 @@ def test_mac_concede_calls_the_clients_own_concede_game():
         ({"scene": "MatchEnd"}, {}),
         ({"stage": "GameOver"}, {}),
         ({"manager": False}, {}),
-        ({}, {"expected_turn": 23}),
+        ({}, {"expected_turn": 23}),  # Arena never catches up to it
+        ({}, {"expected_turn": 21}),  # the game moved past it
         ({}, {"expected_match_id": "another-match"}),
+        ({}, {"expected_game_number": 2}),
         ({}, {"scope": "match"}),
     ],
 )
 def test_mac_concede_refuses_anything_but_this_game_in_play(world_args, command):
     world, _ = concede_world(**world_args)
-    result = MacBridgeAdapter(world.send).handle({"action": "concede", **command})
+    result = MacBridgeAdapter(world.send, **FakeTime().kwargs()).handle({"action": "concede", **command})
     assert not result["ok"]
     assert not any(method.startswith("Concede") for _h, method, _a in world.calls)
+
+
+# 2026-10-19 (match c36db3a3, 07:52:13): Player.log had been on turn 15 for 3 s,
+# but Arena's duel scene was still playing turn 14 back, and the exact-equality
+# turn guard refused: "Stale concede: the turn changed (15 -> 14)". Same at
+# 09:06:03 (match 41753907, "14 -> 13").
+FIELD_CONCEDE = {
+    "action": "concede",
+    "scope": "game",
+    "expires_in_ms": 4000,
+    "expected_match_id": "fra-3da54de9",
+    "expected_turn": 15,
+}
+
+
+def recording(world: World) -> tuple[list[dict], Any]:
+    batches: list[dict] = []
+
+    def send(command: dict, timeout: float | None) -> dict:
+        batches.append(command)
+        return world.send(command, timeout)
+
+    return batches, send
+
+
+def concedes(world: World) -> list:
+    return [h for h, method, _a in world.calls if method == "ConcedeGame"]
+
+
+def test_mac_concede_waits_for_arena_to_play_back_the_logs_turn():
+    world, gre = concede_world(turn=14)
+
+    def play_back(now: float) -> None:
+        if now >= 1.2:
+            world.objects[60]["GameWideTurn"] = 15
+
+    fake = FakeTime(play_back)
+    batches, send = recording(world)
+    result = MacBridgeAdapter(send, **fake.kwargs()).handle(dict(FIELD_CONCEDE))
+    assert result["ok"] and result["turn"] == 15
+    assert concedes(world) == [gre]
+    assert 1.2 <= fake.now < 1.5  # re-read until it caught up, then at once
+    # The concede still goes out in a batch that pins the expected turn.
+    guarded = batches[-1]["ops"]
+    assert guarded[-1]["method"] == "ConcedeGame"
+    assert [op["equals"] for op in guarded if op.get("member") == "GameWideTurn"] == [15]
+    assert all(batch["ops"][-1].get("method") != "ConcedeGame" for batch in batches[:-1])
+
+
+def test_mac_concede_refuses_once_its_wait_for_arena_runs_out():
+    world, _ = concede_world(turn=14)
+    fake = FakeTime()
+    result = MacBridgeAdapter(world.send, **fake.kwargs()).handle(dict(FIELD_CONCEDE))
+    assert not result["ok"] and concedes(world) == []
+    assert "Arena is still on turn 14, behind the expected turn 15" in result["error"]
+    assert 3.0 <= fake.now <= 3.0 + 0.1 + 1e-9  # LIVE_TURN_CATCH_UP_S, one poll at most past it
+
+    # A shorter expires_in_ms leaves the guarded batch its margin.
+    world, _ = concede_world(turn=14)
+    fake = FakeTime()
+    result = MacBridgeAdapter(world.send, **fake.kwargs()).handle({**FIELD_CONCEDE, "expires_in_ms": 1500})
+    assert not result["ok"] and concedes(world) == [] and fake.now <= 1.1 + 1e-9
+
+
+@pytest.mark.parametrize(
+    "current, latest, after",
+    [
+        (16, None, "15 -> 16"),  # Arena is past the coach's evidence
+        (15, 16, "15 -> 16"),  # it already received the next turn
+        (14, 16, "15 -> 16"),  # still playing back, but the next turn is in
+    ],
+)
+def test_mac_concede_refuses_at_once_when_the_game_moved_past_the_expected_turn(current, latest, after):
+    world, _ = concede_world(turn=current)
+    if latest is not None:
+        newest = world.add(61, "MtgGameState", GameWideTurn=latest)
+        world.objects[10]["LatestGameState"] = Obj(newest)
+    fake = FakeTime()
+    result = MacBridgeAdapter(world.send, **fake.kwargs()).handle(dict(FIELD_CONCEDE))
+    assert result == {"ok": False, "error": f"Stale concede: the turn changed ({after})"}
+    assert fake.sleeps == [] and concedes(world) == []
+
+
+def test_mac_concede_refuses_when_arena_catches_up_past_the_expected_turn():
+    world, _ = concede_world(turn=14)
+
+    def jump(now: float) -> None:
+        world.objects[60]["GameWideTurn"] = 16
+
+    result = MacBridgeAdapter(world.send, **FakeTime(jump).kwargs()).handle(dict(FIELD_CONCEDE))
+    assert result == {"ok": False, "error": "Stale concede: the turn changed (15 -> 16)"}
+    assert concedes(world) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [{"expected_match_id": "another-match"}, {"expected_game_number": 2}],
+)
+def test_mac_concede_never_waits_out_another_match_or_game(command):
+    world, _ = concede_world(turn=14)
+    fake = FakeTime()
+    result = MacBridgeAdapter(world.send, **fake.kwargs()).handle({**FIELD_CONCEDE, **command})
+    assert not result["ok"] and "Stale concede: the" in result["error"]
+    assert fake.sleeps == [] and concedes(world) == []
+
+
+def test_bridge_concede_from_the_field_report_lands_once_arena_catches_up():
+    world, gre = concede_world(turn=14)
+    bridge = GREBridge()
+    bridge._connected = True
+
+    def play_back(now: float) -> None:
+        world.objects[60]["GameWideTurn"] = 15
+
+    bridge._mac_adapter = MacBridgeAdapter(world.send, **FakeTime(play_back).kwargs())
+    result = bridge.concede(expected_match_id="fra-3da54de9", expected_turn=15)
+    assert result["ok"] and result["turn"] == 15 and concedes(world) == [gre]
 
 
 def test_mac_concede_timeout_is_outcome_unknown():

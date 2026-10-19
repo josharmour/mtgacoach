@@ -69,6 +69,12 @@ SNAPSHOT_GETTERS = [
 MAX_NUMERIC_INPUT_ENTRIES = 20
 TARGET_COMMIT_TIMEOUT_S = 1.2
 TARGET_GONE_GRACE_S = 0.6
+# Concede/emote: how long a live turn behind the expected one is re-read while
+# Arena's duel scene plays the newer states back (see _await_live_game), and
+# how much of the command's expires_in_ms is left for the guarded batch.
+LIVE_TURN_CATCH_UP_S = 3.0
+LIVE_TURN_POLL_S = 0.1
+LIVE_TURN_SEND_MARGIN_S = 0.5
 
 # Commands answered by the injected library directly.
 PASSTHROUGH = {"ping", "reflect_batch"}
@@ -135,6 +141,15 @@ INTERESTING_NAME_KEYWORDS = (
 
 class AdapterError(Exception):
     """A reflection batch failed; the message is reported as the command error."""
+
+
+class LiveTurnBehind(AdapterError):
+    """Arena's live turn is still behind the command's expected turn."""
+
+    def __init__(self, what: str, wanted: int, live: int) -> None:
+        super().__init__(f"Stale {what}: Arena is still on turn {live}, behind the expected turn {wanted}")
+        self.wanted = wanted
+        self.live = live
 
 
 # ---------------------------------------------------------------------------
@@ -333,9 +348,18 @@ class Snapshot:
 class MacBridgeAdapter:
     # Also drives the Android build of the same probe ("il2cpp-android"): the
     # reflect-1 protocol and the game's classes are identical on both.
-    def __init__(self, send: SendFn, runtime: str = "il2cpp-macos") -> None:
+    def __init__(
+        self,
+        send: SendFn,
+        runtime: str = "il2cpp-macos",
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._send = send
         self._runtime = runtime
+        self._sleep = sleep
+        self._clock = clock
 
     # -- transport ---------------------------------------------------------
 
@@ -967,6 +991,13 @@ class MacBridgeAdapter:
         refs["game"] = game = ops.get(manager, "CurrentGameState", optional=True)
         refs["stage"] = ops.get(game, "Stage", optional=True)
         refs["turn"] = ops.get(game, "GameWideTurn", optional=True)
+        # The newest state received, ahead of CurrentGameState while the duel
+        # scene plays states back (GameManager.Update -> SetLatestGameState).
+        # Only ever used to refuse sooner; not verified in IL2CPP metadata, so
+        # an absent member reads as null and changes nothing.
+        refs["latest_turn"] = ops.get(
+            ops.get(manager, "LatestGameState", optional=True), "GameWideTurn", optional=True
+        )
         refs["info"] = info = ops.get(game, "GameInfo", optional=True)
         refs["match_id"] = ops.get(info, "MatchID", optional=True)
         refs["game_number"] = ops.get(info, "GameNumber", optional=True)
@@ -981,7 +1012,10 @@ class MacBridgeAdapter:
         """(match id, game number, turn) of a game in play, or AdapterError.
 
         A game in progress in the duel scene, stage Play, a live GreInterface,
-        and the command's expected match/game/turn when it names them.
+        and the command's expected match/game/turn when it names them. The
+        match and game must match exactly; a turn ahead of the expected one is
+        stale, and one still behind it raises LiveTurnBehind (the caller may
+        wait for Arena to catch up, see _await_live_game).
         """
 
         def value(name: str) -> Any:
@@ -1010,14 +1044,72 @@ class MacBridgeAdapter:
         wanted_match = command.get("expected_match_id")
         if wanted_match and str(wanted_match) != live_match:
             raise AdapterError(f"Stale {what}: the match changed")
-        for key, live, label in (
-            ("expected_game_number", live_game, "game"),
-            ("expected_turn", live_turn, "turn"),
-        ):
-            wanted = command.get(key)
-            if wanted not in (None, "", 0, -1) and num(wanted, -1) != live:
-                raise AdapterError(f"Stale {what}: the {label} changed ({wanted} -> {live})")
+        wanted = command.get("expected_game_number")
+        if wanted not in (None, "", 0, -1) and num(wanted, -1) != live_game:
+            raise AdapterError(f"Stale {what}: the game changed ({wanted} -> {live_game})")
+        wanted = command.get("expected_turn")
+        if wanted not in (None, "", 0, -1):
+            newest = max(live_turn, num(value("latest_turn"), -1))
+            if newest > num(wanted, -1):
+                raise AdapterError(f"Stale {what}: the turn changed ({wanted} -> {newest})")
+            if live_turn < num(wanted, -1):
+                raise LiveTurnBehind(what, num(wanted, -1), live_turn)
         return live_match, live_game, live_turn
+
+    def _await_live_game(
+        self,
+        command: dict,
+        what: str,
+        timeout: float | None,
+        extra: Callable[[_Ops, dict[str, dict]], dict[str, dict]] | None = None,
+    ) -> tuple[list[Any], dict[str, dict], tuple[str, int, int]]:
+        """The read-only live-game batch (plus ``extra``'s reads) and its guards.
+
+        Arena's duel scene sets ``GameManager.CurrentGameState`` only when it
+        starts playing a state back (GameStatePlaybackController.StartPlayback),
+        behind its animations, so GameWideTurn can trail Player.log, where the
+        coach's expected turn comes from, by seconds. 2026-10-19: two
+        auto-concedes were refused as "Stale concede: the turn changed (15 ->
+        14)" and "(14 -> 13)" while the log had been on the newer turn for
+        3.0 s and 1.5 s. A turn ahead of the expected one is still refused at
+        once (the game moved past the evidence); one behind it is re-read every
+        LIVE_TURN_POLL_S until it catches up, for up to LIVE_TURN_CATCH_UP_S
+        and never past the command's expires_in_ms, then refused. Mirrors
+        Plugin.CheckExpectedTurn.
+        """
+        budget = LIVE_TURN_CATCH_UP_S
+        expires_ms = num(command.get("expires_in_ms"), 0)
+        if expires_ms > 0:
+            budget = min(budget, expires_ms / 1000.0 - LIVE_TURN_SEND_MARGIN_S)
+        started = self._clock()
+        behind: LiveTurnBehind | None = None
+        while True:
+            ops = _Ops()
+            refs = self._live_game_reads(ops)
+            if extra is not None:
+                refs.update(extra(ops, refs))
+            values = self._run(ops, timeout)
+            waited = self._clock() - started
+            try:
+                live = self._live_game(values, refs, command, what)
+            except LiveTurnBehind as exc:
+                if waited >= budget:
+                    raise AdapterError(f"{exc} after {waited:.1f}s") from None
+                if behind is None:
+                    logger.info(
+                        "mac bridge %s: Arena is still playing back turn %s (expected %s); "
+                        "waiting up to %.1fs for it to catch up",
+                        what,
+                        exc.live,
+                        exc.wanted,
+                        budget,
+                    )
+                behind = exc
+                self._sleep(LIVE_TURN_POLL_S)
+                continue
+            if behind is not None:
+                logger.info("mac bridge %s: Arena caught up to turn %s after %.1fs", what, live[2], waited)
+            return values, refs, live
 
     @staticmethod
     def _expect_live_game(ops: _Ops, live_match: str, live_game: int, live_turn: int) -> dict[str, dict]:
@@ -1047,16 +1139,18 @@ class MacBridgeAdapter:
         the whole match. ``GameManager._gre`` is not used either: MatchManager
         replaces its GreInterface on every new game.
 
-        One read-only batch, then one guarded batch that re-checks everything
-        in the same frame as the call: a game in progress in the duel scene,
-        stage Play, the same match/game/turn, and a live GreInterface. Never
-        retried; a main-thread timeout is reported as ``outcome_unknown``.
+        One read-only batch (re-read while Arena's client is still playing back
+        an older turn, see _await_live_game), then one guarded batch that
+        re-checks everything in the same frame as the call: a game in progress
+        in the duel scene, stage Play, the same match/game/turn, and a live
+        GreInterface. Never retried; a main-thread timeout is reported as
+        ``outcome_unknown``.
         """
         if str(command.get("scope") or "game").lower() != "game":
             raise AdapterError("Only conceding the current game is supported")
-        ops = _Ops()
-        refs = self._live_game_reads(ops)
-        live_match, live_game, live_turn = self._live_game(self._run(ops, timeout), refs, command, "concede")
+        _values, _refs, (live_match, live_game, live_turn) = self._await_live_game(
+            command, "concede", timeout
+        )
 
         ops = _Ops()
         guarded = self._expect_live_game(ops, live_match, live_game, live_turn)
@@ -1096,7 +1190,8 @@ class MacBridgeAdapter:
         use and shows our own speech bubble. "Phrase_Basic_Oops" is the id a
         real Oops click puts on the wire (an opponent's, 2026-10-06 14:00:30).
 
-        Batch 1 (read-only): the concede guards; no tutorial (NPEDirector);
+        Batch 1 (read-only): the concede guards, re-read while Arena catches up
+        to the expected turn (_await_live_game); no tutorial (NPEDirector);
         the UIMessageHandler's send delegate targets this game's GreInterface;
         exactly one LocalPlayerDialogController among the handlers of its
         EmoteRecievedCallback. Batch 2 (read-only): that controller uses this
@@ -1111,21 +1206,28 @@ class MacBridgeAdapter:
         emote_id = EMOTE_IDS.get(kind)
         if emote_id is None:
             raise AdapterError(f"Unsupported emote: {kind}")
-        ops = _Ops()
-        refs = self._live_game_reads(ops)
-        npe = ops.get(refs["manager"], "_npeDirector", optional=True)
-        ui = ops.get(refs["manager"], "UIMessageHandler", optional=True)
-        channel = ops.get(ops.get(ui, "_sendUIMessage", optional=True), "m_target", optional=True)
-        receivers = ops.add(
-            "call",
-            target=ops.get(ui, "EmoteRecievedCallback", optional=True),
-            method="GetInvocationList",
-            args=[],
-            depth=2,
-            optional=True,
+
+        def emote_reads(ops: _Ops, refs: dict[str, dict]) -> dict[str, dict]:
+            npe = ops.get(refs["manager"], "_npeDirector", optional=True)
+            ui = ops.get(refs["manager"], "UIMessageHandler", optional=True)
+            return {
+                "npe": npe,
+                "ui": ui,
+                "channel": ops.get(ops.get(ui, "_sendUIMessage", optional=True), "m_target", optional=True),
+                "receivers": ops.add(
+                    "call",
+                    target=ops.get(ui, "EmoteRecievedCallback", optional=True),
+                    method="GetInvocationList",
+                    args=[],
+                    depth=2,
+                    optional=True,
+                ),
+            }
+
+        values, refs, (live_match, live_game, live_turn) = self._await_live_game(
+            command, "emote", timeout, emote_reads
         )
-        values = self._run(ops, timeout)
-        live_match, live_game, live_turn = self._live_game(values, refs, command, "emote")
+        npe, ui, channel, receivers = refs["npe"], refs["ui"], refs["channel"], refs["receivers"]
 
         def value(reference: dict) -> Any:
             index = reference["ref"]
