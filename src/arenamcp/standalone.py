@@ -1080,6 +1080,17 @@ class StandaloneCoach(
             self._bridge_poller.enrich_snapshot(judged)
         return judged
 
+    def _live_request_handed_to_user(self, resp: dict[str, Any] | None = None) -> bool:
+        """The bridge's live request is one the autopilot already declared MANUAL REQUIRED for."""
+        engine = getattr(self, "_autopilot", None)
+        check = getattr(engine, "request_handed_to_user", None)
+        if not callable(check):
+            return False
+        if resp is None:
+            latest = getattr(getattr(self, "_bridge_poller", None), "latest_pending", None)
+            resp = latest() if callable(latest) else None
+        return bool(resp) and bool(check(resp))
+
     def _bridge_pending_label(self) -> str | None:
         """Label of the request the bridge last saw pending ("Search Library"), else None."""
         poller = getattr(self, "_bridge_poller", None)
@@ -1145,6 +1156,7 @@ class StandaloneCoach(
                     self._autopilot_control_status() != "AP:ON"
                     or (callable(cooling) and cooling())
                     or engine.is_window_given_up(judged)
+                    or self._live_request_handed_to_user(resp)
                 )
         step = watchdog.step(resp, last_answer_at=last_answer, clock_remaining_s=remaining, handed_to_user=handed)
         if step is None:
@@ -2353,6 +2365,7 @@ class StandaloneCoach(
                                 _given_up = bool(
                                     self._autopilot.is_window_given_up(_arb_state)
                                     or (callable(_cooling) and _cooling())
+                                    or self._live_request_handed_to_user()
                                 )
                             # Arbiter: never force a decision the bridge says
                             # doesn't exist (connected + idle ⇒ pending_now is

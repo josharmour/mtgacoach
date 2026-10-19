@@ -620,6 +620,16 @@ class OopsController:
             ):
                 logger.debug("[OOPS] incident %s %r already noted", kind, key)
                 return False
+            turn = _turn_of(state) or self._turn
+            if kind == STUCK_MANUAL and any(
+                i.kind == STUCK_MANUAL and i.game_key == game_key and i.turn == turn and i.detail == detail
+                for i in self._pending
+            ):
+                # The same MANUAL REQUIRED re-declared while the first is still
+                # dwelling (2026-10-18 20:49:09 and 20:49:11: one stuck window,
+                # two incidents, the second suppressed only by the 60 s gap).
+                logger.debug("[OOPS] stuck_manual already waiting on turn %s: %s", turn, detail)
+                return False
             dwell = MANUAL_DWELL_S if kind == STUCK_MANUAL else 0.0
             incident = _Incident(
                 kind=kind,
