@@ -453,6 +453,9 @@ class BoardModel:
     # The line search resolves them at its root; the assessment's own facts do not.
     our_stack_doomed: frozenset[int] = frozenset()
     our_stack_face: int = 0
+    # Each player's starting life total (``starting_life``): 25 in Brawl, else 20 (ledger #177:
+    # "at least 7 life more than your starting life total").
+    starting_life: int = 20
     # The opponent's engines (``line_search_moves.TheirEngines``, ledger #128-#133, #143): their
     # life-gain sources and the growth they feed, their draws, drains and "enter tapped". Their
     # bodies carry ``_drain`` (damage to us a turn of theirs), ``_growth`` (+1/+1 counters a turn)
@@ -476,6 +479,23 @@ class BoardModel:
             if commander.text_unknown:
                 notes.append(f"our commander {commander.name}: rules text unknown")
         return notes
+
+
+def starting_life(state: dict) -> int:
+    """The game's starting life total: a player's ``starting_life`` (Player.log
+    ``startingLifeTotal``) or the format profile's when the snapshot has one; 25 in a commander
+    game (commanders known, a command zone, or a Brawl format name); 20 otherwise."""
+    for player in state.get("players") or []:
+        value = _int(player.get("starting_life")) if isinstance(player, dict) else None
+        if value:
+            return value
+    profile = state.get("format_profile")
+    if isinstance(profile, dict) and _int(profile.get("starting_life")):
+        return int(profile["starting_life"])
+    brawl = "brawl" in str(state.get("format_name") or state.get("format") or "").lower()
+    if state.get("commander_grp_ids") or state.get("command") or brawl:
+        return 25
+    return 20
 
 
 _DRAWS_CARDS = re.compile(r"\bdraws? (?:a|one|two|three|x|\d+) cards?\b")
@@ -741,6 +761,7 @@ def build_board_model(state: dict) -> BoardModel | None:
         their_lands_played=max(0, their_lands_played),
         our_stack_doomed=pending.doomed if pending else frozenset(),
         our_stack_face=pending.face if pending else 0,
+        starting_life=starting_life(state),
         engines=engines,
         our_engines=our_engines,
     )  # fmt: skip

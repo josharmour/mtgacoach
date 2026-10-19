@@ -1,0 +1,60 @@
+# game-plan answer with no usable plan: turn 12, high effort, 2643 chars, 2026-10-19 16:21:40
+```json
+{
+  "role": "aggressor",
+  "role_reason": "",
+  "turns": [
+    {
+      "turn": "T",
+      "land": "",
+      "cast": ["Leonardo, Big Brother"],
+      "attack": "all Hares and Rabbits; after blocks Sneak Leonardo ({W}) returning an unblocked Rabbit - he enters tapped and attacking",
+      "hold": "{W}-plus spare mana reserved for the Sneak payment after blocks; any drawn Hare held post-combat to recompound width"
+    },
+    {
+      "turn": "T+1",
+      "land": "",
+      "cast": [],
+      "attack": "all surviving creatures - cleanup swing finishes any remaining life",
+      "hold": "any drawn Hare kept in hand until after combat so it chains off surviving named copies"
+    },
+    {
+      "turn": "T+2",
+      "land": "",
+      "cast": [],
+      "attack": "all creatures if game continues",
+      "hold": "drawn Hares held post-combat; rebuild chain behind future discounts"
+    }
+  ],
+  "win_conditions": ["Sneak-Leonardo all-out swing kills T13", "backup: chain drawn Hares past blockers"],
+  "path": "T12 absorb fly damage; T13 sneak Leo post-blocks unblocked, full swing lethal",
+  "threat": "Denzilore flies unblockable and grows; Thalia lifelinks and blanks ground swings",
+  "develop_next": "Connect Sneak-Leonardo damage now; draw Hares to refill empty hand",
+  "switch_if": [
+    "instant removal/fog hits sneaked Leonardo -> fall back to line 3 (attack first, recast later)",
+    "they flash extra blockers making swing sub-lethal -> hold named Hares back and grind",
+    "board wipe resolves -> become defender, hold Hares in hand behind future discounts"
+  ],
+  "active_mechanisms": [
+    "engine_4 live: width ~15 makes sneaked Leonardo ~15+ power attacking unblocked",
+    "engine_1 live: five named Hares on board compound any future cast",
+    "engine_3 dormant: all discount pieces still in library"
+  ],
+  "resource_priorities": [
+    "Spend rabbit tokens freely as Sneak fuel and chumps - chain replaces them",
+    "Preserve named Hare Apparents - they feed every future ETB count",
+    "Never recast Leonardo at full tax while Sneak ({W}) exists as cheap re-entry"
+  ],
+  "assumptions": [
+    "{W} remains payable from untapped Plains after combat for the Sneak",
+    no instant trick or fog disrupts the committed T13 swing,
+    Thalia blocks at most one attacker; Denzilore cannot block ground
+  ],
+  "lessons": [
+    "No damage T9/T11 - Thalia blanked ground swings; Sneak bypasses her",
+    "Empty hand meant zero casts - hold a drawn Hare back post-combat",
+    "Accepting Unsummon bounce avoided tax growth - repeat that pattern",
+    "Hare-per-turn compounding built width fast; keep chaining"
+  ]
+}
+```

@@ -1957,6 +1957,17 @@ def _assess(state: dict) -> BoardAssessment | None:
             # A win the search found stands whatever the casts it can't value do (they are
             # ours to cast or not): named, since one of them may win sooner.
             flags.append(f"LETHAL LINE: {best_text}" + (f" ({unsure})" if caveat else ""))
+    # Ledger #177 / #180 (c0af235f): their life-threshold anthem (Righteous Valkyrie: "1 damage
+    # switches off ...") and their "draw if you didn't attack" permanent (Faramir).
+    try:
+        from arenamcp.line_search_moves import hold_punishers, life_anthem_facts
+
+        flags.extend(life_anthem_facts(model))
+        punished = hold_punishers(model)[1]
+        if punished:
+            flags.append(punished)
+    except Exception as error:
+        logger.debug("anthem / punisher facts failed: %s", error, exc_info=True)
 
     # --- role ----------------------------------------------------------------
     role, reason = _role(
@@ -2943,8 +2954,19 @@ def _role(
         return ROLE_AGGRESSOR, (
             f"our clock {our_clock} beats their {text(their_clock)} ({board}) — we're the beatdown"
         )
+    # Ledger #161 (c0af235f T12, be1a945f T12): a surviving line that attacks is a race, not
+    # "survive first": the declaration echoed "stabilize behind the token wall" and held.
+    first = (list(getattr(best_line, "steps", None) or ()) or [None])[0]
+    line_attacks = bool(line_text and getattr(first, "attack", ()))
     if opp_lethal:
         through = our_life - (their_lives[0] if their_lives else our_life)
+        lethal = f"opponent has lethal on board ({through} through our best blocks vs {our_life} life)"
+        if only_first_attack_survivor and line_attacks and not caveat:
+            return ROLE_RACE, f"only attacking survives: {lethal}; only line: {line_text}"
+        if evasive_clock and line_attacks and not caveat:
+            # Nothing of ours blocks it (fliers) and the best line attacks: blockers held home save
+            # nothing. A best line that gains life or removes instead stays survive-first.
+            return ROLE_RACE, f"{lethal} and none of ours can block it — race it; best line: {line_text}"
         only = ""
         if only_first_attack_survivor and line_text:
             only = (
@@ -2957,8 +2979,12 @@ def _role(
             f"{only}"
         )
     if only_survivor and line_text:
+        if line_attacks:
+            return ROLE_RACE, f"only attacking survives: {line_text}"
         return ROLE_CONTROL, f"only line that survives: {line_text}"
     if greedy_dies and line_text:
+        if line_attacks:
+            return ROLE_RACE, f"the greedy line dies; attacking survives: {line_text}"
         return ROLE_CONTROL, f"the greedy line dies; best surviving line: {line_text}"
     if dead_in is not None and dead_in <= 2:
         deployed = next((s for s in lookahead if s.casts), None)

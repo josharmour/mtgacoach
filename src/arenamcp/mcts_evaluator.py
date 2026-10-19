@@ -15,7 +15,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from arenamcp.combat_solver import optimal_attacks, optimal_blocks
+from arenamcp.combat_solver import display_deadline, optimal_attacks, optimal_blocks
 from arenamcp.mulligan_policy import hand_card
 from arenamcp.opponent_model import OpponentModel, OpponentProfile
 
@@ -819,11 +819,21 @@ class MCTSEvaluator:
         # 1. Evaluate Combat Attacks (with 2-ply crackback lookahead) — before
         # combat only; after it (Main2) there is nothing left to declare.
         if phase == "Main1":
-            ready_attackers = [
-                c for c in hero_creatures if not c.get("is_tapped") and not c.get("has_summoning_sickness")
-            ]
+
+            def _sick(card: dict) -> bool:
+                # Snapshots say "summoning_sickness" / turn_entered_battlefield, not
+                # "has_summoning_sickness" (2026-10-19 15:50:24: a fresh Hare and its
+                # Rabbits made the search 17 attackers instead of 13).
+                if card.get("has_summoning_sickness") or card.get("summoning_sickness"):
+                    return True
+                text = str(card.get("oracle_text") or "").lower()
+                return card.get("turn_entered_battlefield") == turn_num and "haste" not in text
+
+            ready_attackers = [c for c in hero_creatures if not c.get("is_tapped") and not _sick(c)]
             if ready_attackers:
                 opp_blockers = [c for c in opp_creatures if not c.get("is_tapped")]
+                # The tactical line only shows the pick, on the coaching thread at every state
+                # change of our main 1: a big board gets the short deadline (#162/#182, 15:50).
                 attack_plan = optimal_attacks(
                     candidate_attackers=ready_attackers,
                     opponent_blockers=opp_blockers,
@@ -831,6 +841,8 @@ class MCTSEvaluator:
                     your_life=hero_life,
                     opponent_attackers_next_turn=opp_creatures,
                     your_remaining_blockers=[c for c in hero_creatures if c not in ready_attackers],
+                    deadline_s=display_deadline(len(ready_attackers)),
+                    caller="tactical line",
                 )
                 if attack_plan:
                     atk_names = (

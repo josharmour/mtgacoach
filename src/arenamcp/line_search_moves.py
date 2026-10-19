@@ -27,7 +27,9 @@ their life gain and draws (``TheirEngines``: their planeswalkers' gain
 abilities, their gain triggers, our creatures under their Consuls, one draw a
 turn or two once they have shown a cantrip; a lifelink hit of theirs grows them
 for the next attack; nothing while "players can't gain life"); their drain
-engines (``drain_engine``) deal us their damage; our held
+engines (``drain_engine``) deal us their damage; their life-threshold anthems
+switch on or off with their life after our attack (``life_anthem``, Righteous
+Valkyrie: ledger #177); our held
 instants answer (a flash creature or token maker blocks only while blocks are
 still to come), and the opponent attacks with the policy worst for us
 (``ParanoidOpponent``). Mana, colours, summoning sickness and tapped creatures
@@ -404,6 +406,117 @@ def cast_growth(card: dict) -> int:
         found = match.group("n")
         counters += (_COUNT_WORDS.get(found) or _int(found) or 0) if found else 1
     return counters
+
+
+# Ledger #177 (match c0af235f T12, 2026-10-19): Righteous Valkyrie, "As long as you have at least 7
+# life more than your starting life total, creatures you control get +2/+2.", was on at 32 of a
+# 25 start; one point of our damage would have switched it off for all seven of their creatures.
+_LIFE_ANTHEM = re.compile(
+    r"^as long as you have at least (?P<n>\w+) life more than your starting life total, "
+    r"(?P<who>other creatures you control|creatures you control|~|this creature) gets? "
+    r"\+(?P<p>\d+)/\+(?P<t>\d+)\.?$"
+)
+_NUMBER_WORDS = {**_COUNT_WORDS, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+_ANTHEM_IDS = 650_000_000
+
+
+def life_anthem(card: dict) -> tuple[int, int, int, str] | None:
+    """(life above the starting total it needs, +power, +toughness, 'all' / 'others' / 'self') of
+    the card's "As long as you have at least N life more than your starting life total, creatures
+    you control get +P/+T" (Righteous Valkyrie, Leyline of Hope); None without one."""
+    text = _QUOTED.sub("", _text(card))
+    if "starting life total" not in text:
+        return None
+    for line in _own_lines(text):
+        match = _LIFE_ANTHEM.match(line)
+        need = match and (_NUMBER_WORDS.get(match.group("n")) or _int(match.group("n")))
+        if need:
+            who = match.group("who")
+            scope = "others" if who.startswith("other") else "all" if who.startswith("creatures") else "self"
+            return need, int(match.group("p")), int(match.group("t")), scope
+    return None
+
+
+def life_anthem_facts(model: BoardModel) -> list[str]:
+    """Board-facts lines for their life-threshold anthems (``life_anthem``): '1 damage switches off
+    Righteous Valkyrie's +2/+2 (they are at 32: on from 32, starting life 25)' while it is on, how
+    much life switches it on while it is off (and no more than N away)."""
+    lines = []
+    for card in model.battlefield:
+        if not isinstance(card, dict) or _controller(card) != model.opponent:
+            continue
+        found = life_anthem(card)
+        if found is None:
+            continue
+        need, power, toughness, scope = found
+        threshold = model.starting_life + need
+        whose = {"all": "", "others": " to their other creatures", "self": ""}[scope]
+        bonus = f"{_name(card)}'s +{power}/+{toughness}{whose}"
+        where = f"they are at {model.opp_life}: on from {threshold}, starting life {model.starting_life}"
+        if model.opp_life >= threshold:
+            damage = model.opp_life - threshold + 1
+            lines.append(f"{damage} damage switches off {bonus} ({where})")
+        elif threshold - model.opp_life <= need:  # within reach of their life gain
+            gap = threshold - model.opp_life
+            lines.append(f"{bonus} is off; {gap} life they gain switches it on ({where})")
+    return lines
+
+
+# Ledger #180 (match c0af235f T8/T12): Faramir, Prince of Ithilien — "... At the beginning of that
+# player's next end step, you draw a card if they didn't attack you that turn. Otherwise, create
+# three 1/1 white Human Soldier creature tokens." Each of our holds drew them a card.
+_HOLD_DRAW = re.compile(
+    r"\bdraw (?P<n>a|one|two|three|\d+) cards? if (?:they|that player) (?:didn't|did not) attack you\b"
+    r"|\bif no creatures attacked you this turn, (?:you )?draw (?P<m>a|one|two|three|\d+) cards?"
+)
+_OTHERWISE_TOKENS = re.compile(
+    r"\botherwise, create (?P<n>a|an|one|two|three|four|five|\d+) (?P<p>\d+)/(?P<t>\d+)\b"
+)
+# A card they draw, in line value (our hand counts 0.3 x each card's value; theirs are unseen).
+PUNISH_CARD_VALUE = 1.5
+
+
+def attack_punisher(card: dict) -> tuple[int, int, int, int]:
+    """(cards they draw when we don't attack them, tokens they create when we do, the tokens'
+    power, toughness) of a "draw a card if they didn't attack you" permanent; zeros without one."""
+    text = _QUOTED.sub("", _text(card))
+    if "attack" not in text or "draw" not in text:
+        return 0, 0, 0, 0
+    draw = _HOLD_DRAW.search(text)
+    if draw is None:
+        return 0, 0, 0, 0
+    word = draw.group("n") or draw.group("m")
+    cards = _COUNT_WORDS.get(word) or _int(word) or 1
+    tokens = _OTHERWISE_TOKENS.search(text)
+    if tokens is None:
+        return cards, 0, 0, 0
+    count = _COUNT_WORDS.get(tokens.group("n")) or _int(tokens.group("n")) or 1
+    return cards, count, int(tokens.group("p")), int(tokens.group("t"))
+
+
+def hold_punishers(model: BoardModel) -> tuple[float, str]:
+    """What holding our attack costs this turn against their "draw if you didn't attack"
+    permanents (``attack_punisher``), net of the tokens attacking gives them instead, in line value
+    (positive: holding costs more), and the text: 'holding draws them a card (Faramir, Prince of
+    Ithilien; attacking gives them three 1/1 tokens instead)'. Our turn before our attack only; a
+    permanent that entered this turn chose no one at their last end step."""
+    if not model.our_turn or not model.our_attack_pending:
+        return 0.0, ""
+    cost, parts = 0.0, []
+    for card in model.battlefield:
+        if not isinstance(card, dict) or _controller(card) != model.opponent:
+            continue
+        entered = _int(card.get("turn_entered_battlefield"))
+        if entered is not None and entered >= model.turn:
+            continue
+        cards, tokens, power, toughness = attack_punisher(card)
+        if not cards:
+            continue
+        cost += PUNISH_CARD_VALUE * cards - tokens * (power + 0.5 * toughness)
+        drawn = "a card" if cards == 1 else f"{cards} cards"
+        instead = f"; attacking gives them {tokens} {power}/{toughness} tokens instead" if tokens else ""
+        parts.append(f"holding draws them {drawn} ({_name(card)}{instead})")
+    return cost, "; ".join(parts)
 
 
 # --- their growth and drain engines (ledger #128, #129, #132, #133, #143) ----------------------
@@ -1830,6 +1943,16 @@ class Moves:
             and landfall_doubler(c)
         )
         self.fetch_index = 2 if (model.their_attack_pending and model.any_theirs_attacking) else 1
+        # Their life-threshold anthems (ledger #177, ``life_anthem``): (source id, its creature-ness,
+        # (need, +power, +toughness, scope)); ``anthem_bodies`` switches them with their life.
+        self.their_anthems = tuple(
+            (_int(c.get("instance_id")) or 0, _is_creature(c), found)
+            for c in model.battlefield
+            if isinstance(c, dict)
+            and _controller(c) == model.opponent
+            and (found := life_anthem(c)) is not None
+        )
+        self._anthem_memo: dict = {}
         self._doubler_memo: dict = {}
         self._double_memo: dict = {}
         # Their planeswalkers (ledger #42, a51dea64 10:19–10:25: Kaito and Ajani Resolute were
@@ -2624,6 +2747,58 @@ class Moves:
             saved = reduction_amount(self.spells[var.spell].reduction, powers, permanents)
             total -= var.mana_value - reduced_mana_value(var.mana_value, len(var.pips), saved)
         return total
+
+    def anthem_bodies(self, bodies, opp_life: int, alive=None) -> list[dict]:
+        """``bodies`` (theirs) with their life-threshold anthems (``their_anthems``) as ``opp_life``
+        has them: on at their starting life + N or more while the source is on the battlefield
+        (``alive``, default ``bodies``), off below it. The snapshot's power/toughness already has
+        each anthem that is on at the root; a switched body gets a fresh id (the combat memo keys on
+        ids) and keeps its original one as ``_origin``. Ledger #177 (c0af235f T12): their seven
+        creatures had Righteous Valkyrie's +2/+2 at 32 life (25 + 7); our attack ended it."""
+        if not self.their_anthems:
+            return list(bodies)
+        start, root_life = self.model.starting_life, self.model.opp_life
+        present = {b.get("_origin", b["instance_id"]) for b in (bodies if alive is None else alive)}
+
+        def covers(index: int, origin: int) -> bool:
+            source, _creature, (_need, _p, _t, scope) = self.their_anthems[index]
+            return scope == "all" or (scope == "others") == (origin != source)
+
+        def on(index: int, life: int, root: bool) -> bool:
+            source, creature, (need, _p, _t, _scope) = self.their_anthems[index]
+            return life >= start + need and (root or not creature or source in present)
+
+        out = []
+        for body in bodies:
+            origin = body.get("_origin", body["instance_id"])
+            indices = [i for i in range(len(self.their_anthems)) if covers(i, origin)]
+            had = body.get("_anthems")
+            if had is None:
+                had = frozenset(i for i in indices if on(i, root_life, True))
+            want = frozenset(i for i in indices if on(i, opp_life, False))
+            if want == had:
+                out.append(body)
+                continue
+            power = sum(self.their_anthems[i][2][1] for i in want - had) - sum(
+                self.their_anthems[i][2][1] for i in had - want
+            )
+            toughness = sum(self.their_anthems[i][2][2] for i in want - had) - sum(
+                self.their_anthems[i][2][2] for i in had - want
+            )
+            key = (body["instance_id"], want)
+            found = self._anthem_memo.get(key)
+            if found is None:
+                found = self._anthem_memo[key] = {
+                    **body,
+                    "instance_id": _ANTHEM_IDS + len(self._anthem_memo),
+                    "_origin": origin,
+                    "_anthems": want,
+                    "power": body["power"] + power,
+                    "toughness": body["toughness"] + toughness,
+                }
+            if found["toughness"] > 0:
+                out.append(found)
+        return out
 
     def _countered(self, body: dict, n: int) -> dict:
         """``body`` with ``n`` more +1/+1 counters: a fresh id (the combat memo keys on ids)."""
@@ -3671,6 +3846,9 @@ class Moves:
             grow = self.turn_growth(theirs, gains) if spells else None
             theirs = self._landfall(theirs, entries, extra, spells=spells, grow=grow)
             able = self._landfall(able, entries, extra, spells=spells, grow=grow)
+        if self.their_anthems:  # ledger #177: their life after our attack switches them
+            theirs = self.anthem_bodies(theirs, opp_life)
+            able = self.anthem_bodies(able, opp_life, alive=theirs)
         drain = self.their_drain(theirs) if drain_now else 0
         removal, flash, left = self._held(hand, spare, life)
         flash_bodies = [b for v in flash for b in _bodies(v)]

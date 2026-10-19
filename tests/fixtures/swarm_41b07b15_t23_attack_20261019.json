@@ -1,0 +1,2564 @@
+{
+ "_source": "match 41b07b15 Player.log (+ the post-relaunch log) replayed to 15:54:22.600 (T23 DeclareAttackers; the decision.plan prompt was 118,957 chars, low leg ttft_timeout at 15:54:35)",
+ "battlefield": [
+  {
+   "ability_grp_ids": [
+    15,
+    166869
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 84722,
+   "instance_id": 754,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "keywords": [
+    "vigilance"
+   ],
+   "mana_cost": "{1}{W}",
+   "name": "Shire Shirriff",
+   "object_kind": "CARD",
+   "oracle_text": "Vigilance\nWhen this creature enters, you may sacrifice a token. When you do, exile target creature an opponent controls until this creature leaves the battlefield.",
+   "owner_seat_id": 1,
+   "power": 2,
+   "subtypes": [
+    "Halfling",
+    "Soldier"
+   ],
+   "summoning_sickness": true,
+   "toughness": 2,
+   "turn_entered_battlefield": 22,
+   "type_line": "Creature — Halfling Soldier"
+  },
+  {
+   "ability_grp_ids": [
+    92970
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 75450,
+   "instance_id": 686,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{1}{W}",
+   "name": "Hallowed Priest",
+   "object_kind": "CARD",
+   "oracle_text": "Whenever you gain life, put a +1/+1 counter on this creature.",
+   "owner_seat_id": 1,
+   "power": 1,
+   "subtypes": [
+    "Human",
+    "Cleric"
+   ],
+   "summoning_sickness": true,
+   "toughness": 1,
+   "turn_entered_battlefield": 22,
+   "type_line": "Creature — Human Cleric"
+  },
+  {
+   "ability_grp_ids": [
+    175767,
+    175768
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 93728,
+   "instance_id": 678,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{1}{W}",
+   "name": "Hare Apparent",
+   "object_kind": "CARD",
+   "oracle_text": "When this creature enters, create a number of 1/1 white Rabbit creature tokens equal to the number of other creatures you control named Hare Apparent.\nA deck can have any number of cards named Hare Apparent.",
+   "owner_seat_id": 2,
+   "power": 2,
+   "subtypes": [
+    "Rabbit",
+    "Noble"
+   ],
+   "toughness": 2,
+   "turn_entered_battlefield": 21,
+   "type_line": "Creature — Rabbit Noble"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 107387,
+   "instance_id": 667,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 1,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 20,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "ability_grp_ids": [
+    175767,
+    175768
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "damage": 1,
+   "grp_id": 93728,
+   "instance_id": 660,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{1}{W}",
+   "name": "Hare Apparent",
+   "object_kind": "CARD",
+   "oracle_text": "When this creature enters, create a number of 1/1 white Rabbit creature tokens equal to the number of other creatures you control named Hare Apparent.\nA deck can have any number of cards named Hare Apparent.",
+   "owner_seat_id": 2,
+   "power": 2,
+   "subtypes": [
+    "Rabbit",
+    "Noble"
+   ],
+   "toughness": 2,
+   "turn_entered_battlefield": 19,
+   "type_line": "Creature — Rabbit Noble"
+  },
+  {
+   "ability_grp_ids": [
+    176387,
+    153197
+   ],
+   "card_types": [
+    "CardType_Enchantment"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82511,
+   "instance_id": 619,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{3}{W}",
+   "name": "Static Net",
+   "object_kind": "CARD",
+   "oracle_text": "When this enchantment enters, exile target nonland permanent an opponent controls until this enchantment leaves the battlefield.\nWhen this enchantment enters, you gain 2 life and create a tapped Powerstone token.",
+   "owner_seat_id": 1,
+   "power": null,
+   "subtypes": [],
+   "toughness": null,
+   "turn_entered_battlefield": 18,
+   "type_line": "Enchantment"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 107387,
+   "instance_id": 618,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 1,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 18,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "color_production": [
+    "1"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 75556,
+   "instance_id": 592,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 2,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 15,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "ability_grp_ids": [
+    188697
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 95523,
+   "instance_id": 589,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{W}",
+   "name": "Descendant of Storms",
+   "object_kind": "CARD",
+   "oracle_text": "Whenever this creature attacks, you may pay {o1oW}. If you do, it endures 1.",
+   "owner_seat_id": 1,
+   "power": 2,
+   "subtypes": [
+    "Human",
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 14,
+   "type_line": "Creature — Human Soldier"
+  },
+  {
+   "ability_grp_ids": [
+    6,
+    153198
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82512,
+   "instance_id": 587,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "keywords": [
+    "first strike"
+   ],
+   "mana_cost": "{W}",
+   "name": "Survivor of Korlis",
+   "object_kind": "CARD",
+   "oracle_text": "First strike\n{o1oW}, Exile this card from your graveyard: Scry 2.",
+   "owner_seat_id": 1,
+   "power": 1,
+   "subtypes": [
+    "Human",
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 14,
+   "type_line": "Creature — Human Soldier"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 75556,
+   "instance_id": 568,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 2,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 13,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 107387,
+   "instance_id": 550,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 1,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 12,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 75556,
+   "instance_id": 532,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 2,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 11,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "ability_grp_ids": [
+    175767,
+    175768
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 93728,
+   "instance_id": 526,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{1}{W}",
+   "name": "Hare Apparent",
+   "object_kind": "CARD",
+   "oracle_text": "When this creature enters, create a number of 1/1 white Rabbit creature tokens equal to the number of other creatures you control named Hare Apparent.\nA deck can have any number of cards named Hare Apparent.",
+   "owner_seat_id": 2,
+   "power": 2,
+   "subtypes": [
+    "Rabbit",
+    "Noble"
+   ],
+   "toughness": 2,
+   "turn_entered_battlefield": 11,
+   "type_line": "Creature — Rabbit Noble"
+  },
+  {
+   "ability_grp_ids": [
+    21841,
+    101472
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {
+    "P1P1": 3
+   },
+   "grp_id": 57961,
+   "instance_id": 514,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": true,
+   "mana_cost": "{W}",
+   "name": "Herald of Anafenza",
+   "object_kind": "CARD",
+   "oracle_text": "Outlast {o2oW}\nWhenever you activate this creature's outlast ability, create a 1/1 white Warrior creature token.",
+   "owner_seat_id": 1,
+   "power": 4,
+   "subtypes": [
+    "Human",
+    "Soldier"
+   ],
+   "toughness": 5,
+   "turn_entered_battlefield": 10,
+   "type_line": "Creature — Human Soldier"
+  },
+  {
+   "ability_grp_ids": [
+    164529,
+    165759
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 83723,
+   "instance_id": 509,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{2}{W}{W}",
+   "name": "Mondrak, Glory Dominus",
+   "object_kind": "CARD",
+   "oracle_text": "If one or more tokens would be created under your control, twice that many of those tokens are created instead.\n{o1o(W/P)o(W/P)}, Sacrifice two other artifacts and/or creatures: Put an indestructible counter on Mondrak.",
+   "owner_seat_id": 1,
+   "power": 4,
+   "subtypes": [
+    "Phyrexian",
+    "Horror"
+   ],
+   "toughness": 4,
+   "turn_entered_battlefield": 10,
+   "type_line": "Legendary Creature — Phyrexian Horror"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 107387,
+   "instance_id": 508,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": true,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 1,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 10,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 75556,
+   "instance_id": 492,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 2,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 9,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 107387,
+   "instance_id": 485,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": true,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 1,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 8,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 75556,
+   "instance_id": 470,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 2,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 7,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 107387,
+   "instance_id": 460,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": true,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 1,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 6,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 75556,
+   "instance_id": 454,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 2,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 5,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 107387,
+   "instance_id": 449,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": true,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 1,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 4,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 75556,
+   "instance_id": 443,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 2,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 3,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 107387,
+   "instance_id": 441,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": true,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 1,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 2,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "ability_grp_ids": [
+    1001
+   ],
+   "card_types": [
+    "CardType_Land"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 75556,
+   "instance_id": 439,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Plains",
+   "object_kind": "CARD",
+   "oracle_text": "({T}: Add {W}.)",
+   "owner_seat_id": 2,
+   "power": null,
+   "subtypes": [
+    "Plains"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 1,
+   "type_line": "Basic Land — Plains"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 94158,
+   "instance_id": 466,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Human",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 2,
+   "parent_instance_id": 461,
+   "power": 1,
+   "subtypes": [
+    "Human"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 6,
+   "type_line": "Token Creature — Human"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 94160,
+   "instance_id": 504,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Rabbit",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 2,
+   "parent_instance_id": 502,
+   "power": 1,
+   "subtypes": [
+    "Rabbit"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 9,
+   "type_line": "Token Creature — Rabbit"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 94160,
+   "instance_id": 505,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Rabbit",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 2,
+   "parent_instance_id": 502,
+   "power": 1,
+   "subtypes": [
+    "Rabbit"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 9,
+   "type_line": "Token Creature — Rabbit"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 94160,
+   "instance_id": 530,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Rabbit",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 2,
+   "parent_instance_id": 529,
+   "power": 1,
+   "subtypes": [
+    "Rabbit"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 11,
+   "type_line": "Token Creature — Rabbit"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 94160,
+   "instance_id": 531,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Rabbit",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 2,
+   "parent_instance_id": 529,
+   "power": 1,
+   "subtypes": [
+    "Rabbit"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 11,
+   "type_line": "Token Creature — Rabbit"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 561,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 551,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 12,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 562,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 551,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 12,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 563,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 551,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 12,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 564,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 551,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 12,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 565,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 551,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 12,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 94160,
+   "instance_id": 573,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Rabbit",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 2,
+   "parent_instance_id": 572,
+   "power": 1,
+   "subtypes": [
+    "Rabbit"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 13,
+   "type_line": "Token Creature — Rabbit"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 88903,
+   "instance_id": 586,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Warrior",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 584,
+   "power": 1,
+   "subtypes": [
+    "Warrior"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 14,
+   "type_line": "Token Creature — Warrior"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 94160,
+   "instance_id": 614,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Rabbit",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 2,
+   "parent_instance_id": 613,
+   "power": 1,
+   "subtypes": [
+    "Rabbit"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 17,
+   "type_line": "Token Creature — Rabbit"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 94160,
+   "instance_id": 615,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Rabbit",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 2,
+   "parent_instance_id": 613,
+   "power": 1,
+   "subtypes": [
+    "Rabbit"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 17,
+   "type_line": "Token Creature — Rabbit"
+  },
+  {
+   "ability_grp_ids": [
+    259
+   ],
+   "card_types": [
+    "CardType_Artifact"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82786,
+   "instance_id": 626,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": true,
+   "mana_cost": "",
+   "name": "Powerstone",
+   "object_kind": "TOKEN",
+   "oracle_text": "{oT}: Add {oC}. This mana can't be spent to cast a nonartifact spell.",
+   "owner_seat_id": 1,
+   "parent_instance_id": 624,
+   "power": null,
+   "subtypes": [
+    "Powerstone"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Artifact — Powerstone"
+  },
+  {
+   "ability_grp_ids": [
+    259
+   ],
+   "card_types": [
+    "CardType_Artifact"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82786,
+   "instance_id": 627,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": true,
+   "mana_cost": "",
+   "name": "Powerstone",
+   "object_kind": "TOKEN",
+   "oracle_text": "{oT}: Add {oC}. This mana can't be spent to cast a nonartifact spell.",
+   "owner_seat_id": 1,
+   "parent_instance_id": 624,
+   "power": null,
+   "subtypes": [
+    "Powerstone"
+   ],
+   "toughness": null,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Artifact — Powerstone"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 631,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 632,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 633,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 634,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 635,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 636,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 637,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 638,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 639,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 640,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 641,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 642,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 643,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 644,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 645,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 646,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 647,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Artifact",
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82788,
+   "instance_id": 648,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Soldier",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 630,
+   "power": 1,
+   "subtypes": [
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Soldier"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 88903,
+   "instance_id": 657,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Warrior",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 656,
+   "power": 1,
+   "subtypes": [
+    "Warrior"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Warrior"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 88903,
+   "instance_id": 658,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Warrior",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 656,
+   "power": 1,
+   "subtypes": [
+    "Warrior"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 18,
+   "type_line": "Token Creature — Warrior"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 94160,
+   "instance_id": 664,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Rabbit",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 2,
+   "parent_instance_id": 663,
+   "power": 1,
+   "subtypes": [
+    "Rabbit"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 19,
+   "type_line": "Token Creature — Rabbit"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 94160,
+   "instance_id": 665,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Rabbit",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 2,
+   "parent_instance_id": 663,
+   "power": 1,
+   "subtypes": [
+    "Rabbit"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 19,
+   "type_line": "Token Creature — Rabbit"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 94160,
+   "instance_id": 682,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Rabbit",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 2,
+   "parent_instance_id": 681,
+   "power": 1,
+   "subtypes": [
+    "Rabbit"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 21,
+   "type_line": "Token Creature — Rabbit"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 94160,
+   "instance_id": 683,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Rabbit",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 2,
+   "parent_instance_id": 681,
+   "power": 1,
+   "subtypes": [
+    "Rabbit"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 21,
+   "type_line": "Token Creature — Rabbit"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 94160,
+   "instance_id": 684,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Rabbit",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 2,
+   "parent_instance_id": 681,
+   "power": 1,
+   "subtypes": [
+    "Rabbit"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": 21,
+   "type_line": "Token Creature — Rabbit"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 88903,
+   "instance_id": 694,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Warrior",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 693,
+   "power": 1,
+   "subtypes": [
+    "Warrior"
+   ],
+   "summoning_sickness": true,
+   "toughness": 1,
+   "turn_entered_battlefield": 22,
+   "type_line": "Token Creature — Warrior"
+  },
+  {
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 88903,
+   "instance_id": 695,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "",
+   "name": "Warrior",
+   "object_kind": "TOKEN",
+   "oracle_text": "",
+   "owner_seat_id": 1,
+   "parent_instance_id": 693,
+   "power": 1,
+   "subtypes": [
+    "Warrior"
+   ],
+   "summoning_sickness": true,
+   "toughness": 1,
+   "turn_entered_battlefield": 22,
+   "type_line": "Token Creature — Warrior"
+  }
+ ],
+ "command": [
+  {
+   "ability_grp_ids": [
+    93027,
+    153189
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82502,
+   "instance_id": 753,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{3}{W}",
+   "name": "Myrel, Shield of Argive",
+   "object_kind": "CARD",
+   "oracle_text": "During your turn, your opponents can't cast spells or activate abilities of artifacts, creatures, or enchantments.\nWhenever Myrel attacks, create X 1/1 colorless Soldier artifact creature tokens, where X is the number of Soldiers you control.",
+   "owner_seat_id": 1,
+   "power": 3,
+   "subtypes": [
+    "Human",
+    "Soldier"
+   ],
+   "toughness": 4,
+   "turn_entered_battlefield": -1,
+   "type_line": "Legendary Creature — Human Soldier"
+  },
+  {
+   "ability_grp_ids": [
+    203047,
+    203048
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 100471,
+   "instance_id": 629,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{2}{W}",
+   "name": "Leonardo, Big Brother",
+   "object_kind": "CARD",
+   "oracle_text": "Sneak {oW}\nLeonardo gets +1/+0 for each other creature you control.",
+   "owner_seat_id": 2,
+   "power": 1,
+   "subtypes": [
+    "Mutant",
+    "Ninja",
+    "Turtle"
+   ],
+   "toughness": 3,
+   "turn_entered_battlefield": -1,
+   "type_line": "Legendary Creature — Mutant Ninja Turtle"
+  }
+ ],
+ "commander_casts": {
+  "100471": 3
+ },
+ "commander_grp_ids": [
+  100471
+ ],
+ "damage_taken": {
+  "1": 22
+ },
+ "decision_context": {
+  "legal_attacker_ids": [
+   466,
+   504,
+   505,
+   526,
+   530,
+   531,
+   573,
+   614,
+   615,
+   660,
+   664,
+   665,
+   682,
+   683,
+   684
+  ],
+  "legal_attackers": [
+   "Human",
+   "Rabbit",
+   "Rabbit",
+   "Hare Apparent",
+   "Rabbit",
+   "Rabbit",
+   "Rabbit",
+   "Rabbit",
+   "Rabbit",
+   "Hare Apparent",
+   "Rabbit",
+   "Rabbit",
+   "Rabbit",
+   "Rabbit",
+   "Rabbit"
+  ],
+  "raw_attackers": [
+   {
+    "attackerInstanceId": 466,
+    "legalDamageRecipients": [
+     {
+      "playerSystemSeatId": 1,
+      "type": "DamageRecType_Player"
+     }
+    ]
+   },
+   {
+    "attackerInstanceId": 504,
+    "legalDamageRecipients": [
+     {
+      "playerSystemSeatId": 1,
+      "type": "DamageRecType_Player"
+     }
+    ]
+   },
+   {
+    "attackerInstanceId": 505,
+    "legalDamageRecipients": [
+     {
+      "playerSystemSeatId": 1,
+      "type": "DamageRecType_Player"
+     }
+    ]
+   },
+   {
+    "attackerInstanceId": 526,
+    "legalDamageRecipients": [
+     {
+      "playerSystemSeatId": 1,
+      "type": "DamageRecType_Player"
+     }
+    ]
+   },
+   {
+    "attackerInstanceId": 530,
+    "legalDamageRecipients": [
+     {
+      "playerSystemSeatId": 1,
+      "type": "DamageRecType_Player"
+     }
+    ]
+   },
+   {
+    "attackerInstanceId": 531,
+    "legalDamageRecipients": [
+     {
+      "playerSystemSeatId": 1,
+      "type": "DamageRecType_Player"
+     }
+    ]
+   },
+   {
+    "attackerInstanceId": 573,
+    "legalDamageRecipients": [
+     {
+      "playerSystemSeatId": 1,
+      "type": "DamageRecType_Player"
+     }
+    ]
+   },
+   {
+    "attackerInstanceId": 614,
+    "legalDamageRecipients": [
+     {
+      "playerSystemSeatId": 1,
+      "type": "DamageRecType_Player"
+     }
+    ]
+   },
+   {
+    "attackerInstanceId": 615,
+    "legalDamageRecipients": [
+     {
+      "playerSystemSeatId": 1,
+      "type": "DamageRecType_Player"
+     }
+    ]
+   },
+   {
+    "attackerInstanceId": 660,
+    "legalDamageRecipients": [
+     {
+      "playerSystemSeatId": 1,
+      "type": "DamageRecType_Player"
+     }
+    ]
+   },
+   {
+    "attackerInstanceId": 664,
+    "legalDamageRecipients": [
+     {
+      "playerSystemSeatId": 1,
+      "type": "DamageRecType_Player"
+     }
+    ]
+   },
+   {
+    "attackerInstanceId": 665,
+    "legalDamageRecipients": [
+     {
+      "playerSystemSeatId": 1,
+      "type": "DamageRecType_Player"
+     }
+    ]
+   },
+   {
+    "attackerInstanceId": 682,
+    "legalDamageRecipients": [
+     {
+      "playerSystemSeatId": 1,
+      "type": "DamageRecType_Player"
+     }
+    ]
+   },
+   {
+    "attackerInstanceId": 683,
+    "legalDamageRecipients": [
+     {
+      "playerSystemSeatId": 1,
+      "type": "DamageRecType_Player"
+     }
+    ]
+   },
+   {
+    "attackerInstanceId": 684,
+    "legalDamageRecipients": [
+     {
+      "playerSystemSeatId": 1,
+      "type": "DamageRecType_Player"
+     }
+    ]
+   }
+  ],
+  "type": "declare_attackers"
+ },
+ "deck_cards": [],
+ "designations": {
+  "1": [
+   ""
+  ],
+  "2": [
+   ""
+  ]
+ },
+ "event_id": "Brawl_Ladder",
+ "exile": [],
+ "format_name": "Brawl Ladder",
+ "game_number": 1,
+ "graveyard": [
+  {
+   "ability_grp_ids": [
+    153187
+   ],
+   "card_types": [
+    "CardType_Sorcery"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 82499,
+   "instance_id": 566,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{5}{W}",
+   "name": "Mass Production",
+   "object_kind": "CARD",
+   "oracle_text": "Create four 1/1 colorless Soldier artifact creature tokens.",
+   "owner_seat_id": 1,
+   "power": null,
+   "subtypes": [],
+   "toughness": null,
+   "turn_entered_battlefield": -1,
+   "type_line": "Sorcery"
+  },
+  {
+   "ability_grp_ids": [
+    3
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 75448,
+   "instance_id": 483,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "keywords": [
+    "double strike"
+   ],
+   "mana_cost": "{1}{W}",
+   "name": "Fencing Ace",
+   "object_kind": "CARD",
+   "oracle_text": "Double strike",
+   "owner_seat_id": 1,
+   "power": 1,
+   "subtypes": [
+    "Human",
+    "Soldier"
+   ],
+   "toughness": 1,
+   "turn_entered_battlefield": -1,
+   "type_line": "Creature — Human Soldier"
+  },
+  {
+   "ability_grp_ids": [
+    168736
+   ],
+   "card_types": [
+    "CardType_Instant"
+   ],
+   "controller_seat_id": 1,
+   "counters": {},
+   "grp_id": 93861,
+   "instance_id": 467,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{2}{W}",
+   "name": "Stroke of Midnight",
+   "object_kind": "CARD",
+   "oracle_text": "Destroy target nonland permanent. Its controller creates a 1/1 white Human creature token.",
+   "owner_seat_id": 1,
+   "power": null,
+   "subtypes": [],
+   "toughness": null,
+   "turn_entered_battlefield": -1,
+   "type_line": "Instant"
+  },
+  {
+   "ability_grp_ids": [
+    175767,
+    175768
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 93728,
+   "instance_id": 751,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{1}{W}",
+   "name": "Hare Apparent",
+   "object_kind": "CARD",
+   "oracle_text": "When this creature enters, create a number of 1/1 white Rabbit creature tokens equal to the number of other creatures you control named Hare Apparent.\nA deck can have any number of cards named Hare Apparent.",
+   "owner_seat_id": 2,
+   "power": 2,
+   "subtypes": [
+    "Rabbit",
+    "Noble"
+   ],
+   "toughness": 2,
+   "turn_entered_battlefield": -1,
+   "type_line": "Creature — Rabbit Noble"
+  },
+  {
+   "ability_grp_ids": [
+    175767,
+    175768
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 93728,
+   "instance_id": 649,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{1}{W}",
+   "name": "Hare Apparent",
+   "object_kind": "CARD",
+   "oracle_text": "When this creature enters, create a number of 1/1 white Rabbit creature tokens equal to the number of other creatures you control named Hare Apparent.\nA deck can have any number of cards named Hare Apparent.",
+   "owner_seat_id": 2,
+   "power": 2,
+   "subtypes": [
+    "Rabbit",
+    "Noble"
+   ],
+   "toughness": 2,
+   "turn_entered_battlefield": -1,
+   "type_line": "Creature — Rabbit Noble"
+  },
+  {
+   "ability_grp_ids": [
+    175767,
+    175768
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 93728,
+   "instance_id": 540,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{1}{W}",
+   "name": "Hare Apparent",
+   "object_kind": "CARD",
+   "oracle_text": "When this creature enters, create a number of 1/1 white Rabbit creature tokens equal to the number of other creatures you control named Hare Apparent.\nA deck can have any number of cards named Hare Apparent.",
+   "owner_seat_id": 2,
+   "power": 2,
+   "subtypes": [
+    "Rabbit",
+    "Noble"
+   ],
+   "toughness": 2,
+   "turn_entered_battlefield": -1,
+   "type_line": "Creature — Rabbit Noble"
+  },
+  {
+   "ability_grp_ids": [
+    175767,
+    175768
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 93728,
+   "instance_id": 522,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{1}{W}",
+   "name": "Hare Apparent",
+   "object_kind": "CARD",
+   "oracle_text": "When this creature enters, create a number of 1/1 white Rabbit creature tokens equal to the number of other creatures you control named Hare Apparent.\nA deck can have any number of cards named Hare Apparent.",
+   "owner_seat_id": 2,
+   "power": 2,
+   "subtypes": [
+    "Rabbit",
+    "Noble"
+   ],
+   "toughness": 2,
+   "turn_entered_battlefield": -1,
+   "type_line": "Creature — Rabbit Noble"
+  },
+  {
+   "ability_grp_ids": [
+    175767,
+    175768
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 93728,
+   "instance_id": 506,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{1}{W}",
+   "name": "Hare Apparent",
+   "object_kind": "CARD",
+   "oracle_text": "When this creature enters, create a number of 1/1 white Rabbit creature tokens equal to the number of other creatures you control named Hare Apparent.\nA deck can have any number of cards named Hare Apparent.",
+   "owner_seat_id": 2,
+   "power": 2,
+   "subtypes": [
+    "Rabbit",
+    "Noble"
+   ],
+   "toughness": 2,
+   "turn_entered_battlefield": -1,
+   "type_line": "Creature — Rabbit Noble"
+  },
+  {
+   "ability_grp_ids": [
+    175767,
+    175768
+   ],
+   "card_types": [
+    "CardType_Creature"
+   ],
+   "controller_seat_id": 2,
+   "counters": {},
+   "grp_id": 93728,
+   "instance_id": 482,
+   "is_attacking": false,
+   "is_blocking": false,
+   "is_tapped": false,
+   "mana_cost": "{1}{W}",
+   "name": "Hare Apparent",
+   "object_kind": "CARD",
+   "oracle_text": "When this creature enters, create a number of 1/1 white Rabbit creature tokens equal to the number of other creatures you control named Hare Apparent.\nA deck can have any number of cards named Hare Apparent.",
+   "owner_seat_id": 2,
+   "power": 2,
+   "subtypes": [
+    "Rabbit",
+    "Noble"
+   ],
+   "toughness": 2,
+   "turn_entered_battlefield": -1,
+   "type_line": "Creature — Rabbit Noble"
+  }
+ ],
+ "hand": [],
+ "legal_actions": [
+  "Attack with: Human",
+  "Attack with: Rabbit",
+  "Attack with: Rabbit",
+  "Attack with: Hare Apparent",
+  "Attack with: Rabbit",
+  "Attack with: Rabbit",
+  "Attack with: Rabbit",
+  "Attack with: Rabbit",
+  "Attack with: Rabbit",
+  "Attack with: Hare Apparent",
+  "Attack with: Rabbit",
+  "Attack with: Rabbit",
+  "Attack with: Rabbit",
+  "Attack with: Rabbit",
+  "Attack with: Rabbit",
+  "Done (confirm attackers)"
+ ],
+ "legal_actions_raw": [
+  {
+   "attackerInstanceId": 466,
+   "legalDamageRecipients": [
+    {
+     "playerSystemSeatId": 1,
+     "type": "DamageRecType_Player"
+    }
+   ]
+  },
+  {
+   "attackerInstanceId": 504,
+   "legalDamageRecipients": [
+    {
+     "playerSystemSeatId": 1,
+     "type": "DamageRecType_Player"
+    }
+   ]
+  },
+  {
+   "attackerInstanceId": 505,
+   "legalDamageRecipients": [
+    {
+     "playerSystemSeatId": 1,
+     "type": "DamageRecType_Player"
+    }
+   ]
+  },
+  {
+   "attackerInstanceId": 526,
+   "legalDamageRecipients": [
+    {
+     "playerSystemSeatId": 1,
+     "type": "DamageRecType_Player"
+    }
+   ]
+  },
+  {
+   "attackerInstanceId": 530,
+   "legalDamageRecipients": [
+    {
+     "playerSystemSeatId": 1,
+     "type": "DamageRecType_Player"
+    }
+   ]
+  },
+  {
+   "attackerInstanceId": 531,
+   "legalDamageRecipients": [
+    {
+     "playerSystemSeatId": 1,
+     "type": "DamageRecType_Player"
+    }
+   ]
+  },
+  {
+   "attackerInstanceId": 573,
+   "legalDamageRecipients": [
+    {
+     "playerSystemSeatId": 1,
+     "type": "DamageRecType_Player"
+    }
+   ]
+  },
+  {
+   "attackerInstanceId": 614,
+   "legalDamageRecipients": [
+    {
+     "playerSystemSeatId": 1,
+     "type": "DamageRecType_Player"
+    }
+   ]
+  },
+  {
+   "attackerInstanceId": 615,
+   "legalDamageRecipients": [
+    {
+     "playerSystemSeatId": 1,
+     "type": "DamageRecType_Player"
+    }
+   ]
+  },
+  {
+   "attackerInstanceId": 660,
+   "legalDamageRecipients": [
+    {
+     "playerSystemSeatId": 1,
+     "type": "DamageRecType_Player"
+    }
+   ]
+  },
+  {
+   "attackerInstanceId": 664,
+   "legalDamageRecipients": [
+    {
+     "playerSystemSeatId": 1,
+     "type": "DamageRecType_Player"
+    }
+   ]
+  },
+  {
+   "attackerInstanceId": 665,
+   "legalDamageRecipients": [
+    {
+     "playerSystemSeatId": 1,
+     "type": "DamageRecType_Player"
+    }
+   ]
+  },
+  {
+   "attackerInstanceId": 682,
+   "legalDamageRecipients": [
+    {
+     "playerSystemSeatId": 1,
+     "type": "DamageRecType_Player"
+    }
+   ]
+  },
+  {
+   "attackerInstanceId": 683,
+   "legalDamageRecipients": [
+    {
+     "playerSystemSeatId": 1,
+     "type": "DamageRecType_Player"
+    }
+   ]
+  },
+  {
+   "attackerInstanceId": 684,
+   "legalDamageRecipients": [
+    {
+     "playerSystemSeatId": 1,
+     "type": "DamageRecType_Player"
+    }
+   ]
+  }
+ ],
+ "local_seat_id": 2,
+ "match_id": "41b07b15-ca27-43f0-aa40-a2eceac416ba",
+ "opponent_seat_id": 1,
+ "pending_decision": "Declare Attackers",
+ "players": [
+  {
+   "controller_seat_id": 1,
+   "is_local": false,
+   "lands_played": 0,
+   "life_gained_this_game": 2,
+   "life_gained_this_turn": 0,
+   "life_total": 5,
+   "mana_pool": {},
+   "seat_id": 1,
+   "status": "PlayerStatus_InGame",
+   "team_id": 1
+  },
+  {
+   "controller_seat_id": 2,
+   "is_local": true,
+   "lands_played": 0,
+   "life_gained_this_game": 0,
+   "life_gained_this_turn": 0,
+   "life_total": 25,
+   "mana_pool": {},
+   "seat_id": 2,
+   "status": "PlayerStatus_InGame",
+   "team_id": 2
+  }
+ ],
+ "stack": [],
+ "turn": {
+  "active_player": 2,
+  "decision_player": 2,
+  "pending_combat_steps": [
+   {
+    "active_player": 2,
+    "step": "Step_DeclareAttack",
+    "turn": 23
+   }
+  ],
+  "phase": "Phase_Combat",
+  "priority_player": 2,
+  "step": "Step_DeclareAttack",
+  "turn_number": 23
+ },
+ "zones": {
+  "library_count": 82,
+  "library_count_source": "log_zone_membership",
+  "opponent_hand_count": 1,
+  "opponent_library_count": 81
+ }
+}

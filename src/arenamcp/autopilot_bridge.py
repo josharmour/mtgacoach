@@ -776,8 +776,20 @@ class _BridgeSubmitMixin:
             assessment = assess(game_state)
         except Exception:
             return None
+        sneak = None
         if assessment is None or not getattr(assessment, "all_in", False):
-            return None
+            # Ledger #189 (2026-10-19 16:22-16:23, Brawl Leonardo): the Sneak guard held {4}{W}
+            # for "attack with everything, then Sneak Leonardo after blocks: 39 against their
+            # 21", but on the big board the combat solver declared no attackers, twice; the
+            # held mana went unused. A lethal Sneak line attacks with everything.
+            try:
+                from arenamcp.sneak import sneak_main_hold
+
+                sneak = sneak_main_hold(game_state, declare_step=True)
+            except Exception:
+                sneak = None
+            if sneak is None:
+                return None
         ctx = game_state.get("decision_context") or {}
         legal = {int(i) for i in ctx.get("legal_attacker_ids") or [] if i}
         battlefield = game_state.get("battlefield") or []
@@ -795,6 +807,18 @@ class _BridgeSubmitMixin:
             names.append(f"{name} #{twins.index(identity) + 1}" if len(twins) > 1 else name)
         if len(names) <= len(planned):
             return None
+        if sneak is not None:
+            why = (
+                f"the Sneak line is lethal: attack with everything, then Sneak {sneak.cast.name} "
+                f"after blocks ({sneak.total} against their {sneak.life})"
+            )
+            logger.warning("All-in attack: %s instead of %s — %s", names, planned or "no attack", why)
+            return GameAction(
+                action_type=ActionType.DECLARE_ATTACKERS,
+                attacker_names=names,
+                target_names=["Opponent"],
+                reasoning=f"All in: {why}.",
+            )
         logger.warning(
             "All-in attack: %s instead of %s — %s", names, planned or "no attack", assessment.role_reason
         )
@@ -882,6 +906,7 @@ class _BridgeSubmitMixin:
                 theirs,
                 remaining_blockers,
                 our_walker_loyalties=walkers,
+                caller="bridge solver attack",
             )
         except Exception as e:
             logger.debug(f"combat solver attack fallback failed: {e}")
@@ -972,7 +997,9 @@ class _BridgeSubmitMixin:
                 your_life,
                 theirs,
             )
-            best = optimal_attacks(candidates, opp_blockers, opp_life, your_life, theirs, spare)
+            best = optimal_attacks(
+                candidates, opp_blockers, opp_life, your_life, theirs, spare, caller="bridge attack override"
+            )
         except Exception as e:
             logger.debug(f"attack override solver failed: {e}")
             return None
@@ -1091,12 +1118,20 @@ class _BridgeSubmitMixin:
         ]
         if len(pairs) != len(entries):
             logger.info("Omitting zero-power attackers with no visible attack payoff")
-        losing = losing_attackers(
-            state,
-            [entry["attackerInstanceId"] for _, entry in pairs],
-            pending,
-            # #127: an attack at a planeswalker that dies whatever they block is kept.
-            attacker_targets={entry["attackerInstanceId"]: entry["damageRecipient"] for _, entry in pairs},
+        # Ledger #178: the line search's pushed attack already judged every block over its turns;
+        # thinning it here would send the declaration the push replaced.
+        losing = (
+            {}
+            if getattr(action, "line_push", False)
+            else losing_attackers(
+                state,
+                [entry["attackerInstanceId"] for _, entry in pairs],
+                pending,
+                # #127: an attack at a planeswalker that dies whatever they block is kept.
+                attacker_targets={
+                    entry["attackerInstanceId"]: entry["damageRecipient"] for _, entry in pairs
+                },
+            )
         )
         for name, entry in pairs:
             if entry["attackerInstanceId"] in losing:

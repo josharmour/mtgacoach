@@ -801,3 +801,58 @@ def test_the_desktop_tells_the_engine_it_handles_reload_requests(qapp, child_run
         assert {"features": "request_engine_reload"} in events
     finally:
         process.stop()
+
+
+def test_navigation_waits_for_the_records_of_a_pending_reload(disk, arena, busy_thread, caplog, monkeypatch):
+    """#190 (16:26:39): the change waited on the advice score while auto-queue joined the next
+    queue, and the next match ran on the old code."""
+    engine = Engine()
+    caplog.set_level(logging.INFO, logger="arenamcp.standalone_auto_reload")
+    engine._maybe_request_auto_reload({"match_id": MATCH, "turn": {"turn_number": 8}})
+    arena.complete(MATCH)
+    release = busy_thread("auto-advice-score")
+    assert not engine._auto_reload_holds({"match_id": None})  # nothing found yet
+    assert not engine._maybe_request_auto_reload({"match_id": None})  # found; the score is written
+    for _ in range(3):
+        assert engine._auto_reload_holds({"match_id": None})
+    assert requests(engine) == []
+    assert caplog.text.count("Auto-queue navigation waits for the pending engine reload") == 1
+    release.set()
+    for thread in threading.enumerate():
+        if thread.name == "auto-advice-score":
+            thread.join(1)
+    assert engine._auto_reload_holds({"match_id": None})  # the request goes out at once
+    assert len(requests(engine)) == 1
+
+
+@pytest.mark.parametrize(
+    "navigator",
+    [
+        SimpleNamespace(active=True, queue_joined=True, step_running=False),
+        SimpleNamespace(active=True, queue_joined=False, step_running=True),
+    ],
+)
+def test_no_work_hold_for_navigation_itself_or_mid_game(disk, arena, navigator):
+    engine = Engine()
+    engine._maybe_request_auto_reload({"match_id": MATCH, "turn": {"turn_number": 8}})
+    arena.complete(MATCH)
+    engine._auto_queue_navigator = navigator
+    assert not engine._maybe_request_auto_reload({"match_id": None})
+    assert not engine._auto_reload_holds({"match_id": None})
+    assert not engine._auto_reload_holds({"match_id": NEXT_MATCH, "turn": {"turn_number": 1}})
+
+
+def test_the_work_hold_gives_up_after_its_limit(disk, arena, busy_thread, caplog, monkeypatch):
+    engine = Engine()
+    caplog.set_level(logging.INFO, logger="arenamcp.standalone_auto_reload")
+    engine._maybe_request_auto_reload({"match_id": MATCH, "turn": {"turn_number": 8}})
+    arena.complete(MATCH)
+    busy_thread("match-bundle-15e0eb20")
+    engine._maybe_request_auto_reload({"match_id": None})
+    assert engine._auto_reload_holds({"match_id": None})
+    clock = time.monotonic() + standalone_auto_reload.WORK_HOLD_S + 1
+    monkeypatch.setattr(standalone_auto_reload.time, "monotonic", lambda: clock)
+    assert not engine._auto_reload_holds({"match_id": None})
+    assert not engine._auto_reload_holds({"match_id": None})
+    assert caplog.text.count("stops waiting for the engine reload") == 1
+    assert requests(engine) == []
