@@ -64,6 +64,14 @@ namespace MtgaCoachBridge
         // killing the server.
         // -------------------------------------------------------------------
 
+        // The coach's address. Loopback everywhere except where MTGA runs in a VM
+        // (Asahi muvm under Proton): there MTGACOACH_BRIDGE_HOST names the address
+        // that reaches the host's loopback, e.g. the VM gateway passt maps to it.
+        private static readonly string BridgeHost =
+            string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("MTGACOACH_BRIDGE_HOST"))
+                ? "127.0.0.1"
+                : Environment.GetEnvironmentVariable("MTGACOACH_BRIDGE_HOST").Trim();
+
         private void PipeClientLoop()
         {
             // Reconnect loop with adaptive backoff.
@@ -85,7 +93,7 @@ namespace MtgaCoachBridge
                 try
                 {
                     client = new TcpClient();
-                    var result = client.BeginConnect("127.0.0.1", 44222, null, null);
+                    var result = client.BeginConnect(BridgeHost, 44222, null, null);
                     bool success = result.AsyncWaitHandle.WaitOne(1000); // 1s timeout â€” retry if Python isn't up yet
                     if (!success)
                     {
@@ -111,7 +119,7 @@ namespace MtgaCoachBridge
                     connectedThisIteration = true;
                     consecutiveTimeouts = 0;
                     retryMs = minRetryMs;
-                    _log.LogInfo("TCP client connected to Python server on port 44222");
+                    _log.LogInfo($"TCP client connected to Python server on {BridgeHost}:44222");
 
                     HandleClient(client);
                     _log.LogInfo("TCP client lost connection (HandleClient returned), reconnecting...");
