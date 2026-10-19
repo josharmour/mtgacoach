@@ -360,7 +360,6 @@ CALL_CLASSES: dict[str, str] = {
     "decision.mulligan": "mulligan decision",
     "coach.advice": "coach get_advice, including threat alerts",
     "coach.question": "game assessment question",
-    "coach.win_plan": "win-in-N plan the player asked for (foreground, not the background lane)",
     "coach.win_prob": "win probability",
     "coach.sideboard": "sideboard advice",
     "coach.postmatch": "post-match analysis and rating calls",

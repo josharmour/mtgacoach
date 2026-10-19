@@ -1,8 +1,8 @@
 """Tests for arenamcp.desktop.window_tracking — the per-platform MTGA
-window locator used by the desktop overlays.
+window locator that crops bug-report and "Analyze screen" captures.
 
 Pure-python tests (dispatch, darwin parsing, caching) run headless on any
-platform; the Qt overlay smoke tests are skipped when PySide6 is missing.
+platform.
 """
 
 from __future__ import annotations
@@ -362,15 +362,3 @@ def test_win32_rect_swallows_backend_errors(monkeypatch):
 
     monkeypatch.setattr(wt, "gw", types.SimpleNamespace(getWindowsWithTitle=boom))
     assert wt._win32_rect("MTGA") is None
-
-
-# -- Qt overlay smoke tests (skipped when PySide6 unavailable) --------------------
-
-try:
-    import PySide6  # noqa: F401
-
-    _HAVE_PYSIDE6 = True
-except Exception:  # pragma: no cover - env specific
-    _HAVE_PYSIDE6 = False
-
-needs_pyside6 = pytest.mark.skipif(not _HAVE_PYSIDE6, reason="PySide6 not installed in this environment")

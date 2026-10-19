@@ -1,4 +1,7 @@
-"""Cross-platform MTGA window locator for the desktop overlays.
+"""Cross-platform MTGA window locator for screenshots of the game window.
+
+Used by the autopilot bug capture and the "Analyze screen" diagnostic to crop
+a capture to Arena's window.
 
 Single entry point: :func:`get_mtga_window_rect` returns the MTGA window's
 ``(x, y, width, height)`` in physical screen pixels, or ``None`` when MTGA
@@ -6,16 +9,15 @@ isn't running, is minimized, or the platform backend is unavailable.
 
 Per-platform backends:
 
-- **win32** — pygetwindow title match (the historical overlay approach,
-  moved here verbatim: exact-title ``"MTGA"`` windows, minimized → None).
+- **win32** — pygetwindow title match (moved here verbatim from the
+  removed desktop overlays: exact-title ``"MTGA"`` windows, minimized → None).
 - **linux** — delegates to :func:`arenamcp.desktop.runtime.get_linux_window_geometry`
   (xwininfo under X11/XWayland; returns None on pure Wayland without it).
 - **darwin** — Quartz ``CGWindowListCopyWindowInfo`` filtered by owner name
   containing ``"MTGA"``. Requires pyobjc's Quartz; missing pyobjc degrades
   to ``None`` rather than raising.
 
-Results are cached briefly (overlays poll every ~250-1000 ms, several
-windows poll concurrently) so a burst of calls costs one lookup.
+Results are cached briefly so a burst of calls costs one lookup.
 """
 
 from __future__ import annotations
@@ -28,9 +30,8 @@ from typing import Any
 
 Rect = tuple[int, int, int, int]
 
-# How long a located rect stays fresh. Overlays poll at 250-1000 ms; several
-# overlay windows share this module, so a sub-poll TTL collapses their
-# concurrent lookups into one real query without adding visible lag.
+# How long a located rect stays fresh: concurrent lookups collapse into one
+# real query.
 _CACHE_TTL_S = 0.25
 
 # macOS: ignore tiny windows (menu-bar extras, tooltips) when scanning the
@@ -52,8 +53,7 @@ def _platform() -> str:
 
 
 def _win32_rect(title: str) -> Rect | None:
-    """Historical pygetwindow lookup, behavior-identical to the old overlays:
-    exact-title match, minimized window → None."""
+    """pygetwindow lookup: exact-title match, minimized window → None."""
     if gw is None:
         return None
     try:
@@ -184,7 +184,7 @@ def get_mtga_window_rect(title: str = "MTGA") -> Rect | None:
 
     ``None`` means "no usable window right now": MTGA not running,
     minimized, or the platform locator (pygetwindow / xwininfo / Quartz)
-    is unavailable. Callers should hide their overlay in that case.
+    is unavailable. Callers then skip the window crop.
     """
     now = time.monotonic()
     with _cache_lock:
@@ -203,49 +203,3 @@ def clear_cache() -> None:
     """Drop cached lookups (used by tests and after display changes)."""
     with _cache_lock:
         _cache_value.clear()
-
-
-def apply_system_click_through(widget: Any, enabled: bool = True) -> bool:
-    """OS-level click-through for a top-level Qt window.
-
-    Qt's ``WA_TransparentForMouseEvents`` only makes *Qt* ignore mouse
-    events — the native window still receives clicks from the OS and
-    swallows anything that should reach the app underneath. Windows
-    overlays solve this with ``WS_EX_TRANSPARENT``; the macOS analogue is
-    ``NSWindow.ignoresMouseEvents``, which Qt never sets. Without it an
-    invisible overlay steals every click over the game (observed live
-    2026-07-16 on the first Mac run).
-
-    Returns True when a system-level setting was applied. X11/Wayland have
-    no portable equivalent here; callers keep the Qt attribute regardless.
-    """
-    if sys.platform != "darwin":
-        return False
-    try:
-        import ctypes
-
-        import objc  # pyobjc — same dependency as the Quartz locator
-        from PySide6.QtGui import QGuiApplication
-
-        # winId() is only an NSView* under the real cocoa QPA — under
-        # "offscreen" (tests) it's a fake handle and dereferencing it via
-        # objc would crash the interpreter.
-        if QGuiApplication.platformName() != "cocoa":
-            return False
-
-        wid = int(widget.winId())  # NSView* on macOS
-        if not wid:
-            return False
-        view = objc.objc_object(c_void_p=ctypes.c_void_p(wid))
-        window = view.window()
-        if window is None:
-            return False
-        window.setIgnoresMouseEvents_(bool(enabled))
-        try:
-            window.setHidesOnDeactivate_(False)
-            window.setLevel_(25)  # Overlay / status window level (stays above game when MTGA gains focus)
-        except Exception:
-            pass
-        return True
-    except Exception:
-        return False

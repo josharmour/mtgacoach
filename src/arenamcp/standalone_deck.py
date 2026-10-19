@@ -262,15 +262,6 @@ class _DeckAnalysisMixin:
         summary = prepared.get("library_summary", "")
         return with_deck_reference(summary, prepared) if detailed else summary
 
-    def _has_tutor_in_hand(self, game_state: dict) -> bool:
-        return any(
-            "search your library" in (c.get("oracle_text") or "").lower() for c in game_state.get("hand", [])
-        )
-
-    def _compute_tutor_library_targets(self, game_state: dict) -> str:
-        """Every remaining candidate, with costs and rules in the deck reference."""
-        return self._compute_library_summary(game_state, detailed=True)
-
     def _inject_library_summary_if_needed(self, game_state: dict) -> None:
         from arenamcp.match_context import prepare_match_context
 

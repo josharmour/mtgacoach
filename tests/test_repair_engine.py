@@ -15,7 +15,6 @@ def test_report_summary_and_health():
 
     rep.results.append(CheckResult("c", "C", "action_needed", "broken", "do x"))
     assert rep.healthy is False
-    assert rep.needs_user[0].key == "c"
     assert "1 item(s) need attention" in rep.summary()
 
 

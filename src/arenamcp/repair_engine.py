@@ -56,10 +56,6 @@ class RepairReport:
     def healthy(self) -> bool:
         return all(r.status in ("ok", "fixed") for r in self.results)
 
-    @property
-    def needs_user(self) -> list[CheckResult]:
-        return [r for r in self.results if r.status == "action_needed"]
-
     def summary(self) -> str:
         fixed = sum(1 for r in self.results if r.status == "fixed")
         broken = [r for r in self.results if r.status in ("action_needed", "error")]

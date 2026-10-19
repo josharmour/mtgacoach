@@ -474,3 +474,22 @@ def test_coach_formatter_keeps_the_raw_per_seat_revealed_dict():
         for_planner=True,
     )
     assert "Opp revealed 1 card(s) this game" in context
+
+
+def test_coach_formatter_renders_a_known_empty_opponent_hand_as_zero():
+    """Zero is a fact (an empty hand), not an unknown; only a missing count is UNKNOWN."""
+    from arenamcp.coach import CoachEngine
+
+    formatter = CoachEngine.__new__(CoachEngine)
+    state = {
+        "turn": {"turn_number": 3, "active_player": 1, "priority_player": 1, "phase": "Phase_Main1"},
+        "players": [
+            {"seat_id": 1, "is_local": True, "life_total": 15, "hand_size": 2},
+            {"seat_id": 2, "is_local": False, "life_total": 12, "hand_size": 0},
+        ],
+        "battlefield": [],
+        "hand": [],
+    }
+    assert "Opp hand: 0 card(s)" in formatter._format_game_context(state)
+    del state["players"][1]["hand_size"]
+    assert "Opp hand: UNKNOWN" in formatter._format_game_context(state)

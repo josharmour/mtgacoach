@@ -40,8 +40,6 @@ class _Stub:
     """Borrows the real StandaloneCoach methods without its heavy __init__."""
 
     _compute_library_summary = StandaloneCoach._compute_library_summary
-    _compute_tutor_library_targets = StandaloneCoach._compute_tutor_library_targets
-    _has_tutor_in_hand = StandaloneCoach._has_tutor_in_hand
     _inject_library_summary_if_needed = StandaloneCoach._inject_library_summary_if_needed
 
     def __init__(self):

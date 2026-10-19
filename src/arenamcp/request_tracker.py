@@ -2,7 +2,7 @@
 
 Tracks each logical GRE request through:
 
-    PENDING → SUBMITTED → ADVANCED | REJECTED | ROLLED_BACK
+    PENDING → SUBMITTED → ADVANCED | REJECTED
 
 Identity is **content-addressed**: a fingerprint of the decision's request
 type + option set. The GRE re-issues "the same logical decision" with fresh
@@ -134,7 +134,6 @@ class _Record:
     fingerprint: Fingerprint
     submissions: int = 0
     rejected: int = 0
-    rolled_back: int = 0
     submitted_at: float = 0.0
     in_flight: bool = False
     first_seen_at: float = field(default_factory=time.monotonic)
@@ -190,7 +189,6 @@ class RequestTracker:
             # after five accepted ones; same for same-shaped priority windows).
             rec.submissions = 0
             rec.rejected = 0
-            rec.rolled_back = 0
             logger.debug(f"request {flight[0]}: ADVANCED after submit")
             try:
                 from arenamcp.match_packets import get_current_packet
@@ -232,21 +230,6 @@ class RequestTracker:
         rec.in_flight = True
         rec.window = window
         self._in_flight = fp
-
-    def note_rolled_back(self, fp: Fingerprint) -> None:
-        rec = self._record(fp)
-        rec.rolled_back += 1
-        if self._in_flight == fp:
-            rec.in_flight = False
-            self._in_flight = None
-            try:
-                from arenamcp.match_packets import get_current_packet
-
-                packet = get_current_packet()
-                if packet:
-                    packet.update_outcome(fp, "ROLLED_BACK")
-            except Exception as e:
-                logger.warning(f"MatchPacket: failed to update ROLLED_BACK outcome: {e}")
 
     # -- queries --------------------------------------------------------
 

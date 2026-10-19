@@ -23,34 +23,6 @@ logger = logging.getLogger(__name__)
 _NUMERIC_TYPE_CODE_RE = re.compile(r"^\s*\d+(?:\s*,\s*\d+)*\s*$")
 
 
-# MTGA's WellKnownCatalogId enum (re-output/SharedClientCore/WellKnownCatalogId.cs).
-# These grpIds are placeholders, not printings — MTGA itself skips printing
-# lookups for them (CardData.cs: `_instance.GrpId != 3 && _instance.GrpId != 4`).
-# A face-down creature is hidden *by the rules*; failing to resolve it is the
-# correct outcome and must not be confused with a card database that did not
-# load. Nothing here is a defect.
-WELL_KNOWN_CATALOG_IDS: dict[int, str] = {
-    1: "Token",
-    2: "Emblem",
-    3: "StandardCardBack",  # face-down / hidden card
-    4: "Obscured",
-}
-
-
-def is_hidden_card_id(arena_id: int | None) -> bool:
-    """True if this grpId is MTGA's placeholder for a card nobody can see.
-
-    Distinguishes "the game is hiding this" from "our lookup failed", which
-    are otherwise both just a missing card.
-    """
-    if arena_id is None:
-        return False
-    try:
-        return int(arena_id) in (3, 4)
-    except (TypeError, ValueError):
-        return False
-
-
 def is_bogus_type_line(type_line: str | None) -> bool:
     """True if ``type_line`` is a placeholder/encoding artefact, not a type line.
 

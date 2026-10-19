@@ -147,9 +147,10 @@ def test_commander_choice_receives_current_deck_strategy_and_engine_text():
     assert strategy in prompt
     assert "GAME PLAN: Establish the commander mana engine." in prompt
 
-    # Clearing the coach's analysis at the next match must clear the prompt too.
+    # Clearing the coach's analysis at the next match must clear the prompt too
+    # (the autopilot refreshes the plan from its manager, which has none yet).
     strategy = None
-    planner.clear_game_plan()
+    planner.set_game_plan(None)
     planner._llm_decision_options(decision, state)
     assert "DECK STRATEGY:" not in backend.prompts[-1]
     assert "GAME PLAN:" not in backend.prompts[-1]
