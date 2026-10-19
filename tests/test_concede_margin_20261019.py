@@ -117,3 +117,72 @@ def test_the_most_chumped_life_is_an_upper_bound_that_counts_each_attacker_once(
     striker = body("Striker", 3, 3, "double strike")
     assert _most_chumped_life([striker, ogre], bears[:1], 20) == 20 - 4
     assert _max_flow([4, 4], [[4, 0], [4, 3]], [4, 3]) == 7
+
+
+# --- #90: a self-pump is no out against fliers it can't block -------------------------------
+#
+# 2026-10-19 11:54:28 (match c8ea2b6c T19, their turn): 20 flying damage vs our 9 life; the
+# estimate said 0.60, "possible out: Hired Claw (ability: {o1or})". Hired Claw is a 1/2
+# ground creature and its ability only puts a +1/+1 counter on itself, and only after an
+# opponent lost life this turn.
+
+HIRED_CLAW_TEXT = (
+    "Whenever you attack with one or more Lizards, this creature deals 1 damage to target opponent.\n"
+    "{o1oR}: Put a +1/+1 counter on this creature. Activate only if an opponent lost life this turn "
+    "and only once each turn."
+)
+EARLIER = {"type": "phase_change", "turn": 18}
+
+
+def _fliers_vs_claw(*, claw_text: str = HIRED_CLAW_TEXT, keywords=(), events=None) -> dict:
+    from tests.test_concede import basic
+
+    claw = creature(
+        20, "Hired Claw", US, 1, 2, keywords=keywords, text=claw_text, entered=18,
+        type_line="Creature — Lizard Mercenary",
+    )  # fmt: skip
+    fliers = [creature(30 + k, f"Bat {k}", THEM, 5, 5, keywords=("flying",), entered=12) for k in range(4)]
+    state = board([claw, *fliers, *(basic(40 + k, US, "Mountain") for k in range(2))], life=9, opp_life=12,
+                  active=THEM, phase="Phase_Main1", turn=19)  # fmt: skip
+    if events is not None:
+        state["recent_events"] = events
+    return state
+
+
+def test_a_ground_self_pump_is_no_out_against_lethal_fliers():
+    lost = {"type": "life_changed", "turn": 19, "affected_ids": ["2"], "details": {"life": [-2]}}
+    for events in (None, [EARLIER], [EARLIER, lost]):
+        estimate = estimate_loss(_fliers_vs_claw(events=events))
+        assert estimate.confidence >= 0.95, (events, estimate.blockers)
+        assert not estimate.facts["outs"]
+
+
+def test_a_self_pump_on_a_creature_that_can_block_them_is_still_an_out():
+    estimate = estimate_loss(_fliers_vs_claw(keywords=("reach",)))
+    assert estimate.confidence < 0.95
+    assert "Hired Claw (ability: {1}{R})" in estimate.facts["outs"]
+
+
+def test_an_ability_whose_condition_is_unmet_is_no_out_and_costs_print_as_symbols():
+    text = (
+        "{o1oR}: This creature deals 2 damage to target creature. Activate only if an opponent lost "
+        "life this turn."
+    )
+    gained = [EARLIER, {"type": "life_changed", "turn": 19, "affected_ids": [2], "details": {"life": [1]}}]
+    assert not estimate_loss(_fliers_vs_claw(claw_text=text, events=gained)).facts["outs"]
+    lost = [EARLIER, {"type": "life_changed", "turn": 19, "affected_ids": [2], "details": {"life": [-1]}}]
+    assert estimate_loss(_fliers_vs_claw(claw_text=text, events=lost)).facts["outs"] == [
+        "Hired Claw (ability: {1}{R})"
+    ]
+    # This turn's events may have fallen out of the bounded buffer: the condition may hold.
+    assert estimate_loss(_fliers_vs_claw(claw_text=text, events=gained[1:])).facts["outs"]
+    assert estimate_loss(_fliers_vs_claw(claw_text=text)).facts["outs"]
+
+
+def test_printed_costs():
+    from arenamcp.concede import _printed_cost
+
+    assert _printed_cost("{o1or}") == "{1}{R}"
+    assert _printed_cost("{ot}, sacrifice ~") == "{T}, sacrifice ~"
+    assert _printed_cost("{o2o(g/w)}") == "{2}{G/W}"
+    assert _printed_cost("{2}{r}") == "{2}{R}"

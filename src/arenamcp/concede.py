@@ -380,6 +380,65 @@ def _harmless_text(text: str) -> bool:
     return not _OUT_HINT.search(text)
 
 
+# Arena's raw cost text: "{o1oR}" is {1}{R}, "{oT}" {T}, "{o(G/W)}" {G/W}.
+_ARENA_PIP = re.compile(r"o(\([^)]*\)|\d+|[a-z])", re.IGNORECASE)
+
+
+def _printed_cost(cost: str) -> str:
+    """``cost`` with Arena's raw mana text ("{o1or}") as printed symbols ("{1}{R}")."""
+
+    def symbols(match: re.Match) -> str:
+        inner = match.group(1)
+        pips = _ARENA_PIP.findall(inner)
+        if pips and "".join(f"o{pip}" for pip in pips).lower() == inner.lower():
+            return "".join("{" + pip.strip("()").upper() + "}" for pip in pips)
+        return "{" + inner.upper() + "}"
+
+    return re.sub(r"\{([^}]*)\}", symbols, cost)
+
+
+# 2026-10-19 11:54:28 (match c8ea2b6c T19, ledger #90): Hired Claw's "{1}{R}: Put a
+# +1/+1 counter on this creature. Activate only if an opponent lost life this turn
+# and only once each turn." counted as a possible out (confidence 0.60) against 20
+# flying damage at our 9 life. A ground creature growing changes nothing against
+# fliers it can't block, and the opponent had lost no life that turn.
+_SELF_PUMP = re.compile(
+    r"^(?:put (?:a|an|one|two|three|\d+) \+1/\+1 counters? on (?:~|this creature)"
+    r"|(?:~|this creature) gets \+\d+/\+\d+ until end of turn)$"
+)
+_ACTIVATION_RIDER = re.compile(r"^activate (?:this ability )?only\b")
+_IF_OPPONENT_LOST_LIFE = re.compile(r"\bactivate (?:this ability )?only if an opponent lost life this turn\b")
+
+
+def _self_pump_only(effect: str) -> bool:
+    """The ability only makes its own creature bigger (its "activate only ..." riders aside)."""
+    sentences = [part.strip() for part in re.split(r"\.\s*", effect) if part.strip()]
+    return (
+        bool(sentences)
+        and bool(_SELF_PUMP.match(sentences[0]))
+        and all(_ACTIVATION_RIDER.match(part) for part in sentences[1:])
+    )
+
+
+def _opponent_lost_life_this_turn(state: dict, opponent: int | None, turn: int) -> bool | None:
+    """Whether the log shows the opponent losing life this turn (None: the record can't tell)."""
+    events = state.get("recent_events")
+    if not isinstance(events, list) or opponent is None or not turn:
+        return None
+    dicts = [e for e in events if isinstance(e, dict)]
+    if dicts and _int(dicts[0].get("turn")) == turn:
+        return None  # the bounded buffer may have dropped this turn's earlier events
+    for event in dicts:
+        if event.get("type") != "life_changed" or _int(event.get("turn")) != turn:
+            continue
+        affected = {_int(seat) for seat in event.get("affected_ids") or []}
+        changes = (event.get("details") or {}).get("life")
+        changes = changes if isinstance(changes, list) else [changes]
+        if opponent in affected and any((_int(change) or 0) < 0 for change in changes):
+            return True
+    return False
+
+
 def _harmless_card(card: dict, text: str) -> bool:
     """A card that cannot stop the attack: pure card draw, selection, ramp or a spell counter."""
     if not text.strip():
@@ -480,8 +539,17 @@ def _scan_outs(
     battlefield: list[dict],
     ours: list[dict],
     our_life: int | None,
+    opponent: int | None = None,
+    evasive: list[dict] | tuple = (),
+    combat_ahead: bool = False,
 ) -> _Outs:
-    """Possible outs (names), digs, and confidence caps for things we cannot rule out."""
+    """Possible outs (names), digs, and confidence caps for things we cannot rule out.
+
+    ``evasive``: their attackers our blockers can't stop; when they alone kill
+    us and none of our attacks comes first (``combat_ahead``), a creature
+    ability that only makes that creature bigger is no out unless the creature
+    could block one of them (ledger #90).
+    """
     found = _Outs()
     outs, caps = found.outs, found.caps
     ours_permanents = [c for c in battlefield if _controller(c) == local]
@@ -538,7 +606,7 @@ def _scan_outs(
                 if "draw" in effect:
                     found.digs.append((name, len(sources) - _mana_needed(cost, our_life)))
                 continue
-            outs.append(f"{name} (from hand: {cost})")
+            outs.append(f"{name} (from hand: {_printed_cost(cost)})")
         how, digs = _castable_faces(
             card, flash_granted=flash_granted, sorcery_window=sorcery_window, sources=sources, life=our_life
         )
@@ -557,6 +625,9 @@ def _scan_outs(
         )
         if how:
             outs.append(f"{_name(card)} (command zone, {how})")
+
+    evasive_lethal = our_life is not None and sum(b["power"] for b in evasive) >= our_life
+    can_stop = [b for b in evasive if not b.get("_unblockable")]
 
     # Battlefield: activated abilities, crew, sorcery-speed keywords, statics.
     for card in ours_permanents:
@@ -577,7 +648,16 @@ def _scan_outs(
                 continue
             if _harmless_text(effect) or not _affordable(cost, sources, our_life):
                 continue
-            outs.append(f"{name} (ability: {cost})")
+            if (
+                _IF_OPPONENT_LOST_LIFE.search(effect)
+                and _opponent_lost_life_this_turn(state, opponent, turn) is False
+            ):
+                continue
+            if _self_pump_only(effect) and evasive_lethal and not combat_ahead:
+                body = next((b for b in ours if b.get("_card") is card), None)
+                if body is None or not (_reach_or_flying(body) and can_stop):
+                    continue
+            outs.append(f"{name} (ability: {_printed_cost(cost)})")
         crew = re.search(r"\bcrew (\d+)", text)
         if crew and not tapped:
             need = int(crew.group(1))
@@ -607,7 +687,7 @@ def _scan_outs(
             if "activate only as a sorcery" in effect and not sorcery_window:
                 continue
             if _affordable(cost, sources, our_life):
-                outs.append(f"{name} (graveyard ability: {cost})")
+                outs.append(f"{name} (graveyard ability: {_printed_cost(cost)})")
     for card in state.get("exile") or []:
         if not isinstance(card, dict) or _owner(card) != local:
             continue
@@ -1000,6 +1080,9 @@ def _estimate(state: Any) -> LossEstimate:
         battlefield=battlefield,
         ours=ours,
         our_life=our_life,
+        opponent=opponent,
+        evasive=evasive,
+        combat_ahead=our_turn and not combat_done,
     )
     caps.extend(scan.caps)
     outs = scan.outs
