@@ -301,11 +301,13 @@ def test_old_match_inflight_result_is_discarded(plan_threads):
     assert mgr._match_id == "new"
 
 
-@pytest.mark.parametrize("response", [_plan_json(), "unusable response"])
-def test_background_refresh_cooldown_applies_to_success_and_failure(monkeypatch, plan_threads, response):
+# An unusable answer gets one low-effort retry in the same attempt (ledger #58):
+# a failed attempt is two unusable answers, two calls.
+@pytest.mark.parametrize("responses", [[_plan_json()], ["unusable response", "unusable response"]])
+def test_background_refresh_cooldown_applies_to_success_and_failure(monkeypatch, plan_threads, responses):
     now = [100.0]
     monkeypatch.setattr("arenamcp.game_plan.time.monotonic", lambda: now[0])
-    be = FakeBackend([response, _plan_json("new line")])
+    be = FakeBackend([*responses, _plan_json("new line")])
     mgr = GamePlanManager(be)
     state = _state(turn=3)
     assert mgr.request_reform(state)
@@ -313,11 +315,11 @@ def test_background_refresh_cooldown_applies_to_success_and_failure(monkeypatch,
     state = _state(turn=4)
     state["turn"]["active_player"] = 2
     assert not mgr.request_reform(state)
-    assert be.calls == 1
+    assert be.calls == len(responses)
     now[0] += mgr._REFRESH_INTERVAL_S
     assert mgr.request_reform(state)
     plan_threads[-1].join(timeout=2)
-    assert be.calls == 2
+    assert be.calls == len(responses) + 1
 
 
 def test_mid_turn_reforms_wait_for_the_opponents_turn(monkeypatch, plan_threads):

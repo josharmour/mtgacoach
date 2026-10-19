@@ -519,7 +519,10 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
     * claims: "X has <keyword>", "X can't block" and "Y is unblockable" about
       creatures on the battlefield (or in our hand) are checked against their
       keywords and blocking rules; a false one is rewritten in place
-      (:func:`_check_keyword_claims`).
+      (:func:`_check_keyword_claims`). "<burn> kills <their creature>" is
+      checked against the damage that burn (with the other burn the same step
+      casts) deals it and the damage that kills it; a false one is annotated
+      (:func:`_check_kill_claims`).
     * mana holds: holding mana with nothing to spend it on at instant speed,
       or "banking" it, is replaced by "spend spare mana this turn"
       (:func:`_check_mana_holds`).
@@ -601,6 +604,7 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
     # --- turn plan ------------------------------------------------------------
     plan.turn_plan = _validate_turns(plan.turn_plan, assessment, state, issues)
     _check_keyword_claims(plan, assessment, state, issues)
+    _check_kill_claims(plan, assessment, state, issues)
     _check_leaver_blocks(plan, state, issues)
     _strip_unmet_modified_plan_attacks(plan, state, issues)
     _check_plan_line(plan, assessment, state, issues)
@@ -1335,6 +1339,197 @@ def _check_keyword_claims(plan: GamePlan, assessment: Any, state: dict, issues: 
                 step[key] = fixed(str(step.get(key) or ""), str(step.get("label") or "T"))
     except Exception as error:  # a claim check must never cost the plan
         logger.debug("plan claim check failed: %s", error, exc_info=True)
+
+
+# --- kill claims -------------------------------------------------------------------
+#
+# 2026-10-19 match 115944ce (11:14:41): the T8 plan's path said "T8 Iroh's kills
+# Trostani" — Iroh's Demonstration deals 4 to one creature and Trostani, Three
+# Whispers was a 7/7. Every decision prompt carried the claim; Iroh's was cast at
+# Trostani again and again, and at 11:15:07 the model read "dies_to_damage 7"
+# and still followed the plan ("the plan confirms 4 damage removes the only
+# clock"). A claim that our named burn kills a named opposing creature is now
+# checked against the damage that burn can deal it — together with the other
+# burn the same plan step casts, so a combined kill (Shock + Iroh's) stands —
+# and the damage that kills it now; a false one is annotated in place.
+
+_KILL_VERB = re.compile(r"\bkill(?:s|ing)?\b")
+# Combat or earlier damage may add to the burn: such a claim is not judged.
+_KILL_UNJUDGED = re.compile(
+    r"\b(?:attack\w*|block\w*|combat|trades?|trading|fights?|deathtouch|first strike|double strike|swing\w*"
+    r"|marked|damaged|wounded|already|prior|again|second|third|twice|ping\w*|if drawn|drawn)\b"
+)
+_KILL_NEGATED = re.compile(r"(?:\bnot|n't|\bnever|\bno longer|\bfails? to|\bunable to)\s+(?:\w+\s+){0,2}$")
+# The object of the kill verb: the creature named next ("kills the tapped Trostani").
+_KILL_OBJECT_GAP = re.compile(
+    r"^\s*(?:off\s+)?(?:(?:the|their|its|a|an|tapped|untapped|big|anthemed|only)\s+)*$"
+)
+_KICKED_DAMAGE = re.compile(r"\b(?:this spell|it) was kicked\b[^.\n]*\bdeals (\d+) damage\b")
+# Name words that are ordinary plan words ("kills three 1/1s" is not Trostani, Three Whispers).
+_KILL_KEY_STOPWORDS = frozenset(
+    {"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "them", "they", "their"}
+)
+_TURN_LABEL = re.compile(r"\bT(?:\+(?P<plus>\d)|(?P<abs>\d+))?\b")
+
+
+def _claim_burn(card: dict, body: dict) -> int | None:
+    """Damage (or toughness loss) ``card``'s cast text can deal ``body``; None when not plain burn.
+
+    Kicked damage counts (the larger reach never calls a kill false); ward is
+    ignored (it can be paid). X damage, destroy, fight and bounce are not
+    judged.
+    """
+    from arenamcp.board_assessment import _cast_text, burn_damage, removal_reach
+
+    type_line = str(card.get("type_line") or "").lower()
+    if "instant" not in type_line and "sorcery" not in type_line:
+        return None
+    reach = removal_reach(card)
+    text = _cast_text(card)
+    if reach is None or reach[0] not in ("damage", "shrink") or re.search(r"\bx damage\b|[-−–]x/", text):
+        return None
+    if reach[0] == "shrink":
+        return int(reach[1] or 0)
+    damage = burn_damage(card, body, ward_mana=99)
+    kicked = _KICKED_DAMAGE.search(text)
+    if damage and kicked:
+        damage = max(damage, int(kicked.group(1)))
+    return damage
+
+
+def _kill_corrections(
+    text: str,
+    *,
+    spells: list[dict],
+    ours: list[dict],
+    theirs: list[dict],
+    step_casts: Callable[[str], list[str]],
+) -> tuple[str, list[str]]:
+    """``text`` with its false "<burn> kills <their creature>" claims annotated, and what was found."""
+    from arenamcp.play_safety import lethal_damage
+
+    lowered = text.lower().replace("’", "'")
+    if len(lowered) != len(text) or not _KILL_VERB.search(lowered):
+        return text, []
+    cards = [*spells, *ours, *theirs]
+    keys = [(key, name) for key, name in _claim_keys(cards) if key not in _KILL_KEY_STOPWORDS]
+    spans = _name_spans(lowered, keys)
+    if not spans:
+        return text, []
+    spell_names = {str(c.get("name")) for c in spells}
+    our_names = {str(c.get("name")) for c in ours} - spell_names
+    their_names = {str(c.get("name")) for c in theirs} - spell_names - our_names
+    copies = Counter(str(c.get("name")) for c in spells)
+    by_name = {str(c.get("name")): c for c in spells}
+    edits: list[tuple[int, str]] = []
+    notes: list[str] = []
+    bounds = [0, *[m.end() for m in re.finditer(r"[;.|\n]", lowered)], len(lowered) + 1]
+    for begin, finish in zip(bounds, bounds[1:], strict=False):
+        clause = lowered[begin:finish]
+        named = [(s - begin, e - begin, n) for s, e, n in spans if begin <= s and e <= finish]
+        if _KILL_UNJUDGED.search(clause) or any(n in our_names for _s, _e, n in named):
+            continue
+        for verb in _KILL_VERB.finditer(clause):
+            if _KILL_NEGATED.search(clause[: verb.start()]):
+                continue
+            target = next(
+                (
+                    (s, e, n)
+                    for s, e, n in named
+                    if s >= verb.end() and _KILL_OBJECT_GAP.match(clause[verb.end() : s])
+                ),
+                None,
+            )
+            used = Counter(n for _s, _e, n in named if n in spell_names)
+            if target is None or target[2] not in their_names or not used:
+                continue
+            # Copies of one name: the easiest to kill decides.
+            known = [
+                (dies, body)
+                for body in theirs
+                if str(body.get("name")) == target[2] and (dies := lethal_damage(body)) is not None
+            ]
+            if not known:
+                continue
+            dies_to, body = min(known, key=lambda item: item[0])
+            toughness = body.get("modified_toughness")
+            toughness = toughness if type(toughness) is int else body.get("toughness")
+            # Other burn the plan step casts counts toward a combined kill.
+            # The turn named last before the verb ("T7 Shock face -> T8 Iroh's kills ...").
+            labels = list(_TURN_LABEL.finditer(text[begin : begin + verb.start()]))
+            label = labels[-1].group(0) if labels else ""
+            cast = Counter(name for name in step_casts(label) if name in spell_names)
+            for name, count in cast.items():
+                used[name] = max(used[name], count)
+            pieces = {}
+            for name, count in used.items():
+                damage = _claim_burn(by_name[name], {**body, "toughness": toughness})
+                if damage is None:
+                    pieces = None
+                    break
+                pieces[name] = damage * min(count, copies[name])
+            if pieces is None or sum(pieces.values()) >= dies_to:
+                continue
+            total = sum(pieces.values())
+            if len(pieces) == 1:
+                burn = f"{next(iter(pieces))} deals {total}"
+            else:
+                burn = " + ".join(f"{name} {damage}" for name, damage in pieces.items()) + f" deal {total}"
+            fact = f"{burn}; {target[2]} dies to {dies_to}"
+            notes.append(f"no kill: {fact}")
+            edits.append((begin + target[1], f" [checked: NOT a kill — {fact}]"))
+            break
+    for at, insert in sorted(edits, reverse=True):
+        text = text[:at] + insert + text[at:]
+    return text, notes
+
+
+def _check_kill_claims(plan: GamePlan, assessment: Any, state: dict, issues: list[str]) -> None:
+    """Annotate false kill claims in the plan's text (see the comment above)."""
+    try:
+        local = _local_seat(state)
+        battlefield = [c for c in state.get("battlefield") or [] if isinstance(c, dict)]
+        on_board = [c for c in battlefield if _is_creature_card(c) and c.get("name")]
+        ours = [c for c in on_board if (c.get("controller_seat_id") or c.get("owner_seat_id")) == local]
+        theirs = [c for c in on_board if (c.get("controller_seat_id") or c.get("owner_seat_id")) != local]
+        castable = [c for c in _castable_cards(state) if c.get("name")]
+        spells = [
+            c
+            for c in castable
+            if not _is_creature_card(c) and "land" not in str(c.get("type_line") or "").lower()
+        ]
+        # Our creatures, in hand too: a clause naming one may count its combat or trigger.
+        ours = ours + [c for c in castable if _is_creature_card(c)]
+        if not theirs or not spells:
+            return
+        steps = {str(s.get("label") or ""): s for s in plan.turn_plan}
+        by_turn = {f"T{s.get('turn')}": s for s in plan.turn_plan}
+
+        def casts_of(step: dict | None) -> list[str]:
+            return _cast_names(step.get("cast")) if step else []
+
+        def fixed(value: str, where: str, step: dict | None = None) -> str:
+            if not value:
+                return value
+
+            def step_casts(label: str) -> list[str]:
+                return casts_of(step if step is not None else by_turn.get(label) or steps.get(label))
+
+            text, notes = _kill_corrections(
+                value, spells=spells, ours=ours, theirs=theirs, step_casts=step_casts
+            )
+            issues.extend(f"{where}: plan claim corrected: {note}" for note in notes)
+            return text
+
+        for attr in ("path", "threat", "develop_next", "role_reason"):
+            setattr(plan, attr, fixed(getattr(plan, attr), attr))
+        for attr in ("win_conditions", "switch_if", "assumptions", "resource_priorities"):
+            setattr(plan, attr, [fixed(item, attr) for item in getattr(plan, attr)])
+        for step in plan.turn_plan:
+            for key in ("attack", "hold"):
+                step[key] = fixed(str(step.get(key) or ""), str(step.get("label") or "T"), step)
+    except Exception as error:  # a claim check must never cost the plan
+        logger.debug("plan kill-claim check failed: %s", error, exc_info=True)
 
 
 # A plan clause about their turn: blocks, their combat (10a78106 T9: "{2}{R} reserved to
@@ -2231,6 +2426,22 @@ def plan_board_note(plan: GamePlan, changes: list[str]) -> str:
     )
 
 
+def plan_refresh_note(plan: GamePlan | None, failed: tuple[int, str] | None) -> str:
+    """The prompt line for a plan kept after its re-plan failed ('' otherwise).
+
+    ``failed`` is (turn of the failed reform, why) from
+    :class:`GamePlanManager`; the line names the plan's own turn.
+    """
+    if plan is None or plan.is_empty() or not failed:
+        return ""
+    turn, why = failed
+    return (
+        f"  PLAN NOT REFRESHED: the re-plan on turn {turn} failed ({why}), so this game plan is still the one "
+        f"formed on turn {plan.turn_formed}. Treat its lines as stale: where the current board facts disagree "
+        "with it, follow the facts."
+    )
+
+
 def compose_strategy_block(
     assessment: Any,
     plan: GamePlan | None,
@@ -2238,6 +2449,7 @@ def compose_strategy_block(
     extra_facts: str = "",
     state: dict | None = None,
     with_lines: bool = True,
+    refresh_failed: tuple[int, str] | None = None,
 ) -> str:
     """ROLE + this turn + facts (fresh) followed by the game plan's spine.
 
@@ -2251,10 +2463,15 @@ def compose_strategy_block(
     prompt that already shows it (a typed decision, above its options).
     With ``state``, a plan written before the opponent's board changed says
     so on its step and in a PLAN PREDATES line (:func:`plan_board_changes`).
+    ``refresh_failed`` (turn, why): the plan was kept after a failed re-plan;
+    its step and a PLAN NOT REFRESHED line say so (:func:`plan_refresh_note`).
     """
     extra = extra_facts.rstrip()
+    refresh = plan_refresh_note(plan, refresh_failed)
     if assessment is None:
         block = plan.as_planner_block().strip() if plan else ""
+        if block and refresh:
+            block += "\n" + refresh
         return f"{block}\n{extra}" if block and extra else block or extra.strip()
     this_turn = next_turns = None
     role_note = ""
@@ -2263,6 +2480,8 @@ def compose_strategy_block(
         step = plan.step_for(assessment.plan_turn)
         if step is not None:
             tag = f"game plan T{plan.turn_formed}"
+            if refresh:
+                tag += f", not refreshed (re-plan on turn {refresh_failed[0]} failed)"
             if changes:
                 tag += ", written before the opponent's board changed: re-check its attacks"
             this_turn = f"{step_text(_with_progress(step, assessment, state))} [{tag}]"
@@ -2284,6 +2503,8 @@ def compose_strategy_block(
         block += "\n" + plan.as_planner_block(with_role_and_turns=False)
         if changes:
             block += "\n" + plan_board_note(plan, changes)
+        if refresh:
+            block += "\n" + refresh
         losses = plan_card_losses(plan, state)
         if losses:
             block += "\n" + losses
@@ -2398,6 +2619,52 @@ def _round(x: Any, default: int = 0) -> int:
 
 _CRITICAL_LOCK = threading.Lock()
 _critical_inflight = 0
+
+
+_PLAN_KEYS = frozenset(
+    {"win_conditions", "win_condition", "path", "turns", "turn_plan", "develop_next", "role", "threat"}
+)
+_TRAILING_COMMA = re.compile(r",\s*([}\]])")
+# Bound on '{' positions tried when the answer wraps the JSON in prose.
+_MAX_JSON_STARTS = 64
+
+
+def _plan_object(text: str) -> tuple[dict, str] | None:
+    """The plan's JSON object in a model answer, and its source text (None without one).
+
+    The outermost '{...}' is tried first, as before. Failing that (prose
+    around the JSON with mana symbols like "{1}{R}", a second object after it,
+    trailing commas before a newline), each '{' is decoded in turn and the
+    first object with a plan key wins, so a turn step nested in a broken
+    outer object is never mistaken for the plan.
+    """
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    blob = text[start : end + 1]
+    for candidate in (blob, _TRAILING_COMMA.sub(r"\1", blob)):
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data, blob
+        break
+    decoder = json.JSONDecoder()
+    tried = 0
+    while start != -1 and tried < _MAX_JSON_STARTS:
+        tried += 1
+        tail = text[start:]
+        for candidate in (tail, _TRAILING_COMMA.sub(r"\1", tail)):
+            try:
+                data, size = decoder.raw_decode(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict) and _PLAN_KEYS.intersection(data):
+                return data, candidate[:size]
+            break
+        start = text.find("{", start + 1)
+    return None
 
 
 @contextlib.contextmanager
@@ -2641,6 +2908,11 @@ class GamePlanManager:
         self._plan_attempts = 0
         self._plan_cancels = 0
         self._no_plan_warned_turn = 0
+        # Why the last _reform returned no plan ("" when cancelled or ok), and,
+        # while a plan is kept after a failed reform, (turn of the failure,
+        # why): decision prompts then flag the kept plan as not refreshed.
+        self._reform_failure = ""
+        self._refresh_failed: tuple[int, str] | None = None
         self._last_seed: str | None = None
         self._inflight = False
         self._last_attempt_at: float | None = None
@@ -2693,6 +2965,7 @@ class GamePlanManager:
             self._plan_attempts = 0
             self._plan_cancels = 0
             self._no_plan_warned_turn = 0
+            self._refresh_failed = None
             self._last_attempt_at = None
             self._inflight_basis = {}
             self._live_basis = {}
@@ -2856,9 +3129,12 @@ class GamePlanManager:
         return self._plan
 
     def plan_text(self) -> str:
-        """Planner-prompt block for the current plan ("" if none yet)."""
+        """Planner-prompt block for the current plan ("" if none yet), flagged when its re-plan failed."""
         plan = self._plan
-        return plan.as_planner_block() if plan else ""
+        if not plan:
+            return ""
+        refresh = plan_refresh_note(plan, getattr(self, "_refresh_failed", None))
+        return plan.as_planner_block() + (f"\n{refresh}" if refresh else "")
 
     def coach_intro(self) -> str:
         plan = self._plan
@@ -2881,7 +3157,12 @@ class GamePlanManager:
         verdict = risk.verdict_line() if risk is not None and risk.known else ""
         extra = f"  OPP INTERACTION: {verdict}" if verdict else ""
         block = compose_strategy_block(
-            assessment, plan, extra_facts=extra, state=state, with_lines=with_lines
+            assessment,
+            plan,
+            extra_facts=extra,
+            state=state,
+            with_lines=with_lines,
+            refresh_failed=getattr(self, "_refresh_failed", None),
         )
         # The ledger's deterministic lessons reach every tactical prompt at
         # once, not only after the next reform echoes them into the plan.
@@ -3252,7 +3533,12 @@ class GamePlanManager:
                     self._observed_turn,
                 )
             if plan is None and not self._plan_outcome.startswith(("yielded", "superseded")):
-                self._plan_outcome = "no usable plan from the model"
+                failure = getattr(self, "_reform_failure", "") or "no usable plan from the model"
+                self._plan_outcome = failure
+                if self._plan is not None:
+                    # 2026-10-19 115944ce: the T6 decisions ran on a plan whose
+                    # reform had failed, and nothing in their prompts said so.
+                    self._refresh_failed = (turn_num, failure)
             if plan is not None:
                 # Still the newest plan, but written before what changed since its
                 # snapshot: prompts flag its lines; a threat re-plans on their turn.
@@ -3266,6 +3552,7 @@ class GamePlanManager:
                     )
                 self._plan_outcome = "ok"
                 self._plan = plan
+                self._refresh_failed = None
                 self._last_sig = sig
                 self._last_key = key
                 self._last_seed = seed
@@ -3600,6 +3887,7 @@ class GamePlanManager:
         user_parts.append("\nForm the GAME PLAN as JSON now.")
         user_message = with_deck_reference("\n".join(user_parts), game_state)
 
+        self._reform_failure = ""
         try:
             # 2026-10-10 Brawl: the first plan after a mid-game restart took 35 s
             # at high effort on a 21k-token prompt. With no plan at all, a quick
@@ -3611,25 +3899,15 @@ class GamePlanManager:
             response = self._complete(GAME_PLAN_PROMPT, user_message, cancel=cancel, effort=effort)
         except Exception as e:
             logger.warning("game-plan LLM call failed (keeping prior plan): %s", e)
+            self._reform_failure = "call failed"
             return None
 
-        if cancel is not None and cancel.is_set():
-            logger.info("Discarded a superseded game plan (turn %d); keeping the prior plan", turn_num)
-            return None
-
-        if is_skipped_call_text(response):
-            # Skipped while the model server is down, or cancelled/dropped by
-            # the background lane: nothing failed, the prior plan stays.
-            logger.info("game-plan call not made (keeping prior plan): %s", str(response)[:160])
-            return None
-        if is_backend_error_text(response):
-            # The proxy returns an error sentinel instead of raising; on
-            # 2026-10-06 five of seven plan calls timed out this way unlogged.
-            logger.warning("game-plan LLM call failed (keeping prior plan): %s", str(response)[:160])
-            return None
-        plan = self._parse(response, turn_num)
-        if plan is None or plan.is_empty():
-            logger.info("game-plan answer had no usable plan (keeping prior plan)")
+        plan = self._usable_plan(response, turn_num, cancel=cancel, effort=effort)
+        if plan is None and self._reform_failure == "no usable plan from the model":
+            plan = self._retry_for_json(user_message, turn_num, cancel=cancel)
+            if plan is not None:
+                effort = "low"
+        if plan is None:
             return None
         plan.effort = effort
         try:
@@ -3652,6 +3930,71 @@ class GamePlanManager:
             plan.path,
             " | ".join(f"T{step['turn']}: {step_text(step)}" for step in plan.turn_plan) or "-",
         )
+        return plan
+
+    # 2026-10-19 ladder: "game-plan answer had no usable plan (keeping prior
+    # plan)" 15 times in one session, with the answer never logged (10:56:57
+    # match 15e0eb20: a 30.7 s high-effort call, 4233 reasoning tokens;
+    # 11:11:47 match 115944ce). The answer's head goes to the log, and one
+    # bounded retry at low effort (a few seconds) asks for just the JSON.
+    _UNUSABLE_LOG_CHARS = 300
+    _RETRY_NUDGE = (
+        "\n\nYOUR PREVIOUS ANSWER WAS NOT A USABLE GAME PLAN (no JSON object with role, turns, "
+        "win_conditions and path). Answer again with ONLY that JSON object: no prose, no markdown."
+    )
+
+    def _usable_plan(
+        self, response: Any, turn_num: int, *, cancel: threading.Event | None, effort: str
+    ) -> GamePlan | None:
+        """The parsed plan in ``response``, or None with ``_reform_failure`` saying why (never raises)."""
+        if cancel is not None and cancel.is_set():
+            logger.info("Discarded a superseded game plan (turn %d); keeping the prior plan", turn_num)
+            self._reform_failure = ""
+            return None
+        if is_skipped_call_text(response):
+            # Skipped while the model server is down, or cancelled/dropped by
+            # the background lane: nothing failed, the prior plan stays.
+            logger.info("game-plan call not made (keeping prior plan): %s", str(response)[:160])
+            self._reform_failure = "call not made (model server unavailable)"
+            return None
+        if is_backend_error_text(response):
+            # The proxy returns an error sentinel instead of raising; on
+            # 2026-10-06 five of seven plan calls timed out this way unlogged.
+            logger.warning("game-plan LLM call failed (keeping prior plan): %s", str(response)[:160])
+            self._reform_failure = "call failed"
+            return None
+        plan = self._parse(response, turn_num)
+        if plan is None or plan.is_empty():
+            text = response if isinstance(response, str) else repr(response)
+            logger.warning(
+                "game-plan answer had no usable plan (%s effort, %d chars; keeping prior plan): %r",
+                effort,
+                len(text),
+                text[: self._UNUSABLE_LOG_CHARS],
+            )
+            self._reform_failure = "no usable plan from the model"
+            return None
+        self._reform_failure = ""
+        return plan
+
+    def _retry_for_json(
+        self, user_message: str, turn_num: int, *, cancel: threading.Event | None
+    ) -> GamePlan | None:
+        """One low-effort retry after an unusable answer (none once cancelled or with the server down)."""
+        if (cancel is not None and cancel.is_set()) or not background_llm_allowed(self._backend):
+            return None
+        logger.info("game-plan: asking once more, at low effort, for just the JSON plan (turn %d)", turn_num)
+        try:
+            response = self._complete(
+                GAME_PLAN_PROMPT, user_message + self._RETRY_NUDGE, cancel=cancel, effort="low"
+            )
+        except Exception as e:
+            logger.warning("game-plan retry call failed (keeping prior plan): %s", e)
+            self._reform_failure = "call failed"
+            return None
+        plan = self._usable_plan(response, turn_num, cancel=cancel, effort="low")
+        if plan is not None:
+            logger.info("game-plan retry produced a usable plan (turn %d)", turn_num)
         return plan
 
     def _complete(
@@ -3696,22 +4039,10 @@ class GamePlanManager:
             text = text.split("```", 2)[1] if "```" in text[3:] else text
             if text.lower().startswith("json"):
                 text = text[4:]
-        # Extract the first {...} block.
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1 or end <= start:
+        found = _plan_object(text)
+        if found is None:
             return None
-        blob = text[start : end + 1]
-        try:
-            data = json.loads(blob)
-        except json.JSONDecodeError:
-            # Tolerate trailing commas.
-            try:
-                data = json.loads(blob.replace(",}", "}").replace(",]", "]"))
-            except json.JSONDecodeError:
-                return None
-        if not isinstance(data, dict):
-            return None
+        data, blob = found
 
         wins_raw = data.get("win_conditions") or data.get("win_condition") or []
         if isinstance(wins_raw, str):
