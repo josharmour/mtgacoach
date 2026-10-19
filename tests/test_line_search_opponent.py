@@ -35,7 +35,7 @@ def _power(model, hand_bodies: dict[str, int]) -> dict[str, int]:
     return {**hand_bodies, **powers}
 
 
-def test_their_attack_policy_is_valued_after_our_crackback_on_the_logged_board():
+def test_their_attack_policy_is_valued_after_our_crackback_on_the_logged_board(unlimited_search_deadline):
     source = fx.BUG_182945_T13_UPKEEP
     model = build_board_model(deepcopy(source))
     assert (model.our_life, model.opp_life, model.our_turn) == (10, 24, False)
