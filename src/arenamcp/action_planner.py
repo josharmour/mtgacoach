@@ -18,7 +18,7 @@ from typing import Any
 
 from arenamcp.backend_health import is_backend_error_text
 from arenamcp.cast_notes import combat_cast_note, loot_mode_note, trick_timing_note, turn_investments_note
-from arenamcp.decision_memory import DecisionMemory, critical_decision
+from arenamcp.decision_memory import DecisionMemory, burn_combo_note, critical_decision
 from arenamcp.decisions import expand_target_selection
 from arenamcp.mana_potential import mana_reach_note
 from arenamcp.match_context import prepare_match_context, strategic_policy, with_deck_reference
@@ -156,6 +156,9 @@ class GameAction:
     model_choice: bool = False
     # Why a deterministic override replaced what was asked for; spoken after the action.
     override_note: str = ""
+    # The model's own reasoning when a guard rewrote ``reasoning`` (ledger #36),
+    # kept so reviews can see what the model meant.
+    model_reasoning: str = ""
 
     def __str__(self) -> str:
         parts = [self.action_type.value]
@@ -194,6 +197,15 @@ FALLBACK_LLM_UNAVAILABLE = "llm_unavailable"
 
 class LLMUnavailableError(RuntimeError):
     """The model was not asked (circuit open) or answered with an error sentinel."""
+
+
+class SecondLookError(ValueError):
+    """A typed-decision pick a deterministic check set aside, with no better model answer in time.
+
+    The caller's board-math fallback decides instead of firing the pick
+    (ledger #57, #59: a false lethal claim, face burn the line search rates
+    below its best line).
+    """
 
 
 # Exception classes (matched by name to avoid importing the proxy/SDK here)
@@ -1206,6 +1218,9 @@ class ActionPlanner(_ActionLegalityMixin):
         self._ensure_free_blocks(
             plan, game_state, decision_context or game_state.get("decision_context") or {}
         )
+        self._follow_line_attack(
+            plan, game_state, decision_context or game_state.get("decision_context") or {}
+        )
         self._check_losing_attacks(
             plan, game_state, decision_context or game_state.get("decision_context") or {}
         )
@@ -1246,6 +1261,107 @@ class ActionPlanner(_ActionLegalityMixin):
 
         logger.info(f"Planned {len(plan.actions)} actions: {plan.overall_strategy}")
         return plan
+
+    def _follow_line_attack(self, plan: ActionPlan, state: dict, context: dict) -> None:
+        """No attack planned while the opponent is tapped out and the searched line attacks: attack as it does.
+
+        2026-10-19 10:35:26 (match a9cd5a2e T4, ledger #54): Emberheart
+        Challenger (2/2 haste) faced one untapped 2/2 with every opposing land
+        tapped; the board facts' line was "Mountain + Emberheart Challenger,
+        attack with Emberheart Challenger" and the game plan attacked too, yet
+        the model kept it home "to grow with burn spells". The free-attack rule
+        needs every attacker to survive their best blocks (a trade is not
+        free), so the empty declaration stood.
+
+        Only at a live DeclareAttackers request, for a plan that attacks with
+        nobody, with every opposing land tapped (no trick, no flash blocker),
+        when the searched line's posture is attack or lethal and its first step
+        attacks with creatures the request offers. The losing-attack and
+        crackback guards that run next still judge the declaration.
+        """
+        if str(context.get("type") or "").lower() != "declare_attackers" or not plan.actions:
+            return
+        actions = plan.actions
+        declared = next((a for a in actions if a.action_type == ActionType.DECLARE_ATTACKERS), None)
+        if declared is not None:
+            if declared.attacker_names or len(actions) != 1:
+                return
+        elif not all(a.action_type in (ActionType.CLICK_BUTTON, ActionType.PASS_PRIORITY) for a in actions):
+            return
+        if not _opponent_tapped_out(state):
+            return
+        try:
+            from arenamcp.board_assessment import assess
+
+            assessment = assess(state)
+            result = getattr(assessment, "line_search", None)
+            if assessment is None or result is None or not assessment.our_turn:
+                return
+            if getattr(result, "posture", "") not in ("attack", "lethal") or not result.best.steps:
+                return
+            step = result.best.steps[0]
+            summary = result.best.summary()
+        except Exception as error:  # the strategic layer never blocks a declaration
+            logger.debug("line attack skipped: %s", error)
+            return
+        if not step.attack:
+            return
+        eligible = [int(i) for i in context.get("legal_attacker_ids") or [] if str(i).isdigit()] or [
+            int(entry.get("attackerInstanceId") or 0) for entry in context.get("raw_attackers") or []
+        ]
+        cards = {_as_int(card.get("instance_id")): card for card in state.get("battlefield") or []}
+        # The step lists its attackers by name in instance-id order.
+        ids = sorted(_as_int(i) for i in (step.plays[2] if len(step.plays) == 3 else ()) or ())
+        if len(ids) != len(step.attack):
+            ids = []
+            for name in step.attack:
+                match = next(
+                    (i for i in eligible if i not in ids and str((cards.get(i) or {}).get("name")) == name),
+                    None,
+                )
+                if match is None:
+                    return
+                ids.append(match)
+        if not ids or any(i not in eligible for i in ids):
+            return
+        names = [
+            str((cards.get(i) or {}).get("name") or name) for i, name in zip(ids, step.attack, strict=True)
+        ]
+        walkers = dict(step.at_walkers)
+        original = _model_reasoning(plan, actions[0])
+        attack = GameAction(
+            ActionType.DECLARE_ATTACKERS,
+            attacker_names=list(names),
+            attacker_instance_ids=list(ids),
+            attacker_targets={name: walkers.get(name, "Opponent") for name in names},
+        )
+        from arenamcp.narration import spoken_list, spoken_name
+
+        who = spoken_list([spoken_name(name) for name in names])
+        attack.reasoning = (
+            f"Line attack: the opponent is tapped out and the searched line attacks with {who}: {summary}."
+        )
+        attack.model_reasoning = original
+        logger.warning(
+            "Line attack: the plan attacks with nobody while the opponent is tapped out; the searched line "
+            "attacks with %s (%s) [model planned: %s]",
+            ", ".join(names),
+            summary,
+            original[:200] or "no reason given",
+        )
+        plan.actions = [attack]
+        plan.fallback_reason = "planner_line_attack"
+        plan.overall_strategy = (
+            f"Attack with {who}: the opponent is tapped out and the board-math line attacks."
+        )
+        plan.voice_advice = f"Attacking with {who}: they are tapped out, and the board math attacks here."
+
+    def _remember_guard_hold(self, state: dict, what: str, why: str) -> None:
+        """Put a guard's attack hold into the decision memory the next prompt of the turn reads (ledger #60)."""
+        try:
+            self._memory().note(state, "DeclareAttackers", what, why)
+        except Exception as error:  # memory never blocks a declaration
+            logger.debug("decision memory note skipped: %s", error)
 
     def _check_block_menace(self, plan: ActionPlan, state: dict, context: dict) -> None:
         """Make planned blocks legal against menace before the survival check weighs them.
@@ -1369,13 +1485,15 @@ class ActionPlanner(_ActionLegalityMixin):
             token = card.get("is_token") or "token" in str(card.get("object_kind", "")).lower()
             return f"{'*' if token else ''}{card.get('name', 'Creature')} [id:{iid}]"
 
+        original = _model_reasoning(plan, plan.actions[0])
         logger.warning(
-            "%s block guard: planned blocks %s let %d damage through at %d life; using %s",
+            "%s block guard: planned blocks %s let %d damage through at %d life; using %s [model planned: %s]",
             "Lethal" if lethal else "Danger-zone",
             planned,
             through,
             life,
             survival.explanation,
+            original[:200] or "no reason given",
         )
         if declined:
             action = plan.actions[0] = GameAction(action_type=ActionType.DECLARE_BLOCKERS)
@@ -1385,6 +1503,7 @@ class ActionPlanner(_ActionLegalityMixin):
         action.reasoning = (
             f"Planned blocks {outcome} ({through} damage at {life} life); {survival.explanation}."
         )
+        action.model_reasoning = action.model_reasoning or original
         plan.fallback_reason = "planner_lethal_block" if lethal else "planner_danger_block"
         plan.overall_strategy = f"Survive combat: {survival.explanation}."
         blocks = "; ".join(f"{label(b)} against {label(a)}" for b, a in survival.assignments.items())
@@ -1490,13 +1609,15 @@ class ActionPlanner(_ActionLegalityMixin):
                 for name, identity in zip(action.attacker_names, identities, strict=True)
                 if identity in losing
             ]
+            original = _model_reasoning(plan, action)
             for name, identity in dropped:
                 logger.warning(
-                    "Losing-attack guard: not attacking with %s [%d] (planned target: %s): %s",
+                    "Losing-attack guard: not attacking with %s [%d] (planned target: %s): %s [model planned: %s]",
                     name,
                     identity,
                     action.attacker_targets.get(name) or ", ".join(action.target_names) or "unspecified",
                     losing[identity],
+                    original[:200] or "no reason given",
                 )
             action.attacker_names = [name for name, _ in kept]
             action.attacker_instance_ids = [identity for _, identity in kept]
@@ -1512,6 +1633,14 @@ class ActionPlanner(_ActionLegalityMixin):
             held = spoken_list([spoken_name(name) for name, _ in dropped])
             outcome = "they would die to blocks" if len(dropped) > 1 else "it would die to a block"
             action.reasoning = f"Held back {held}: " + "; ".join(losing[i] for _, i in dropped) + "."
+            action.model_reasoning = action.model_reasoning or original
+            # 2026-10-19 10:56:24 (ledger #60): nothing recorded the hold, and the
+            # next decision still said "proceed to attack ... for lethal".
+            self._remember_guard_hold(
+                state,
+                f"attack held by guard: {', '.join(name for name, _ in dropped)} not attacking",
+                "; ".join(losing[i] for _, i in dropped),
+            )
             plan.fallback_reason = "planner_losing_attack"
             plan.overall_strategy = f"Hold back {held}: {outcome} for nothing."
             plan.voice_advice = f"Not attacking with {held}: {outcome} for nothing." + (
@@ -1690,6 +1819,11 @@ class ActionPlanner(_ActionLegalityMixin):
             f"Crackback guard: not lethal this turn, and attacking with everything would leave us at "
             f"{life_after(attacking)} after their best attack; {note}."
         )
+        self._remember_guard_hold(
+            state,
+            f"attack held by guard: {', '.join(held_names)} not attacking",
+            f"crackback: attacking with everything would leave us at {life_after(attacking)}; {note}",
+        )
         plan.fallback_reason = "planner_crackback_guard"
         from arenamcp.narration import spoken_list, spoken_name
 
@@ -1782,15 +1916,18 @@ class ActionPlanner(_ActionLegalityMixin):
             token = card.get("is_token") or "token" in str(card.get("object_kind", "")).lower()
             return f"{'*' if token else ''}{card.get('name', 'Creature')} [id:{iid}]"
 
+        original = _model_reasoning(plan, action)
         logger.info(
-            "Combat recovery comparison changed %s to %s: %s",
+            "Combat recovery comparison changed %s to %s: %s [model planned: %s]",
             action.blocker_instance_assignments,
             assignments,
             explanation,
+            original[:200] or "no reason given",
         )
         action.blocker_instance_assignments = assignments
         action.blocker_assignments = {label(b): label(a) for b, a in assignments.items()}
         action.reasoning = explanation
+        action.model_reasoning = action.model_reasoning or original
         blocks = "; ".join(f"{label(b)} against {label(a)}" for b, a in assignments.items())
         if explanation.startswith("Identical copy"):
             plan.fallback_reason = "planner_commander_identity"
@@ -3236,6 +3373,10 @@ class ActionPlanner(_ActionLegalityMixin):
         corrected = getattr(self, "_false_lethal_memory", None)
         if corrected is not None and corrected[0] == reasoning:
             reasoning = corrected[1]  # the model's own words survive a lethal correction
+        if chosen == [DECLINE_DECISION]:
+            # 2026-10-19 11:13 (ledger #68): a declined target, which cancels the
+            # cast, was remembered with the model's "dealing 4 cripples Trostani".
+            reasoning = getattr(self, "_decline_reason", "") or "no safe choice, the request was cancelled"
         try:
             self._memory().record(game_state, decision, chosen, reasoning)
         except Exception as error:  # memory never blocks a decision
@@ -3343,6 +3484,8 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         self._last_decision_reasoning = ""
         self._false_lethal_memory = None
+        self._decline_reason = ""
+        self._held_instants = []
         self._last_decision_option_ids = []
         self._last_decision_target_controllers = {}
         self._last_decision_unusual_targets = {}
@@ -3451,6 +3594,9 @@ class ActionPlanner(_ActionLegalityMixin):
         loop_pick = self._drain_loop_pick(decision, game_state)
         if loop_pick:
             return loop_pick
+        decision, held_pick = self._hold_instant_burn(decision, game_state)
+        if held_pick:
+            return held_pick
         if decision.request_type == "SelectN":
             # "As it enters, choose a color" (Room of Refuge, live 2026-10-07):
             # the colour our hand needs and our lands lack is a counting job.
@@ -3519,6 +3665,8 @@ class ActionPlanner(_ActionLegalityMixin):
                 sentinels = ([DECLINE_DECISION], [NO_TARGETS_DECISION])
                 chosen = self._gate_harmful_llm_target_picks(decision, game_state, chosen)
                 if chosen not in sentinels:
+                    chosen = self._follow_line_over_face(decision, game_state, chosen)
+                if chosen not in sentinels:
                     chosen = self._prefer_lethal_damage_target(decision, game_state, chosen)
                 if chosen not in sentinels:
                     chosen = self._verify_shrink_pick(decision, game_state, chosen)
@@ -3553,7 +3701,10 @@ class ActionPlanner(_ActionLegalityMixin):
             )
             self.last_llm_failure = "bad_answer"
         except Exception as e:
-            self.last_llm_failure = "unavailable" if is_llm_unavailable_error(e) else "bad_answer"
+            if isinstance(e, SecondLookError):
+                self.last_llm_failure = "set_aside"
+            else:
+                self.last_llm_failure = "unavailable" if is_llm_unavailable_error(e) else "bad_answer"
             # Only the spoken/logged wording: "unavailable" keeps its meaning
             # for the autopilot (no timeout escalation).
             self._last_llm_too_slow = is_time_budget_error(e)
@@ -3605,6 +3756,8 @@ class ActionPlanner(_ActionLegalityMixin):
             lead = "Model too slow"
         elif failure == "unavailable":
             lead = "Model unavailable"
+        elif failure == "set_aside":
+            lead = "The model's pick was set aside"
         else:
             lead = "No usable model answer"
         self._last_decision_option_ids = picked
@@ -3622,6 +3775,450 @@ class ActionPlanner(_ActionLegalityMixin):
             f" [line pick; board math: {board_pick}]" if source == "line" else "",
         )
         return picked
+
+    def _second_look(
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        data: dict,
+        chosen: list[str],
+        concerns_for: Callable[[list[str], dict], list[tuple[str, str]]],
+        ask: Callable[..., str],
+        parse: Callable[[str], tuple[dict, list[str]]],
+        message: str,
+        answered_high: bool,
+    ) -> tuple[dict, list[str]]:
+        """Doubts about a priority pick (:meth:`_second_look_concerns`): ask once more at high effort, or set it aside.
+
+        A low-effort pick with a concern goes back to the model at high effort
+        with the concerns in front of it, and that answer stands; if that call
+        fails, the board-math fallback decides (:class:`SecondLookError`), not
+        the doubted pick. A pick already made at high effort stands, unless it
+        rests on a false lethal claim or casts an attack-only creature the
+        losing-attack guard would hold: those deterministic contradictions go
+        to the board-math fallback, which follows the searched line.
+        """
+        concerns = concerns_for(chosen, data)
+        if not concerns:
+            return data, chosen
+        kinds = [kind for kind, _text in concerns]
+        trace = self._last_decision_trace if isinstance(self._last_decision_trace, dict) else {}
+        if answered_high:
+            hard = [(kind, text) for kind, text in concerns if kind in ("false_lethal", "attack_only")]
+            if not hard:
+                logger.info(
+                    "typed-decision: the high-effort pick %s stands despite %s", chosen, ", ".join(kinds)
+                )
+                return data, chosen
+            trace["second_look"] = {
+                "concerns": [text for _kind, text in hard],
+                "first": chosen,
+                "final": "fallback",
+            }
+            logger.warning(
+                "typed-decision: setting aside the high-effort pick %s (%s) [model: %s]",
+                chosen,
+                hard[0][1][:200],
+                str(data.get("reasoning") or "")[:160],
+            )
+            raise SecondLookError(f"high-effort pick {chosen} set aside: {hard[0][1][:200]}")
+        option = decision.find(chosen[0])
+        label = _option_text(decision, chosen[0]) if option is not None else chosen[0]
+        logger.info(
+            "typed-decision: second look at high effort for %s (%s): %s [model: %s]",
+            chosen,
+            ", ".join(kinds),
+            " / ".join(text[:140] for _kind, text in concerns),
+            str(data.get("reasoning") or "")[:160],
+        )
+        note = (
+            f"\n\nSECOND LOOK: you chose {label}. "
+            + " ".join(text for _kind, text in concerns)
+            + " Choose again: the same option only with a concrete reason that answers this."
+        )
+        try:
+            new_data, new_chosen = parse(
+                ask(
+                    message + note,
+                    effort="high",
+                    budget=self._CRITICAL_DECISION_BUDGET_S,
+                    cancel_event=getattr(self, "_decision_cancel_event", None),
+                )
+            )
+        except Exception as error:
+            trace["second_look"] = {
+                "concerns": [text for _kind, text in concerns],
+                "first": chosen,
+                "final": "fallback",
+                "error": str(error)[:120],
+            }
+            raise SecondLookError(f"second look failed ({error}); {concerns[0][1][:160]}") from error
+        trace["second_look"] = {
+            "concerns": [text for _kind, text in concerns],
+            "first": chosen,
+            "final": new_chosen,
+        }
+        logger.info("typed-decision: second look chose %s (first %s)", new_chosen, chosen)
+        return new_data, new_chosen
+
+    def _hold_instant_burn(self, decision: Any, game_state: dict[str, Any]) -> tuple[Any, list[str]]:
+        """Our main phase: keep instant burn that only goes face for the opponent's end step.
+
+        2026-10-19 11:36:01 (match 772233af T6, ledger #80): with our Fleeting
+        Effigy on the stack and an empty opposing board, Lightning Strike went
+        to the face at low effort ("burn only goes face"); held to their end
+        step it cost nothing, and it would have killed Vadmir on T7. A payable
+        instant-speed burn cast is taken off this menu when it kills nothing
+        on their side (:func:`decision_memory.burn_kills_nothing`, no
+        :func:`decision_memory.burn_combo`), nothing is lethal this turn (the
+        board math, or all our castable burn at their face), nothing of ours
+        pays off a cast (:func:`decision_memory.cast_payoffs`: prowess,
+        Slickshot Show-Off) and the stack holds nothing of theirs
+        to answer. The prompt names the held cards (:meth:`_instant_timing_note`);
+        when only a pass is left, the pass is the decision, without the model.
+
+        Arena gives us priority at their end step for such an instant: our
+        StopType_EndStep for opponents is set, and 2026-10-18 18:50:52 (match
+        5d72aecb T2) and 18:59:27 (1e900e6e T3) it sent ActionsAvailableReq in
+        Phase_Ending/Step_End offering the held instant; the autopilot decided
+        there. Returns (the decision to ask about, a pick or []).
+        """
+        if decision.request_type != "ActionsAvailable" or not _local_turn(game_state):
+            return decision, []
+        try:
+            from arenamcp.decision_memory import (
+                _TURN_STEPS,
+                burn_combo_for,
+                burn_kills_nothing,
+                burn_reach,
+                cast_payoffs,
+                turn_window,
+            )
+            from arenamcp.mulligan_policy import hand_card
+
+            if turn_window(game_state) not in (_TURN_STEPS.index("main1"), _TURN_STEPS.index("main2")):
+                return decision, []
+            local = _local_seat(game_state)
+            if any(_controller_seat(entry) != local for entry in game_state.get("stack") or []):
+                return decision, []  # theirs to answer: a response is the point of an instant
+            if cast_payoffs(game_state):
+                return decision, []
+            held, face = [], 0
+            for option in decision.options:
+                meta = option.meta or {}
+                if option.payable is False or meta.get("actionType") != "ActionType_Cast":
+                    continue
+                card = find_source(game_state, meta)
+                oracle = str(card.get("oracle_text") or "")
+                each = re.search(r"deals (\d+) damage to each opponent", oracle, re.IGNORECASE)
+                face += int(each.group(1)) if each else 0
+                burn = burn_reach(oracle, card, game_state) if card else None
+                if burn is None:
+                    continue
+                face += (
+                    max(damage for _need, damage in burn.variants) if "any target" in oracle.lower() else 0
+                )
+                if card.get("type_line") and hand_card(card).instant_speed:
+                    if burn_kills_nothing(oracle, game_state, castable=card):
+                        held.append((option, str(card.get("name") or option.label)))
+            if not held:
+                return decision, []
+            combo = burn_combo_for(decision, game_state)
+            if combo is not None:
+                held = [(option, name) for option, name in held if name not in combo.spells]
+            life = next(
+                (
+                    _as_int(player.get("life_total"))
+                    for player in game_state.get("players") or []
+                    if not player.get("is_local") and player.get("life_total") is not None
+                ),
+                None,
+            )
+            if not held or life is None or face >= life or _lethal_this_turn(game_state) is not False:
+                return decision, []
+        except Exception as error:  # the hold never blocks a decision
+            logger.debug("instant-timing hold skipped: %s", error)
+            return decision, []
+        from dataclasses import replace
+
+        held_ids = {option.option_id for option, _name in held}
+        names = list(dict.fromkeys(name for _option, name in held))
+        self._held_instants = names
+        logger.info(
+            "Instant timing: holding %s for the opponent's end step (face damage only now, not lethal, "
+            "nothing of ours triggers on a cast)",
+            ", ".join(names),
+        )
+        kept = tuple(option for option in decision.options if option.option_id not in held_ids)
+        filtered = replace(decision, options=kept)
+        if any(option.option_id == "pass" for option in kept) and all(
+            option.option_id == "pass" or option.payable is False for option in kept
+        ):
+            why = (
+                f"Holding {', '.join(names)}: instant burn that only goes face now; cast it at the "
+                "opponent's end step or in response to their creature or trigger."
+            )
+            self._last_decision_option_ids = ["pass"]
+            self._last_decision_reasoning = why
+            self._last_decision_trace = {"policy": "instant_timing", "validated_ids": ["pass"], "held": names}
+            return filtered, ["pass"]
+        return filtered, []
+
+    def _instant_timing_note(self, decision: Any, game_state: dict[str, Any]) -> str:
+        """The typed prompt's word on instant burn timing (ledger #80), or ''.
+
+        On our turn: the casts :meth:`_hold_instant_burn` took off the menu and
+        why. At the opponent's end step: it is the last window for that mana.
+        """
+        held = list(getattr(self, "_held_instants", []) or [])
+        if held:
+            return (
+                f"INSTANT TIMING: {', '.join(held)} are held this window: instant burn that only goes face now "
+                "(it kills nothing on their side, nothing is lethal, nothing of ours triggers on a cast). Cast it "
+                "at the opponent's end step or in response to their creature or trigger; Arena gives us priority then."
+            )
+        if decision.request_type != "ActionsAvailable" or _local_turn(game_state):
+            return ""
+        from arenamcp.decision_memory import _TURN_STEPS, turn_window
+
+        if turn_window(game_state) != _TURN_STEPS.index("end") or game_state.get("stack"):
+            return ""
+        if not any(
+            option.payable is not False and (option.meta or {}).get("actionType") == "ActionType_Cast"
+            for option in decision.options
+        ):
+            return ""
+        return (
+            "OPPONENT'S END STEP: the last window before we untap; mana left unused now is wasted, so instant "
+            "burn held for this moment can go now (at a creature it kills, else their face)."
+        )
+
+    def _second_look_concerns(
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        chosen: list[str],
+        reasoning: str,
+        line_source: Any = None,
+        line_tags: dict[str, str] | None = None,
+    ) -> list[tuple[str, str]]:
+        """Deterministic reasons to doubt a priority pick on our turn: (kind, sentence for the prompt).
+
+        - "false_lethal" (ledger #57): the pick rests on a claim that we win
+          this turn and the board math finds no lethal;
+        - "face_burn" (ledger #59, #77): burn that only goes face, with no
+          lethal, that the line search rates below its best line or not at all;
+        - "attack_only" (ledger #37): a haste creature that leaves at end step,
+          cast before combat, whose attack the losing-attack guard would hold.
+        """
+        if (
+            decision.request_type != "ActionsAvailable"
+            or len(chosen or []) != 1
+            or not _local_turn(game_state)
+        ):
+            return []
+        found: list[tuple[str, str]] = []
+        for kind, check in (
+            ("false_lethal", self._false_lethal_concern),
+            ("face_burn", self._face_burn_concern),
+            ("attack_only", self._attack_only_cast_concern),
+        ):
+            try:
+                text = check(
+                    decision, game_state, str(chosen[0]), str(reasoning or ""), line_source, line_tags or {}
+                )
+            except Exception as error:  # a check never blocks a decision
+                logger.debug("second-look check %s failed: %s", kind, error)
+                text = ""
+            if text:
+                found.append((kind, text))
+        return found
+
+    def _false_lethal_concern(
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        option_id: str,
+        reasoning: str,
+        _source: Any,
+        _tags: dict,
+    ) -> str:
+        """The pick's reason is a "we win this turn" claim the board math contradicts (ledger #57)."""
+        claims = self._lethal_claims(reasoning)
+        if not claims or _lethal_this_turn(game_state) is not False:
+            return ""
+        option = decision.find(option_id)
+        if option is None:
+            return ""
+        if option_id == "pass":
+            names = [r"\bpass(?:es|ing)?\b", r"\battack", r"\bswing"]
+        else:
+            name = str(find_source(game_state, option.meta or {}).get("name") or "")
+            name = name or re.sub(
+                r"^(?:cast|activate(?: ability)?:?|play land:)\s*",
+                "",
+                option.label.split(" [")[0],
+                flags=re.I,
+            )
+            words = [w for w in re.findall(r"[a-z0-9']+", name.casefold().split(",")[0]) if len(w) >= 4]
+            names = [re.escape(name.casefold())] + [rf"\b{re.escape(w)}\b" for w in words]
+        claim = next((c for c in claims if any(re.search(p, c, re.I) for p in names)), None)
+        if claim is None and len(re.split(r"(?<=[.!?])\s+", reasoning.strip())) == 1:
+            claim = claims[0]  # the whole reason is the claim
+        if claim is None:
+            return ""
+        life = next(
+            (p.get("life_total") for p in game_state.get("players") or [] if not p.get("is_local")), None
+        )
+        return (
+            f'Your reasoning says "{claim.strip()[:160]}", but the board math finds no lethal this turn'
+            + (f" (they are at {life})" if life is not None else "")
+            + ". Do not count on winning this turn."
+        )
+
+    def _face_burn_concern(
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        option_id: str,
+        _reasoning: str,
+        source: Any,
+        tags: dict,
+    ) -> str:
+        """Burn cast now only for face damage, no lethal, and not the line search's best (ledger #59, #77).
+
+        2026-10-19 10:54:08 (match 15e0eb20 T1): Shock at the face at low
+        effort while tagged "[LINE: -3 vs best]" (also a51dea64 T1, 7efad315 T6).
+        11:30:12 (abde2a07 T6, #77): Tectonic Hazard into an empty board
+        ("zero downside") with no tag at all; held to T10 it killed their only
+        reach creature. A "best"/"~best" tag, a burn kill (alone or with other
+        burn), a cast payoff on our board (prowess) or lethal clears it.
+        """
+        from arenamcp.decision_memory import (
+            _TURN_STEPS,
+            _theirs,
+            _types,
+            burn_combo_for,
+            burn_kills_nothing,
+            burn_reach,
+            cast_payoffs,
+            turn_window,
+        )
+
+        option = decision.find(option_id)
+        meta = (option.meta if option is not None else None) or {}
+        if meta.get("actionType") != "ActionType_Cast" or option.payable is False:
+            return ""
+        if turn_window(game_state) not in (_TURN_STEPS.index("main1"), _TURN_STEPS.index("main2")):
+            return ""
+        card = find_source(game_state, meta)
+        oracle = str(card.get("oracle_text") or "")
+        burn = burn_reach(oracle, card, game_state) if card else None
+        if burn is None or not burn.creatures or not burn_kills_nothing(oracle, game_state, castable=card):
+            return ""
+        name = str(card.get("name") or option.label)
+        combo = burn_combo_for(decision, game_state)
+        if (combo is not None and name in combo.spells) or cast_payoffs(game_state):
+            return ""
+        tag = str(tags.get(option_id) or "")
+        if tag.startswith("[LINE best") or tag.startswith("[LINE: ~best"):
+            return ""
+        life = next(
+            (_as_int(p.get("life_total")) for p in game_state.get("players") or [] if not p.get("is_local")),
+            None,
+        )
+        most = max(damage for _need, damage in burn.variants)
+        if life is None or life <= most or _lethal_this_turn(game_state) is not False:
+            return ""
+        empty = not any("creature" in _types(c) for c in _theirs(game_state))
+        now = (
+            "it hits no creature now (their board is empty)"
+            if empty
+            else "it kills nothing on their side now"
+        )
+        gap = re.match(r"\[LINE: -(\d+) vs best", tag)
+        best = getattr(getattr(source, "best", None), "summary", None)
+        best_text = f" ({best()[:90]})" if callable(best) else ""
+        rating = (
+            f"the line search rates it {gap.group(1)} below its best line{best_text}"
+            if gap
+            else "the line search does not rate it above holding it"
+        )
+        return (
+            f"{name} only does face damage now: {now}, nothing is lethal this turn, and {rating}. "
+            "Held, it can kill a creature they play later; cast it now only if you can name what that gains."
+        )
+
+    _LEAVES_AT_END_RE = re.compile(
+        r"at the beginning of (?:your|the next) end step,? (?:return (?:this creature|it|~)[^.]*hand"
+        r"|sacrifice (?:this creature|it|~)|exile (?:this creature|it|~))"
+        r"|at end of turn,? (?:sacrifice|exile|return)",
+        re.IGNORECASE,
+    )
+
+    def _attack_only_cast_concern(
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        option_id: str,
+        reasoning: str,
+        _source: Any,
+        _tags: dict,
+    ) -> str:
+        """A pre-combat haste creature that leaves at end step, whose attack the losing-attack guard holds (#37).
+
+        2026-10-19 10:03:10 and 10:04:21 (match 6175f002 T8, T10): Fleeting
+        Effigy was cast "before combat" for an attack; the losing-attack guard
+        then held it (Guiding Hydra 3/2, then Momo 5/5 would block and kill it)
+        and it went back to hand at end step: the mana bought nothing. The
+        guard (``combat_strategy.losing_attackers``) runs on the board with the
+        creature added, untapped and hasty, before it is cast.
+        """
+        from arenamcp.decision_memory import _TURN_STEPS, turn_window
+        from arenamcp.rules_engine import card_has_haste
+
+        if turn_window(game_state) != _TURN_STEPS.index("main1"):
+            return ""
+        option = decision.find(option_id)
+        meta = (option.meta if option is not None else None) or {}
+        if meta.get("actionType") != "ActionType_Cast":
+            return ""
+        card = find_source(game_state, meta)
+        types = (
+            f"{card.get('type_line') or ''} {' '.join(str(t) for t in card.get('card_types') or [])}".lower()
+        )
+        if not card or "creature" not in types or not card_has_haste(card):
+            return ""
+        if not self._LEAVES_AT_END_RE.search(str(card.get("oracle_text") or "")):
+            return ""
+        local = _local_seat(game_state)
+        iid = _as_int(card.get("instance_id"))
+        if local is None or not iid or not isinstance(card.get("power"), int):
+            return ""
+        turn = _as_int((game_state.get("turn") or {}).get("turn_number"))
+        body = {
+            **card,
+            "controller_seat_id": local,
+            "owner_seat_id": card.get("owner_seat_id") or local,
+            "is_tapped": False,
+            "turn_entered_battlefield": turn,
+            "summoning_sickness": False,
+        }
+        board = {
+            **game_state,
+            "battlefield": [*(game_state.get("battlefield") or []), body],
+            "hand": [c for c in game_state.get("hand") or [] if _as_int(c.get("instance_id")) != iid],
+        }
+        from arenamcp.combat_strategy import losing_attackers
+
+        losing = losing_attackers(board, [iid], strategy_text=reasoning)
+        if iid not in losing:
+            return ""
+        name = str(card.get("name") or option.label)
+        return (
+            f"{name} only matters if it attacks this turn (it leaves at end step), but it would not attack: "
+            f"{losing[iid]}. The losing-attack guard holds that attack, so casting it now buys nothing."
+        )
 
     def _apply_role_guard(self, decision: Any, game_state: dict[str, Any], chosen: list[str]) -> list[str]:
         """Behind on board: replace a card-draw/rock/cycling pick with a survival play.
@@ -4249,6 +4846,9 @@ class ActionPlanner(_ActionLegalityMixin):
             logger.warning(
                 "Keeping the spell: %d damage kills no legal opposing target (picked %s)", damage, name
             )
+            self._decline_reason = (
+                f"{damage} damage kills no legal opposing target ({name}); spell kept in hand"
+            )
             return [DECLINE_DECISION]
         best = max(alternatives)
         logger.warning("Retargeting: %d damage does not kill %s; %s dies instead", damage, name, best[3])
@@ -4398,14 +4998,31 @@ class ActionPlanner(_ActionLegalityMixin):
         r"(?![-‑]|\s+(?:line|race|crackback|clock|setup|set-up|plan|path|threat|range|pressure)\b)"
     )
     _CLAUSE_GAP = r"(?:(?!\b(?:so|because|since|while|but|whereas)\b)[^.!?;:,—–])*?"
-    _NOW_WORD = r"\b(?:this turn|this combat|right now|now|immediately)\b"
+    _NOW_WORD = r"\b(?:this turn|this combat|right now|now|immediately|outright)\b"
+    # 2026-10-19 10:56:13 (match 15e0eb20 T9, ledger #57): "Lightning Strike to
+    # face puts opponent at 2, letting Emberheart Challenger's attack close the
+    # game this turn" — no "lethal" in it, so no check, while an untapped 4/4
+    # Gwenom blocked the only attacker. Ending the game counts like "lethal";
+    # "ends the game" / "should close the game" claim it for now on their own.
+    _GAME_END = (
+        r"\b(?:clos(?:e|es|ing)|end(?:s|ing)?|win(?:s|ning)?|finish(?:es|ing)?|seal(?:s|ing)?)\s+"
+        r"(?:out\s+)?(?:the\s+)?(?:game|match)\b|\bgame\s+over\b"
+        r"|\bfinish(?:es|ing)?\s+(?:them|the opponent)(?:\s+off)?\b"
+    )
+    _GAME_ENDS_NOW = (
+        r"\b(?:ends|wins|closes|finishes|seals)\s+(?:out\s+)?(?:the\s+)?(?:game|match)\b"
+        r"|\b(?:should|will)\s+(?:close|end|win|finish|seal)\s+(?:out\s+)?(?:the\s+)?(?:game|match)\b"
+        r"|\bgame\s+over\b|\bfinish(?:es)?\s+(?:them|the opponent)\s+off\b"
+    )
     _LETHAL_NOW = re.compile(
         rf"(?<!not )\b(?:exactly|precisely)\s+lethal\b"
-        rf"|{_LETHAL_WORD}{_CLAUSE_GAP}{_NOW_WORD}|{_NOW_WORD}{_CLAUSE_GAP}{_LETHAL_WORD}",
+        rf"|{_LETHAL_WORD}{_CLAUSE_GAP}{_NOW_WORD}|{_NOW_WORD}{_CLAUSE_GAP}{_LETHAL_WORD}"
+        rf"|(?:{_GAME_END}){_CLAUSE_GAP}{_NOW_WORD}|{_NOW_WORD}{_CLAUSE_GAP}(?:{_GAME_END})|{_GAME_ENDS_NOW}",
         re.I,
     )
     _LETHAL_LATER = re.compile(
         r"\b(?:next turn|following turn|on T\+?\d|T\+\d|T\d+|in \d|toward|towards|set(?:s|ting)? up|threaten|"
+        r"fast(?:er|est)|sooner|quick(?:er|est)|eventually|"
         r"clock|if (?:they|the opponent)|unless|would be lethal|next (?:attack|combat|swing)|"
         # The opponent's lethal, not ours.
         r"their (?:next )?(?:turn|attack|combat|swing)|their (?:\w+ )?lethal|opponent'?s (?:\w+ )?lethal|"
@@ -4416,6 +5033,15 @@ class ActionPlanner(_ActionLegalityMixin):
     )
     # DecisionMemory keeps a decision's first 40 reasoning words.
     _MEMORY_REASONING_WORDS = 40
+
+    @classmethod
+    def _lethal_claims(cls, text: str) -> list[str]:
+        """The sentences of ``text`` that claim we kill them this turn (``_LETHAL_NOW``, not ``_LETHAL_LATER``)."""
+        return [
+            sentence
+            for sentence in re.split(r"(?<=[.!?])\s+", str(text or ""))
+            if cls._LETHAL_NOW.search(sentence) and not cls._LETHAL_LATER.search(sentence)
+        ]
 
     def _correct_false_lethal_claim(self, game_state: dict[str, Any]) -> None:
         """Strip a "lethal this turn" claim the deterministic board facts contradict.
@@ -4431,14 +5057,10 @@ class ActionPlanner(_ActionLegalityMixin):
         ``_LETHAL_LATER``); the decision memory keeps the original reasoning.
         """
         reasoning = self._last_decision_reasoning
-        if not reasoning or "lethal" not in reasoning.lower():
+        if not reasoning:
             return
         sentences = re.split(r"(?<=[.!?])\s+", reasoning)
-        claims = [
-            sentence
-            for sentence in sentences
-            if self._LETHAL_NOW.search(sentence) and not self._LETHAL_LATER.search(sentence)
-        ]
+        claims = self._lethal_claims(reasoning)
         if not claims:
             return
         try:
@@ -4678,6 +5300,61 @@ class ActionPlanner(_ActionLegalityMixin):
             logger.warning("Targeting fallback: %s %s instead of %s", reason, wanted, picked)
         self._note_target_choice([wanted], reason)
         return [wanted]
+
+    def _follow_line_over_face(
+        self, decision: Any, game_state: dict[str, Any], chosen: list[str]
+    ) -> list[str]:
+        """A model pick of the opponent's face for burn the searched line aims at a creature: the line's.
+
+        2026-10-19 10:55:43 (match 15e0eb20 T7, ledger #56): the line was
+        "Lightning Strike (on Nullpriest of Oblivion), attack ..."; the cast
+        step's low answer said "pointing Lightning Strike at face", and the
+        target step's high answer kept it ("Consistent with my earlier
+        decision"). Strike went face (10 -> 7) and the lifelinking 2/1 stayed.
+        Only "any target" damage, only the line's own target for this cast
+        (:meth:`_remember_cast_intent`) while it is offered, and only when the
+        face damage is not lethal and the board math finds no lethal this turn.
+        """
+        face = self._opponent_face_option(decision, game_state)
+        if not face or chosen != [face]:
+            return chosen
+        intent = self._cast_intent_for(decision)
+        if not intent or intent.get("line_target") in ("", "opponent", None):
+            return chosen
+        line_option = self._line_target_option(decision, game_state, intent)
+        if not line_option or line_option == face:
+            return chosen
+        from arenamcp.play_safety import damage_effect
+
+        parsed = damage_effect({"oracle_text": self._decision_source_oracle(decision, game_state)})
+        if parsed is None or parsed[1] != "any":
+            return chosen
+        life = next(
+            (
+                _as_int(player.get("life_total"))
+                for player in game_state.get("players", []) or []
+                if f"tgt:{_as_int(player.get('seat_id'))}" == face and player.get("life_total") is not None
+            ),
+            None,
+        )
+        if life is None or life <= parsed[0] or _lethal_this_turn(game_state) is not False:
+            return chosen
+        reason = (
+            f"The searched line aims {intent['card']} at {intent['line_target']}; {parsed[0]} damage to the "
+            f"opponent's face is not lethal (they are at {life})."
+        )
+        logger.warning(
+            "Retargeting: %s %s instead of %s [model: %s]",
+            reason,
+            line_option,
+            chosen,
+            (self._last_decision_reasoning or "")[:160],
+        )
+        self._note_target_choice([line_option], reason)
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict):
+            trace["line_over_face"] = {"model": chosen, "line": line_option, "card": intent["card"]}
+        return [line_option]
 
     def _cast_intent_note(self, decision: Any, game_state: dict[str, Any]) -> str:
         """The SelectTargets prompt's reminder of why this spell was cast and where the line aims it."""
@@ -5064,7 +5741,8 @@ class ActionPlanner(_ActionLegalityMixin):
         parse: Callable[[str], tuple[dict, list[str]]],
         message: str,
         normal_budget: float,
-        low_agrees: Callable[[list[str]], str] | None = None,
+        low_agrees: Callable[[list[str], dict], str] | None = None,
+        low_doubt: Callable[[list[str], dict], str] | None = None,
     ) -> tuple[dict, list[str]]:
         """A critical decision: the high-effort call and the normal low-effort one, at once.
 
@@ -5079,7 +5757,12 @@ class ActionPlanner(_ActionLegalityMixin):
         A valid low answer waits at most ``_HIGH_AFTER_LOW_S`` for the high one,
         and not at all when ``low_agrees`` (the board-math line's own play,
         :func:`board_math_agreement`) names it: two independent ways to the
-        same play leave the high leg nothing to add.
+        same play leave the high leg nothing to add. A low answer that
+        ``low_doubt`` questions (face burn the line search rates below its best
+        line, a false lethal claim: :meth:`_second_look_concerns`) waits for
+        the high leg to its deadline instead, and without a high answer the
+        decision fails over to the caller's board-math fallback
+        (:class:`SecondLookError`) rather than firing it.
         """
         outer = getattr(self, "_decision_cancel_event", None)
         legs = {
@@ -5122,14 +5805,26 @@ class ActionPlanner(_ActionLegalityMixin):
         high_deadline = started + legs["high"][1] + self._HEDGE_GRACE_S
         # The first valid answer, or the high leg finishing (or out of time).
         wait_until(high_deadline, lambda: ok("high") or ok("low") or "high" in results)
-        agreed = ""
-        if ok("low") and not ok("high") and "high" not in results:
-            if low_agrees is not None:
+        agreed = doubt = ""
+        if ok("low") and not ok("high"):
+            low_data, low_ids = results["low"][1]
+            high_pending = "high" not in results
+            if low_agrees is not None and high_pending:
                 try:
-                    agreed = low_agrees(results["low"][1][1]) or ""
+                    agreed = low_agrees(low_ids, low_data) or ""
                 except Exception as error:  # never block a decision on the check
                     logger.debug("hedge agreement check failed: %s", error)
-            if not agreed:
+            if not agreed and low_doubt is not None:
+                try:
+                    doubt = low_doubt(low_ids, low_data) or ""
+                except Exception as error:  # never block a decision on the check
+                    logger.debug("hedge doubt check failed: %s", error)
+            if doubt and high_pending:
+                logger.info(
+                    "typed-decision hedge: the low answer %s waits for high effort (%s)", low_ids, doubt
+                )
+                wait_until(high_deadline, lambda: "high" in results)
+            elif not agreed and high_pending:
                 wait_until(
                     min(high_deadline, time.monotonic() + self._HIGH_AFTER_LOW_S), lambda: "high" in results
                 )
@@ -5150,6 +5845,16 @@ class ActionPlanner(_ActionLegalityMixin):
         if not ok("low"):
             wait_until(started + legs["low"][1] + self._HEDGE_GRACE_S, lambda: "low" in results)
         high, low = results.get("high"), results.get("low")
+        if doubt and low is not None and low[0] == "ok":
+            why = f"high: {high[1]}" if high is not None else "high: no answer in time"
+            logger.info("typed-decision hedge: low answer %s set aside (%s; %s)", low[1][1], doubt, why)
+            if isinstance(trace, dict):
+                trace["hedge"] = {
+                    "winner": "none",
+                    "low_ms": round(low[2]),
+                    "why": f"set aside: {doubt}"[:160],
+                }
+            raise SecondLookError(f"low answer set aside ({doubt}); {why}")
         if low is not None and low[0] == "ok":
             if high is not None:
                 why = f"high: {high[1]}"
@@ -5347,6 +6052,11 @@ class ActionPlanner(_ActionLegalityMixin):
         if lines_text:
             # Next to the menu: the strategy block comes after ~20k characters of game state.
             lines.insert(lines.index("OPTIONS:"), lines_text)
+        # Burn that kills together what no one spell kills (ledger #64), and
+        # instant burn held for the opponent's end step (ledger #80).
+        for note in (burn_combo_note(decision, tag_state), self._instant_timing_note(decision, tag_state)):
+            if note:
+                lines.insert(lines.index("OPTIONS:"), note)
         if decision.request_type == "SelectTargets":
             # The cast step's reason and the line's target (2026-10-19 10:13:47, match 1e4ccb0c).
             intent_note = self._cast_intent_note(decision, game_state)
@@ -5461,6 +6171,8 @@ class ActionPlanner(_ActionLegalityMixin):
             self._last_decision_trace["lines"] = {"summary": lines_text, "tags": line_tags}
             if unmodelled:
                 self._last_decision_trace["lines"]["unmodelled"] = dict(unmodelled)
+        if getattr(self, "_held_instants", None):
+            self._last_decision_trace["held_instants"] = list(self._held_instants)
 
         # Tighter than the general planning timeout: typed decisions
         # (mulligan, targeting, selection) sit inside short MTGA action
@@ -5533,14 +6245,30 @@ class ActionPlanner(_ActionLegalityMixin):
             if isinstance(trace, dict):
                 trace["hedge"] = {"winner": "low", "why": "high not sent: server degraded"}
             critical = ""
+
+        def reasoning_of(data: dict) -> str:
+            return data.get("reasoning") if isinstance(data.get("reasoning"), str) else ""
+
+        def concerns_for(ids: list[str], data: dict) -> list[tuple[str, str]]:
+            return self._second_look_concerns(
+                decision, tag_state, ids, reasoning_of(data), line_source, line_tags
+            )
+
+        answered_high = False
         if critical:
             low_agrees = None
             if decision.request_type == "ActionsAvailable" and line_source is not None and not unmodelled:
                 # The searched line valued every option: its own play needs no second opinion.
-                def low_agrees(ids: list[str]) -> str:
-                    return board_math_agreement(decision, tag_state, ids)
+                def low_agrees(ids: list[str], data: dict) -> str:
+                    return board_math_agreement(decision, tag_state, ids, reasoning_of(data))
 
-            data, chosen = self._hedged_decision(ask, parse, user_message, normal_budget, low_agrees)
+            def low_doubt(ids: list[str], data: dict) -> str:
+                return "; ".join(kind for kind, _text in concerns_for(ids, data))
+
+            data, chosen = self._hedged_decision(
+                ask, parse, user_message, normal_budget, low_agrees, low_doubt
+            )
+            answered_high = (self._last_decision_trace.get("hedge") or {}).get("winner") == "high"
         else:
             data, chosen = parse(ask(user_message, effort=None, budget=normal_budget))
         reversed_record = self._memory().reversal(game_state, decision, chosen)
@@ -5584,8 +6312,12 @@ class ActionPlanner(_ActionLegalityMixin):
                     "earlier": reversed_record.reasoning,
                     "final": chosen,
                 }
+                answered_high = answered_high or not opponent_turn
             except Exception as error:
                 logger.info("typed-decision: reversal re-check failed (%s); keeping the first answer", error)
+        data, chosen = self._second_look(
+            decision, tag_state, data, chosen, concerns_for, ask, parse, user_message, answered_high
+        )
         reason = data.get("reasoning")
         self._last_decision_target_controllers = (
             data.get("target_controllers") if isinstance(data.get("target_controllers"), dict) else {}
@@ -5724,6 +6456,57 @@ def _local_seat(state: dict[str, Any]) -> Any:
             None,
         )
     return seat
+
+
+def _opponent_tapped_out(state: dict[str, Any]) -> bool:
+    """Every land the opponent controls is tapped (they hold no mana for a trick or a flash blocker)."""
+    local = _local_seat(state)
+    lands = [
+        card
+        for card in state.get("battlefield") or []
+        if local is not None
+        and _controller_seat(card) not in (None, local)
+        and (
+            "land" in str(card.get("type_line") or "").lower()
+            or "CardType_Land" in (card.get("card_types") or [])
+        )
+    ]
+    return bool(lands) and all(card.get("is_tapped") for card in lands)
+
+
+def _model_reasoning(plan: ActionPlan, action: GameAction) -> str:
+    """What the plan said for ``action`` before a guard rewrites it: its reasoning and the plan's strategy.
+
+    Ledger #36 (2026-10-19 match 6175f002): the losing-attack and block guards
+    replaced the model's reasoning without logging it, so reviews could not
+    tell what the model meant.
+    """
+    if action.model_reasoning:
+        return action.model_reasoning
+    parts = [str(action.reasoning or "").strip(), str(plan.overall_strategy or "").strip()]
+    return " | ".join(dict.fromkeys(part for part in parts if part))
+
+
+def _lethal_this_turn(state: dict[str, Any]) -> bool | None:
+    """Whether the board math finds our kill this turn (lethal on board, a lethal posture, a line
+    winning on T); None when the board cannot be assessed."""
+    try:
+        from arenamcp import board_assessment
+
+        facts = board_assessment.assess(state)
+    except Exception as error:  # the strategic layer never blocks a decision
+        logger.debug("lethal check: no assessment (%s)", error)
+        return None
+    if facts is None:
+        return None
+    best = facts.lines[0] if getattr(facts, "lines", None) else None
+    return bool(facts.lethal_now or facts.posture == "lethal" or (best is not None and best.win_at == 1))
+
+
+def _local_turn(state: dict[str, Any]) -> bool:
+    turn = state.get("turn") or {}
+    local = _local_seat(state)
+    return local is not None and turn.get("active_player") == local
 
 
 def _own_main_phase_with_empty_stack(state: dict[str, Any]) -> bool:
@@ -6024,13 +6807,21 @@ def line_fallback_option_pick(
         return None
 
 
-def board_math_agreement(decision: Any, game_state: dict[str, Any], chosen: list[str]) -> str:
+def board_math_agreement(
+    decision: Any, game_state: dict[str, Any], chosen: list[str], reasoning: str = ""
+) -> str:
     """Why the board-math fallback would play exactly ``chosen`` here, or "".
 
     The fallback's own pick (:func:`board_math_option_pick`, overridden by
     :func:`line_fallback_option_pick` as in ``_board_math_fallback``) on our
     main phase with an empty stack, where it follows the searched line. Never
     a pass: holding everything is the call the high-effort answer is for.
+
+    A spell the searched line aims at a target agrees only when ``reasoning``
+    states that target (:func:`_reasoning_names_target`). 2026-10-19 10:55:38
+    (match 15e0eb20 T7, ledger #56): the line was "Lightning Strike (on
+    Nullpriest of Oblivion)"; the low answer cast Strike "pointing at face",
+    counted as the board-math play, and the high leg was cancelled.
     """
     chosen = [str(option_id) for option_id in chosen or []]
     if decision.request_type != "ActionsAvailable" or len(chosen) != 1 or chosen == ["pass"]:
@@ -6041,7 +6832,50 @@ def board_math_agreement(decision: Any, game_state: dict[str, Any], chosen: list
     line = line_fallback_option_pick(decision, game_state, picked)
     if line is not None:
         picked, why = line
-    return (why or "the board-math play") if picked == chosen else ""
+    if picked != chosen:
+        return ""
+    option = decision.find(chosen[0])
+    name = str(find_source(game_state, (option.meta if option is not None else None) or {}).get("name") or "")
+    target = ActionPlanner._searched_line_target(game_state, name)[0] if name else ""
+    if target and not _reasoning_names_target(reasoning, target):
+        logger.info(
+            "typed-decision: the low answer casts the line's %s but not at its target (%s): %r",
+            name,
+            "the opponent" if target == "opponent" else target,
+            str(reasoning or "")[:160],
+        )
+        return ""
+    return why or "the board-math play"
+
+
+_FACE_TARGET_RE = re.compile(
+    r"\b(?:face|go(?:es|ing)? face|(?:at|to|into|on|target(?:ing)?) (?:the )?(?:opponent|opponent's (?:face|life)|player)"
+    r"|their (?:face|life(?: total)?|head)|(?:opponent|player) directly)\b",
+    re.IGNORECASE,
+)
+
+
+def _reasoning_names_target(reasoning: str, target: str) -> bool:
+    """Whether ``reasoning`` aims the cast where the searched line does ("opponent" or a creature's name).
+
+    A creature counts when its full name or a distinctive word of it (four
+    letters or more, "Nullpriest") appears and the reasoning does not send
+    the spell at the opponent instead; the opponent counts when the
+    reasoning names the face/opponent and no creature as the spell's mark.
+    """
+    text = str(reasoning or "")
+    if not text:
+        return False
+    # "kill Nullpriest instead of going face": the rejected option is not the mark.
+    aimed = re.sub(r"\b(?:instead of|rather than|over|not)\b[^.;,:—–]*", " ", text, flags=re.IGNORECASE)
+    face = bool(_FACE_TARGET_RE.search(aimed))
+    if target == "opponent":
+        return face
+    folded = aimed.casefold()
+    name = target.casefold()
+    words = [word for word in re.findall(r"[a-z0-9']+", name.split(",")[0]) if len(word) >= 4]
+    named = name in folded or any(re.search(rf"\b{re.escape(word)}\b", folded) for word in words)
+    return named and not face
 
 
 def board_math_legacy_plan(

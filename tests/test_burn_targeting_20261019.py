@@ -432,6 +432,10 @@ def test_the_target_prompt_carries_the_cast_intent_and_the_line(monkeypatch):
     planner = _planner(
         json.dumps({"option_ids": ["idx:0"], "reasoning": "Shock to face advances the burn race; Effigy attacks."})
     )
+    # Since ledger #80 this face-only Shock is held in our main phase for the opponent's
+    # end step (tests/test_decision_layer_20261019.py). This test is about the cast
+    # intent reaching the target prompt once Shock is cast, so the hold stays out of it.
+    monkeypatch.setattr(planner, "_hold_instant_burn", lambda decision, state: (decision, []))
     assert planner.plan_decision_options(_cast_menu((328, "Shock")), before) == ["idx:0"]
     planner._backend.reply = MODEL_10_13_47
     assert planner.plan_decision_options(decision, state) == ["tgt:1"]

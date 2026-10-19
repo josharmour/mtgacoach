@@ -213,7 +213,8 @@ def test_a_high_answer_inside_the_grace_still_wins_and_the_log_compares_them(cap
 
 
 def test_a_low_answer_that_is_the_board_math_play_does_not_wait_for_high(caplog):
-    def agrees(ids):
+    # The hedge hands the check the low answer's ids and its parsed JSON (its stated target, #56).
+    def agrees(ids, data):
         return "the board-math line casts Jace" if ids == ["idx:2"] else ""
 
     data, _, elapsed, cancels, _ = _hedge(high=(2.0, OTHER), low=(0.01, LOW), low_agrees=agrees)
@@ -222,7 +223,7 @@ def test_a_low_answer_that_is_the_board_math_play_does_not_wait_for_high(caplog)
     assert cancels["high"].is_set()
     assert "high not awaited: the low answer is the board-math play" in caplog.text
     # A low answer the board math does not share waits for the high one as before.
-    data, _, _, _, _ = _hedge(high=(0.1, OTHER), low=(0.01, LOW), low_agrees=lambda ids: "")
+    data, _, _, _, _ = _hedge(high=(0.1, OTHER), low=(0.01, LOW), low_agrees=lambda ids, data: "")
     assert data["reasoning"].startswith("high:")
 
 
