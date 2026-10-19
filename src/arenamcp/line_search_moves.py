@@ -1158,6 +1158,13 @@ class Moves:
         # Hushbringer / Torpor Orb on the battlefield: a creature we cast triggers nothing on entering.
         self.enters_triggers = not any(_NO_ENTERS_TRIGGERS.search(_text(c)) for c in model.battlefield)
         self._prepare()
+        # compare_modes: the spell whose mode it applies before T is being cast now, so its cast
+        # triggers pump T's attack like any cast of the line's (ledger #94).
+        self.root_pumps: dict = {}
+        source = (root_effect or {}).get("source")
+        if isinstance(source, dict) and self.pumps_possible and self.our_turn and model.our_attack_pending:
+            scratch = SimpleNamespace(ours=list(model.ours), pumps=self.root_pumps)
+            self._pump_kinds(scratch, spell_kinds(source))
 
     # -- precomputation ------------------------------------------------------------------
 
@@ -1978,7 +1985,7 @@ class Moves:
         mid.applied = False
         mid.modes, mid.targets, mid.cycles, mid.cast_names = [], [], [], []
         mid.walkers = {iid: (name, loyal) for iid, name, loyal in node.walkers}
-        mid.pumps = {}
+        mid.pumps = dict(self.root_pumps) if node.k == 0 else {}
         mid.keys = self.play_keys(land, casts)
         if not mid.attack_first:
             self._apply_casts(mid)
@@ -2076,7 +2083,10 @@ class Moves:
         this turn included, gets its pump; a spell whose removal finds its
         target gone was still cast. Ledger #94 (match 18b1601a T9, 2026-10-19).
         """
-        kinds = self.kinds(index)
+        self._pump_kinds(mid, self.kinds(index))
+
+    def _pump_kinds(self, mid: Any, kinds: frozenset) -> None:
+        """``_cast_triggers`` for a cast of these kinds (``cast_triggers.spell_kinds``)."""
         adds: dict[int, tuple[int, int]] = {}
 
         def add(bodies, power: int, toughness: int) -> None:

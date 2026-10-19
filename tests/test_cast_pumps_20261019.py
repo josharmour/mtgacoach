@@ -145,3 +145,28 @@ def test_landcycling_is_not_a_cast():
     result = _search(_one_slickshot([(602, "Test Landcycling Sorcery")], their_life=3))
     # Only the 1/2 flier's own power: 3 -> 2, never lethal this turn.
     assert not (result.best.cls == WIN and result.best.win_turn == 5), result.best.summary()
+
+
+def test_the_modal_spell_being_cast_pumps_this_turns_attack():
+    # Choosing Iroh's Demonstration's mode: the spell is being cast, its cast triggers fire
+    # whatever the mode. Two 3/2 fliers into 6 life: lethal now with either mode.
+    from tests.strategic_states import modal_decision
+    from tests.test_modal_sweep_20261019 import CARDS as MODAL_CARDS
+    from tests.test_modal_sweep_20261019 import MODE_MENU
+
+    from arenamcp.line_search import compare_modes
+
+    source = board(
+        turn=9, life=9, their_life=6, lands_played=0,
+        ours=[(401, "Mountain", True, 1), (402, "Mountain", True, 3), (350, "Slickshot Show-Off", False, 3),
+              (447, "Slickshot Show-Off", False, 5)],
+        theirs=[(501, "Forest", False, 2), (601, "Grizzly Bears", False, 4)], hand=[],
+    )  # fmt: skip
+    source["stack"] = [
+        {"instance_id": 373, "name": "Iroh's Demonstration", "owner_seat_id": 1, "controller_seat_id": 1,
+         **deepcopy(MODAL_CARDS["Iroh's Demonstration"])}
+    ]  # fmt: skip
+    comparison = compare_modes(deepcopy(source), modal_decision(MODE_MENU, (308, 394)), hard_ms=1e9)
+    assert comparison is not None and comparison.complete
+    for option_id, line in comparison.lines.items():
+        assert line.cls == WIN and line.win_turn == 9, (option_id, line.summary())
