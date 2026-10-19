@@ -3839,7 +3839,13 @@ class ActionPlanner(_ActionLegalityMixin):
         return chosen
 
     def _plan_mulligan_bottom(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
-        """London-mulligan bottoming: the LLM's pick unless it is clearly worse than the land/curve pick."""
+        """London-mulligan bottoming: the LLM's pick unless it is clearly worse than the land/curve pick.
+
+        Clearly worse: a score more than 1.0 below the suggestion's, fewer
+        than two kept lands (when there were two), or a bottomed spell that
+        is strictly better than one it keeps (``mulligan_policy.dominated_bottom``;
+        2026-10-19 08:47, match 7efad315: Burst Lightning bottomed, Shock kept).
+        """
         from arenamcp import mulligan_policy
 
         ids = [int(option.meta.get("instance_id") or 0) for option in decision.options]
@@ -3861,20 +3867,28 @@ class ActionPlanner(_ActionLegalityMixin):
             lands = mulligan_policy.kept_land_count(game_state, ids, picked)
             total = mulligan_policy.kept_land_count(game_state, ids, [])
             needed = min(total, 2)
-            if score is not None and best is not None and best - score <= 1.0 and lands >= needed:
+            dominated = mulligan_policy.dominated_bottom(game_state, ids, picked)
+            if (
+                score is not None
+                and best is not None
+                and best - score <= 1.0
+                and lands >= needed
+                and dominated is None
+            ):
                 return chosen
             logger.warning(
-                "Mulligan bottom guard: model bottomed %s (keeps %d land(s), score %.1f); bottoming %s "
+                "Mulligan bottom guard: model bottomed %s (keeps %d land(s), score %.1f%s); bottoming %s "
                 "instead (score %.1f)",
                 mulligan_policy.card_names(game_state, picked),
                 lands,
                 score if score is not None else float("nan"),
+                f"; {dominated[0]} is strictly better than the kept {dominated[1]}" if dominated else "",
                 mulligan_policy.card_names(game_state, suggested),
                 best if best is not None else float("nan"),
             )
         reason = (
-            f"Bottom {mulligan_policy.card_names(game_state, suggested)}: keep lands toward two or three "
-            "and the cheapest castable plays."
+            f"Bottom {mulligan_policy.card_names(game_state, suggested)}: keep lands toward two or three, "
+            "the cheapest castable plays, and instant-speed removal before burn that only hits players."
         )
         self._last_decision_option_ids = suggested_ids
         self._last_decision_reasoning = reason
@@ -5246,7 +5260,9 @@ class ActionPlanner(_ActionLegalityMixin):
             lines.append(
                 f"LONDON MULLIGAN BOTTOM: the option_ids you choose go to the BOTTOM of your library; you keep "
                 f"{len(ids) - decision.min_select}. Keep lands toward 2-3 (3 when keeping 6), cheap castable "
-                "plays and bombs; bottom expensive, uncastable, or redundant cards."
+                "plays and bombs; bottom expensive, uncastable, or redundant cards. Between cards of equal "
+                "cost, cheap instant-speed removal beats burn that only hits players, and a card that does "
+                "everything another does (and more) is never the one to bottom."
             )
             lines.extend(mulligan_policy.describe(game_state, decision.min_select)[1:])
             if suggested:

@@ -67,6 +67,45 @@ class HandCard:
     type_line: str
     mana_cost: str
     rarity: str
+    # What the spell does, for ties the land/curve score leaves (see _role_value).
+    role: float = 0.0
+
+
+# A spell that can kill or stop a creature: damage it can aim at one (or at
+# each creature), destroy/exile, -N/-N, fight, or a counterspell.
+_HITS_CREATURES = re.compile(
+    r"\bdeals? (?:\d+|x|twice x) damage to (?:any target|each (?:other )?creature"
+    r"|(?:up to \w+ )?(?:another |other )?target (?:[\w-]+ )*?(?:creature|planeswalker))"
+    r"|\b(?:destroy|exile) (?:up to \w+ )?(?:another )?target (?:[\w-]+ )*?"
+    r"(?:creature|permanent|planeswalker)\b"
+    r"|\btarget creature[^.]*\bgets? [-−]\d+/[-−][1-9]"
+    r"|\bfights?\b|\bcounter target\b"
+)
+# Burn that only reaches players ("deals 3 damage to each opponent").
+_FACE_ONLY = re.compile(r"\bdeals? \d+ damage to (?:each opponent|target (?:player|opponent))\b")
+
+
+def _role_value(text: str, type_line: str, instant_speed: bool) -> float:
+    """Tie-break worth of a spell for bottoming: what it does, not what it costs.
+
+    2026-10-19 09:30 (match 92c09c7a): keeping Shock or Boltwave both scored
+    19.0, and list position bottomed Shock. Instant-speed removal (3) beats
+    creatures and sorcery-speed removal (2), other spells (1.5) and burn that
+    only hits players (1); a kicker that scales the effect adds 0.25 (Burst
+    Lightning over Shock: 08:47, match 7efad315, the model bottomed a Burst).
+    """
+    types = type_line.lower()
+    if "creature" in types or "planeswalker" in types:
+        value = 2.0
+    elif _HITS_CREATURES.search(text):
+        value = 3.0 if instant_speed else 2.0
+    elif _FACE_ONLY.search(text):
+        value = 1.0
+    else:
+        value = 1.5
+    if re.search(r"\b(?:multi)?kicker\b", text):
+        value += 0.25
+    return value
 
 
 def _symbols(cost: str) -> list[str]:
@@ -158,6 +197,7 @@ def hand_card(card: dict) -> HandCard:
     is_land = "land" in card_types or bool(re.search(r"\bland\b", supertypes))
     types = f"{type_line} {' '.join(card_types)}".lower()
     cost = str(card.get("mana_cost") or "")
+    instant_speed = "instant" in types or bool(flash)
     return HandCard(
         instance_id=int(card.get("instance_id") or 0),
         name=str(card.get("name") or "?"),
@@ -166,10 +206,11 @@ def hand_card(card: dict) -> HandCard:
         mana_value=0 if is_land else _mana_value(cost),
         pips=() if is_land else _pips(cost),
         landcycling=_mana_value(cycling.group(1)) if cycling else None,
-        instant_speed="instant" in types or bool(flash),
+        instant_speed=instant_speed,
         type_line=type_line,
         mana_cost=cost,
         rarity=_rarity(card),
+        role=0.0 if is_land else _role_value(text.lower(), types, instant_speed),
     )
 
 
@@ -237,16 +278,61 @@ def hand_score(kept: list[HandCard]) -> float:
 
 
 def best_keep(cards: list[HandCard], keep: int) -> tuple[list[HandCard], list[HandCard]]:
-    """The keep-card subset with the best land count and curve; ties keep cheaper cards."""
+    """The keep-card subset with the best land count and curve; ties keep the better
+    role (:func:`_role_value`), then cheaper cards, and only then the earlier ones."""
     keep = max(0, min(keep, len(cards)))
     best_key, best = None, None
     for chosen in combinations(range(len(cards)), keep):
         kept = [cards[i] for i in chosen]
-        key = (hand_score(kept), -sum(card.mana_value for card in kept), [-i for i in chosen])
+        key = (
+            round(hand_score(kept), 6),
+            sum(card.role for card in kept),
+            -sum(card.mana_value for card in kept),
+            [-i for i in chosen],
+        )
         if best_key is None or key > best_key:
             best_key, best = key, chosen
     kept = [cards[i] for i in best or ()]
     return kept, [card for i, card in enumerate(cards) if i not in set(best or ())]
+
+
+def dominated_bottom(state: dict, instance_ids: list[int], bottomed: list[int]) -> tuple[str, str] | None:
+    """(bottomed spell, kept spell) when a bottomed spell does what a kept one does and more:
+    the same kind of card (role class, speed, creature or not), at least as good on every count
+    the policy has (land/curve value with the kept lands, role, mana value) and better on one.
+    Keeping it instead is strictly better. None otherwise; trading one kind of card for
+    another stays a judgement call.
+
+    2026-10-19 08:47 (match 7efad315): the model bottomed a Burst Lightning and
+    kept Shock, which Burst does everything of; within the score tolerance it
+    stood.
+    """
+    by_id = {
+        int(card.get("instance_id") or 0): card for card in state.get("hand") or [] if isinstance(card, dict)
+    }
+    if any(i not in by_id for i in instance_ids):
+        return None
+    out = set(bottomed)
+    cards = {i: hand_card(by_id[i]) for i in instance_ids}
+    lands = [card for i, card in cards.items() if card.is_land and i not in out]
+
+    def worth(card: HandCard) -> tuple[float, float, int]:
+        return (round(_card_value(card, lands, 0), 6), card.role, -card.mana_value)
+
+    def kind(card: HandCard) -> tuple[int, bool, bool]:
+        types = card.type_line.lower()
+        return int(card.role), card.instant_speed, "creature" in types or "planeswalker" in types
+
+    gone = [cards[i] for i in bottomed if i in cards and not cards[i].is_land]
+    kept = [card for i, card in cards.items() if i not in out and not card.is_land]
+    for bottom in gone:
+        for keeper in kept:
+            if bottom.name == keeper.name or kind(bottom) != kind(keeper):
+                continue
+            ours, theirs = worth(bottom), worth(keeper)
+            if ours != theirs and all(a >= b for a, b in zip(ours, theirs, strict=True)):
+                return bottom.name, keeper.name
+    return None
 
 
 @dataclass
@@ -330,11 +416,14 @@ def mulligan_verdict(found: MulliganSituation) -> tuple[str, str] | None:
     where = {True: "on the play", False: "on the draw", None: "play/draw unknown"}[found.on_play]
     if keep_size is not None and keep_size <= 4:
         return "keep", f"keeping {keep_size}: never mulligan to {keep_size - 1}"
-    kept, bottom = best_keep(cards, keep_size or 7)
+    kept, _bottom = best_keep(cards, keep_size or 7)
     kept_lands = [card for card in kept if card.is_land]
     early, cheap, covered = _plays(kept)
     landish = len(kept_lands) + 0.5 * sum(card.landcycling is not None for card in kept if not card.is_land)
-    bottoming = f" (bottom {_names(bottom)})" if bottom else ""
+    # The keep never names the bottom card: the bottom step decides it with
+    # the whole hand in view. 2026-10-19 09:30 (match 92c09c7a): "(bottom
+    # Shock)" here, from a tie broken by list position, and the bottom step's
+    # model followed it "consistent with my earlier keep decision".
 
     if keep_size in (7, None):
         if 3 <= lands <= 4 and early and len(covered) >= 2:
@@ -354,7 +443,7 @@ def mulligan_verdict(found: MulliganSituation) -> tuple[str, str] | None:
         if 2 <= len(kept_lands) <= 4 and landish <= 4.5 and early:
             return (
                 "keep",
-                f"keeping 6 with {len(kept_lands)} lands and early plays ({_names(early)}){bottoming}; "
+                f"keeping 6 with {len(kept_lands)} lands and early plays ({_names(early)}); "
                 "a random 5 is worse",
             )
         return None
@@ -365,7 +454,7 @@ def mulligan_verdict(found: MulliganSituation) -> tuple[str, str] | None:
         return "mulligan", f"{lands} lands of 7: keeping 5 leaves at most one spell"
     if len(kept_lands) == 1 and not cheap:
         return "mulligan", f"1 land and no cheap plays among {_names(kept)}"
-    return "keep", f"keeping 5 with {len(kept_lands)} land(s){bottoming}; a random 4 is worse"
+    return "keep", f"keeping 5 with {len(kept_lands)} land(s); a random 4 is worse"
 
 
 def _turn_note(card: HandCard, lands: list[HandCard]) -> str:
