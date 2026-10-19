@@ -63,6 +63,7 @@ from arenamcp.mana import get_local_seat_id
 from arenamcp.plan_card import PlanCard
 from arenamcp.settings import get_settings
 from arenamcp.standalone_auto_queue import _AutoQueueMixin
+from arenamcp.standalone_auto_reload import _AutoReloadMixin
 from arenamcp.standalone_autopilot_capture import _AutopilotCaptureMixin
 from arenamcp.standalone_concede import _ConcedeMixin
 from arenamcp.standalone_deck import _DeckAnalysisMixin
@@ -94,6 +95,7 @@ logger = logging.getLogger(__name__)
 
 class StandaloneCoach(
     _AutoQueueMixin,
+    _AutoReloadMixin,
     _DraftEventMixin,
     _AutopilotCaptureMixin,
     _ConcedeMixin,
@@ -2177,7 +2179,16 @@ class StandaloneCoach(
                 # End-state staging above runs first; navigation never delays
                 # those records or overlaps with the in-match autopilot.
                 match_finished = self._completed_match_wait(curr_state)
-                if self._poll_auto_queue(curr_state) or match_finished:
+                # A reload requested between matches holds navigation until the
+                # desktop swaps the engine (standalone_auto_reload.py).
+                if self._auto_reload_holds(curr_state):
+                    prev_state = curr_state
+                    time.sleep(0.3)
+                    continue
+                navigating = self._poll_auto_queue(curr_state)
+                # Engine code changed on disk? Reload now if this is between matches.
+                self._maybe_request_auto_reload(curr_state)
+                if navigating or match_finished:
                     prev_state = curr_state
                     time.sleep(0.3)
                     continue
@@ -3262,6 +3273,8 @@ class StandaloneCoach(
         self._startup_finished = False
         self._load_engine_resume()
         self._startup_status("starting", "Starting coaching engine…")
+        # Fingerprint the code this engine runs, for reloads between matches.
+        self._init_auto_reload()
 
         # Initialize components — emit progress to pipe so GUI shows what's happening
         # Android: MTGA runs on an adb-tethered phone. Mirror its log before the
