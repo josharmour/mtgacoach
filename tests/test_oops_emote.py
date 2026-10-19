@@ -1116,21 +1116,21 @@ def test_mac_emote_guards_the_click_in_the_same_frame():
 
 
 def test_the_self_cancel_guard_reports_an_oops_incident(monkeypatch):
-    from test_graveyard_recursion_and_modal_targets import (
+    from tests.necromancer_states import (
         NECRO_IDS,
-        _actions_poll,
-        _engine,
-        _loop_state,
-        _targets_poll,
+        actions_poll,
+        loop_engine,
+        loop_state,
+        targets_poll,
     )
 
-    engine, bridge, _ = _engine(monkeypatch)
+    engine, bridge, _ = loop_engine()
     reports: list[tuple] = []
     engine._oops_fn = lambda *args: reports.append(args)
-    state = _loop_state()
-    bridge.get_pending_actions.return_value = _actions_poll()
+    state = loop_state()
+    bridge.get_pending_actions.return_value = actions_poll()
     assert engine._try_typed_decision_path(state, "decision_required")
-    bridge.get_pending_actions.return_value = _targets_poll(NECRO_IDS, game_state_id=460, msg_id=648)
+    bridge.get_pending_actions.return_value = targets_poll(NECRO_IDS, game_state_id=460, msg_id=648)
     assert engine._try_typed_decision_path(state, "decision_required")
     ((kind, key, text, reported_state),) = reports
     # One incident per play per game, whatever the turn (see the recurring Necromancer test).
@@ -1140,14 +1140,14 @@ def test_the_self_cancel_guard_reports_an_oops_incident(monkeypatch):
 
 
 def test_manual_required_reports_its_reason(monkeypatch):
-    from test_graveyard_recursion_and_modal_targets import _engine, _loop_state
+    from tests.necromancer_states import loop_engine, loop_state
 
-    engine, _bridge, _ = _engine(monkeypatch)
+    engine, _bridge, _ = loop_engine()
     engine._try_submit_plan_advancing_play = lambda state: False
     engine._try_auto_respond_escape = lambda state, why: False
     reports: list[tuple] = []
     engine._oops_fn = lambda *args: reports.append(args)
-    state = _loop_state()
+    state = loop_state()
     engine._pause_for_manual("SelectTargets: no safe automatic choice — pick manually", state)
     ((kind, key, text, _state),) = reports
     assert kind == STUCK_MANUAL and text == "SelectTargets: no safe automatic choice — pick manually"
@@ -1158,17 +1158,18 @@ def test_manual_required_reports_its_reason(monkeypatch):
 
 
 def test_the_semantic_guard_reports_before_the_capture_turns_autoplay_off(monkeypatch):
-    from arenamcp.autopilot_progress import DecisionProgressGuard
-    from test_graveyard_recursion_and_modal_targets import NECRO_IDS, _engine, _loop_state, _targets_poll
+    from tests.necromancer_states import NECRO_IDS, loop_engine, loop_state, targets_poll
 
-    engine, _bridge, _ = _engine(monkeypatch)
+    from arenamcp.autopilot_progress import DecisionProgressGuard
+
+    engine, _bridge, _ = loop_engine()
     now = [0.0]
     engine._progress_guard = DecisionProgressGuard(clock=lambda: now[0])
     order: list[str] = []
     engine._oops_fn = lambda kind, *rest: order.append(kind)
     engine._stuck_report_fn = lambda reason, context: order.append("capture")
-    state = _loop_state()
-    poll = _targets_poll(NECRO_IDS, game_state_id=460, msg_id=648)
+    state = loop_state()
+    poll = targets_poll(NECRO_IDS, game_state_id=460, msg_id=648)
     for _ in range(3):
         assert not engine._observe_decision_progress(poll, state)
         engine._progress_guard.note_attempt("submit_targets", {"args": ([271],)})
@@ -1178,9 +1179,9 @@ def test_the_semantic_guard_reports_before_the_capture_turns_autoplay_off(monkey
 
 
 def test_submitted_targets_and_declared_attacks_become_evidence(monkeypatch):
-    from test_graveyard_recursion_and_modal_targets import _engine
+    from tests.necromancer_states import loop_engine
 
-    engine, bridge, _ = _engine(monkeypatch)
+    engine, bridge, _ = loop_engine()
     bridge.submit_targets.return_value = True
     state = live_state(decision_context={"type": "target_selection", "source_id": 395})
     poll = {"has_pending": True, "request_type": "SelectTargets", "decision_context": {"sourceId": 395}}
@@ -1614,9 +1615,9 @@ def test_bo3_game_one_facts_never_hide_a_game_two_blunder():
 
 
 def test_the_engine_keeps_only_this_games_evidence(monkeypatch):
-    from test_graveyard_recursion_and_modal_targets import _engine
+    from tests.necromancer_states import loop_engine
 
-    engine, bridge, _ = _engine(monkeypatch)
+    engine, bridge, _ = loop_engine()
     engine._note_declared_attack({**fblthp_board(), "game_number": 1}, [{"attackerInstanceId": 288}], None)
     game2 = {**fblthp_board(), "game_number": 2}
     game2["turn"] = {**game2["turn"], "turn_number": 6}
@@ -1694,9 +1695,10 @@ def test_get_game_state_carries_the_game_number(monkeypatch):
 
 def test_no_oops_while_the_auto_concede_is_being_sent():
     """The countdown claims itself (armed turns False) before the concede is sent and confirmed."""
-    import test_concede as tc
+    from tests.bug_180436_states import bug_state
+    from tests.concede_fakes import Harness as ConcedeHarness
 
-    conc = tc.Harness(tc.bug_state())
+    conc = ConcedeHarness(bug_state())
     key = (conc.state["match_id"], 1)
     h = Harness()
     h.controller._concede_active = conc.controller.concede_in_progress
@@ -1725,9 +1727,10 @@ def test_no_oops_while_the_auto_concede_is_being_sent():
 
 
 def test_a_cancelled_countdown_frees_the_oops():
-    import test_concede as tc
+    from tests.bug_180436_states import bug_state
+    from tests.concede_fakes import Harness as ConcedeHarness
 
-    conc = tc.Harness(tc.bug_state())
+    conc = ConcedeHarness(bug_state())
     key = (conc.state["match_id"], 1)
     h = Harness()
     h.controller._concede_active = conc.controller.concede_in_progress
@@ -1793,22 +1796,22 @@ def test_a_stale_trick_fact_still_counts_for_its_combat():
 
 def test_a_recurring_self_cancel_is_one_incident_per_game(monkeypatch):
     """Theoretical Necromancer was activated and cancelled for the same reason at 17:51, 17:52 and 18:57."""
-    from test_graveyard_recursion_and_modal_targets import (
+    from tests.necromancer_states import (
         NECRO_IDS,
-        _actions_poll,
-        _engine,
-        _loop_state,
-        _targets_poll,
+        actions_poll,
+        loop_engine,
+        loop_state,
+        targets_poll,
     )
 
-    engine, bridge, _ = _engine(monkeypatch)
+    engine, bridge, _ = loop_engine()
     reports: list[tuple] = []
     engine._oops_fn = lambda *args: reports.append(args)
     for turn, gsid in ((16, 459), (18, 500)):
-        bridge.get_pending_actions.return_value = _actions_poll(gsid)
-        assert engine._try_typed_decision_path(_loop_state(turn=turn), "decision_required")
-        bridge.get_pending_actions.return_value = _targets_poll(NECRO_IDS, game_state_id=gsid + 1, msg_id=648)
-        assert engine._try_typed_decision_path(_loop_state(turn=turn), "decision_required")
+        bridge.get_pending_actions.return_value = actions_poll(gsid)
+        assert engine._try_typed_decision_path(loop_state(turn=turn), "decision_required")
+        bridge.get_pending_actions.return_value = targets_poll(NECRO_IDS, game_state_id=gsid + 1, msg_id=648)
+        assert engine._try_typed_decision_path(loop_state(turn=turn), "decision_required")
     assert [r[0] for r in reports] == [SELF_CANCEL, SELF_CANCEL] and reports[0][1] == reports[1][1]
 
     h = Harness()
@@ -1846,12 +1849,12 @@ def test_declining_a_resolved_creatures_trigger_target_is_no_self_cancel(monkeyp
     trigger 320 (AbilityInstanceCreated, parent 316) asking for a mode, then SelectTargetsReq sourceId 320.
     18:11:46 the autopilot declined tgt:243 and cancelled: the GRE re-sent the trigger's
     CastingTimeOptionsReq; the cast itself stood. No Oops, and the cast is not withheld."""
-    from test_graveyard_recursion_and_modal_targets import _engine, _loop_state, _targets_poll
+    from tests.necromancer_states import loop_engine, loop_state, targets_poll
 
-    engine, bridge, _ = _engine(monkeypatch)
+    engine, bridge, _ = loop_engine()
     reports: list[tuple] = []
     engine._oops_fn = lambda *args: reports.append(args)
-    state = _loop_state(turn=15)
+    state = loop_state(turn=15)
     bridge.get_pending_actions.return_value = _duelist_cast_poll()
     assert engine._try_typed_decision_path(state, "decision_required")
     assert bridge.submit_action_by_index.call_count == 1
@@ -1871,7 +1874,7 @@ def test_declining_a_resolved_creatures_trigger_target_is_no_self_cancel(monkeyp
         "source_id": 320,
         "source_parent_instance_id": 316,
     }
-    bridge.get_pending_actions.return_value = _targets_poll((214, 243, 278), game_state_id=360, msg_id=470)
+    bridge.get_pending_actions.return_value = targets_poll((214, 243, 278), game_state_id=360, msg_id=470)
     assert engine._try_typed_decision_path(trigger, "decision_required")
     bridge.cancel_action.assert_called_once()
     assert reports == []
@@ -1883,12 +1886,12 @@ def test_declining_a_resolved_creatures_trigger_target_is_no_self_cancel(monkeyp
 
 
 def test_declining_the_spells_own_targets_still_counts_as_a_self_cancelled_cast(monkeypatch):
-    from test_graveyard_recursion_and_modal_targets import _engine, _loop_state, _targets_poll
+    from tests.necromancer_states import loop_engine, loop_state, targets_poll
 
-    engine, bridge, _ = _engine(monkeypatch)
+    engine, bridge, _ = loop_engine()
     reports: list[tuple] = []
     engine._oops_fn = lambda *args: reports.append(args)
-    state = _loop_state(turn=15)
+    state = loop_state(turn=15)
     bridge.get_pending_actions.return_value = _duelist_cast_poll()
     assert engine._try_typed_decision_path(state, "decision_required")
     spell = dict(state)
@@ -1902,7 +1905,7 @@ def test_declining_the_spells_own_targets_still_counts_as_a_self_cancelled_cast(
         }
     ]
     spell["decision_context"] = {"type": "target_selection", "source_id": 316}
-    bridge.get_pending_actions.return_value = _targets_poll((214, 243, 278), game_state_id=360, msg_id=470)
+    bridge.get_pending_actions.return_value = targets_poll((214, 243, 278), game_state_id=360, msg_id=470)
     assert engine._try_typed_decision_path(spell, "decision_required")
     ((kind, key, text, _state),) = reports
     assert kind == SELF_CANCEL and key == ("ActionType_Cast", "divining duelist", 0)
@@ -1974,9 +1977,9 @@ def test_an_attacker_killed_by_a_first_striker_is_judged():
 
 def test_a_single_candidate_auto_target_is_recorded_as_evidence(monkeypatch):
     """autopilot.py's single-candidate auto-submit passes the target as a bare int."""
-    from test_graveyard_recursion_and_modal_targets import _engine
+    from tests.necromancer_states import loop_engine
 
-    engine, bridge, _ = _engine(monkeypatch)
+    engine, bridge, _ = loop_engine()
     bridge.submit_targets.return_value = True
     state = live_state(decision_context={"type": "target_selection", "source_id": 395})
     assert engine._progress_bridge(state).submit_targets(266)
