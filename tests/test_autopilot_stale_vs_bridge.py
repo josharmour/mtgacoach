@@ -23,7 +23,10 @@ a real bridge problem and must still surface MANUAL REQUIRED.
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import pytest
+from tests.fakes import FakeBridge, make_engine
 
 from arenamcp.action_planner import ActionType, GameAction
 from arenamcp.autopilot import AutopilotEngine
@@ -95,3 +98,43 @@ def test_planner_action_stale_vs_bridge(action, pending, bridge_actions, stale):
     if bridge_actions is not None:
         state["_bridge_actions"] = bridge_actions
     assert engine._is_planner_action_stale_vs_bridge(action, state) is stale
+
+
+# --- what happens to a stale combat step ------------------------------------
+
+
+@pytest.mark.parametrize("can_pass", [True, False])
+def test_a_combat_step_in_a_main_phase_window_passes_toward_combat(can_pass):
+    """Declaring attackers while Arena still offers Main 1's actions: pass priority to
+    move on to the attack step (the plan comes back there), or skip and re-plan
+    when the window has no pass."""
+    window = {
+        "ok": True,
+        "has_pending": True,
+        "request_type": "ActionsAvailable",
+        "request_class": "ActionsAvailableRequest",
+        "actions": [{"actionType": "Pass"}],
+        "can_pass": can_pass,
+    }
+    bridge = FakeBridge(window, connected=True)
+    bridge.submit_pass = Mock(return_value=True)
+    engine = make_engine(bridge)
+    engine._try_gre_bridge = lambda action, state: None  # the attack itself is not submittable here
+    state = {
+        "turn": {"turn_number": 5, "phase": "Phase_Main1", "step": ""},
+        "players": [{"seat_id": 1, "is_local": True}],
+        "_bridge_connected": True,
+    }
+
+    result = engine._execute_action(
+        GameAction(action_type=ActionType.DECLARE_ATTACKERS, attacker_names=["Bear"]), state
+    )
+
+    assert result.success
+    if can_pass:
+        bridge.submit_pass.assert_called_once()
+        assert result.error == "GRE bridge (advance-to-combat)"
+        assert result.submitted_action.action_type == ActionType.PASS_PRIORITY
+    else:
+        bridge.submit_pass.assert_not_called()
+        assert result.error == "GRE bridge (stale-skip)"
