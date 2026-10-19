@@ -1015,7 +1015,7 @@ def critical_decision(
         for card in state.get("stack") or []:
             oracle = str(card.get("oracle_text") or "")
             if source_id and card.get("instance_id") == source_id and _REMOVAL_RE.search(oracle):
-                if not burn_kills_nothing(oracle, state):
+                if not burn_kills_nothing(oracle, state, source=card):
                     return f"removal mode: {card.get('name') or source_id}"
         return ""
     return ""
