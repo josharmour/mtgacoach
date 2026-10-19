@@ -1413,7 +1413,10 @@ def loyalty_minus_exposes_walker(label: str, source: dict, state: dict) -> str:
         threat += burn
         names = [*names, f"{burn} burn from open red mana"]
     after = current - cost
-    if threat <= 0 or after > threat:
+    # A minus to 0 spends the walker by design: nothing is left to expose.
+    # bug_20261018_224732: Jace at 1 loyalty (abilities -1 and -3 only) had its
+    # -1 withheld every turn, so the walker could never be used again.
+    if threat <= 0 or after > threat or after <= 0:
         return ""
     gained = loyalty_minus_value(label, state)
     if gained > 2.0 * max(0, after):

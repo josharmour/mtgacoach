@@ -316,3 +316,17 @@ def test_a_minus_worth_more_than_the_walker_left_is_not_withheld():
     label = "Activate: Garruk, Curse Breaker [-3: Create a 4/4 green Beast creature token with trample.]"
     assert loyalty_minus_value(label, window) == 4 + 2 + 2
     assert loyalty_minus_exposes_walker(label, window["battlefield"][-1], window) == ""
+
+
+def test_a_minus_that_spends_the_last_loyalty_is_not_withheld():
+    """bug_20261018_224732: Jace at 1 loyalty (only -1 and -3 abilities left) had its
+    -1 withheld on every turn under an evasive threat, so it could never be used.
+    A minus to 0 spends the walker by design; there is nothing left to expose."""
+    window = _evasive_only(state("G1_T9_MAIN1"))
+    jace = _jace(window)
+    jace["counters"]["Loyalty"] = 1
+    assert loyalty_minus_exposes_walker("Activate: Jace [-1: Surveil 1.]", jace, window) == ""
+    jace["counters"]["Loyalty"] = 3
+    assert loyalty_minus_exposes_walker("Activate: Jace [-3: Draw a card.]", jace, window) == ""
+    jace["counters"]["Loyalty"] = 4
+    assert "leaves 1" in loyalty_minus_exposes_walker("Activate: Jace [-3: Draw a card.]", jace, window)
