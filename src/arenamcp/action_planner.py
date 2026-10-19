@@ -3220,6 +3220,9 @@ class ActionPlanner(_ActionLegalityMixin):
                     # counters: without them Burst Lightning's {2} ward tax read
                     # as its "{4} kicker" and was declined (2026-10-19 10:38:30).
                     *pay_decision_facts(game_state),
+                    # Ledger #104 (12:23:49): Spell Pierce's {2} on our Burst was
+                    # taken for its kicker, which had been declined at the cast.
+                    *filter(None, [self._kicker_answered_fact(game_state)]),
                     self._decision_game_context(game_state),
                     self._strategy_context(game_state),
                     "",
@@ -3255,6 +3258,31 @@ class ActionPlanner(_ActionLegalityMixin):
             logger.info(f"plan_pay_or_decline: pay={pay} ({str(data.get('reasoning', ''))[:100]})")
             return pay
         return None
+
+    def _kicker_answered_fact(self, game_state: dict[str, Any]) -> str:
+        """A pay-prompt line when the kicker of our spell on the stack was already chosen at its cast ('' otherwise)."""
+        try:
+            local_seat = _local_seat(game_state)
+            ours = {
+                str(item.get("name") or "").strip().casefold()
+                for item in game_state.get("stack") or []
+                if isinstance(item, dict)
+                and item.get("controller_seat_id") == local_seat
+                and str(item.get("object_kind") or "").upper() != "ABILITY"
+            } - {""}
+            for record in reversed(self._memory().this_turn(game_state)):
+                if record.request_type != "CastingTimeOptions" or record.source.strip().casefold() not in ours:
+                    continue
+                if not any("kick" in str(label).casefold() for label in record.option_labels.values()):
+                    continue
+                kicked = any("kick" in str(label).casefold() for label in record.chosen_labels)
+                return (
+                    f"The kicker of {record.source} was already answered when it was cast "
+                    f"({'kicked' if kicked else 'not kicked'}): this cost is not its kicker."
+                )
+        except Exception as error:  # a prompt fact never blocks the decision
+            logger.debug("kicker fact unavailable: %s", error)
+        return ""
 
     # The decision rules, each tagged with the subject it needs in the game
     # (situational_rules.SUBJECTS; None: always). With every subject in play
