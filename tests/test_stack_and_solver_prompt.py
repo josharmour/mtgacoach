@@ -145,12 +145,14 @@ def test_stack_is_rendered_in_the_order_it_resolves() -> None:
     state = coach_state(frame(replay_stack_fight(), 131))
     lines = _fmt()._format_stack_section(state, 2)
     entries = [line for line in lines if re.match(r"  \d+\. ", line)]
+    # Targets come from the log's TargetSpec annotations (ledger #122); the
+    # replay holds only the stack, so they render by instance id.
     assert entries == [
         "  1. YOU Prowess  <- resolves next",
-        "  2. YOU Shock",
-        "  3. OPP Shock",
+        "  2. YOU Shock -> targets: #299",
+        "  3. OPP Shock -> targets: #294",
         "  4. YOU Prowess",
-        "  5. YOU Burst Lightning",
+        "  5. YOU Burst Lightning -> targets: #287",
     ]
 
 
