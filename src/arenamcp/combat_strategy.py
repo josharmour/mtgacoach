@@ -1088,14 +1088,96 @@ def _all_in(state: dict) -> bool:
     return bool(assessment is not None and getattr(assessment, "all_in", False))
 
 
+def _walker_target_id(target, cards: dict, opponent_seat) -> int | None:
+    """The opponent's planeswalker an attack recipient names, or None (the player, unknown, ambiguous).
+
+    ``target`` is what the caller has: a GRE ``damageRecipient`` dict (the
+    bridge), a planner label ("Ajani Resolute [341]", "Ajani Resolute",
+    "Opponent") or an instance id.
+    """
+    identity = None
+    if isinstance(target, dict):
+        try:
+            kind, identity = recipient_key(target)
+        except (TypeError, ValueError):
+            return None
+        if kind != "planeswalker":
+            return None
+    elif _is_int(target):
+        identity = target
+    elif isinstance(target, str) and target.strip():
+        tagged = re.search(r"\[(?:id:)?(\d+)\]\s*$", target.strip())
+        if tagged:
+            identity = int(tagged.group(1))
+        else:
+            wanted = target.strip().casefold()
+            named = [
+                iid
+                for iid, card in cards.items()
+                if str(card.get("name") or "").casefold() == wanted
+                and _controller(card) == opponent_seat
+                and "planeswalker" in _types(card)
+            ]
+            identity = named[0] if len(named) == 1 else None
+    walker = cards.get(identity) if identity is not None else None
+    if walker is None or _controller(walker) != opponent_seat or "planeswalker" not in _types(walker):
+        return None
+    return identity
+
+
+def _walker_kills(
+    attackers: list[dict], blockers: list[dict], cards: dict, attacker_targets: dict, opponent_seat
+) -> dict[int, str]:
+    """Attackers aimed at a planeswalker of theirs that dies whatever they block, with the reason.
+
+    #127 (2026-10-19 T15, match 3e545401): Slickshot Show-Off 3/2 flier and
+    Giant Cindermaw 4/3 trampler were both sent at Ajani Resolute (loyalty 1)
+    past one untapped blocker, Unflinching Hortimancer 7/6 flying first
+    strike. Whichever it blocked, the other killed Ajani; the guard priced
+    face damage only ("only 3 more damage through") and held both. Their best
+    blocks against the attackers aimed at the walker, every blocker on it, are
+    judged with its loyalty as the life they protect: when that still leaves
+    damage >= loyalty, the walker dies whatever they do, and killing a
+    planeswalker is worth the creature they eat. Unknown loyalty keeps nothing.
+    """
+    aimed: dict[int, list[dict]] = {}
+    for card in attackers:
+        walker = _walker_target_id(attacker_targets.get(card["instance_id"]), cards, opponent_seat)
+        if walker is not None:
+            aimed.setdefault(walker, []).append(card)
+    kept: dict[int, str] = {}
+    for walker, group in aimed.items():
+        remaining = loyalty(cards[walker])
+        if remaining is None or remaining <= 0:
+            continue
+        if _best_through(group, blockers, remaining) < remaining:
+            continue
+        names = " and ".join(str(card.get("name") or card["instance_id"]) for card in group)
+        verb = "attack" if len(group) > 1 else "attacks"
+        walker_name = cards[walker].get("name") or "their planeswalker"
+        reason = (
+            f"{names} {verb} {walker_name} (loyalty {remaining}), "
+            f"and their best blocks still leave at least {remaining} damage on it: "
+            "it dies whatever they block, worth the creature they eat"
+        )
+        for card in group:
+            kept[card["instance_id"]] = reason
+    return kept
+
+
 def losing_attackers(
     state: dict,
     attacker_ids: list[int],
     pending: dict | None = None,
     *,
     strategy_text: str = "",
+    attacker_targets: dict | None = None,
 ) -> dict[int, str]:
     """Planned attackers that only feed an untapped blocker, with the reason.
+
+    ``attacker_targets`` maps an attacker's instance id to its recipient (a
+    GRE ``damageRecipient``, a planner label such as "Ajani Resolute [341]",
+    or a planeswalker instance id); attackers without one attack the player.
 
     Each attacker is judged on its own (2026-10-19 T10, match f9e0ec3b: a 1/2
     Hired Claw added to the attack kept Emberheart Challenger 3/3 in against
@@ -1116,6 +1198,8 @@ def losing_attackers(
       - the whole attack is not lethal through their best blocks;
       - it is not required to attack (GRE ``mustAttack`` in the state or the
         live ``pending`` bridge request);
+      - it is not aimed at a planeswalker of theirs that the attackers aimed
+        at it kill whatever they block (``_walker_kills``, #127);
       - its rules text names no attack/block/death payoff, evasion, or
         damage-to-creature value, except an attack trigger that only deals
         damage or changes life (Hired Claw's ping), which counts toward what
@@ -1199,6 +1283,9 @@ def losing_attackers(
         ]
         if entry.get("mustAttack")
     }
+    walker_kills = _walker_kills(attackers, blockers, cards, attacker_targets or {}, opponent.get("seat_id"))
+    for identity, reason in walker_kills.items():
+        logger.info("Losing-attack guard: keeping %s: %s", cards[identity].get("name") or identity, reason)
     payoffs = {card["instance_id"]: _attack_payoff(card) for card in attackers}
     # What a blocker that survives can do with their tricks (#120), and what our burn kills (#113).
     exposure = combat_solver.attacking_trick_exposure(state, opponent.get("seat_id"))
@@ -1207,6 +1294,7 @@ def losing_attackers(
         card
         for card in attackers
         if card["instance_id"] not in forced
+        and card["instance_id"] not in walker_kills
         and payoffs[card["instance_id"]] is not None
         and not any(_has_type(card, kind) for kind in rewarded)
     ]

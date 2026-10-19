@@ -54,6 +54,13 @@ def _as_int(value: Any) -> int:
         return 0
 
 
+def _walker_loyalty(card: dict[str, Any]) -> int | None:
+    """A planeswalker's current loyalty (its loyalty counters first), None when unknown (#130)."""
+    from arenamcp.combat_strategy import loyalty
+
+    return loyalty(card)
+
+
 def _is_opponent_turn(game_state: dict[str, Any], local_seat: Any) -> bool:
     """Whether the opponent is the active player (False when either seat is unknown)."""
     active = _as_int((game_state.get("turn") or {}).get("active_player"))
@@ -1616,7 +1623,15 @@ class ActionPlanner(_ActionLegalityMixin):
                 except (ValueError, TypeError, KeyError):
                     continue  # cannot tell which creatures attack: keep the plan
             strategy_text = f"{plan.overall_strategy or ''} {action.reasoning or ''}".strip()
-            losing = losing_attackers(state, identities, strategy_text=strategy_text)
+            # #127 (2026-10-19 T15): an attack at a planeswalker is judged by what it does to the walker.
+            shared = action.target_names[0] if len(action.target_names) == 1 else ""
+            recipients = {
+                identity: action.attacker_targets.get(name) or shared
+                for name, identity in zip(action.attacker_names, identities, strict=True)
+            }
+            losing = losing_attackers(
+                state, identities, strategy_text=strategy_text, attacker_targets=recipients
+            )
             if not losing:
                 continue
             kept = [
@@ -5087,7 +5102,9 @@ class ActionPlanner(_ActionLegalityMixin):
             if card is None or controllers.get(iid) == local_seat:
                 return None
             if "planeswalker" in str(card.get("type_line") or "").lower():
-                return True
+                # #130: a walker the damage doesn't finish keeps a pick but is no kill to retarget to.
+                remaining = _walker_loyalty(card)
+                return True if remaining is None or damage >= remaining else None
             if "creature" not in str(card.get("type_line") or "").lower():
                 return None
             return damage_would_kill(card, damage)
@@ -5205,7 +5222,10 @@ class ActionPlanner(_ActionLegalityMixin):
                 continue
             type_line = str(other.get("type_line") or "").lower()
             if "planeswalker" in type_line:
-                alternatives.append((0, 0, oid, other.get("name")))
+                # #130: "dies instead" only for a walker the damage finishes.
+                remaining = _walker_loyalty(other)
+                if remaining is None or sure_damage >= remaining:
+                    alternatives.append((0, 0, oid, other.get("name")))
             elif (
                 "creature" in type_line
                 and damage_would_kill(other, sure_damage) is True
@@ -5679,6 +5699,44 @@ class ActionPlanner(_ActionLegalityMixin):
             None,
         )
         if life is None or life <= parsed[0] or _lethal_this_turn(game_state) is not False:
+            return chosen
+        # #126 (2026-10-19 13:14:15): the line wanted Burst Lightning on a 1/1 Callous Inspector; the
+        # model went face because the kill "only feeds its death trigger and gives a Clue". The line
+        # search does not model death triggers: when the target has one that pays its controller,
+        # the model's face pick stands.
+        from arenamcp.play_safety import death_trigger_benefit
+
+        line_card = next(
+            (
+                card
+                for card in game_state.get("battlefield", []) or []
+                if f"tgt:{_as_int(card.get('instance_id'))}" == line_option
+            ),
+            {},
+        )
+        trigger = death_trigger_benefit(line_card)
+        if trigger:
+            said = self._last_decision_reasoning or ""
+            cited = bool(re.search(r"\bdeath\b|\bdies\b|\bclue\b|\btoken\b", said, re.I))
+            logger.warning(
+                "Not retargeting: the searched line aims %s at %s, but its death trigger (%s) gives its "
+                "controller something the line search does not model; keeping %s%s [model: %s]",
+                intent["card"],
+                intent["line_target"],
+                trigger[:120],
+                chosen,
+                " (the model cited it)" if cited else "",
+                said[:160],
+            )
+            trace = getattr(self, "_last_decision_trace", None)
+            if isinstance(trace, dict):
+                trace["line_over_face_deferred"] = {
+                    "model": chosen,
+                    "line": line_option,
+                    "card": intent["card"],
+                    "death_trigger": trigger[:200],
+                    "model_cited": cited,
+                }
             return chosen
         reason = (
             f"The searched line aims {intent['card']} at {intent['line_target']}; {parsed[0]} damage to the "
@@ -6387,6 +6445,14 @@ class ActionPlanner(_ActionLegalityMixin):
                     from arenamcp.play_safety import creature_state_facts
 
                     facts.update(creature_state_facts(card, mine=ctrl is not None and ctrl == local_seat))
+                # #130 (2026-10-19, match 3e545401): Ajani Resolute at loyalty 1 was a bare name.
+                if _as_int(o.option_id[4:]) in battlefield_ids and (
+                    "planeswalker" in str(card.get("type_line") or "").lower()
+                    or "CardType_Planeswalker" in (card.get("card_types") or [])
+                ):
+                    from arenamcp.play_safety import planeswalker_state_facts
+
+                    facts.update(planeswalker_state_facts(card))
                 ward = ward_of(card) if _as_int(o.option_id[4:]) in battlefield_ids else None
                 if ward is not None and ctrl not in (None, local_seat) and ward_mana is not None:
                     warded_targets = True
