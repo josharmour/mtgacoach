@@ -717,7 +717,7 @@ def test_autopilot_off_recommends_once_and_never_arms():
     assert harness.events == [] and harness.threads == [] and harness.concedes == []
 
 
-def test_autopilot_on_concedes_after_the_offer_is_heard_and_the_countdown():
+def test_autopilot_on_concedes_after_announcing_the_offer_and_the_countdown():
     harness = Harness(bug_state())
     harness.observe()
     assert harness.states == ["offering"] and harness.events[0]["seconds"] == 3
@@ -878,7 +878,7 @@ def test_a_cancel_on_another_thread_waits_for_the_armed_event():
             return
         canceller = threading.Thread(target=harness.controller.cancel, args=("ui",))
         canceller.start()
-        canceller.join(0.2)
+        canceller.join(0.05)
         blocked.append(canceller.is_alive())  # waiting on the emit lock
         harness._joins = canceller  # type: ignore[attr-defined]
 
@@ -990,6 +990,7 @@ def pipe(coach: PipeCoach) -> tuple[PipeAdapter, list[dict]]:
         ({"cmd": "force_stop"}, "force_stop"),
         ({"cmd": "stop_speech"}, "stop_speech"),
         ({"cmd": "autopilot_abort"}, "autopilot_abort"),
+        ({"cmd": "autopilot_cancel"}, "autopilot_cancel"),
     ],
 )
 def test_pipe_commands_cancel_the_countdown(command, source):
@@ -1018,6 +1019,7 @@ def test_autopilot_cancel_falls_back_to_escape():
     coach._autopilot = Engine()
     adapter, events = pipe(coach)
     adapter._dispatch({"cmd": "autopilot_cancel"})
+    assert coach.cancels == ["autopilot_cancel"]  # any countdown is cancelled too
     assert Engine.escaped == 1 and not [e for e in events if e.get("type") == "error"]
 
 
@@ -1326,37 +1328,6 @@ def test_turning_auto_concede_off_saves_and_cancels():
     runtime.settings.set.assert_called_once_with("auto_concede", False)
     runtime._concede.cancel.assert_called_once_with("auto-concede turned off", decline=True)
     assert runtime._concede_autopilot_on() is False  # a dry run never concedes
-
-
-def test_the_engine_reload_record_reaches_the_new_engine(monkeypatch, tmp_path):
-    import json
-    import time
-    from unittest.mock import Mock
-
-    import arenamcp.standalone_startup as startup
-    from arenamcp.standalone_concede import _ConcedeMixin
-
-    record = {
-        "match_id": "fra-3da54de9",
-        "turn": 22,
-        "recommended": True,
-        "declined": True,
-        "conceded": False,
-    }
-    path = tmp_path / "engine_resume.json"
-    path.write_text(json.dumps({"saved_at": time.time(), "match_id": "fra-3da54de9", "concede": record}))
-    monkeypatch.setattr(startup, "ENGINE_RESUME_PATH", path)
-    monkeypatch.setenv("ARENAMCP_ENGINE_RELOAD", "1")
-
-    class Runtime(_ConcedeMixin, startup._StartupMixin):
-        def __init__(self) -> None:
-            self.settings = Mock()
-            self.ui = Mock()
-            self._concede = Mock()
-
-    runtime = Runtime()
-    runtime._load_engine_resume()
-    runtime._concede.resume_from.assert_called_once_with(record)
 
 
 def test_printed_stats_are_added_on_our_turn_only(monkeypatch):

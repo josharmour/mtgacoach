@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from collections import Counter
 
+import pytest
+
 from arenamcp.coach import CoachEngine
 
 LOCAL_SEAT = 1
@@ -123,21 +125,30 @@ class TestLandHasAbilities:
 class TestBattlefieldLandOracleDisplay:
     """Non-basic land oracle text must appear in the battlefield section."""
 
-    def test_evendo_oracle_reaches_prompt(self) -> None:
+    # The oracle is shown whatever the prompt (coach or planner) and however
+    # long the land has been out: an old permanent's activation condition
+    # still matters (the for_planner flag no longer trims it).
+    @pytest.mark.parametrize("for_planner", [False, True])
+    @pytest.mark.parametrize("entered", [1, TURN_NUM], ids=["long_resident", "recent"])
+    def test_evendo_oracle_reaches_prompt(self, for_planner, entered) -> None:
         """Evendo's 12+ condition must be visible in the rendered board."""
-        lines = _format_lines(_evendo())
-
-        # The card name must appear
-        assert any("Evendo, Waking Haven" in line for line in lines)
-
-        # Oracle text must be included (this was missing before the fix)
-        # After reminder-text removal, the key line is:
-        #   "12+ | {G}, {T}: Add {G} for each creature you control."
-        full_text = "\n".join(lines)
-        assert "12+" in full_text, "Evendo's 12+ charge counter threshold should be visible in the prompt"
-        assert "creature you control" in full_text, (
-            "Evendo's activated ability effect should be visible in the prompt"
+        card = _evendo()
+        card["turn_entered_battlefield"] = entered
+        lines = _fmt()._format_board_card(
+            card,
+            local_seat=LOCAL_SEAT,
+            turn_num=TURN_NUM,
+            attachments={},
+            name_counts=Counter({"Evendo, Waking Haven": 1}),
+            name_seen={},
+            is_local=True,
+            for_planner=for_planner,
         )
+        full_text = "\n".join(lines)
+        assert "Evendo, Waking Haven" in full_text
+        # After reminder-text removal the key line is
+        # "12+ | {G}, {T}: Add {G} for each creature you control."
+        assert "12+" in full_text and "creature you control" in full_text
 
     def test_basic_forest_oracle_not_shown(self) -> None:
         """Basic lands still skip oracle text — no regression."""
@@ -149,57 +160,6 @@ class TestBattlefieldLandOracleDisplay:
 
         # Reminder text should NOT appear (stripped and keyword-only for basic)
         assert "Add {G}" not in full_text
-
-    def test_long_resident_evendo_shows_oracle_in_coach_mode(self) -> None:
-        """Coach mode (for_planner=False) always shows non-basic land oracle."""
-        card = _evendo()
-        card["turn_entered_battlefield"] = 1  # entered long ago
-        lines = _fmt()._format_board_card(
-            card,
-            local_seat=LOCAL_SEAT,
-            turn_num=TURN_NUM,
-            attachments={},
-            name_counts=Counter({"Evendo, Waking Haven": 1}),
-            name_seen={},
-            is_local=True,
-            for_planner=False,  # Coach mode — always show
-        )
-        full_text = "\n".join(lines)
-        assert "12+" in full_text
-
-    def test_long_resident_evendo_keeps_relevant_oracle_in_planner_mode(self) -> None:
-        """An old permanent's activation condition remains relevant to planning."""
-        card = _evendo()
-        card["turn_entered_battlefield"] = 1  # entered long ago
-        lines = _fmt()._format_board_card(
-            card,
-            local_seat=LOCAL_SEAT,
-            turn_num=TURN_NUM,
-            attachments={},
-            name_counts=Counter({"Evendo, Waking Haven": 1}),
-            name_seen={},
-            is_local=True,
-            for_planner=True,
-        )
-        full_text = "\n".join(lines)
-        assert "12+" in full_text
-
-    def test_recent_evendo_shows_oracle_in_planner_mode(self) -> None:
-        """Planner mode keeps oracle for recently-entered permanents."""
-        card = _evendo()
-        card["turn_entered_battlefield"] = TURN_NUM  # just entered
-        lines = _fmt()._format_board_card(
-            card,
-            local_seat=LOCAL_SEAT,
-            turn_num=TURN_NUM,
-            attachments={},
-            name_counts=Counter({"Evendo, Waking Haven": 1}),
-            name_seen={},
-            is_local=True,
-            for_planner=True,
-        )
-        full_text = "\n".join(lines)
-        assert "12+" in full_text, "Recent ETB oracle should be visible even in planner mode"
 
     def test_long_land_oracle_remains_complete(self) -> None:
         """An arbitrary length cutoff can remove a land's activated ability."""

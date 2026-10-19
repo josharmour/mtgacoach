@@ -592,25 +592,21 @@ def test_other_platform_without_injected_controller_is_explicitly_unsupported(mo
     backend.complete_with_image.assert_not_called()
 
 
-def test_parse_queue_action_normalizes_pixel_coordinates():
-    content = proposal(action="open_play", screen="home", label="Play", point=[1440, 900])
-    data, action = parse_queue_action(content, image_size=(1600, 1000))
+@pytest.mark.parametrize(
+    ("point", "image_size", "expected"),
+    [
+        ([1440, 900], (1600, 1000), (0.9, 0.9)),  # pixels of the frame
+        ([850, 920], None, (0.85, 0.92)),  # a 0-1000 scale
+        ([0.9, 1.0], None, (0.9, 0.999)),  # the exact edge is nudged inside
+    ],
+    ids=["pixels", "thousand_scale", "edge"],
+)
+def test_parse_queue_action_normalizes_the_point(point, image_size, expected):
+    content = proposal(action="open_play", screen="home", label="Play", point=point)
+    kwargs = {"image_size": image_size} if image_size else {}
+    _data, action = parse_queue_action(content, **kwargs)
     assert action is not None
-    assert action.point == (0.9, 0.9)
-
-
-def test_parse_queue_action_normalizes_thousand_scale():
-    content = proposal(action="open_play", screen="home", label="Play", point=[850, 920])
-    data, action = parse_queue_action(content)
-    assert action is not None
-    assert action.point == (0.85, 0.92)
-
-
-def test_parse_queue_action_nudges_exact_boundary():
-    content = proposal(action="open_play", screen="home", label="Play", point=[0.9, 1.0])
-    data, action = parse_queue_action(content)
-    assert action is not None
-    assert action.point == (0.9, 0.999)
+    assert action.point == expected
 
 
 def test_parse_queue_action_dismiss_result_always_centers():

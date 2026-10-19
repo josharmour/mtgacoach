@@ -46,6 +46,9 @@ def seeded_file(tmp_path, monkeypatch):
 def test_backfill_rating_requires_match_id(tmp_path):
     h = MatchHistory(history_path=tmp_path / "h.json")
     h.add_record(record_from_game_end("mx", "win", {"players": []}, replay_path=""))
+    h.set_rating("", 4)  # no match id: nothing to backfill
+    h.set_rating("mx", None)  # no rating either
+    assert [r.coach_rating for r in h.get_recent(10)] == [None]
     h.set_rating("mx", 4)
     assert [r.coach_rating for r in h.get_recent(10)] == [4]
 

@@ -285,8 +285,7 @@ def test_board_assessment_leads_with_the_loop_flag():
         battlefield=[VITO, EXQUISITE_BLOOD, AETHERBORN, SANCTUM, _land(444), _land(451), _land(550, "Swamp")]
     )
     assessment = assess(state)
-    if assessment is None:
-        pytest.skip("assessment needs a fuller snapshot")
+    assert assessment is not None
     assert assessment.flags and assessment.flags[0].startswith("OPPONENT DRAIN LOOP ASSEMBLED")
 
 

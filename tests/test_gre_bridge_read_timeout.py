@@ -1,4 +1,4 @@
-"""Regression test for the pipe read timeout in GREBridge._send_command.
+"""Regression test for the read timeout in GREBridge._send_command.
 
 Without a timeout, a hung BepInEx plugin (Unity main thread busy mid-
 target-selection, scene transition, etc.) blocked the read forever
@@ -7,9 +7,10 @@ and a frozen UI requiring autopilot toggle-off + a "wait a while"
 recovery period. See bug report 2026-05-01 (Optimistic Scavenger
 select_target lockup).
 
-This test simulates a hung plugin by feeding the bridge a pipe-file
-mock whose read() blocks until the test cancels it. The bridge must
-time out, force-disconnect, and raise — not block forever.
+The transport is the plugin's TCP socket, read through a file object
+(``_pipe_file``). This test feeds the bridge a file mock whose read()
+blocks until it is closed. The bridge must time out, force-disconnect,
+and raise — not block forever.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from arenamcp.gre_bridge import GREBridge, GREBridgeError
 
 
 class _BlockingPipe:
-    """Mimics a Win32 pipe file object that never returns from read."""
+    """A connection file object whose read never returns until it is closed."""
 
     def __init__(self) -> None:
         self._closed = threading.Event()
@@ -54,10 +55,8 @@ def _bridge_with_pipe(pipe: Any, *, timeout: float = 0.3) -> GREBridge:
     bridge._pipe_lock = threading.Lock()
     bridge._pipe_file = pipe
     bridge._connected = True
-    bridge._pipe_created = False
-    bridge._server_pipe_handle = None
-    bridge._pipe_handle = None
-    bridge._pipe_fd = None
+    bridge._server_socket = None
+    bridge._client_socket = None
     bridge._last_ping_at = 0.0
     bridge._DEFAULT_READ_TIMEOUT_S = timeout
     return bridge
@@ -66,14 +65,14 @@ def _bridge_with_pipe(pipe: Any, *, timeout: float = 0.3) -> GREBridge:
 def test_send_command_times_out_on_hung_plugin():
     """When the plugin doesn't respond, the read must time out and raise."""
     pipe = _BlockingPipe()
-    bridge = _bridge_with_pipe(pipe, timeout=0.25)
+    bridge = _bridge_with_pipe(pipe, timeout=0.05)
 
     start = time.monotonic()
     with pytest.raises(GREBridgeError) as excinfo:
         bridge._send_command({"action": "submit_targets", "instanceId": 42})
     elapsed = time.monotonic() - start
 
-    # Should time out roughly at the configured 0.25s, not block indefinitely.
+    # Should time out roughly at the configured 0.05s, not block indefinitely.
     assert elapsed < 15.0, f"timeout took {elapsed:.2f}s — looks like it hung"
     assert "timeout" in str(excinfo.value).lower()
     assert pipe._closed.is_set(), "pipe must be force-disconnected on timeout"
@@ -83,7 +82,7 @@ def test_send_command_times_out_on_hung_plugin():
 def test_send_command_does_not_hold_pipe_lock_after_timeout():
     """A second send after a timeout must not deadlock waiting for _pipe_lock."""
     pipe = _BlockingPipe()
-    bridge = _bridge_with_pipe(pipe, timeout=0.2)
+    bridge = _bridge_with_pipe(pipe, timeout=0.05)
 
     with pytest.raises(GREBridgeError):
         bridge._send_command({"action": "ping"})
@@ -104,7 +103,7 @@ def test_send_command_respects_explicit_timeout_param():
 
     start = time.monotonic()
     with pytest.raises(GREBridgeError):
-        bridge._send_command({"action": "ping"}, timeout=0.15)
+        bridge._send_command({"action": "ping"}, timeout=0.05)
     elapsed = time.monotonic() - start
 
     assert elapsed < 1.0, f"per-call timeout was ignored ({elapsed:.2f}s)"

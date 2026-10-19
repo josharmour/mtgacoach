@@ -1208,12 +1208,6 @@ def test_submitted_targets_and_declared_attacks_become_evidence(monkeypatch):
 # --- coach wiring: setting, pipe, mixin, diagnostics ----------------------------------------------
 
 
-def test_the_setting_defaults_on():
-    from arenamcp.settings import DEFAULTS
-
-    assert DEFAULTS["oops_emote"] is True
-
-
 def test_set_oops_emote_reaches_the_engine_and_falls_back_to_settings():
     toggled: list[bool] = []
     adapter = PipeAdapter()
@@ -1330,7 +1324,9 @@ def test_the_tools_menu_toggles_the_oops_emote(qapp, monkeypatch):
     from PySide6.QtGui import QAction
 
     from arenamcp.desktop.main_window import MainWindow
+    from arenamcp.settings import DEFAULTS
 
+    assert DEFAULTS["oops_emote"] is True
     window = MainWindow()
     try:
         sent: list[dict] = []
@@ -1499,11 +1495,15 @@ def test_same_game_tells_bo3_games_apart():
 
 
 @pytest.mark.parametrize("games", [(1, 2), (None, None)])
-def test_bo3_game_two_never_resends_game_ones_attack_blunder(games):
+@pytest.mark.parametrize("game2_combat", ["trade", "quiet"])
+def test_bo3_game_two_never_rejudges_game_one(games, game2_combat):
     """Match 3da54de9 was a Bo3: game 2 shares the match id and restarts turn numbers.
 
-    Game 1's Fblthp Oops on turn 6, then game 2's turn-6 trade (our 2/2 for
-    their 2/2) while the engine still holds game 1's attack record: nothing.
+    Game 1's Fblthp Oops on turn 6, then game 2's turn 6 while the engine still
+    holds game 1's attack record: a real trade (our 2/2 for their 2/2) or a
+    quiet damage step (a wall holds our attacker off, nothing dies). Neither
+    resends game 1's blunder or re-reads its Fblthp death from the controller's
+    fact history.
     """
     first, second = games
     h = Harness()
@@ -1516,17 +1516,13 @@ def test_bo3_game_two_never_resends_game_ones_attack_blunder(games):
     h.now += 600
     game2 = live_state(turn=6, match=FBLTHP_MATCH, game_number=second)
     h.observe(game2, game=(FBLTHP_MATCH, 2))
-    board2 = {
-        **fblthp_board(),
-        "game_number": second,
-        "battlefield": [creature(400, "Bear", LOCAL, 2, 2), creature(401, "Bear", OPP, 2, 2)],
-    }
-    bears = {
-        400: {"controller": LOCAL, "grp_id": 9, "types": ["CardType_Creature"]},
-        401: {"controller": OPP, "grp_id": 9, "types": ["CardType_Creature"]},
-    }
-    trade = facts_of(
-        [
+    if game2_combat == "trade":
+        ours, theirs = creature(400, "Bear", LOCAL, 2, 2), creature(401, "Bear", OPP, 2, 2)
+        objects = {
+            400: {"controller": LOCAL, "grp_id": 9, "types": ["CardType_Creature"]},
+            401: {"controller": OPP, "grp_id": 9, "types": ["CardType_Creature"]},
+        }
+        annotations = [
             ann("PhaseOrStepModified", [LOCAL], phase=3, step=7),
             ann("DamageDealt", [401], 400, damage=2, type=1),
             ann("DamageDealt", [400], 401, damage=2, type=1),
@@ -1534,60 +1530,30 @@ def test_bo3_game_two_never_resends_game_ones_attack_blunder(games):
             ann("ZoneTransfer", [410], zone_src=28, zone_dest=37, category="SBA_Damage"),
             ann("ObjectIdChanged", [401], orig_id=401, new_id=411),
             ann("ZoneTransfer", [411], zone_src=28, zone_dest=33, category="SBA_Damage"),
-        ],
-        bears,
-        turn=6,
-        phase="Phase_Combat",
-        step="Step_CombatDamage",
-        match=FBLTHP_MATCH,
-        game=second,
-    )
-    g2_attack = combat_record(board2, [400])
-    h.observe(game2, game=(FBLTHP_MATCH, 2), facts=trade, evidence={"attacks": [g1_attack, g2_attack]})
-    assert len(h.sent) == 1 and h.outcomes() == [(ATTACK_BLUNDER, "sent")]
-
-
-@pytest.mark.parametrize("games", [(1, 2), (None, None)])
-def test_bo3_game_two_quiet_combat_never_rejudges_game_one(games):
-    """Game 2, turn 6: our attacker is held off by a wall and nothing dies. That regular damage step is
-    judged too, and must not re-read game 1's turn-6 Fblthp death from the controller's fact history."""
-    first, second = games
-    h = Harness()
-    g1_attack = fblthp_attack(game_number=first)
-    game1 = live_state(turn=6, match=FBLTHP_MATCH, game_number=first)
-    h.observe(
-        game1, game=(FBLTHP_MATCH, 1), facts=fblthp_facts(game=first), evidence={"attacks": [g1_attack]}
-    )
-    h.now += 600
-    game2 = live_state(turn=6, match=FBLTHP_MATCH, game_number=second)
-    h.observe(game2, game=(FBLTHP_MATCH, 2))
-    quiet = facts_of(
-        [
-            ann("PhaseOrStepModified", [LOCAL], phase=3, step=7),
-            ann("DamageDealt", [701], 700, damage=2, type=1),
-        ],
-        {
+        ]
+    else:
+        ours, theirs = creature(700, "Bear", LOCAL, 2, 2), creature(701, "Wall", OPP, 0, 4)
+        objects = {
             700: {"controller": LOCAL, "grp_id": 9, "types": ["CardType_Creature"]},
             701: {"controller": OPP, "grp_id": 8, "types": ["CardType_Creature"]},
-        },
+        }
+        annotations = [
+            ann("PhaseOrStepModified", [LOCAL], phase=3, step=7),
+            ann("DamageDealt", [701], 700, damage=2, type=1),
+        ]
+    facts = facts_of(
+        annotations,
+        objects,
         turn=6,
         phase="Phase_Combat",
         step="Step_CombatDamage",
         match=FBLTHP_MATCH,
         game=second,
     )
-    board2 = {
-        **fblthp_board(),
-        "game_number": second,
-        "battlefield": [creature(700, "Bear", LOCAL, 2, 2), creature(701, "Wall", OPP, 0, 4)],
-    }
-    h.observe(
-        game2,
-        game=(FBLTHP_MATCH, 2),
-        facts=quiet,
-        evidence={"attacks": [g1_attack, combat_record(board2, [700])]},
-    )
-    assert len(h.sent) == 1
+    board2 = {**fblthp_board(), "game_number": second, "battlefield": [ours, theirs]}
+    g2_attack = combat_record(board2, [ours["instance_id"]])
+    h.observe(game2, game=(FBLTHP_MATCH, 2), facts=facts, evidence={"attacks": [g1_attack, g2_attack]})
+    assert len(h.sent) == 1 and h.outcomes() == [(ATTACK_BLUNDER, "sent")]
 
 
 def test_bo3_game_one_facts_never_hide_a_game_two_blunder():
