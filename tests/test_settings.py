@@ -13,6 +13,9 @@ LEGACY = {
     "ollama_url": "http://ollama:11434",
     "api_key": "sk-old-provider",
     "known_backends": ["ollama", "proxy"],
+    # The dev-only local backend (create_backend is online-only).
+    "local_url": "http://localhost:8000/v1",
+    "local_model": "qwen",
     # The removed native Mac autopilot's vision model.
     "autopilot_vision_model": "glm-5.3-flash",
     "autopilot_vision_url": "http://10.0.0.10:8444/v1/",
