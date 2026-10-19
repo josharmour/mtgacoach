@@ -1,0 +1,74 @@
+```json
+{
+  "role": "race",
+  "role_reason": "",
+  "turns": [
+    {
+      "turn": "T",
+      "land": "",
+      "cast": [],
+      "attack": "Slickshot Show-Off and Giant Cindermaw at opponent - Hortimancer is tapped from its T14 attack",
+      "hold": "nothing in hand; if drawn: any noncreature burn - cast pre-combat to grow Slickshot and chip face"
+    },
+    {
+      "turn": "T+1",
+      "land": "",
+      "cast": [],
+      "attack": "both at opponent if Hortimancer died or is tapped; else Slickshot only over their ground",
+      "hold": "if drawn Strike/Iroh's/Burst(kick): kill Hortimancer pre-combat so both attackers connect and its swing disappears"
+    },
+    {
+      "turn": "T+2",
+      "land": "",
+      "cast": [],
+      "attack": "everything at opponent - lethal check with any held burn as finisher",
+      "hold": "keep all instants for their combat trick or Angelic Destiny recast; burn face once lethal math confirms"
+    },
+    {
+      "turn": null,
+      "_note": ""
+    }
+  ],
+```
+
+Wait—I need to output valid JSON with exactly three turns:
+
+```json
+{
+  "role": "race",
+  "role_reason": "",
+  "turns": [
+    {
+      "turn": "T",
+      "land": "",
+      "cast": [],
+      "attack": "Slickshot Show-Off and Giant Cindermaw at opponent - Hortimancer tapped from its T14 attack",
+      "hold": "nothing in hand; if drawn: noncreature burn cast pre-combat grows Slickshot and chips face"
+    },
+    {
+      "turn": "T+1",
+      "land": "",
+      "cast": [],
+      "attack": "both at opponent if Hortimancer removed/tapped; else Slickshot only",
+      "hold": "if drawn Strike/Iroh's/Burst(kicked): kill Hortimancer pre-combat - removes blocker and saves us its swing"
+    },
+    {
+      "turn": "T+2",
+      "land": "",
+      "cast": [],
+      "attack": "all attackers at opponent - close with any held/topdecked burn",
+      "hold": "instants reserved for their combat trick or Angelic Destiny recast; burn face once lethal confirmed"
+    }
+  ],
+```
+
+Hmm—the schema requires exactly three turns array entries plus the other fields:
+
+```json
+{
+  "role": "race",
+```
+
+Final answer below as pure JSON object only:
+
+{"role":"race","role_reason":"","turns":[{"turn":"T","land":"","cast":[],"attack":"Slickshot Show-Off and Giant Cindermaw at opponent - Hortimancer tapped from its T14 attack","hold":"nothing in hand; if drawn: noncreature burn cast pre-combat grows Slickshot and chips face"},{"turn":"T+1","land":"","cast":[],"attack":"both at opponent if Hortimancer removed or tapped; else Slickshot only","hold":"if drawn Strike/Iroh's/Burst(kicked): kill Hortimancer pre-combat - removes blocker and erases its swing"},{"turn":"T+2","land":"","cast":[],"attack":"all attackers at opponent - close with any held or topdecked burn","hold":"instants reserved for their combat trick or Angelic Destiny recast; burn face once lethal math confirms"}],"win_conditions":["Both attackers connect twice plus drawn burn reach","Kill Hortimancer, grind out with topdecked burn"],"path":"Swing both while Hortimancer taps out; drawn removal clears it; burn finishes from <=8.","threat":"Angelic Destiny recurs onto new bodies; Ajani tokens widen their clock past ours.","develop_next":"Draw removal or burn to clear Hortimancer and finish.","switch_if":["Drawn Strike/Iroh's/Burst by T17 -> kill Hortimancer and double-swing","They recast Angelic Destiny on a token -> recheck race math","Ajani floods tokens -> pivot to Hazard/Iroh mode-1 sweeps"],"active_mechanisms":["engine_5 ACTIVE: Cindermaw disables Authority/Ajani lifegain - all our damage permanent","engine_1 ready: any drawn noncreature spell grows attacking Slickshot +2/+0","engine_3 partial: drawn Hazard/Iroh soften board or provide reach"],"resource_priorities":["Preserve Cindermaw and Slickshot - they are the entire clock plus lifegain lock","Never chump-block Slickshot into first-strike Hortimancer - trade nothing","Spend drawn burn decisively at face or the angel, never durdle"],"assumptions":["Hortimancer stays tapped during our T15 attack window","Ward {1} payable when removal arrives","Ajani adds no extra attackers beyond modeled clock","Neither attacker eats instant removal mid-swing"],"lessons":["Killing lifelink engines on sight worked every time","Resolving Cindermaw locked their lifegain at the key moment","Burn-only plan stalled seven turns - bodies carry the clock","Hand empty - every step hinges on draws"]}

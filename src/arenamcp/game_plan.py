@@ -49,6 +49,7 @@ from collections import Counter, OrderedDict
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -2851,8 +2852,91 @@ _PLAN_KEYS = frozenset(
     {"win_conditions", "win_condition", "path", "turns", "turn_plan", "develop_next", "role", "threat"}
 )
 _TRAILING_COMMA = re.compile(r",\s*([}\]])")
-# Bound on '{' positions tried when the answer wraps the JSON in prose.
-_MAX_JSON_STARTS = 64
+# Where an object can start: '{' and a quoted key (skips "{1}{R}" and bare '{' lines).
+_OBJECT_START = re.compile(r'\{\s*"')
+# An object whose first key is a plan key: the only ones worth repairing. The
+# second form is written with escaped quotes ({\"role\": \"race\", ...}).
+_PLAN_START = re.compile(r'\{\s*"(?:' + "|".join(sorted(_PLAN_KEYS)) + r')"')
+_ESCAPED_PLAN_START = re.compile(r'\{\s*\\"(?:' + "|".join(sorted(_PLAN_KEYS)) + r')\\"')
+# Bound on object starts tried when the answer wraps the JSON in prose.
+_MAX_JSON_STARTS = 128
+# Bound on syntax repairs per candidate object.
+_MAX_JSON_REPAIRS = 12
+_KEY_NAME = re.compile(r"[A-Za-z_]\w*")
+# The keys GamePlan.is_empty() reads: an object with none of them is a draft ({"role": ...}).
+_PLAN_CONTENT_KEYS = ("win_conditions", "win_condition", "path", "turns", "turn_plan", "develop_next")
+
+
+def _has_plan_content(data: dict) -> bool:
+    return any(data.get(key) for key in _PLAN_CONTENT_KEYS)
+
+
+def _string_open(text: str, close: int) -> int | None:
+    """Index of the quote that opens the JSON string closed at ``close`` (None if unbalanced)."""
+    i = close
+    while True:
+        i = text.rfind('"', 0, i)
+        if i == -1:
+            return None
+        slashes = i - len(text[:i].rstrip("\\"))
+        if slashes % 2 == 0:
+            return i
+
+
+def _repair_at(text: str, error: json.JSONDecodeError) -> str | None:
+    """``text`` with the syntax slip at ``error.pos`` fixed, or None when it is not one we fix.
+
+    The slips GLM made in the 2026-10-18/19 plan answers (Langfuse; issue #114):
+    a bare string member (``"hold": "x", ""}``), a key missing its opening
+    quote (``resource_priorities": [``), a key name with no value
+    (``resource_priorities,``) and trailing commas. Anything else (an
+    unquoted value, prose inside the object, a cut-off answer) stays unusable.
+    """
+    pos, msg = error.pos, error.msg
+    if msg.startswith("Illegal trailing comma"):  # Python 3.13+: pos is the comma
+        return text[:pos] + text[pos + 1 :]
+    head = text[:pos].rstrip()
+    if text.startswith(("}", "]"), pos) and head.endswith(","):  # a trailing comma (3.12-)
+        return head[:-1] + text[len(head) :]
+    if msg.startswith("Expecting property name"):
+        name = _KEY_NAME.match(text, pos)
+        if name is None:
+            return None
+        if text.startswith('"', name.end()):  # half-quoted key
+            return text[:pos] + '"' + text[pos:]
+        rest = text[name.end() :].lstrip()
+        rest_at = len(text) - len(rest)
+        if rest.startswith(":"):  # unquoted key
+            return text[:pos] + '"' + name.group() + '"' + text[name.end() :]
+        if rest.startswith(","):  # a key name with no value: drop it and its comma
+            return text[:pos] + text[rest_at + 1 :]
+        if rest.startswith("}"):
+            return text[:pos] + text[rest_at:]
+        return None
+    if msg.startswith("Expecting ':' delimiter"):
+        # A bare string where a key belongs: drop it and the comma before it.
+        close = len(head) - 1
+        opening = _string_open(text, close) if close >= 0 and text[close] == '"' else None
+        before = text[:opening].rstrip() if opening is not None else ""
+        if before.endswith(","):
+            return before[:-1] + text[close + 1 :]
+    return None
+
+
+def _repaired_object(text: str) -> tuple[dict, str] | None:
+    """The object at the start of ``text`` after up to ``_MAX_JSON_REPAIRS`` syntax repairs."""
+    decoder = json.JSONDecoder()
+    for _ in range(_MAX_JSON_REPAIRS + 1):
+        try:
+            data, size = decoder.raw_decode(text)
+        except json.JSONDecodeError as error:
+            repaired = _repair_at(text, error)
+            if repaired is None or repaired == text:
+                return None
+            text = repaired
+            continue
+        return (data, text[:size]) if isinstance(data, dict) else None
+    return None
 
 
 def _plan_object(text: str) -> tuple[dict, str] | None:
@@ -2860,9 +2944,12 @@ def _plan_object(text: str) -> tuple[dict, str] | None:
 
     The outermost '{...}' is tried first, as before. Failing that (prose
     around the JSON with mana symbols like "{1}{R}", a second object after it,
-    trailing commas before a newline), each '{' is decoded in turn and the
-    first object with a plan key wins, so a turn step nested in a broken
-    outer object is never mistaken for the plan.
+    trailing commas before a newline), each object start is decoded in turn and
+    the first object with a plan key wins, so a turn step nested in a broken
+    outer object is never mistaken for the plan. The whole answer is searched:
+    GLM often abandons a broken fenced draft and writes the plan again below
+    it ("Wait — I need to output valid JSON", issue #114). Only when no object
+    decodes is a plan-shaped object repaired (``_repair_at``).
     """
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
@@ -2877,9 +2964,11 @@ def _plan_object(text: str) -> tuple[dict, str] | None:
             return data, blob
         break
     decoder = json.JSONDecoder()
-    tried = 0
-    while start != -1 and tried < _MAX_JSON_STARTS:
-        tried += 1
+    starts = [match.start() for match in _OBJECT_START.finditer(text, start)][:_MAX_JSON_STARTS]
+    # A draft with a plan key but no plan in it ({"role": "race"}) is the
+    # answer only when nothing better follows.
+    fallback = None
+    for start in starts:
         tail = text[start:]
         for candidate in (tail, _TRAILING_COMMA.sub(r"\1", tail)):
             try:
@@ -2887,10 +2976,50 @@ def _plan_object(text: str) -> tuple[dict, str] | None:
             except json.JSONDecodeError:
                 continue
             if isinstance(data, dict) and _PLAN_KEYS.intersection(data):
-                return data, candidate[:size]
+                if _has_plan_content(data):
+                    return data, candidate[:size]
+                fallback = fallback or (data, candidate[:size])
             break
-        start = text.find("{", start + 1)
-    return None
+    tails = [text[start:] for start in starts if _PLAN_START.match(text, start)]
+    tails += [
+        text[match.start() :].replace('\\"', '"')
+        for match in _ESCAPED_PLAN_START.finditer(text, start)
+    ][:_MAX_JSON_STARTS]
+    for tail in tails:
+        found = _repaired_object(tail)
+        if found is not None and _has_plan_content(found[0]):
+            return found
+    return fallback
+
+
+# Full text of the newest unusable game-plan answers (the log keeps 300
+# characters; #114 could only be diagnosed from the gateway's trace store).
+UNUSABLE_PLAN_DIR = Path.home() / ".arenamcp" / "debug"
+UNUSABLE_PLAN_KEEP = 20
+_UNUSABLE_PLAN_PREFIX = "game_plan_unusable_"
+
+
+def save_unusable_answer(text: str, *, turn_num: int, effort: str) -> Path | None:
+    """Write an unusable plan answer in full under ``UNUSABLE_PLAN_DIR``, keeping the newest 20.
+
+    Returns the file, or None when it could not be written (never raises).
+    """
+    now = time.time()
+    stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now)) + f"_{int(now * 1000) % 1000:03d}"
+    try:
+        UNUSABLE_PLAN_DIR.mkdir(parents=True, exist_ok=True)
+        path = UNUSABLE_PLAN_DIR / f"{_UNUSABLE_PLAN_PREFIX}{stamp}.txt"
+        header = (
+            f"# game-plan answer with no usable plan: turn {turn_num}, {effort} effort, "
+            f"{len(text)} chars, {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}\n"
+        )
+        path.write_text(header + text, encoding="utf-8")
+        for stale in sorted(UNUSABLE_PLAN_DIR.glob(f"{_UNUSABLE_PLAN_PREFIX}*.txt"))[:-UNUSABLE_PLAN_KEEP]:
+            stale.unlink(missing_ok=True)
+        return path
+    except OSError as error:
+        logger.debug("could not save the unusable game-plan answer: %s", error)
+        return None
 
 
 @contextlib.contextmanager
@@ -4204,6 +4333,9 @@ class GamePlanManager:
                 len(text),
                 text[: self._UNUSABLE_LOG_CHARS],
             )
+            saved = save_unusable_answer(text, turn_num=turn_num, effort=effort)
+            if saved is not None:
+                logger.info("game-plan: the full unusable answer is in %s", saved)
             self._reform_failure = "no usable plan from the model"
             return None
         self._reform_failure = ""
@@ -4266,11 +4398,8 @@ class GamePlanManager:
         text = response.strip()
         if is_backend_error_text(text):
             return None
-        # Strip markdown fences.
-        if text.startswith("```"):
-            text = text.split("```", 2)[1] if "```" in text[3:] else text
-            if text.lower().startswith("json"):
-                text = text[4:]
+        # The whole answer, fences and all: the plan is not always in the first
+        # fenced block (a broken draft, then the plan again below it; #114).
         found = _plan_object(text)
         if found is None:
             return None
