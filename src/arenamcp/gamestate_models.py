@@ -120,6 +120,10 @@ class GameObject:
     # entry per instance (GameObjectInfo.uniqueAbilities). A Skyward Spider
     # wearing Sheltered by Ghosts lists ward {2} (141939) twice (2026-10-19).
     ability_grp_ids: list[int] = field(default_factory=list)
+    # GameObjectInfo.isFacedown (Morph, Disguise, Manifest, Cloak; grpId 3 for the opponent's),
+    # and why, from the FaceDown annotation's REASON (ReasonFaceDown: 6 = Disguise).
+    face_down: bool = False
+    face_down_reason: int | None = None
 
     def to_dict(self) -> dict:
         """Convert to simple dict for snapshot serialization."""
@@ -189,6 +193,10 @@ class GameObject:
             result["targeting"] = self.targeting
         if self.color_production:
             result["color_production"] = self.color_production
+        if self.face_down:
+            result["face_down"] = True
+            if self.face_down_reason is not None:
+                result["face_down_reason"] = self.face_down_reason
         return result
 
 

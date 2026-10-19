@@ -1203,6 +1203,18 @@ def _signature(state: dict) -> tuple:
 
         command += tuple((c.name, c.cost, c.casts) for c in our_commanders(state))
     casts = state.get("commander_casts") if isinstance(state.get("commander_casts"), dict) else {}
+    # The stack's objects and their targets: the line search resolves our pending damage
+    # first (ledger #122), so a spell's target being chosen changes the facts.
+    stack = tuple(
+        sorted(
+            (
+                (_int(c.get("instance_id")) or 0, _controller(c) or 0, tuple(c.get("targeting") or ()))
+                for c in state.get("stack") or []
+                if isinstance(c, dict)
+            ),
+            key=repr,
+        )
+    )
     return (
         state.get("match_id"),
         turn.get("turn_number"),
@@ -1218,6 +1230,7 @@ def _signature(state: dict) -> tuple:
         bool(state.get("deck_catalog")),  # the deck curve only exists on prepared states
         command,
         tuple(sorted((str(k), str(v)) for k, v in casts.items())),
+        stack,
     )
 
 
@@ -1940,10 +1953,14 @@ def _our_pending(state: dict, model: Any) -> list[str]:
     search can't value (a fog, a tap-down, an aura: ``unmodelled_effect``)
     that is not card flow. A creature spell's body is already counted: only
     its own enters trigger is. The facts read the board before any of them
-    resolves.
+    resolves, except a damage spell whose whole effect the line search
+    resolves at its root (``play_safety.our_stack_damage``'s ``settled``,
+    ledger #122): it is not listed.
     """
     from arenamcp.line_search_moves import bullets, card_flow, classify, token_specs, unmodelled_effect
+    from arenamcp.play_safety import our_stack_damage
 
+    settled = our_stack_damage(state).settled
     cards: dict[int, dict] = {}
     for zone in ("battlefield", "graveyard", "exile", "hand", "command"):
         for card in state.get(zone) or []:
@@ -1952,6 +1969,8 @@ def _our_pending(state: dict, model: Any) -> list[str]:
     found: list[str] = []
     for obj in state.get("stack") or []:
         if not isinstance(obj, dict) or _controller(obj) != model.local:
+            continue
+        if obj.get("instance_id") in settled:
             continue
         ability = "ability" in str(obj.get("object_kind") or obj.get("type_line") or "").lower()
         parent = cards.get(_int(obj.get("parent_instance_id"))) if ability else None

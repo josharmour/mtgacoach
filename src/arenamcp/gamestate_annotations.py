@@ -384,7 +384,12 @@ class _GameStateAnnotationsMixin:
                     )
 
                 elif ann_type == "AnnotationType_FaceDown":
+                    # REASON is a ReasonFaceDown value (6 = Disguise): the snapshot names it (#123).
+                    reason = _coerce_optional_int(detail_map.get("REASON"))
                     for obj_id in affected_ids:
+                        obj = self.game_objects.get(obj_id)
+                        if obj is not None and obj.face_down and reason is not None:
+                            obj.face_down_reason = reason  # isFacedown itself says face down
                         self._add_event(
                             {
                                 "type": "face_down",
@@ -404,8 +409,14 @@ class _GameStateAnnotationsMixin:
                 # ── Phase 1 turbo-charge: new annotation handlers ──
 
                 elif ann_type == "AnnotationType_TargetSpec":
-                    # Spell/ability targeting — links source to target instance IDs
-                    source_id = _coerce_int(detail_map.get("sourceId", 0), 0)
+                    # Spell/ability targeting — links source to target instance IDs.
+                    # Arena names the source as the annotation's affectorId and the
+                    # targets as its affectedIds (2026-10-19 match 17a32d51 T5: Shock
+                    # 312 -> Emberheart 307); with only "sourceId" read, no stack
+                    # object ever got its targets (ledger #122).
+                    source_id = _coerce_int(detail_map.get("sourceId", 0), 0) or _coerce_int(
+                        ann.get("affectorId", 0), 0
+                    )
                     target_ids = _ensure_int_list(detail_map.get("targetIds", affected_ids))
                     source_obj = self.game_objects.get(source_id)
                     if source_obj:

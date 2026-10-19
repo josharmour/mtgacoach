@@ -915,6 +915,8 @@ class GameState(_GameStateAnnotationsMixin):
                             for item in obj_data.get("ability_grp_ids", [])
                             if _coerce_int(item, 0)
                         ],
+                        face_down=bool(obj_data.get("face_down", False)),
+                        face_down_reason=_coerce_optional_int(obj_data.get("face_down_reason")),
                     )
                     self.game_objects[instance_id] = game_object
 
@@ -1676,9 +1678,12 @@ class GameState(_GameStateAnnotationsMixin):
 
                     is_ability = enriched.get("object_kind") == "ABILITY"
                     # An ability id read through the card table can name an unrelated card
-                    # (ledger #88: ability 92970 is also card 92970, Deal Gone Bad).
-                    lookup = server.enrich_ability if is_ability else server.enrich_with_oracle_text
-                    card_info = lookup(grp_id)
+                    # (ledger #88: ability 92970 is also card 92970, Deal Gone Bad), and a card
+                    # through the ability table (#123: face-down grpId 3 as "Double strike").
+                    if is_ability:
+                        card_info = server.enrich_ability(grp_id)
+                    else:
+                        card_info = server.card_object_info(enriched)
                     enriched["name"] = card_info.get("name", f"Unknown ({grp_id})")
                     enriched["type_line"] = card_info.get("type_line", "")
                     enriched["mana_cost"] = card_info.get("mana_cost", "")
@@ -2136,6 +2141,8 @@ class GameState(_GameStateAnnotationsMixin):
             keywords = list(existing_obj.keywords)
             ability_grp_ids = list(existing_obj.ability_grp_ids)
             damage = existing_obj.damage
+            face_down = existing_obj.face_down
+            face_down_reason = existing_obj.face_down_reason
         else:
             grp_id = 0
             zone_id = 0
@@ -2159,6 +2166,8 @@ class GameState(_GameStateAnnotationsMixin):
             keywords = []
             ability_grp_ids = []
             damage = 0
+            face_down = False
+            face_down_reason = None
 
         # 2. Overwrite with present data
         if "grpId" in obj_data:
@@ -2254,6 +2263,14 @@ class GameState(_GameStateAnnotationsMixin):
             damage = _coerce_int(obj_data["damage"], 0)
         elif full_info:
             damage = 0
+        # Face down (ledger #123, 2026-10-19 match 17a32d51: the opponent's Disguise creature
+        # came as grpId 3 with isFacedown and was read as the ability "Double strike").
+        if "isFacedown" in obj_data:
+            face_down = bool(obj_data["isFacedown"])
+        elif full_info:
+            face_down = False
+        if not face_down:
+            face_down_reason = None
 
         if "cardTypes" in obj_data:
             card_types = _coerce_str_list(obj_data["cardTypes"])
@@ -2330,6 +2347,13 @@ class GameState(_GameStateAnnotationsMixin):
             keywords=keywords,
             ability_grp_ids=ability_grp_ids,
             damage=damage,
+            face_down=face_down,
+            face_down_reason=face_down_reason,
+            # A spell's targets (TargetSpec) hold while it stays where it is: a diff that
+            # re-sends the object does not re-send that persistent annotation (ledger #122).
+            targeting=list(existing_obj.targeting)
+            if existing_obj is not None and existing_obj.zone_id == zone_id
+            else [],
         )
 
         self.game_objects[instance_id] = game_object
@@ -2727,6 +2751,8 @@ class GameState(_GameStateAnnotationsMixin):
         if not grp_id:
             return "Unknown"
         grp_id = int(grp_id)
+        if grp_id == 3:  # Arena's face-down card (ledger #123)
+            return "Face-down 2/2"
         cached = self._card_name_cache.get(grp_id)
         if cached:
             return cached
@@ -2750,8 +2776,17 @@ class GameState(_GameStateAnnotationsMixin):
         "Card#136588" and the model then invented properties for the
         nonexistent card (issue #407's leaked grpIds; "Pay costs for
         Card#136588" in issue #483). The parent permanent is the thing the
-        player actually recognises, so name it after that.
+        player actually recognises, so name it after that. A face-down object
+        is named as one (ledger #123), never after its grp id.
         """
+        if obj.object_kind != GameObjectKind.ABILITY and (obj.face_down or obj.grp_id == 3):
+            try:
+                from arenamcp import server
+
+                return str(server.face_down_info(obj.to_dict())["name"])
+            except Exception as e:
+                logger.debug(f"face-down name failed for {obj.instance_id}: {e}")
+                return "Face-down 2/2"
         name = self._resolve_card_name(obj.grp_id)
         if obj.object_kind == GameObjectKind.ABILITY:
             name = f"Ability (ID: {obj.grp_id})"
