@@ -38,6 +38,9 @@ logger = logging.getLogger(__name__)
 FALLBACK_DAMAGE_ASSIGNMENT = "planner_damage_assignment"
 
 _ID_SUFFIX = re.compile(r"[\[#(]\s*(?:id:)?\s*(\d+)\s*[\])]?\s*$", re.I)
+# A bare receiver id ("545", "id:545"): 2026-10-19 match 639c5fe1 T13 the model split
+# Leonardo's 13 as {"544": 2, "545": 11} and the split was thrown away (ledger #169).
+_BARE_ID = re.compile(r"(?:id:)?\s*(\d+)", re.I)
 _PLAYER_WORDS = frozenset(
     {"opponent", "the opponent", "player", "the player", "defending player", "face", "their face", "them"}
 )
@@ -224,7 +227,7 @@ def _resolve_receiver(
     """The entry a model's distribution key names: "Name [350]", "Opponent [1]", "Opponent", a card name."""
     text = str(key or "").strip()
     by_id = {r.instance_id for r in recs}
-    match = _ID_SUFFIX.search(text)
+    match = _ID_SUFFIX.search(text) or _BARE_ID.fullmatch(text)
     if match:
         rid = int(match.group(1))
         return rid if rid in by_id else None
@@ -365,23 +368,66 @@ def plan_assigners(
     return out, ", ".join(dict.fromkeys(sources))
 
 
-def receiver_label(instance_id: int, game_state: dict[str, Any]) -> str:
-    """ "Pyrewood Gearhulk [350]" / "Opponent [1]": names a receiver for narration and the planner."""
+def receiver_label(
+    instance_id: int, game_state: dict[str, Any], *, blockers: set[int] | frozenset[int] = frozenset()
+) -> str:
+    """ "Pyrewood Gearhulk [350]" / "Opponent [1]": names a receiver for narration and the planner.
+
+    ``blockers``: the ids Arena's request lists as blockers (``request_blockers``).
+    One the snapshot lacks is a blocking creature, never the opponent (ledger
+    #169, match 639c5fe1 T13: "2 to Pest and 11 to the opponent", the 11 went
+    onto the second blocking Pest).
+    """
     card = _cards(game_state.get("battlefield")).get(instance_id)
     if card is not None:
         return f"{card.get('name') or 'creature'} [{instance_id}]"
+    if instance_id in blockers:
+        return f"a blocking creature [{instance_id}]"
     local = _local_seat(game_state)
     if local and instance_id == local:
         return f"You [{instance_id}]"
     return f"Opponent [{instance_id}]"
 
 
-def submitted_distribution(assigners: list[dict[str, Any]], game_state: dict[str, Any]) -> dict[str, int]:
-    """Receiver label -> damage over every attacker (what the narration says was assigned)."""
+def request_blockers(request: list[dict] | None, game_state: dict[str, Any]) -> frozenset[int]:
+    """The receivers Arena's AssignDamage request lists as blockers.
+
+    An entry with a lethal amount (``minDamage`` > 0: the attack quarry has
+    none), and the blockers the snapshot records on each attacker
+    (``ordered_blockers`` / ``blocked_by_ids``, Arena's attackInfo.orderedBlockers).
+    """
+    cards = _cards(game_state.get("battlefield"))
+    seats = _player_seats(game_state.get("players"))
+    found: set[int] = set()
+    for assigner in request or []:
+        if not isinstance(assigner, dict):
+            continue
+        for entry in assigner.get("assignments") or []:
+            if isinstance(entry, dict) and _int(entry.get("minDamage")) > 0:
+                found.add(_int(entry.get("instanceId")))
+        attacker = cards.get(_int(assigner.get("instanceId"))) or {}
+        for key in ("ordered_blockers", "orderedBlockers", "blocked_by_ids"):
+            for blocker in attacker.get(key) or []:
+                identity = _int(blocker.get("instanceId") if isinstance(blocker, dict) else blocker)
+                if identity:
+                    found.add(identity)
+    found.discard(0)
+    return frozenset(found - seats)
+
+
+def submitted_distribution(
+    assigners: list[dict[str, Any]], game_state: dict[str, Any], request: list[dict] | None = None
+) -> dict[str, int]:
+    """Receiver label -> damage over every attacker (what the narration says was assigned).
+
+    ``request``: Arena's assigners, so a blocker the snapshot lacks is still a
+    blocker (``request_blockers``).
+    """
+    blockers = request_blockers(request, game_state)
     out: dict[str, int] = {}
     for assigner in assigners:
         for entry in assigner.get("assignments") or []:
-            label = receiver_label(_int(entry.get("instanceId")), game_state)
+            label = receiver_label(_int(entry.get("instanceId")), game_state, blockers=blockers)
             out[label] = out.get(label, 0) + _int(entry.get("damage"))
     return out
 
@@ -426,8 +472,9 @@ def fallback_plan(game_state: dict[str, Any], decision_context: dict[str, Any] |
     from arenamcp.action_planner import ActionPlan, ActionType, GameAction
 
     context = decision_context or game_state.get("decision_context") or {}
-    planned, _ = plan_assigners(log_assigners(context), game_state)
-    split = submitted_distribution(planned, game_state) if planned else {}
+    request = log_assigners(context)
+    planned, _ = plan_assigners(request, game_state)
+    split = submitted_distribution(planned, game_state, request) if planned else {}
     reasoning = "Lethal damage to each blocker first, the rest past them with trample"
     if split:
         reasoning += ": " + spoken_split(split)
