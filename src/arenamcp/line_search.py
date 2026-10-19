@@ -15,7 +15,9 @@ The opponent (``line_search_moves.ParanoidOpponent``) is paranoid but
 uninventive: if ANY of its attack policies kills us the line is dead there (a
 lethal attack is never filtered out); otherwise it takes the non-suicidal one
 worst for us. It deploys nothing, draws nothing and casts no tricks (v1), but
-plays a land each turn for its landfall creatures (since 2026-10-19); an
+plays a land each turn for its landfall creatures (since 2026-10-19), and its
+creatures grow on its life gain and draws and its drain engines hit us
+(``line_search_moves.TheirEngines``, since 2026-10-19); an
 unparsed or 'other' mode of a modal card is worth 0; no unknown card is ever
 invented. ``proxy_outcome`` replays a line with +2/+0 on their biggest attacker
 as a robustness check.
@@ -53,6 +55,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from arenamcp.board_assessment import (
+    ClockEngines,
     TurnProjection,
     _body,
     _budget_turns,
@@ -434,6 +437,21 @@ class _Search(Moves):
         super().__init__(model, **kwargs)
         self.groups, self.width, self.k_next = max(1, groups), max(1, width), max(0, k_next)
         self._race_memo: dict = {}
+        # Their growth and drains count in their clock (ledger #128-#133, #143); ours in ours.
+        self._race_engines = (
+            ClockEngines(self.engines.static_drain, outlet=self.outlet)
+            if (self.growers or self.drains or self.token_engines or self.outlet)
+            else None
+        )
+        ours_engines = getattr(self.model, "our_engines", None)
+        self._race_our_engines = (
+            ClockEngines(ours_engines.static_drain)
+            if ours_engines is not None
+            and (
+                ours_engines.static_drain or any(b.get("_drain") or b.get("_growth") for b in self.model.ours)
+            )
+            else None
+        )
 
     def baseline(self, root: Node) -> Node:
         """Today's greedy line (``_budget_turns`` + ``_schedule``, no attacks) through this transition."""
@@ -500,11 +518,13 @@ class _Search(Moves):
                 list(node.ours), list(node.theirs), node.opp_life,
                 first_attackers=None, first_blockers=open_blockers, horizon=_RACE_HORIZON,
                 drain=lifelink_drain(list(node.theirs), list(node.ours), node.our_life),
+                engines=self._race_our_engines,
             )  # fmt: skip
             theirs, _ = _simulate_attacks(
                 list(node.theirs), list(node.ours), node.our_life,
                 first_attackers=None, first_blockers=None, horizon=_RACE_HORIZON,
                 drain=lifelink_drain(list(node.ours), list(node.theirs), node.opp_life),
+                engines=self._race_engines,
             )  # fmt: skip
             if ours is not None and (theirs is None or ours <= theirs):
                 found = _RACE / ours

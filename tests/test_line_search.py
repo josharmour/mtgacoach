@@ -1237,6 +1237,10 @@ def test_hushbringer_turns_off_an_enters_trigger():
     for entry in hushless["battlefield"]:
         if entry["name"] == "Hushbringer":
             entry["oracle_text"] = "Flying\nLifelink"
+        if entry["name"] == "Queza, Augur of Agonies":
+            # Its draw drain is in their clock since ledger #133 and kills us on T21 at 1 life whatever
+            # the Tyrant gains (test_drain_engines_20261019); this test is about Hushbringer.
+            entry["oracle_text"] = ""
     assert any(line.cls != DEAD for line in _all_lines(_search(hushless)))
 
 

@@ -763,7 +763,38 @@ def creature_state_facts(creature: dict, *, mine: bool) -> dict[str, Any]:
         facts["dies_to_damage"] = dies_to
     elif type(toughness) is int:
         facts["dies_to_damage"] = "never (indestructible)"
+    if not mine:
+        engine = engine_fact(creature)
+        if engine:
+            facts["engine"] = engine
     return facts
+
+
+def engine_fact(card: dict) -> str:
+    """What one of their creatures does every turn beyond combat, from its own text: a drain
+    ("2 damage to you whenever they sacrifice an artifact") and growth ("+1/+1 counter whenever
+    they gain life"); "" without one. Ledger #132 (match 16ed84d0 T7: Iroh's Demonstration's
+    4 damage went to The Sackville-Bagginses; Biotech Specialist's drain dealt 13 of our 20)."""
+    try:
+        from arenamcp.line_search_moves import drain_engine, draw_growth, lifegain_growth
+    except Exception:  # a reading aid: never break a decision on it
+        return ""
+
+    def theirs(event: str) -> str:
+        return re.sub(r"\byour\b", "their", re.sub(r"\byou\b", "they", event))
+
+    parts = [f"{amount} damage to you {theirs(event)}" for amount, event in drain_engine(card)]
+    own, _loyal, team, first = lifegain_growth(card)
+    when = "whenever they gain life" + (" (once a turn)" if first else "")
+    if own:
+        parts.append(f"+{own}/+{own} counter {when}")
+    parts += [f"+{n}/+{n} counter on each {kind} they control {when}" for kind, n in team]
+    each, second = draw_growth(card)
+    if each:
+        parts.append(f"+{each}/+{each} counter whenever they draw a card")
+    if second:
+        parts.append(f"+{second}/+{second} counter on their second card drawn each turn")
+    return "; ".join(parts)
 
 
 def planeswalker_state_facts(walker: dict) -> dict[str, Any]:
