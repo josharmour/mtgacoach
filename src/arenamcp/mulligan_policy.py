@@ -549,6 +549,59 @@ def bottom_choice(state: dict, instance_ids: list[int], count: int) -> list[int]
     return [card.instance_id for card in bottom]
 
 
+# Subsets tried when choosing several cards to lose at once (C(10, 3) = 120).
+_MAX_LOSS_SUBSETS = 2000
+
+
+def hand_loss_choice(state: dict, instance_ids: list[int], count: int) -> list[int]:
+    """Which ``count`` of these hand cards to give up mid-game (discard, exile, put on the bottom).
+
+    The bottoming score (``hand_score``) of what we keep, counted with our
+    lands in play: an extra land beyond what the hand can use goes first, a
+    land we still need stays. Ties give up a second copy before a card's last
+    one, then the weaker role (``_role_value``), then the costlier card.
+    Instance ids, [] when a card is unknown or the count does not fit.
+
+    Ledger #79 (match 772233af, 2026-10-19 11:35:23): Unscrupulous Agent made
+    us exile a card from Hazard, Strike, Hazard, Mountain, Shock, Effigy with
+    one land in play; the model exiled Shock, the second Hazard was the card
+    to lose.
+    """
+    hand_dicts = [card for card in state.get("hand") or [] if isinstance(card, dict)]
+    by_id = {int(card.get("instance_id") or 0): card for card in hand_dicts}
+    wanted = list(dict.fromkeys(int(i) for i in instance_ids))
+    if not wanted or any(i not in by_id for i in wanted) or not 0 < count <= len(wanted):
+        return []
+    if count == len(wanted):
+        return wanted
+    hand = [hand_card(card) for card in hand_dicts]
+    seat = local_seat(state)
+    in_play = [
+        hand_card(card)
+        for card in state.get("battlefield") or []
+        if isinstance(card, dict) and (card.get("controller_seat_id") or card.get("owner_seat_id")) == seat
+    ]
+    lands_in_play = [card for card in in_play if card.is_land]
+    options = [card for card in hand if card.instance_id in set(wanted)]
+    subsets = list(combinations(range(len(options)), count))
+    if len(subsets) > _MAX_LOSS_SUBSETS:
+        return []
+    best_key, best = None, None
+    for gone in subsets:
+        lost = {options[i].instance_id for i in gone}
+        kept = [card for card in hand if card.instance_id not in lost]
+        key = (
+            round(hand_score(kept + lands_in_play), 6),
+            len({card.name for card in kept}),
+            sum(card.role for card in kept),
+            -sum(card.mana_value for card in kept),
+            [-i for i in range(len(options)) if i not in gone],
+        )
+        if best_key is None or key > best_key:
+            best_key, best = key, gone
+    return [options[i].instance_id for i in best or ()]
+
+
 def kept_score(state: dict, instance_ids: list[int], bottomed: list[int]) -> float | None:
     by_id = {
         int(card.get("instance_id") or 0): card for card in state.get("hand") or [] if isinstance(card, dict)

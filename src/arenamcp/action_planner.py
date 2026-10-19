@@ -3573,6 +3573,18 @@ class ActionPlanner(_ActionLegalityMixin):
                 self._last_decision_trace = {"policy": "hand_creature_buff", "validated_ids": picked}
                 logger.info("typed-decision: %s — no LLM choice", why)
                 return picked
+            # A discard / exile / bottom from our hand gives up the card we need
+            # least (ledger #79: Unscrupulous Agent's exile took Shock, not the
+            # second Tectonic Hazard). Unusual losses still go to the model.
+            from arenamcp.decisions import hand_loss_choice
+
+            picked, why = hand_loss_choice(decision, game_state)
+            if picked:
+                self._last_decision_option_ids = picked
+                self._last_decision_reasoning = why
+                self._last_decision_trace = {"policy": "hand_loss", "validated_ids": picked, "reasoning": why}
+                logger.info("typed-decision: %s — no LLM choice", why)
+                return picked
         if decision.request_type == "Mulligan" and {"mull:keep", "mull:mull"} <= decision.option_ids():
             return self._plan_mulligan(decision, game_state)
         if decision.request_type == "Group" and "LondonMulligan" in str(decision.source_label or ""):
@@ -5924,12 +5936,14 @@ class ActionPlanner(_ActionLegalityMixin):
         local_seat, controllers = self._battlefield_controllers(game_state)
         target_objects = self._target_objects(game_state)
         target_trace = []
-        if decision.request_type == "SelectN":
-            from arenamcp.decisions import select_n_discard_note
+        if decision.request_type in ("SelectN", "Search"):
+            # Arena's prompt text, the card asking with its rules, and a hand
+            # loss framed as one (ledger #79: an exile read as a cast).
+            from arenamcp.decisions import select_n_note
 
-            discard_note = select_n_discard_note(decision, game_state)
-            if discard_note:
-                lines.insert(1, discard_note)
+            selection_note = select_n_note(decision, game_state)
+            if selection_note:
+                lines.insert(1, selection_note)
         if decision.request_type == "SelectTargets":
             lines.insert(1, f"YOU ARE SEAT {local_seat}; control determines YOURS/opponent, not ownership.")
             lines.insert(

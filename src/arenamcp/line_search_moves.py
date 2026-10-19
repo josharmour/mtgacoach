@@ -16,7 +16,9 @@ turns. Lifelink heals its side with the combat damage. A cast pays its additiona
 mana cost and the life it costs; a set that would kill us is never cast, nor is
 a spell whose "can't cast unless" condition is unmet. Their turn: everything
 untaps, they play a land (one, plus one per "play an additional land"
-permanent) and their landfall creatures grow (``landfall_growth``), our held
+permanent) and their landfall creatures grow (``landfall_growth``), as do
+their creatures that grow when they cast a spell, by one spell's worth
+(``cast_growth``: a +1/+1 counter trigger or connive), our held
 instants answer (a flash creature or token maker blocks only while blocks are
 still to come), and the opponent attacks with the policy worst for us
 (``ParanoidOpponent``). Mana, colours, summoning sickness and tapped creatures
@@ -234,6 +236,16 @@ _LANDFALL = re.compile(
 )
 # "You may play an additional land on each of your turns." (Icetill Explorer, Azusa, Exploration).
 _EXTRA_LAND = re.compile(r"\byou may play (?:an|one|two|\d+) additional lands?\b")
+# A creature that grows when its controller casts a spell: "Whenever you cast a black spell from
+# your hand, Baron Helmut Zemo connives." (a nonland discard puts a +1/+1 counter on it), "Whenever
+# you cast a noncreature spell, put a +1/+1 counter on this creature." Only an unconditional "a/an
+# <kind> spell" trigger; "your second spell each turn", "a spell that targets ~" and temporary
+# pumps (prowess) are not growth.
+_CAST_GROWTH = re.compile(
+    r"^whenever you cast an? (?:[a-z-]+ |or ){0,4}spells?(?: from your hand)?\s*,\s*"
+    r"(?:put (?P<n>a|an|one|two|three|\d+) \+1/\+1 counters? on (?:~|this creature|it|cardname)"
+    r"|(?:~|this creature|it|cardname) connives)\.?$"
+)
 
 
 def landfall_growth(card: dict) -> tuple[int, int, int]:
@@ -251,6 +263,26 @@ def landfall_growth(card: dict) -> tuple[int, int, int]:
         else:
             power, toughness = power + int(match.group("p")), toughness + int(match.group("t"))
     return counters, power, toughness
+
+
+def cast_growth(card: dict) -> int:
+    """+1/+1 counters the card's own "whenever you cast a ... spell" trigger gives it per spell (connive: 1).
+
+    Ledger #82 (match 772233af T14, 2026-10-19): Baron Helmut Zemo connives on
+    each black spell its controller casts; the line projected a static 4/4
+    ("dead on T17") and Mabel made it the 5/5 whose 8 damage met our 8 life on T15.
+    """
+    text = _QUOTED.sub("", _text(card))
+    if "cast" not in text:
+        return 0
+    counters = 0
+    for line in _own_lines(text):
+        match = _CAST_GROWTH.match(line)
+        if match is None:
+            continue
+        found = match.group("n")
+        counters += (_COUNT_WORDS.get(found) or _int(found) or 0) if found else 1
+    return counters
 
 
 def attack_pings(card: dict) -> tuple[tuple[int, str], ...]:
@@ -947,6 +979,7 @@ class Moves:
         self._strength_memo: dict = {}
         self._ping_memo: dict = {}
         self._growth_memo: dict = {}
+        self._spell_growth_memo: dict = {}
         self._pump_memo: dict = {}
         # Lands they play each of their turns, for their landfall creatures (ledger #27, match
         # 92c09c7a: Sazh's Chocobo grew +1/+1 a turn while the lines attacked with a static 7/8).
@@ -2134,12 +2167,21 @@ class Moves:
             found = self._growth_memo[id(body)] = landfall_growth(body.get("_card") or body)
         return found
 
+    def spell_growth(self, body: dict) -> int:
+        """``cast_growth`` of a body, memoised."""
+        found = self._spell_growth_memo.get(id(body))
+        if found is None:
+            found = self._spell_growth_memo[id(body)] = cast_growth(body.get("_card") or body)
+        return found
+
     def _landfall(self, bodies) -> list[dict]:
-        """``bodies`` (theirs) after their land drops: each landfall creature with its +1/+1 counters
-        (``_countered``: a fresh id, so the memos see a new body; it keeps growing every turn)."""
+        """``bodies`` (theirs) after their land drops and their spell: each landfall creature with its
+        +1/+1 counters, and each creature that grows when they cast a spell with one spell's worth
+        (paranoid: they cast one a turn; ledger #82) (``_countered``: a fresh id, so the memos see a
+        new body; it keeps growing every turn)."""
         out = []
         for body in bodies:
-            counters = self.growth(body)[0] * self.their_drops
+            counters = self.growth(body)[0] * self.their_drops + self.spell_growth(body)
             out.append(self._countered(body, counters) if counters else body)
         return out
 
