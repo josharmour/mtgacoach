@@ -165,6 +165,9 @@ class StandaloneCoach(
         self._autopilot_capture_lock = threading.RLock()
         self._auto_queue_enabled = bool(self.settings.get("auto_queue_enabled", False))
         self._auto_queue_since = time.time()
+        # On from the last session: Arena may be idle after a match (see
+        # _arm_auto_queue_after_restart).
+        self._auto_queue_restart_pending = self._auto_queue_enabled
 
         # State
         # advice_style can be "quick" (terse, speakable) or "chatty" (longer,
