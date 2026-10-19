@@ -19,11 +19,13 @@ unparsed or 'other' mode of a modal card is worth 0; no unknown card is ever
 invented. ``proxy_outcome`` replays a line with +2/+0 on their biggest attacker
 as a robustness check.
 
-Combat goes through ``board_assessment._combat`` (the combat solver's best
-blocks), so flying/reach, menace, trample, deathtouch and "can't be blocked"
-are the solver's, and so are its known gaps: lifelink is ignored, first strike
-counts on both sides, double-strike blockers and marked damage are not
-modelled.
+Combat goes through ``board_assessment._combat_life`` (the combat solver's
+best blocks), so flying/reach, menace, trample, deathtouch and "can't be
+blocked" are the solver's, and so are its known gaps: first strike counts on
+both sides, double-strike blockers and marked combat damage are not
+modelled. Lifelink is: attackers and blockers heal their side with the combat
+damage (since 2026-10-19, match 41753907: a 4/4 lifelink flier the lines
+raced as if it gained nothing).
 
 Scores are (class, timing, V): WIN 2 (sooner is better), ALIVE 1, DEAD 0
 (later is better), then V = u(life) - 0.6 opp life + material + 0.3 hand + a
@@ -70,6 +72,7 @@ from arenamcp.board_assessment import (
     _types,
     face_damage,
     life_loss,
+    lifelink_drain,
     search_hints,
 )
 from arenamcp.board_model import BoardModel, build_board_model
@@ -445,13 +448,16 @@ class _Search(Moves):
         found = self._race_memo.get(key)
         if found is None:
             open_blockers = [b for b in node.theirs if b["instance_id"] not in node.their_tapped]
+            # Each side's lifelink attacks heal it between the other side's attacks.
             ours, _ = _simulate_attacks(
                 list(node.ours), list(node.theirs), node.opp_life,
                 first_attackers=None, first_blockers=open_blockers, horizon=_RACE_HORIZON,
+                drain=lifelink_drain(list(node.theirs), list(node.ours), node.our_life),
             )  # fmt: skip
             theirs, _ = _simulate_attacks(
                 list(node.theirs), list(node.ours), node.our_life,
                 first_attackers=None, first_blockers=None, horizon=_RACE_HORIZON,
+                drain=lifelink_drain(list(node.ours), list(node.theirs), node.opp_life),
             )  # fmt: skip
             if ours is not None and (theirs is None or ours <= theirs):
                 found = _RACE / ours
@@ -1016,6 +1022,14 @@ def _evaluate_plan(result: LineSearchResult, steps: list[dict]) -> PlanEvaluatio
             )
             options = [t for t in options if t["instance_id"] not in taken]
             named = [t for t in options if aim and _plain(t["name"]) == _plain(aim)]
+            if aim and not named and var.reach is not None:
+                # "Lightning Strike (on Dawnwing Marshal)" + "Burst Lightning (on Dawnwing Marshal)":
+                # a piece of a combined kill; the target dies once the pieces reach its toughness.
+                chip = next((c for c in hs.chips if c.mode == var.mode), None)
+                body = next((b for b in node.theirs if _plain(b["name"]) == _plain(aim)), None)
+                if chip is not None and body is not None and search.burn(chip, body, len(sources)):
+                    casts.append((chip, body))
+                    continue
             casts.append((var, (named or options or [None])[0]))
         mid = search.begin(node, land, tuple(casts))
         options, possible = search.attack_choices(mid)

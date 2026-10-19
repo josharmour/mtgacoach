@@ -3,9 +3,12 @@
 ``line_search`` drives the search; this module says what a turn does. Our turn:
 one land drop (one option per land class), up to three spells (each spell's
 variants: plain cast, one per 'Choose one —' mode, removal on each of the top
-two legally targetable bodies it kills, an 'any target' spell aimed at the
-opponent, landcycling for its basic type) and an attack (none / all / the ones
-that survive their best blocks / the evasive ones). A cast pays its additional
+two legally targetable bodies it kills, targeted damage as one piece of a
+combined kill (two or three burn spells, or one plus the damage already
+marked this turn, reaching a creature's toughness: ``HandSpell.chips``), an
+'any target' spell aimed at the opponent, landcycling for its basic type) and
+an attack (none / all / the ones that survive their best blocks / the evasive
+ones). Lifelink heals its side with the combat damage. A cast pays its additional
 mana cost and the life it costs; a set that would kill us is never cast, nor is
 a spell whose "can't cast unless" condition is unmet. Their turn: everything
 untaps, our held instants answer (a flash creature or token maker blocks only
@@ -44,19 +47,23 @@ from arenamcp.board_assessment import (
     _OR_ANOTHER,
     _QUOTED,
     _body,
+    _body_colors,
     _cast_text,
-    _combat,
+    _combat_life,
     _enters_tapped,
     _flying,
     _int,
     _is_creature,
     _kills,
+    _lifelink,
     _name,
     _reach_or_flying,
+    _removal_clauses,
     _Spell,
     _spell_value,
     _text,
     _types,
+    burn_damage,
     card_role,
     extra_life_cost,
     face_damage,
@@ -291,6 +298,9 @@ class Variant:
     # count is read when it resolves, after the casts before it in the turn.
     life_tokens: tuple = ()
     counter: int = 0  # +1/+1 counters it puts on target creature (we pick our biggest)
+    # Damage it deals its creature target as one piece of a combined kill (``HandSpell.chips``):
+    # the target dies once the pieces aimed at it this turn reach its toughness.
+    chip: int = 0
 
 
 @dataclass(eq=False)
@@ -304,6 +314,7 @@ class HandSpell:
     variants: tuple = ()
     plain: Variant | None = None  # today's greedy semantics: no mode, whole-card removal
     reduction: Any = None  # its own "this spell costs {X} less" (``cost_reduction``)
+    chips: tuple = ()  # its targeted-damage variants as pieces of a combined kill (``Variant.chip``)
 
 
 @dataclass(frozen=True, eq=False)
@@ -766,6 +777,8 @@ class Moves:
         self._life_token_memo: dict = {}
         self._counter_memo: dict = {}
         self._neutral_memo: dict = {}
+        self._burn_memo: dict = {}
+        self._strength_memo: dict = {}
         # Hushbringer / Torpor Orb on the battlefield: a creature we cast triggers nothing on entering.
         self.enters_triggers = not any(_NO_ENTERS_TRIGGERS.search(_text(c)) for c in model.battlefield)
         self._prepare()
@@ -788,6 +801,7 @@ class Moves:
             hs = HandSpell(index, spell, iid, lowest[(spell.name, spell.zone)], spell.name, max(1.0, value))
             hs.reduction = parse_cost_reduction(str(spell.card.get("oracle_text") or ""))
             hs.variants, hs.plain = self._variants(hs)
+            hs.chips = self._chips(hs.variants)
             self.spells.append(hs)
         self.hand0 = tuple(
             sorted(range(len(self.spells)), key=lambda i: (self.spells[i].name, self.spells[i].iid))
@@ -800,6 +814,27 @@ class Moves:
                 Land(_int(card.get("instance_id")) or 0, _name(card), colors, _enters_tapped(card), source)
             )
         self.lands0 = tuple(sorted(lands, key=lambda land: (land.tapped, land.name, land.iid)))
+
+    @staticmethod
+    def _chips(variants) -> tuple:
+        """One combined-kill piece per targeted-damage cast variant (per mode): its damage as ``chip``.
+
+        Match 41753907 (2026-10-19): Lightning Strike (3) + Burst Lightning (2)
+        on a 4/4 lifelink flier at T7, Lightning Strike + Shock on it as a 5/5 at
+        T11, were never offered: removal was one spell per target.
+        """
+        chips, seen = [], set()
+        for var in variants:
+            if var.kind != "cast" or var.reach is None or var.bounce or var.aim or var.chip:
+                continue
+            amount = max(
+                (c.limit or 0 for c in _removal_clauses(var.reach) if c.kind == "damage" and c.targeted),
+                default=0,
+            )
+            if amount > 0 and (var.mode, amount) not in seen:
+                seen.add((var.mode, amount))
+                chips.append(dataclasses.replace(var, chip=amount))
+        return tuple(chips)
 
     def _tokens(self, specs) -> tuple[dict, ...]:
         """Token bodies for ``token_specs`` output, each with a fresh id (unique within the search)."""
@@ -845,9 +880,15 @@ class Moves:
             else 0
         )
 
+        colors = _body_colors(card)
+
         def make(
             mode=None, text="", gain=0, reach=None, bounce=False, rock=False, loss=0, face=0, aim="", specs=()
         ):
+            if reach is not None and reach is not card and not _types(reach).strip():
+                # A mode's or an enters trigger's text: its card's type and colours decide
+                # protection and "hexproof from instants" (``board_assessment._protected_from``).
+                reach = {**reach, "_source_types": _types(card), "_source_colors": colors}
             return Variant(
                 hs.index, "cast", mode, text, body, gain, reach, bounce, rock, spell.mana_value, spell.pips,
                 bool(info.instant_speed), loss, face, aim, tokens=self._tokens([*base_specs, *specs]),
@@ -962,6 +1003,10 @@ class Moves:
 
     def combat(self, attackers, blockers, life, *, first=False, tag=""):
         """``_combat`` memoised per search on (attacker ids, blocker ids, life)."""
+        return self.combat_life(attackers, blockers, life, first=first, tag=tag)[:3]
+
+    def combat_life(self, attackers, blockers, life, *, first=False, tag=""):
+        """``_combat_life`` (lifelink gains too) memoised like ``combat``."""
         attackers = sorted(attackers, key=lambda b: b["instance_id"])
         blockers = sorted(blockers, key=lambda b: b["instance_id"])
         able = sum(1 for b in blockers if b["_can_block"])
@@ -972,8 +1017,8 @@ class Moves:
         if found is None:
             self.combats += 1
             self.work += 2 + len(attackers) + able
-            damage, dead_att, dead_blk = _combat(attackers, blockers, life)
-            found = self._memo[key] = (damage, frozenset(dead_att), frozenset(dead_blk))
+            damage, dead_att, dead_blk, gained, healed = _combat_life(attackers, blockers, life)
+            found = self._memo[key] = (damage, frozenset(dead_att), frozenset(dead_blk), gained, healed)
         return found
 
     def kills(self, reach: dict, body: dict, ours=(), *, attacking: bool = False, mana: int = 0) -> bool:
@@ -1107,8 +1152,7 @@ class Moves:
         ``mana``: what is left for a ward after the spell itself.
         """
         killable = sorted(
-            (b for b in theirs if self.kills(reach, b, ours, mana=mana)),
-            key=lambda b: (-b["power"], -b["toughness"], b["name"], b["instance_id"]),
+            (b for b in theirs if self.kills(reach, b, ours, mana=mana)), key=self._threat_order
         )
         out, seen = [], set()
         for body in killable:
@@ -1125,6 +1169,61 @@ class Moves:
             if len(out) == _TARGETS:
                 break
         return out
+
+    @staticmethod
+    def _threat_order(body: dict) -> tuple:
+        """Removal targets, most dangerous first: power, a lifelinker's counted twice (each hit is a
+        swing of twice its power in the race), then toughness."""
+        power = body["power"] * (2 if _lifelink(body) else 1)
+        return (-power, -body["power"], -body["toughness"], body["name"], body["instance_id"])
+
+    def marked(self, body: dict, node: Node) -> int:
+        """Damage already marked on their creature: only on our turn T (it wears off at end of turn)."""
+        if node.k or not self.our_turn:
+            return 0
+        return max(0, _int((body.get("_card") or {}).get("damage")) or 0)
+
+    def burn(self, var: Variant, body: dict, mana: int) -> int:
+        """``burn_damage`` memoised: what the chip ``var`` deals ``body`` (0: not a legal target),
+        ``mana`` being what is left for a ward."""
+        key = (id(var), id(body))
+        found = self._burn_memo.get(key)
+        if found is None:
+            found = self._burn_memo[key] = (
+                min(var.chip, burn_damage(var.reach, body, ward_mana=10**6)) if var.chip else 0
+            )
+        return found if found and self.ward(body) <= mana else 0
+
+    def chip_targets(self, node: Node, position: int, var: Variant, sources: int) -> list[dict]:
+        """Up to two of their creatures ``var`` (a chip) can be one piece of killing this turn.
+
+        A target it can't kill alone (``targets`` offers those) but can with
+        the damage already marked on it this turn, or with at most two other
+        damage spells in hand (each one's best piece, mana aside: ``cast_sets``
+        checks that), most dangerous first.
+        """
+        spare = sources - var.mana_value
+        found = []
+        for body in sorted(node.theirs, key=self._threat_order):
+            mine = self.burn(var, body, spare)
+            need = body["toughness"] - self.marked(body, node)
+            if not mine or need <= 0 or mine >= body["toughness"]:
+                continue  # not a legal target, already dead, or a single-spell kill
+            if mine < need:
+                others = sorted(
+                    (
+                        max((self.burn(c, body, sources) for c in self.spells[i].chips), default=0)
+                        for p, i in enumerate(node.hand)
+                        if p != position
+                    ),
+                    reverse=True,
+                )
+                if mine + sum(others[: _MAX_SPELLS_PER_TURN - 1]) < need:
+                    continue
+            found.append(body)
+            if len(found) == _TARGETS:
+                break
+        return found
 
     def item_value(self, var: Variant, target: dict | None, theirs) -> float:
         """``_spell_value`` of one variant against the node's enemy board."""
@@ -1162,6 +1261,9 @@ class Moves:
         """The items' values; a life-scaled token maker counts the life ``gained`` this turn
         before it plus what the rest of the set gains (``_apply_casts`` casts the gains first)."""
         value = sum(self.item_value(v, t, theirs) for v, t in choice)
+        # A combined kill is worth one removal of its target (``_spell_value``'s), however many pieces.
+        for target in {id(t): t for v, t in choice if v.chip and t is not None}.values():
+            value += 3 + target["power"] * (1.5 if self.survival else 1.0)
         if any(v.life_tokens for v, _ in choice):
             x = min(10, gained + sum(v.gain for v, _ in choice if not v.life_tokens))
             for var, _target in choice:
@@ -1230,6 +1332,7 @@ class Moves:
         """
         theirs, their_tapped = node.theirs, node.their_tapped
         bans = self.bans(node)
+        marking = node.k == 0 and self.our_turn  # damage marked this turn still counts
         key = (
             node.hand,
             tuple(sorted("".join(sorted(s.produces)) for s in sources)),
@@ -1239,6 +1342,7 @@ class Moves:
             max((b["power"] for b in node.ours), default=-1),
             node.our_life,
             bans,
+            marking,
             self.gained_at_start(node),
         )
         found = self._cast_memo.get(key)
@@ -1248,13 +1352,15 @@ class Moves:
         for position, index in enumerate(node.hand):
             items = []
             banned = self.banned(self.spells[index], bans)
-            for var in self.spells[index].variants:
-                reduced = self.spells[index].reduction is not None
+            reduced = self.spells[index].reduction is not None
+            for var in self.spells[index].variants + self.spells[index].chips:
                 if (instant_only and not var.instant) or (var.mana_value > len(sources) and not reduced):
                     continue
                 if (banned and var.kind == "cast") or var.loss >= node.our_life:
                     continue
-                if var.reach is not None:  # no killable target: hold it
+                if var.chip:  # one piece of a combined kill (completed below, or the set is dropped)
+                    items.extend((var, t) for t in self.chip_targets(node, position, var, len(sources)))
+                elif var.reach is not None:  # no killable target: hold it
                     spare = len(sources) - var.mana_value
                     aims = self.targets(var.reach, theirs, their_tapped, node.ours, spare)
                     items.extend((var, t) for t in aims)
@@ -1264,6 +1370,7 @@ class Moves:
                     items.append((var, None))
             if items:
                 options.append((position, items))
+        need = {b["instance_id"]: b["toughness"] - self.marked(b, node) for b in theirs}
         names = [self.spells[i].name for i in node.hand]
         scored: list[tuple] = [((), 0.0, 0)]
         for size in range(1, min(_MAX_SPELLS_PER_TURN, len(options)) + 1):
@@ -1282,7 +1389,12 @@ class Moves:
                         for b in range(a + 1, size)
                     ):
                         continue
-                    hit = [t["instance_id"] for _, t in choice if t is not None]
+                    hit = [t["instance_id"] for v, t in choice if t is not None and not v.chip]
+                    if any(v.chip for v, _ in choice):
+                        pieces = self._pieces(choice, need)
+                        if pieces is None:
+                            continue  # a piece whose kill the set doesn't complete, or one too many
+                        hit += pieces
                     total = self.set_cost(node.ours, choice)
                     if len(hit) != len(set(hit)) or total > len(sources):
                         continue
@@ -1295,6 +1407,25 @@ class Moves:
         scored.sort(key=lambda item: (-round(item[1], 6), -item[2], self.choice_text(item[0])))
         result = self._cast_memo[key] = [item[0] for item in scored]
         return result
+
+    @staticmethod
+    def _pieces(choice, need: dict) -> list | None:
+        """The ids a set's chips kill, or None unless every chip target dies and no piece is spare.
+
+        Each chip target needs its pieces' damage to reach its toughness less
+        the damage already marked (``need``); a piece the kill doesn't need
+        (Shock + Shock + Strike on a 4/4) makes the set a worse copy of a
+        smaller one.
+        """
+        aimed: dict[int, list[int]] = {}
+        for var, target in choice:
+            if var.chip and target is not None:
+                aimed.setdefault(target["instance_id"], []).append(var.chip)
+        for iid, damage in aimed.items():
+            total = sum(damage)
+            if total < need.get(iid, 10**6) or total - min(damage) >= need.get(iid, 10**6):
+                return None
+        return list(aimed)
 
     def play_keys(self, land, casts) -> set:
         keys: set = set()
@@ -1349,6 +1480,7 @@ class Moves:
 
     def _apply_casts(self, mid: Mid) -> None:
         mid.applied = True
+        chipped: dict[int, int] = {}  # damage combined-kill pieces dealt each target so far
         for var, target in mid.casts:
             hs = self.spells[var.spell]
             if var.spell in mid.hand:
@@ -1379,7 +1511,13 @@ class Moves:
             for body in ([var.body] if var.body is not None else []) + made:
                 mid.ours.append(body)
                 mid.entered[body["instance_id"]] = mid.node.abs_turn
-            if target is not None and any(b is target for b in mid.theirs):
+            if target is not None and var.chip and any(b is target for b in mid.theirs):
+                iid = target["instance_id"]
+                chipped[iid] = chipped.get(iid, self.marked(target, mid.node)) + var.chip
+                mid.targets.append((hs.name, target["name"]))
+                if chipped[iid] >= target["toughness"]:  # the last piece: it dies
+                    mid.theirs = [b for b in mid.theirs if b is not target]
+            elif target is not None and any(b is target for b in mid.theirs):
                 mid.theirs = [b for b in mid.theirs if b is not target]
                 mid.targets.append((hs.name, target["name"]))
                 if var.bounce:
@@ -1447,8 +1585,13 @@ class Moves:
             if attack[0] == "declared" and self.model.step == "Step_FirstStrikeDamage":
                 # Their life already shows our first-strike damage: only the regular part is left.
                 fighting, tag = _regular_damage_part(attackers), "fs"
-            damage, dead_ours, dead_theirs = self.combat(fighting, blockers, mid.opp_life, tag=tag)
-            mid.opp_life -= damage
+            damage, dead_ours, dead_theirs, gained, healed = self.combat_life(
+                fighting, blockers, mid.opp_life, tag=tag
+            )
+            # Lifelink on both sides lands with the combat damage: the net change decides lethal.
+            mid.opp_life -= damage - healed
+            mid.our_life += gained
+            mid.gained += gained
             opp_after = mid.opp_life
             mid.ours = [b for b in mid.ours if b["instance_id"] not in dead_ours]
             mid.theirs = [b for b in mid.theirs if b["instance_id"] not in dead_theirs]
@@ -1523,12 +1666,14 @@ class Moves:
         history, attacks = node.history + (after,), node.attacks + 1
         if hit["dead"]:
             return dataclasses.replace(
-                node, **{**carry, "our_life": hit["life"]}, history=history, attacks=attacks,
-                dead_at=attacks, dead_turn=node.abs_turn + 1, overkill=-hit["life"],
+                node, **{**carry, "our_life": hit["life"], "opp_life": hit["opp_life"]}, history=history,
+                attacks=attacks, dead_at=attacks, dead_turn=node.abs_turn + 1, overkill=-hit["life"],
             )  # fmt: skip
+        # Their lifelink attackers (and our lifelink blockers) changed both life totals.
         carry.update(
-            our_life=hit["life"], ours=tuple(hit["ours"]), theirs=tuple(hit["theirs"]), hand=hit["hand"]
-        )
+            our_life=hit["life"], opp_life=hit["opp_life"], ours=tuple(hit["ours"]), theirs=tuple(hit["theirs"]),
+            hand=hit["hand"],
+        )  # fmt: skip
         return dataclasses.replace(
             node,
             **carry,
@@ -1597,6 +1742,14 @@ class Moves:
                 policies.append((f"keep-{count}", tuple(a for a in able if a["instance_id"] not in home)))
         return policies
 
+    def _strength(self, var: Variant) -> float:
+        """``_reach_strength`` memoised: re-reading the removal text on every attack of theirs
+        was a sixth of a burn-heavy hand's search (2026-10-19)."""
+        found = self._strength_memo.get(id(var.reach))
+        if found is None:
+            found = self._strength_memo[id(var.reach)] = _reach_strength(var.reach)
+        return found
+
     def _held(self, hand, spare, life) -> tuple[list[Variant], list[Variant], int]:
         """Instants we keep up for their turn, affordable together: (removal, flash creatures, mana left)."""
         sources, used_mv, used_pips = spare
@@ -1608,8 +1761,8 @@ class Moves:
             killers = [v for v in instant if v.reach is not None]
             bodied = [v for v in instant if _bodies(v)]
             if killers:  # the mode that kills the most: destroy, then the most damage
-                var = max(killers, key=lambda v: _reach_strength(v.reach))
-                candidates.append((0, -_reach_strength(var.reach), self.spells[index].name, var))
+                var = max(killers, key=self._strength)
+                candidates.append((0, -self._strength(var), self.spells[index].name, var))
             elif bodied:  # a flash creature, or an instant that makes creature tokens
                 var = max(bodied, key=lambda v: sum(self.material(b) for b in _bodies(v)))
                 candidates.append(
@@ -1713,15 +1866,19 @@ class Moves:
         if boost:
             big = max(declared, key=lambda b: (b["power"], b["toughness"], -b["instance_id"]))
             fighting = [self._boost(b) if b is big else b for b in declared]
-        damage, dead_att, dead_blk = self.combat(
+        damage, dead_att, dead_blk, gained, healed = self.combat_life(
             fighting, defenders, life, first=index == 1, tag=tag + ("proxy" if boost else "")
         )
         dead_att = {abs(i) for i in dead_att}
-        after = life - damage
+        # Lifelink lands with the damage: our lifelink blockers heal us, their lifelink
+        # attackers heal them (match 41753907 T7: Dawnwing Marshal's 4 a turn).
+        after = life - damage + healed
+        opp_life += gained
         if after <= 0:
             return {
                 "dead": True,
                 "life": after,
+                "opp_life": opp_life,
                 "policy": name,
                 "used": tuple(used),
                 "suicidal": False,
@@ -1742,10 +1899,11 @@ class Moves:
         )
         crack = [b for b in ours_after if b["_can_attack"] and not self.sick(b, next_k, next_abs, entered)]
         crack_blockers = [b for b in theirs_after if b["instance_id"] not in their_tapped]
-        crack_damage, crack_dead_ours, crack_dead_theirs = (
-            self.combat(crack, crack_blockers, opp_life) if crack else (0, set(), set())
+        crack_damage, crack_dead_ours, crack_dead_theirs, crack_gained, crack_healed = (
+            self.combat_life(crack, crack_blockers, opp_life) if crack else (0, set(), set(), 0, 0)
         )
-        suicidal = bool(crack) and crack_damage >= opp_life
+        crack_net = crack_damage - crack_healed
+        suicidal = bool(crack) and crack_net >= opp_life
         # Worst for us means after our reply too: their attackers can't block on our
         # turn, so a policy is valued at the better of our holding and our crackback
         # (bug_20261007_182945: all-out 1/4 fliers every turn "took" 24 life to 5).
@@ -1754,7 +1912,7 @@ class Moves:
             v = max(
                 v,
                 self.value(
-                    after, opp_life - crack_damage,
+                    after + crack_gained, opp_life - crack_net,
                     [b for b in ours_after if b["instance_id"] not in crack_dead_ours],
                     [b for b in theirs_after if b["instance_id"] not in crack_dead_theirs],
                     hand,
@@ -1763,6 +1921,7 @@ class Moves:
         return {
             "dead": False,
             "life": after,
+            "opp_life": opp_life,
             "policy": name,
             "used": tuple(used),
             "suicidal": suicidal,
@@ -1867,8 +2026,8 @@ class Moves:
             block = variant if fixed is not None else ""
             if hit["dead"]:
                 out.append(
-                    (variant, dataclasses.replace(node, our_life=hit["life"], attacks=1, now_life=hit["life"],
-                                                  block=block, dead_at=1, dead_turn=model.turn,
+                    (variant, dataclasses.replace(node, our_life=hit["life"], opp_life=hit["opp_life"], attacks=1,
+                                                  now_life=hit["life"], block=block, dead_at=1, dead_turn=model.turn,
                                                   overkill=-hit["life"]))
                 )  # fmt: skip
                 continue
@@ -1878,6 +2037,7 @@ class Moves:
                     dataclasses.replace(
                         node,
                         our_life=hit["life"],
+                        opp_life=hit["opp_life"],
                         ours=tuple(hit["ours"]),
                         theirs=tuple(hit["theirs"]),
                         our_tapped=frozenset(),
