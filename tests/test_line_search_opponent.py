@@ -35,8 +35,31 @@ def _power(model, hand_bodies: dict[str, int]) -> dict[str, int]:
     return {**hand_bodies, **powers}
 
 
-def test_their_attack_policy_is_valued_after_our_crackback_on_the_logged_board(unlimited_search_deadline):
+def _without_planeswalkers(source: dict) -> dict:
+    """The board as the search saw it before it modelled their planeswalkers (2026-10-19)."""
+    board = deepcopy(source)
+    board["battlefield"] = [c for c in board["battlefield"] if "Planeswalker" not in str(c.get("type_line"))]
+    return board
+
+
+def test_their_garruk_is_attacked_and_the_crackback_rules_still_hold(unlimited_search_deadline):
+    # The logged board has their Garruk, Veiled Butcher (loyalty 7). Since the search models
+    # planeswalkers (ledger #42), its best line sends our wide board at Garruk; their attack
+    # policies are still valued after our crackback: never all-out every turn.
     source = fx.BUG_182945_T13_UPKEEP
+    result = _assess(source).line_search
+    assert result is not None and not result.truncated and result.best.outcome == "alive"
+    assert any(step.at_walkers for step in result.best.steps), result.best.summary()
+    assert {walker for step in result.best.steps for _a, walker in step.at_walkers} == {
+        "Garruk, Veiled Butcher"
+    }
+    assert not all(step.policy == "all" for step in result.best.steps)
+
+
+def test_their_attack_policy_is_valued_after_our_crackback_on_the_logged_board(unlimited_search_deadline):
+    # The hand-computed line below dates from before planeswalkers were modelled: it is the
+    # board without their Garruk (test_their_garruk_is_attacked_... has the board with it).
+    source = _without_planeswalkers(fx.BUG_182945_T13_UPKEEP)
     model = build_board_model(deepcopy(source))
     assert (model.our_life, model.opp_life, model.our_turn) == (10, 24, False)
     assert sorted(b["name"] for b in model.theirs) == [

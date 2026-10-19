@@ -602,10 +602,12 @@ def _combat(attackers: list[dict], blockers: list[dict], life: int) -> tuple[int
     return _combat_life(attackers, blockers, life)[:3]
 
 
-def _combat_life(
-    attackers: list[dict], blockers: list[dict], life: int
-) -> tuple[int, set[int], set[int], int, int]:
+def _combat_life(attackers: list[dict], blockers: list[dict], life: int, *, detail: bool = False) -> tuple:
     """``_combat`` plus lifelink: (damage, dead attackers, dead blockers, attacker gain, defender gain).
+
+    ``detail``: a sixth item, each attacker's damage through ({instance id: damage}), and a
+    seventh, the ids of the blockers that blocked: an attack split between the player and a
+    planeswalker reads them (``line_search_moves``).
 
     The attacking side gains what its lifelink attackers deal (to blockers and
     through, ``combat_solver._resolve_attacker``); the defending side gains a
@@ -617,7 +619,7 @@ def _combat_life(
     opponent 29 life over the game.
     """
     if not attackers:
-        return 0, set(), set(), 0, 0
+        return (0, set(), set(), 0, 0, {}, set()) if detail else (0, set(), set(), 0, 0)
     blockers = [b for b in blockers if b["_can_block"]]
     groups: dict[int, list[dict]] = {}
     if blockers:
@@ -638,10 +640,12 @@ def _combat_life(
                 groups.setdefault(attacker_id, []).append(by_id[blocker_id])
     damage, dead_attackers, dead_blockers = 0, set(), set()
     attacker_gain = defender_gain = 0
+    through: dict[int, int] = {}
     for attacker in attackers:
         group = groups.get(attacker["instance_id"], [])
         outcome = _resolve_attacker(attacker, group)
         damage += outcome.damage_through
+        through[attacker["instance_id"]] = outcome.damage_through
         attacker_gain += outcome.life_gained
         if group and outcome.attacker_died:
             dead_attackers.add(attacker["instance_id"])
@@ -654,6 +658,9 @@ def _combat_life(
                 continue  # killed in the first-strike step, before it dealt damage
             twice = has_combat_keyword(blocker, "double strike") and not outcome.attacker_died
             defender_gain += blocker["power"] * (2 if twice else 1)
+    if detail:
+        used = {b["instance_id"] for group in groups.values() for b in group}
+        return damage, dead_attackers, dead_blockers, attacker_gain, defender_gain, through, used
     return damage, dead_attackers, dead_blockers, attacker_gain, defender_gain
 
 
@@ -1683,6 +1690,7 @@ def _assess(state: dict) -> BoardAssessment | None:
         best_line=best,
         line_text=best_text,
         evasive_clock=bool(getattr(clocks, "evasive_clock", False)),
+        walkers=_their_walkers(battlefield, opponent),
         # "Only" claims force no role while a cast or pending effect they can't see could change them.
         only_survivor=bool(found and found.only_survivor) and not caveat,
         greedy_dies=bool(found and getattr(found, "greedy_dies", False)) and not caveat,
@@ -1758,6 +1766,19 @@ def _assess(state: dict) -> BoardAssessment | None:
     )
     result.elapsed_ms = (time.perf_counter() - started) * 1000
     return result
+
+
+def _their_walkers(battlefield: list[dict], opponent: int | None) -> str:
+    """'Kaito, Cunning Infiltrator (loyalty 4), ...' for the opponent's planeswalkers, '' without one."""
+    found = [
+        f"{_name(card)} (loyalty {loyal})"
+        for card in battlefield
+        if isinstance(card, dict)
+        and _controller(card) == opponent
+        and "planeswalker" in _types(card)
+        and (loyal := loyalty(card)) is not None
+    ]
+    return ", ".join(found)
 
 
 def _commander_facts(model: Any, lookahead: list[TurnProjection], search: Any) -> list[str]:
@@ -2511,6 +2532,7 @@ def _role(
     greedy_dies: bool = False,
     caveat: str = "",
     evasive_clock: bool = False,
+    walkers: str = "",
 ) -> tuple[str, str]:
     """Who's the beatdown: lethal and survival first, then fast clocks, then board/cards/curve.
 
@@ -2531,6 +2553,8 @@ def _role(
     and the opponent-lethal reason calls the line the best modelled one.
     """
     board = f"{ours} vs {theirs} creatures, {our_power} vs {their_power} power"
+    if walkers:  # a51dea64 (2026-10-19): "1 vs 0 creatures" with Kaito and Ajani Resolute out
+        board += f", their planeswalkers {walkers}"
 
     def fast(clock: int | None) -> bool:
         return clock is not None and clock <= _HORIZON

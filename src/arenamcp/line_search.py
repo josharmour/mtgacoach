@@ -567,7 +567,7 @@ class _Search(Moves):
             node.k, node.our_life, node.opp_life, ids_of(node.ours), ids_of(node.theirs), node.our_tapped,
             node.their_tapped, node.entered, node.hand, tuple(x.iid for x in node.lands),
             tuple(sorted(s.name for s in node.played)), len(node.rocks), ids_of(node.returning),
-            node.dead_at, node.win_at, node.overkill, node.block,
+            node.dead_at, node.win_at, node.overkill, node.block, node.walkers,
         )  # fmt: skip
 
     def _rank(self, group: _Group) -> tuple:
@@ -891,6 +891,11 @@ def proxy_outcome(result: LineSearchResult | None, line: Line | None) -> Line | 
             for var, target in casts:
                 if var.spell not in node.hand:
                     continue
+                if var.walker:  # burn at a planeswalker: the same one, at its loyalty in this replay
+                    found = next((w for w in node.walkers if w[0] == target["instance_id"]), None)
+                    if found is not None:
+                        playable.append((var, search.walker_body(*found)))
+                    continue
                 if target is not None:
                     same = [b for b in node.theirs if b["instance_id"] == target["instance_id"]]
                     target = (
@@ -901,7 +906,9 @@ def proxy_outcome(result: LineSearchResult | None, line: Line | None) -> Line | 
                 playable.append((var, target))
             mid = search.begin(node, land, tuple(playable))
             allowed = {i for _n, option in search.attack_choices(mid)[0] for i in option}
-            node = search.finish(mid, ("replay", tuple(i for i in ids if i in allowed)))
+            # A planeswalker attack keeps its split ("at:<walker>:<attackers>").
+            replay = step.walker_attack or "replay"
+            node = search.finish(mid, (replay, tuple(i for i in ids if i in allowed)))
         return search.line(search.rollout(node))
     except Exception:  # never let the robustness check break a decision
         logger.debug("proxy replay failed", exc_info=True)
@@ -1023,6 +1030,11 @@ def _evaluate_plan(result: LineSearchResult, steps: list[dict]) -> PlanEvaluatio
             )
             options = [t for t in options if t["instance_id"] not in taken]
             named = [t for t in options if aim and _plain(t["name"]) == _plain(aim)]
+            walker = next((w for w in node.walkers if aim and _plain(w[1]) == _plain(aim)), None)
+            burn = next((v for v in hs.walker_vars if v.mode == var.mode), None)
+            if walker is not None and burn is not None and not named:
+                casts.append((burn, search.walker_body(*walker)))  # "Lightning Strike (on Kaito)"
+                continue
             if aim and not named and var.reach is not None:
                 # "Lightning Strike (on Dawnwing Marshal)" + "Burst Lightning (on Dawnwing Marshal)":
                 # a piece of a combined kill; the target dies once the pieces reach its toughness.

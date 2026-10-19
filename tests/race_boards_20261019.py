@@ -121,6 +121,27 @@ CARDS: dict[str, dict[str, Any]] = {
         "oracle_text": "You may play an additional land on each of your turns.\nYou may play lands from your "
         "graveyard.\nLandfall — Whenever a land you control enters, mill a card.",
     },
+    "Kaito, Cunning Infiltrator": {
+        "type_line": "Legendary Planeswalker — Kaito", "mana_cost": "{1}{U}{U}", "loyalty": "3",
+        "card_types": ["CardType_Planeswalker"],
+        "oracle_text": "Whenever a creature you control deals combat damage to a player, put a loyalty counter on "
+        "Kaito.\n+1: Up to one target creature you control can't be blocked this turn. Whenever that creature "
+        "deals damage this turn, return it to its owner's hand.\n−2: Draw a card. Then discard a card unless you "
+        "attacked this turn.\n−9: You get an emblem with \"Whenever a player casts a spell, you create a 1/1 blue "
+        "Ninja creature token.\"",
+    },
+    "Ajani Resolute": {
+        "type_line": "Legendary Planeswalker — Ajani", "mana_cost": "{2}{W}{W}", "loyalty": "5",
+        "card_types": ["CardType_Planeswalker"],
+        "oracle_text": "+1: Put a +1/+1 counter on up to one target creature. It gains vigilance until end of "
+        "turn.\n−2: Return target creature card with mana value 2 or less from your graveyard to the "
+        "battlefield.\n−6: Creatures you control get +4/+4 until end of turn.",
+    },
+    "Youthful Valkyrie": {
+        "type_line": "Creature — Angel Warrior", "mana_cost": "{1}{W}", "power": 1, "toughness": 3,
+        "keywords": ["flying"], "card_types": ["CardType_Creature"],
+        "oracle_text": "Flying\nWhenever another Angel you control enters, put a +1/+1 counter on this creature.",
+    },
     "Grizzly Bears": {
         "type_line": "Creature — Bear", "mana_cost": "{1}{G}", "power": 2, "toughness": 2,
         "card_types": ["CardType_Creature"], "oracle_text": "",

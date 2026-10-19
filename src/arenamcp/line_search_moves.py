@@ -6,9 +6,13 @@ variants: plain cast, one per 'Choose one —' mode, removal on each of the top
 two legally targetable bodies it kills, targeted damage as one piece of a
 combined kill (two or three burn spells, or one plus the damage already
 marked this turn, reaching a creature's toughness: ``HandSpell.chips``), an
-'any target' spell aimed at the opponent, landcycling for its basic type) and
-an attack (none / all / the ones that survive their best blocks / the evasive
-ones). Lifelink heals its side with the combat damage. A cast pays its additional
+'any target' spell aimed at the opponent or at one of their planeswalkers,
+landcycling for its basic type) and an attack (none / all / the ones that
+survive their best blocks / the evasive ones / the survivors with the fewest
+that can finish a planeswalker of theirs sent at it, their blockers protecting
+it first). Their planeswalkers (``Node.walkers``) are worth
+``combat_solver.walker_value`` to them and go up one loyalty each of their
+turns. Lifelink heals its side with the combat damage. A cast pays its additional
 mana cost and the life it costs; a set that would kill us is never cast, nor is
 a spell whose "can't cast unless" condition is unmet. Their turn: everything
 untaps, they play a land (one, plus one per "play an additional land"
@@ -81,6 +85,8 @@ from arenamcp.board_assessment import (
 )
 from arenamcp.board_model import BoardModel, _regular_damage_part, cast_bans, spell_banned
 from arenamcp.combat_keywords import has_combat_keyword
+from arenamcp.combat_solver import walker_value
+from arenamcp.combat_strategy import loyalty
 from arenamcp.cost_reduction import parse_cost_reduction, reduced_mana_value, reduction_amount
 from arenamcp.mulligan_policy import _land_colors, _pip_matching, hand_card
 
@@ -330,13 +336,17 @@ class Step:
     plays: tuple = field(
         default=(), repr=False, compare=False
     )  # (land, ((variant, target), ...), attack ids)
+    # Attackers sent at one of their planeswalkers: ((attacker, planeswalker), ...); the rest go
+    # at the player. ``walker_attack`` is the attack option's name, for replays.
+    at_walkers: tuple[tuple[str, str], ...] = ()
+    walker_attack: str = ""
 
     @property
     def sig(self) -> tuple:
         """What was played: two steps with the same sig are the same choice (cast order ignored)."""
         return (
             self.turn, self.land, tuple(sorted(self.casts)), tuple(sorted(self.modes)),
-            tuple(sorted(self.targets)), tuple(sorted(self.cycles)), self.attack,
+            tuple(sorted(self.targets)), tuple(sorted(self.cycles)), self.attack, self.at_walkers,
         )  # fmt: skip
 
     def text(self) -> str:
@@ -353,7 +363,9 @@ class Step:
             parts = [p for p in parts if p not in later]
         text = " + ".join(parts)
         if self.attack:
-            text += f"{', ' if text else ''}attack with {', '.join(self.attack)}"
+            at = dict(self.at_walkers)
+            who = [f"{name} (at {at[name]})" if name in at else name for name in self.attack]
+            text += f"{', ' if text else ''}attack with {', '.join(who)}"
             if later:
                 text += f", then cast {' + '.join(later)} after combat"
         text = text or "no play"
@@ -390,6 +402,8 @@ class Variant:
     chip: int = 0
     # Damage it deals each of their creatures (Tectonic Hazard): it adds to the pieces' damage.
     sweep: int = 0
+    # Damage it deals one of their planeswalkers ("any target", "target creature or planeswalker").
+    walker: int = 0
 
 
 @dataclass(eq=False)
@@ -404,6 +418,7 @@ class HandSpell:
     plain: Variant | None = None  # today's greedy semantics: no mode, whole-card removal
     reduction: Any = None  # its own "this spell costs {X} less" (``cost_reduction``)
     chips: tuple = ()  # its targeted-damage variants as pieces of a combined kill (``Variant.chip``)
+    walker_vars: tuple = ()  # its damage aimed at one of their planeswalkers (``Variant.walker``)
 
 
 @dataclass(frozen=True, eq=False)
@@ -447,6 +462,8 @@ class Node:
     win_turn: int | None = None
     overkill: int = 0
     rolled: bool = False  # finished by greedy rollout (deadline or beam overflow)
+    # Their planeswalkers: ((instance id, name, loyalty), ...) (ledger #42, 2026-10-19 a51dea64).
+    walkers: tuple = ()
 
     @property
     def terminal(self) -> bool:
@@ -459,7 +476,7 @@ class Mid:
     __slots__ = (
         "node", "land", "casts", "sources", "base_sources", "used_mv", "used_pips", "our_life", "opp_life",
         "ours", "theirs", "our_tapped", "entered", "hand", "lands", "played", "rocks", "returning",
-        "attack_first", "applied", "modes", "targets", "cycles", "cast_names", "keys", "gained",
+        "attack_first", "applied", "modes", "targets", "cycles", "cast_names", "keys", "gained", "walkers",
     )  # fmt: skip
 
     def copy(self) -> Mid:
@@ -702,6 +719,18 @@ _SWEEP = re.compile(
 )
 
 
+# Damage a spell can aim at one of their planeswalkers: "any target", "target creature or
+# planeswalker", "target player or planeswalker".
+_WALKER_BURN = re.compile(
+    r"\bdeals? (?P<n>\d+) damage to (?:any (?:other )?target|(?:up to one )?target (?:[a-z]+(?:,| or) )*?planeswalker)"
+)
+
+
+def walker_burn(text: str) -> int:
+    """Damage ``text`` (lower case) can deal one of their planeswalkers (0: none)."""
+    return max((int(m.group("n")) for m in _WALKER_BURN.finditer(text or "")), default=0)
+
+
 def _sweep(text: str) -> int:
     """Damage ``text`` (lower-case cast text) deals each creature the opponent controls (0: none)."""
     return max((int(m.group("n")) for m in _SWEEP.finditer(text or "")), default=0)
@@ -927,6 +956,20 @@ class Moves:
             for c in model.battlefield
             if isinstance(c, dict) and _controller(c) == model.opponent and _EXTRA_LAND.search(_text(c))
         )
+        # Their planeswalkers (ledger #42, a51dea64 10:19–10:25: Kaito and Ajani Resolute were
+        # invisible; face burn was "~best" while Strike on Youthful Valkyrie let Slickshot kill Ajani).
+        self._walker_memo: dict = {}
+        self.walkers0 = tuple(
+            sorted(
+                (_int(c.get("instance_id")) or 0, _name(c), loyal)
+                for c in model.battlefield
+                if isinstance(c, dict)
+                and _controller(c) == model.opponent
+                and "planeswalker" in _types(c)
+                and (loyal := loyalty(c)) is not None
+                and loyal > 0
+            )
+        )
         # Hushbringer / Torpor Orb on the battlefield: a creature we cast triggers nothing on entering.
         self.enters_triggers = not any(_NO_ENTERS_TRIGGERS.search(_text(c)) for c in model.battlefield)
         self._prepare()
@@ -950,6 +993,7 @@ class Moves:
             hs.reduction = parse_cost_reduction(str(spell.card.get("oracle_text") or ""))
             hs.variants, hs.plain = self._variants(hs)
             hs.chips = self._chips(hs.variants)
+            hs.walker_vars = self._walker_vars(hs) if self.walkers0 else ()
             self.spells.append(hs)
         self.hand0 = tuple(
             sorted(range(len(self.spells)), key=lambda i: (self.spells[i].name, self.spells[i].iid))
@@ -962,6 +1006,34 @@ class Moves:
                 Land(_int(card.get("instance_id")) or 0, _name(card), colors, _enters_tapped(card), source)
             )
         self.lands0 = tuple(sorted(lands, key=lambda land: (land.tapped, land.name, land.iid)))
+
+    def _walker_vars(self, hs: HandSpell) -> tuple:
+        """Its damage aimed at one of their planeswalkers, one per cast variant (per mode)."""
+        modes = bullets(str(hs.spell.card.get("oracle_text") or ""))
+        whole = _cast_text(hs.spell.card)
+        out, seen = [], set()
+        for var in hs.variants:
+            if var.kind != "cast" or var.aim or var.chip:
+                continue
+            text = modes[var.mode].lower() if var.mode is not None and var.mode < len(modes) else whole
+            amount = walker_burn(text)
+            if amount and (var.mode, amount) not in seen:
+                seen.add((var.mode, amount))
+                out.append(dataclasses.replace(var, reach=None, bounce=False, aim="walker", walker=amount))
+        return tuple(out)
+
+    def walker_body(self, iid: int, name: str, loyalty: int) -> dict:
+        """A stable target dict for one of their planeswalkers at this loyalty (the memos key on ids)."""
+        key = (iid, loyalty)
+        found = self._walker_memo.get(key)
+        if found is None:
+            found = self._walker_memo[key] = {
+                "instance_id": iid,
+                "name": name,
+                "loyalty": loyalty,
+                "_walker": True,
+            }
+        return found
 
     @staticmethod
     def _chips(variants) -> tuple:
@@ -1157,6 +1229,11 @@ class Moves:
 
     def combat_life(self, attackers, blockers, life, *, first=False, tag=""):
         """``_combat_life`` (lifelink gains too) memoised like ``combat``."""
+        return self.combat_detail(attackers, blockers, life, first=first, tag=tag)[:5]
+
+    def combat_detail(self, attackers, blockers, life, *, first=False, tag=""):
+        """``combat_life`` plus each attacker's damage through, as sorted (id, damage) pairs, and
+        the ids of the blockers that blocked."""
         attackers = sorted(attackers, key=lambda b: b["instance_id"])
         blockers = sorted(blockers, key=lambda b: b["instance_id"])
         able = sum(1 for b in blockers if b["_can_block"])
@@ -1167,8 +1244,13 @@ class Moves:
         if found is None:
             self.combats += 1
             self.work += 2 + len(attackers) + able
-            damage, dead_att, dead_blk, gained, healed = _combat_life(attackers, blockers, life)
-            found = self._memo[key] = (damage, frozenset(dead_att), frozenset(dead_blk), gained, healed)
+            damage, dead_att, dead_blk, gained, healed, through, used = _combat_life(
+                attackers, blockers, life, detail=True
+            )
+            found = self._memo[key] = (
+                damage, frozenset(dead_att), frozenset(dead_blk), gained, healed, tuple(sorted(through.items())),
+                frozenset(used),
+            )  # fmt: skip
         return found
 
     def kills(self, reach: dict, body: dict, ours=(), *, attacking: bool = False, mana: int = 0) -> bool:
@@ -1222,8 +1304,9 @@ class Moves:
             )
         return found
 
-    def value(self, life, opp_life, ours, theirs, hand) -> float:
-        """V = u(life) - 0.6 opp life + our material - theirs + 0.3 hand (hand-tuned)."""
+    def value(self, life, opp_life, ours, theirs, hand, walkers=()) -> float:
+        """V = u(life) - 0.6 opp life + our material - theirs + 0.3 hand (hand-tuned), less each
+        planeswalker of theirs (``combat_solver.walker_value``: 9 + its loyalty up to 6)."""
         u = life + min(life, 10) + 2 * min(life, 5)
         return (
             u
@@ -1231,6 +1314,7 @@ class Moves:
             + sum(self.material(b) for b in ours)
             - sum(self.material(b) for b in theirs)
             + 0.3 * sum(self.spells[i].hand_value for i in hand)
+            - sum(walker_value(loyal) for _iid, _name, loyal in walkers)
         )
 
     def score(self, node: Node) -> tuple:
@@ -1242,7 +1326,9 @@ class Moves:
         return (
             ALIVE,
             0,
-            self.value(node.our_life, node.opp_life, node.ours, node.theirs + node.returning, node.hand),
+            self.value(
+                node.our_life, node.opp_life, node.ours, node.theirs + node.returning, node.hand, node.walkers
+            ),
         )
 
     def sick(self, body, k, abs_turn, entered) -> bool:
@@ -1428,6 +1514,14 @@ class Moves:
         # A combined kill is worth one removal of its target (``_spell_value``'s), however many pieces.
         for target in {id(t): t for v, t in choice if v.chip and t is not None}.values():
             value += 3 + target["power"] * (1.5 if self.survival else 1.0)
+        # Burn at a planeswalker: what it takes off ``walker_value`` (all of it when it dies).
+        burnt: dict[int, tuple[int, int]] = {}
+        for var, target in choice:
+            if var.walker and target is not None:
+                iid, before = target["instance_id"], burnt.get(target["instance_id"], (target["loyalty"], 0))
+                burnt[iid] = (before[0], before[1] + var.walker)
+        for loyal, damage in burnt.values():
+            value += walker_value(loyal) - (walker_value(loyal - damage) if damage < loyal else 0.0)
         # A sweep: each creature of theirs it kills by itself.
         for var in (v for v, _ in choice if v.sweep):
             value += sum(
@@ -1514,6 +1608,7 @@ class Moves:
             node.our_life,
             bans,
             marking,
+            node.walkers,
             self.gained_at_start(node),
         )
         found = self._cast_memo.get(key)
@@ -1524,13 +1619,16 @@ class Moves:
             items = []
             banned = self.banned(self.spells[index], bans)
             reduced = self.spells[index].reduction is not None
-            for var in self.spells[index].variants + self.spells[index].chips:
+            hs = self.spells[index]
+            for var in hs.variants + hs.chips + hs.walker_vars:
                 if (instant_only and not var.instant) or (var.mana_value > len(sources) and not reduced):
                     continue
                 if (banned and var.kind == "cast") or var.loss >= node.our_life:
                     continue
                 if var.chip:  # one piece of a combined kill (completed below, or the set is dropped)
                     items.extend((var, t) for t in self.chip_targets(node, position, var, len(sources)))
+                elif var.walker:  # burn at one of their planeswalkers
+                    items.extend((var, self.walker_body(*w)) for w in node.walkers)
                 elif var.reach is not None:  # no killable target: hold it
                     spare = len(sources) - var.mana_value
                     aims = self.targets(var.reach, theirs, their_tapped, node.ours, spare)
@@ -1560,7 +1658,9 @@ class Moves:
                         for b in range(a + 1, size)
                     ):
                         continue
-                    hit = [t["instance_id"] for v, t in choice if t is not None and not v.chip]
+                    hit = [t["instance_id"] for v, t in choice if t is not None and not (v.chip or v.walker)]
+                    if any(v.walker for v, _ in choice) and self._spare_walker_burn(choice):
+                        continue
                     if any(v.chip for v, _ in choice):
                         pieces = self._pieces(choice, need)
                         if pieces is None:
@@ -1578,6 +1678,17 @@ class Moves:
         scored.sort(key=lambda item: (-round(item[1], 6), -item[2], self.choice_text(item[0])))
         result = self._cast_memo[key] = [item[0] for item in scored]
         return result
+
+    @staticmethod
+    def _spare_walker_burn(choice) -> bool:
+        """Burn at a planeswalker that its loyalty doesn't need (it dies without that spell)."""
+        aimed: dict[int, list[int]] = {}
+        loyal: dict[int, int] = {}
+        for var, target in choice:
+            if var.walker and target is not None:
+                aimed.setdefault(target["instance_id"], []).append(var.walker)
+                loyal[target["instance_id"]] = target["loyalty"]
+        return any(sum(d) - min(d) >= loyal[iid] for iid, d in aimed.items())
 
     def _pieces(self, choice, need: dict) -> list | None:
         """The ids a set's chips kill, or None unless every chip target dies and no piece is spare.
@@ -1644,6 +1755,7 @@ class Moves:
         mid.attack_first = node.k == 0 and self.our_turn and self.model.t_casts_post_combat
         mid.applied = False
         mid.modes, mid.targets, mid.cycles, mid.cast_names = [], [], [], []
+        mid.walkers = {iid: (name, loyal) for iid, name, loyal in node.walkers}
         mid.keys = self.play_keys(land, casts)
         if not mid.attack_first:
             self._apply_casts(mid)
@@ -1666,7 +1778,7 @@ class Moves:
             mid.cast_names.append(hs.name)
             if var.mode_text:
                 mid.modes.append((hs.name, var.mode_text))
-            if var.aim:
+            if var.aim and not var.walker:  # (a planeswalker target is named below)
                 mid.targets.append((hs.name, var.aim))
             mid.our_life -= var.loss
             mid.opp_life -= var.face
@@ -1682,7 +1794,16 @@ class Moves:
             for body in ([var.body] if var.body is not None else []) + made:
                 mid.ours.append(body)
                 mid.entered[body["instance_id"]] = mid.node.abs_turn
-            if target is not None and var.chip and any(b is target for b in mid.theirs):
+            if target is not None and var.walker:  # burn at one of their planeswalkers
+                iid = target["instance_id"]
+                if iid in mid.walkers:
+                    name, loyal = mid.walkers[iid]
+                    mid.targets.append((hs.name, name))
+                    if loyal - var.walker > 0:
+                        mid.walkers[iid] = (name, loyal - var.walker)
+                    else:
+                        del mid.walkers[iid]
+            elif target is not None and var.chip and any(b is target for b in mid.theirs):
                 iid = target["instance_id"]
                 chipped[iid] = chipped.get(iid, self.marked(target, mid.node)) + var.chip
                 mid.targets.append((hs.name, target["name"]))
@@ -1747,7 +1868,32 @@ class Moves:
             if ids not in seen and (ids or name == "none"):
                 seen.add(ids)
                 out.append((name, ids))
+        out += self._walker_attacks(mid, [a for a in able if a["instance_id"] not in dead], air)
         return out, True
+
+    def _walker_attacks(self, mid: Mid, survivors: list[dict], air: bool) -> list[tuple[str, tuple]]:
+        """For each planeswalker of theirs (the two with most loyalty), the survivors' attack with
+        the fewest of them (evasive first, then the smallest) that can finish it sent at it, the
+        rest at the player: ("at:<walker id>:<attacker ids>", all survivor ids)."""
+        if not mid.walkers or not survivors:
+            return []
+        order = sorted(
+            survivors,
+            key=lambda a: (not (a["_unblockable"] or (_flying(a) and not air)), a["power"], a["instance_id"]),
+        )
+        out = []
+        walkers = sorted(mid.walkers.items(), key=lambda item: (-item[1][1], item[0]))
+        for iid, (_walker, loyal) in walkers[:2]:
+            sent, power = [], 0
+            for attacker in order:
+                if power >= loyal:
+                    break
+                if attacker["power"] > 0:
+                    sent.append(attacker["instance_id"])
+                    power += attacker["power"]
+            if power >= loyal:
+                out.append((f"at:{iid}:{','.join(str(i) for i in sorted(sent))}", ids_of(survivors)))
+        return out
 
     def finish(self, mid: Mid, attack: tuple[str, tuple], *, greedy: bool = False) -> Node:
         """Our attack (and casts after it), then their attack: the next node or a terminal one."""
@@ -1757,6 +1903,12 @@ class Moves:
         ids = attack[1]
         attackers = [b for b in mid.ours if b["instance_id"] in ids]
         opp_after = None
+        # "at:<walker>:<attackers>": those attackers go at one of their planeswalkers.
+        at: dict[int, int] = {}
+        if attack[0].startswith("at:"):
+            _at, walker, sent = attack[0].split(":", 2)
+            at = {int(i): int(walker) for i in sent.split(",") if i}
+        at_walkers: list[tuple[str, str]] = []
         if attackers:
             # Attack triggers that ping the opponent (Hired Claw) resolve before blocks.
             if attack[0] != "declared":
@@ -1766,9 +1918,31 @@ class Moves:
             if attack[0] == "declared" and self.model.step == "Step_FirstStrikeDamage":
                 # Their life already shows our first-strike damage: only the regular part is left.
                 fighting, tag = _regular_damage_part(attackers), "fs"
-            damage, dead_ours, dead_theirs, gained, healed = self.combat_life(
-                fighting, blockers, mid.opp_life, tag=tag
-            )
+            walker_id = next(iter(at.values()), None)
+            if walker_id in mid.walkers:
+                # Their blockers protect the planeswalker first (its loyalty is the "life" they
+                # defend), then the player with the blockers left over.
+                name, loyal = mid.walkers[walker_id]
+                sent = [b for b in fighting if b["instance_id"] in at]
+                hit, w_dead_ours, w_dead_theirs, w_gained, w_healed, _t, used = self.combat_detail(
+                    sent, blockers, loyal, tag=tag + "walker"
+                )
+                rest = [b for b in fighting if b["instance_id"] not in at]
+                spare = [b for b in blockers if b["instance_id"] not in used]
+                damage, dead_ours, dead_theirs, gained, healed = self.combat_life(
+                    rest, spare, mid.opp_life, tag=tag
+                )
+                dead_ours, dead_theirs = dead_ours | w_dead_ours, dead_theirs | w_dead_theirs
+                gained, healed = gained + w_gained, healed + w_healed
+                at_walkers = [(b["name"], name) for b in sent]
+                if loyal - hit > 0:
+                    mid.walkers[walker_id] = (name, loyal - hit)
+                else:
+                    del mid.walkers[walker_id]
+            else:
+                damage, dead_ours, dead_theirs, gained, healed = self.combat_life(
+                    fighting, blockers, mid.opp_life, tag=tag
+                )
             # Lifelink on both sides lands with the combat damage: the net change decides lethal.
             mid.opp_life -= damage - healed
             mid.our_life += gained
@@ -1804,6 +1978,8 @@ class Moves:
             "keys": frozenset(mid.keys | {("attack", frozenset(ids)) if ids else ("noattack",)}),
             "plays": (mid.land, tuple(mid.casts), ids),
             "post_combat": post_combat,
+            "at_walkers": tuple(sorted(at_walkers)),
+            "walker_attack": attack[0] if at else "",
         }
         carry = {
             "our_life": mid.our_life,
@@ -1814,6 +1990,7 @@ class Moves:
             "lands": tuple(mid.lands),
             "played": tuple(mid.played),
             "rocks": tuple(mid.rocks),
+            "walkers": tuple((iid, name, loyal) for iid, (name, loyal) in sorted(mid.walkers.items())),
         }
         if mid.opp_life <= 0:
             return dataclasses.replace(
@@ -1851,10 +2028,11 @@ class Moves:
                 node, **{**carry, "our_life": hit["life"], "opp_life": hit["opp_life"]}, history=history,
                 attacks=attacks, dead_at=attacks, dead_turn=node.abs_turn + 1, overkill=-hit["life"],
             )  # fmt: skip
-        # Their lifelink attackers (and our lifelink blockers) changed both life totals.
+        # Their lifelink attackers (and our lifelink blockers) changed both life totals; each of
+        # their planeswalkers used a plus ability (paranoid: +1 loyalty a turn).
         carry.update(
             our_life=hit["life"], opp_life=hit["opp_life"], ours=tuple(hit["ours"]), theirs=tuple(hit["theirs"]),
-            hand=hit["hand"],
+            hand=hit["hand"], walkers=tuple((iid, name, loyal + 1) for iid, name, loyal in carry["walkers"]),
         )  # fmt: skip
         return dataclasses.replace(
             node,
@@ -1936,8 +2114,11 @@ class Moves:
             if pings is None:
                 pings = self._ping_memo[id(body)] = attack_pings(body.get("_card") or body)
             for amount, who in pings:
-                if who == "any" or (who == "self" and any(a is body for a in attackers)) or who not in ("any", "self") and any(self._is_kind(a, who) for a in attackers):
-                    total += amount
+                if who == "self":
+                    met = any(a is body for a in attackers)
+                else:
+                    met = who == "any" or any(self._is_kind(a, who) for a in attackers)
+                total += amount if met else 0
         return total
 
     @staticmethod
@@ -2218,6 +2399,7 @@ class Moves:
             played=(),
             rocks=(),
             returning=tuple(returning),
+            walkers=self.walkers0,
         )
 
     def roots(self) -> list[tuple[str, Node]]:
