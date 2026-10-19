@@ -1170,6 +1170,23 @@ def shrink_note(state: dict, card: dict, *, activation: bool, metadata: dict | N
     return f"  [-X/-{reach[1]} until end of turn kills nothing now (toughness {survivors}); {when}]"
 
 
+def pump_before_blocks_wasted(card: dict, state: dict, metadata: dict | None = None) -> str:
+    """Withhold an attacking creature's self-pump before blocks while it is still eaten (#78).
+
+    ``combat_strategy.pump_before_blocks_wasted`` judges the offered ability's effect.
+    """
+    cost, effect = _offered_ability(card, metadata)
+    if not effect:
+        return ""
+    from arenamcp.combat_strategy import pump_before_blocks_wasted as wasted
+
+    try:
+        return wasted(state, card, effect, cost)
+    except Exception as error:  # a safety rule never blocks a play on its own failure
+        logger.debug("pump-before-blocks rule failed: %s", error)
+        return ""
+
+
 def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict | None = None) -> str:
     """Return a reason to withhold a play, not a claim of full MTG legality."""
     action_type = action_type.removeprefix("ActionType_").lower()
@@ -1202,6 +1219,7 @@ def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict
             temporary_shrink_wasted(card, state, activation=True, metadata=metadata)
             or castable_discard_for_minor_effect(card, state, metadata)
             or pointless_self_animation(state, card, metadata)
+            or pump_before_blocks_wasted(card, state, metadata)
         )
     if action_type != "cast" or _tutor_requirement(card) is None:
         return ""
