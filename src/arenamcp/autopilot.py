@@ -2994,8 +2994,21 @@ class AutopilotEngine(
                     # No Auto Pay (an X spell taking every source, 2026-10-18
                     # 21:40): pay one mana source per round as Arena's bot does;
                     # the server's next PayCostsReq asks for what is left.
-                    from arenamcp.mana_payment import choose_payment_source
+                    from arenamcp.mana_payment import choose_payment_source, payment_shortfall
 
+                    # Arena's own Auto Pay solution says the cost is payable.
+                    shortfall = "" if pay_context.get("has_autotap") else payment_shortfall(pay_context)
+                    if shortfall:
+                        logger.info(
+                            "Autopilot: %s's %s cannot be paid (%s); cancelling PayCostsRequest",
+                            pay_context.get("source_card") or "the pending cost",
+                            pay_context.get("mana_cost") or "cost",
+                            shortfall,
+                        )
+                        if self._cancel_unpayable_costs(
+                            game_state, trigger, f"PayCosts cancelled ({shortfall})"
+                        ):
+                            return True
                     step = choose_payment_source(pay_context)
                     if step and self._progress_bridge(game_state).submit_payment_action(
                         step["instance_id"], step["ability_grp_id"], step["color"]

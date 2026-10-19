@@ -15,6 +15,39 @@ from typing import Any
 COLORED = ("W", "U", "B", "R", "G", "C")
 
 
+def payment_shortfall(context: dict[str, Any]) -> str:
+    """Why the offered sources cannot pay the whole cost, '' when they can or it is unknown.
+
+    Tapping one source of a cost that can never be completed only ends in a
+    cancel (2026-10-19 11:17:34: Slickshot Show-Off's plot {1}{R} with one
+    Mountain offered); cancel at once instead.
+    """
+    if not context.get("requirements_modeled", False) or context.get("has_effect_cost"):
+        return ""
+    try:
+        requirements = context.get("mana_requirements") or {}
+        needs = {color: int(count) for color, count in requirements.items() if count}
+        pool = int(context.get("pool_mana_count") or 0)
+        sources = {
+            source["instance_id"]: source
+            for source in context.get("payment_sources") or []
+            if isinstance(source, dict) and source.get("instance_id")
+        }
+        supply = sum(int(source.get("amount") or 1) for source in sources.values()) + pool
+    except (TypeError, ValueError):
+        return ""
+    if not sources or any(not source.get("colors") for source in sources.values()):
+        return ""  # what a source makes is unknown: leave it to the payment steps
+    owed = sum(needs.values())
+    if owed and supply < owed:
+        return f"{supply} mana offered for a cost of {owed}"
+    if not pool:
+        for color in COLORED:
+            if needs.get(color) and not any(color in (s.get("colors") or ()) for s in sources.values()):
+                return f"nothing offered makes {color}"
+    return ""
+
+
 def choose_payment_source(context: dict[str, Any]) -> dict[str, Any] | None:
     """{"instance_id", "ability_grp_id", "color"} for the next mana ability to
     activate, or None when the cost cannot be planned safely.
