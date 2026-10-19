@@ -89,8 +89,8 @@ _ONE_SIDED = re.compile(
     r"(?: (?:your opponents control|you don't control|an opponent controls))?"
 )
 _HITS_OURS = re.compile(
-    r"\beach (?:other )?creature\b"
-    r"(?! (?:your opponents control|you don't control|an opponent controls|they control|that player controls))"
+    r"\beach (?:other )?creature\b(?! (?:your opponents control|you don't control|an opponent controls"
+    r"|they control|that player controls))"
 )
 
 

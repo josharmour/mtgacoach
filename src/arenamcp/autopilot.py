@@ -807,7 +807,10 @@ class AutopilotEngine(
                 logger.info("Self-cancel guard: nothing withheld for the cancelled %s (%s)", why, missing)
                 return
             logger.info(
-                "Self-cancel guard: %s; the cancelled %s belongs to our spell %r on the stack", missing, why, spell
+                "Self-cancel guard: %s; the cancelled %s belongs to our spell %r on the stack",
+                missing,
+                why,
+                spell,
             )
             note = (time.monotonic(), self._turn_number(game_state), "ActionType_Cast", 0, 0, spell)
         noted_at, turn, kind, instance_id, ability_id, name = note
@@ -818,7 +821,8 @@ class AutopilotEngine(
             parent = 0
         if kind == "ActionType_Activate" and parent and instance_id and parent != instance_id:
             logger.info(
-                "Self-cancel guard: the cancelled %s belonged to another source (%s), not to the activation of %r",
+                "Self-cancel guard: the cancelled %s belonged to another source (%s), "
+                "not to the activation of %r",
                 why,
                 parent,
                 name or instance_id,
@@ -4672,6 +4676,67 @@ class AutopilotEngine(
         logger.info("typed-decision: log still behind the bridge (gameStateId %s < %s); yielding", have, want)
         return None
 
+    def _clock_wrap_up(self, game_state: dict[str, Any]) -> str:
+        """Why this turn of ours must wrap up now (Arena's clock), or "" (decision_clock.wrap_up_reason)."""
+        from arenamcp.decision_clock import wrap_up_reason
+
+        turn = game_state.get("turn") or {}
+        seat = game_state.get("local_seat_id") or next(
+            (p.get("seat_id") for p in game_state.get("players") or [] if p.get("is_local")), None
+        )
+        try:
+            return wrap_up_reason(
+                game_state.get("timer_state"),
+                seat,
+                self._turn_number(game_state),
+                turn.get("active_player"),
+            )
+        except Exception as error:
+            logger.debug("clock wrap-up check failed: %s", error, exc_info=True)
+            return ""
+
+    def _wrap_up_with_pass(
+        self, decision: Any, fp: Any, game_state: dict[str, Any], poll: dict[str, Any], trigger: str
+    ) -> bool:
+        """Out of time on our turn: pass priority now instead of starting another play.
+
+        2026-10-19 (match 115944ce T8, #66): a cast/cancel loop spent the turn
+        clock; Arena's timeout came at 11:14:00 and its AI took our seat over
+        at 11:14:30, cancelling the pending cast and passing Main 1. The
+        autopilot kept recasting the spell till then (and once more in Main 2
+        after a restart). Once Arena has charged a timeout this turn or our
+        rope is down to decision_clock.WRAP_UP_REMAINING_S, a priority window
+        is answered with a pass, no model call: nothing optional is started or
+        recast, combat comes next (its attack is planned as usual) or the turn
+        ends. Returns True when the pass was submitted.
+        """
+        reason = self._clock_wrap_up(game_state)
+        if not reason or decision.find("pass") is None:
+            return False
+        from arenamcp.decisions import submit_option
+        from arenamcp.request_tracker import request_window
+
+        turn = self._turn_number(game_state)
+        if getattr(self, "_wrap_up_announced_turn", None) != turn:
+            self._wrap_up_announced_turn = turn
+            logger.warning(
+                "[CLOCK] wrap-up on turn %d: %s — no more optional plays; passing priority", turn, reason
+            )
+            self._notify("AUTOPILOT", "Running out of time on this turn — passing on")
+        else:
+            logger.info("[CLOCK] wrap-up (%s): passing priority", reason)
+        if not submit_option(self._progress_bridge(game_state, poll=poll), decision, ["pass"]):
+            logger.info("[CLOCK] wrap-up: the pass was not accepted; planning the window as usual")
+            return False
+        self._request_tracker.note_submitted(fp, request_window(game_state))
+        self._last_typed_play = None
+        self._log_execution_path(ExecutionPath.GRE_AWARE, f"clock wrap-up: passed priority ({reason})")
+        self._record_autopilot_decision(
+            game_state, trigger, action_type="pass", summary=f"clock wrap-up: passed ({reason})"
+        )
+        self._state = AutopilotState.IDLE
+        return True
+
     @staticmethod
     def _untargeted_mode_for_no_kill(
         decision: Any, game_state: dict[str, Any], option_ids: list[str]
@@ -4833,6 +4898,11 @@ class AutopilotEngine(
                 decision.request_type,
             )
             self._state = AutopilotState.IDLE
+            return True
+
+        if decision.request_type == "ActionsAvailable" and self._wrap_up_with_pass(
+            decision, fp, game_state, poll, trigger
+        ):
             return True
 
         # Typed priority/target/search decisions must receive the same evolving

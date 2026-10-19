@@ -104,10 +104,22 @@ def modes_poll(gsid=191):
         "game_state_id": gsid,
         "can_cancel": True,
         "actions": [
-            {"actionType": "CastingTimeOption", "choiceKind": "modal", "label": "Mode 1", "childIndex": 0,
-             "optionIndex": 0, "grpId": 87912},
-            {"actionType": "CastingTimeOption", "choiceKind": "modal", "label": "Mode 2", "childIndex": 0,
-             "optionIndex": 1, "grpId": 21773},
+            {
+                "actionType": "CastingTimeOption",
+                "choiceKind": "modal",
+                "label": "Mode 1",
+                "childIndex": 0,
+                "optionIndex": 0,
+                "grpId": 87912,
+            },
+            {
+                "actionType": "CastingTimeOption",
+                "choiceKind": "modal",
+                "label": "Mode 2",
+                "childIndex": 0,
+                "optionIndex": 1,
+                "grpId": 21773,
+            },
         ],
     }
 
@@ -131,16 +143,19 @@ def targets_poll(gsid=192):
     }
 
 
-@pytest.fixture
-def iroh_engine(monkeypatch):
+def make_iroh_engine(monkeypatch):
     """The live loop: cast Iroh's, choose mode 2, decline its target (no card text, so no mode switch)."""
     import arenamcp.card_db as card_db
     import arenamcp.decisions as decisions
 
     monkeypatch.setattr(
-        decisions, "_default_card_resolver", lambda grp: {"name": "Iroh's Demonstration"} if grp == IROH_GRP else {}
+        decisions,
+        "_default_card_resolver",
+        lambda grp: {"name": "Iroh's Demonstration"} if grp == IROH_GRP else {},
     )
-    monkeypatch.setattr(card_db, "get_card_database", lambda: SimpleNamespace(get_ability_text=lambda grp: None))
+    monkeypatch.setattr(
+        card_db, "get_card_database", lambda: SimpleNamespace(get_ability_text=lambda grp: None)
+    )
     planner = MagicMock()
 
     def plan(decision, state):
@@ -158,6 +173,11 @@ def iroh_engine(monkeypatch):
     engine._request_tracker.may_submit.return_value = True
     engine._request_tracker.exhausted.return_value = False
     return engine, bridge, planner
+
+
+@pytest.fixture
+def iroh_engine(monkeypatch):
+    return make_iroh_engine(monkeypatch)
 
 
 def trigger(engine, state):
@@ -208,7 +228,9 @@ def test_the_first_self_cancel_withholds_the_cast_after_a_longer_game(iroh_engin
     trigger(engine, board_state(stack=True, source=IROH_STACK))  # 11:13:01 SelectTargets trigger
     bridge.get_pending_actions.return_value = targets_poll()
     with caplog.at_level(logging.INFO, logger="arenamcp.autopilot"):
-        assert engine._try_typed_decision_path(board_state(stack=True, source=IROH_STACK), "decision_required")
+        assert engine._try_typed_decision_path(
+            board_state(stack=True, source=IROH_STACK), "decision_required"
+        )
     bridge.cancel_action.assert_called_once()
     assert "withholding it for the rest of turn 8" in caplog.text
 
@@ -229,7 +251,9 @@ def test_a_cancel_with_no_record_withholds_our_spell_on_the_stack(iroh_engine, c
     with caplog.at_level(logging.INFO, logger="arenamcp.autopilot"):
         engine._withhold_after_self_cancel(state, "SelectTargets cancelled")
     assert "no cast or activation of ours is on record" in caplog.text
-    assert engine._self_cancel_withheld(board_state(), "ActionType_Cast", IROH_HAND, 0, "iroh's demonstration")
+    assert engine._self_cancel_withheld(
+        board_state(), "ActionType_Cast", IROH_HAND, 0, "iroh's demonstration"
+    )
 
 
 def test_every_silent_return_says_why(iroh_engine, caplog):
@@ -237,9 +261,23 @@ def test_every_silent_return_says_why(iroh_engine, caplog):
     no_source = board_state()
     with caplog.at_level(logging.INFO, logger="arenamcp.autopilot"):
         engine._withhold_after_self_cancel(no_source, "SelectTargets cancelled")
-        engine._last_typed_play = (time.monotonic() - 60, 8, "ActionType_Cast", IROH_HAND, 0, "iroh's demonstration")
+        engine._last_typed_play = (
+            time.monotonic() - 60,
+            8,
+            "ActionType_Cast",
+            IROH_HAND,
+            0,
+            "iroh's demonstration",
+        )
         engine._withhold_after_self_cancel(no_source, "SelectTargets cancelled")
-        engine._last_typed_play = (time.monotonic(), 7, "ActionType_Cast", IROH_HAND, 0, "iroh's demonstration")
+        engine._last_typed_play = (
+            time.monotonic(),
+            7,
+            "ActionType_Cast",
+            IROH_HAND,
+            0,
+            "iroh's demonstration",
+        )
         engine._withhold_after_self_cancel(no_source, "SelectTargets cancelled")
     messages = [r.getMessage() for r in caplog.records if "Self-cancel guard" in r.getMessage()]
     assert len(messages) == 3

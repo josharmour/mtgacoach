@@ -20,6 +20,14 @@ describes the request that was pending when it arrived: callers pass
 The wall-clock time a reading was made comes from the event's own
 ``timestamp`` (ms), so a log read late (startup catch-up) is not mistaken
 for a fresh clock.
+
+GameStateMessages carry the same timers (``timers``, each with its
+``timerId``; ``players[].timerIds`` says whose) whenever one changes —
+started, stopped, extended — so between TimerStateMessages the clock is still
+in the log: a turn spent on a cast/cancel loop (2026-10-19 11:12:52-11:14:00)
+sent no TimerStateMessage at all, but every GameStateMessage reported our
+ActivePlayer timer running. gamestate merges both per timer
+(:func:`seat_entry`); :func:`wrap_up_reason` reads our turn's rope from it.
 """
 
 from __future__ import annotations
@@ -77,27 +85,57 @@ def timer_entry(timer_msg: dict[str, Any], received_at: float) -> tuple[int, dic
     timers = [timer for timer in timers if isinstance(timer, dict)]
     if not any("durationSec" in timer for timer in timers):
         return None
-    running = []
-    for timer in timers:
-        if not timer.get("running") or timer.get("behavior") not in _DEADLINE_BEHAVIORS:
+    return seat, seat_entry([(timer, received_at) for timer in timers], received_at)
+
+
+# The rope: the active player's turn budget and the other player's response
+# budget. Arena adds time to them as the player acts (61 s + 7 s per action
+# seen 2026-10-19); their TakeControl expiry is a TimeoutMessage.
+_ROPE_TYPES = ("TimerType_ActivePlayer", "TimerType_NonActivePlayer")
+
+
+def seat_entry(timers: list[tuple], received_at: float) -> dict[str, Any]:
+    """The ``timer_state`` entry for one seat from its latest report of each timer.
+
+    Each timer comes as ``(timer, reported_at[, turn])`` (a GameStateMessage
+    reports only the timers that changed); a running one has run on since, so
+    every remaining time is as of ``received_at``. Besides the soonest running
+    deadline (the legacy keys), ``rope_s`` / ``rope_running`` / ``rope_turn``
+    give each rope timer's time left, paused or not, and the turn it was read
+    in (a turn's first request comes before Arena resets the rope).
+    """
+    running, rope, rope_running, rope_turn = [], {}, {}, {}
+    for report in timers:
+        timer, at = report[0], report[1]
+        turn = report[2] if len(report) > 2 else None
+        if timer.get("behavior") not in _DEADLINE_BEHAVIORS:
             continue
         duration = _seconds(timer, "durationMs", "durationSec")
         if duration <= 0:
             continue
-        running.append(
-            {
-                "type": str(timer.get("type") or ""),
-                "behavior": str(timer.get("behavior") or ""),
-                "remaining_s": max(0.0, duration - _seconds(timer, "elapsedMs", "elapsedSec")),
-            }
-        )
+        remaining = duration - _seconds(timer, "elapsedMs", "elapsedSec")
+        if timer.get("running"):
+            remaining -= max(0.0, float(received_at) - float(at))
+        remaining = max(0.0, remaining)
+        kind = str(timer.get("type") or "")
+        if kind in _ROPE_TYPES:
+            rope[kind] = remaining
+            rope_running[kind] = bool(timer.get("running"))
+            rope_turn[kind] = turn
+        if timer.get("running"):
+            running.append(
+                {"type": kind, "behavior": str(timer.get("behavior") or ""), "remaining_s": remaining}
+            )
     soonest = min(running, key=lambda timer: timer["remaining_s"]) if running else None
-    return seat, {
+    return {
         "time_remaining_ms": int(soonest["remaining_s"] * 1000) if soonest else 0,
         "timer_type": soonest["type"] if soonest else "",
         "behavior": soonest["behavior"] if soonest else "",
         "is_ticking": bool(running),
         "running": running,
+        "rope_s": rope,
+        "rope_running": rope_running,
+        "rope_turn": rope_turn,
         "received_at": float(received_at),
     }
 
@@ -154,3 +192,54 @@ def seconds_remaining(
     except (TypeError, ValueError):
         return None
     return remaining - max(0.0, now - received)
+
+
+# Our turn's rope this low: stop starting optional plays (each costs a model
+# call or several) and move on to the attack / the pass. The decision
+# watchdog's CLOCK_MARGIN_S takes over at the same mark for an unanswered
+# request.
+WRAP_UP_REMAINING_S = 20.0
+
+
+def wrap_up_reason(
+    timer_state: dict[Any, Any] | None,
+    seat: int | None,
+    turn: int,
+    active_player: int | None,
+    *,
+    now: float | None = None,
+    threshold: float = WRAP_UP_REMAINING_S,
+) -> str:
+    """Why this turn of ours must wrap up now, or "".
+
+    2026-10-19 (match 115944ce T8, #66): a cast/cancel loop spent the whole
+    turn clock — Arena's TimeoutMessage for our seat at 11:14:00 used up a
+    banked timeout, and 30 s later Arena's AI took our seat over, cancelled
+    the pending cast and passed Main 1. The clock was in the log all along
+    (GameStateMessage timers: ActivePlayer 75 s, 56 s elapsed at 11:13:41)
+    but only a TimeoutMessage was ever logged.
+
+    Wrap up once Arena has reported a timeout for our seat this turn, or when
+    our turn's rope (read this turn) is down to ``threshold`` seconds.
+    """
+    if not timer_state or not seat or not turn:
+        return ""
+    entry = timer_state.get(seat)
+    if entry is None:
+        entry = timer_state.get(str(seat))
+    if not isinstance(entry, dict):
+        return ""
+    if entry.get("timed_out_turn") == turn:
+        return "Arena's turn timer already ran out on us this turn"
+    if active_player != seat or (entry.get("rope_turn") or {}).get("TimerType_ActivePlayer") != turn:
+        return ""
+    rope = (entry.get("rope_s") or {}).get("TimerType_ActivePlayer")
+    if not isinstance(rope, (int, float)):
+        return ""
+    if (entry.get("rope_running") or {}).get("TimerType_ActivePlayer"):
+        now = time.time() if now is None else now
+        received = entry.get("received_at")
+        rope -= max(0.0, now - (now if received is None else float(received)))
+    if rope > threshold:
+        return ""
+    return f"{max(0.0, rope):.0f}s left on our turn clock"
