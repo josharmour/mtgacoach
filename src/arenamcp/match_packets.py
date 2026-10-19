@@ -1,8 +1,8 @@
-"""Match packet recorder: records gameplay trajectories for self-improvement.
+"""Match packet recorder: the decisions the autopilot made in a match.
 
 Every match's decision sequence (PendingDecisions + chosen actions + outcomes)
-is recorded to ~/.arenamcp/match_packets/ for post-match judge scoring and
-DPO pair generation.
+is recorded to ~/.arenamcp/match_packets/ for the post-match review
+(match_review), bug reports and the uploaded match bundle.
 """
 
 from __future__ import annotations
@@ -139,7 +139,7 @@ class MatchPacket:
         Typed decisions go through add_decision; executor actions were
         invisible before this — match 1 on 2026-07-05 saved decisions=0
         despite 8 successful bridge submissions, gutting the packet's value
-        as training/telemetry data (P0-9).
+        as telemetry (P0-9).
         """
         self.decisions.append(
             {

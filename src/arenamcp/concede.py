@@ -1074,8 +1074,9 @@ class ConcedeController:
     (``_emit_lock``) is held across every state change and the event that
     reports it, so the desktop always sees a countdown's events in order.
 
-    A countdown first speaks its offer (``announce`` blocks until it has been
-    heard) and only then starts counting: "offering" -> "armed" ->
+    A countdown first shows and starts speaking its offer (``announce``; the
+    coach no longer waits for it to be heard, 2026-10-10) and then counts:
+    "offering" -> "armed" ->
     "conceding" -> "sent" -> "conceded" (or "cancelled" / "aborted" /
     "failed" / "unconfirmed").
     """
@@ -1447,7 +1448,7 @@ class ConcedeController:
     # -- the countdown thread -------------------------------------------------------
 
     def _announce(self, armed: _Armed) -> bool:
-        """Show and speak the offer; True once heard (or when nothing is spoken)."""
+        """Show and start speaking the offer; False if that failed or a cancel came in (only logged)."""
         if self._announce_fn is None:
             self._advise(armed.text, armed.record_state)
             return True

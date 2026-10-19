@@ -34,7 +34,7 @@ _seen_rules: tuple[Any, list[int]] = (None, [])
 
 
 def reset_seen_rules() -> None:
-    """Forget which cards' rules have been quoted (tests, and a new match)."""
+    """Forget which cards' rules have been quoted (a test hook: a new match id resets it anyway)."""
     global _seen_rules
     with _seen_lock:
         _seen_rules = (None, [])
