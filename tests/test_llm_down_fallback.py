@@ -10,7 +10,8 @@ land, otherwise pass"). These tests pin the replacement:
   pass while that line casts something (opponent's turn: still pass);
 - attacks: ``combat_strategy.combat_choice`` with the all-in and
   losing-attack guards; blocks keep ``safe_default_blocks``;
-- targets / modes keep their safe classifiers (never our own permanent);
+- targets keep their safe classifiers (never our own permanent); a casting
+  choice finishes the cast (Done, else the first legal mode: ledger #121);
 - with the circuit breaker open no model call is made at all, and a model
   failure never escalates the planner budget.
 
@@ -325,7 +326,10 @@ def test_targets_and_modes_keep_their_safe_classifiers_while_down():
         (DecisionOption("idx:0", "Mode one", meta={"choiceKind": "modal", "childIndex": 0}),),
         can_cancel=True,
     )
-    assert planner.plan_decision_options(modes, {}) == [DECLINE_DECISION]
+    # A required mode of a spell we are casting: its first legal mode, never a cancel of
+    # our own cast (ledger #121: Burst Lightning's kicker step cancelled every outage turn).
+    # The target step after it keeps the safe classifier above.
+    assert planner.plan_decision_options(modes, {}) == ["idx:0"]
     assert backend.calls == []
 
 

@@ -599,6 +599,8 @@ class PipeAdapter:
                     target=self._handle_debug_report,
                     args=(screenshots,),
                     daemon=True,
+                    # An automatic engine reload waits for it (standalone_auto_reload.py).
+                    name="debug-report",
                 ).start()
             elif action == "read_win_plan":
                 coach._on_read_win_plan()
@@ -621,7 +623,7 @@ class PipeAdapter:
                     "user_feedback": msg,
                 }
                 threading.Thread(
-                    target=self._handle_bugreport, args=(msg, extra_context), daemon=True
+                    target=self._handle_bugreport, args=(msg, extra_context), daemon=True, name="bug-report"
                 ).start()
             elif action == "subscribe":
                 threading.Thread(target=self._handle_subscribe, daemon=True).start()

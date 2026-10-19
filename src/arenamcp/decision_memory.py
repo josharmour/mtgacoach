@@ -606,6 +606,13 @@ def _reachable(burn: Burn, target: dict, state: dict, mana: int) -> list[int]:
     return [damage for need, damage in burn.variants if need + tax <= mana]
 
 
+def _doomed(state: dict, source: dict | None = None) -> frozenset:
+    """Their creatures our own spells on the stack kill, ``source`` (a stack spell) left out."""
+    from arenamcp.play_safety import doomed_by_our_stack
+
+    return doomed_by_our_stack(state, exclude=(source or {}).get("instance_id"))
+
+
 def burn_kills_nothing(
     oracle: str, state: dict, castable: dict | None = None, *, source: dict | None = None
 ) -> bool:
@@ -625,8 +632,12 @@ def burn_kills_nothing(
     (``source``, its card) may have been kicked, so it always counts there.
     A warded target counts only when the spell's cost plus every ward on it
     fits our mana (ledger #83; Arena takes a spell's cost after its targets,
-    so a spell on the stack still owes it). Together with other burn, see
-    :func:`burn_combo`.
+    so a spell on the stack still owes it). A creature our own pending
+    damage on the stack already kills (:func:`play_safety.doomed_by_our_stack`,
+    ``source`` itself left out) is no kill for it (ledger #122, 17a32d51 T5:
+    Lightning Strike "could kill" the Emberheart our Shock was aimed at, so
+    the #80 hold let it go face at low effort). Together with other burn,
+    see :func:`burn_combo`.
     """
     burn = burn_reach(
         oracle, castable if castable is not None else source, state, check_kicker=castable is not None
@@ -636,7 +647,10 @@ def burn_kills_nothing(
     mana = mana_available(state)
     from arenamcp.combat_strategy import loyalty
 
+    doomed = _doomed(state, source)
     for card in _theirs(state):
+        if card.get("instance_id") in doomed:
+            continue
         types = _types(card)
         if burn.walkers and "planeswalker" in types:
             # Ledger #139 (d9a33232 T4): Shock's 2 at a 3-loyalty Jace killed nothing.
@@ -692,7 +706,8 @@ def burn_combo(
     the window ran at low effort ("burn only goes face"); together, for three
     mana, they kill it. Every spell's cost and the victim's ward for each
     spell count against ``mana`` (default :func:`mana_available`); hexproof
-    or shroud creatures are skipped. ``required`` (a spell on the stack)
+    or shroud creatures are skipped, and so are those our other pending
+    damage already kills (ledger #122). ``required`` (a spell on the stack)
     must be part of the kill. The biggest victim wins, then the fewest
     spells and the least mana; ``victim_id`` limits it to that creature.
     """
@@ -706,9 +721,10 @@ def burn_combo(
     if len(pool) < 2:
         return None
     mana = mana_available(state) if mana is None else mana
+    doomed = _doomed(state, required.card if required is not None else None)
     best: tuple[tuple, BurnCombo] | None = None
     for victim in _theirs(state):
-        if "creature" not in _types(victim):
+        if "creature" not in _types(victim) or victim.get("instance_id") in doomed:
             continue
         if victim_id is not None and victim.get("instance_id") != victim_id:
             continue
@@ -1069,7 +1085,14 @@ def critical_decision(
         return ""
     if request_type == "SelectTargets":
         source_id = None
-        for card in state.get("stack") or []:
+        stack = [card for card in state.get("stack") or [] if isinstance(card, dict)]
+        label = str(getattr(decision, "source_label", "") or "")
+        named = [card for card in stack if label and str(card.get("name") or "") == label]
+        if named:
+            # The request's own spell, by name: the copy whose targets are not chosen yet. Our
+            # Shock already aimed below it is not the spell being aimed (ledger #122).
+            stack = sorted(named, key=lambda card: bool(card.get("targeting")))[:1]
+        for card in stack:
             source_id = card.get("instance_id")
             oracle = str(card.get("oracle_text") or "")
             if _REMOVAL_RE.search(oracle):

@@ -172,7 +172,9 @@ def test_an_exact_tie_goes_to_the_cheaper_pair_of_bodies():
         line for line in result.lines if line.steps[0].casts == (CODIE, NECROMANCER) and line.steps[0].attack
     )
     assert rival.score == best.score  # the exact tie the fallback used to lose
-    # (bodies, colours, mana left): 5 of 6 mana vs all 6, the same colours either way
-    assert _deployment(best)[::2] == (2, 1) and _deployment(rival)[::2] == (2, 0)
-    assert _deployment(best)[1] == _deployment(rival)[1]
+    # (bodies, colours, instants kept, mana left): 5 of 6 mana vs all 6, the same colours and
+    # instants either way
+    best_d, rival_d = _deployment(best), _deployment(rival)
+    assert (best_d[0], best_d[3]) == (2, 1) and (rival_d[0], rival_d[3]) == (2, 0)
+    assert best_d[1:3] == rival_d[1:3]
     assert _order(best) > _order(rival)

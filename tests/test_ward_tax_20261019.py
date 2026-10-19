@@ -248,7 +248,11 @@ def _t8_state(extra_mountains=0, triggers=(320, 321)):
     """10:36:53: the Joke paid with Mountain 281; ward triggers #320 and #321 on the stack."""
     ours = [_land(281, "Mountain", LOCAL, True), _land(291, "Mountain", LOCAL), _land(318, "Mountain", LOCAL)]
     ours += [_land(900 + n, "Mountain", LOCAL) for n in range(extra_mountains)]
-    stack = [_our_spell(319, "Impractical Joke", JOKE_TEXT, 287), *(_ward_trigger(t, 287) for t in triggers)]
+    # Top-first, as Player.log listed it at gsid 177: [321, 320, 319] (ledger #115).
+    stack = [
+        *(_ward_trigger(t, 287) for t in sorted(triggers, reverse=True)),
+        _our_spell(319, "Impractical Joke", JOKE_TEXT, 287),
+    ]
     return _snapshot(8, ours + _theirs(), stack, PAY_COSTS_244)
 
 
@@ -260,7 +264,10 @@ def _t10_state():
         _spider(328, 2, 2, tapped=False, abilities=[141939, 172428], entered=9),
     ]
     theirs[3].update(power=5, toughness=4)  # the +1/+1 counter from Origin of Spider-Man (T9)
-    stack = [_our_spell(332, "Burst Lightning", BURST_TEXT, 328), _ward_trigger(333, 328)]
+    stack = [
+        _ward_trigger(333, 328),
+        _our_spell(332, "Burst Lightning", BURST_TEXT, 328),
+    ]  # gsid 231: [333, 332]
     return _snapshot(10, ours + theirs, stack, PAY_COSTS_318, life=(5, 27))
 
 

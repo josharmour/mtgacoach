@@ -223,7 +223,7 @@ def numeric_option_source(state: dict, decision: Any) -> dict:
     return next(
         (
             card
-            for card in reversed(state.get("stack") or [])
+            for card in state.get("stack") or []  # the topmost first (arenamcp.stack_order)
             if "{X}" in str(card.get("mana_cost") or "").upper()
             and (card.get("controller_seat_id") or card.get("owner_seat_id")) == local
         ),
@@ -625,6 +625,112 @@ def lethal_damage(creature: dict) -> int | None:
         return None
     damage = creature.get("damage") if type(creature.get("damage")) is int else 0
     return max(1, toughness - damage)
+
+
+_EACH_OPPONENT_DAMAGE = re.compile(r"\bdeals (\d+) damage to each opponent\b")
+_ONLY_EACH_OPPONENT = re.compile(r"[^.]*\bdeals \d+ damage to each opponent\.?")
+
+
+class StackDamage:
+    """What our own spells on the stack deal when they resolve (:func:`our_stack_damage`)."""
+
+    __slots__ = ("doomed", "face", "settled")
+
+    def __init__(self, doomed: frozenset = frozenset(), face: int = 0, settled: frozenset = frozenset()):
+        self.doomed = doomed  # instance ids of their creatures the damage kills
+        self.face = face  # damage to the opponent
+        self.settled = settled  # our stack objects whose whole effect the two above count
+
+
+def our_stack_damage(state: dict, *, exclude: Any = None) -> StackDamage:
+    """Their creatures our own pending damage kills, and the damage it deals the opponent.
+
+    2026-10-19 12:54:13 (match 17a32d51 T5, ledger #122): our Shock was on
+    the stack aimed at Emberheart Challenger (2/2) when Lightning Strike was
+    offered; the effort gate and the #80 instant hold still counted the
+    Emberheart as Strike's kill, so Strike went to the face at low effort
+    instead of waiting, and the line search offered Iroh's Demonstration on
+    the already-dying creature. Each of our spells on the stack (``exclude``:
+    the one whose targets are being chosen) is read with
+    :func:`damage_effect` unkicked (a kicked spell only kills more), at the
+    targets it has (``targeting``, the log's TargetSpec or the bridge's
+    TargetIds); damage to one creature from several spells adds up, marked
+    damage counts (:func:`damage_would_kill`). A creature whose ward trigger
+    is still on the stack (the spell may yet be countered), or that a spell
+    or ability of theirs targets (a response may save it), is not counted.
+    Who controls an object and what it targets decide, never its stack position.
+    """
+    local = _local_seat(state)
+    stack = [entry for entry in state.get("stack") or [] if isinstance(entry, dict)]
+    if local is None or not stack:
+        return StackDamage()
+    opponents = {
+        player.get("seat_id")
+        for player in state.get("players") or []
+        if not player.get("is_local") and player.get("seat_id") is not None and player.get("seat_id") != local
+    }
+    theirs = {
+        card.get("instance_id"): card
+        for card in _opposing_creatures(state)
+        if card.get("instance_id") is not None
+    }
+    # Their ward triggers waiting on the stack (the spell they answer may still be countered),
+    # and creatures their own spells or abilities target (a response may save them).
+    contested: set = set()
+    for entry in stack:
+        if (entry.get("controller_seat_id") or entry.get("owner_seat_id")) != local:
+            contested.add(entry.get("parent_instance_id"))
+            contested.update(entry.get("targeting") or ())
+    damage: Counter = Counter()
+    face = 0
+    effects: list[tuple[Any, str, list, bool]] = []  # (object id, scope, its creature targets, whole effect)
+    for entry in stack:
+        if (entry.get("controller_seat_id") or entry.get("owner_seat_id")) != local:
+            continue
+        iid = entry.get("instance_id")
+        if exclude is not None and iid == exclude:
+            continue
+        lines = [line.lower() for line in _rules_lines(entry.get("oracle_text")) if ":" not in line]
+        each_opponent = sum(int(m.group(1)) for line in lines for m in _EACH_OPPONENT_DAMAGE.finditer(line))
+        parsed = damage_effect(entry, kicked=False)
+        if parsed is None:
+            if each_opponent and len(lines) == 1 and _ONLY_EACH_OPPONENT.fullmatch(lines[0]):
+                face += each_opponent  # "deals 3 damage to each opponent." (Boltwave)
+                effects.append((iid, "face", [], True))
+            continue
+        amount, scope = parsed
+        exact = damage_effect(entry, kicked=True) == parsed  # no kicker that could have added damage
+        face += each_opponent
+        if scope == "each":
+            for target in theirs:
+                damage[target] += amount
+            effects.append((iid, scope, list(theirs), exact))
+            continue
+        targets = [target for target in entry.get("targeting") or [] if target is not None]
+        hit = [target for target in targets if target in theirs and target not in contested]
+        for target in hit:
+            damage[target] += amount
+        at_face = [target for target in targets if target in opponents]
+        if scope == "any":
+            face += amount * len(at_face)
+        whole = exact and bool(targets) and len(hit) + len(at_face) == len(targets)
+        effects.append((iid, scope, hit, whole))
+    doomed = frozenset(
+        target for target, amount in damage.items() if damage_would_kill(theirs[target], amount) is True
+    )
+    settled = frozenset(
+        iid for iid, _scope, hit, whole in effects if whole and all(target in doomed for target in hit)
+    )
+    return StackDamage(doomed, face, settled)
+
+
+def doomed_by_our_stack(state: dict, *, exclude: Any = None) -> frozenset:
+    """Instance ids of their creatures our own spells on the stack kill (:func:`our_stack_damage`)."""
+    try:
+        return our_stack_damage(state, exclude=exclude).doomed
+    except Exception as error:  # a reading aid: never break a decision on it
+        logger.debug("stack damage not read: %s", error)
+        return frozenset()
 
 
 def creature_state_facts(creature: dict, *, mine: bool) -> dict[str, Any]:

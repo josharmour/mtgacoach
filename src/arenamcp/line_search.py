@@ -223,16 +223,22 @@ def _unmodelled_mark(line: Line, unmodelled: Collection[str]) -> str:
     return f" ({', '.join(names)} not modelled)" if names else ""
 
 
-def _deployment(line: Line) -> tuple[int, int, int]:
-    """The T step's (creature bodies cast, colours available, mana left unspent): the tie-break behind the score.
+def _deployment(line: Line) -> tuple[int, int, int, int]:
+    """The T step's (creature bodies cast, colours available, instants kept, mana left unspent):
+    the tie-break behind the score.
 
     Two lines with exactly the same outcome class, timing and value differ
     only in what T puts on the board and keeps in reserve: the one that casts
-    more creature bodies, then the one that leaves more mana open (the dearer
-    spell stays castable next turn, the mana answers their turn), wins. Before
-    this (2026-10-08, bug_20261006_185403 T10 with the model down) "Codie +
-    Necromancer" and "Geist + Necromancer" tied at 43.6 and the summary text
-    decided: the 6-mana pair over the 5-mana pair.
+    more creature bodies, then the one that spends fewer instant-speed spells
+    (the same kill with a sorcery keeps the instant for their turn), then the
+    one that leaves more mana open (the dearer spell stays castable next
+    turn, the mana answers their turn), wins. Before this (2026-10-08,
+    bug_20261006_185403 T10 with the model down) "Codie + Necromancer" and
+    "Geist + Necromancer" tied at 43.6 and the summary text decided: the
+    6-mana pair over the 5-mana pair. 2026-10-19 (match 17a32d51 T5, ledger
+    #124): "Shock (on Emberheart Challenger)" and "Iroh's Demonstration (on
+    Emberheart Challenger)" tied to within float noise, and the cheaper Shock
+    led on mana left.
     """
     step = line.steps[0] if line.steps else None
     if step is None or not step.plays:
@@ -240,11 +246,12 @@ def _deployment(line: Line) -> tuple[int, int, int]:
     _land, casts, _ids = step.plays
     bodies = sum(1 for var, _target in casts if var.kind == "cast" and (var.body is not None or var.tokens))
     spent = sum(var.mana_value for var, _target in casts if var.kind == "cast")
+    instants = sum(1 for var, _target in casts if var.kind == "cast" and var.instant and var.body is None)
     # A land drop that adds a colour (more distinct colours among T's sources)
     # beats a repeat of one we have: bug 2026-10-09 07:58 played a fifth
     # Forest over the Mountain and stranded a {U/R} spell on a tie.
     colours = len(set(step.colors) - {"C"})
-    return (bodies, colours, step.mana - spent)
+    return (bodies, colours, -instants, step.mana - spent)
 
 
 def _order(line: Line) -> tuple:
@@ -388,8 +395,42 @@ class _Group:
     line: Line | None = None
 
 
+def _after_our_pending(model: BoardModel) -> BoardModel:
+    """``model`` with our own pending stack damage resolved: the board the search's root starts from.
+
+    2026-10-19 12:54:13 (match 17a32d51 T5, ledger #122): with our Shock on
+    the stack aimed at Emberheart Challenger, the lines still offered Iroh's
+    Demonstration and Lightning Strike "on Emberheart Challenger", a creature
+    already dying. Their creatures the damage kills (``our_stack_doomed``)
+    are gone and its damage to the opponent (``our_stack_face``) is dealt,
+    unless that alone is lethal (the spell ends the game; nothing to plan).
+    Our creature spells on the stack already enter at the root
+    (``our_stack_bodies``). The result has both fields cleared, so resolving
+    it again changes nothing.
+    """
+    doomed, face = model.our_stack_doomed, model.our_stack_face
+    if not doomed and not face:
+        return model
+    face = face if face < model.opp_life else 0
+
+    def alive(bodies):
+        return None if bodies is None else tuple(b for b in bodies if b["instance_id"] not in doomed)
+
+    return dataclasses.replace(
+        model,
+        opp_life=model.opp_life - face,
+        battlefield=tuple(c for c in model.battlefield if _int(c.get("instance_id")) not in doomed),
+        theirs=alive(model.theirs),
+        untapped_theirs=alive(model.untapped_theirs),
+        first_their_attackers=alive(model.first_their_attackers),
+        our_stack_doomed=frozenset(),
+        our_stack_face=0,
+    )
+
+
 class _Search(Moves):
     def __init__(self, model: BoardModel, *, groups: int, width: int, k_next: int, **kwargs: Any) -> None:
+        model = _after_our_pending(model)
         super().__init__(model, **kwargs)
         self.groups, self.width, self.k_next = max(1, groups), max(1, width), max(0, k_next)
         self._race_memo: dict = {}

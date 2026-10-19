@@ -115,11 +115,15 @@ def _driver_possessives(text: str) -> str:
     return re.sub(r"(^|[.!?]\s+)Your(?=\s+[a-z])", r"\1My", text)
 
 
-def action_narration(text: str, *, planned: bool = False) -> str:
+def action_narration(text: str, *, planned: bool = False, rationale: bool = False) -> str:
     """Render validated action labels as driver intent or ongoing submission.
 
     This is not a free-form paraphraser: only verbs at sentence/clause starts
     change. Observations, card names, and target assignments stay intact. Use ``planned=True`` before submission.
+    ``rationale=True`` is for a decision's reasoning, where "resolve" is the
+    spell resolving, not Arena's Resolve button: it stays as written (ledger
+    #119, 12:48:55: "; resolve Burst Lightning for 2" was spoken as
+    "Passing priority Burst Lightning for 2").
     """
 
     def rewrite(match: re.Match[str]) -> str:
@@ -132,8 +136,8 @@ def action_narration(text: str, *, planned: bool = False) -> str:
             phrase = "Taking a mulligan"
         elif lower == "resolve":
             # Arena's Resolve action passes priority; it cannot certify the
-            # spell's eventual resolution or outcome.
-            phrase = "Passing priority"
+            # spell's eventual resolution or outcome. Prose keeps its verb.
+            phrase = verb if rationale else "Passing priority"
         else:
             phrase = _VERBS[lower].capitalize()
         return boundary + phrase
@@ -176,6 +180,6 @@ def submission_narration(action_text: str, reasoning: str = "") -> str:
     if reasoning:
         # A rationale starting with an instruction describes a purpose, not
         # a new unsubmitted action for the listener to perform.
-        reasoning = action_narration(reasoning, planned=True)
+        reasoning = action_narration(reasoning, planned=True, rationale=True)
         result += " " + _driver_possessives(reasoning)
     return result

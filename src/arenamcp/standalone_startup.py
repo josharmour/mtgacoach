@@ -98,6 +98,11 @@ class _StartupMixin:
         concede_record = concede_export() if callable(concede_export) else None
         oops_export = getattr(self, "_oops_export", None)
         oops_record = oops_export() if callable(oops_export) else None
+        # Armed post-match navigation, read before suspending it below.
+        queue_export = getattr(self, "_auto_queue_export", None)
+        queue_record = queue_export() if callable(queue_export) else None
+        reload_export = getattr(self, "_auto_reload_export", None)
+        reload_record = reload_export() if callable(reload_export) else None
         suspend_queue = getattr(self, "_suspend_auto_queue", None)
         if callable(suspend_queue):
             suspend_queue()
@@ -112,6 +117,14 @@ class _StartupMixin:
             with contextlib.suppress(Exception):
                 self._autopilot.on_abort()
         self._startup_status("resuming_match", "Saving current match and strategy before reloading engine…")
+        payload = {
+            "saved_at": time.time(),
+            "autopilot_paused": was_paused,
+            "concede": concede_record,
+            "oops": oops_record,
+            "auto_queue": queue_record,
+            "auto_reload": reload_record,
+        }
         try:
             from arenamcp import server
             from arenamcp.gamestate_persistence import save_match_state
@@ -124,25 +137,28 @@ class _StartupMixin:
                 log_path=str(watcher.log_path) if watcher else None,
             )
             manager = getattr(self._coach, "_game_plan_mgr", None)
-            payload = {
-                "saved_at": time.time(),
-                "match_id": state.get("match_id"),
-                "turn": (state.get("turn") or {}).get("turn_number", 0),
-                "deck_strategy": getattr(self._coach, "_deck_strategy", None),
-                "deck_playbook": self._coach._deck_playbook.export()
-                if getattr(self._coach, "_deck_playbook", None)
-                else None,
-                "game_plan": manager.export_for_reload() if manager else None,
-                "autopilot_paused": was_paused,
-                "concede": concede_record,
-                "oops": oops_record,
-            }
+            payload.update(
+                {
+                    "match_id": state.get("match_id"),
+                    "turn": (state.get("turn") or {}).get("turn_number", 0),
+                    "deck_strategy": getattr(self._coach, "_deck_strategy", None),
+                    "deck_playbook": self._coach._deck_playbook.export()
+                    if getattr(self._coach, "_deck_playbook", None)
+                    else None,
+                    "game_plan": manager.export_for_reload() if manager else None,
+                }
+            )
+        except Exception as exc:
+            logger.warning("Engine reload checkpoint failed; live state will be reacquired: %s", exc)
+        # Written even without the match part: between matches the navigation
+        # record is what lets the new engine requeue.
+        try:
             ENGINE_RESUME_PATH.parent.mkdir(parents=True, exist_ok=True)
             temporary = ENGINE_RESUME_PATH.with_suffix(f".{os.getpid()}.tmp")
             temporary.write_text(json.dumps(payload), encoding="utf-8")
             temporary.replace(ENGINE_RESUME_PATH)
-        except Exception as exc:
-            logger.warning("Engine reload checkpoint failed; live state will be reacquired: %s", exc)
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning("Engine reload checkpoint could not be written: %s", exc)
         emit = getattr(self.ui, "_emit", None)
         if callable(emit):
             emit({"type": "reload_ready"})
@@ -152,11 +168,20 @@ class _StartupMixin:
 
     def _load_engine_resume(self) -> None:
         self._engine_resume = None
+        self._auto_queue_resume = None
         if os.environ.get("ARENAMCP_ENGINE_RELOAD") != "1":
             return
         try:
             data = json.loads(ENGINE_RESUME_PATH.read_text(encoding="utf-8"))
             age = time.time() - data.get("saved_at", 0)
+            if 0 <= age <= 120:
+                # Between matches there is no match part; navigation and the
+                # automatic-reload rate limit still carry over.
+                if isinstance(data.get("auto_queue"), dict):
+                    self._auto_queue_resume = data["auto_queue"]
+                resume_reload = getattr(self, "_auto_reload_resume_from", None)
+                if callable(resume_reload):
+                    resume_reload(data.get("auto_reload"))
             if 0 <= age <= 120 and data.get("match_id"):
                 self._engine_resume = data
                 resume_concede = getattr(self, "_concede_resume_from", None)

@@ -80,6 +80,8 @@ class MainWindow(QMainWindow):
 
         # Session & Controller
         self._session = CoachSession(self)
+        # The engine's own between-matches request takes the button's path.
+        self._session.engineReloadRequested.connect(self._reload_engine)
 
         # Setup & Repair sub-interface
         self.repair_tab = RepairTab()

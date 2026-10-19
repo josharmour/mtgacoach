@@ -277,6 +277,12 @@ def assemble_state(results: list[Any], index: dict[str, int]) -> dict[str, Any]:
             "total_count": _zone_count(result(f"{key}_count")),
             "cards": cards,
         }
+        if key == "stack":
+            # VisibleCards follow insertion order; CardIds is the GRE zone's own
+            # objectInstanceIds, top-first (arenamcp.stack_order).
+            card_ids = _uint_list(field(zone_node, "CardIds"))
+            if card_ids:
+                zones[key]["card_ids"] = card_ids
 
     response: dict[str, Any] = {"ok": True, "turn": turn, "players": player_rows}
     if zones:
@@ -499,6 +505,8 @@ def _card_entry(node: dict[str, Any], seats: _PlayerSeats | None = None) -> dict
     face_down_reason = enum_name(field(field(node, "FaceDownState"), "reasonFaceDown"))
     if face_down_reason and face_down_reason != "None":
         entry["face_down"] = True
+        # "Disguise", "Morph", ...: the snapshot names the creature by it (ledger #123).
+        entry["face_down_reason"] = face_down_reason
 
     return entry
 

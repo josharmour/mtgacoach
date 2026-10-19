@@ -2958,8 +2958,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
     def _format_stack_section(self, game_state: dict[str, Any], local_seat: int) -> list[str]:
         """Render the ordered stack with controller, targets and chosen modes.
 
-        The GRE stack zone lists objects in the order they were put on the
-        stack, so the LAST entry is the top and resolves FIRST. The previous
+        Every snapshot's stack is top-first, as Arena's Stack zone lists it:
+        the FIRST entry resolves next (arenamcp.stack_order). The previous
         one-line ``Stack: A > B`` rendering both dropped targets entirely and
         implied the opposite resolution order, which made it impossible to
         reason about responses, counterspells or timing.
@@ -2973,8 +2973,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         target_names = self._stack_target_name_map(game_state)
         lines: list[str] = ["STACK (top resolves first):"]
-        # Top of stack = last element in GRE zone order.
-        for position, obj in enumerate(reversed(stack), start=1):
+        # Top of stack = first element (Arena's zone order, arenamcp.stack_order).
+        for position, obj in enumerate(stack, start=1):
             if not isinstance(obj, dict):
                 continue
             controller = obj.get("controller_seat_id")

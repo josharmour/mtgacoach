@@ -3,10 +3,10 @@
 Three prompt-side gaps (2026-07-26), each pinned below:
 
   1. The planner's rendered state carried a ``Stack: Y:A > O:B`` one-liner
-     that dropped every target and implied the WRONG resolution order (GRE
-     lists the stack bottom-first, so the LAST entry resolves FIRST). A model
-     that cannot see what a spell targets cannot reason about responses,
-     counterspells or timing at all.
+     that dropped every target. A model that cannot see what a spell targets
+     cannot reason about responses, counterspells or timing at all. (Arena
+     lists the Stack zone top-first, so the FIRST entry resolves first:
+     ledger #115 and arenamcp.stack_order. This file once said the opposite.)
 
   2. ``_format_block_combat`` — the only producer of the
      "Computed optimal blocks:" line — was dispatched on ``"Combat" in phase``
@@ -24,9 +24,11 @@ No network: these tests only exercise the pure formatters.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
+from tests.test_stack_order_20261019 import coach_state, frame, replay_stack_fight
 
 from arenamcp.action_planner import AUTOPILOT_SYSTEM_PROMPT
 from arenamcp.coach import CoachEngine
@@ -132,22 +134,26 @@ def test_stack_renders_controller_name_and_targets() -> None:
     assert "targets: Grizzly Bears" in lines[1]
 
 
-def test_stack_is_rendered_top_first_not_gre_order() -> None:
-    """GRE lists the stack bottom-first; the TOP resolves first.
+def test_stack_is_rendered_in_the_order_it_resolves() -> None:
+    """Arena lists the Stack zone top-first, and the prompt numbers it in that order.
 
-    The old ``Stack: A > B`` one-liner read as "A then B", the exact
-    reverse of resolution order.
+    Player.log 2026-10-19, match 2c67eed8 T6 (ledger #115): the stack
+    [311, 309, 307, 306, 304] resolved prowess, our Shock, their Shock,
+    prowess, Burst Lightning, exactly in the zone's order. Replayed from the
+    log through the real GameState.
     """
-    state = _state(
-        stack=[
-            _stack_obj(401, "Bottom Spell", LOCAL_SEAT),  # cast first, resolves LAST
-            _stack_obj(402, "Top Spell", OPP_SEAT),  # cast last, resolves FIRST
-        ]
-    )
-    lines = _fmt()._format_stack_section(state, LOCAL_SEAT)
-    assert "Top Spell" in lines[1] and "resolves next" in lines[1]
-    assert "Bottom Spell" in lines[2]
-    assert "resolves next" not in lines[2]
+    state = coach_state(frame(replay_stack_fight(), 131))
+    lines = _fmt()._format_stack_section(state, 2)
+    entries = [line for line in lines if re.match(r"  \d+\. ", line)]
+    # Targets come from the log's TargetSpec annotations (ledger #122); the
+    # replay holds only the stack, so they render by instance id.
+    assert entries == [
+        "  1. YOU Prowess  <- resolves next",
+        "  2. YOU Shock -> targets: #299",
+        "  3. OPP Shock -> targets: #294",
+        "  4. YOU Prowess",
+        "  5. YOU Burst Lightning -> targets: #287",
+    ]
 
 
 def test_stack_controller_labels_you_vs_opp() -> None:

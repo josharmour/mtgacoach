@@ -6,6 +6,8 @@ Re-exported from arenamcp.coach for backwards compatibility."""
 import logging
 from typing import Any
 
+from arenamcp.stack_order import stack_top
+
 logger = logging.getLogger(__name__)
 
 
@@ -315,8 +317,10 @@ class GameStateTrigger:
 
         # Stack spell detection - differentiate between your spells and opponent's
         if len(curr_stack) > len(prev_stack):
-            # Check who owns the newest spell on the stack
-            newest_spell = curr_stack[-1] if curr_stack else None
+            # Who owns the object on top (index 0, arenamcp.stack_order). With
+            # [-1] read as the top, the opponent's Shock answering our Burst
+            # Lightning was logged as stack_spell_yours (match 2c67eed8 T6, #115).
+            newest_spell = stack_top(curr_state)
             if newest_spell:
                 spell_owner = newest_spell.get("owner_seat_id")
                 if spell_owner == local_seat:
