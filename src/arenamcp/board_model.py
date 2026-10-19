@@ -45,6 +45,7 @@ from arenamcp.board_assessment import (
     _text,
     _types,
     card_role,
+    engine_role,
     extra_mana_cost,
 )
 from arenamcp.combat_keywords import has_combat_keyword, printed_combat_keywords
@@ -455,6 +456,12 @@ class BoardModel:
     # Each player's starting life total (``starting_life``): 25 in Brawl, else 20 (ledger #177:
     # "at least 7 life more than your starting life total").
     starting_life: int = 20
+    # The opponent's engines (``line_search_moves.TheirEngines``, ledger #128-#133, #143): their
+    # life-gain sources and the growth they feed, their draws, drains and "enter tapped". Their
+    # bodies carry ``_drain`` (damage to us a turn of theirs), ``_growth`` (+1/+1 counters a turn)
+    # and ``_per_gain`` (counters per life-gain event). None when it could not be read.
+    engines: Any = None
+    our_engines: Any = None  # the same for our side (our bodies carry the same fields)
 
     @property
     def unknowns(self) -> list[str]:
@@ -485,11 +492,97 @@ def starting_life(state: dict) -> int:
     profile = state.get("format_profile")
     if isinstance(profile, dict) and _int(profile.get("starting_life")):
         return int(profile["starting_life"])
-    if state.get("commander_grp_ids") or state.get("command") or "brawl" in str(
-        state.get("format_name") or state.get("format") or ""
-    ).lower():
+    brawl = "brawl" in str(state.get("format_name") or state.get("format") or "").lower()
+    if state.get("commander_grp_ids") or state.get("command") or brawl:
         return 25
     return 20
+
+
+_DRAWS_CARDS = re.compile(r"\bdraws? (?:a|one|two|three|x|\d+) cards?\b")
+_EXTRA_LAND_DROP = re.compile(r"\byou may play (?:an|one|two|\d+) additional lands?\b")
+
+
+def their_draws(state: dict, seat: int | None = None) -> int:
+    """Cards the opponent (or ``seat``) draws a turn: one, two once they have shown a cantrip (an
+    instant or sorcery of theirs in their graveyard or exile whose text draws). Ledger #143
+    (match 970d9b41: Confusticate and Bebother in their graveyard; Ravenhill Flock grew on
+    every draw)."""
+    if seat is None:
+        _local, seat = _seats(state)
+    zones = state.get("zones") if isinstance(state.get("zones"), dict) else {}
+    for zone in ("graveyard", "exile"):
+        for card in state.get(zone) or zones.get(zone) or []:
+            if (
+                isinstance(card, dict)
+                and card.get("owner_seat_id", card.get("controller_seat_id")) == seat
+                and re.search(r"\b(?:instant|sorcery)\b", _types(card))
+                and _DRAWS_CARDS.search(_text(card))
+            ):
+                return 2
+    return 1
+
+
+def engines_of(battlefield: list[dict], local: int | None, opponent: int | None, *, draws: int = 1) -> Any:
+    """``line_search_moves.their_engines`` of this battlefield (None when it can't be read)."""
+    try:
+        from arenamcp.line_search_moves import _engine_text, _key, their_engines
+
+        drops = 1 + sum(
+            1
+            for c in battlefield
+            if _controller(c) == opponent and _EXTRA_LAND_DROP.search(_engine_text(*_key(c)))
+        )
+        return their_engines(battlefield, local, opponent, draws=draws, drops=drops)
+    except Exception:  # a reading aid: the board facts never fail on it
+        return None
+
+
+def annotate_engines(bodies: list[dict], engines: Any) -> None:
+    """A side's bodies' engine fields (``BoardModel.engines`` for theirs, ``our_engines`` for ours):
+    ``_drain``, ``_growth``, ``_per_gain``."""
+    if engines is None:
+        return
+    gains = engines.gain_events()
+    for body in bodies:
+        card = body.get("_card") or body
+        body["_drain"] = engines.body_drain(card)
+        body["_growth"] = engines.growth(card, gains=gains)
+        body["_per_gain"] = engines.per_gain(card)
+        # Token engines (#172): tokens a turn, their power/toughness, and what they are worth.
+        tokens, power, toughness = engines.body_tokens(card)
+        body["_tokens"], body["_token_pt"] = tokens, (power, toughness)
+        body["_token_value"] = token_value(tokens, power, toughness)
+        # The combat solver's value table (``combat_solver._material``) reads it too: a block that
+        # kills an engine is worth what the engine does each turn.
+        role = engine_role(body)
+        if role > 0:
+            body["_engine_value"] = role
+
+
+def engine_facts(state: dict) -> dict[int, dict]:
+    """Their creatures' engine fields by instance id (``annotate_engines`` on this snapshot) with
+    their ``engine_role`` value as ``_engine_value``; only creatures with an engine. For callers
+    that work on raw cards (the block solver's value table, ``combat_solver._material``)."""
+    local, opponent = _seats(state)
+    battlefield = [c for c in state.get("battlefield") or [] if isinstance(c, dict)]
+    engines = engines_of(battlefield, local, opponent, draws=their_draws(state))
+    if engines is None:
+        return {}
+    bodies = [{"_card": c} for c in battlefield if _controller(c) == opponent and _is_creature(c)]
+    annotate_engines(bodies, engines)
+    out = {}
+    for body in bodies:
+        value = engine_role(body)
+        if value > 0:
+            iid = _int(body["_card"].get("instance_id"))
+            out[iid] = {**{k: v for k, v in body.items() if k != "_card"}, "_engine_value": value}
+    return out
+
+
+def token_value(tokens: int, power: int, toughness: int) -> float:
+    """What a token engine's turn of tokens is worth as an engine role (``engine_role``): half a
+    token's material (power + toughness / 2) for each, at most eight of them."""
+    return 0.5 * min(tokens, 8) * (max(0, power) + max(0, toughness) / 2) if tokens > 0 else 0.0
 
 
 def build_board_model(state: dict) -> BoardModel | None:
@@ -531,6 +624,11 @@ def build_board_model(state: dict) -> BoardModel | None:
             unknown_bodies.append(_name(card))
             continue
         (ours if _controller(card) == local else theirs).append(body)
+    engines = engines_of(battlefield, local, opponent, draws=their_draws(state))
+    annotate_engines(theirs, engines)
+    # Ours too, read the same way: the board clocks are symmetric (``_clock_facts``).
+    our_engines = engines_of(battlefield, opponent, local, draws=their_draws(state, local))
+    annotate_engines(ours, our_engines)
 
     any_ours_attacking = any(b["_attacking"] for b in ours)
     any_theirs_attacking = any(b["_attacking"] for b in theirs)
@@ -664,4 +762,6 @@ def build_board_model(state: dict) -> BoardModel | None:
         our_stack_doomed=pending.doomed if pending else frozenset(),
         our_stack_face=pending.face if pending else 0,
         starting_life=starting_life(state),
+        engines=engines,
+        our_engines=our_engines,
     )  # fmt: skip

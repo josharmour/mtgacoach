@@ -55,6 +55,7 @@ def _card_key(c: dict) -> tuple:
         c.get("cant_be_blocked"),
         c.get("combat_hit_bonus"),
         c.get("is_tapped"),
+        c.get("_engine_value"),
     )
 
 
@@ -132,9 +133,14 @@ def mana_spending_restriction(card: dict) -> str:
 
 
 def _material(card: dict) -> int:
-    """Value a body plus ongoing resources; this is not a mana/castability estimate."""
+    """Value a body plus ongoing resources; this is not a mana/castability estimate.
+
+    ``_engine_value`` (``board_model.engine_facts``, set by callers that read the board): what its
+    engine does each turn beyond the flat +3 a role — Squirrel Girl's 12 Squirrels a turn, Biotech
+    Specialist's drain (ledger #172, #132)."""
     power, toughness = _pt(card)
-    return max(1, power + toughness) + 2 + 3 * len(combat_resource_roles(card))
+    engine = int(round(float(card.get("_engine_value") or 0)))
+    return max(1, power + toughness) + 2 + 3 * len(combat_resource_roles(card)) + engine
 
 
 def _can_block(attacker: dict, blocker: dict) -> bool:
@@ -1276,6 +1282,112 @@ def _search_attacks(
     return best
 
 
+def gang_block_kill(
+    attacker: dict, blockers: list[dict], allowed: dict[int, set[int]] | None = None
+) -> tuple[list[dict], int] | None:
+    """(``blockers`` whose damage together kills ``attacker``, how many of them it can kill), or
+    None: an attacker with first or double strike, indestructible or protection (the block may
+    not kill it), or not enough legal blockers. ``allowed``: Arena's blocker id -> attacker ids it
+    may block. Of the cheapest blockers first and the strongest first, the set whose losses (the
+    attacker killing the most valuable it can, ``_material``) are smaller; a deathtouch blocker
+    is lethal alone.
+
+    Ledger #172 (match 2b77f14d T7): three untapped Hare Apparents (2/2) could have killed The
+    Unbeatable Squirrel Girl (5/5) before her doubling turn; we chumped with Rabbits.
+    """
+    text = _plain_rules(attacker)
+    if (
+        any(_has(attacker, k) for k in ("first strike", "double strike", "indestructible"))
+        or "protection" in text
+    ):
+        return None
+    iid = attacker.get("instance_id")
+    legal = [
+        b
+        for b in blockers
+        if _pt(b)[0] > 0
+        and _can_block(attacker, b)
+        and (allowed is None or b.get("instance_id") not in allowed or iid in allowed[b.get("instance_id")])
+    ]
+    need = _pt(attacker)[1] - int(attacker.get("damage") or 0)
+
+    def pick(order: list[dict]) -> list[dict] | None:
+        chosen, dealt = [], 0
+        for blocker in order:
+            if dealt >= need:
+                break
+            chosen.append(blocker)
+            dealt += need if _has(blocker, "deathtouch") else _pt(blocker)[0]
+        if dealt < need or not chosen or (_has(attacker, "menace") and len(chosen) < 2):
+            return None
+        return chosen
+
+    def losses(chosen: list[dict]) -> tuple[int, list[dict]]:
+        power, lost = _pt(attacker)[0], []
+        for blocker in sorted(chosen, key=lambda b: (-_material(b), _pt(b)[1])):
+            cost = 1 if _has(attacker, "deathtouch") else max(1, _pt(blocker)[1])
+            if power >= cost:
+                power -= cost
+                lost.append(blocker)
+        return sum(_material(b) for b in lost), lost
+
+    def key(b: dict) -> int:
+        return b.get("instance_id") or 0
+
+    orders = (
+        sorted(legal, key=lambda b: (_material(b), -_pt(b)[0], key(b))),
+        sorted(legal, key=lambda b: (-_pt(b)[0], _material(b), key(b))),
+    )
+    sets = [found for order in orders if (found := pick(order)) is not None]
+    if not sets:
+        return None
+    best = min(sets, key=lambda s: (losses(s)[0], len(s)))
+    return best, len(losses(best)[1])
+
+
+def next_turn_engines(state: dict, crackers: list[dict], alive: list[dict]) -> tuple[list[dict], int]:
+    """(``crackers`` grown for their next turn, their drains that turn) on this snapshot.
+
+    Their creatures that grow on their life gain or draws (``line_search_moves.TheirEngines``:
+    Unflinching Hortimancer and Ajani's Pridemate on Ajani Resolute's life gain) are bigger when
+    they attack, and their drain engines (Biotech Specialist) deal us their damage whatever we
+    block; ``alive``: their creatures still there after our attack. Ledger #128 (match
+    3e545401 T17: the crackback guard counted 10 through, the real attack was 12 into 12)."""
+    from arenamcp.board_model import engines_of, their_draws
+    from arenamcp.combat_strategy import _controller as controller
+
+    battlefield = [c for c in state.get("battlefield") or [] if isinstance(c, dict)]
+    players = [p for p in state.get("players") or [] if isinstance(p, dict)]
+    local = next((p.get("seat_id") for p in players if p.get("is_local")), None)
+    opponent = next((p.get("seat_id") for p in players if not p.get("is_local")), None)
+    engines = engines_of(battlefield, local, opponent, draws=their_draws(state))
+    if engines is None:
+        return crackers, 0
+    gains = engines.gain_events()
+    grown = []
+    for card in crackers:
+        n = engines.growth(card, gains=gains) if controller(card) == opponent else 0
+        power, toughness = _pt(card)
+        grown.append({**card, "power": power + n, "toughness": toughness + n} if n > 0 else card)
+    drain = engines.static_drain + sum(
+        engines.body_drain(c, gains=gains) for c in alive if controller(c) == opponent
+    )
+    # Their token engine at our end step with the mana they have up (#172): those tokens attack.
+    budget, made = engines.mana_now, 0
+    for card in alive:
+        if controller(card) != opponent or made >= 8:
+            continue
+        count, power, toughness = engines.body_tokens(card, mana=budget, activated=True)
+        for index in range(min(count, 8 - made)):
+            grown.append({
+                "instance_id": 650_000_000 + made + index, "name": f"{card.get('name') or 'their'} token",
+                "power": power, "toughness": toughness, "controller_seat_id": opponent, "oracle_text": "",
+                "type_line": "Token Creature",
+            })  # fmt: skip
+        made += min(count, 8 - made)
+    return grown, drain
+
+
 def _attack_rank(plan: AttackPlan, mask: int) -> tuple:
     doomed = plan.score <= -1_000.0
     return (plan.score, plan.damage_through if doomed else 0, -mask)
@@ -1374,8 +1486,12 @@ def evaluate_attack(
     *,
     our_walker_loyalties: tuple[int, ...] = (),
     creature_died_this_turn: bool | None = None,
+    state: dict | None = None,
 ) -> AttackPlan:
     """Score one attack: `our_defenders` are the creatures left home to block.
+
+    ``state`` (the snapshot): their next turn's engines count in the crackback
+    (``next_turn_engines``: their creatures grow first, their drains add to it).
 
     ``our_walker_loyalties``: our planeswalkers' loyalty. Their crackback may
     finish one instead of hitting us (``walker_crackback_cost``).
@@ -1427,8 +1543,16 @@ def evaluate_attack(
     ]
     from arenamcp.combat_strategy import guarded_block_plan
 
+    drain = 0
+    if state is not None:
+        survivors = [
+            c
+            for c in opponent_attackers_next_turn
+            if not (c.get("instance_id") and c.get("instance_id") in killed)
+        ]
+        crackers, drain = next_turn_engines(state, crackers, survivors)
     crack_block = guarded_block_plan(crackers, defenders, your_life)
-    crackback = crack_block.damage_through if crack_block else sum(_pt(a)[0] for a in crackers)
+    crackback = (crack_block.damage_through if crack_block else sum(_pt(a)[0] for a in crackers)) + drain
 
     plan = AttackPlan(
         attacker_ids=[int(a.get("instance_id") or 0) for a in attacking],

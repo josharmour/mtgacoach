@@ -1843,7 +1843,7 @@ class _BridgeSubmitMixin:
             submitted = GameAction(
                 action_type=ActionType.ASSIGN_DAMAGE,
                 card_name=action.card_name,
-                distribution=submitted_distribution(assigners, game_state),
+                distribution=submitted_distribution(assigners, game_state, bridge_assigners),
                 reasoning=action.reasoning,
                 model_choice=action.model_choice,
                 override_note=action.override_note

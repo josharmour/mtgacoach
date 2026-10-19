@@ -351,12 +351,16 @@ def hold_overrides(decision: Any, state: dict, held: list[tuple[Any, dict]]) -> 
 def line_gain_is_face_only(result: Any, face: int) -> bool:
     """Whether the searched best line beats holding (its best line that casts nothing now) only by
     ``face`` damage to their face: same outcome and timing, our life no higher at any step, and
-    their final life at most ``face`` lower (ledger #136: Tectonic Hazard's "[LINE best]" at T1)."""
+    their final life at most ``face`` lower (ledger #136: Tectonic Hazard's "[LINE best]" at T1).
+    True when holding is the best line itself: a cast rated "~best" then gains nothing over it
+    (the held-removal floor, ledger #147, rates holding Hazard above its 1 face damage at T1)."""
     try:
         best = getattr(result, "best", None)
         hold = (getattr(result, "first_action", None) or {}).get(("nocast",))
-        if best is None or hold is None or face <= 0 or hold is best:
+        if best is None or hold is None or face <= 0:
             return False
+        if hold is best:
+            return True
         if (hold.cls, hold.timing) != (best.cls, best.timing):
             return False
         if any(ours > held for ours, held in zip(best.lives(), hold.lives(), strict=False)):

@@ -137,6 +137,42 @@ def _playbook_prompt_fingerprint() -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _gang_block_lines(attacking: list[dict], blockers: list[dict], allowed, engines_by_id: dict) -> list[str]:
+    """'Gang-block kill available on <engine>' for each attacking engine of theirs our blockers can
+    kill together (``combat_solver.gang_block_kill``; ``engines_by_id``: ``board_model.engine_facts``).
+
+    Ledger #172 (match 2b77f14d T7, 2026-10-19): three Hare Apparents could have killed The
+    Unbeatable Squirrel Girl on the turn before her 4 + 8 Squirrels; we chumped with Rabbits.
+    """
+    from arenamcp.combat_solver import gang_block_kill
+
+    lines = []
+    for attacker in attacking:
+        facts = engines_by_id.get(attacker.get("instance_id"))
+        if not facts:
+            continue
+        found = gang_block_kill(attacker, blockers, allowed or None)
+        if found is None:
+            continue
+        chosen, killed = found
+        why = []
+        if facts.get("_tokens"):
+            power, toughness = facts.get("_token_pt") or (1, 1)
+            why.append(f"token engine: ~{facts['_tokens']} {power}/{toughness} tokens on their next turn")
+        if facts.get("_drain"):
+            why.append(f"drain engine: ~{facts['_drain']} damage to you each turn")
+        if facts.get("_growth"):
+            why.append(f"grows +{facts['_growth']}/+{facts['_growth']} each turn")
+        damage = sum(int(b.get("power") or 0) for b in chosen)
+        lines.append(
+            f"Gang-block kill available on {attacker.get('name', '?')} {attacker.get('power')}/"
+            f"{attacker.get('toughness')} ({'; '.join(why)}): {' + '.join(str(b.get('name', '?')) for b in chosen)} "
+            f"deal {damage} into its {attacker.get('toughness')} toughness; it kills at most {killed} of them. "
+            "Killing the engine now usually beats chumping it."
+        )
+    return lines
+
+
 __all__ = [
     "CoachEngine",
     "GameStateTrigger",
@@ -2580,6 +2616,18 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             # 2026-10-19 T13 match abde2a07, a zero-slack triple block into two
             # open mana met Scarblade's Malice and lost all three blockers).
             exposure = attacking_trick_exposure(game_state)
+            # Their engines are worth what they do each turn, not a flat +3 a role (#172, #132):
+            # the solver's value table reads ``_engine_value``.
+            from arenamcp.board_model import engine_facts
+
+            engines_by_id = engine_facts(game_state) if game_state else {}
+            if engines_by_id:
+                attacking = [
+                    {**c, "_engine_value": engines_by_id[iid]["_engine_value"]}
+                    if (iid := c.get("instance_id")) in engines_by_id
+                    else c
+                    for c in attacking
+                ]
             solver_plan = optimal_blocks(
                 attacking,
                 usable_blockers,
@@ -2614,6 +2662,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     "with taking the hit, and account for the next attack."
                 )
                 lines.extend(f.explanation for f in recovery.forecasts(solver_plan.blockers_lost_ids))
+                lines.extend(_gang_block_lines(attacking, usable_blockers, allowed_map, engines_by_id))
                 resource_creatures = [
                     f"{card.get('name', '?')} ({', '.join(combat_resource_roles(card))})"
                     for card in usable_blockers

@@ -699,6 +699,18 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
     haste_for_all = _our_global_haste(state)
     # Back in hand after each of our turns (Fleeting Effigy): cast again on a later turn.
     leavers = _end_step_leavers(state)
+    # Our permanents that make our spells cheaper (#170, match 639c5fe1 T6: with Pearl Medallion
+    # out the plan's T7 was Hare Apparent {W} + Leonardo {1}{W}, 3 of 4 mana; the trim read the
+    # printed 2 + 3 and dropped Leonardo: "needs 5 mana, budget 4"). One the plan casts counts
+    # from its next turn.
+    reducers = _static_reducers(
+        [
+            card
+            for card in state.get("battlefield") or []
+            if isinstance(card, dict)
+            and (card.get("controller_seat_id") or card.get("owner_seat_id")) == local
+        ]
+    )
     used: set[int] = set()
     rocks: list[SimpleNamespace] = []
     steps: list[dict] = []
@@ -778,7 +790,7 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
                     continue
                 chosen.append((f"landcycle {card.get('name')}", info.landcycling, (), card))
                 continue
-            chosen.append((stored, info.mana_value, info.pips, card))
+            chosen.append((stored, _reduced_mana_value(card, info, reducers), info.pips, card))
         # Trim until the turn is mana-legal: when defending, card draw / rocks /
         # selection go first; otherwise (and then) the most expensive cast.
         survival = bool(getattr(assessment, "survival_mode", False))
@@ -808,7 +820,9 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
                 if card is not None and id(card) not in used:
                     cost = command_costs.get(id(card))
                     info = hand_card(card if cost is None else dict(card, mana_cost=cost))
-                    fill.append((str(card.get("name")), info.mana_value, info.pips, card))
+                    fill.append(
+                        (str(card.get("name")), _reduced_mana_value(card, info, reducers), info.pips, card)
+                    )
             total = sum(c[1] for c in fill)
             if (
                 fill
@@ -827,6 +841,8 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
         for name, _mv, _pips, card in chosen:
             if str(card.get("name")) not in leavers:
                 used.add(id(card))
+            if not name.startswith("landcycle "):
+                reducers = reducers + _static_reducers([card])
             text = str(card.get("oracle_text") or "").lower()
             type_line = str(card.get("type_line") or "").lower()
             if (
@@ -984,6 +1000,81 @@ def _our_global_haste(state: dict) -> bool:
         return bool(_side_rules(battlefield, _local_seat(state)).get("haste"))
     except Exception:
         return False
+
+
+# A permanent that makes some of its controller's spells cheaper, as one whole sentence:
+# "White spells you cast cost {1} less to cast." (Pearl Medallion), "Instant and sorcery
+# spells you cast cost {1} less to cast.", "Spells you cast cost {1} less to cast." A
+# condition or count after it ("for each", "if", "during") is not read: no reduction.
+_STATIC_REDUCER = re.compile(r"(?P<what>[a-z ,]*?)\s*spells you cast cost \{o?(?P<n>\d+)\} less to cast\.?")
+_COLOR_WORDS = {"white": "W", "blue": "U", "black": "B", "red": "R", "green": "G"}
+
+
+def _static_reducers(cards: list[dict]) -> list[tuple[list[list[str]], int]]:
+    """(qualifier groups, generic mana off) for each static cost reduction on ``cards`` (#170).
+
+    "instant and sorcery" is two groups (either), "white creature" one (both);
+    no qualifier at all reduces every spell.
+    """
+    found: list[tuple[list[list[str]], int]] = []
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        text = re.sub(r"<[^>]*>", "", str(card.get("oracle_text") or "")).lower()
+        for sentence in re.split(r"\n|(?<=\.)\s+", text):
+            match = _STATIC_REDUCER.fullmatch(sentence.strip())
+            if not match:
+                continue
+            groups: list[list[str]] = [[]]
+            for word in match.group("what").replace(",", " ").split():
+                if word in ("and", "or"):
+                    groups.append([])
+                else:
+                    groups[-1].append(word)
+            found.append(([group for group in groups if group], int(match.group("n"))))
+    return found
+
+
+def _reduced_mana_value(card: dict, info: Any, reducers: list[tuple[list[list[str]], int]]) -> int:
+    """The spell's mana value less our static reductions, which pay generic mana only (#170)."""
+    from arenamcp.cost_reduction import reduced_mana_value
+
+    return reduced_mana_value(info.mana_value, len(info.pips), _reduction_for(card, info.pips, reducers))
+
+
+def _spell_colors(card: dict, pips: tuple) -> set[str]:
+    colors = set()
+    for color in card.get("colors") or card.get("color") or []:
+        word = str(color).lower().replace("cardcolor_", "")
+        colors.add(_COLOR_WORDS.get(word, word.upper()[:1]))
+    if not colors:
+        colors = {color for pip in pips for color in pip} - {"C"}
+    return colors & set(_COLOR_WORDS.values())
+
+
+def _reduction_for(card: dict, pips: tuple, reducers: list[tuple[list[list[str]], int]]) -> int:
+    """The generic mana our static reducers take off this spell (#170)."""
+    if not reducers:
+        return 0
+    types = f"{card.get('type_line') or ''} {' '.join(str(t) for t in card.get('card_types') or [])}".lower()
+    colors = _spell_colors(card, pips)
+
+    def fits(word: str) -> bool:
+        if word in _COLOR_WORDS:
+            return _COLOR_WORDS[word] in colors
+        if word == "colorless":
+            return not colors
+        if word == "multicolored":
+            return len(colors) > 1
+        if word == "monocolored":
+            return len(colors) == 1
+        if word.startswith("non") and len(word) > 3:
+            return not fits(word[3:])
+        return bool(re.search(rf"\b{re.escape(word)}s?\b", types))
+
+    return sum(
+        amount for groups, amount in reducers if not groups or any(all(fits(w) for w in g) for g in groups)
+    )
 
 
 def _named_creatures(text: str, candidates: list[str]) -> list[str]:

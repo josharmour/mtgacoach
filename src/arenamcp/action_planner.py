@@ -1875,7 +1875,7 @@ class ActionPlanner(_ActionLegalityMixin):
 
         def life_after(attack_set: list[dict]) -> int:
             home = [card for card in ours if card not in attack_set or _has(card, "vigilance")]
-            result = evaluate_attack(attack_set, home, blockers, opp_life, our_life, theirs)
+            result = evaluate_attack(attack_set, home, blockers, opp_life, our_life, theirs, state=state)
             return our_life - int(result.worst_case_crackback)
 
         try:

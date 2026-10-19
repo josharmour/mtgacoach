@@ -29,6 +29,7 @@ import pytest
 from tests import valkyrie_boards_20261019 as vb
 
 from arenamcp import action_planner as ap
+from arenamcp import combat_strategy
 from arenamcp.action_planner import (
     FALLBACK_ATTACK_PUSH,
     FALLBACK_BIG_BOARD,
@@ -39,7 +40,7 @@ from arenamcp.action_planner import (
 )
 from arenamcp.autopilot_bridge import _BridgeSubmitMixin
 from arenamcp.board_assessment import assess
-from arenamcp.combat_strategy import combat_choice, losing_attackers
+from arenamcp.combat_strategy import combat_choice
 from arenamcp.line_guard import attack_push, attack_push_mode
 
 # The thirteen tokens the best line sends at T12: the Warriors and the able Rabbits.
@@ -227,16 +228,28 @@ def test_the_big_board_solver_declaration_is_judged_too(monkeypatch, caplog):
 
 
 def test_a_pushed_attack_is_not_thinned_by_the_losing_attack_guard(monkeypatch):
-    # At 13 life the line attacks with all twenty; the losing-attack guard would drop the Hares
-    # (Aven Gagglemaster 6/5 blocks a 2/2 and survives).
+    # At 13 life the line attacks with all twenty. Whatever the losing-attack guard says of the
+    # Hares (here: each dies to a block for nothing), neither its planner pass, which runs before
+    # the push, nor the bridge's pass at submission thins the pushed declaration.
     monkeypatch.setenv("ARENAMCP_ATTACK_PUSH", "on")
+    hares = sorted(vb.HARES)
+
+    def guard(state, attackers, *args, **kwargs):
+        return {i: "dies to a block for nothing" for i in attackers if i in hares}
+
+    monkeypatch.setattr(combat_strategy, "losing_attackers", guard)
     state = _at_life(13)
     everyone = sorted(vb.T12_ATTACKERS)
-    hares = sorted(vb.HARES)
-    assert set(hares) <= set(losing_attackers(state, everyone))
-    plan = _run_guards(_no_attack(), state)
+    sent = GameAction(
+        ActionType.DECLARE_ATTACKERS,
+        attacker_names=["Hare Apparent"] * len(hares),
+        attacker_instance_ids=list(hares),
+        attacker_targets={"Hare Apparent": "Opponent"},
+    )
+    plan = _run_guards(ActionPlan(actions=[sent], overall_strategy="Send the Hares."), state)
     (action,) = plan.actions
     assert action.line_push and action.attacker_instance_ids == everyone
+    assert plan.fallback_reason == FALLBACK_ATTACK_PUSH
     # The bridge's own pass of the guard leaves it whole as well.
     face = {"type": "DamageRecType_Player", "playerSystemSeatId": vb.OPPONENT}
     entries = [{"attackerInstanceId": i, "damageRecipient": face} for i in everyone]

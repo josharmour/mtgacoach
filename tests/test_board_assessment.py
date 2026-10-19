@@ -1255,6 +1255,10 @@ def test_a_surviving_searched_line_rules_out_all_in(monkeypatch):
     for entry in source["battlefield"]:
         if entry["name"] == "Hushbringer":
             entry["oracle_text"] = "Flying\nLifelink"
+        if entry["name"] == "Queza, Augur of Agonies":
+            # Its draw drain is in their clock since ledger #133 and kills us on T21 at 1 life whatever
+            # the Tyrant gains (test_drain_engines_20261019); this test is about the ALL-IN flag.
+            entry["oracle_text"] = ""
     monkeypatch.setattr(ba, "_unmodelled_castable", lambda *_args: ([], []))  # nothing else in the way
     a = _fresh(source)
     assert not a.line_search.exact_first_attack and a.dead_in_greedy == 1 and a.dead_in is None
