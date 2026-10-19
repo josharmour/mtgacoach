@@ -4754,7 +4754,7 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         if reach:
             lines.append(reach)
-        lines.append(self._decision_game_context(context_state))
+        lines.append(self._decision_game_context(context_state, options_listed=True))
         # The LINES line is shown once, above OPTIONS: not again in the strategy block.
         strategy_context = self._strategy_context(
             game_state, with_lines=not lines_text.startswith("LINES"), request_type=decision.request_type
@@ -4906,13 +4906,21 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         return chosen
 
-    def _decision_game_context(self, game_state: dict[str, Any]) -> str:
+    # The game view's restatement of the request and its menu. A typed prompt
+    # names the request and lists every option (with its id and payability)
+    # above the game state: 2026-10-18 the menu was sent twice, with a
+    # "15 legal actions" count that included the mana abilities.
+    _RESTATED_REQUEST_LINES = ("Legal: ", "GRE_Request: ", "GRE_RequestClass: ", "!!! YOUR PRIORITY")
+
+    def _decision_game_context(self, game_state: dict[str, Any], *, options_listed: bool = False) -> str:
         """The planner's full board view (card text, mana, combat math).
 
         Typed decisions — every bridge priority window since Phase E — used
         the names-only fallback formatter. 2026-09-24 the model passed turns 7
         and 9 stuck on three lands with Archdruid's Charm castable: it could
-        not see that the charm fetches a land.
+        not see that the charm fetches a land. ``options_listed``: the prompt
+        lists the request's options itself, so the view's own menu lines
+        (Legal:, GRE_Request:, the priority banner) are left out.
         """
         try:
             from arenamcp.coach import CoachEngine
@@ -4920,6 +4928,10 @@ class ActionPlanner(_ActionLegalityMixin):
             formatter = CoachEngine.__new__(CoachEngine)
             context = formatter._format_game_context(game_state, for_planner=True)
             if context and context.strip():
+                if options_listed:
+                    context = "\n".join(
+                        line for line in context.split("\n") if not line.startswith(self._RESTATED_REQUEST_LINES)
+                    )
                 return context
         except Exception as e:
             logger.warning(f"typed-decision context formatter failed: {e}")

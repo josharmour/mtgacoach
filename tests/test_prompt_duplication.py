@@ -248,6 +248,22 @@ def test_hand_and_command_zone_rules_are_quoted_once_with_the_deck_reference(mon
         assert "Fixture Mana Elf #1" in hand and "Fixture Mana Elf #2" in hand and "Fixture Growth" in hand
 
 
+def test_a_typed_prompt_lists_its_options_once(monkeypatch):
+    from arenamcp.match_context import reset_seen_rules
+
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, epoch: CATALOG[gid])
+    reset_seen_rules()
+    prompt = _typed_prompt(_deck_state())
+    assert "- idx:0: Cast Fixture Growth" in prompt and "- pass: Pass" in prompt
+    # Before: "Legal: Cast Fixture Growth [OK], Pass", "GRE_Request: ActionsAvailable" and
+    # "GRE_RequestClass: ActionsAvailableRequest" restated them in the game view.
+    for restated in ("Legal:", "GRE_Request", "legal actions available"):
+        assert restated not in prompt, restated
+    assert "\nHAND:" in prompt and "Life: You=20 Opp=20" in prompt
+    reset_seen_rules()
+    assert "Legal:" in _plan_prompt(_deck_state())  # the plan prompt's numbered menu
+
+
 def test_without_a_deck_list_the_hand_quotes_each_card_once():
     state = _deck_state()
     state["deck_cards"] = []
