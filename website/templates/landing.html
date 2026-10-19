@@ -1,313 +1,473 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>mtgacoach — a coach in your ear for MTG Arena</title>
-    <meta name="description" content="mtgacoach watches your Magic: The Gathering Arena games and talks you through them — line by line, in real time.">
-    <style>
-        :root {
-            --bg: #16130f;
-            --ink: #e6ddcc;
-            --faint: #97907f;
-            --rule: #353026;
-            --accent: #d4a13c;
-            --accent-dim: #8a6b2b;
-        }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        html { scroll-behavior: smooth; }
-        body {
-            font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-            background: var(--bg);
-            color: var(--ink);
-            line-height: 1.65;
-            font-size: 17px;
-            position: relative;
-        }
-        /* Faint candlelight over the table */
-        body::before {
-            content: "";
-            position: absolute;
-            inset: 0;
-            pointer-events: none;
-            background:
-                radial-gradient(1100px 520px at 72% -8%, rgba(212, 161, 60, 0.08), transparent 62%),
-                radial-gradient(900px 700px at 8% 30%, rgba(74, 106, 138, 0.05), transparent 60%);
-        }
-        a { color: var(--accent); text-decoration: none; }
-        a:hover { text-decoration: underline; text-underline-offset: 3px; }
-        .wrap { max-width: 680px; margin: 0 auto; padding: 0 24px; }
+{% extends "_base.html" %}
 
-        header {
-            padding: 28px 0 0;
-        }
-        header .wrap {
-            display: flex; justify-content: space-between; align-items: baseline;
-        }
-        .wordmark {
-            font-style: italic;
-            font-size: 1.65rem;
-            color: var(--ink);
-            letter-spacing: 0.02em;
-        }
-        .wordmark:hover { text-decoration: none; color: var(--accent); }
-        nav a {
-            color: var(--faint);
-            font-size: 0.9rem;
-            margin-left: 22px;
-        }
-        nav a:hover { color: var(--ink); text-decoration: none; }
+{% block title %}mtgacoach — a coach in your ear for MTG Arena{% endblock %}
+{% block description %}mtgacoach reads your Magic: The Gathering Arena games as you play and talks you through them, out loud, every turn. Free for 7 days on Windows, macOS and Linux.{% endblock %}
 
-        .hero { padding: 96px 0 64px; }
-        /* Full-page card-fan backdrop, weighted to the right */
-        .bg-art {
-            position: fixed;
-            inset: 0;
-            width: 100%;
-            height: 100%;
-            z-index: -1;
-            pointer-events: none;
-            user-select: none;
-        }
-        @media (max-width: 760px) { .bg-art { opacity: 0.5; } }
-        .kicker {
-            font-family: -apple-system, "Segoe UI", sans-serif;
-            font-size: 0.72rem;
-            letter-spacing: 0.18em;
-            text-transform: uppercase;
-            color: var(--accent-dim);
-            margin-bottom: 20px;
-        }
-        h1 {
-            font-weight: 500;
-            font-size: 2.6rem;
-            line-height: 1.18;
-            letter-spacing: -0.01em;
-            max-width: 15em;
-        }
-        h1 em { font-style: italic; color: var(--accent); }
-        .hero p {
-            margin-top: 24px;
-            font-size: 1.12rem;
-            color: var(--faint);
-            max-width: 32em;
-        }
-        .hero-actions { margin-top: 36px; }
-        .button {
-            display: inline-block;
-            font-family: -apple-system, "Segoe UI", sans-serif;
-            font-size: 0.92rem;
-            padding: 11px 26px;
-            border: 1px solid var(--accent);
-            color: var(--accent);
-            letter-spacing: 0.03em;
-        }
-        .button:hover { background: var(--accent); color: var(--bg); text-decoration: none; }
-        .hero-actions .aside {
-            margin-left: 18px;
-            font-size: 0.92rem;
-            color: var(--faint);
-        }
+{% block head %}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@800;900&family=Space+Mono:wght@400;700&display=swap">
+{% endblock %}
 
-        hr {
-            border: 0;
-            border-top: 1px solid var(--rule);
-            margin: 0;
-        }
+{% block nav %}
+    <a class="nav-optional" href="#features">Features</a>
+    <a class="nav-optional" href="#get-started">Platforms</a>
+    <a href="#pricing">Pricing</a>
+    <a class="nav-optional" href="#arenaonair">ArenaOnAir</a>
+    <a class="nav-cta" href="/subscribe">Subscribe</a>
+{% endblock %}
 
-        section { padding: 64px 0; }
-        .label {
-            font-family: -apple-system, "Segoe UI", sans-serif;
-            font-size: 0.72rem;
-            letter-spacing: 0.18em;
-            text-transform: uppercase;
-            color: var(--faint);
-            margin-bottom: 36px;
-        }
+{% block content %}
+    {% set play_icon %}<svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"/></svg><svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>{% endset %}
 
-        dl.features dt {
-            font-size: 1.15rem;
-            font-style: italic;
-            margin-top: 30px;
-        }
-        dl.features dt:first-of-type { margin-top: 0; }
-        dl.features dd {
-            color: var(--faint);
-            margin-top: 4px;
-            max-width: 36em;
-        }
+    <!-- Hero -------------------------------------------------------------- -->
+    <section class="hero" aria-labelledby="hero-title">
+        <div class="wrap hero-grid">
+            <div>
+                <p class="kicker">For Magic: The Gathering Arena</p>
+                <h1 id="hero-title">A coach in your ear, <em>every turn</em> of the game.</h1>
+                <p class="lede">mtgacoach reads your Arena game as you play and talks you
+                through it — attacks, blocks, sequencing, the line you didn't see.
+                Out loud, while it matters, not in a post-mortem.</p>
 
-        ol.steps {
-            list-style: none;
-            counter-reset: step;
-        }
-        ol.steps li {
-            counter-increment: step;
-            padding: 22px 0;
-            border-top: 1px solid var(--rule);
-            display: grid;
-            grid-template-columns: 3.5rem 1fr;
-            gap: 8px;
-        }
-        ol.steps li:first-child { border-top: 0; padding-top: 0; }
-        ol.steps li::before {
-            content: counter(step, upper-roman) ".";
-            font-style: italic;
-            color: var(--accent-dim);
-            font-size: 1.1rem;
-        }
-        ol.steps h3 { font-weight: 500; font-size: 1.05rem; display: inline; }
-        ol.steps p { color: var(--faint); margin-top: 2px; }
-        ol.steps code {
-            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-            font-size: 0.85em;
-            color: var(--ink);
-            background: #221e17;
-            padding: 1px 6px;
-        }
+                <div class="clip" data-clip>
+                    <button type="button" class="clip-btn" aria-pressed="false" aria-label="Play the coach's line for the turn in the screenshot (8 seconds)" hidden>{{ play_icon }}</button>
+                    <div class="clip-text">
+                        <q>Cast Emergency Phytomedic, then Ghalta — the Beast makes it cost five. Hold back this turn; Seed Suture next turn, then swing with everything.</q>
+                        <span class="clip-meta">0:08 · the turn in the screenshot, rendered by the app's own speech engine (voice: Fenrir)</span>
+                        <span class="clip-bar" aria-hidden="true"><span></span></span>
+                        <audio controls preload="none" src="/static/audio/coach-turn.mp3">Your browser can't play this clip.</audio>
+                    </div>
+                </div>
 
-        .closing { text-align: center; padding: 72px 0 88px; }
-        .closing .fleuron { color: var(--accent-dim); font-size: 1.3rem; margin-bottom: 28px; }
-        .closing p {
-            font-style: italic;
-            font-size: 1.25rem;
-            max-width: 26em;
-            margin: 0 auto 32px;
-        }
+                <div class="hero-actions">
+                    <a class="button primary" href="https://github.com/josharmour/mtgacoach/releases/latest">Download for Windows</a>
+                    <a class="button" href="#get-started">macOS &amp; Linux</a>
+                </div>
+                <p class="hero-note">Free for 7 days — no card, no account. Then $10 a month through
+                Patreon, which also covers <a href="#arenaonair">ArenaOnAir</a>.</p>
+            </div>
 
-        footer {
-            border-top: 1px solid var(--rule);
-            padding: 28px 0 40px;
-            color: var(--faint);
-            font-size: 0.82rem;
-        }
-        footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-
-        @media (max-width: 560px) {
-            h1 { font-size: 2rem; }
-            .hero { padding: 64px 0 48px; }
-            .hero-actions .aside { display: block; margin: 14px 0 0; }
-        }
-    </style>
-</head>
-<body>
-    <svg class="bg-art" viewBox="170 270 1730 820" preserveAspectRatio="xMaxYMax meet" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <!-- a held hand of five cards rising from the lower right, one pip per color of the pie -->
-        <g stroke-linejoin="round" stroke-width="2">
-            <g transform="rotate(-28 1030 1750)">
-                <rect x="840" y="330" width="380" height="540" rx="26" fill="#191510" stroke="#332c1f"/>
-                <rect x="866" y="356" width="328" height="488" rx="16" fill="none" stroke="#252017"/>
-                <circle cx="1030" cy="600" r="20" fill="#cfc49a" opacity="0.4"/>
-            </g>
-            <g transform="rotate(-14 1030 1750)">
-                <rect x="840" y="305" width="380" height="540" rx="26" fill="#191510" stroke="#332c1f"/>
-                <rect x="866" y="331" width="328" height="488" rx="16" fill="none" stroke="#252017"/>
-                <circle cx="1030" cy="575" r="20" fill="#4a7fa8" opacity="0.35"/>
-            </g>
-            <g>
-                <rect x="840" y="295" width="380" height="540" rx="26" fill="#1b1712" stroke="#3a3222"/>
-                <rect x="866" y="321" width="328" height="488" rx="16" fill="none" stroke="#272115"/>
-                <circle cx="1030" cy="565" r="20" fill="#7a6a8e" opacity="0.35"/>
-            </g>
-            <g transform="rotate(14 1030 1750)">
-                <rect x="840" y="305" width="380" height="540" rx="26" fill="#191510" stroke="#332c1f"/>
-                <rect x="866" y="331" width="328" height="488" rx="16" fill="none" stroke="#252017"/>
-                <circle cx="1030" cy="575" r="20" fill="#b25b47" opacity="0.35"/>
-            </g>
-            <g transform="rotate(28 1030 1750)">
-                <rect x="840" y="330" width="380" height="540" rx="26" fill="#191510" stroke="#332c1f"/>
-                <rect x="866" y="356" width="328" height="488" rx="16" fill="none" stroke="#252017"/>
-                <circle cx="1030" cy="600" r="20" fill="#5d8a5a" opacity="0.4"/>
-            </g>
-        </g>
-    </svg>
-    <header>
-        <div class="wrap">
-            <a href="/" class="wordmark">mtgacoach</a>
-            <nav>
-                <a href="/subscribe">Subscribe</a>
-                <a href="https://github.com/josharmour/mtgacoach">GitHub</a>
-            </nav>
+            <figure class="hero-shot">
+                <div class="shot shot-fade">
+                    <div class="shot-crop">
+                        <img src="/static/img/sidebar-coaching.webp" width="760" height="1524"
+                             alt="The mtgacoach sidebar during a game: Your turn, T15, Main 1. The Now card reads: Cast Emergency Phytomedic, then Ghalta — the Beast makes it cost five. Hold back this turn; Seed Suture next turn, then swing with everything. Below it: Best line, lethal on turn 19; Outlook 32 percent, behind; Role defender; Clocks, they kill you in 7. The board card shows the opponent at 19 life and you at 7."
+                             fetchpriority="high" decoding="async">
+                    </div>
+                </div>
+                <figcaption>The real sidebar, rendered from a board recorded in a pro's Alchemy
+                draft game. Best line, outlook, role and clocks are the app's own math;
+                the advice line is our example for that turn.</figcaption>
+            </figure>
         </div>
-    </header>
+    </section>
 
-    <section class="hero">
+    <!-- What you see -------------------------------------------------------- -->
+    <section id="tour" aria-labelledby="tour-title">
         <div class="wrap">
-            <div class="kicker">For Magic: The Gathering Arena</div>
-            <h1>A coach in your ear, <em>every turn</em> of the game.</h1>
-            <p>mtgacoach watches your Arena games as you play and talks you
-            through them — attacks, blocks, sequencing, the line you didn't
-            see. Out loud, while it matters, not in a post-mortem.</p>
-            <div class="hero-actions">
-                <a class="button" href="/subscribe">Subscribe</a>
-                <span class="aside">$9.99 a month, through Patreon.</span>
+            <div class="section-head">
+                <p class="label">What you see while you play</p>
+                <h2 id="tour-title">One narrow window beside Arena.</h2>
+                <p class="lede">You hear the advice first. The sidebar is the written copy, plus
+                the reasoning behind it.</p>
+            </div>
+            <div class="tour">
+                <figure class="shot tour-shot">
+                    <div class="pin-host">
+                        <img src="/static/img/sidebar-coaching.webp" width="760" height="1524" loading="lazy" decoding="async"
+                             alt="The full mtgacoach sidebar, numbered from top to bottom: turn strip, model and game-source chips, the Now card, the best line, the game plan, the board, the feed and the controls.">
+                        <span class="pin" style="top:3%" aria-hidden="true">1</span>
+                        <span class="pin" style="top:7.2%" aria-hidden="true">2</span>
+                        <span class="pin" style="top:11.4%" aria-hidden="true">3</span>
+                        <span class="pin" style="top:24.2%" aria-hidden="true">4</span>
+                        <span class="pin" style="top:35.2%" aria-hidden="true">5</span>
+                        <span class="pin" style="top:61.5%" aria-hidden="true">6</span>
+                        <span class="pin" style="top:78.1%" aria-hidden="true">7</span>
+                        <span class="pin" style="top:92.7%" aria-hidden="true">8</span>
+                    </div>
+                </figure>
+                <ol class="legend">
+                    <li><div><h3>Turn strip</h3>
+                        <p>Whose turn it is, the turn number and the phase.</p></div></li>
+                    <li><div><h3>Model and source</h3>
+                        <p>The model answering (GLM 5.3 on our server) and where the game state comes
+                        from: <em>Log watcher</em> for Arena's own log, <em>Bridge</em> when the autoplay
+                        bridge is connected too.</p></div></li>
+                    <li><div><h3>Now</h3>
+                        <p>The line it just said out loud, with the time it said it.</p></div></li>
+                    <li><div><h3>Best line</h3>
+                        <p>A search over your next three turns and their attacks in between.
+                        “Board even” is a weighted board score, not a win chance.</p></div></li>
+                    <li><div><h3>Game plan</h3>
+                        <p>Written by the model in the background and checked against board math:
+                        outlook (a 0–100 read on the game), role (aggressor, racer or defender), both
+                        clocks, the searched line and its alternative, the next three turns and
+                        how you win.</p></div></li>
+                    <li><div><h3>Board</h3>
+                        <p>Life totals, your hand with mana costs, both sides' creatures with
+                        power, toughness and tapped state, and your lands.</p></div></li>
+                    <li><div><h3>Feed</h3>
+                        <p>Everything it has said this game, newest at the bottom.</p></div></li>
+                    <li><div><h3>Controls</h3>
+                        <p>Autoplay, auto-queue, stop talking, and Voice &amp; style: voice,
+                        speed, quick or chatty advice, mute.</p></div></li>
+                </ol>
             </div>
         </div>
     </section>
 
-    <div class="wrap"><hr></div>
+    <div class="wrap"><hr class="rule"></div>
 
-    <section>
+    <!-- Features ------------------------------------------------------------ -->
+    <section id="features" aria-labelledby="features-title">
         <div class="wrap">
-            <div class="label">What it does</div>
-            <dl class="features">
-                <dt>Live table talk</dt>
-                <dd>It reads the real game state — your hand, the board, the
-                stack, every legal action — and speaks its advice so your eyes
-                never leave the game.</dd>
+            <div class="section-head">
+                <p class="label">What it does</p>
+                <h2 id="features-title">Coaching, drafting, and a pair of hands.</h2>
+            </div>
 
-                <dt>Draft picks, with receipts</dt>
-                <dd>Pack-by-pack pick ratings built on 17lands data, so you
-                draft the deck the numbers like and not just the rare.</dd>
+            <div class="features">
+                <article class="feature">
+                    <h3>Table talk, out loud</h3>
+                    <p>It reads the real game from Arena's log — your hand, both boards, the stack,
+                    every legal action — and says the play, so your eyes stay on the game. When
+                    their removal targets something you can protect, it tells you to respond
+                    before the window closes.</p>
+                    <div class="visual">
+                        <ul class="pills" aria-label="Voice options">
+                            <li>28 English voices</li>
+                            <li>Adjustable speed</li>
+                            <li>Quick or Chatty</li>
+                            <li>Speech runs on your computer</li>
+                        </ul>
+                        <div class="clip compact" data-clip>
+                            <button type="button" class="clip-btn" aria-pressed="false" aria-label="Play a real line from a coaching log (5 seconds)" hidden>{{ play_icon }}</button>
+                            <div class="clip-text">
+                                <q>Surrak and Goreclaw is already down — move to combat and swing with everything for lethal.</q>
+                                <span class="clip-meta">0:05 · a real line from a coaching log</span>
+                                <span class="clip-bar" aria-hidden="true"><span></span></span>
+                                <audio controls preload="none" src="/static/audio/coach-lethal.mp3">Your browser can't play this clip.</audio>
+                            </div>
+                        </div>
+                    </div>
+                </article>
 
-                <dt>An autopilot that actually plays</dt>
-                <dd>Step away and it takes the wheel: lands on curve, sensible
-                combat, priority passed on time. Come back to a game still in
-                progress, not a concession.</dd>
+                <article class="feature">
+                    <h3>Drafts for the deck, not the tier list</h3>
+                    <p>Every pick comes with its reasons: 17Lands numbers, your lane, the open
+                    signals, and how the card's rules text works with what you've taken. When the
+                    draft ends you hear a counted 40-card build with every cut named. Sealed pools
+                    get a spoken build recommendation too.</p>
+                    <p>On a Mac with the bridge, Autoplay can run the whole event: it researches the
+                    set before pick one, drafts for the deck it's building (17Lands is about a
+                    quarter of each pick; hate-picks are their own call), submits the 40 and plays
+                    the matches.</p>
+                    <div class="visual">
+                        <div class="app-card" role="group" aria-label="Draft log excerpt">
+                            <div class="cap">Draft · pack 3</div>
+                            <div class="row"><span class="k">Plan</span>Simic Jace Empower · lane UG · needs cheap interaction</div>
+                            <div class="row"><span class="k">P3p4</span><span class="accent">Way of the Wildspeaker</span> — GIH 53.1% (z −0.66), in lane</div>
+                            <div class="row"><span class="k">P3p5</span><span class="accent">Inspired Tethermage</span> — GIH 50.0% (z −1.52), fits a payoff for the plan</div>
+                        </div>
+                        <div class="clip compact" data-clip>
+                            <button type="button" class="clip-btn" aria-pressed="false" aria-label="Play the spoken explanation for pick P3p4 (6 seconds)" hidden>{{ play_icon }}</button>
+                            <div class="clip-text">
+                                <q>Choosing Way of the Wildspeaker: it works with our Inspired Tethermage and Kiora of Salt and Sand.</q>
+                                <span class="clip-meta">0:06 · real picks from a 13 Oct 2026 draft log; both rated below the set average, both taken for the plan</span>
+                                <span class="clip-bar" aria-hidden="true"><span></span></span>
+                                <audio controls preload="none" src="/static/audio/coach-draft.mp3">Your browser can't play this clip.</audio>
+                            </div>
+                        </div>
+                    </div>
+                </article>
 
-                <dt>Our own table, our own stakes</dt>
-                <dd>Coaching runs on dedicated GPU hardware we operate
-                ourselves. No per-token metering — your subscription is the
-                whole bill.</dd>
-            </dl>
+                <article class="feature wide">
+                    <div class="wide-text">
+                        <h3>An autopilot that actually plays</h3>
+                        <p>Turn on Autoplay and it plays the match — lands, spells, targets, attacks
+                        and blocks — submitted straight to Arena's game engine through the bridge,
+                        not by driving your mouse.</p>
+                        <ul>
+                            <li>Plays out whole lines — your next three turns against their worst-case
+                            attacks — before it commits to one.</li>
+                            <li>Counts your planeswalkers when it blocks and when it weighs the
+                            crackback, and weighs loyalty costs against the burn they could be
+                            holding.</li>
+                            <li>Sticks to its own plan: when the plan says hold back, it holds back.
+                            Only an all-in or lethal swing overrides it.</li>
+                            <li>Auto-queue starts the next match with the same queue and deck.
+                            It concedes only when the board math proves the game is lost, after a
+                            countdown you can cancel.</li>
+                            <li>No bridge? It says <strong>MANUAL REQUIRED</strong>, hands you the
+                            decision, and keeps coaching.</li>
+                        </ul>
+                    </div>
+                    <figure class="visual">
+                        <div class="shot">
+                            <div class="crop-autoplay">
+                                <img src="/static/img/sidebar-autoplay.webp" width="760" height="1696" loading="lazy" decoding="async"
+                                     alt="The top of the sidebar during autoplay: Your turn, T13, Main 1, with the Bridge chip lit. The Now card reads: Attacking with Arni, Humble Scribe, Keeper of the Quiet Hour, Mindseeker Oculus and Semester Foreseer at the opponent. Best line: board favorable, attack now, then Screeching Soulbreaker and Protege's Awakening on the next two turns. Plan formed T11; outlook 52 percent, even.">
+                            </div>
+                        </div>
+                        <figcaption>Autoplay on, bridge connected, rendered from a recorded Quick Draft
+                        board. The narration line is our example in the app's format.</figcaption>
+                    </figure>
+                </article>
+
+                <article class="feature">
+                    <h3>Knows your deck before the first draw</h3>
+                    <p>Open Decks before you queue and it writes a playbook for any deck Arena has
+                    shown it: how it wins, what to do when that's disrupted, its engines and key
+                    cards. The plan card works from it on turn one.</p>
+                    <ol class="steps-visual visual" aria-label="Before, during and after a match">
+                        <li><span><strong>Before</strong> — Tools → Decks builds the playbook.</span></li>
+                        <li><span><strong>During</strong> — the game plan follows it, turn by turn.</span></li>
+                        <li><span><strong>After</strong> — Match History logs the result and a 1–10 score
+                        the coach gives its own advice.</span></li>
+                    </ol>
+                </article>
+
+                <article class="feature">
+                    <h3>Quick enough for Arena's clock</h3>
+                    <p>Board math happens on your computer; only the judgment calls go to the
+                    model. Key decisions ask twice at once — a quick answer and a deeper one — and
+                    use the deeper one only if it's back in time.</p>
+                    <ol class="steps-visual visual" aria-label="From Arena's log to spoken advice">
+                        <li><span><strong>Log line</strong> — read the moment Arena writes it.</span></li>
+                        <li><span><strong>Board math</strong> — combat, clocks and the three-turn search,
+                        in milliseconds.</span></li>
+                        <li><span><strong>Model</strong> — quick and deep answers race; 15-second ceiling.
+                        Quick decisions came back in a median 2.5 s in a live session on 18 Oct 2026.</span></li>
+                        <li><span><strong>Voice</strong> — spoken on your computer.</span></li>
+                    </ol>
+                </article>
+            </div>
         </div>
     </section>
 
-    <div class="wrap"><hr></div>
+    <div class="wrap"><hr class="rule"></div>
 
-    <section>
+    <!-- Platforms ----------------------------------------------------------- -->
+    <section id="get-started" aria-labelledby="platforms-title">
         <div class="wrap">
-            <div class="label">How it works</div>
-            <ol class="steps">
-                <li>
-                    <div>
-                        <h3>Install the app.</h3>
-                        <p>Grab the Windows installer from GitHub, or
-                        <code>pip install mtgacoach</code> anywhere Python runs.</p>
-                    </div>
-                </li>
-                <li>
-                    <div>
-                        <h3>Add your license key.</h3>
-                        <p>Subscribe on Patreon, link your account, and paste the
-                        key into the app under Settings.</p>
-                    </div>
-                </li>
-                <li>
-                    <div>
-                        <h3>Queue up.</h3>
-                        <p>Launch Arena, launch mtgacoach, and play. The coaching
-                        starts with your first priority.</p>
-                    </div>
-                </li>
+            <div class="section-head">
+                <p class="label">Get started</p>
+                <h2 id="platforms-title">Windows, macOS and Linux.</h2>
+                <p class="lede">Coaching works the same everywhere because it only needs Arena's
+                log. Autoplay needs the bridge for your platform.</p>
+            </div>
+
+            <div class="table-wrap">
+                <table class="platforms">
+                    <caption class="sr-only">What each platform supports and how to install it</caption>
+                    <thead>
+                        <tr><th scope="col">Platform</th><th scope="col">Install</th><th scope="col">Coaching</th><th scope="col">Autoplay</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <th scope="row">Windows</th>
+                            <td data-col="Install"><a href="https://github.com/josharmour/mtgacoach/releases/latest"><strong>mtgacoach-Setup.exe</strong></a> from GitHub Releases.</td>
+                            <td data-col="Coaching"><strong>Yes</strong> <span class="tag ok">Player.log</span></td>
+                            <td data-col="Autoplay"><strong>Yes</strong> <span class="tag ok">BepInEx bridge</span><br>
+                            The installer sets the bridge up; Setup &amp; Repair reinstalls it if it
+                            goes missing.</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">macOS</th>
+                            <td data-col="Install"><code>uv tool install arenamcp</code>, then run
+                            <code>mtgacoach-desktop</code>. Python 3.10 or newer; <code>pip install arenamcp</code>
+                            works too.</td>
+                            <td data-col="Coaching"><strong>Yes</strong> <span class="tag ok">Player.log</span><br>
+                            Native Arena client, no Wine.</td>
+                            <td data-col="Autoplay"><strong>Experimental</strong> <span class="tag exp">injected library</span><br>
+                            Build the bridge library once from the
+                            <a href="https://github.com/josharmour/mtgacoach">source</a> (one script,
+                            Xcode command-line tools). Then let the coach open Arena, or add the Steam
+                            launch option Setup &amp; Repair shows you. Draft-event autoplay is Mac-only.</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Linux</th>
+                            <td data-col="Install"><code>uv tool install arenamcp</code>, then run
+                            <code>mtgacoach-desktop</code>.</td>
+                            <td data-col="Coaching"><strong>Yes</strong> <span class="tag ok">Player.log</span><br>
+                            Arena on Steam with Proton; the coach reads the log inside the Proton
+                            prefix.</td>
+                            <td data-col="Autoplay"><strong>Via Proton</strong> <span class="tag">BepInEx bridge</span><br>
+                            The same bridge as Windows. Setup &amp; Repair installs it; you add
+                            <code>WINEDLLOVERRIDES="winhttp=n,b" %command%</code> to Arena's Steam launch
+                            options.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <ol class="steps start-steps">
+                <li><p><strong>Install the app</strong> for your platform, above.</p></li>
+                <li><p><strong>Turn on Detailed Logs</strong> in Arena: Options → Account →
+                Detailed Logs (Plugin Support), then restart Arena.</p></li>
+                <li><p><strong>Open Setup &amp; Repair</strong> in mtgacoach. It checks your
+                install and starts your 7-day trial. Then queue up — coaching starts with
+                your first priority.</p></li>
             </ol>
         </div>
     </section>
 
+    <div class="wrap"><hr class="rule"></div>
+
+    <!-- Pricing ------------------------------------------------------------- -->
+    <section id="pricing" aria-labelledby="pricing-title">
+        <div class="wrap">
+            <div class="section-head">
+                <p class="label">Pricing</p>
+                <h2 id="pricing-title">Try the whole thing first.</h2>
+            </div>
+            <div class="plans">
+                <div class="plan">
+                    <h3>Free trial</h3>
+                    <p class="price">7 days</p>
+                    <ul>
+                        <li>The whole coach: voice, drafting, autoplay</li>
+                        <li>No card, no account, no Patreon</li>
+                        <li>Starts when you open Setup &amp; Repair</li>
+                        <li>One trial per computer</li>
+                    </ul>
+                    <a class="button" href="#get-started">Install and start</a>
+                </div>
+                <div class="plan featured">
+                    <h3>Patreon</h3>
+                    <p class="price">$10 <small>a month</small></p>
+                    <ul>
+                        <li>Coaching for as many games as you play</li>
+                        <li>One flat price — no per-token charges</li>
+                        <li>The model runs on our own GPU server</li>
+                        <li>Also covers ArenaOnAir's hosted casters</li>
+                        <li>Cancel on Patreon; the key stops with the pledge</li>
+                    </ul>
+                    <a class="button primary" href="/subscribe">Subscribe</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ArenaOnAir ---------------------------------------------------------- -->
+    <section id="arenaonair" aria-labelledby="aoa-title">
+        <div class="wrap">
+            <p class="label">Also from us</p>
+            <div class="aoa">
+                <div class="aoa-main">
+                    <div class="aoa-brand">
+                        <span class="aoa-logo" aria-hidden="true">AoA</span>
+                        <div>
+                            <div class="aoa-word">Arena<span>OnAir</span></div>
+                            <div class="aoa-sub">Esports radio broadcast</div>
+                        </div>
+                    </div>
+                    <h2 id="aoa-title">Play-by-play radio for <span>your Arena matches</span>.</h2>
+                    <p>Two AI casters follow your match, call the plays and talk through the game.
+                    GLM 5.3 on the same server writes the conversation; the voices run on your
+                    computer. It reads Arena's log and nothing else — no memory hooks.</p>
+                    <div class="aoa-stats">
+                        <div><b>Two casters</b><small>One Arena log</small></div>
+                        <div><b class="red">Local voices</b><small>On your computer</small></div>
+                        <div><b>5 free matches</b><small>Then Patreon or your own model</small></div>
+                    </div>
+                    <div class="aoa-actions">
+                        <a class="aoa-btn" href="https://arenaonair.com"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"/></svg>Tune in at arenaonair.com</a>
+                        <span class="aoa-note">Your mtgacoach Patreon key works there too.<br>Early access · Windows, macOS, Linux.</span>
+                    </div>
+                </div>
+                <div class="aoa-desk" aria-hidden="true">
+                    <span class="on-air">ON AIR</span>
+                    <div class="vu">
+                        <div class="vu-row"><span>CH-L</span><i class="g"></i><i class="g"></i><i class="g"></i><i class="g"></i><i class="g"></i><i class="g"></i><i class="g"></i><i class="g"></i><i class="a"></i><i class="a"></i><i></i><i></i><i></i><i></i></div>
+                        <div class="vu-row"><span>CH-R</span><i class="g"></i><i class="g"></i><i class="g"></i><i class="g"></i><i class="g"></i><i class="g"></i><i class="a"></i><i class="a"></i><i class="a"></i><i class="r"></i><i></i><i></i><i></i><i></i></div>
+                    </div>
+                    <div class="casters">
+                        <p class="caster"><b>Caster 1</b>“Veteran Survivor does the dirty work! Armour's assault connects for ten, Sparky drops to two.”</p>
+                        <p class="caster two"><b>Caster 2</b>“Wrath of God sweeps the board clean! All six creatures down, resetting the battlefield.”</p>
+                    </div>
+                    <p class="aoa-note">Sample calls from arenaonair.com</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FAQ ----------------------------------------------------------------- -->
+    <section id="faq" aria-labelledby="faq-title">
+        <div class="wrap narrow">
+            <p class="label">Questions</p>
+            <h2 id="faq-title">The honest answers.</h2>
+            <div class="faq">
+                <details>
+                    <summary>What does it read?</summary>
+                    <div class="answer">
+                        <p>Arena's own <code>Player.log</code>, with Detailed Logs (Plugin Support)
+                        turned on. That is everything the coach knows about your game, so coaching
+                        needs nothing installed into Arena. Setup &amp; Repair checks the setting
+                        for you.</p>
+                    </div>
+                </details>
+                <details>
+                    <summary>What does autoplay need?</summary>
+                    <div class="answer">
+                        <p>The bridge: a plugin that runs inside the Arena client and submits
+                        actions to its game engine — BepInEx on Windows and under Proton, an injected
+                        library on macOS. It is optional. Without it, autoplay says MANUAL REQUIRED,
+                        hands the decision back to you, and the coach keeps advising.</p>
+                    </div>
+                </details>
+                <details>
+                    <summary>Where does the AI run?</summary>
+                    <div class="answer">
+                        <p>On our own GPU server, reached through <code>api.mtgacoach.com</code>; the
+                        model is GLM 5.3. There's no per-token billing — your subscription is the
+                        whole bill — with fair-use rate limits far above what a game needs. The voice
+                        is synthesized on your computer.</p>
+                    </div>
+                </details>
+                <details>
+                    <summary>What leaves my computer?</summary>
+                    <div class="answer">
+                        <p>Each request sends the game facts the model needs to our server. By
+                        default the app also uploads a redacted record of each finished match —
+                        its decisions, the coach's log, the match's game events and any bug reports —
+                        so we can improve the coach from real games. Names, keys, emails, file paths
+                        and Arena account IDs are removed first.</p>
+                        <p>Turn it off in Tools → Share Match Logs to Improve the Coach.</p>
+                    </div>
+                </details>
+                <details>
+                    <summary>Does my subscription cover ArenaOnAir?</summary>
+                    <div class="answer">
+                        <p>Yes. Paste the same Patreon key into ArenaOnAir's Premium connection.
+                        Its five free matches are separate from mtgacoach's 7-day trial.</p>
+                    </div>
+                </details>
+                <details>
+                    <summary>How do I cancel?</summary>
+                    <div class="answer">
+                        <p>Cancel your pledge on Patreon. Your key stops working when the pledge
+                        ends; nothing is billed here.</p>
+                    </div>
+                </details>
+                <details>
+                    <summary>Is this official?</summary>
+                    <div class="answer">
+                        <p>No. mtgacoach is unofficial fan software, not made or endorsed by Wizards
+                        of the Coast. Magic: The Gathering is a trademark of Wizards of the Coast
+                        LLC.</p>
+                    </div>
+                </details>
+            </div>
+        </div>
+    </section>
+
+    <!-- Closing ------------------------------------------------------------- -->
     <section class="closing">
         <div class="wrap">
             <div class="fleuron" aria-hidden="true">
-                <svg width="64" height="60" viewBox="0 0 64 60" xmlns="http://www.w3.org/2000/svg">
+                <svg width="64" height="60" viewBox="0 0 64 60" xmlns="http://www.w3.org/2000/svg" focusable="false">
                     <!-- the color pie -->
                     <circle cx="32" cy="10" r="4" fill="#cfc49a" opacity="0.8"/>
                     <circle cx="53" cy="25" r="4" fill="#4a7fa8" opacity="0.8"/>
@@ -316,18 +476,15 @@
                     <circle cx="11" cy="25" r="4" fill="#5d8a5a" opacity="0.8"/>
                 </svg>
             </div>
-            <p>&ldquo;The difference between a good player and a great one is
-            somebody standing behind them asking: are you sure?&rdquo;</p>
-            <a class="button" href="/subscribe">Get mtgacoach</a>
+            <blockquote>
+                <p>&ldquo;The difference between a good player and a great one is
+                somebody standing behind them asking: are you sure?&rdquo;</p>
+            </blockquote>
+            <a class="button primary" href="#get-started">Start your free week</a>
         </div>
     </section>
+{% endblock %}
 
-    <footer>
-        <div class="wrap">
-            <span>&copy; mtgacoach.com</span>
-            <span>Unofficial fan software. Magic: The Gathering is a trademark
-            of Wizards of the Coast LLC.</span>
-        </div>
-    </footer>
-</body>
-</html>
+{% block scripts %}
+    <script src="/static/js/site.js?v=2" defer></script>
+{% endblock %}
