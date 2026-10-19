@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from tests.mac_world import Obj, World
+from tests.mac_world import FakeTime, Obj, World
 
 from arenamcp.gre_bridge import EMOTE_EXPIRES_MS, GREBridge, GREBridgeError
 from arenamcp.mac_bridge_adapter import MacBridgeAdapter
@@ -1014,7 +1014,8 @@ def test_mac_emote_clicks_oops_on_the_wheel():
         ({"scene": "MatchEnd"}, {}),
         ({"stage": "GameOver"}, {}),
         ({"manager": False}, {}),  # draft, deck building, menus: no GameManager
-        ({}, {"expected_turn": 15}),
+        ({}, {"expected_turn": 15}),  # Arena never catches up to it
+        ({}, {"expected_turn": 13}),  # the game moved past it
         ({}, {"expected_match_id": "another-match"}),
         ({}, {"emote": "good game"}),
         ({"npe": True}, {}),  # the tutorial has no emote wheel
@@ -1027,9 +1028,41 @@ def test_mac_emote_clicks_oops_on_the_wheel():
 )
 def test_mac_emote_refuses_unless_oops_is_on_a_live_duels_wheel(world_args, command):
     world = emote_world(**world_args)
-    result = MacBridgeAdapter(world.send).handle({"action": "send_emote", **command})
+    result = MacBridgeAdapter(world.send, **FakeTime().kwargs()).handle({"action": "send_emote", **command})
     assert result["ok"] is False and not result.get("outcome_unknown")
     assert clicks(world) == []
+
+
+def test_mac_emote_waits_for_arena_to_play_back_the_expected_turn():
+    """The emote shares the concede's turn guard (2026-10-19: Arena's duel scene
+    trails Player.log by seconds): a live turn behind the expected one is waited
+    for, within the emote's shorter expires_in_ms."""
+    world = emote_world()
+    world.objects[60]["GameWideTurn"] = 13
+
+    def play_back(now: float) -> None:
+        if now >= 0.5:
+            world.objects[60]["GameWideTurn"] = 14
+
+    fake = FakeTime(play_back)
+    command = {
+        "action": "send_emote",
+        "emote": "oops",
+        "expires_in_ms": EMOTE_EXPIRES_MS,
+        "expected_match_id": MATCH,
+        "expected_turn": 14,
+    }
+    result = MacBridgeAdapter(world.send, **fake.kwargs()).handle(dict(command))
+    assert result["ok"] is True and result["turn"] == 14
+    assert clicks(world) == [(WHEEL, [{"str": "Phrase_Basic_Oops"}])]
+
+    world = emote_world()
+    world.objects[60]["GameWideTurn"] = 13
+    fake = FakeTime()
+    result = MacBridgeAdapter(world.send, **fake.kwargs()).handle(dict(command))
+    assert result["ok"] is False and "behind the expected turn 14" in result["error"]
+    assert "emote wheel" not in result["error"]  # not mistaken for a deck without Oops
+    assert clicks(world) == [] and fake.now <= EMOTE_EXPIRES_MS / 1000 - 0.5 + 0.1 + 1e-9
 
 
 def test_mac_emote_names_what_is_on_the_wheel_when_oops_is_not():

@@ -39,7 +39,9 @@ BRIDGE_PORT = 44222
 UNMAPPED_INTERACTION_TYPE = "unmapped_interaction"
 # First BepInEx plugin version with the "concede" command (PluginInfo.Version).
 CONCEDE_PLUGIN_VERSION = "0.6.4"
-# A queued concede older than this is refused on MTGA's main thread.
+# A queued concede older than this is refused on MTGA's main thread. It also
+# bounds the wait for Arena's client to catch up to the expected turn (its
+# duel scene can trail Player.log by seconds; 2026-10-19).
 CONCEDE_EXPIRES_MS = 4000
 # First BepInEx plugin version with the "send_emote" command (PluginInfo.Version).
 EMOTE_PLUGIN_VERSION = "0.6.5"
@@ -1645,7 +1647,8 @@ class GREBridge:
         The client runs ``MatchManager.GreInterface.ConcedeGame()`` (a
         ConcedeReq with game scope), which needs no pending request. The
         plugin refuses unless a game is in play, and unless it is still the
-        expected match/game/turn when given.
+        expected match/game/turn when given; a live turn still behind the
+        expected one is waited for (bounded by ``expires_in_ms``).
 
         Sent exactly once: unlike ``_send_safe`` there is no reconnect-and-
         resend, which could queue a second ConcedeReq. Returns the plugin's
