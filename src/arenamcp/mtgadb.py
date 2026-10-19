@@ -181,6 +181,7 @@ class MTGADatabase:
         self._conn_lock = threading.RLock()
         self._card_cache: dict[int, MTGACard] = {}
         self._rarity_cache: dict[str, str | None] = {}
+        self._prompt_cache: dict[int, str | None] = {}
         # Lowercased English title -> [(grp_id, expansion)], built on first use.
         self._name_index: dict[str, list[tuple[int, str]]] | None = None
         self._available = False
@@ -651,6 +652,7 @@ class MTGADatabase:
         with self._conn_lock:
             self._card_cache.clear()
             self._rarity_cache.clear()
+            self._prompt_cache.clear()
             self._name_index = None
 
     def get_ability_text(self, ability_id: int) -> str | None:
@@ -695,6 +697,35 @@ class MTGADatabase:
                     self._connect()
 
         return None
+
+    def get_prompt_text(self, prompt_id: int) -> str | None:
+        """English template of a GRE prompt id (the ``Prompts`` table), or None.
+
+        GRE requests carry ``prompt.promptId`` ("Exile a card." is 1117); the
+        text is an ICU message ("{1, plural, =1 {Discard a card.} ...}") whose
+        parameters ``arena_prompts.render_prompt`` fills. A DB build without the
+        table answers None without counting as a lookup error.
+        """
+        prompt_id = int(prompt_id or 0)
+        if prompt_id <= 0:
+            return None
+        with self._conn_lock:
+            if prompt_id in self._prompt_cache:
+                return self._prompt_cache[prompt_id]
+            if not self._available or not self._conn:
+                return None
+            try:
+                row = self._conn.execute(
+                    "SELECT l.Loc FROM Prompts p JOIN Localizations_enUS l ON l.LocId = p.LocId "
+                    "WHERE p.Id = ? ORDER BY l.Formatted = 1 DESC LIMIT 1",
+                    (prompt_id,),
+                ).fetchone()
+            except sqlite3.Error as e:
+                logger.debug(f"Prompt lookup failed for id {prompt_id}: {e}")
+                return None
+            text = re.sub(r"</?nobr>", "", str(row["Loc"] or "")) if row else ""
+            self._prompt_cache[prompt_id] = text or None
+            return text or None
 
     def close(self):
         """Close the database connection."""

@@ -279,6 +279,11 @@ class MTGADatabaseAdapter:
         """Look up text for an ability ID (MTGA-specific)."""
         return self._db.get_ability_text(ability_id)
 
+    def get_prompt_text(self, prompt_id: int) -> str | None:
+        """English template of a GRE prompt id (MTGA-specific)."""
+        getter = getattr(self._db, "get_prompt_text", None)
+        return getter(prompt_id) if callable(getter) else None
+
     def get_cards_batch(self, grp_ids: list[int]) -> dict[int, Any]:
         """Batch lookup (MTGA-specific). Returns raw MTGACard objects."""
         return self._db.get_cards_batch(grp_ids)
@@ -462,6 +467,12 @@ class FallbackCardDatabase:
         """Look up ability text (delegates to MTGA adapter if available)."""
         if self._mtga_adapter:
             return self._mtga_adapter.get_ability_text(ability_id)
+        return None
+
+    def get_prompt_text(self, prompt_id: int) -> str | None:
+        """English template of a GRE prompt id (delegates to the MTGA adapter if available)."""
+        if self._mtga_adapter:
+            return self._mtga_adapter.get_prompt_text(prompt_id)
         return None
 
     def prewarm_cards(self, grp_ids: list[int]) -> dict[int, CardInfo]:

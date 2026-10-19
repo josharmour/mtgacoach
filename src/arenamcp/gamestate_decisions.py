@@ -731,6 +731,14 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
         if prior_prompt:
             decision_text = game_state.decision_context.get("text", "Select Items")
 
+    # Arena's words and the card asking (ledger #79, 2026-10-19 11:35:23:
+    # Unscrupulous Agent's SelectNReq carried prompt 1117 "Exile a card." and
+    # sourceId 353; both were dropped and the choice read as a cast).
+    prompt_info = _select_n_prompt_info(game_state, msg, req, option_ids)
+    if prompt_info.get("hand_loss") in ("discard", "exile"):
+        selection_type = prompt_info["hand_loss"]
+        decision_text = selection_type.capitalize()
+
     # A SelectNReq replaces the priority window: its Play/Cast/Pass menu is
     # gone until Arena sends the next ActionsAvailableReq. Keeping it let the
     # autopilot re-plan "Play Land: Swamp" three times against Room of
@@ -804,8 +812,49 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
         "id_type": id_type,
         "list_type": req.get("listType") or "",
         "static_list": req.get("staticList") or "",
+        **prompt_info,
     }
     return False
+
+
+def _select_n_prompt_info(
+    game_state: "GameState", msg: dict, req: dict, option_ids: list[int]
+) -> dict[str, Any]:
+    """Prompt id and text, request id, the card asking and whether the pick is a hand loss.
+
+    ``hand_loss`` is "discard" / "exile" / "bottom" when every option is one of
+    our hand cards and Arena's prompt says so ("Exile a card.", "Discard a
+    card.", "... on the bottom of your library"). Never raises.
+    """
+    info: dict[str, Any] = {}
+    try:
+        from arenamcp.arena_prompts import prompt_id, prompt_text, request_prompt
+
+        info["request_id"] = [_coerce_int(msg.get("gameStateId", 0), 0), _coerce_int(msg.get("msgId", 0), 0)]
+        prompt = request_prompt(msg, req)
+        if prompt is not None:
+
+            def name_of(instance_id: int) -> str:
+                obj = game_state.game_objects.get(instance_id)
+                return game_state._resolve_card_name(obj.grp_id) if obj is not None and obj.grp_id else ""
+
+            info["prompt_id"] = prompt_id(prompt)
+            text = prompt_text(prompt, name_of)
+            if text:
+                info["prompt_text"] = text
+        source_id = _coerce_int(req.get("sourceId", 0), 0)
+        if source_id:
+            info["source_id"] = source_id
+            info.update(_resolve_request_source_context(game_state, source_id))
+        text = info.get("prompt_text") or ""
+        hand_ids = {obj.instance_id for obj in game_state.hand}
+        if text and option_ids and all(i in hand_ids for i in option_ids):
+            from arenamcp.decisions import _LOSS_PROMPT
+
+            info["hand_loss"] = next((kind for kind, pattern in _LOSS_PROMPT if pattern.search(text)), None)
+    except Exception as error:  # enrichment only: the decision itself must still be captured
+        logger.debug(f"SelectN prompt enrichment failed: {error}")
+    return {key: value for key, value in info.items() if value not in (None, "")}
 
 
 _MANA_COLOR_SYMBOL = {

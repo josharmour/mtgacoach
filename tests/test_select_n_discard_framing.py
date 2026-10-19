@@ -16,7 +16,7 @@ import time
 
 import arenamcp.autopilot as autopilot_module
 from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
-from arenamcp.decisions import build_pending_decision, select_n_discard_note
+from arenamcp.decisions import build_pending_decision, hand_loss_note
 
 HAND = {
     119: "Garruk, Veiled Butcher",
@@ -58,24 +58,24 @@ def _decision(ids, names=HAND):
 
 
 def test_a_loot_over_our_hand_is_framed_as_a_discard():
-    note = select_n_discard_note(_decision(HAND), _state(stack=[LOOT]))
+    note = hand_loss_note(_decision(HAND), _state(stack=[LOOT]))
     assert note.startswith("THIS IS A DISCARD")
     assert "Draw a card, then discard a card" in note
     assert "value is a reason NOT to pick it" in note
 
 
 def test_a_selection_that_is_not_a_discard_gets_no_note():
-    assert select_n_discard_note(_decision(HAND), _state(stack=[])) == ""
+    assert hand_loss_note(_decision(HAND), _state(stack=[])) == ""
     surveil = dict(LOOT, oracle_text="Surveil 1.")
-    assert select_n_discard_note(_decision(HAND), _state(stack=[surveil])) == ""
+    assert hand_loss_note(_decision(HAND), _state(stack=[surveil])) == ""
     # Choices that are not our hand cards (a trigger ordering) are not discards.
-    assert select_n_discard_note(_decision([234, 235], {}), _state(stack=[LOOT])) == ""
+    assert hand_loss_note(_decision([234, 235], {}), _state(stack=[LOOT])) == ""
 
 
 def test_a_discard_source_label_is_enough():
     decision = _decision(HAND)
     decision = type(decision)(**{**decision.__dict__, "source_label": "Twinned Vision: Discard a card"})
-    assert select_n_discard_note(decision, _state()).startswith("THIS IS A DISCARD")
+    assert hand_loss_note(decision, _state()).startswith("THIS IS A DISCARD")
 
 
 def test_the_card_just_drawn_is_marked_unknown_until_the_log_names_it():
