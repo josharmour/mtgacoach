@@ -48,6 +48,10 @@ EMOTE_IDS = {"oops": "Phrase_Basic_Oops"}
 # Request fields never needed for the protocol and bulky or recursive to dump.
 SNAPSHOT_SKIP = ["OriginalMessage", "ParentRequest", "_outboundMessage", "OnSubmit", "OnRequestSubmit"]
 SNAPSHOT_DEPTH = 7
+# List entries the request snapshot keeps (the probe's default is 100). Herald's Horn's
+# creature-type SelectN offers 353 subtype ids; cut at 100, Rabbit (232) was not offered and
+# the autopilot named Angel (ledger #186, match 4d934402).
+SNAPSHOT_MAX_ITEMS = 600
 # Speculative getters read in the snapshot batch; absent members come back null.
 SNAPSHOT_GETTERS = [
     "Type",
@@ -268,8 +272,10 @@ class _Ops:
         self.ops.append({"op": op, **fields})
         return REF(len(self.ops) - 1)
 
-    def pending(self, depth: int = 0) -> dict:
-        return self.add("pending", depth=depth, skip=SNAPSHOT_SKIP)
+    def pending(self, depth: int = 0, max_items: int | None = None) -> dict:
+        if max_items is None:
+            return self.add("pending", depth=depth, skip=SNAPSHOT_SKIP)
+        return self.add("pending", depth=depth, skip=SNAPSHOT_SKIP, max_items=max_items)
 
     def get(self, target: dict, member: str, depth: int = 0, optional: bool = False) -> dict:
         return self.add("get", target=target, member=member, depth=depth, optional=optional)
@@ -371,7 +377,7 @@ class MacBridgeAdapter:
 
     def snapshot(self, depth: int = SNAPSHOT_DEPTH, timeout: float | None = None) -> Snapshot:
         ops = _Ops()
-        request = ops.pending(depth)
+        request = ops.pending(depth, max_items=SNAPSHOT_MAX_ITEMS)
         ops.get(request, "OriginalMessage", depth=1, optional=True)
         for name in SNAPSHOT_GETTERS:
             ops.get(request, name, depth=1, optional=True)
@@ -1701,6 +1707,10 @@ class MacBridgeAdapter:
 
     def _shape_SelectNRequest(self, request: dict, getters: dict, response: dict) -> None:
         response["select_n_ids"] = [num(i) for i in items(field(request, "Ids"))]
+        listed = field(request, "Ids")
+        if isinstance(listed, dict) and num(listed.get("$n"), 0) > len(response["select_n_ids"]):
+            # The snapshot cut the list (SNAPSHOT_MAX_ITEMS): the log's SelectNReq has the rest.
+            response["select_n_ids_truncated"] = True
         response["select_n_zone_ids"] = [num(i) for i in items(field(request, "ZoneIds"))]
         response["select_n_id_type"] = enum_name(field(request, "IdType"))
         response["select_n_list_type"] = enum_name(field(request, "ListType"))

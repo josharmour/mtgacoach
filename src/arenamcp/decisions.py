@@ -952,6 +952,9 @@ def _build_select_n(
         color_decision = _build_color_choice(poll, request_id, can_cancel, source_label, resolve_instance)
         if color_decision is not None:
             return color_decision
+        type_decision = _build_subtype_choice(poll, request_id, can_cancel, source_label, resolve_instance)
+        if type_decision is not None:
+            return type_decision
         prompt_decision = _build_prompt_choice(
             poll, request_id, can_cancel, source_label, resolve_instance, resolve_prompt, resolve_card
         )
@@ -1076,6 +1079,68 @@ def _build_color_choice(
     )
     if not source_label and resolve_instance is not None:
         asking = _prompt_card_instance(poll)
+        if asking:
+            source_label = resolve_instance(asking)
+    return PendingDecision(
+        request_id=request_id,
+        request_type="SelectN",
+        options=options,
+        min_select=int(poll.get("select_n_min", 1)),
+        max_select=max(1, int(poll.get("select_n_max", 1))),
+        can_cancel=can_cancel,
+        source_label=source_label,
+    )
+
+
+def _build_subtype_choice(
+    poll: dict[str, Any],
+    request_id: tuple[int, int],
+    can_cancel: bool,
+    source_label: str,
+    resolve_instance: Callable[[int], str] | None,
+) -> PendingDecision | None:
+    """A "choose a creature type" SelectN: options are SubType enum values, not cards.
+
+    Ledger #186 (match 4d934402, 2026-10-19 16:08:22): Herald's Horn's 353
+    subtype ids reached the model as "Option 1" ... "Option 133" (the bridge
+    snapshot stopped at 100); it meant Rabbit (232) and named Angel (1). The
+    ids are labelled from the card database (``creature_type_choice``); when
+    the bridge's list was cut short, the log's SelectNReq for the same request
+    supplies the rest. The card asking is the prompt's CardId.
+    """
+    from arenamcp.creature_type_choice import subtype_names, subtype_selection_ids
+
+    ids = subtype_selection_ids(
+        list_type=poll.get("select_n_list_type"),
+        static_list=poll.get("select_n_static_list"),
+        ids=poll.get("select_n_ids") or [],
+    )
+    if ids is None:
+        return None
+    context = getattr(_live_game_state(), "decision_context", None) or {}
+    same_request = list(context.get("request_id") or []) == list(request_id) and any(request_id)
+    if poll.get("select_n_ids_truncated") and same_request:
+        logged = subtype_selection_ids(
+            list_type=context.get("list_type"), static_list=context.get("static_list"), ids=context.get("option_ids") or []
+        )
+        if logged and set(ids) <= set(logged):
+            ids = logged
+    names = subtype_names()
+    options = tuple(
+        DecisionOption(
+            option_id=f"sel:{subtype}",
+            label=names.get(subtype) or f"Creature type #{subtype}",
+            # Never a card: no later poll names it better (autopilot's identity wait is for cards).
+            meta={"choice": "creature_type", "subtype_id": subtype, "identity_known": True},
+        )
+        for subtype in ids
+    )
+    if not options:
+        return None
+    if not source_label and resolve_instance is not None:
+        asking = next(iter(_prompt_card_ids(poll)), 0) or _prompt_card_instance(poll)
+        if not asking and same_request:
+            asking = next(iter(context.get("prompt_card_ids") or []), 0)
         if asking:
             source_label = resolve_instance(asking)
     return PendingDecision(
@@ -2178,6 +2243,32 @@ def _request_source_id(state: dict[str, Any]) -> int:
     return 0
 
 
+def type_choice_source(decision: Any, state: dict[str, Any]) -> tuple[str, str]:
+    """(name, rules text) of the card asking a creature-type choice (Herald's Horn).
+
+    ``asking_card``, else our permanent named like the decision's source label
+    (the prompt's CardId): the request's own source id is a trigger object.
+    """
+    name, rules = asking_card(decision, state)
+    if rules or not name:
+        return name, rules
+    for zone in ("battlefield", "stack"):
+        for card in state.get(zone) or []:
+            if isinstance(card, dict) and str(card.get("name") or "") == name and card.get("oracle_text"):
+                return name, str(card["oracle_text"])
+    return name, rules
+
+
+def creature_type_pick(decision: Any, state: dict[str, Any]) -> Any:
+    """``creature_type_choice.pick_creature_type`` with the asking card's text (ledger #186)."""
+    from arenamcp.creature_type_choice import is_creature_type_choice, pick_creature_type
+
+    if not is_creature_type_choice(decision):
+        return None
+    _name, rules = type_choice_source(decision, state)
+    return pick_creature_type(decision, state, source_text=rules)
+
+
 def asking_card(decision: Any, state: dict[str, Any]) -> tuple[str, str]:
     """(name, rules text) of the card whose effect asks this question, ('', '') when unknown.
 
@@ -2384,6 +2475,13 @@ def select_n_note(decision: Any, state: dict[str, Any]) -> str:
     choice_note = prompt_choice_note(decision, state)
     if choice_note:
         return choice_note
+    from arenamcp.creature_type_choice import is_creature_type_choice, type_choice_note
+
+    if is_creature_type_choice(decision):
+        name, rules = type_choice_source(decision, state)
+        note = type_choice_note(decision, state, name)
+        rules = clean_rules_text(rules, name)
+        return note + (f" {name}: {rules[:240]}" if name and rules else "")
     lines = []
     loss_note = hand_loss_note(decision, state)
     if loss_note:

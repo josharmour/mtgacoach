@@ -729,6 +729,35 @@ class MTGADatabase:
             self._prompt_cache[prompt_id] = text or None
             return text or None
 
+    def get_subtype_names(self) -> dict[int, str]:
+        """{SubType enum value: English name} from the ``Enums`` table (1 Angel, 232 Rabbit).
+
+        A "choose a creature type" SelectN (Herald's Horn, ``StaticList_SubTypes``)
+        offers these values as its ids (ledger #186). {} when the table is missing.
+        """
+        with self._conn_lock:
+            cached = getattr(self, "_subtype_names", None)
+            if cached is not None:
+                return dict(cached)
+            if not self._available or not self._conn:
+                return {}
+            try:
+                rows = self._conn.execute(
+                    "SELECT e.Value AS Value, l.Loc AS Loc FROM Enums e "
+                    "JOIN Localizations_enUS l ON l.LocId = e.LocId "
+                    "WHERE e.Type = 'SubType' ORDER BY e.Value, l.Formatted DESC"
+                ).fetchall()
+            except Exception as e:  # older builds without an Enums table
+                logger.debug(f"Subtype lookup failed: {e}")
+                return {}
+            names: dict[int, str] = {}
+            for row in rows:
+                text = re.sub(r"<[^>]*>", "", str(row["Loc"] or "")).strip()
+                if text and int(row["Value"]) not in names:
+                    names[int(row["Value"])] = text
+            self._subtype_names = names
+            return dict(names)
+
     def close(self):
         """Close the database connection."""
         with self._conn_lock:

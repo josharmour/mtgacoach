@@ -805,10 +805,19 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
                 "prompt_source_id": prompt_source_id,
             }
 
+    # "Choose a creature type" (Herald's Horn): SubType enum values, never cards (ledger #186).
+    from arenamcp.creature_type_choice import subtype_names, subtype_selection_ids
+
+    subtype_ids = subtype_selection_ids(
+        list_type=req.get("listType"), static_list=req.get("staticList"), ids=option_ids
+    )
     # Resolve option IDs to card names (handles both game objects and direct grp_ids from library searches)
     option_cards: list[str] = [option["name"] for option in color_options(color_ids or [])]
     option_cards += [choice["text"] or f"Choice #{choice['id']}" for choice in prompt_choices]
-    for oid in option_ids[:20] if color_ids is None and not prompt_choices else []:  # named above
+    if subtype_ids:
+        names = subtype_names()
+        option_cards += [names.get(subtype) or f"Creature type #{subtype}" for subtype in subtype_ids]
+    for oid in option_ids[:20] if color_ids is None and not prompt_choices and not subtype_ids else []:
         grp_id = 0
         obj = game_state.game_objects.get(oid)
         if obj and obj.grp_id:
@@ -831,7 +840,7 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
                 option_cards.append(f"Card#{grp_id}")
 
     logger.info(
-        f"Captured Decision: {decision_text} ({num_to_select} items, type={selection_type}, options={option_cards or option_ids[:5]})"
+        f"Captured Decision: {decision_text} ({num_to_select} items, type={selection_type}, options={option_cards[:20] or option_ids[:5]})"
     )
     game_state.pending_decision = decision_text
     game_state.decision_timestamp = _time.time()
@@ -884,6 +893,14 @@ def _select_n_prompt_info(
             text = prompt_text(prompt, name_of)
             if text:
                 info["prompt_text"] = text
+            # The card asking (Herald's Horn's creature-type choice: CardId 561, ledger #186).
+            card_ids = [
+                _coerce_int(param.get("numberValue", 0), 0)
+                for param in prompt.get("parameters") or []
+                if isinstance(param, dict) and param.get("parameterName") == "CardId"
+            ]
+            if any(card_ids):
+                info["prompt_card_ids"] = [card_id for card_id in card_ids if card_id]
         source_id = _coerce_int(req.get("sourceId", 0), 0)
         if source_id:
             # Not "source_id": that key arms the stack-based auto-clear, and the

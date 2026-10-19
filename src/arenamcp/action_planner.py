@@ -3959,6 +3959,17 @@ class ActionPlanner(_ActionLegalityMixin):
                 self._last_decision_trace = {"policy": "color_choice", "validated_ids": [color.option_id]}
                 logger.info("typed-decision: choosing %s without an LLM choice", color.reason)
                 return [color.option_id]
+            # "Choose a creature type" for our own payoff (Herald's Horn): our deck's main type
+            # (ledger #186: "Option 1" named Angel when the model meant Rabbit).
+            from arenamcp.decisions import creature_type_pick
+
+            kind = creature_type_pick(decision, game_state)
+            if kind is not None and kind.obvious:
+                self._last_decision_option_ids = [kind.option_id]
+                self._last_decision_reasoning = kind.reason
+                self._last_decision_trace = {"policy": "creature_type", "validated_ids": [kind.option_id]}
+                logger.info("typed-decision: naming %s without an LLM choice", kind.reason)
+                return [kind.option_id]
         if decision.request_type == "Search" and any(
             option.meta.get("identity_known") is False for option in decision.options
         ):
@@ -4090,6 +4101,15 @@ class ActionPlanner(_ActionLegalityMixin):
                 self._last_decision_reasoning = color.reason
                 logger.info("plan_decision_options: colour fallback picked %s", color.reason)
                 return [color.option_id]
+            from arenamcp.decisions import creature_type_pick
+
+            kind = creature_type_pick(decision, game_state)
+            if kind is not None:
+                # Never Angel-by-position (subtype 1): our deck's main creature type.
+                self._last_decision_option_ids = [kind.option_id]
+                self._last_decision_reasoning = kind.reason
+                logger.info("plan_decision_options: creature-type fallback picked %s", kind.reason)
+                return [kind.option_id]
         if decision.request_type == "Group":
             if "LondonMulligan" in str(decision.source_label or ""):
                 return []
