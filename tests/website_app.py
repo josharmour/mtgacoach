@@ -18,6 +18,7 @@ WEBSITE_DIR = Path(__file__).resolve().parents[1] / "website"
 
 WEBSITE_MODULES = (
     "db",
+    "abuse_protection",
     "providers",
     "patreon",
     "state",

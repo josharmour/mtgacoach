@@ -18,6 +18,9 @@ from tests.website_app import load_website_app
 
 MACHINE_ID = "a" * 64
 OTHER_MACHINE_ID = "b" * 64
+# Signups are rate-limited per caller network, so the test client needs a
+# real address (Starlette's default peer "testclient" is not an IP).
+CLIENT_ADDR = ("203.0.113.7", 50000)
 
 
 @pytest.fixture()
@@ -25,7 +28,7 @@ def env(tmp_path, monkeypatch):
     proxy_app, proxy_db, patreon = load_website_app(tmp_path, monkeypatch)
     fake = FakeLiteLLM(key_prefix="sk-fake-trial-")
     monkeypatch.setattr(patreon, "_http", lambda: fake)
-    with TestClient(proxy_app.app) as client:
+    with TestClient(proxy_app.app, client=CLIENT_ADDR) as client:
         yield proxy_app, proxy_db, patreon, fake, client
 
 
@@ -125,6 +128,8 @@ def test_litellm_payload_has_duration_and_metadata(env):
     assert payload["max_budget"] == patreon.TRIAL_KEY_BUDGET
     assert payload["max_budget"] <= patreon.PATRON_KEY_BUDGET * 0.25
     assert payload["models"] == patreon.PATRON_KEY_MODELS
+    for name, value in patreon.TRIAL_LIMITS.items():
+        assert payload[name] == value
     # minted with the gateway admin key
     assert fake.minted[0]["headers"]["Authorization"] == "Bearer sk-master-test"
 
@@ -139,6 +144,77 @@ def test_trials_are_per_machine(env):
     assert r2.json()["status"] == "created"
     assert r1.json()["key"] != r2.json()["key"]
     assert len(fake.minted) == 2
+
+
+
+# ── Signup abuse limits (website/abuse_protection.py) ──
+
+
+def _machine(n: int) -> str:
+    return f"{n:064x}"
+
+
+def test_network_limit_is_three_new_trials_per_hour(env):
+    _, _, _, fake, client = env
+
+    for n in range(3):
+        assert _post_trial(client, machine_id=_machine(n + 1)).status_code == 200
+
+    r = _post_trial(client, machine_id=_machine(99))
+
+    assert r.status_code == 429
+    assert int(r.headers["Retry-After"]) > 0
+    assert len(fake.minted) == 3
+
+
+def test_failed_mint_blocks_an_immediate_retry_but_records_the_attempt(env, monkeypatch):
+    _, proxy_db, patreon, fake, client = env
+
+    async def broken(machine_id):
+        raise RuntimeError("gateway down")
+
+    monkeypatch.setattr(patreon, "mint_trial_key", broken)
+    assert _post_trial(client).status_code == 503
+
+    retry = _post_trial(client)
+
+    assert retry.status_code == 429  # one attempt per machine per 5 minutes
+    with proxy_db.get_db() as conn:
+        statuses = [r[0] for r in conn.execute("SELECT status FROM trial_signup_reservations")]
+    assert statuses == ["failed"]
+    assert proxy_db.get_trial(MACHINE_ID) is None
+
+
+def test_issued_trial_is_marked_and_existing_key_still_returned(env):
+    _, proxy_db, _, fake, client = env
+    first = _post_trial(client).json()
+
+    again = _post_trial(client)
+
+    assert again.status_code == 200 and again.json()["key"] == first["key"]
+    with proxy_db.get_db() as conn:
+        statuses = [r[0] for r in conn.execute("SELECT status FROM trial_signup_reservations")]
+    assert statuses == ["issued"]
+    assert len(fake.minted) == 1
+
+
+def test_tunnel_peer_is_identified_by_cf_connecting_ip(env, monkeypatch):
+    proxy_app, _, _, fake, _ = env
+    abuse = __import__("sys").modules["abuse_protection"]
+    monkeypatch.setattr(abuse, "TRUSTED_TUNNEL_PEERS", {"10.0.0.2"})
+    with TestClient(proxy_app.app, client=("10.0.0.2", 40000)) as tunnel:
+        missing = tunnel.post("/api/trial", json={"machine_id": _machine(7)})
+        assert missing.status_code == 400  # no header from the tunnel: fail closed
+        for n, ip in enumerate(["198.51.100.1", "198.51.100.1", "198.51.100.1", "198.51.100.2"]):
+            r = tunnel.post(
+                "/api/trial", json={"machine_id": _machine(n + 10)}, headers={"CF-Connecting-IP": ip}
+            )
+            assert r.status_code == 200, (n, r.text)  # distinct client networks, not the tunnel's
+        r = tunnel.post(
+            "/api/trial", json={"machine_id": _machine(20)}, headers={"CF-Connecting-IP": "198.51.100.1"}
+        )
+        assert r.status_code == 429
+    assert len(fake.minted) == 4
 
 
 # ── /v1/subscription/check answers trial keys (the desktop access badge) ──

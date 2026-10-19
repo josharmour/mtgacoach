@@ -88,6 +88,8 @@ def test_pledge_create_mints_scoped_sk_key(env):
     assert payload["models"] == patreon.PATRON_KEY_MODELS
     assert payload["metadata"]["patron_id"] == "12345"
     assert payload["max_budget"] == patreon.PATRON_KEY_BUDGET
+    for name, value in patreon.PATRON_LIMITS.items():
+        assert payload[name] == value
 
     sub = db.check_license("sk-fake-0")
     assert sub and sub["email"] == "pat@example.com" and sub["status"] == "active"

@@ -155,7 +155,7 @@ async def completion(request: Request):
                      "WHERE token_hash=? AND match_id=?", (minute, minute, token_hash, match))
     try:
         response = await patreon._http().post(patreon.LITELLM_URL + "/v1/chat/completions",
-                                              json=payload, headers=patreon._admin_headers())
+                                              json=payload, headers={"Authorization": "Bearer " + os.environ["LITELLM_ARENAONAIR_KEY"]})
         if response.status_code != 200:
             raise RuntimeError("gateway unavailable")
         result = response.json()

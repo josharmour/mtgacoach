@@ -29,6 +29,7 @@ from typing import Any, Optional
 
 import db
 import httpx
+from abuse_protection import PATRON_LIMITS, TRIAL_LIMITS
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
@@ -98,6 +99,7 @@ async def mint_litellm_key(email: str, name: str, patron_id: str) -> str:
     payload: dict[str, Any] = {
         "models": PATRON_KEY_MODELS,
         "key_alias": f"patreon-{email}",
+        **PATRON_LIMITS,
         "max_budget": PATRON_KEY_BUDGET,
         "budget_duration": PATRON_KEY_BUDGET_DURATION,
         "metadata": {
@@ -137,6 +139,7 @@ async def mint_trial_key(machine_id: str) -> str:
     payload: dict[str, Any] = {
         "models": PATRON_KEY_MODELS,
         "key_alias": f"trial-{machine_id[:12]}",
+        **TRIAL_LIMITS,
         "duration": TRIAL_KEY_DURATION,
         "max_budget": TRIAL_KEY_BUDGET,
         "metadata": {
