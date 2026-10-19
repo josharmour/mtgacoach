@@ -3854,7 +3854,7 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         gap = trace.get("line_gap") if isinstance(trace, dict) else None
         if (
-            failure == "set_aside"
+            getattr(self, "last_llm_failure", "") == "set_aside"
             and isinstance(gap, dict)
             and gap.get("mode") == "on"
             and picked
