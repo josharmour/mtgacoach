@@ -61,16 +61,22 @@ def state(monkeypatch):
     }
 
 
-def assert_full_context(prompt):
+def assert_full_context(prompt, *, library=True):
     assert prompt.startswith("DECK REFERENCE")
     # The whole deck is listed; rules are quoted for the card in hand, not the
     # library card (2026-10-10: 99 Brawl cards' rules cost ~7k tokens a call).
     assert "1x Card 139 [grp:139]" in prompt.split("MY LIBRARY", 1)[0]
     assert "Distinct rules for 100." in prompt
     assert "Distinct rules for 139." not in prompt
-    library = prompt.split("MY LIBRARY", 1)[1]
-    assert "1x Card 139" in library
-    assert "1x Card 100" not in library
+    remaining = prompt.split("MY LIBRARY", 1)[1]
+    if library:
+        assert "1x Card 139" in remaining
+        assert "1x Card 100" not in remaining
+    else:
+        # No search/scry/surveil/mill effect in play: a tactical prompt points
+        # to the deck reference instead of restating it minus the visible zones.
+        assert "Card 139" not in remaining
+        assert "DECK REFERENCE minus the cards seen" in remaining
 
 
 def test_typed_and_legacy_prompts_share_complete_stable_deck(state):
@@ -88,7 +94,7 @@ def test_typed_and_legacy_prompts_share_complete_stable_deck(state):
     )
     planner._llm_decision_options(decision, state)
     first = backend.calls[-1][1]
-    assert_full_context(first)
+    assert_full_context(first, library=False)
     assert "For tutors" in backend.calls[-1][0]
     changed = deepcopy(state)
     changed["players"][0]["life_total"] = 5
@@ -97,7 +103,14 @@ def test_typed_and_legacy_prompts_share_complete_stable_deck(state):
     second = backend.calls[-1][1]
     assert first.split("PENDING DECISION:")[0] == second.split("PENDING DECISION:")[0]
     assert first != second
-    assert_full_context(planner._build_action_prompt(state, "new_turn", legal_actions=["Pass"]))
+    assert_full_context(planner._build_action_prompt(state, "new_turn", legal_actions=["Pass"]), library=False)
+    # A library effect in hand: the inventory is listed, after the same deck prefix.
+    scry = deepcopy(state)
+    scry["hand"][0]["oracle_text"] = "Scry 2, then draw a card."
+    planner._llm_decision_options(decision, scry)
+    third = backend.calls[-1][1]
+    assert_full_context(third)
+    assert third.split("PENDING DECISION:")[0] == first.split("PENDING DECISION:")[0]
 
 
 def test_coach_dynamic_strategy_does_not_invalidate_deck_prefix(state, monkeypatch):

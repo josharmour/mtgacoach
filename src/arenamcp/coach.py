@@ -2990,8 +2990,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         library_summary = game_state.get("library_summary", "")
         if library_summary:
+            from arenamcp.match_context import LIBRARY_POINTER
+
             lines.append("")
-            lines.append(library_summary)
+            # Without a search/scry/surveil/mill effect in play the inventory
+            # only restates the deck reference minus the visible zones.
+            lines.append(library_summary if game_state.get("library_listed", True) else LIBRARY_POINTER)
         return lines
 
     def _resolve_raw_legal_actions(self, game_state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3841,7 +3845,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if not llm_available(self._backend):
             return self._offline_advice(game_state, trigger=trigger, threat=threat, question=question)
         self._note_model_available()
-        game_state = prepare_match_context(game_state)
+        # A question ("what are my outs?") gets the library inventory; advice
+        # gets it when a search/scry/surveil/mill effect is in play.
+        game_state = prepare_match_context(game_state, library=True if question else None)
         total_start = time.perf_counter()
 
         # Build context. _build_context honors MTGACOACH_PROMPT_VARIANT

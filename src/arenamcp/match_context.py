@@ -215,6 +215,69 @@ def _tutor_in_hand(state: dict) -> bool:
     return False
 
 
+# Effects whose outcome depends on what is left in the library: searches
+# (tutors, fetches, ramp, typecycling), looking at or revealing its top
+# (scry, surveil, explore, seek, discover, cascade) and milling.
+_COUNT = r"(?:a|an|one|two|three|four|five|six|seven|x|\d+)"
+_LIBRARY_EFFECT_RE = re.compile(
+    r"search (?:your|their|its owner's|that player's) library|\b\w+cycling\b"
+    rf"|\b(?:scry|surveil|discover) (?:\d+|x)\b|\bmills? {_COUNT}\b|\bseeks? {_COUNT}\b"
+    r"|\bexplores?\b|\bcascade\b"
+    r"|top (?:\w+ )?cards? of (?:your|their|his or her|its owner's) library"
+    r"|(?:look at|reveal|exile) the top",
+    re.I,
+)
+LIBRARY_DECISIONS = frozenset({"search", "scry", "surveil", "mill", "explore"})
+LIBRARY_POINTER = (
+    "MY LIBRARY: the DECK REFERENCE minus the cards seen this game; its inventory is listed when a "
+    "search, scry, surveil, mill or top-of-library effect is in play."
+)
+
+
+def library_in_play(state: dict) -> bool:
+    """Whether the remaining library's composition can matter right now.
+
+    True for a library decision (search, scry, surveil, mill, explore), and
+    when one of our cards that could act now reaches the library: a card in
+    hand or the command zone, our object on the stack, or a permanent of ours
+    with a library ability that is not a one-time enters trigger. Otherwise
+    the inventory (up to ~1.2k tokens in Brawl) only restates the deck
+    reference minus the visible zones (2026-10-18 prompt audit).
+    """
+    context = state.get("decision_context") or {}
+    request = f"{context.get('type') or ''} {state.get('_bridge_request_type') or ''}".lower()
+    if any(kind in request for kind in LIBRARY_DECISIONS):
+        return True
+    local = state.get("local_seat_id") or next(
+        (p.get("seat_id") for p in state.get("players", []) if p.get("is_local")), None
+    )
+
+    def ours(card: dict) -> bool:
+        side = card.get("controller_seat_id") or card.get("owner_seat_id")
+        return local is None or side in (None, local)
+
+    for zone_name in ("hand", "command", "stack"):
+        for card in _zone(state, zone_name):
+            if ours(card) and _LIBRARY_EFFECT_RE.search(" ".join(oracle_lines(card.get("oracle_text")))):
+                return True
+    for card in _zone(state, "battlefield"):
+        if not ours(card):
+            continue
+        resolved = False
+        for line in oracle_lines(card.get("oracle_text")):
+            if not line.startswith("•"):  # a "•" mode belongs to the ability above it
+                resolved = _one_time_enters(line)
+            if not resolved and _LIBRARY_EFFECT_RE.search(line):
+                return True
+    return False
+
+
+def _one_time_enters(line: str) -> bool:
+    """A permanent's "When ... enters" trigger: it resolved when the permanent arrived."""
+    head = line.split(",", 1)[0].lower()
+    return head.startswith(("when ", "as ")) and "enter" in head and not re.search(r"\b(?:or|and)\b", head)
+
+
 def _card_line(info: dict, count: int, grp_id: int) -> str:
     name = info.get("name") or f"Unknown({grp_id})"
     fields = [
@@ -244,6 +307,7 @@ def prepare_match_context(
     card_lookup: Callable[[int], Any] | None = None,
     reveal: Iterable[int] = (),
     full_rules: bool = False,
+    library: bool | None = None,
 ) -> dict:
     """Return a shallow snapshot with the deck reference, catalog and remaining inventory.
 
@@ -251,6 +315,10 @@ def prepare_match_context(
     cards seen this game (plus ``reveal``: grp ids a pending decision offers,
     such as tutor candidates, quoted for this call only). ``full_rules=True``
     quotes every card (the library inspection and win-in-N paths).
+    ``library_listed`` on the result says whether a prompt lists the
+    remaining inventory (``library_summary``) or only points to the deck
+    reference: ``library=True`` always lists it (strategy prompts),
+    ``None`` lists it when :func:`library_in_play` (tactical prompts).
     Ownership (not controller) determines library membership. Tokens/abilities
     and duplicated instance records do not consume deck copies. Hidden, copied,
     transformed or generated cards can make this estimate incomplete; report
@@ -321,6 +389,7 @@ def prepare_match_context(
     result["deck_reference"] = "\n".join(reference)
     result["deck_catalog"] = catalog
     result["deck_rules_grp_ids"] = sorted(set(quoted) | set(commanders))
+    result["library_listed"] = bool(library or full_rules or library_in_play(state))
 
     remaining = deck.copy()
     seen: set[int] = set()

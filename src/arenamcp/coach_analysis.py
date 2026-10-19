@@ -72,7 +72,7 @@ class _CoachAnalysisMixin:
         # Build context (honors MTGACOACH_PROMPT_VARIANT)
         from arenamcp.match_context import prepare_match_context, with_deck_reference
 
-        game_state = prepare_match_context(game_state)
+        game_state = prepare_match_context(game_state, library=True)
         context = with_deck_reference(self._build_context(game_state), game_state)
 
         # Build system prompt with turn count injected
@@ -469,7 +469,7 @@ class _CoachAnalysisMixin:
 
         from arenamcp.match_context import prepare_match_context, with_deck_reference
 
-        game_state = prepare_match_context(game_state)
+        game_state = prepare_match_context(game_state, library=True)
         context = with_deck_reference(self._build_context(game_state), game_state)
 
         system_prompt = (

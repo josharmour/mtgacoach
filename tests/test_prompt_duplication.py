@@ -176,7 +176,7 @@ def _deck_state():
         hand=[_card(11, 100), _card(12, 100), _card(13, 101)],
         battlefield=[_card(21, 102, turn_entered_battlefield=1)],
         command=[_card(31, 200)],
-        zones={"library_count": 14, "opponent_hand_count": 5},
+        zones={"library_count": 16, "opponent_hand_count": 5},
     )
 
 
@@ -275,3 +275,79 @@ def test_repeated_board_copies_quote_their_rules_once():
     for number in (1, 2, 3):
         assert f"*Cadet #{number} 1/1" in context
     assert "*Cadet #2 1/1 [T]" in context
+
+
+# --- the library inventory is listed when the library is in play -------------------
+
+FETCH = "{T}, Pay 1 life, Sacrifice this land: Search your library for a basic land card, put it onto the battlefield."
+
+
+def _library_state(**changes):
+    state = _deck_state()
+    for key, value in changes.items():
+        state[key] = value
+    return state
+
+
+def _context(state, **prepare):
+    prepared = prepare_match_context(state, card_lookup=CATALOG.get, **prepare)
+    return CoachEngine.__new__(CoachEngine)._format_game_context(prepared, for_planner=True)
+
+
+def test_tactical_prompts_point_to_the_deck_reference_without_a_library_effect():
+    state = _library_state()
+    tactical, strategic = _context(state), _context(state, library=True)
+    assert "MY LIBRARY (" not in tactical
+    assert "MY LIBRARY: the DECK REFERENCE minus the cards seen this game" in tactical
+    assert "15x Forest [grp:102]" in strategic  # 16 in the deck, 1 on the battlefield
+    assert len(tactical) < len(strategic)
+    assert "Your library: 16 card(s)" in tactical  # the count stays
+
+
+def test_library_effects_in_play_list_the_inventory():
+    land_search = "Search your library for a basic land card, reveal it, put it into your hand, then shuffle."
+    listed = {
+        "a search in hand": _library_state(hand=[_card(13, 101, oracle_text=land_search)]),
+        "typecycling in hand": _library_state(hand=[_card(13, 101, oracle_text="Basic landcycling {2}")]),
+        "a fetch land's ability": _library_state(
+            battlefield=[_card(21, 102, name="Fixture Fetch", oracle_text=FETCH, turn_entered_battlefield=1)]
+        ),
+        "a recurring scry": _library_state(
+            battlefield=[_card(21, 101, oracle_text="Whenever you cast an instant spell, scry 1.")]
+        ),
+        "our spell on the stack": _library_state(stack=[_card(40, 101, oracle_text="Surveil 2. Draw a card.")]),
+        "a search decision": _library_state(decision_context={"type": "search"}),
+        "a scry decision": _library_state(decision_context={"type": "scry"}),
+    }
+    for why, state in listed.items():
+        assert "MY LIBRARY (" in _context(state), why
+    not_listed = {
+        "a resolved enters trigger": "When this land enters, scry 1.",
+        # Yuriko, Hope from the Shadows (FRA): the surveil is a mode of its enters trigger.
+        "a resolved modal enters trigger": "Flash\nWhen this creature enters, choose one —\n"
+        "•Target creature gets -X/-0 until end of turn.\n•Surveil 2.",
+        # Diviner of Victory (FRA): a payoff, not a library effect.
+        "a scry payoff": "Whenever you scry or surveil, this creature gets +1/+1 until end of turn.",
+    }
+    for why, text in not_listed.items():
+        entered = _library_state(battlefield=[_card(21, 100, oracle_text=text)])
+        assert "MY LIBRARY (" not in _context(entered), why
+    theirs = _library_state(stack=[_card(40, 101, oracle_text="Scry 2.", controller_seat_id=2, owner_seat_id=2)])
+    assert "MY LIBRARY (" not in _context(theirs)
+
+
+def test_the_game_plan_and_questions_keep_the_inventory(monkeypatch):
+    from arenamcp.game_plan import GamePlanManager
+
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, epoch: CATALOG[gid])
+    backend = _Capture('{"win_conditions":["Engine"],"path":"Develop","threat":"x","develop_next":"y"}')
+    GamePlanManager(backend).maybe_reform(_library_state(), force=True)
+    assert "MY LIBRARY (16 cards left" in backend.calls[-1]
+    from types import SimpleNamespace
+
+    coach_backend = _Capture("Two Forests and the second Growth remain.")
+    coach = CoachEngine(backend=coach_backend)
+    coach._ensure_game_plan_mgr = lambda: None
+    coach._rules_db = SimpleNamespace(get_rules_for_situation=lambda *args, **kwargs: [])
+    coach.get_advice(_library_state(), question="What can I still draw?")
+    assert "MY LIBRARY (16 cards left" in coach_backend.calls[-1]

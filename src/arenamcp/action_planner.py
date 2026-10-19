@@ -4538,8 +4538,13 @@ class ActionPlanner(_ActionLegalityMixin):
         line_source, lines_text, unmodelled = self._line_prompt_context(decision, game_state)
         tag_state = game_state
         line_tags: dict[str, str] = {}
-        # A search/tutor offers library cards: their rules are quoted for this call.
-        game_state = prepare_match_context(game_state, reveal=_option_grp_ids(decision))
+        # A search/tutor offers library cards: their rules are quoted for this
+        # call, and the remaining inventory is listed with them.
+        game_state = prepare_match_context(
+            game_state,
+            reveal=_option_grp_ids(decision),
+            library=True if decision.request_type == "Search" else None,
+        )
         lines = [
             f"PENDING DECISION: {decision.request_type}"
             + (f" (source: {decision.source_label})" if decision.source_label else ""),
