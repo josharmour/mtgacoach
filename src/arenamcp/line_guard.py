@@ -14,6 +14,10 @@ four narrow, deterministic uses at decision time:
   'LINES ...' prompt line.
 - ``line_fallback_pick``: the best line's first action when the model gave no
   usable answer.
+- ``attack_line_guard`` / ``attack_line_note`` (ledger #152): declared
+  attackers the best surviving line keeps home, when attacking with them dies
+  sooner (``ARENAMCP_ATTACK_LINE_GUARD``, shadow by default), and the
+  attack-vs-hold verdict for the declare-attackers prompt.
 
 Both guards are shadow-only by default: they return a verdict whose
 ``applies`` is False, and the caller logs what it would have done. The env vars
@@ -548,6 +552,208 @@ def _mode_guard(result_fn, decision, chosen_ids, state, *, lethal_now) -> LineVe
     )
 
 
+# --- the attack line guard (ledger #152) ------------------------------------------------------
+
+# The searched line that sends the attackers we would hold must die at least this many of their
+# attacks sooner than the holding line (a holding line that survives its last searched attack
+# counts as dying one attack past it).
+ATTACK_LINE_MARGIN = 1
+
+
+def attack_line_mode() -> str:
+    """'off', 'shadow' or 'on' for the attack line guard (``ARENAMCP_ATTACK_LINE_GUARD``); default 'shadow'.
+
+    Shadow by default like ARENAMCP_LINE_GUARD: guards that replace the model's
+    pick stay in shadow until the user reviews their logs.
+    """
+    value = str(os.environ.get("ARENAMCP_ATTACK_LINE_GUARD", "") or "").strip().lower()
+    return value if value in GUARD_MODES else "shadow"
+
+
+@dataclass
+class AttackLineVerdict:
+    """Declared attackers the searched lines keep home, because attacking with them dies sooner."""
+
+    hold_ids: list[int]
+    hold_names: list[str]
+    attack_line: Line
+    hold_line: Line
+    reason: str  # 'attack dead T16, hold survives (life 10, 6, 2); best line: ...' for the log
+    summary: str  # short text for narration
+    attack_text: str = ""  # 'dead on T16'
+    hold_text: str = ""  # 'survives (life 10, 6, 2)'
+    robust: bool = False
+    applies: bool = False
+    setting: str = "shadow"
+
+    def as_trace(self) -> dict[str, Any]:
+        return {
+            "hold": list(self.hold_names),
+            "hold_ids": list(self.hold_ids),
+            "attack_line": self.attack_line.summary(),
+            "hold_line": self.hold_line.summary(),
+            "robust": self.robust,
+            "applied": self.applies,
+            "mode": self.setting,
+        }
+
+
+def _attack_ids(line: Line) -> frozenset[int] | None:
+    """The attacker ids of the line's T step; None when they can't be told from its names."""
+    if not line.steps:
+        return None
+    step = line.steps[0]
+    ids = frozenset(_int(i) for i in (step.plays[2] if len(step.plays) == 3 else ()) or ())
+    return ids if len(ids) == len(step.attack) else None
+
+
+def _dies_at(line: Line) -> int:
+    """Their attack that kills us in this line; a line that lives dies one past its last searched attack."""
+    if line.cls == DEAD and line.dead_at is not None:
+        return line.dead_at
+    return sum(1 for step in line.steps if step.life_after is not None) + 1
+
+
+def _outcome_brief(line: Line) -> str:
+    """'dead T16' / 'survives (life 10, 6, 2)' / 'lethal on T15'."""
+    if line.cls == DEAD and line.dead_turn is not None:
+        return f"dead T{line.dead_turn}"
+    return line.outcome_text()
+
+
+def attack_line_guard(
+    result: LineSearchResult | None,
+    declared_ids: list[int] | tuple[int, ...],
+    state: dict,
+    *,
+    lethal_now: bool,
+    all_in: bool,
+    unknown_bodies: list[str] | tuple[str, ...] = (),
+) -> AttackLineVerdict | None:
+    """Declared attackers to hold because the searched lines keep them home; None to keep the attack.
+
+    Ledger #152 (2026-10-19 match 633f56bd T11, 13:59:54): both Slickshot
+    Show-Offs attacked into a tapped-out board ("free 4 flying damage"; it was
+    2) while the line search said holding survives (life 10, 6, 2) and
+    attacking is dead on T16. Untapped, they would have blocked; their next
+    attack took 8. Only the one-turn crackback guard judged attacks.
+
+    Holds the declared attackers the best line's T step leaves home, when that
+    best line survives (or wins later), the searched line that attacks as
+    declared (else the best one sending all of them and no undeclared
+    attacker) dies at least ``ATTACK_LINE_MARGIN`` of their attacks sooner, and
+    the +2/+0 trick proxy does not reverse that. None when: off; no usable search;
+    lethal now or a winning posture; all in; not our turn or not before our
+    attack; an unknown-P/T creature; the best line's attackers can't be told;
+    or no searched line sends the attackers it would hold. Shadow by default
+    (``ARENAMCP_ATTACK_LINE_GUARD``): ``applies`` is then False and the caller
+    only logs the verdict.
+    """
+    try:
+        return _attack_line_guard(
+            result, declared_ids, state, lethal_now=lethal_now, all_in=all_in, unknown_bodies=unknown_bodies
+        )
+    except Exception:  # never let the guard break a declaration
+        logger.debug("attack line guard failed", exc_info=True)
+        return None
+
+
+def _attack_line_guard(result, declared_ids, state, *, lethal_now, all_in, unknown_bodies):
+    setting = attack_line_mode()
+    if setting == "off" or not _usable(result) or lethal_now or all_in or not _our_turn(state):
+        return None
+    model = result.model
+    if not model.our_turn or not model.our_attack_pending or unknown_bodies or model.unknown_bodies:
+        return None
+    best = result.best
+    if result.posture == "lethal" or best.cls == DEAD or (best.cls == WIN and best.win_at == 1):
+        return None
+    declared = frozenset(_int(i) for i in declared_ids or () if _int(i) is not None)
+    best_attack = _attack_ids(best)
+    if not declared or best_attack is None:
+        return None
+    home = declared - best_attack
+    if not home:
+        return None
+    # The line that attacks as declared, else the best searched one that sends every attacker we'd
+    # hold and none we did not declare (an extra attacker would be a blocker it gave up).
+    attacking = result.first_action.get(("attack", declared))
+    if attacking is None:
+        sending = [
+            line
+            for key, line in result.first_action.items()
+            if len(key) == 2 and key[0] == "attack" and home <= set(key[1]) <= declared
+        ]
+        attacking = max(sending, key=lambda line: line.score) if sending else None
+    if attacking is None or attacking.cls != DEAD:
+        return None
+    if _dies_at(best) - _dies_at(attacking) < ATTACK_LINE_MARGIN:
+        return None
+    proxy = _proxy_check((result, best), (result, attacking), by_value=False)
+    if proxy is None or not proxy[0]:
+        return None
+    names = {
+        _int(card.get("instance_id")): _name(card)
+        for card in state.get("battlefield") or []
+        if isinstance(card, dict)
+    }
+    hold_ids = sorted(home)
+    hold_names = [names.get(i) or f"#{i}" for i in hold_ids]
+    attack_text, hold_text = attacking.outcome_text(), best.outcome_text()
+    reason = (
+        f"attack {_outcome_brief(attacking)}, hold {_outcome_brief(best)}; best line: {best.summary()} "
+        f"[{proxy[2]}]"
+    )
+    summary = (
+        f"Holding {', '.join(hold_names)} back: by the line search, attacking is {attack_text}, "
+        f"holding {hold_text}."
+    )
+    return AttackLineVerdict(
+        hold_ids=hold_ids,
+        hold_names=hold_names,
+        attack_line=attacking,
+        hold_line=best,
+        reason=reason,
+        summary=_clip(summary, _SUMMARY_MAX),
+        attack_text=attack_text,
+        hold_text=hold_text,
+        robust=proxy[1],
+        applies=setting == "on",
+        setting=setting,
+    )
+
+
+def attack_line_note(result: LineSearchResult | None, state: dict) -> str:
+    """The line search's attack-vs-hold verdict for a declare-attackers prompt, or '' (ledger #152).
+
+    Only on our turn before our attack, with a usable search whose posture is
+    'attack' or 'hold' (a lethal posture has its own facts; 'either' says
+    nothing).
+    """
+    try:
+        if not _usable(result) or not _our_turn(state):
+            return ""
+        model = result.model
+        if not model.our_turn or not model.our_attack_pending:
+            return ""
+        if result.posture not in ("attack", "hold") or not result.posture_reason:
+            return ""
+        head = (
+            "ATTACK vs HOLD (board-math line search, 2 turns + greedy 3rd; their new cards and tricks "
+            f"not modelled): {result.posture_reason}. Verdict: {result.posture.upper()}"
+        )
+        if result.posture == "hold":
+            return (
+                f"{head}. Not lethal this turn. Their creatures being tapped now does not make an attack "
+                "free: an attacker without vigilance stays tapped through their next turn and cannot "
+                "block. Keep the attackers the search keeps home unless you can name what it is missing."
+            )
+        return f"{head}."
+    except Exception:
+        logger.debug("attack line note failed", exc_info=True)
+        return ""
+
+
 # --- prompt text --------------------------------------------------------------------------
 
 
@@ -702,10 +908,15 @@ def line_fallback_pick(result: LineSearchResult | None, decision: Any, state: di
 
 
 __all__ = [
+    "ATTACK_LINE_MARGIN",
     "GUARD_MODES",
     "LINE_GUARD_MARGIN",
     "LINE_TOL",
+    "AttackLineVerdict",
     "LineVerdict",
+    "attack_line_guard",
+    "attack_line_mode",
+    "attack_line_note",
     "guard_mode",
     "line_fallback_pick",
     "line_gap_mode",

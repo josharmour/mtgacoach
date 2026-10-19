@@ -1257,6 +1257,9 @@ class ActionPlanner(_ActionLegalityMixin):
         self._check_attack_crackback(
             plan, game_state, decision_context or game_state.get("decision_context") or {}
         )
+        self._check_attack_line(
+            plan, game_state, decision_context or game_state.get("decision_context") or {}
+        )
 
         # Attach GRE action refs if raw actions are available. If the bridge says
         # the current request has no actions (e.g. PayCostsReq), do not fall back
@@ -1872,6 +1875,118 @@ class ActionPlanner(_ActionLegalityMixin):
         plan.voice_advice = (
             f"Holding {spoken_list([spoken_name(n) for n in held_names])} back: not lethal this turn, "
             f"and their crackback would leave us at {life_after(attacking)}."
+        )
+
+    def _check_attack_line(self, plan: ActionPlan, state: dict, context: dict) -> None:
+        """Hold declared attackers the searched lines keep home when attacking dies sooner (ledger #152).
+
+        2026-10-19 match 633f56bd T11 (13:59:54): both Slickshot Show-Offs
+        attacked ("No untapped blockers; free 4 flying damage" — it was 2;
+        "saving burn" with an empty hand) while the line search said holding
+        survives (life 10, 6, 2) and attacking is dead on T16. Untapped they
+        would have blocked; their next attack took 8. The crackback guard only
+        looks one attack ahead (10 - 6 = 4, above its danger line).
+
+        Runs last, on the declaration the losing-attack, free-attack and
+        crackback guards leave: see :func:`arenamcp.line_guard.attack_line_guard`
+        (never on lethal, all-in, a planeswalker recipient, an unknown-P/T
+        creature or without a usable search). Shadow by default
+        (``ARENAMCP_ATTACK_LINE_GUARD``): 'shadow' logs what it would hold;
+        'on' holds it, and a declaration emptied this way is a ``guard_hold``
+        (#75) the bridge does not refill.
+        """
+        if str(context.get("type") or "").lower() != "declare_attackers":
+            return
+        declared = next((a for a in plan.actions if a.action_type == ActionType.DECLARE_ATTACKERS), None)
+        if declared is None or not declared.attacker_names:
+            return
+        try:
+            from arenamcp import line_guard
+            from arenamcp.board_assessment import assess
+            from arenamcp.combat_identity import resolve_combatants
+            from arenamcp.combat_strategy import _walker_target_id
+
+            if line_guard.attack_line_mode() == "off":
+                return
+            identities = list(declared.attacker_instance_ids)
+            if len(identities) != len(declared.attacker_names):
+                eligible = [int(i) for i in context.get("legal_attacker_ids") or [] if str(i).isdigit()] or [
+                    int(entry.get("attackerInstanceId") or 0) for entry in context.get("raw_attackers") or []
+                ]
+                identities = resolve_combatants(declared.attacker_names, state, eligible, local_side=True)
+            cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
+            opponent = next(
+                (p.get("seat_id") for p in state.get("players") or [] if not p.get("is_local")), None
+            )
+            shared = declared.target_names[0] if len(declared.target_names) == 1 else ""
+            recipients = [declared.attacker_targets.get(name) or shared for name in declared.attacker_names]
+            if any(_walker_target_id(target, cards, opponent) is not None for target in recipients if target):
+                return  # an attack at a planeswalker is judged by what it does to the walker
+            assessment = assess(state)
+            result = getattr(assessment, "line_search", None)
+            if assessment is None or result is None:
+                return
+            verdict = line_guard.attack_line_guard(
+                result,
+                identities,
+                state,
+                lethal_now=assessment.lethal_now,
+                all_in=assessment.all_in,
+                unknown_bodies=[u for u in assessment.unknowns if "unknown power/toughness" in u],
+            )
+        except Exception as error:  # the strategic layer never blocks a declaration
+            logger.debug("attack line guard skipped: %s", error)
+            return
+        if verdict is None:
+            return
+        original = _model_reasoning(plan, declared)
+        if not verdict.applies:
+            logger.info(
+                "attack_line_guard [%s]: would hold %s (%s) [model planned: %s]",
+                verdict.setting,
+                ", ".join(verdict.hold_names),
+                verdict.reason,
+                original[:200] or "no reason given",
+            )
+            return
+        held = set(verdict.hold_ids)
+        pairs = list(zip(declared.attacker_names, identities, strict=True))
+        keep = [(name, identity) for name, identity in pairs if identity not in held]
+        logger.warning(
+            "attack_line_guard: holding %s (%s) [model planned: %s]",
+            ", ".join(verdict.hold_names),
+            verdict.reason,
+            original[:200] or "no reason given",
+        )
+        declared.attacker_names = [name for name, _ in keep]
+        if declared.attacker_instance_ids:
+            declared.attacker_instance_ids = [identity for _, identity in keep]
+        declared.attacker_targets = {
+            name: target
+            for name, target in declared.attacker_targets.items()
+            if name in declared.attacker_names
+        }
+        if not keep:
+            declared.target_names = []
+            declared.guard_hold = True
+        declared.reasoning = verdict.summary
+        declared.model_reasoning = declared.model_reasoning or original
+        self._remember_guard_hold(
+            state,
+            f"attack held by guard: {', '.join(verdict.hold_names)} not attacking",
+            f"line search: {verdict.reason}",
+        )
+        from arenamcp.narration import spoken_list, spoken_name
+
+        who = spoken_list([spoken_name(name) for name in verdict.hold_names])
+        plan.fallback_reason = "planner_attack_line_guard"
+        plan.overall_strategy = (
+            f"Hold back {who}: by the board math, attacking is {verdict.attack_text}, "
+            f"holding {verdict.hold_text}."
+        )
+        plan.voice_advice = (
+            f"Not attacking with {who}: by the board math, attacking is {verdict.attack_text}."
+            + (f" {plan.spoken_actions()}" if keep else "")
         )
 
     def _ensure_free_attacks(self, plan: ActionPlan, state: dict, context: dict) -> None:
@@ -2788,6 +2903,11 @@ class ActionPlanner(_ActionLegalityMixin):
             "",
             context,
         ]
+        if dec_type == "declare_attackers":
+            # Ledger #152: the line search's attack-vs-hold verdict at the declaration itself.
+            attack_note = self._attack_line_note(game_state)
+            if attack_note:
+                parts.insert(1, attack_note)
 
         # Persistent GAME PLAN (strategic spine): the top-level frame every
         # tactical decision serves. Placed before the per-turn intent so the
@@ -2874,6 +2994,28 @@ class ActionPlanner(_ActionLegalityMixin):
         parts.append("\nRespond with ONLY a JSON action plan matching the schema.")
 
         return with_deck_reference("\n".join(parts), game_state)
+
+    @staticmethod
+    def _attack_line_note(game_state: dict[str, Any]) -> str:
+        """The line search's attack-vs-hold verdict for the declare-attackers prompt, or '' (ledger #152).
+
+        2026-10-19 match 633f56bd T11: both Slickshot Show-Offs attacked "free"
+        into a tapped-out board while the search had holding surviving (life 10,
+        6, 2) and attacking dead on T16; that verdict sat only inside the
+        STRATEGIC ROLE line. See :func:`arenamcp.line_guard.attack_line_note`;
+        nothing with lethal on board or all in (their own facts say so).
+        """
+        try:
+            from arenamcp.board_assessment import assess
+            from arenamcp.line_guard import attack_line_note
+
+            assessment = assess(game_state)
+            if assessment is None or assessment.lethal_now or assessment.all_in:
+                return ""
+            return attack_line_note(getattr(assessment, "line_search", None), game_state)
+        except Exception as error:  # the strategic layer never blocks a prompt
+            logger.debug("attack line note skipped: %s", error)
+            return ""
 
     def _fallback_format(self, game_state: dict[str, Any]) -> str:
         """Fallback game state formatter if CoachEngine is unavailable."""
@@ -7422,7 +7564,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 }
                 answered_high = answered_high or not opponent_turn
             except Exception as error:
-                logger.info("typed-decision: reversal re-check failed (%s); keeping the first answer", error)
+                data, chosen = self._reversal_check_failed(
+                    decision, tag_state, data, chosen, line_tags, reversed_record, error
+                )
         data, chosen = self._second_look(
             decision, tag_state, data, chosen, concerns_for, ask, parse, user_message, answered_high
         )
@@ -7445,6 +7589,70 @@ class ActionPlanner(_ActionLegalityMixin):
             "typed-decision choice %s: %s", chosen, self._last_decision_reasoning or "reason not supplied"
         )
         return chosen
+
+    def _reversal_check_failed(
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        data: dict,
+        chosen: list[str],
+        line_tags: dict[str, str],
+        record: Any,
+        error: Exception,
+    ) -> tuple[dict, list[str]]:
+        """The reversal re-check got no answer: keep the earlier pass unless the reversing pick is line-best or lethal.
+
+        Ledger #151 (2026-10-19 match 633f56bd T7, 13:58:48 -> 13:59:03): in our
+        declare-blockers step the low answer cast Lightning Strike at the face
+        (tagged "[LINE: -7 vs best ...]"), reversing the Main 1 pass ("keep
+        Lightning Strike as instant-speed interaction"). The high-effort
+        re-check ran out its 15 s budget beside a 3,162-token game-plan reform,
+        and the reversing cast stood unexamined. The re-check exists because
+        the reversal is doubtful, so without its answer the earlier pass stands,
+        unless the line search rates the pick best ('[LINE best' / '[LINE:
+        ~best', within its tolerance) or the board math has lethal this turn.
+        """
+        option_id = str(chosen[0]) if chosen else ""
+        tag = str((line_tags or {}).get(option_id) or "")
+        stands = ""
+        if tag.startswith(("[LINE best", "[LINE: ~best")):
+            stands = f"the line search rates it best {tag}"
+        elif _lethal_this_turn(game_state) is True:
+            stands = "the board math has lethal this turn"
+        elif decision.find("pass") is None:
+            stands = "no pass on the menu"
+        trace = getattr(self, "_last_decision_trace", None)
+        check = {"earlier": record.reasoning, "failed": str(error)[:200]}
+        if stands:
+            logger.info(
+                "typed-decision: reversal re-check failed (%s); keeping the first answer (%s)", error, stands
+            )
+            if isinstance(trace, dict):
+                trace["reversal_check"] = {**check, "final": list(chosen), "kept": f"first answer: {stands}"}
+            return data, chosen
+        label = _option_text(decision, option_id)
+        logger.warning(
+            "typed-decision: reversal re-check failed (%s); keeping the earlier pass, not %s %s "
+            "(neither the line's best nor lethal) [model: %s]",
+            error,
+            label,
+            tag or "(no line tag)",
+            str(data.get("reasoning") or "")[:160],
+        )
+        if isinstance(trace, dict):
+            trace["reversal_check"] = {
+                **check,
+                "final": ["pass"],
+                "kept": "earlier pass",
+                "set_aside": list(chosen),
+            }
+        reasoning = " ".join(str(record.reasoning or "").split())
+        return {
+            "option_ids": ["pass"],
+            "reasoning": f"Keeping the earlier pass this turn: {reasoning}"
+            if reasoning
+            else "Keeping the earlier pass this turn.",
+        }, ["pass"]
 
     def _note_false_claims(self, game_state: dict[str, Any], decision: Any, chosen: list[str]) -> None:
         """Annotate the reasoning's claims the board contradicts (ledger #84; no model call).
