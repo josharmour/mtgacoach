@@ -182,3 +182,161 @@ def test_removal_without_a_legal_target_does_not_escalate():
         "idx:2", "Cast Last Gasp", payable=True, meta={"actionType": "ActionType_Cast", "instanceId": 140}
     )
     assert critical_decision(actions(gasp), state(hand=[GASP], battlefield=[]), "") == ""
+
+
+# 2026-10-19 Mono-Red Burn (07:15-09:08): burn in hand sent 151 typed decisions
+# to the high-effort hedge, most of them against bodies it could not kill.
+SHOCK = card(201, "Shock", ("Instant",), "Shock deals 2 damage to any target.")
+BURST = card(
+    202,
+    "Burst Lightning",
+    ("Instant",),
+    "Kicker {4}\nBurst Lightning deals 2 damage to any target. If this spell was kicked, "
+    "it deals 4 damage instead.",
+) | {"mana_cost": "{R}"}
+STRIKE = card(203, "Lightning Strike", ("Instant",), "Lightning Strike deals 3 damage to any target.")
+
+
+def cast_option(option_id, source):
+    return DecisionOption(
+        option_id,
+        f"Cast {source['name']}",
+        payable=True,
+        meta={"actionType": "ActionType_Cast", "instanceId": source["instance_id"]},
+    )
+
+
+def body(instance_id, name, toughness, owner=2, **flags):
+    return dict(card(instance_id, name, owner=owner), toughness=toughness, power=toughness, **flags)
+
+
+BILL = body(301, "Bristly Bill", 4)
+
+
+def test_burn_that_can_kill_nothing_runs_at_low_effort():
+    shock = actions(cast_option("idx:0", SHOCK))
+    skipped: list[str] = []
+    assert critical_decision(shock, state(hand=[SHOCK], battlefield=[BILL]), "", skipped) == ""
+    assert skipped == ["Shock can kill nothing on their side"]
+    # An empty opposing board, or only our own 2/2: Shock only goes face.
+    assert critical_decision(shock, state(hand=[SHOCK]), "") == ""
+    assert (
+        critical_decision(shock, state(hand=[SHOCK], battlefield=[BILL, body(5, "Ours", 2, owner=1)]), "")
+        == ""
+    )
+    # A body it kills, one damaged into range, one in combat, a planeswalker, or an
+    # unknown toughness: removal.
+    for target in (
+        body(302, "Elf", 2),
+        body(303, "Marshal", 4, damage=2),
+        dict(BILL, is_blocking=True),
+        card(304, "Jace", ("Planeswalker",), owner=2),
+        card(305, "Ghoul", owner=2),
+    ):
+        board = state(hand=[SHOCK], battlefield=[BILL, target])
+        assert critical_decision(shock, board, "") == "removal available: Shock"
+    # Burst Lightning's kicked 4 damage counts only with the mana for {R} plus kicker {4};
+    # on the stack it may have been kicked, so it counts there.
+    burst = actions(cast_option("idx:1", BURST))
+    mountains = [card(400 + i, "Mountain", ("Land",)) for i in range(5)]
+    kicked = state(hand=[BURST], battlefield=[BILL, *mountains])
+    assert critical_decision(burst, kicked, "") == "removal available: Burst Lightning"
+    unkicked = state(hand=[BURST], battlefield=[BILL, *mountains[:2]])
+    assert critical_decision(burst, unkicked, "") == ""
+    tapped = state(
+        hand=[BURST], battlefield=[BILL, *mountains[:3], *(dict(m, is_tapped=True) for m in mountains[3:])]
+    )
+    assert critical_decision(burst, tapped, "") == ""
+    # Our main phase counts the land drop still to come.
+    basics = [dict(m, oracle_text="({T}: Add {R}.)") for m in mountains]
+    main = state(hand=[BURST, basics[4]], battlefield=[BILL, *basics[:4]])
+    main["turn"].update(phase="Phase_Main1", active_player=1)
+    assert critical_decision(burst, main, "") == "removal available: Burst Lightning"
+    main["battlefield"] = [BILL, *basics[:3]]
+    assert critical_decision(burst, main, "") == ""
+    targets = PendingDecision(
+        request_id=(1, 2), request_type="SelectTargets", options=(), source_label="Burst Lightning"
+    )
+    assert (
+        critical_decision(targets, state(stack=[BURST], battlefield=[BILL]), "")
+        == "removal target: Burst Lightning"
+    )
+    strike = actions(cast_option("idx:2", STRIKE))
+    assert critical_decision(strike, state(hand=[STRIKE], battlefield=[BILL]), "") == ""
+    # Real removal next to the burn still escalates.
+    gasp = DecisionOption(
+        "idx:3", "Cast Last Gasp", payable=True, meta={"actionType": "ActionType_Cast", "instanceId": 140}
+    )
+    both = actions(cast_option("idx:0", SHOCK), gasp)
+    assert (
+        critical_decision(both, state(hand=[SHOCK, GASP], battlefield=[BILL]), "")
+        == "removal available: Last Gasp"
+    )
+
+
+def test_targeting_burn_that_can_kill_nothing_runs_at_low_effort():
+    targets = PendingDecision(
+        request_id=(1, 2),
+        request_type="SelectTargets",
+        options=(DecisionOption("tgt:2", "Opponent"), DecisionOption("tgt:301", "Bristly Bill")),
+        source_label="Shock",
+    )
+    skipped: list[str] = []
+    assert critical_decision(targets, state(stack=[SHOCK], battlefield=[BILL]), "", skipped) == ""
+    assert skipped == ["Shock can kill nothing on their side"]
+    assert critical_decision(targets, state(hand=[SHOCK], battlefield=[BILL]), "") == ""
+    elf = body(302, "Elf", 2)
+    assert (
+        critical_decision(targets, state(stack=[SHOCK], battlefield=[BILL, elf]), "")
+        == "removal target: Shock"
+    )
+
+
+def combat_state(step, **kw):
+    board = state(**kw)
+    board["turn"].update(phase="Phase_Combat", step=step, active_player=1)
+    return board
+
+
+def test_a_pass_that_kept_the_card_for_later_is_carried_out_not_reversed():
+    """2026-10-19 08:04:11 'holding Shock as post-combat reach', then Shock once blockers were declared."""
+    from arenamcp.decision_memory import turn_window
+
+    memory = DecisionMemory()
+    window = actions(cast_option("idx:0", SHOCK))
+    passed_at = combat_state("Step_DeclareAttack", hand=[SHOCK], battlefield=[BILL])
+    record = memory.record(
+        passed_at,
+        window,
+        ["pass"],
+        "Attacking both into a lone 4/4 blocker guarantees one connector, and holding Shock as "
+        "post-combat reach closes out lethal this turn",
+    )
+    later = combat_state("Step_DeclareBlock", hand=[SHOCK], battlefield=[BILL])
+    assert memory.reversal(later, window, ["idx:0"]) is record  # the board signature alone calls it one
+    assert memory.stated_plan_followed(record, later, window, ["idx:0"]) == "as post-combat reach"
+    # 08:03:58's wording of the same plan.
+    held = memory.record(
+        passed_at,
+        window,
+        ["pass"],
+        "Hold Shock as instant-speed reach: attack both creatures (Bill blocks one, the other connects "
+        "for 3), then Shock face for exact lethal.",
+    )
+    assert memory.stated_plan_followed(held, later, window, ["idx:0"]) == "as instant-speed reach"
+    # The same step is not later; a pass that rejected the card names no later point.
+    assert memory.stated_plan_followed(record, passed_at, window, ["idx:0"]) == ""
+    rejected = memory.record(passed_at, window, ["pass"], "Shock on Bill is a bad trade; it survives")
+    assert memory.stated_plan_followed(rejected, later, window, ["idx:0"]) == ""
+    # A card the pass did not keep is no part of its plan; an unknown step never counts.
+    strike = actions(cast_option("idx:2", STRIKE))
+    assert memory.stated_plan_followed(record, later, strike, ["idx:2"]) == ""
+    assert (
+        memory.stated_plan_followed(record, state(hand=[SHOCK], battlefield=[BILL]), window, ["idx:0"]) == ""
+    )
+    # Turn order: a main phase ignores a lingering step; combat steps run in order.
+    main2 = turn_window({"turn": {"phase": "Phase_Main2", "step": "Step_EndCombat"}})
+    damage = turn_window({"turn": {"phase": "Phase_Combat", "step": "Step_CombatDamage"}})
+    main1 = turn_window({"turn": {"phase": "Phase_Main1", "step": ""}})
+    assert main2 > damage > main1
+    assert turn_window({"turn": {}}) is None

@@ -12,8 +12,9 @@ This module is deterministic. It keeps the last few decisions of the match
 (what was chosen, why, and what the board looked like), renders them for the
 next decision prompt and for the background game-plan reform, detects a
 reversal (taking an action the planner declined moments ago on the same
-board), and classifies the few decisions that should run at high reasoning
-effort: removal, spending a card the game plan names, and target selection
+board, unless that pass kept the card for this later step), and classifies
+the few decisions that should run at high reasoning effort: removal that can
+kill something, spending a card the game plan names, and target selection
 for a removal effect.
 """
 
@@ -38,6 +39,56 @@ _REMOVAL_RE = re.compile(
 )
 
 
+# The steps of a turn in order; ``turn_window`` indexes into it.
+_TURN_STEPS = (
+    "upkeep",
+    "draw",
+    "main1",
+    "begincombat",
+    "declareattack",
+    "declareblock",
+    "firststrikedamage",
+    "combatdamage",
+    "endcombat",
+    "main2",
+    "end",
+    "cleanup",
+)
+
+# A pass that keeps a card for a later point of the turn ("holding Shock as
+# post-combat reach", "Shock face after combat").
+_LATER_IN_TURN_RE = re.compile(
+    r"post-?combat|after (?:combat|blocks|blockers|the attack|attacking|combat damage|damage)"
+    r"|second main|main ?2|end of (?:the |their )?turn|end step|their turn"
+    r"|\b(?:as|for) (?:[\w-]+ )?reach\b|\blater\b",
+    re.IGNORECASE,
+)
+
+
+def turn_window(state: dict | None) -> int | None:
+    """Where in the turn ``state`` is, as an index into the turn's steps; None when unknown."""
+    if not isinstance(state, dict):
+        return None
+    turn = state.get("turn") or {}
+
+    def norm(value: Any) -> str:
+        return re.sub(r"^(?:phase|step)_", "", str(value or "").strip().lower()).replace("_", "")
+
+    phase, step = norm(turn.get("phase")), norm(turn.get("step"))
+    if phase in ("main1", "main2"):
+        return _TURN_STEPS.index(phase)  # a main phase has no step (an old one may linger)
+    for name in (step, phase):
+        if name in _TURN_STEPS:
+            return _TURN_STEPS.index(name)
+    if "combat" in phase:
+        return _TURN_STEPS.index("begincombat")
+    if "ending" in phase:
+        return _TURN_STEPS.index("end")
+    if "beginning" in phase:
+        return _TURN_STEPS.index("upkeep")
+    return None
+
+
 @dataclass
 class DecisionRecord:
     turn: int
@@ -48,6 +99,7 @@ class DecisionRecord:
     reasoning: str
     option_labels: dict[str, str] = field(default_factory=dict)
     signature: tuple = ()
+    window: int | None = None
 
     def line(self) -> str:
         what = ", ".join(self.chosen_labels) or ", ".join(self.chosen) or "(nothing)"
@@ -124,6 +176,7 @@ class DecisionMemory:
             reasoning=" ".join(str(reasoning or "").split()[:40]),
             option_labels=labels,
             signature=board_signature(state),
+            window=turn_window(state),
         )
         self._records.append(record)
         del self._records[: -self._limit]
@@ -174,6 +227,40 @@ class DecisionMemory:
             if label in record.option_labels.values():
                 return record
         return None
+
+    @staticmethod
+    def stated_plan_followed(
+        record: DecisionRecord | None, state: dict | None, decision: Any, chosen: list[str]
+    ) -> str:
+        """The phrase by which ``record``'s pass kept the chosen card for later, once the turn got there; else "".
+
+        2026-10-19 08:04:11 (Mono-Red Burn): the autopilot passed in the
+        declare-attackers step "holding Shock as post-combat reach"; at 08:04:23,
+        with blockers declared, it chose Shock, and the reversal check called that
+        a contradiction ("nothing on the board has changed") and asked again at
+        high effort (another 12.7 s; "Coaching loop stalled ... ~23s"). Using a
+        card in a later step of the turn the pass itself named for it is that
+        pass's plan, not a reversal. A pass that rejected the card ("a bad
+        trade") names no later point, and the same step is never later.
+        """
+        if record is None or not isinstance(state, dict) or len(chosen or []) != 1:
+            return ""
+        now = turn_window(state)
+        if now is None or record.window is None or now <= record.window:
+            return ""
+        option = next(
+            (o for o in getattr(decision, "options", ()) or () if o.option_id == str(chosen[0])), None
+        )
+        if option is None:
+            return ""
+        name = str(_source_card(option, state).get("name") or "")
+        if not name:
+            label = str(option.label or "").split(" [", 1)[0]
+            name = re.sub(r"^(?:cast|activate(?: ability)?:?|play land:)\s*", "", label, flags=re.IGNORECASE)
+        if not _names_in_plan(name.strip(), record.reasoning):
+            return ""
+        match = _LATER_IN_TURN_RE.search(record.reasoning)
+        return match.group(0) if match else ""
 
     def lines_for_turn(self, turn: int) -> list[str]:
         """The decisions recorded for one turn of the current match, oldest first."""
@@ -231,6 +318,107 @@ def _removal_has_target(oracle: str, state: dict) -> bool:
     return False
 
 
+_DAMAGE_CLAUSE_RE = re.compile(
+    r"deals? (\d+|x) damage to (any target|target creature|target planeswalker|each creature)", re.IGNORECASE
+)
+# Burst Lightning: "If this spell was kicked, it deals 4 damage instead."
+_DAMAGE_INSTEAD_RE = re.compile(r"deals? (\d+) damage instead", re.IGNORECASE)
+_KICKER_RE = re.compile(r"\bkicker ((?:\{[^}]+\})+)", re.IGNORECASE)
+
+
+def _kicker_affordable(card: dict, oracle: str, state: dict) -> bool:
+    """Whether the mana for this spell plus its kicker can be there this turn (yes when it cannot be told).
+
+    Our untapped lands, or in our main phase the turn's mana potential (land
+    drop and mana creatures counted) when that is more.
+    """
+    kicker = _KICKER_RE.search(oracle)
+    if kicker is None:
+        return True
+    try:
+        from arenamcp.mana import mana_cost_to_cmc
+        from arenamcp.mana_potential import turn_mana_potential
+
+        need = mana_cost_to_cmc(card.get("mana_cost")) + mana_cost_to_cmc(kicker.group(1))
+        potential = turn_mana_potential(state)
+    except Exception:
+        return True
+    local = _local_seat(state)
+    have = sum(
+        1
+        for c in state.get("battlefield") or []
+        if c.get("controller_seat_id") == local and _is_land(c) and not c.get("is_tapped")
+    )
+    if potential is not None:
+        have = max(have, potential.total_with_enabler)
+    return have >= need
+
+
+def _types(card: dict) -> str:
+    types = " ".join(str(t) for t in (card.get("card_types") or card.get("types") or []))
+    return f"{types} {card.get('type_line') or ''}".lower()
+
+
+def _damage_may_kill(creature: dict, amount: int) -> bool:
+    """Whether ``amount`` damage may kill this creature now: unknown toughness and a combat in progress count."""
+    toughness = creature.get("toughness")
+    if type(toughness) is not int:
+        return True
+    marked = creature.get("damage") if type(creature.get("damage")) is int else 0
+    if toughness - marked <= amount:
+        return True
+    return bool(
+        creature.get("is_attacking") or creature.get("is_blocking") or creature.get("damaged_this_turn")
+    )
+
+
+def burn_kills_nothing(oracle: str, state: dict, castable: dict | None = None) -> bool:
+    """Damage-only removal that can kill no opposing creature or planeswalker now: it can only go face.
+
+    2026-10-19 Mono-Red Burn (07:15-09:08): Shock, Burst Lightning and
+    Lightning Strike ("deals N damage to any target") were in hand almost
+    every window, so 151 typed decisions ran the high-effort hedge, many of
+    them against a 4/4 Bristly Bill or a 4-toughness Dawnwing Marshal the burn
+    could not kill. Burning face is the race the board math and the game plan
+    already count, not removal. Destroy, exile and -N/-N effects, X damage,
+    an opposing planeswalker, a creature the damage kills (marked damage
+    counted) or one in combat keep the decision critical. The kicked amount
+    counts unless ``castable`` (the card about to be cast) shows the mana
+    for the kicker cannot be there this turn; a spell already on the stack
+    may have been kicked, so it always counts there.
+    """
+    walkers = creatures = False
+    amounts: list[int] = []
+    for match in _REMOVAL_RE.finditer(oracle):
+        damage = _DAMAGE_CLAUSE_RE.match(match.group(0))
+        if damage is None or damage.group(1).lower() == "x":
+            return False
+        amounts.append(int(damage.group(1)))
+        scope = damage.group(2).lower()
+        creatures = creatures or "creature" in scope or scope == "any target"
+        walkers = (
+            walkers
+            or scope in ("any target", "target planeswalker")
+            or oracle[match.end() : match.end() + 17].lower().startswith(" or planeswalker")
+        )
+    if not amounts:
+        return False
+    kicked = [int(n) for n in _DAMAGE_INSTEAD_RE.findall(oracle)]
+    if kicked and castable is not None and not _kicker_affordable(castable, oracle, state):
+        kicked = []
+    amount = max(amounts + kicked)
+    local = _local_seat(state)
+    for card in state.get("battlefield") or []:
+        if not (local is None or card.get("controller_seat_id") not in (None, local)):
+            continue
+        types = _types(card)
+        if walkers and "planeswalker" in types:
+            return False
+        if creatures and "creature" in types and _damage_may_kill(card, amount):
+            return False
+    return True
+
+
 def _names_in_plan(name: str, plan_text: str) -> bool:
     if not name or not plan_text:
         return False
@@ -242,16 +430,24 @@ def _names_in_plan(name: str, plan_text: str) -> bool:
     return bool(short) and len(short) > 3 and re.search(rf"\b{re.escape(short)}\b", text) is not None
 
 
-def critical_decision(decision: Any, state: dict | None, plan_text: str = "") -> str:
+def critical_decision(
+    decision: Any, state: dict | None, plan_text: str = "", skipped: list[str] | None = None
+) -> str:
     """Why this decision deserves high reasoning effort, or "" for the routine path.
 
     - a removal spell or ability is castable now (ActionsAvailable);
     - an option spends a card the game plan names (an activation from hand,
       which is a discard cost, or a SelectN discard/sacrifice of that card);
     - the targets of a removal effect are being chosen (SelectTargets).
+
+    Burn that can kill nothing on the opposing side (:func:`burn_kills_nothing`)
+    is not removal here; ``skipped`` (when given) collects why such cards were
+    passed over, for the log.
     """
     if decision is None or not isinstance(state, dict):
         return ""
+    if skipped is None:
+        skipped = []
     request_type = str(getattr(decision, "request_type", "") or "")
     options = list(getattr(decision, "options", ()) or ())
     if request_type == "ActionsAvailable":
@@ -272,6 +468,9 @@ def critical_decision(decision: Any, state: dict | None, plan_text: str = "") ->
             ):
                 return f"spends a plan card from hand: {name}"
             if _REMOVAL_RE.search(oracle) and _removal_has_target(oracle, state):
+                if burn_kills_nothing(oracle, state, castable=card):
+                    skipped.append(f"{name or option.label} can kill nothing on their side")
+                    continue
                 return f"removal available: {name or option.label}"
         return ""
     if request_type == "SelectN":
@@ -286,16 +485,19 @@ def critical_decision(decision: Any, state: dict | None, plan_text: str = "") ->
         source_id = None
         for card in state.get("stack") or []:
             source_id = card.get("instance_id")
-            if _REMOVAL_RE.search(str(card.get("oracle_text") or "")):
+            oracle = str(card.get("oracle_text") or "")
+            if _REMOVAL_RE.search(oracle):
+                if burn_kills_nothing(oracle, state):
+                    skipped.append(f"{card.get('name') or source_id} can kill nothing on their side")
+                    continue
                 return f"removal target: {card.get('name') or source_id}"
         source = str(getattr(decision, "source_label", "") or "")
         for zone in ("battlefield", "hand", "graveyard"):
             for card in state.get(zone) or []:
-                if (
-                    source
-                    and str(card.get("name") or "") == source
-                    and _REMOVAL_RE.search(str(card.get("oracle_text") or ""))
-                ):
+                oracle = str(card.get("oracle_text") or "")
+                if source and str(card.get("name") or "") == source and _REMOVAL_RE.search(oracle):
+                    if burn_kills_nothing(oracle, state):
+                        continue
                     return f"removal target: {source}"
         return ""
     return ""
