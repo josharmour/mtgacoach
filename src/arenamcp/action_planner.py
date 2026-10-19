@@ -1616,7 +1616,15 @@ class ActionPlanner(_ActionLegalityMixin):
                 except (ValueError, TypeError, KeyError):
                     continue  # cannot tell which creatures attack: keep the plan
             strategy_text = f"{plan.overall_strategy or ''} {action.reasoning or ''}".strip()
-            losing = losing_attackers(state, identities, strategy_text=strategy_text)
+            # #127 (2026-10-19 T15): an attack at a planeswalker is judged by what it does to the walker.
+            shared = action.target_names[0] if len(action.target_names) == 1 else ""
+            recipients = {
+                identity: action.attacker_targets.get(name) or shared
+                for name, identity in zip(action.attacker_names, identities, strict=True)
+            }
+            losing = losing_attackers(
+                state, identities, strategy_text=strategy_text, attacker_targets=recipients
+            )
             if not losing:
                 continue
             kept = [
