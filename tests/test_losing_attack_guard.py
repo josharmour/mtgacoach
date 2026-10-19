@@ -231,9 +231,13 @@ def test_guard_keeps_the_rest_of_a_split_plan():
             )
         ]
     )
-    # The flyer cannot be answered, so the plan is pressure: keep both.
+    # Each attacker is judged on its own (2026-10-19, match f9e0ec3b): Keeper
+    # can't block the flyer anyway, so Fblthp buys nothing and stays home while
+    # the Wind Drake still attacks.
     ActionPlanner.__new__(ActionPlanner)._check_losing_attacks(plan, state, state["decision_context"])
-    assert plan.actions[0].attacker_instance_ids == [288, 400]
+    assert plan.actions[0].attacker_instance_ids == [400]
+    assert plan.actions[0].attacker_names == ["Wind Drake"]
+    assert plan.actions[0].attacker_targets == {"Wind Drake": "Opponent"}
 
 
 # --- legitimate attacks are preserved -------------------------------------------

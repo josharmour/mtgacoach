@@ -21,9 +21,9 @@ Incidents:
   targeted with it, and that permanent died.
 * ``attack_blunder`` (log fact): a creature the autopilot attacked with died
   to a single blocker that survived, and the losing-attack guard's own
-  whole-attack verdict (``combat_strategy.losing_attackers``) on the board the
-  autopilot declared against says the opponent could answer the whole attack
-  for free. That blocker alone was untapped, could legally block it, and
+  verdict (``combat_strategy.losing_attackers``, which judges each attacker
+  of the declared attack) on the board the autopilot declared against says it
+  only fed a blocker. That blocker alone was untapped, could legally block it, and
   would kill it and survive. Combat is judged whole, once the regular damage
   step starts: no combat damage reached the opponent or a noncreature
   permanent, nothing but our own attackers died (no exchange), and nothing
@@ -348,11 +348,12 @@ def self_harm_reason(fact: dict, targets: Iterable[dict], card_text: Callable[[i
 def _free_kill(state: dict, attacker_id: int, blocker_id: int, losing: dict[int, str]) -> str:
     """Why this block was a predictable free kill on the declared board ("" if not).
 
-    ``losing`` is the losing-attack guard's verdict on the whole declared
-    attack (``combat_strategy.losing_attackers``): it names an attacker only
-    when the opponent could block every attacker at once so that each dies, no
-    blocker dies and nothing gets through, and no attack or death payoff,
-    forced attack, affordable trick or all-in board says to attack anyway.
+    ``losing`` is the losing-attack guard's verdict on the declared attack
+    (``combat_strategy.losing_attackers``): it names an attacker only when a
+    blocker group could eat it (it dies, no blocker dies, nothing gets
+    through) while the rest of the attack gains less than it would deal, and
+    no attack or death payoff, forced attack, affordable trick or all-in board
+    says to attack anyway.
     The blocker that actually killed it must also have been able to do so on
     its own.
     """
@@ -382,8 +383,8 @@ def attack_blunders(fact: dict, record: dict, turn_facts: Iterable[dict]) -> lis
     Combat is judged whole: the first-strike step's damage and deaths count
     with the regular step's; damage that got through or anything besides our
     own attackers dying (an exchange) means the attack did something; and an
-    attacker is flagged only when the losing-attack guard's own whole-attack
-    verdict says the opponent could answer every attacker at once for free.
+    attacker is flagged only when the losing-attack guard's own verdict says
+    it only fed a blocker.
     """
     if fact.get("active_player") != fact.get("local_seat") or fact.get("step") != "Step_CombatDamage":
         return []

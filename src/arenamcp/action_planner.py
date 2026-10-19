@@ -1202,6 +1202,9 @@ class ActionPlanner(_ActionLegalityMixin):
         self._check_block_recovery(
             plan, game_state, decision_context or game_state.get("decision_context") or {}
         )
+        self._ensure_free_blocks(
+            plan, game_state, decision_context or game_state.get("decision_context") or {}
+        )
         self._check_losing_attacks(
             plan, game_state, decision_context or game_state.get("decision_context") or {}
         )
@@ -1299,6 +1302,14 @@ class ActionPlanner(_ActionLegalityMixin):
         planner kept a 6/5 Dragon back from a 13/11 and went 16 -> 3, then
         died to the next attack. That plan was a bare "done" click, which
         declines every block just like an empty declaration.
+
+        2026-10-19 T21 (match cd41ad5a): Shark Shredder's first-strike hit put
+        a Hare Apparent from our graveyard onto the battlefield attacking; the
+        guard counted 12 into 14 ("survives at 2") and the real 14 killed us.
+        Attackers carry their combat-damage trigger's extra damage
+        (``combat_strategy.with_hit_bonus``), so chumping Shark ranks first;
+        and an attacker Arena's request shows withdrawn is not counted
+        (``combat_strategy.phantom_attackers``, 2026-10-19 T9 match 6175f002).
         """
         if len(plan.actions) != 1:
             return
@@ -1309,6 +1320,7 @@ class ActionPlanner(_ActionLegalityMixin):
         if plan.actions[0].action_type != ActionType.DECLARE_BLOCKERS and not declined:
             return
         from arenamcp.combat_solver import _resolve_attacker, blocker_options, optimal_blocks
+        from arenamcp.combat_strategy import phantom_attackers, with_hit_bonus
 
         local = next((p for p in state.get("players", []) if p.get("is_local")), None)
         life = (local or {}).get("life_total")
@@ -1321,6 +1333,12 @@ class ActionPlanner(_ActionLegalityMixin):
             for c in cards.values()
             if c.get("is_attacking") and (c.get("controller_seat_id") or c.get("owner_seat_id")) != local_seat
         ]
+        phantoms = phantom_attackers(
+            state, [c.get("instance_id") for c in attackers], context.get("raw_blockers")
+        )
+        attackers = with_hit_bonus(
+            [c for c in attackers if c.get("instance_id") not in phantoms], state, local_seat
+        )
         legal_ids = {int(i) for i in context.get("legal_blocker_ids") or [] if str(i).isdigit()}
         blockers = [cards[i] for i in legal_ids if i in cards]
         if not attackers or not blockers:
@@ -1371,6 +1389,60 @@ class ActionPlanner(_ActionLegalityMixin):
         blocks = "; ".join(f"{label(b)} against {label(a)}" for b, a in survival.assignments.items())
         risk = "not blocking was lethal" if lethal else f"not blocking left us at {life - through} life"
         plan.voice_advice = f"Blocking with {blocks}; {risk}."
+
+    def _ensure_free_blocks(self, plan: ActionPlan, state: dict, context: dict) -> None:
+        """Declare every free block whatever the model planned (the free-attack rule's mirror).
+
+        2026-10-19 T9 (match a74bbc90): Slickshot Show-Off 1/2 could block the
+        attacking 1/1 Pest, kill it and survive; the plan said "Preserve
+        Slickshot as the sole wincon; absorb minor damage" and declined every
+        block. :func:`combat_strategy.free_blocks` names blocks that kill the
+        attacker while the blocker survives; each is added for a blocker the
+        plan leaves idle against an attacker it leaves unblocked. The plan's
+        own blocks stand.
+        """
+        if str(context.get("type") or "").lower() != "declare_blockers" or len(plan.actions) != 1:
+            return
+        action = plan.actions[0]
+        declined = action.action_type in (ActionType.CLICK_BUTTON, ActionType.PASS_PRIORITY)
+        if action.action_type != ActionType.DECLARE_BLOCKERS and not declined:
+            return
+        planned = {} if declined else dict(action.blocker_instance_assignments or {})
+        if not declined and len(planned) != len(action.blocker_assignments or {}):
+            return  # blocks bound by name only: leave them alone
+        from arenamcp.combat_strategy import free_blocks
+
+        raw = context.get("raw_blockers")
+        try:
+            free = free_blocks(state, {"blockers": raw} if isinstance(raw, list) else None)
+        except Exception as error:  # never block a declaration on the rule's own failure
+            logger.debug("free-block rule failed: %s", error)
+            return
+        added = {
+            blocker: entry
+            for blocker, entry in free.items()
+            if blocker not in planned and entry[0] not in planned.values()
+        }
+        if not added:
+            return
+        cards = {c.get("instance_id"): c for c in state.get("battlefield", [])}
+
+        def label(iid):
+            card = cards.get(iid, {})
+            token = card.get("is_token") or "token" in str(card.get("object_kind", "")).lower()
+            return f"{'*' if token else ''}{card.get('name', 'Creature')} [id:{iid}]"
+
+        if declined:
+            action = plan.actions[0] = GameAction(action_type=ActionType.DECLARE_BLOCKERS)
+        for blocker, (attacker, _reason) in added.items():
+            action.blocker_instance_assignments[blocker] = attacker
+            action.blocker_assignments[label(blocker)] = label(attacker)
+        reasons = "; ".join(reason for _attacker, reason in added.values())
+        logger.warning("Free block: adding %s", reasons)
+        action.reasoning = (action.reasoning + " " if action.reasoning else "") + f"Free block: {reasons}."
+        plan.fallback_reason = "planner_free_block"
+        plan.overall_strategy = f"Free block: {reasons}."
+        plan.voice_advice = plan.spoken_actions()
 
     def _check_losing_attacks(self, plan: ActionPlan, state: dict, context: dict) -> None:
         """Hold back attackers that only feed an untapped blocker.

@@ -2181,13 +2181,22 @@ class GameState(_GameStateAnnotationsMixin):
         # BlockState.cs). Without parsing these, is_attacking stayed False on
         # the log-only path (no bridge), so the coach's block-combat analysis
         # never knew which creatures were attacking (issue #420).
-        if "attackState" in obj_data:
-            is_attacking = _parse_attack_state(obj_data["attackState"])
-        if "blockState" in obj_data:
-            is_blocking = _parse_block_state(obj_data["blockState"])
         # A full GameObjectInfo ("type" is always present) omits default
         # values, so a missing attackInfo / hasSummoningSickness means none.
         full_info = "type" in obj_data
+        # Likewise a missing attackState/blockState is None: 2026-10-19 T9
+        # (match 6175f002) the opponent declared Guiding Hydra (gsid 268,
+        # AttackState_Declared), withdrew it (gsid 269 re-sent the object
+        # without attackState) and attacked with Momo alone, but the Hydra
+        # stayed "attacking" here and the block guard counted its 4 damage.
+        if "attackState" in obj_data:
+            is_attacking = _parse_attack_state(obj_data["attackState"])
+        elif full_info and "isAttacking" not in obj_data:
+            is_attacking = False
+        if "blockState" in obj_data:
+            is_blocking = _parse_block_state(obj_data["blockState"])
+        elif full_info and "isBlocking" not in obj_data:
+            is_blocking = False
         if "attackInfo" in obj_data:
             attack_info = obj_data["attackInfo"] if isinstance(obj_data["attackInfo"], dict) else {}
             attack_target_id = _coerce_optional_int(attack_info.get("targetId"))
