@@ -3339,6 +3339,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 if decision.request_type == "CastingTimeOptions":
                     # 2026-10-06 G1 T14: "destroy" over "gain 4 life" at 4 life.
                     chosen = self._apply_mode_guard(decision, game_state, chosen)
+                    self._remember_chosen_x(decision, chosen)
                 return chosen
             chosen = [c for c in chosen if c in valid]
             if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
@@ -3982,6 +3983,34 @@ class ActionPlanner(_ActionLegalityMixin):
         """Bounded targeting facts, not a full prompt or backend configuration."""
         return dict(getattr(self, "_last_decision_trace", {}))
 
+    # How long a chosen X answers the same spell's later target request.
+    _CHOSEN_X_TTL_S = 60.0
+
+    def _remember_chosen_x(self, decision: Any, chosen: list[str]) -> None:
+        """Keep the X picked while casting so the spell's target check can read its damage."""
+        for option in decision.options:
+            meta = option.meta or {}
+            if option.option_id in chosen and meta.get("choiceKind") == "numeric_input" and "numericValue" in meta:
+                self._chosen_x = (
+                    _as_int(meta.get("sourceId")),
+                    str(getattr(decision, "source_label", "") or "").strip().lower(),
+                    int(meta["numericValue"]),
+                    time.monotonic(),
+                )
+                return
+
+    def _chosen_x_for(self, decision: Any, game_state: dict[str, Any]) -> int | None:
+        """The X chosen for this targeting request's spell, if it was chosen just now."""
+        remembered = getattr(self, "_chosen_x", None)
+        if not remembered or time.monotonic() - remembered[3] > self._CHOSEN_X_TTL_S:
+            return None
+        source_id, source_label, value, _at = remembered
+        current_id = self._decision_source_instance(game_state)
+        if source_id and current_id:
+            return value if source_id == current_id else None
+        label = str(getattr(decision, "source_label", "") or "").strip().lower()
+        return value if source_label and label == source_label else None
+
     def _prefer_lethal_damage_target(
         self, decision: Any, game_state: dict[str, Any], chosen: list[str]
     ) -> list[str]:
@@ -3990,9 +4019,13 @@ class ActionPlanner(_ActionLegalityMixin):
         2026-10-05: Wrath of the Bloodmane (4 damage) was aimed at a 5/5 while
         a 1/2 it would kill was also attacking; the 5/5's damage was lethal.
         """
-        from arenamcp.play_safety import damage_would_kill, fixed_damage_removal
+        from arenamcp.play_safety import damage_would_kill, fixed_damage_removal, x_damage_removal
 
-        parsed = fixed_damage_removal({"oracle_text": self._decision_source_oracle(decision, game_state)})
+        source = {"oracle_text": self._decision_source_oracle(decision, game_state)}
+        parsed = fixed_damage_removal(source)
+        if parsed is None:
+            x = self._chosen_x_for(decision, game_state)
+            parsed = x_damage_removal(source, x) if x is not None else None
         targets = [oid for oid in chosen if str(oid).startswith("tgt:")]
         if not parsed or len(targets) != 1:
             return chosen

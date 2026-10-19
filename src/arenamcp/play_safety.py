@@ -506,6 +506,30 @@ def fixed_damage_removal(card: dict) -> tuple[int, bool] | None:
     return int(match.group(1)), "planeswalker" in match.group(2)
 
 
+_X_DAMAGE = re.compile(
+    r"\bdeals (twice )?x damage to (?:another )?target (creature or planeswalker|creature|planeswalker)\b"
+)
+# X counts something else, or the damage is split or scaled.
+_X_NOT_CHOSEN = ("where x", "divided", "for each", "instead")
+
+
+def x_damage_removal(card: dict, x: int) -> tuple[int, bool] | None:
+    """(damage, may target planeswalkers) for "deals [twice] X damage to target ..." at
+    the X chosen while casting; None when X is defined by the text or the damage varies.
+
+    2026-10-18 21:42 (bug_20261018_214252): Purphoros's Intervention, "deals twice X
+    damage", was cast with X=1 at a 1/3; the 2 damage killed nothing and the
+    fixed-damage check (which skips "x damage") never looked.
+    """
+    oracle = "\n".join(
+        line for line in str(card.get("oracle_text") or "").lower().splitlines() if ":" not in line
+    )
+    match = _X_DAMAGE.search(oracle)
+    if not match or x < 0 or any(phrase in oracle for phrase in _X_NOT_CHOSEN):
+        return None
+    return x * (2 if match.group(1) else 1), "planeswalker" in match.group(2)
+
+
 def damage_would_kill(creature: dict, damage: int) -> bool | None:
     """True/False when the board proves it; None when damage already marked or combat could change it."""
     from arenamcp.combat_keywords import has_combat_keyword
