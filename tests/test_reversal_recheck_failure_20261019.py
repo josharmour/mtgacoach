@@ -12,6 +12,10 @@ are the match's Player.log (gsid 187, request [187, 257]):
   pass this turn ...; asking again at high effort" (13:58:48); the high-effort call ran out its
   15 s budget beside a 3,162-token game-plan reform ("LLM streaming time budget exhausted",
   13:59:03) and "reversal re-check failed ...; keeping the first answer": the cast stood.
+
+Since 6d97e0f (#140) the burn-timing hold answers this very window before the model ("our
+combat: kills no blocker, not lethal"). The re-check tests below take the hold out
+(``reaches_model``), as at b720163, to exercise the reversal path any other window can reach.
 """
 
 from __future__ import annotations
@@ -155,6 +159,21 @@ def _short_budget(monkeypatch):
     monkeypatch.setattr(ActionPlanner, "_CRITICAL_DECISION_BUDGET_S", 0.3)
 
 
+@pytest.fixture
+def reaches_model(monkeypatch):
+    """The window goes to the model, as it did live (no #140 combat hold at b720163)."""
+    monkeypatch.setattr(ActionPlanner, "_hold_instant_burn", lambda self, decision, state: (decision, []))
+
+
+def test_today_the_combat_hold_answers_this_window_before_the_model(caplog):
+    model = _Model(high=None)
+    planner = _planner(model)
+    with caplog.at_level(logging.INFO, logger="arenamcp.action_planner"):
+        assert planner.plan_decision_options(_menu(), _t7()) == ["pass"]
+    assert model.efforts == []
+    assert "Instant timing: holding Lightning Strike for the opponent's end step (our combat" in caplog.text
+
+
 def test_the_t7_board_reproduces_the_recorded_tag_and_the_reversal():
     state, menu = _t7(), _menu()
     source, text, unmodelled = ActionPlanner._line_prompt_context(menu, state)
@@ -173,7 +192,7 @@ def test_the_t7_board_reproduces_the_recorded_tag_and_the_reversal():
     assert planner._memory().stated_plan_followed(record, state, menu, ["idx:0"]) == ""
 
 
-def test_a_failed_recheck_keeps_the_earlier_pass_not_the_reversing_cast(caplog):
+def test_a_failed_recheck_keeps_the_earlier_pass_not_the_reversing_cast(reaches_model, caplog):
     model = _Model(high=None)
     planner = _planner(model)
     with caplog.at_level(logging.INFO, logger="arenamcp.action_planner"):
@@ -197,7 +216,7 @@ def test_a_failed_recheck_keeps_the_earlier_pass_not_the_reversing_cast(caplog):
     assert [r.chosen for r in planner._memory().this_turn(_t7())] == [["pass"], ["pass"]]
 
 
-def test_a_failed_recheck_keeps_a_line_best_pick(monkeypatch, caplog):
+def test_a_failed_recheck_keeps_a_line_best_pick(reaches_model, monkeypatch, caplog):
     monkeypatch.setattr(
         ActionPlanner,
         "_line_tag",
@@ -214,7 +233,7 @@ def test_a_failed_recheck_keeps_a_line_best_pick(monkeypatch, caplog):
     assert planner.get_last_decision_trace()["reversal_check"]["final"] == ["idx:0"]
 
 
-def test_a_failed_recheck_keeps_a_lethal_pick(monkeypatch, caplog):
+def test_a_failed_recheck_keeps_a_lethal_pick(reaches_model, monkeypatch, caplog):
     monkeypatch.setattr(planner_module, "_lethal_this_turn", lambda state: True)
     planner = _planner(_Model(high=None))
     with caplog.at_level(logging.INFO, logger="arenamcp.action_planner"):
@@ -222,7 +241,7 @@ def test_a_failed_recheck_keeps_a_lethal_pick(monkeypatch, caplog):
     assert "keeping the first answer (the board math has lethal this turn)" in caplog.text
 
 
-def test_an_answered_recheck_still_decides():
+def test_an_answered_recheck_still_decides(reaches_model):
     planner = _planner(_Model(high=_reply("idx:0", "Emberheart is attacking now; Strike face is fine.")))
     assert planner.plan_decision_options(_menu(), _t7()) == ["idx:0"]
     assert planner.get_last_decision_trace()["reversal_check"]["final"] == ["idx:0"]
