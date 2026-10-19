@@ -694,6 +694,48 @@ def _casting_label(action: dict) -> str:
     return label
 
 
+def _alternative_cost_kind(action: dict) -> str:
+    """The keyword of the alternative cost a cast action uses ("Sneak"), '' for a normal cast.
+
+    Arena marks such a cast with ``alternativeGrpId``, the ability id of the
+    cost ("Sneak {oW}", grp 203047 on Leonardo, Big Brother). Before 2026-10-19
+    the label read a plain "Cast Leonardo, Big Brother" in the declare-blockers
+    step and the model took it for an ordinary cast ("puts a 4/3 body down",
+    match be1a945f T6; ledger #156).
+    """
+    alternative = int(action.get("alternativeGrpId") or 0)
+    if not alternative:
+        return ""
+    _cost, text = _default_ability_description(alternative)
+    from arenamcp.sneak import is_sneak_ability
+
+    if is_sneak_ability(text):
+        return "Sneak"
+    word = re.match(r"\s*([A-Za-z]+)", str(text or ""))
+    return word.group(1).title() if word else "alternative cost"
+
+
+def _sneak_note(name: str, action: dict) -> str:
+    """'via Sneak {2}{W} (Sneak {W} + commander tax): return an unblocked attacker you control to
+    its owner's hand; Leonardo, Big Brother enters tapped and attacking'."""
+    from arenamcp.sneak import braced, sneak_cost
+
+    try:
+        from arenamcp.board_model import _action_cost
+
+        paid = braced(_action_cost(action.get("manaCost")))
+    except Exception:
+        paid = ""
+    _ability_cost, text = _default_ability_description(int(action.get("alternativeGrpId") or 0))
+    printed = sneak_cost({"oracle_text": text})
+    paid = paid or printed
+    extra = f" (Sneak {printed} + commander tax)" if printed and paid and paid != printed else ""
+    return (
+        f"via Sneak {paid}{extra}: return an unblocked attacker you control to its owner's hand; "
+        f"{name} enters tapped and attacking"
+    )
+
+
 def _build_actions_available(
     poll: dict[str, Any],
     request_id: tuple[int, int],
@@ -736,9 +778,14 @@ def _build_actions_available(
             # mana when casting spells or paying costs. Exposing them in
             # ActionsAvailable causes autopilot to tap lands one by one for no spell.
             continue
+        alternative = ""
         if atype == "ActionType_Cast":
             payable = has_autotap_solution(action)
+            alternative = _alternative_cost_kind(action)
             label = f"Cast {name or 'spell'}" + ("" if payable else " (cannot auto-pay)")
+            if alternative == "Sneak":
+                # A trailing [tag]: every "Cast X" name parser strips it as decoration.
+                label += f" [{_sneak_note(name or 'it', action)}]"
         elif atype == "ActionType_Play":
             label = f"Play land: {name or 'land'}"
         elif atype == "ActionType_Activate":
@@ -783,6 +830,13 @@ def _build_actions_available(
                     "manaCost": action.get("manaCost"),
                     "autoTapActions": action.get("autoTapActions") or [],
                     "hasAutoTap": has_autotap_solution(action),
+                    # The alternative cost Arena offers this cast through (Sneak: ledger #156).
+                    **(
+                        {"alternativeGrpId": int(action.get("alternativeGrpId") or 0)}
+                        if action.get("alternativeGrpId")
+                        else {}
+                    ),
+                    **({"alternative": alternative} if alternative else {}),
                 },
             )
         )
