@@ -5328,7 +5328,13 @@ class ActionPlanner(_ActionLegalityMixin):
     @staticmethod
     def _searched_line_target(game_state: dict[str, Any], name: str) -> tuple[str, int]:
         """The searched best line's target for ``name`` this turn: ("opponent" or a creature's
-        name, that creature's instance id or 0), or ("", 0)."""
+        name, that creature's instance id or 0), or ("", 0).
+
+        The id is the one this cast aims at in the line (its plays, in cast
+        order like ``step.casts``); only without that record, the first body
+        of that name. 2026-10-19 12:31:40 (ledger #111): two Hearth Elementals,
+        the line's Iroh's Demonstration aimed at the one Strike had damaged.
+        """
         try:
             from arenamcp.board_assessment import assess
 
@@ -5339,7 +5345,18 @@ class ActionPlanner(_ActionLegalityMixin):
             if not target or target == "opponent":
                 return target, 0
             plays = step.plays[1] if len(step.plays) == 3 else ()
-            target_id = next(
+            casts = tuple(getattr(step, "casts", ()) or ())
+            bodies = [body for variant, body in plays if getattr(variant, "kind", "") != "cycle"]
+            exact = (
+                [
+                    _as_int(body.get("instance_id"))
+                    for cast, body in zip(casts, bodies, strict=True)
+                    if cast == name and isinstance(body, dict) and body.get("name") == target
+                ]
+                if casts and len(bodies) == len(casts)
+                else []
+            )
+            target_id = exact[-1] if exact else next(
                 (
                     _as_int(body.get("instance_id"))
                     for _variant, body in plays
@@ -7017,8 +7034,8 @@ def board_math_agreement(
         return ""
     option = decision.find(chosen[0])
     name = str(find_source(game_state, (option.meta if option is not None else None) or {}).get("name") or "")
-    target = ActionPlanner._searched_line_target(game_state, name)[0] if name else ""
-    if target and not _reasoning_names_target(reasoning, target):
+    target, target_id = ActionPlanner._searched_line_target(game_state, name) if name else ("", 0)
+    if target and not _reasoning_names_target(reasoning, target, target_id=target_id, game_state=game_state):
         logger.info(
             "typed-decision: the low answer casts the line's %s but not at its target (%s): %r",
             name,
@@ -7036,13 +7053,26 @@ _FACE_TARGET_RE = re.compile(
 )
 
 
-def _reasoning_names_target(reasoning: str, target: str) -> bool:
+_ID_MENTION_RE = re.compile(r"(?:\[id:\s*|\bid[: ]\s*|#)(\d+)", re.IGNORECASE)
+_UNDAMAGED_RE = re.compile(r"\b(?:undamaged|unhurt|unwounded)\b", re.IGNORECASE)
+_DAMAGED_RE = re.compile(r"\b(?:\d+-)?(?:damaged|wounded|injured)\b", re.IGNORECASE)
+
+
+def _reasoning_names_target(
+    reasoning: str, target: str, *, target_id: int = 0, game_state: dict[str, Any] | None = None
+) -> bool:
     """Whether ``reasoning`` aims the cast where the searched line does ("opponent" or a creature's name).
 
     A creature counts when its full name or a distinctive word of it (four
     letters or more, "Nullpriest") appears and the reasoning does not send
     the spell at the opponent instead; the opponent counts when the
     reasoning names the face/opponent and no creature as the spell's mark.
+
+    With the line's instance (``target_id``) and another opposing creature of
+    the same name, the name alone does not say which: the reasoning must name
+    that instance's id, or call it damaged/undamaged when only it is (ledger
+    #111, 2026-10-19 12:31:40: "on the undamaged Hearth Elemental" agreed with
+    a line aimed at the damaged one). Without the id, the name decides.
     """
     text = str(reasoning or "")
     if not text:
@@ -7056,7 +7086,28 @@ def _reasoning_names_target(reasoning: str, target: str) -> bool:
     name = target.casefold()
     words = [word for word in re.findall(r"[a-z0-9']+", name.split(",")[0]) if len(word) >= 4]
     named = name in folded or any(re.search(rf"\b{re.escape(word)}\b", folded) for word in words)
-    return named and not face
+    if not named or face:
+        return False
+    if not target_id or not isinstance(game_state, dict):
+        return True
+    local_seat = _local_seat(game_state)
+    bodies = {
+        _as_int(card.get("instance_id")): card
+        for card in game_state.get("battlefield", []) or []
+        if card.get("name") == target and card.get("controller_seat_id") != local_seat
+    }
+    if target_id not in bodies or len(bodies) == 1:
+        return True
+    mentioned = {int(found) for found in _ID_MENTION_RE.findall(aimed)}
+    if mentioned & set(bodies):
+        return target_id in mentioned
+    damaged = {iid: _as_int(card.get("damage")) > 0 for iid, card in bodies.items()}
+    if list(damaged.values()).count(damaged[target_id]) != 1:
+        return False  # its twins look the same: nothing in the text can single it out
+    says_damaged, says_undamaged = bool(_DAMAGED_RE.search(aimed)), bool(_UNDAMAGED_RE.search(aimed))
+    if says_damaged == says_undamaged:
+        return False
+    return says_damaged == damaged[target_id]
 
 
 def board_math_legacy_plan(
