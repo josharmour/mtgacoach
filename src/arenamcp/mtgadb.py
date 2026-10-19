@@ -696,6 +696,28 @@ class MTGADatabase:
 
         return None
 
+    def get_prompt_text(self, prompt_id: int) -> str | None:
+        """English text of a GRE prompt id ("Lose 3 life"), or None.
+
+        A SelectN of IdType_PromptParameterIndex names each choice only by a
+        prompt id; the card database's Prompts table maps it to a LocId.
+        """
+        with self._conn_lock:
+            if not self._available or not self._conn:
+                return None
+            try:
+                row = self._conn.execute(
+                    "SELECT l.Loc FROM Prompts p JOIN Localizations_enUS l ON l.LocId = p.LocId "
+                    "WHERE p.Id = ? ORDER BY l.Formatted = 1 DESC",
+                    (int(prompt_id),),
+                ).fetchone()
+            except Exception as e:  # older builds without a Prompts table
+                logger.debug(f"Prompt lookup failed for id {prompt_id}: {e}")
+                return None
+        if not row or not row["Loc"]:
+            return None
+        return re.sub(r"<[^>]*>", "", row["Loc"]).strip() or None
+
     def close(self):
         """Close the database connection."""
         with self._conn_lock:
