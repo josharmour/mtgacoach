@@ -2157,6 +2157,7 @@ def get_game_state() -> dict[str, Any]:
         "_bridge_request_payload": copy.deepcopy(snap.get("_bridge_request_payload")),
         "_bridge_game_state_id": snap.get("_bridge_game_state_id", 0),
         "_log_game_state_id": snap.get("_log_game_state_id", 0),
+        "_log_summarized_at_gsid": snap.get("_log_summarized_at_gsid", -1),
     }
 
     bridge_overlay = _get_bridge_overlay(

@@ -4806,6 +4806,18 @@ class AutopilotEngine(
         have = int(game_state.get("_log_game_state_id", 0) or 0)
         if not want or not have or have >= want:
             return game_state
+        if int(game_state.get("_log_summarized_at_gsid", -1) or -1) == have:
+            # Ledger #174 (2026-10-19 15:54, after an MTGA crash + reconnect, and 2b77f14d
+            # T10): Arena summarized the messages after gameStateId `have` in Player.log, so
+            # their details never arrive; waiting yielded until Arena's clock ran out. The
+            # snapshot already carries the bridge overlay: use it.
+            logger.info(
+                "typed-decision: Player.log summarized the messages after gameStateId %s; "
+                "using the bridge state (%s)",
+                have,
+                want,
+            )
+            return game_state
         deadline = time.monotonic() + self._LOG_CATCH_UP_TIMEOUT_S
         while time.monotonic() < deadline:
             if self._abort_event.is_set():

@@ -364,6 +364,7 @@ class GameState(_GameStateAnnotationsMixin):
         logger.info("Resetting GameState for new match")
         self._apply_field_defaults()
         self.log_game_state_id = 0  # gameStateIds restart every game
+        self.log_summarized_at_gsid = -1
         self.turn_info = TurnInfo()
         self._raw_gre_sequence = 0
         self.publish_snapshot()
@@ -1610,6 +1611,7 @@ class GameState(_GameStateAnnotationsMixin):
             },
             "pending_decision": self.pending_decision,
             "_log_game_state_id": getattr(self, "log_game_state_id", 0),
+            "_log_summarized_at_gsid": getattr(self, "log_summarized_at_gsid", -1),
             "decision_seat_id": self.decision_seat_id,
             "decision_context": self.decision_context,
             "last_cleared_decision": self.last_cleared_decision,
@@ -3194,6 +3196,11 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
             for idx, msg in enumerate(messages):
                 if not isinstance(msg, dict):
                     continue
+                if msg.get("_summarized"):
+                    # Ledger #174: Arena summarized this event in Player.log; the state ids
+                    # it carried will never arrive in detail. Readers waiting for the log to
+                    # reach the bridge's gameStateId stop waiting (autopilot catch-up gate).
+                    game_state.log_summarized_at_gsid = int(getattr(game_state, "log_game_state_id", 0) or 0)
                 msg_type = msg.get("type", "")
                 seat_hint = _coerce_optional_int(msg.get("systemSeatId"))
                 if seat_hint is None:
