@@ -152,6 +152,10 @@ class AutopilotEngine(
         self._recent_takeovers: list[dict[str, Any]] = []
         # P1-4: manual-play detection state.
         self._last_seen_own_stack: set[str] = set()
+        # Turn of the first stack look and when this engine started: own
+        # spells already on the stack then are not manual plays (#62).
+        self._own_stack_first_turn: int | None = None
+        self._started_at: float = time.monotonic()
         self._manual_play_cooldown_until: float = 0.0
         self._recent_bot_submissions: list[tuple[float, str]] = []
         # Activated-ability submissions this turn, keyed (turn, "iid"|"name", key).
@@ -503,6 +507,10 @@ class AutopilotEngine(
     _MANUAL_PLAY_COOLDOWN_S = 20.0
     # Bot submissions within this window explain an own stack object.
     _MANUAL_PLAY_BOT_WINDOW_S = 15.0
+    # After a start in the middle of a game, own stack objects of that turn
+    # this soon are the previous coach process's casts (tools/ladder_report.py
+    # applies the same 30 s rule).
+    _RESTART_STACK_GRACE_S = 30.0
 
     def _detect_manual_play(self, game_state: dict[str, Any]) -> bool:
         """True when a NEW own-controlled stack object wasn't bot-submitted.
@@ -527,6 +535,10 @@ class AutopilotEngine(
             and str(e.get("object_kind") or "").upper() != "ABILITY"
             and not str(e.get("name")).lower().startswith("ability (id:")
         }
+        turn = self._turn_number(game_state)
+        first_look = getattr(self, "_own_stack_first_turn", None) is None
+        if first_look:
+            self._own_stack_first_turn = turn
         new_names = own_stack - self._last_seen_own_stack
         self._last_seen_own_stack = own_stack
         if not new_names:
@@ -537,6 +549,25 @@ class AutopilotEngine(
         }
         unexplained = {n for n in new_names if n not in recent_bot_names}
         if not unexplained:
+            return False
+        # 2026-10-19 11:14:30 (#62, match 115944ce): the coach restarted while
+        # the Iroh's Demonstration the previous process had cast was on the
+        # stack; the new process knew none of its submissions, read the spell
+        # as the user's and stood down for 20 s — the decision watchdog then
+        # had to attack with 20 s left on Arena's clock. What is already on
+        # our stack when this engine first looks, and (for a start in the
+        # middle of a game, while the log catches up) what appears in that
+        # same turn within the first 30 s, was cast before this engine ran.
+        inherited = first_look or (
+            turn > 0
+            and turn == getattr(self, "_own_stack_first_turn", None)
+            and now - getattr(self, "_started_at", float("-inf")) <= self._RESTART_STACK_GRACE_S
+        )
+        if inherited:
+            logger.info(
+                "Autopilot: %s on our stack since before this coach started — not a manual play",
+                sorted(unexplained),
+            )
             return False
         already_cooling = time.time() < self._manual_play_cooldown_until
         self._manual_play_cooldown_until = time.time() + self._MANUAL_PLAY_COOLDOWN_S
