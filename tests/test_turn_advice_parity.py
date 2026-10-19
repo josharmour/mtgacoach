@@ -1,43 +1,29 @@
-"""T5 Turn-Advice dispatch-parity harness (Wave 5 release threshold).
+"""Turn-advice dispatch pins on a scripted recorded game.
 
-Compares the CURRENT ``StandaloneCoach`` dispatch behavior in ``turn_advice``
-mode against the PRE-FEATURE BASELINE at commit ``2adb7c9`` (the last commit
-before any conversation-mode work) on the same scripted recorded game.
+The expected sequences were derived from the pre-conversation-mode
+``StandaloneCoach._coaching_loop`` (commit 2adb7c9, 2026-09) and are
+hard-coded here: which triggers reach the LLM, which are suppressed, and the
+text and ``blocking`` argument of every ``speak_advice`` call. (Until
+2026-10-18 the file also exec'd 2adb7c9's standalone.py, read from the
+repository history, as a live oracle; that hybrid imported current mixins,
+never matched a shipped build and needed full history in CI, so it was
+dropped.)
 
-How baseline expectations are derived
-=====================================
+Pinned behaviour, in ``standalone.py`` terms:
 
-The baseline module is loaded directly from a checkout of commit 2adb7c9
-(``git show 2adb7c9:src/arenamcp/standalone.py`` — read-only, never touches
-the working tree; override with ``$MTGACOACH_BASELINE_FILE``) and the REAL
-baseline ``StandaloneCoach._coaching_loop`` runs as a live oracle over the
-identical scripted snapshots + trigger batches as the current tree. The
-recorded dispatch sequences must be byte-equal.
-
-Static-analysis cross-check (baseline 2adb7c9 ``src/arenamcp/standalone.py``
-line numbers; ``git diff 2adb7c9 -- src/arenamcp/standalone.py`` shows ZERO
-removed lines — every legacy line survives verbatim in the current tree):
-
-- L352 ``speak_advice(text, blocking=True)``: TTS filter ladder =
-  L358 ``strip_health_tags`` -> L363 ``_is_passive_advice`` mute ->
-  L369 ``_is_pass_narration`` 45s cooldown -> L377-379 raw
-  ``self._voice_output.speak(text, blocking=blocking)``. The current tree adds
-  an arbiter route ONLY when ``conversation.mode == "conversation"``; in
-  turn_advice ``_conversation_identity_for_speech`` returns None, so the raw
-  sink call with the SAME text and blocking argument is preserved.
-- L1054 ``CRITICAL_PRIORITY`` / L1846 ``trigger_priorities`` sort: unchanged.
-- L2130 ``should_advise`` ladder: unchanged.
-- L2108 meaningful-window gate / L2177 ``QUIET_TRIGGERS``: unchanged.
-- L2215 losing_badly -> ``generate_win_probability`` -> L2225
-  ``speak_advice(prob)`` (default blocking=True); L2228 threat_detected ->
-  ``get_advice(threat=...)`` -> ``speak_advice(advice)``: unchanged.
-- L2530 delivered advice -> ``speak_advice(advice, blocking=False)``: unchanged.
-- L1893-1901 'Action Required' turn+phase dedup and L2142-2153
-  unresolved-decision signature dedup: unchanged.
-- Conversation additions are all gated on ``mode == "conversation"``
-  (on_state before the trigger loop, the non-critical continue gate,
-  speak_topic_if_any after the batch) or are inert recorders
-  (``_conversation_reset_for_match`` at the three boundary sites).
+- ``speak_advice(text, blocking=True)``: the TTS filter ladder
+  ``strip_health_tags`` -> ``_is_passive_advice`` mute ->
+  ``_is_pass_narration`` cooldown -> raw ``self._voice_output.speak``.
+- ``CRITICAL_PRIORITY`` / ``trigger_priorities`` ordering and the
+  ``should_advise`` ladder.
+- The meaningful-window gate (``_is_meaningful_advice_window``) and
+  ``QUIET_TRIGGERS``.
+- losing_badly -> ``generate_win_probability`` -> ``speak_advice(prob)``
+  (blocking default); threat_detected -> ``get_advice(threat=...)``.
+- Delivered advice -> ``speak_advice(advice, blocking=False)``.
+- The 'Action Required' turn+phase dedup and the unresolved-decision
+  signature dedup.
+- Conversation-mode additions stay inert in turn_advice mode.
 
 Scripted game coverage: new_turn, priority_gained (is_frequent=False
 suppression), land_played, combat_attackers (fresh-state staleness pass),
@@ -45,60 +31,20 @@ combat_blockers (my-turn suppression), stack_spell_opponent (QUIET
 suppression), threat_detected, losing_badly, decision_required, spell_resolved
 (QUIET suppression), opponent-turn new_turn rename (QUIET suppression), a
 match boundary (m1->m2, with the post-boundary trigger-suppression window),
-and byte-equality of the strip_health_tags/passive/pass-narration filters.
+and the strip_health_tags/passive/pass-narration filters.
 """
 
 from __future__ import annotations
 
-import os
-import subprocess
-import tempfile
 from typing import Any
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Baseline module loader (live oracle)
-# ---------------------------------------------------------------------------
-
-
-def _export_baseline_file() -> str:
-    """Materialize baseline standalone.py from commit 2adb7c9 (read-only)."""
-    override = os.environ.get("MTGACOACH_BASELINE_FILE")
-    if override and os.path.exists(override):
-        return override
-    repo = os.environ.get("MTGACOACH_REPO", os.getcwd())
-    blob = subprocess.run(
-        ["git", "show", "2adb7c9:src/arenamcp/standalone.py"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    fd, path = tempfile.mkstemp(prefix="w5_t5_baseline_", suffix=".py")
-    with os.fdopen(fd, "w") as fh:
-        fh.write(blob)
-    return path
-
-
-def _load_baseline_module():
-    baseline_path = _export_baseline_file()
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("w5_t5_baseline_standalone", baseline_path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-BASELINE = _load_baseline_module()
-
-import arenamcp.match_packets as _match_packets  # noqa: E402  (after baseline export)
-import arenamcp.standalone as current_mod  # noqa: E402  (after baseline export)
-from arenamcp.conversation import TURN_ADVICE, ConversationController  # noqa: E402
-from arenamcp.standalone_tempo import _TempoTracker  # noqa: E402
-from arenamcp.voice_session import VoiceSession  # noqa: E402
+import arenamcp.match_packets as _match_packets
+import arenamcp.standalone as current_mod
+from arenamcp.conversation import TURN_ADVICE, ConversationController
+from arenamcp.standalone_tempo import _TempoTracker
+from arenamcp.voice_session import VoiceSession
 
 # ---------------------------------------------------------------------------
 # Scripted recorded game + shared fakes
@@ -320,16 +266,14 @@ class FakeClock:
 
 
 def make_engine(
-    module,
     *,
     snapshots: list[dict],
     batches: list[list[str]],
     threat: dict | None = None,
     win_prob: str = "Win probability is low. Look for blockers.",
 ):
-    """Build a bare StandaloneCoach from `module` (baseline or current) driven
-    by the scripted game. Returns (coach, sink, llm)."""
-    coach = module.StandaloneCoach.__new__(module.StandaloneCoach)
+    """Build a bare StandaloneCoach driven by the scripted game. Returns (coach, sink, llm)."""
+    coach = current_mod.StandaloneCoach.__new__(current_mod.StandaloneCoach)
     sink = RecordingSink()
     llm = RecordingCoachEngine(win_prob)
     coach.ui = StubUI()
@@ -373,8 +317,8 @@ def make_engine(
     coach._original_backend = None
     coach._original_model = None
     coach._last_pipe_heartbeat_time = 0.0
-    # Side-effect-free stubs for helpers with external I/O (identical on both
-    # engines — they are not part of the dispatch logic under test):
+    # Side-effect-free stubs for helpers with external I/O (not part of the
+    # dispatch logic under test):
     coach._record_advice = lambda *a, **k: None
     coach._inject_library_summary_if_needed = lambda s: None
     coach._has_actionable_priority_window = lambda s: False
@@ -388,15 +332,14 @@ def make_engine(
     coach._get_match_context = lambda: {}
     coach._win_plan_worker = lambda state: None
 
-    # --- Current-tree conversation wiring (mirror of the new __init__ block).
-    if module is current_mod:
-        coach.last_match_id = None
-        coach.voice_session = VoiceSession(coach._voice_output)
-        coach.conversation = ConversationController(
-            coach, emit_event=None, snapshot_fn=lambda: dict(coach._mcp.snapshots[0])
-        )
-        coach.conversation.set_mode(TURN_ADVICE, persist=False)
-        coach._conversation_speech_seq = 0
+    # Conversation wiring (mirror of the __init__ block), parked in turn_advice.
+    coach.last_match_id = None
+    coach.voice_session = VoiceSession(coach._voice_output)
+    coach.conversation = ConversationController(
+        coach, emit_event=None, snapshot_fn=lambda: dict(coach._mcp.snapshots[0])
+    )
+    coach.conversation.set_mode(TURN_ADVICE, persist=False)
+    coach._conversation_speech_seq = 0
     return coach, sink, llm
 
 
@@ -430,28 +373,26 @@ def dispatch_record(sink: RecordingSink, llm: RecordingCoachEngine) -> list[dict
 
 @pytest.fixture(autouse=True)
 def _no_match_packet_files(monkeypatch):
-    """Match-packet recording writes files under ~/.arenamcp — no-op it for
-    both engines (the loop imports the functions at call time)."""
+    """Match-packet recording writes files under ~/.arenamcp — no-op it (the
+    loop imports the functions at call time)."""
     monkeypatch.setattr(_match_packets, "start_match_packet", lambda match_id: None)
     monkeypatch.setattr(_match_packets, "stop_match_packet", lambda: None)
 
 
 # ---------------------------------------------------------------------------
-# Derived baseline expectations (documented per segment)
+# Expected dispatch (documented per segment)
 # ---------------------------------------------------------------------------
 
 
 def expected_main_dispatch() -> list[dict]:
-    """Trigger->advice dispatch the baseline produces on MAIN_BATCHES, derived
-    from the quoted source lines (see module docstring for line numbers).
+    """Trigger->advice dispatch on MAIN_BATCHES.
 
     The scripted snapshots have empty legal_actions / no pending decision / no
-    castable instants, so the meaningful-window gate (baseline L2108-2125,
-    ``_is_meaningful_advice_window`` in standalone_windows.py L192) marks the
-    filler windows trivial — this is REAL baseline behavior, exercised here:
+    castable instants, so the meaningful-window gate
+    (``_is_meaningful_advice_window`` in standalone_windows.py) marks the
+    filler windows trivial:
 
     it0  new_turn      is_new_turn (5 > 0) -> get_advice -> speak(False)
-                          [L2130/L2530]
     it1  priority_gained  filler: meaningful-window gate -> trivial (no
                           pending, local priority, no legal actions) ->
                           "Quiet: priority_gained (no meaningful play)"
@@ -463,14 +404,14 @@ def expected_main_dispatch() -> list[dict]:
                           stale -> speak(False)
     it4  combat_blockers  my turn -> suppressed ("my turn, not blocking")
     it5  stack_spell_opponent  critical but QUIET_TRIGGERS + no instants
-                          -> suppressed BEFORE the LLM [L2177]
+                          -> suppressed BEFORE the LLM
     it6  threat_detected  critical -> get_advice(threat=THREAT) ->
-                          speak_advice(advice) blocking=True default [L2228]
+                          speak_advice(advice) blocking=True default
     it7  losing_badly  critical -> generate_win_probability ->
-                          speak_advice(prob) blocking=True default [L2215/2225]
+                          speak_advice(prob) blocking=True default
     it8  decision_required  critical; arbitrate (bridge down, pending set)
                           -> log decision -> get_advice -> speak(False);
-                          sig recorded for dedup [L2530]
+                          sig recorded for dedup
     it9  spell_resolved  filler: trivial window -> suppressed
     it10 new_turn (opp turn) -> renamed opponent_turn [raw_new_turn branch]
                           -> filler trivial window -> suppressed
@@ -495,42 +436,23 @@ def expected_main_dispatch() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Tests: dispatch parity (live baseline oracle vs current tree)
+# Tests
 # ---------------------------------------------------------------------------
 
 
-def test_t5_dispatch_sequence_matches_baseline(monkeypatch):
-    """Core T5: identical trigger->advice dispatch sequence vs baseline
-    2adb7c9 — same triggers admitted/suppressed, same LLM call count, same
-    speak_advice invocation text and blocking argument."""
-    b_coach, b_sink, b_llm = make_engine(
-        BASELINE, snapshots=MAIN_SNAPSHOTS, batches=MAIN_BATCHES, threat=THREAT
-    )
-    run_scripted_game(monkeypatch, b_coach, iterations=len(MAIN_BATCHES))
+def test_t5_turn_advice_dispatch_sequence(monkeypatch):
+    """Core T5: the trigger->advice dispatch sequence — same triggers
+    admitted/suppressed, same LLM call count, same speak_advice text and
+    blocking argument as the pre-conversation baseline."""
+    coach, sink, llm = make_engine(snapshots=MAIN_SNAPSHOTS, batches=MAIN_BATCHES, threat=THREAT)
+    run_scripted_game(monkeypatch, coach, iterations=len(MAIN_BATCHES))
 
-    c_coach, c_sink, c_llm = make_engine(
-        current_mod, snapshots=MAIN_SNAPSHOTS, batches=MAIN_BATCHES, threat=THREAT
-    )
-    run_scripted_game(monkeypatch, c_coach, iterations=len(MAIN_BATCHES))
-
-    expected = expected_main_dispatch()
-    actual_baseline = dispatch_record(b_sink, b_llm)
-    actual_current = dispatch_record(c_sink, c_llm)
-
-    assert actual_baseline == expected, (
-        "baseline oracle diverged from the documented derivation — harness "
-        f"must be fixed first:\nexpected={expected}\nbaseline={actual_baseline}"
-    )
-    assert actual_current == actual_baseline, (
-        "T5 DISPATCH PARITY FAILURE — current turn_advice dispatch differs "
-        f"from baseline 2adb7c9:\nbaseline={actual_baseline}\ncurrent={actual_current}"
-    )
+    assert dispatch_record(sink, llm) == expected_main_dispatch()
 
 
 def test_t5_byte_equal_text_through_tts_filters(monkeypatch):
-    """Byte-equality through the speak_advice filter ladder: the health-tag
-    strip (baseline L358) at the TTS boundary — display text keeps the tag,
-    speech drops it; both engines byte-identical."""
+    """The speak_advice filter ladder's health-tag strip at the TTS boundary:
+    display text keeps the tag, speech drops it."""
     batches = [["losing_badly"], ["losing_badly"]]
     snapshots = [
         snap(turn=5, life=(3, 20)),  # S0 (never evaluated)
@@ -546,29 +468,24 @@ def test_t5_byte_equal_text_through_tts_filters(monkeypatch):
                 return "[BACKEND ERROR] gateway down"
             return "Win probability is low. Look for blockers."
 
-    b_coach, b_sink, b_llm = make_engine(BASELINE, snapshots=snapshots, batches=batches)
-    b_coach._coach = TaggedProbEngine()
-    run_scripted_game(monkeypatch, b_coach, iterations=2)
+    coach, sink, _ = make_engine(snapshots=snapshots, batches=batches)
+    coach._coach = TaggedProbEngine()
+    run_scripted_game(monkeypatch, coach, iterations=2)
 
-    c_coach, c_sink, c_llm = make_engine(current_mod, snapshots=snapshots, batches=batches)
-    c_coach._coach = TaggedProbEngine()
-    run_scripted_game(monkeypatch, c_coach, iterations=2)
-
-    # speak_advice strips the [BACKEND ERROR] prefix before speaking (L358)
-    # but the DISPLAY path (ui.advice, "WIN PROBABILITY") keeps the tag.
-    assert [c["text"] for c in b_sink.calls] == [
-        "gateway down",
+    # speak_advice strips the [BACKEND ERROR] prefix before speaking but the
+    # DISPLAY path (ui.advice, "WIN PROBABILITY") keeps the tag.
+    assert sink.calls == [
+        {"text": "gateway down", "blocking": True},
+        {"text": "Win probability is low. Look for blockers.", "blocking": True},
+    ]
+    assert [text for text, _ in coach.ui.advice_calls] == [
+        "[BACKEND ERROR] gateway down",
         "Win probability is low. Look for blockers.",
     ]
-    assert [c["text"] for c in c_sink.calls] == [c["text"] for c in b_sink.calls]
-    assert [c["blocking"] for c in c_sink.calls] == [c["blocking"] for c in b_sink.calls]
-    assert c_coach.ui.advice_calls == b_coach.ui.advice_calls
-    assert b_coach.ui.advice_calls[0][0] == "[BACKEND ERROR] gateway down"
 
 
 def test_t5_passive_and_pass_narration_filters_match(monkeypatch):
-    """The passive TTS mute (baseline L363) silences the same texts on both
-    engines — byte-equal silence, identical blocking flags on the survivors."""
+    """The passive TTS mute silences bare passes; the survivor keeps its blocking flag."""
     batches = [["new_turn"]] * 4
     snapshots = [
         snap(turn=5),  # S0
@@ -588,73 +505,50 @@ def test_t5_passive_and_pass_narration_filters_match(monkeypatch):
             self.calls.append({"kind": "get_advice", "trigger": trigger, **kwargs})
             return self.answers[min(len(self.calls) - 1, len(self.answers) - 1)]
 
-    b_coach, b_sink, b_llm = make_engine(BASELINE, snapshots=snapshots, batches=batches)
-    b_coach._coach = PassiveEngine()
-    run_scripted_game(monkeypatch, b_coach, iterations=4)
+    coach, sink, _ = make_engine(snapshots=snapshots, batches=batches)
+    coach._coach = PassiveEngine()
+    run_scripted_game(monkeypatch, coach, iterations=4)
 
-    c_coach, c_sink, c_llm = make_engine(current_mod, snapshots=snapshots, batches=batches)
-    c_coach._coach = PassiveEngine()
-    run_scripted_game(monkeypatch, c_coach, iterations=4)
-
-    # Both paths use the current passive filter: bare passes and passing
-    # priority are silent; the actionable attack advice remains audible.
-    spoken_baseline = [c["text"] for c in b_sink.calls]
-    assert spoken_baseline == ["Attack with everything."]
-    assert [c["text"] for c in c_sink.calls] == spoken_baseline
-    assert [c["blocking"] for c in c_sink.calls] == [c["blocking"] for c in b_sink.calls]
+    # Bare passes and passing priority are silent; the actionable attack
+    # advice remains audible.
+    assert sink.calls == [{"text": "Attack with everything.", "blocking": False}]
 
 
 def test_t5_dedup_action_required_suppression_matches(monkeypatch):
-    """Dedup keys: 'Action Required' turn+phase suppression (baseline
-    L1893-1901) — first decision_required advises, duplicates on the same
-    turn+phase are suppressed identically on both engines."""
+    """Dedup keys: 'Action Required' turn+phase suppression — the first
+    decision_required advises, duplicates on the same turn+phase are suppressed."""
     batches = [["decision_required"]] * 3
     state = snap(turn=5, pending="Action Required")
     snapshots = [state, state, state, state]
 
-    b_coach, b_sink, b_llm = make_engine(BASELINE, snapshots=snapshots, batches=batches)
-    run_scripted_game(monkeypatch, b_coach, iterations=3)
+    coach, sink, llm = make_engine(snapshots=snapshots, batches=batches)
+    run_scripted_game(monkeypatch, coach, iterations=3)
 
-    c_coach, c_sink, c_llm = make_engine(current_mod, snapshots=snapshots, batches=batches)
-    run_scripted_game(monkeypatch, c_coach, iterations=3)
-
-    assert [c["trigger"] for c in b_llm.calls] == ["decision_required"]
-    assert [c["text"] for c in b_sink.calls] == ["ADVICE[decision_required]"]
-    assert [c["blocking"] for c in b_sink.calls] == [False]
-    assert [c["trigger"] for c in c_llm.calls] == [c["trigger"] for c in b_llm.calls]
-    assert [c["text"] for c in c_sink.calls] == [c["text"] for c in b_sink.calls]
-    assert [c["blocking"] for c in c_sink.calls] == [c["blocking"] for c in b_sink.calls]
+    assert [c["trigger"] for c in llm.calls] == ["decision_required"]
+    assert sink.calls == [{"text": "ADVICE[decision_required]", "blocking": False}]
 
 
 def test_t5_match_boundary_parity(monkeypatch):
     """Match boundary (m1 -> m2): the boundary resets coaching state and
-    suppresses triggers for the 2s window on BOTH engines; the first
-    post-window dispatch is byte-identical (also covers the current tree's
-    conversation reset at the boundary being inert)."""
-    b_coach, b_sink, b_llm = make_engine(
-        BASELINE, snapshots=MAIN_SNAPSHOTS, batches=MAIN_BATCHES, threat=THREAT
-    )
-    run_scripted_game(monkeypatch, b_coach, iterations=len(MAIN_BATCHES))
+    suppresses triggers for the 2s window (also covers the conversation reset
+    at the boundary being inert)."""
+    coach, sink, llm = make_engine(snapshots=MAIN_SNAPSHOTS, batches=MAIN_BATCHES, threat=THREAT)
+    run_scripted_game(monkeypatch, coach, iterations=len(MAIN_BATCHES))
 
-    c_coach, c_sink, c_llm = make_engine(
-        current_mod, snapshots=MAIN_SNAPSHOTS, batches=MAIN_BATCHES, threat=THREAT
-    )
-    run_scripted_game(monkeypatch, c_coach, iterations=len(MAIN_BATCHES))
-
-    # The boundary fired on both: match number bumped, match id mirrored.
-    assert b_coach._match_number == c_coach._match_number == 1
-    assert c_coach.last_match_id == "m2"
-    # Post-boundary dispatch identical: it11 suppressed (2s window), it12
-    # suppressed by the trivial-window gate (no legal actions) — byte-equal
-    # on both engines, and the last spoken text is the it8 decision advice.
-    assert dispatch_record(c_sink, c_llm) == dispatch_record(b_sink, b_llm)
-    assert [c["text"] for c in c_sink.calls][-1] == "ADVICE[decision_required]"
+    # The boundary fired: match number bumped, match id mirrored.
+    assert coach._match_number == 1
+    assert coach.last_match_id == "m2"
+    # Post-boundary: it11 suppressed (2s window), it12 suppressed by the
+    # trivial-window gate (no legal actions), so the last spoken text is the
+    # it8 decision advice.
+    assert dispatch_record(sink, llm) == expected_main_dispatch()
+    assert [c["text"] for c in sink.calls][-1] == "ADVICE[decision_required]"
 
 
 def test_t5_mode_switch_back_restores_parity(monkeypatch):
     """Mode switch conversation -> turn_advice: after switching back, the
-    dispatch sequence resumes byte-identically to the baseline (raw sink path,
-    same blocking, same LLM calls)."""
+    dispatch resumes on the raw sink path (same text, blocking and LLM calls
+    as a turn_advice-only run)."""
     import arenamcp.conversation as conversation_mod
 
     monkeypatch.setattr(conversation_mod, "get_settings", lambda: FakeSettings())
@@ -668,7 +562,7 @@ def test_t5_mode_switch_back_restores_parity(monkeypatch):
         snap(turn=8, legal_actions=["Play Island"]),  # S4 it3 (meaningful)
     ]
 
-    c_coach, c_sink, c_llm = make_engine(current_mod, snapshots=snapshots, batches=batches)
+    c_coach, c_sink, c_llm = make_engine(snapshots=snapshots, batches=batches)
     # Two iterations in conversation mode: non-critical trigger is memory-only
     # (no speech at all — the arbiter never touches the sink).
     c_coach.conversation.set_mode("conversation", persist=False)
@@ -677,21 +571,15 @@ def test_t5_mode_switch_back_restores_parity(monkeypatch):
     c_coach.conversation.set_mode(TURN_ADVICE, persist=False)
     run_scripted_game(monkeypatch, c_coach, iterations=2)
 
-    b_coach, b_sink, b_llm = make_engine(BASELINE, snapshots=snapshots, batches=batches)
-    run_scripted_game(monkeypatch, b_coach, iterations=4)
-
-    # Post-switch current dispatch == baseline's last two dispatch records.
     # The conversation-mode match-start opener ("Conversation mode. Match
     # underway...") is a mode indicator, not advice dispatch — it lands in
-    # the sink at the match boundary and must not count against parity.
-    b_last2 = [(c["text"], c["blocking"]) for c in b_sink.calls][-2:]
+    # the sink at the match boundary and must not count.
     c_all = [
         (c["text"], c["blocking"])
         for c in c_sink.calls
         if not str(c["text"]).startswith(("Conversation mode. Match underway.",))
     ]
-    assert b_last2 == [("ADVICE[land_played]", False), ("ADVICE[land_played]", False)]
-    assert c_all == b_last2
+    assert c_all == [("ADVICE[land_played]", False), ("ADVICE[land_played]", False)]
     assert [c["trigger"] for c in c_llm.calls] == ["land_played", "land_played"]
 
 
@@ -712,7 +600,7 @@ def test_t5_conversation_additions_inert_in_turn_advice(monkeypatch):
         snap(turn=7, legal_actions=["Play Plains"]),  # S3 it2 (meaningful)
     ]
 
-    c_coach, c_sink, c_llm = make_engine(current_mod, snapshots=snapshots, batches=batches)
+    c_coach, c_sink, c_llm = make_engine(snapshots=snapshots, batches=batches)
 
     on_state_calls: list = []
     topic_calls: list = []

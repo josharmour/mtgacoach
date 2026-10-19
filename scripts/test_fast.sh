@@ -15,7 +15,6 @@
 set -euo pipefail
 
 src="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
-git_dir="$(git -C "$src" rev-parse --absolute-git-dir)"
 key="$(printf '%s' "$src" | shasum | cut -c1-12)"
 mirror="${XDG_CACHE_HOME:-$HOME/.cache}/mtgacoach-testrun/$key"
 venv="$HOME/.venvs/mtgacoach-dev"
@@ -38,6 +37,5 @@ rsync -a --delete \
 
 cd "$mirror"
 [[ $# -eq 0 ]] && set -- tests
-# GIT_DIR: a few tests read history (git show <rev>:path) from the real repo.
-GIT_DIR="$git_dir" PYTHONPATH="$mirror/src" QT_QPA_PLATFORM=offscreen \
+PYTHONPATH="$mirror/src" QT_QPA_PLATFORM=offscreen \
   exec "$py" -m pytest -q -p no:cacheprovider -n auto "$@"

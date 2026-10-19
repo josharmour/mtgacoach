@@ -1,7 +1,7 @@
 """OpenAI-compatible API backend for LLM coaching.
 
-Handles both online (mtgacoach.com) and local (Ollama/LM Studio) modes
-through the same OpenAI-compatible chat completions interface.
+Talks to the api.mtgacoach.com LiteLLM gateway (the app is online-only)
+through the OpenAI chat completions interface.
 """
 
 import logging
@@ -150,9 +150,9 @@ def _reads_like_deliberation(candidate: str) -> bool:
 # Online mode: hardcoded API endpoint
 ONLINE_BASE_URL = "https://api.mtgacoach.com/v1"
 
-# Default local endpoint (vLLM). Ollama lives at :11434 if a user wants to fall back.
+# Base URL of a ProxyBackend built without one (tests). Deliberately not the
+# gateway, so a bare backend can never send real customer traffic.
 DEFAULT_LOCAL_URL = "http://localhost:8000/v1"
-DEFAULT_LOCAL_MODEL = "gemma4:e2b"
 
 
 class BackendError(Exception):
@@ -360,6 +360,7 @@ CALL_CLASSES: dict[str, str] = {
     "decision.mulligan": "mulligan decision",
     "coach.advice": "coach get_advice, including threat alerts",
     "coach.question": "user question / conversation mode",
+    "coach.win_plan": "win-in-N plan the player asked for (foreground, not the background lane)",
     "coach.win_prob": "win probability",
     "coach.sideboard": "sideboard advice",
     "coach.postmatch": "post-match analysis and rating calls",
@@ -882,11 +883,11 @@ def _circuit_gate(
 
 
 class ProxyBackend:
-    """LLM backend using OpenAI-compatible chat completions API.
+    """LLM backend using the OpenAI-compatible chat completions API.
 
-    In online mode, routes through api.mtgacoach.com with the user's
-    license key. In local mode, connects to a user-configured endpoint
-    (Ollama, LM Studio, or any OpenAI-compatible server).
+    ``create_online`` routes through api.mtgacoach.com with the user's
+    license key. An explicit ``base_url`` (tests, a user-configured vision
+    endpoint) talks to any OpenAI-compatible server.
     """
 
     def __init__(
@@ -908,9 +909,6 @@ class ProxyBackend:
         self._stream_usage_supported = True
         self.last_request_metrics: dict | None = None
 
-        # Fire-and-forget warmup for any local backend to pre-load weights/KV cache
-        self._local_warmup()
-
     @classmethod
     def create_online(cls, model: str | None = None, license_key: str = "") -> "ProxyBackend":
         """Create a backend configured for online mode (mtgacoach.com)."""
@@ -923,20 +921,6 @@ class ProxyBackend:
             api_key=license_key,
         )
 
-    @classmethod
-    def create_local(
-        cls,
-        model: str | None = None,
-        url: str | None = None,
-        api_key: str | None = None,
-    ) -> "ProxyBackend":
-        """Create a backend configured for local mode (vLLM/Ollama/LM Studio)."""
-        return cls(
-            model=model or DEFAULT_LOCAL_MODEL,
-            base_url=url or DEFAULT_LOCAL_URL,
-            api_key=api_key or "vllm",
-        )
-
     # Hard ceiling applied at the SDK level. Per-call request_timeout_s in
     # complete() can tighten this. Without a finite client-level timeout,
     # the OpenAI SDK defaults to ~10 minutes — which means a hung backend
@@ -945,7 +929,7 @@ class ProxyBackend:
     _CLIENT_HARD_TIMEOUT_S = 60.0
 
     def _get_client(self):
-        """Create one HTTP client even when startup and warmup race."""
+        """Create one HTTP client even when startup preparation and a request race."""
         if self._client is not None:
             return self._client
         with self._client_lock:
@@ -987,47 +971,6 @@ class ProxyBackend:
         the remote model is warm or healthy. Requests still determine health.
         """
         self._get_client()
-
-    def probe_connection(self, timeout: float = 5.0) -> None:
-        """Check model discovery using the same auth/headers as inference.
-
-        This is a single GET, never a completion or a model warmup. It does
-        not prove inference works (LiteLLM answers it with vLLM dead) and
-        never touches the circuit breaker; use probe_inference() for that.
-        """
-        self._get_client().with_options(timeout=timeout, max_retries=0).models.list()
-
-    def _local_warmup(self) -> None:
-        """Send a minimal warmup request to a local backend in a background thread.
-
-        Fires for any non-online endpoint (vLLM/Ollama/LM Studio/etc.) so the
-        first real coach call doesn't pay the cold-start cost.
-        """
-        if os.environ.get("ARENAMCP_ENGINE_RELOAD") == "1":
-            logger.debug("[PROXY] Engine reload: skipping synthetic model warmup")
-            return
-        url = self._base_url or ""
-        if not url or url == ONLINE_BASE_URL:
-            return
-        # Only warm up obvious local URLs to avoid surprising arbitrary endpoints.
-        is_local = "localhost" in url or "127.0.0.1" in url or url.startswith("http://0.0.0.0")
-        if not is_local:
-            return
-
-        def _warmup():
-            try:
-                client = self._get_client()
-                client.chat.completions.create(
-                    model=self.model,
-                    messages=[{"role": "user", "content": "hi"}],
-                    max_tokens=1,
-                )
-                logger.info(f"[PROXY] Local warmup complete for model {self.model}")
-            except Exception as e:
-                logger.debug(f"[PROXY] Local warmup failed (non-fatal): {e}")
-
-        t = threading.Thread(target=_warmup, daemon=True)
-        t.start()
 
     def complete(
         self,
@@ -1310,22 +1253,12 @@ class ProxyBackend:
                 {"role": "user", "content": user_message},
             ],
             "temperature": temperature,
+            "max_tokens": max_tokens,
         }
         if response_format is not None:
             params["response_format"] = response_format
 
-        model_lower = self.model.lower()
-        is_gpt5 = (
-            "gpt-5" in model_lower or "gpt5" in model_lower or "o1" in model_lower or "o3" in model_lower
-        )
-        is_gemini = "gemini" in model_lower
-
-        if is_gpt5:
-            params["max_completion_tokens"] = max_tokens
-        else:
-            params["max_tokens"] = max_tokens
-
-        extra = {}
+        # The gateway serves one model, glm-5.3-flash, to every customer.
         # GLM-5.3 (the engine now behind the dsv4/deepseek-v4-flash
         # aliases via serve-glm53-blackwell.sh) ALWAYS deliberates: with
         # `thinking:false` the reasoning is not separated into
@@ -1344,42 +1277,12 @@ class ProxyBackend:
         # thinking=true — the 2026-07-29 p50 6134ms bug); re-gate on the
         # served engine then.
         if reasoning_effort:
-            extra["chat_template_kwargs"] = {"thinking": True, "reasoning_effort": reasoning_effort}
+            ctk = {"thinking": True, "reasoning_effort": reasoning_effort}
         elif thinking_enabled:
-            extra["chat_template_kwargs"] = {"thinking": True}
+            ctk = {"thinking": True}
         else:
-            extra["chat_template_kwargs"] = {"thinking": True, "reasoning_effort": "low"}
-        if thinking_enabled:
-            if "claude" in model_lower:
-                extra["thinking"] = {"type": "enabled", "budget_tokens": 8000}
-                if "max_completion_tokens" in params:
-                    params["max_completion_tokens"] = max_tokens + 8000
-                else:
-                    params["max_tokens"] = max_tokens + 8000
-            elif is_gemini:
-                # Gemini's OpenAI-compat endpoint rejects native fields
-                # like thinking_config. Use reasoning_effort instead.
-                params["reasoning_effort"] = "medium"
-            elif is_gpt5:
-                params["reasoning_effort"] = "medium"
-                params["verbosity"] = "medium"
-        else:
-            # (legacy `think: false` Ollama spelling removed — no alias
-            # routes to Ollama anymore, and `think: false` would
-            # contradict chat_template_kwargs.thinking=true on GLM)
-            if "claude" in model_lower:
-                extra["thinking"] = {"type": "disabled"}
-            if is_gemini:
-                params["reasoning_effort"] = "none"
-            if is_gpt5:
-                params["reasoning_effort"] = "minimal"
-                params["verbosity"] = "low"
-        # GPT-5 reasoning models reject any temperature other than 1.0 when
-        # reasoning_effort is set. Drop the param so Azure uses the default.
-        if is_gpt5:
-            params.pop("temperature", None)
-        if extra:
-            params["extra_body"] = extra
+            ctk = {"thinking": True, "reasoning_effort": "low"}
+        params["extra_body"] = {"chat_template_kwargs": ctk}
         return params
 
     def _priority_supported(self) -> bool:
@@ -1540,8 +1443,7 @@ class ProxyBackend:
 
         Sends one 1-token completion. Records the outcome in BackendHealth
         and the shared breaker (a success closes it). Returns (ok, detail).
-        Use this instead of check_gateway_health(): LiteLLM answers
-        GET /models while vLLM is dead.
+        Never GET /models: LiteLLM answers it while vLLM is dead.
         """
         breaker = self._circuit()
         started = time.perf_counter()
@@ -1921,25 +1823,8 @@ class ProxyBackend:
             if json_mode:
                 params["response_format"] = {"type": "json_object"}
 
-            model_lower = self.model.lower()
-            extra = {}
-            is_gpt5 = "gpt-5" in model_lower or "gpt5" in model_lower
-            is_gemini = "gemini" in model_lower
-            if "glm" in model_lower:
-                extra["chat_template_kwargs"] = {"thinking": True, "reasoning_effort": "low"}
-            if "claude" in model_lower:
-                extra["thinking"] = {"type": "disabled"}
-            if is_gemini:
-                # OpenAI-compat path: use reasoning_effort, not thinking_config.
-                params["reasoning_effort"] = "none"
-            if is_gpt5:
-                params["reasoning_effort"] = "minimal"
-                params["verbosity"] = "low"
-                # GPT-5 reasoning models reject temperature != 1.0 when
-                # reasoning_effort is set. Drop it so Azure uses the default.
-                params.pop("temperature", None)
-            if extra:
-                params["extra_body"] = extra
+            if "glm" in self.model.lower():
+                params["extra_body"] = {"chat_template_kwargs": {"thinking": True, "reasoning_effort": "low"}}
 
             request_start = time.perf_counter()
             response = client.chat.completions.create(**params)
@@ -1976,13 +1861,3 @@ class ProxyBackend:
                     "configured backend/gateway cannot serve vision requests"
                 )
             return f"{BACKEND_ERROR_PREFIX} vision analysis failed: {e}"
-
-    def list_models(self) -> list[str]:
-        """List available models from the endpoint."""
-        try:
-            client = self._get_client()
-            models = client.models.list()
-            return [m.id for m in models.data]
-        except Exception as e:
-            logger.error(f"Failed to list models: {e}")
-            return []

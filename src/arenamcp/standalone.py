@@ -53,7 +53,6 @@ from arenamcp.backend_health import (
     LOCAL_FALLBACK_PREFIX,
     BackendHealth,
     HealthState,
-    check_gateway_health,
     is_backend_error_text,
     strip_health_tags,
 )
@@ -476,7 +475,6 @@ class StandaloneCoach(
         as a stream of tagged error advice.
         """
         self._startup_connection_error = ""
-        self._startup_connection_warning = ""
         try:
             backend = getattr(self._coach, "_backend", None) if self._coach else None
             if backend is None:
@@ -507,17 +505,12 @@ class StandaloneCoach(
                     emit = getattr(self.ui, "emit_backend_health", None)
                     if callable(emit):
                         emit(snapshot)
-                    if snapshot.get("state") == "ok" and (
-                        getattr(self, "_startup_connection_error", "")
-                        or getattr(self, "_startup_connection_warning", "")
-                    ):
+                    if snapshot.get("state") == "ok" and getattr(self, "_startup_connection_error", ""):
                         self._startup_connection_error = ""
-                        self._startup_connection_warning = ""
                         if getattr(self, "_startup_finished", False):
                             self._startup_complete()
                     elif snapshot.get("state") in ("degraded", "down") and snapshot.get("total_failures", 0):
                         self._startup_connection_error = snapshot.get("detail") or "Model request failed"
-                        self._startup_connection_warning = ""
                         if getattr(self, "_startup_finished", False):
                             self._startup_complete()
                     logger.info(
@@ -533,24 +526,22 @@ class StandaloneCoach(
                 logger.debug("Backend has no _base_url; skipping startup health probe")
                 return
 
-            self._startup_status("checking_connection", "Checking the model server connection…")
+            # Class-level lookup: a Mock/SimpleNamespace backend in tests must
+            # not look probeable just because attribute access succeeds.
             probe_inference = (
                 getattr(backend, "probe_inference", None)
                 if getattr(type(backend), "probe_inference", None) is not None
                 else None
             )
-            if callable(probe_inference):
-                # A 1-token completion: LiteLLM answers GET /models with vLLM
-                # dead ("OK (208ms)" at 18:50:46 on 2026-10-06, mid-outage).
-                state, detail = self._probe_inference_health(probe_inference)
-            else:
-                state, detail = check_gateway_health(backend)
-                if state is HealthState.OK:
-                    detail = f"{detail}; model list only, inference not tested yet"
+            if not callable(probe_inference):
+                logger.debug("Backend has no probe_inference; skipping startup health probe")
+                return
+            self._startup_status("checking_connection", "Checking the model server connection…")
+            # A 1-token completion, not GET /models: LiteLLM answers the model
+            # list with vLLM dead ("OK (208ms)" at 18:50:46 on 2026-10-06).
+            state, detail = self._probe_inference_health(probe_inference)
             if state is HealthState.DOWN:
                 self._startup_connection_error = detail
-            elif state is not HealthState.OK:
-                self._startup_connection_warning = detail
             logger.info(f"Backend health: {state.value.upper()} ({detail})")
             self.ui.log(f"Backend health: {state.value.upper()} ({detail})")
             if state is HealthState.DOWN:
@@ -952,19 +943,8 @@ class StandaloneCoach(
         # Pass UI subtask callback for real-time progress display
         progress_cb = self.ui.subtask if self.ui else None
 
-        # "auto" mode: detect and report which backend was selected
-        requested = self.backend_name
         llm_backend = create_backend(self.backend_name, model=self.model_name, progress_callback=progress_cb)
         actual_model = getattr(llm_backend, "model", "unknown")
-
-        # If auto-selected, update our backend_name to reflect the actual choice
-        if requested == "auto":
-            from arenamcp.backend_detect import auto_select_mode
-
-            resolved_mode, _ = auto_select_mode()
-            self._backend_name = resolved_mode
-            self.settings.set("mode", "auto", save=False)  # Keep "auto" in settings
-            self.ui.log(f"[bold green]Auto-detected mode: {resolved_mode} (model: {actual_model})[/]")
 
         logger.info(f"Created {self.backend_name} backend with model: {actual_model}")
         self._validate_model_on_launch()
@@ -3582,7 +3562,6 @@ class StandaloneCoach(
 
         tests = [
             ("Online (default)", "online", None),
-            ("Local (default)", "local", None),
         ]
 
         import time
@@ -3642,8 +3621,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m arenamcp.standalone --backend online
-  python -m arenamcp.standalone --backend local
+  python -m arenamcp.standalone
   python -m arenamcp.standalone --draft --set MH3
         """,
     )

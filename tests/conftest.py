@@ -314,8 +314,13 @@ def _sandbox_arenamcp_home(monkeypatch, tmp_path_factory):
     return sandbox
 
 
+# Env switches for the proxy's gates; a developer shell that exports one must
+# not change what the tests see.
+_LLM_GATE_ENV = ("ARENAMCP_LLM_PRIORITY", "ARENAMCP_LLM_CIRCUIT", "ARENAMCP_LLM_BACKGROUND_LANE")
+
+
 def _reset_llm_gates() -> None:
-    """Forget the proxy's process-wide breaker, priority and background-lane state.
+    """Forget the proxy's process-wide breaker, priority, background-lane and health state.
 
     Only modules something already imported are touched (an unimported one
     holds no state, and importing the proxy here would pull the SDK into every
@@ -333,11 +338,16 @@ def _reset_llm_gates() -> None:
         # A request thread a test left behind may still hold the old lane;
         # its release() on the new lane is a no-op.
         proxy._BACKGROUND_LANE = proxy._BackgroundLane()
+    backend_health = sys.modules.get("arenamcp.backend_health")
+    if backend_health is not None:
+        backend_health.BackendHealth.reset_instance()
 
 
 @pytest.fixture(autouse=True)
-def _isolate_llm_gates():
-    """Circuit breakers, the priority rejection and the background lane never leak between tests."""
+def _isolate_llm_gates(monkeypatch):
+    """Breakers, the priority rejection, the background lane, BackendHealth and the gate env never leak."""
+    for var in _LLM_GATE_ENV:
+        monkeypatch.delenv(var, raising=False)
     _reset_llm_gates()
     yield
     _reset_llm_gates()

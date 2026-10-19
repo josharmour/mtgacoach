@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+from arenamcp.backend_health import BACKEND_ERROR_PREFIX
 from arenamcp.coach import SIDEBOARD_RECOMMENDATION_PROMPT, CoachEngine
 from arenamcp.pipe_adapter import PipeAdapter
 from arenamcp.standalone import StandaloneCoach
@@ -79,7 +80,7 @@ def test_coach_recommend_sideboard_dicts_and_strings():
 
 def test_coach_recommend_sideboard_error_fallback():
     """Test recommend_sideboard when backend returns empty or error."""
-    backend = DummyBackend(response="Error 500: Server unavailable")
+    backend = DummyBackend(response=f"{BACKEND_ERROR_PREFIX} HTTP 500: Server unavailable")
     coach = CoachEngine(backend=backend)
 
     result = coach.recommend_sideboard(

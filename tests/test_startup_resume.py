@@ -146,15 +146,6 @@ def test_pipe_protocol_for_startup_and_reload():
     adapter._coach.prepare_engine_reload.assert_called_once()
 
 
-def test_inconclusive_model_list_check_keeps_coaching_enabled():
-    runtime = Runtime()
-    runtime._startup_connection_warning = "Model list rejected; inference is not yet tested"
-    runtime._startup_complete()
-    payload = runtime.ui.emit_startup_status.call_args.args[0]
-    assert payload["phase"] == "connection_warning"
-    assert payload["ready"] is True
-
-
 def test_legacy_unstructured_summary_is_reanalyzed_after_reload(resume_path):
     resume_path.write_text(
         json.dumps(

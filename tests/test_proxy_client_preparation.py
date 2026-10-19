@@ -1,4 +1,4 @@
-"""Engine resume prepares its HTTP client without synthetic inference."""
+"""The coach's HTTP client: built once, without synthetic inference, aimed at the gateway."""
 
 import sys
 import threading
@@ -9,6 +9,8 @@ from unittest.mock import Mock
 import pytest
 
 from arenamcp.backends.proxy import ONLINE_BASE_URL, ProxyBackend
+from arenamcp.client_metadata import get_client_headers
+from arenamcp.coach import create_backend
 
 
 def install_client(monkeypatch, factory=None):
@@ -16,37 +18,6 @@ def install_client(monkeypatch, factory=None):
     constructor = factory or Mock(return_value=client)
     monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=constructor))
     return constructor, client
-
-
-def test_engine_reload_skips_loopback_model_warmup_but_can_prepare_http(monkeypatch):
-    monkeypatch.setenv("ARENAMCP_ENGINE_RELOAD", "1")
-    constructor, client = install_client(monkeypatch)
-    thread = Mock(side_effect=AssertionError("reload must not launch model warmup"))
-    monkeypatch.setattr("arenamcp.backends.proxy.threading.Thread", thread)
-    backend = ProxyBackend(base_url="http://localhost:8000/v1")
-    constructor.assert_not_called()
-    assert backend.prepare_client() is None
-    backend.prepare_client()
-    constructor.assert_called_once()
-    client.chat.completions.create.assert_not_called()
-    thread.assert_not_called()
-
-
-def test_normal_cold_loopback_start_keeps_one_minimal_warmup(monkeypatch):
-    monkeypatch.delenv("ARENAMCP_ENGINE_RELOAD", raising=False)
-    constructor, client = install_client(monkeypatch)
-
-    def immediate_thread(*, target, daemon):
-        assert daemon is True
-        return SimpleNamespace(start=target)
-
-    monkeypatch.setattr("arenamcp.backends.proxy.threading.Thread", immediate_thread)
-    backend = ProxyBackend(model="glm-5.3-flash", base_url="http://127.0.0.1:8000/v1")
-    backend.prepare_client()
-    constructor.assert_called_once()
-    client.chat.completions.create.assert_called_once_with(
-        model="glm-5.3-flash", messages=[{"role": "user", "content": "hi"}], max_tokens=1
-    )
 
 
 @pytest.mark.parametrize("url", ["http://10.0.0.100:8444/v1", ONLINE_BASE_URL])
@@ -99,3 +70,31 @@ def test_failed_preparation_can_be_retried_without_marking_model_healthy(monkeyp
     backend.prepare_client()
     assert backend._client is client
     client.chat.completions.create.assert_not_called()
+
+
+def test_online_backend_authenticates_to_the_gateway_with_the_license_key(monkeypatch):
+    """2026-07-16: an empty license key meant 435 silent 401s in one evening.
+
+    The desktop's only factory call is create_backend("online"): it must aim
+    the SDK at api.mtgacoach.com with the saved key, the client headers and
+    no SDK-level retries.
+    """
+    monkeypatch.setattr("arenamcp.settings.get_settings", lambda: {"license_key": "sk-customer-key"})
+    constructor, client = install_client(monkeypatch)
+    backend = create_backend("online")
+    assert backend.model == "glm-5.3-flash"
+    backend.prepare_client()
+    constructor.assert_called_once()
+    kwargs = constructor.call_args.kwargs
+    assert kwargs["base_url"] == ONLINE_BASE_URL
+    assert kwargs["api_key"] == "sk-customer-key"
+    assert kwargs["default_headers"] == get_client_headers()
+    assert kwargs["default_headers"]["User-Agent"]
+    assert kwargs["max_retries"] == 0
+    client.chat.completions.create.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", ["local", "auto", "ollama"])
+def test_only_the_online_mode_exists(mode):
+    with pytest.raises(ValueError, match="online-only"):
+        create_backend(mode)

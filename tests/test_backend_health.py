@@ -1,34 +1,22 @@
-"""Backend health architecture: tracker transitions, tags, gateway probe.
+"""Backend health architecture: tracker transitions and output tags.
 
 Covers the 2026-07-23 backend-health build: silent LLM failures (gateway
 outage 2026-07-05, license-key 401s 2026-07-16) must be announced via the
 BackendHealth tracker and [BACKEND ERROR]/[LOCAL FALLBACK] tags.
 """
 
-import urllib.error
-
-import pytest
+from tests.proxy_fakes import FakeAPIError, make_backend
 
 from arenamcp.backend_health import (
     BACKEND_ERROR_PREFIX,
     LOCAL_FALLBACK_PREFIX,
     BackendHealth,
     HealthState,
-    check_gateway_health,
     is_backend_error_text,
     is_local_fallback_text,
     strip_health_tags,
 )
-from arenamcp.backends.proxy import ProxyBackend
 from arenamcp.coach import CoachEngine, _fallback_non_action_advice
-
-
-@pytest.fixture(autouse=True)
-def _reset_singleton():
-    BackendHealth.reset_instance()
-    yield
-    BackendHealth.reset_instance()
-
 
 # ── Tracker state transitions ────────────────────────────────────────
 
@@ -110,10 +98,11 @@ def test_snapshot_shape():
 # ── Tag predicates ───────────────────────────────────────────────────
 
 
-def test_is_backend_error_text_matches_new_and_legacy():
+def test_is_backend_error_text_matches_only_the_tag():
     assert is_backend_error_text(f"{BACKEND_ERROR_PREFIX} auth failed")
-    assert is_backend_error_text("Error getting advice: auth failed")
-    assert is_backend_error_text("  Error: LLM timed out after 30s")
+    assert is_backend_error_text(f"  {BACKEND_ERROR_PREFIX} LLM timed out after 30s")
+    # Model text that merely starts with "Error" is advice, not a failure.
+    assert not is_backend_error_text("Error-proof line: hold up Negate.")
     assert not is_backend_error_text("Attack with the 3/3 first.")
     assert not is_backend_error_text("")
     assert not is_backend_error_text(None)
@@ -176,129 +165,13 @@ def test_build_threat_fallback_tagged():
     assert "Sheoldred" in out
 
 
-# ── Proxy error returns carry the tag ────────────────────────────────
-
-
-class _FakeAPIError(Exception):
-    def __init__(self, msg, status_code=None, body=None):
-        super().__init__(msg)
-        self.status_code = status_code
-        self.body = body
-
-
-class _Completions:
-    """Scriptable completions endpoint: pops one behavior per call."""
-
-    def __init__(self, script):
-        self.script = list(script)
-
-    def create(self, **params):
-        behavior = self.script.pop(0)
-        if isinstance(behavior, Exception):
-            raise behavior
-        return behavior
-
-
-class _Client:
-    def __init__(self, script):
-        self.chat = type("chat", (), {})()
-        self.chat.completions = _Completions(script)
-
-    def with_options(self, **kw):
-        return self
-
-
-def _proxy_backend(script) -> ProxyBackend:
-    be = ProxyBackend(model="nemotron-3-super", base_url="http://test.invalid/v1")
-    be._client = _Client(script)
-    return be
-
-
-def test_proxy_error_return_tagged_and_detectable():
-    be = _proxy_backend([_FakeAPIError("auth", status_code=401)])
-    out = be.complete("sys", "user", 16)
-    assert out.startswith(BACKEND_ERROR_PREFIX)
-    assert is_backend_error_text(out)
+# ── Proxy failures reach the tracker ─────────────────────────────────
 
 
 def test_proxy_failure_feeds_tracker():
-    be = _proxy_backend([_FakeAPIError("auth", status_code=401)])
+    """The [BACKEND ERROR] sentinel itself is covered in test_proxy_backend_errors."""
+    be = make_backend([FakeAPIError("auth", status_code=401)])
     be.complete("sys", "user", 16)
     snap = BackendHealth.instance().snapshot()
     assert snap["total_failures"] >= 1
     assert snap["state"] == HealthState.DEGRADED.value
-
-
-# ── Gateway probe ────────────────────────────────────────────────────
-
-
-class _ProbeBackend:
-    _base_url = "http://gateway.test/v1"
-    _api_key = "test-key"
-    model = "probe-model"
-
-
-class _FakeResponse:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        return False
-
-    def read(self):
-        return b'{"data": []}'
-
-
-def test_probe_ok_on_200(monkeypatch):
-    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _FakeResponse())
-    state, detail = check_gateway_health(_ProbeBackend())
-    assert state is HealthState.OK
-    assert "reachable" in detail
-    assert BackendHealth.instance().state is HealthState.OK
-
-
-@pytest.mark.parametrize("code", [401, 403, 404, 405])
-def test_model_list_permissions_do_not_establish_inference_failure(monkeypatch, code):
-    def _raise_http(req, timeout=None):
-        raise urllib.error.HTTPError(req.full_url, code, "Rejected", {}, None)
-
-    monkeypatch.setattr("urllib.request.urlopen", _raise_http)
-    state, detail = check_gateway_health(_ProbeBackend())
-    assert state is HealthState.UNKNOWN
-    assert str(code) in detail
-    tracker = BackendHealth.instance()
-    assert tracker.snapshot()["total_failures"] == 0
-    assert tracker.state is HealthState.UNKNOWN
-    assert tracker.record_success()  # Next real response clears provisional warning.
-    assert tracker.state is HealthState.OK
-
-
-def test_probe_uses_inference_transport_without_completing(monkeypatch):
-    from unittest.mock import Mock
-
-    backend = ProxyBackend(model="model", base_url="http://gateway.test/v1")
-    backend._client = Mock()
-    backend._client.with_options.return_value = backend._client
-    monkeypatch.setattr("urllib.request.urlopen", Mock(side_effect=AssertionError("wrong transport")))
-    assert check_gateway_health(backend, timeout=2)[0] is HealthState.OK
-    backend._client.with_options.assert_called_once_with(timeout=2, max_retries=0)
-    backend._client.models.list.assert_called_once_with()
-    backend._client.chat.completions.create.assert_not_called()
-
-
-def test_probe_warning_does_not_overwrite_actual_inference_health():
-    tracker = BackendHealth.instance()
-    tracker.record_failure("inference failed")
-    tracker.record_probe_warning("model list forbidden")
-    assert tracker.state is HealthState.DEGRADED
-    assert tracker.snapshot()["last_error"] == "inference failed"
-
-
-def test_probe_down_on_unreachable(monkeypatch):
-    def _raise_url(req, timeout=None):
-        raise urllib.error.URLError("connection refused")
-
-    monkeypatch.setattr("urllib.request.urlopen", _raise_url)
-    state, detail = check_gateway_health(_ProbeBackend())
-    assert state is HealthState.DOWN
-    assert "unreachable" in detail

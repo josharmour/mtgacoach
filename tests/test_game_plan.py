@@ -5,6 +5,7 @@ import threading
 
 import pytest
 
+from arenamcp.backend_health import BACKEND_ERROR_PREFIX
 from arenamcp.game_plan import GamePlan, GamePlanManager
 
 
@@ -77,7 +78,7 @@ def test_parse_markdown_fenced_json():
 
 
 def test_parse_garbage_returns_none():
-    assert GamePlanManager._parse("Error: timed out", 1) is None
+    assert GamePlanManager._parse(f'{BACKEND_ERROR_PREFIX} HTTP 500 {{"path": "x"}}', 1) is None
     assert GamePlanManager._parse("no json here", 1) is None
     assert GamePlanManager._parse("", 1) is None
 

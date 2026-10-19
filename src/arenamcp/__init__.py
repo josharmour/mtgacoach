@@ -34,8 +34,6 @@ from arenamcp.coach import (
     CoachEngine,
     GameStateTrigger,
     create_backend,
-    create_local_fallback,
-    get_available_modes,
     get_models_for_mode,
 )
 
@@ -99,8 +97,6 @@ __all__ = [
     "CoachEngine",
     "GameStateTrigger",
     "create_backend",
-    "create_local_fallback",
-    "get_available_modes",
     "get_models_for_mode",
     "save_match_state",
     "load_match_state",

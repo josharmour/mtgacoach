@@ -78,11 +78,9 @@ DEFAULTS = {
     "model": None,  # None = use backend default
     # Subscription license key for online mode
     "license_key": "",
-    # Local endpoint config — dev use only (local-backend detection in
-    # backend_detect/coach_backends); customers are online-only.
-    "local_url": "http://localhost:8000/v1",  # Default: vLLM (Ollama is at :11434)
-    "local_model": None,  # None = auto-detect first available
-    "local_api_key": "vllm",  # vLLM/Ollama ignore this; LM Studio needs "lm-studio"
+    # Bearer token for a self-hosted TTS server (tts_server_url); the name is
+    # left over from the removed local LLM mode.
+    "local_api_key": "vllm",
     # Subscription messages tracking
     "last_seen_message_id": None,
     # Autopilot persistent toggle state

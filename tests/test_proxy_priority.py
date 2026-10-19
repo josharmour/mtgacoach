@@ -10,73 +10,18 @@ rejects the field disables it for the session after one immediate retry.
 
 from __future__ import annotations
 
-import threading
-from types import SimpleNamespace as NS
-
 import pytest
+from tests.proxy_fakes import FakeAPIError, make_backend, ok_stream
 
 from arenamcp.backend_health import BackendHealth
-from arenamcp.backends import health, proxy
-from arenamcp.backends.proxy import BackendError, ProxyBackend
+from arenamcp.backends import proxy
+from arenamcp.backends.proxy import BackendError
 
 
 @pytest.fixture(autouse=True)
-def _isolate(monkeypatch):
-    for var in ("ARENAMCP_LLM_PRIORITY", "ARENAMCP_LLM_CIRCUIT", "ARENAMCP_LLM_BACKGROUND_LANE"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None)
-    monkeypatch.setattr(proxy, "_BACKGROUND_LANE", proxy._BackgroundLane())
+def _no_retry_sleep(monkeypatch):
+    """conftest resets the gates; this only skips the proxy's real retry pause."""
     monkeypatch.setattr(proxy.time, "sleep", lambda s: None)
-    health.reset_circuit_breakers()
-    proxy.reset_priority_state()
-    BackendHealth.reset_instance()
-    yield
-    health.reset_circuit_breakers()
-    proxy.reset_priority_state()
-    BackendHealth.reset_instance()
-
-
-class FakeAPIError(Exception):
-    def __init__(self, msg, status_code=None, body=None):
-        super().__init__(msg)
-        self.status_code = status_code
-        self.body = body
-
-
-def ok_stream(text="ok"):
-    return [
-        NS(
-            model="glm-5.3-flash",
-            usage=None,
-            choices=[NS(delta=NS(content=text, reasoning_content=None), finish_reason="stop")],
-        )
-    ]
-
-
-class FakeClient:
-    def __init__(self, behaviors=()):
-        self.behaviors = list(behaviors)
-        self.calls: list[dict] = []
-        self.lock = threading.Lock()
-        self.chat = NS(completions=NS(create=self._create))
-
-    def with_options(self, **options):
-        return self
-
-    def _create(self, **params):
-        with self.lock:
-            # Snapshot extra_body: the proxy may edit it before a retry.
-            self.calls.append({**params, "extra_body": dict(params.get("extra_body") or {})})
-            behavior = self.behaviors.pop(0) if self.behaviors else ok_stream()
-        if isinstance(behavior, Exception):
-            raise behavior
-        return iter(behavior)
-
-
-def make_backend(behaviors=(), model="glm-5.3-flash", url="http://test.invalid/v1") -> ProxyBackend:
-    be = ProxyBackend(model=model, base_url=url)
-    be._client = FakeClient(behaviors)
-    return be
 
 
 def sent_priority(be, index=-1):
@@ -161,9 +106,9 @@ def test_env_switch_on_or_unset_keeps_priority(monkeypatch, value):
     assert sent_priority(be) == 10
 
 
-@pytest.mark.parametrize("model", ["gemma-4-12b-it", "gemma4:e2b", "claude-sonnet-4", "gpt-5-mini"])
-def test_priority_only_sent_on_the_glm_vllm_path(model):
-    be = make_backend(model=model)
+def test_priority_only_sent_on_the_glm_vllm_path():
+    """A user-configured vision endpoint may serve anything; only GLM's vLLM schedules by priority."""
+    be = make_backend(model="custom-vision-model")
     be.complete("s", "u", call_class="background.game_plan", priority=None)
     be.complete("s", "u", call_class="decision.typed", priority=-10)
     assert all("priority" not in call["extra_body"] for call in be._client.calls)

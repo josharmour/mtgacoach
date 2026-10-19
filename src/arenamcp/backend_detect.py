@@ -1,73 +1,13 @@
-"""Backend detection for the two-mode architecture (online / local).
+"""Online-backend validation and error classification.
 
-Used by the TUI/standalone to detect available backends on launch,
-validate connectivity, and pick the best default mode.
+The app is online-only (local mode was removed 2026-06-11): ``validate_backend``
+checks the license key against the subscription service before a manual
+reconnect, and ``is_query_failure_retriable`` spots billing/auth failures.
 """
 
-import json
 import logging
-import urllib.request
 
 logger = logging.getLogger(__name__)
-
-# Default local model (vLLM serves Gemma 4 E2B-it under this alias)
-DEFAULT_LOCAL_MODEL = "gemma4:e2b"
-
-
-def detect_backends_quick() -> dict[str, bool]:
-    """Check which backend modes are available.
-
-    Returns a dict of mode_name -> is_available.
-    HTTP checks use a 2-second timeout so this never blocks for long.
-    """
-    results: dict[str, bool] = {}
-
-    # Online: check if mtgacoach.com API is reachable and we have a license key
-    results["online"] = _is_online_available()
-
-    # Local: check if local endpoint is reachable
-    results["local"] = _validate_local()[0]
-
-    return results
-
-
-def _is_online_available() -> bool:
-    """Check if online mode is available (has license key + API reachable)."""
-    try:
-        from arenamcp.settings import get_settings
-
-        license_key = get_settings().get("license_key", "")
-        if not license_key:
-            return False
-    except Exception:
-        return False
-
-    try:
-        from arenamcp.backends.proxy import ONLINE_BASE_URL
-
-        req = urllib.request.Request(
-            f"{ONLINE_BASE_URL}/models",
-            method="GET",
-            headers={"Authorization": f"Bearer {license_key}", "User-Agent": "mtgacoach-client/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=2):
-            return True
-    except Exception as e:
-        logger.debug(f"Online API check failed: {e}")
-        # If we have a cached valid subscription, consider online available
-        # even if the API is momentarily unreachable
-        try:
-            from arenamcp.subscription import check_subscription
-
-            status = check_subscription(license_key)
-            return status.is_valid
-        except Exception:
-            return False
-
-
-def _is_local_available() -> bool:
-    """Check if the configured local endpoint responds (disabled)."""
-    return False
 
 
 def validate_backend(mode: str) -> tuple[bool, str]:
@@ -80,10 +20,7 @@ def validate_backend(mode: str) -> tuple[bool, str]:
 
     if mode == "online":
         return _validate_online()
-    elif mode == "local":
-        return _validate_local()
-    else:
-        return False, f"Unknown mode: {mode}. Use 'online'."
+    return False, f"Unknown mode: {mode}. Use 'online'."
 
 
 def _validate_online() -> tuple[bool, str]:
@@ -107,49 +44,6 @@ def _validate_online() -> tuple[bool, str]:
         return False, status.message or "Subscription not active."
     except Exception as e:
         return False, f"Subscription check failed: {e}"
-
-
-def _validate_local() -> tuple[bool, str]:
-    """Check local mode: endpoint reachable with at least one model."""
-    try:
-        from arenamcp.settings import get_settings
-
-        local_url = get_settings().get("local_url") or "http://localhost:8000/v1"
-    except Exception:
-        local_url = "http://localhost:8000/v1"
-
-    try:
-        req = urllib.request.Request(f"{local_url}/models", method="GET")
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            data = json.loads(resp.read())
-            models = data.get("data", [])
-            if models:
-                return True, ""
-            return False, f"Endpoint at {local_url} has no models loaded"
-    except Exception as e:
-        logger.debug(f"Local validation failed: {e}")
-        # Check if it's an Ollama endpoint by trying /api/tags
-        if "11434" in local_url:
-            try:
-                req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
-                with urllib.request.urlopen(req, timeout=3) as resp:
-                    data = json.loads(resp.read())
-                    models = data.get("models", [])
-                    if models:
-                        return True, ""
-                    return False, "Ollama is running but has no models. Run: ollama pull llama3.2"
-            except Exception:
-                pass
-        return False, f"Local endpoint not reachable at {local_url}. Is Ollama/LM Studio running?"
-
-
-def auto_select_mode() -> tuple[str, str | None]:
-    """Auto-select the best available mode.
-
-    Returns:
-        (mode, model_or_none)
-    """
-    return "online", None
 
 
 def is_query_failure_retriable(error_text: str) -> bool:

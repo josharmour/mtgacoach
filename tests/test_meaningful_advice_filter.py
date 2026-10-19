@@ -1,7 +1,8 @@
-"""Unit tests for the meaningful-window advice gate in standalone.py.
+"""Unit tests for the meaningful-window advice gate (standalone_windows.py).
 
 These tests exercise the pure ``StandaloneCoach._is_meaningful_advice_window``
-predicate over crafted ``game_state`` dicts. The predicate is what gates
+predicate (from ``_StandaloneWindowsMixin`` in standalone_windows.py) over crafted
+``game_state`` dicts. The predicate is what gates
 NON-CRITICAL triggers in the coaching loop: a *meaningful* window (real choice)
 → SPEAK (generate advice / Coach-Log / TTS); a *trivial* window (pass-only,
 opponent priority with no instant response, empty legal moves) → SKIP entirely.
@@ -14,6 +15,8 @@ filter.
 from __future__ import annotations
 
 from typing import Any
+
+import pytest
 
 from arenamcp.coach import GameStateTrigger
 from arenamcp.standalone import StandaloneCoach
@@ -67,41 +70,27 @@ def _is_meaningful(state: dict[str, Any], *, has_castable_instants: bool = False
 # --------------------------------------------------------------------------- #
 # Your turn: real plays available → SPEAK
 # --------------------------------------------------------------------------- #
-def test_your_turn_castable_spell_speaks():
-    state = _make_state(legal_actions=["Cast Lightning Bolt [ok]", "Wait"])
-    assert _is_meaningful(state) is True
-
-
-def test_your_turn_playable_land_speaks():
-    state = _make_state(legal_actions=["Play Land: Forest", "Wait"])
-    assert _is_meaningful(state) is True
-
-
-def test_your_turn_activated_ability_speaks():
-    state = _make_state(legal_actions=["Activate Ability: tap for mana", "Wait"])
-    assert _is_meaningful(state) is True
-
-
-def test_your_turn_legal_attack_speaks():
-    state = _make_state(
-        legal_actions=["Action: Attack with Grizzly Bears", "Wait"],
-        phase="Phase_Combat",
-        step="Step_DeclareAttack",
-    )
+@pytest.mark.parametrize(
+    ("play", "phase", "step"),
+    [
+        ("Cast Lightning Bolt [ok]", "Phase_Main1", "Step_Main"),
+        ("Play Land: Forest", "Phase_Main1", "Step_Main"),
+        ("Activate Ability: tap for mana", "Phase_Main1", "Step_Main"),
+        ("Action: Attack with Grizzly Bears", "Phase_Combat", "Step_DeclareAttack"),
+    ],
+    ids=["castable-spell", "land", "activated-ability", "attack"],
+)
+def test_your_turn_real_play_speaks(play, phase, step):
+    state = _make_state(legal_actions=[play, "Wait"], phase=phase, step=step)
     assert _is_meaningful(state) is True
 
 
 # --------------------------------------------------------------------------- #
 # Your turn: nothing to do → SKIP
 # --------------------------------------------------------------------------- #
-def test_your_turn_pass_only_skips():
-    state = _make_state(legal_actions=["Wait"])
-    assert _is_meaningful(state) is False
-
-
-def test_your_turn_pass_priority_only_skips():
-    state = _make_state(legal_actions=["Pass", "Pass Priority"])
-    assert _is_meaningful(state) is False
+@pytest.mark.parametrize("legal_actions", [["Wait"], ["Pass", "Pass Priority"]], ids=["wait", "pass"])
+def test_your_turn_pass_only_skips(legal_actions):
+    assert _is_meaningful(_make_state(legal_actions=legal_actions)) is False
 
 
 def test_empty_legal_moves_no_pending_skips():
@@ -143,28 +132,17 @@ def test_opponent_turn_local_priority_with_instant_legal_speaks():
 # --------------------------------------------------------------------------- #
 # Pending decisions → always SPEAK (even with sparse legal_actions)
 # --------------------------------------------------------------------------- #
-def test_pending_target_selection_speaks():
-    state = _make_state(legal_actions=[], pending_decision="Select Targets")
-    assert _is_meaningful(state) is True
-
-
-def test_pending_scry_speaks():
-    state = _make_state(legal_actions=[], pending_decision="Scry")
-    assert _is_meaningful(state) is True
-
-
-def test_pending_discard_speaks():
-    state = _make_state(legal_actions=[], pending_decision="Discard")
-    assert _is_meaningful(state) is True
-
-
-def test_pending_mulligan_speaks():
-    state = _make_state(
-        legal_actions=[],
-        pending_decision="Mulligan",
-        phase="Phase_None",
-        step="Step_None",
-    )
+@pytest.mark.parametrize(
+    ("decision", "phase", "step"),
+    [
+        ("Select Targets", "Phase_Main1", "Step_Main"),
+        ("Scry", "Phase_Main1", "Step_Main"),
+        ("Discard", "Phase_Main1", "Step_Main"),
+        ("Mulligan", "Phase_None", "Step_None"),
+    ],
+)
+def test_pending_decision_speaks(decision, phase, step):
+    state = _make_state(legal_actions=[], pending_decision=decision, phase=phase, step=step)
     assert _is_meaningful(state) is True
 
 

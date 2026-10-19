@@ -1,34 +1,56 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from arenamcp.backend_health import BackendHealth, HealthState
+import pytest
+
+from arenamcp.backend_health import BackendHealth
 from arenamcp.standalone import StandaloneCoach
 from arenamcp.standalone_startup import _StartupMixin
 
 
-def test_inconclusive_probe_then_inference_failure_and_recovery_update_banner(monkeypatch):
+class _ProbeBackend:
+    """The live boot check: ProxyBackend.probe_inference sends a 1-token completion."""
+
+    _base_url = "https://gateway.test/v1"
+    model = "glm-5.3-flash"
+
+    def __init__(self, ok: bool) -> None:
+        self.ok = ok
+
+    def probe_inference(self, timeout: float = 8.0):
+        if self.ok:
+            return True, "glm-5.3-flash inference OK, 210ms"
+        return False, "glm-5.3-flash: inference probe failed after 5000ms: Connection error"
+
+
+@pytest.mark.parametrize("boot_ok", [True, False], ids=["boot-ok", "boot-down"])
+def test_inference_probe_then_failure_and_recovery_update_the_banner(boot_ok):
     BackendHealth.reset_instance()
     try:
         coach = StandaloneCoach.__new__(StandaloneCoach)
         coach.ui = Mock()
-        coach._coach = SimpleNamespace(_backend=SimpleNamespace(_base_url="https://gateway.test/v1"))
+        coach._coach = SimpleNamespace(_backend=_ProbeBackend(boot_ok))
         coach._startup_finished = False
 
-        def probe(_backend):
-            BackendHealth.instance().record_probe_warning("Model list restricted")
-            return HealthState.UNKNOWN, "Model list restricted"
+        def last_status():
+            return coach.ui.emit_startup_status.call_args.args[0]
 
-        monkeypatch.setattr("arenamcp.standalone.check_gateway_health", probe)
         coach._probe_backend_health_at_startup()
+        phases = [c.args[0]["phase"] for c in coach.ui.emit_startup_status.call_args_list]
+        assert "checking_connection" in phases
         coach._startup_complete()
-        assert coach.ui.emit_startup_status.call_args.args[0]["phase"] == "connection_warning"
-        BackendHealth.instance().record_failure("Inference authentication failed", status_code=401)
-        failure = coach.ui.emit_startup_status.call_args.args[0]
-        assert failure["phase"] == "error"
-        assert "authentication" in failure["message"]
+        if boot_ok:
+            assert last_status()["phase"] == "ready" and last_status()["ready"]
+            BackendHealth.instance().record_failure("Inference authentication failed", status_code=401)
+            assert last_status()["phase"] == "error"
+            assert "authentication" in last_status()["message"]
+        else:
+            assert last_status()["phase"] == "error"
+            assert "Connection error" in last_status()["message"]
+            assert not last_status()["ready"]
+
         BackendHealth.instance().record_success()
-        recovered = coach.ui.emit_startup_status.call_args.args[0]
-        assert recovered["ready"] and recovered["phase"] == "ready"
+        assert last_status()["ready"] and last_status()["phase"] == "ready"
     finally:
         BackendHealth.reset_instance()
 

@@ -10,65 +10,21 @@ label, and background calls run one at a time across all backends.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace as NS
 
 import pytest
+from tests.proxy_fakes import APIConnectionError, chunk, make_backend
 
-from arenamcp.backend_health import BackendHealth, is_backend_error_text
-from arenamcp.backends import health, proxy
-from arenamcp.backends.proxy import BackendCallCancelled, ProxyBackend
+from arenamcp.backend_health import BACKEND_ERROR_PREFIX, BackendHealth, is_backend_error_text
+from arenamcp.backends import proxy
+from arenamcp.backends.proxy import BackendCallCancelled
 
-
-@pytest.fixture(autouse=True)
-def _isolate(monkeypatch):
-    for var in ("ARENAMCP_LLM_PRIORITY", "ARENAMCP_LLM_CIRCUIT", "ARENAMCP_LLM_BACKGROUND_LANE"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None)
-    monkeypatch.setattr(proxy, "_BACKGROUND_LANE", proxy._BackgroundLane())
-    health.reset_circuit_breakers()
-    proxy.reset_priority_state()
-    BackendHealth.reset_instance()
-    yield
-    health.reset_circuit_breakers()
-    proxy.reset_priority_state()
-    BackendHealth.reset_instance()
-
-
-def chunk(text=None, *, reasoning=None, finish=None):
-    has_choice = text is not None or reasoning is not None or finish is not None
-    return NS(
-        model="glm-5.3-flash",
-        usage=None,
-        choices=[NS(delta=NS(content=text, reasoning_content=reasoning), finish_reason=finish)]
-        if has_choice
-        else [],
-    )
-
-
-class FakeClient:
-    """Scriptable OpenAI client: one behavior per create() call."""
-
-    def __init__(self, behaviors=()):
-        self.behaviors = list(behaviors)
-        self.calls: list[dict] = []
-        self.lock = threading.Lock()
-        self.chat = NS(completions=NS(create=self._create))
-
-    def with_options(self, **options):
-        return self
-
-    def _create(self, **params):
-        with self.lock:
-            self.calls.append(params)
-            behavior = self.behaviors.pop(0) if self.behaviors else [chunk("ok", finish="stop")]
-        if isinstance(behavior, Exception):
-            raise behavior
-        if isinstance(behavior, list):
-            return iter(behavior)
-        return behavior
+SRC = Path(proxy.__file__).resolve().parents[1]
 
 
 class BlockingStream:
@@ -93,12 +49,6 @@ class BlockingStream:
 
     def close(self):
         self.closed.set()
-
-
-def make_backend(behaviors=(), model="glm-5.3-flash", url="http://test.invalid/v1") -> ProxyBackend:
-    be = ProxyBackend(model=model, base_url=url)
-    be._client = FakeClient(behaviors)
-    return be
 
 
 def ctk(params) -> dict:
@@ -161,23 +111,18 @@ def test_thinking_without_effort_is_reported_as_template_default():
     assert ctk(be._client.calls[0]) == {"thinking": True}
 
 
-def test_documented_classes_cover_every_call_site_family():
-    for name in (
-        "decision.typed",
-        "decision.plan",
-        "decision.block_repair",
-        "decision.pay",
-        "coach.advice",
-        "coach.sideboard",
-        "background.game_plan",
-        "background.deck_playbook",
-        "background.win_plan",
-        "background.set_primer",
-        "background.postmatch",
-        "vision",
-        "probe",
-    ):
-        assert name in proxy.CALL_CLASSES
+def test_every_call_class_used_in_src_is_documented():
+    """CALL_CLASSES is the reference for reading "[PROXY] Request metrics" lines."""
+    label = re.compile(r'"((?:decision|coach|background|draft)\.[a-z_]+)"')
+    used = {
+        name
+        for path in SRC.rglob("*.py")
+        if path.name != "proxy.py"
+        for name in label.findall(path.read_text(encoding="utf-8"))
+    }
+    assert {"decision.typed", "coach.advice", "background.game_plan"} <= used, "the scan found nothing"
+    assert sorted(used - set(proxy.CALL_CLASSES)) == []
+    assert {"vision", "probe"} <= set(proxy.CALL_CLASSES)
 
 
 def test_vision_calls_now_record_metrics_without_counting_the_image():
@@ -193,16 +138,22 @@ def test_vision_calls_now_record_metrics_without_counting_the_image():
     assert metrics["max_tokens"] == 600
 
 
-def test_vision_failure_records_error_metrics_and_never_counts_toward_the_breaker():
-    class APIConnectionError(Exception):
-        pass
-
+def test_three_vision_failures_disable_vision_without_counting_toward_the_breaker():
+    """Live 2026-07-06: the vision watchdog burned a failing call pair every
+    ~40 s all match (text-only gateway model, tunnel choking on MB payloads).
+    Three consecutive failures latch ``_vision_dead``; none of them counts
+    toward the text breaker, because image payloads fail where text works."""
     be = make_backend([APIConnectionError("tunnel reset") for _ in range(6)])
     for _ in range(3):
-        out = be.complete_with_image("s", "u", b"img")
+        out = be.complete_with_image("s", "u", b"\x89PNG fake")
+        assert out.startswith(BACKEND_ERROR_PREFIX)
         assert is_backend_error_text(out)
     assert be.last_request_metrics["status"] == "error"
     assert be.circuit_snapshot()["consecutive_failures"] == 0
+    assert be._vision_dead is True
+    out = be.complete_with_image("s", "u", b"\x89PNG fake")
+    assert "disabled" in out
+    assert len(be._client.calls) == 3, "no request once vision is disabled"
 
 
 # ── GLM effort normalisation ──────────────────────────────────────────
@@ -224,15 +175,9 @@ def test_supported_glm_efforts_pass_through(effort):
 
 
 def test_medium_effort_untouched_for_non_glm_models():
-    be = make_backend(model="qwen-local")
+    be = make_backend(model="custom-vision-model")
     be.complete("s", "u", reasoning_effort="medium")
     assert ctk(be._client.calls[0])["reasoning_effort"] == "medium"
-
-
-def test_reasoning_effort_docstring_no_longer_advertises_medium():
-    doc = " ".join(ProxyBackend.complete.__doc__.split())
-    assert 'GLM effort for this request: "low", "high" or "max"' in doc
-    assert '("low", "medium", "high")' not in doc
 
 
 # ── background lane ───────────────────────────────────────────────────
@@ -282,7 +227,11 @@ def test_background_call_of_another_class_waits_for_the_lane():
     tb, rb = _start(
         b.complete, "s", "u", call_class="background.deck_playbook", request_timeout_s=10, lane_wait_s=5
     )
-    time.sleep(0.3)
+    lane = proxy._BACKGROUND_LANE
+    deadline = time.monotonic() + 5
+    while not lane._waiting and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert [h.call_class for h in lane._waiting] == ["background.deck_playbook"], "B queues for the lane"
     assert b._client.calls == [], "B must wait while A holds the lane"
     stream.release.set()
     ta.join(5)

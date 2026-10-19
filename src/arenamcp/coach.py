@@ -28,10 +28,7 @@ from arenamcp.backends import LLMBackend, ProxyBackend
 from arenamcp.card_db import is_unknown_card_name
 from arenamcp.coach_analysis import _CoachAnalysisMixin
 from arenamcp.coach_backends import (
-    _is_local_backend,
     create_backend,
-    create_local_fallback,
-    get_available_modes,
     get_models_for_mode,
     pick_thinking_model,
 )
@@ -145,8 +142,6 @@ __all__ = [
     "GameStateTrigger",
     "WordUsageTracker",
     "create_backend",
-    "create_local_fallback",
-    "get_available_modes",
     "get_models_for_mode",
     "pick_thinking_model",
     "DEFAULT_SYSTEM_PROMPT",
@@ -4199,11 +4194,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         # the lock, causing cascading lock-busy failures on subsequent calls
         # which triggers unnecessary restarts.
         backend_timeout = getattr(self._backend, "timeout_s", 12.0)
-        is_local = _is_local_backend(self._backend)
-        if is_local:
-            api_timeout = max(backend_timeout + 5, 45)  # Local models need more time
-        else:
-            api_timeout = max(backend_timeout + 5, 15)
+        api_timeout = max(backend_timeout + 5, 15)
         api_start = time.perf_counter()
         import concurrent.futures
 
@@ -4231,10 +4222,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         try:
             response = future.result(timeout=api_timeout)
         except concurrent.futures.TimeoutError:
-            is_local = _is_local_backend(self._backend)
-            hint = " — try a smaller model or use a cloud backend" if is_local else ""
             logger.warning(
-                f"LLM API call timed out after {api_timeout}s (model may be too slow for real-time coaching){hint}"
+                f"LLM API call timed out after {api_timeout}s (model may be too slow for real-time coaching)"
             )
             # Return error string (not empty) to avoid triggering the
             # consecutive-empty-response restart counter in standalone.py

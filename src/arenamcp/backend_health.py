@@ -1,6 +1,6 @@
 """Backend health architecture: never let LLM failures be silent.
 
-Three pieces:
+Two pieces:
 
 1. ``HealthState`` / ``BackendHealth`` — a thread-safe singleton tracker that
    records consecutive backend successes/failures and derives a coarse state
@@ -13,16 +13,13 @@ Three pieces:
    license-key 401s) produced advice-shaped text that was impossible to
    distinguish from real coaching.
 
-3. ``check_gateway_health()`` — a startup self-check that probes
-   ``GET {base_url}/models`` with the configured key so a dead gateway is
-   announced at boot instead of discovered mid-match.
+The boot-time self-check is ``ProxyBackend.probe_inference()`` (a 1-token
+completion), driven by ``StandaloneCoach._probe_backend_health_at_startup``.
 """
 
 import logging
 import threading
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from enum import Enum
 from typing import Any
@@ -44,20 +41,18 @@ class HealthState(Enum):
     OK = "ok"
     DEGRADED = "degraded"
     DOWN = "down"
-    UNKNOWN = "unknown"
 
 
 def is_backend_error_text(text: str | None) -> bool:
     """True for strings that represent a backend failure, not real content.
 
-    Matches the ``[BACKEND ERROR]`` tag and legacy ``Error ...`` sentinels
-    (older backends, the coach timeout path, third-party wrappers) so all
-    pre-existing detection sites keep working through the sentinel rename.
+    Matches the ``[BACKEND ERROR]`` tag, the only sentinel ProxyBackend and
+    the coach timeout path produce. (A bare ``Error ...`` prefix used to count
+    too, which could misread model advice that happens to start with "Error".)
     """
     if not text or not isinstance(text, str):
         return False
-    stripped = text.lstrip()
-    return stripped.startswith(BACKEND_ERROR_PREFIX) or stripped.startswith("Error")
+    return text.lstrip().startswith(BACKEND_ERROR_PREFIX)
 
 
 def is_local_fallback_text(text: str | None) -> bool:
@@ -170,21 +165,9 @@ class BackendHealth:
             self._notify(snap)
         return transitioned
 
-    def record_probe_warning(self, detail: str) -> None:
-        """Model-list permissions do not establish whether inference works."""
-        with self._lock:
-            if self._total_successes or self._total_failures:
-                return  # Never replace evidence from actual requests.
-            self._last_detail = detail
-            old = self._state
-            self._state = HealthState.UNKNOWN
-            snap = self._snapshot_locked()
-        if old is not HealthState.UNKNOWN:
-            self._notify(snap)
-
     def _snapshot_locked(self) -> dict[str, Any]:
         """snapshot() with self._lock already held."""
-        if self._state in (HealthState.OK, HealthState.UNKNOWN):
+        if self._state is HealthState.OK:
             detail = self._last_detail or "reachable"
         else:
             detail = self._last_error or "backend failing"
@@ -215,51 +198,3 @@ class BackendHealth:
                 listener(snapshot)
             except Exception as e:
                 logger.debug(f"backend-health listener failed: {e}")
-
-
-# Keep in sync with backends/proxy.py defaults (importing proxy here would be
-# circular: proxy imports this module to report outcomes).
-_DEFAULT_BASE_URL = "http://localhost:8000/v1"
-
-
-def check_gateway_health(backend: Any, timeout: float = 5.0) -> tuple[HealthState, str]:
-    """Probe the LLM gateway with a minimal GET {base_url}/models request.
-
-    Uses the backend's configured base_url and API key. Records the outcome
-    to the singleton tracker and returns ``(state, detail)`` where state is
-    the probe's own assessment: OK when reachable, DEGRADED when the server
-    answered with an HTTP error (reachable but rejecting, e.g. auth), DOWN
-    when the endpoint could not be reached at all.
-    """
-    base_url = str(getattr(backend, "_base_url", "") or "").rstrip("/") or _DEFAULT_BASE_URL
-    api_key = str(getattr(backend, "_api_key", "") or "")
-    model = str(getattr(backend, "model", "unknown") or "unknown")
-
-    request = urllib.request.Request(f"{base_url}/models")
-    if api_key:
-        request.add_header("Authorization", f"Bearer {api_key}")
-
-    tracker = BackendHealth.instance()
-    start = time.perf_counter()
-    try:
-        probe = getattr(backend, "probe_connection", None)
-        if callable(probe):
-            probe(timeout=timeout)
-        else:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                response.read()
-        ms = (time.perf_counter() - start) * 1000
-        tracker.record_success(detail=f"startup probe OK ({ms:.0f}ms)")
-        return HealthState.OK, f"{model} reachable, {ms:.0f}ms"
-    except Exception as e:
-        ms = (time.perf_counter() - start) * 1000
-        code = e.code if isinstance(e, urllib.error.HTTPError) else getattr(e, "status_code", None)
-        if code in (401, 403, 404, 405):
-            detail = f"{model}: model-list check returned HTTP {code}; inference is not yet tested"
-            tracker.record_probe_warning(detail)
-            return HealthState.UNKNOWN, detail
-        if code:
-            tracker.record_failure(error=f"HTTP {code} from {base_url}", status_code=code)
-            return HealthState.DEGRADED, f"{model} endpoint answered HTTP {code} ({ms:.0f}ms)"
-        tracker.record_failure(error=f"{type(e).__name__}: {e}")
-        return HealthState.DOWN, f"{model} unreachable: {e} ({ms:.0f}ms)"

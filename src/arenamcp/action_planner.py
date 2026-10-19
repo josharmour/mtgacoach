@@ -1043,7 +1043,7 @@ class ActionPlanner(_ActionLegalityMixin):
         # Call LLM with enforced timeout.
         # Use temperature=0 for deterministic planning — avoids different
         # actions being proposed across priority windows in the same turn.
-        # raise_on_error: never let the "Error getting advice: ..." sentinel
+        # raise_on_error: never let the "[BACKEND ERROR] ..." sentinel
         # reach the JSON parser — during a backend outage the parse yields 0
         # actions and _fallback_plan would submit a real game action (blind
         # passes, 2026-07-05). _call_llm raises on a sentinel as well.

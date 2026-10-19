@@ -23,25 +23,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from arenamcp.backend_health import BackendHealth
-from arenamcp.backends import health, proxy
+from arenamcp.backends import proxy
 from arenamcp.backends.proxy import BackendCallCancelled, ProxyBackend
 
 MODEL = "glm-5.3-flash"
-
-
-@pytest.fixture(autouse=True)
-def _isolate(monkeypatch):
-    for var in ("ARENAMCP_LLM_PRIORITY", "ARENAMCP_LLM_CIRCUIT", "ARENAMCP_LLM_BACKGROUND_LANE"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None)
-    monkeypatch.setattr(proxy, "_BACKGROUND_LANE", proxy._BackgroundLane())
-    health.reset_circuit_breakers()
-    proxy.reset_priority_state()
-    BackendHealth.reset_instance()
-    yield
-    health.reset_circuit_breakers()
-    proxy.reset_priority_state()
-    BackendHealth.reset_instance()
+# A stalled request gives up on its own after this long; it only runs out
+# when the client never disconnects, i.e. when a test is already failing.
+STALL_LIMIT_S = 6.0
 
 
 class ScriptedServer:
@@ -50,13 +38,15 @@ class ScriptedServer:
     "stall_headers": never sends response headers (queued before the gateway
     answers). "stall_stream": sends SSE headers, then nothing (queued in
     vLLM). Anything else: an SSE answer with that text. A stall ends when the
-    client disconnects (recorded) or after 20 s.
+    client disconnects (recorded) or after STALL_LIMIT_S; ``stalled`` is set
+    once a stalled request is parked, so the client is blocked reading.
     """
 
     def __init__(self, script):
         self.script = list(script)
         self.lock = threading.Lock()
         self.disconnected = threading.Event()
+        self.stalled = threading.Event()
         self.requests = 0
         server = self
 
@@ -97,11 +87,13 @@ class ScriptedServer:
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.httpd.daemon_threads = True
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        # A short poll interval: shutdown() waits up to one interval (0.5 s by default).
+        threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}/v1"
 
     def _wait_for_disconnect(self, conn) -> None:
-        deadline = time.monotonic() + 20
+        self.stalled.set()
+        deadline = time.monotonic() + STALL_LIMIT_S
         while time.monotonic() < deadline:
             readable, _, _ = select.select([conn], [], [], 0.05)
             if readable:
@@ -134,12 +126,7 @@ def _warm_sdk():
 
 
 def _backend(url: str) -> ProxyBackend:
-    original = ProxyBackend._local_warmup
-    ProxyBackend._local_warmup = lambda self: None
-    try:
-        return ProxyBackend(model=MODEL, base_url=url, api_key="x")
-    finally:
-        ProxyBackend._local_warmup = original
+    return ProxyBackend(model=MODEL, base_url=url, api_key="x")
 
 
 @pytest.fixture
@@ -172,15 +159,6 @@ def _start(fn, *args, **kwargs):
     return thread, result
 
 
-def _wait_for(predicate, timeout=5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.02)
-    return predicate()
-
-
 @pytest.mark.parametrize("stall", ["stall_stream", "stall_headers"])
 def test_cancel_event_aborts_a_call_still_waiting_for_the_server(server_factory, stall):
     server = server_factory([stall])
@@ -195,8 +173,7 @@ def test_cancel_event_aborts_a_call_still_waiting_for_the_server(server_factory,
         cancel_event=cancel,
         raise_on_error=True,
     )
-    assert _wait_for(lambda: server.requests == 1)
-    time.sleep(0.2)
+    assert server.stalled.wait(5)
     cancel.set()
     thread.join(10)
     assert not thread.is_alive()
@@ -221,8 +198,7 @@ def test_a_newer_same_class_call_takes_the_lane_from_a_queued_one(server_factory
         request_timeout_s=60,
         raise_on_error=True,
     )
-    assert _wait_for(lambda: server.requests == 1)
-    time.sleep(0.2)
+    assert server.stalled.wait(5)
     started = time.monotonic()
     out = new.complete("s", "u", call_class="background.game_plan", request_timeout_s=60)
     assert out == "fresh plan"

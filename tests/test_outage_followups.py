@@ -100,9 +100,6 @@ class RecordingLane(proxy._BackgroundLane):
 
 @pytest.fixture
 def glm_proxy(monkeypatch):
-    for var in ("ARENAMCP_LLM_PRIORITY", "ARENAMCP_LLM_CIRCUIT", "ARENAMCP_LLM_BACKGROUND_LANE"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(ProxyBackend, "_local_warmup", lambda self: None)
     lane = RecordingLane()
     monkeypatch.setattr(proxy, "_BACKGROUND_LANE", lane)
     backend = ProxyBackend(model="glm-5.3-flash", base_url="http://winplan.invalid/v1")

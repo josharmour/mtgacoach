@@ -240,7 +240,7 @@ def check_backends() -> dict[str, bool]:
         _check("Backend detection", FAIL, "Cannot import backend_detect module")
         return results
 
-    backends = ["online", "local"]
+    backends = ["online"]
 
     for name in backends:
         try:

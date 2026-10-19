@@ -314,7 +314,7 @@ def _background_coaching_loop(
 
 
 def start_background_coaching(
-    backend: str = "auto", model: str | None = None, auto_speak: bool = False
+    backend: str = "online", model: str | None = None, auto_speak: bool = False
 ) -> None:
     """Start background game monitoring with proactive coaching.
 
@@ -322,8 +322,8 @@ def start_background_coaching(
     when triggers fire.
 
     Args:
-        backend: LLM mode to use ("online", "local", or "auto")
-        model: Optional model override (uses mode default if not specified)
+        backend: LLM mode to use ("online"; the app is online-only)
+        model: Optional model override (the gateway pins glm-5.3-flash)
         auto_speak: If True, automatically speak advice via TTS
     """
     global _coaching_thread, _coaching_enabled, _coaching_backend, _coaching_model, _coaching_auto_speak
@@ -2577,7 +2577,7 @@ def clear_pending_advice() -> dict[str, Any]:
 
 @mcp.tool()
 def start_coaching(
-    backend: str = "auto", model: str | None = None, auto_speak: bool = False
+    backend: str = "online", model: str | None = None, auto_speak: bool = False
 ) -> dict[str, Any]:
     """Start background game monitoring with proactive coaching.
 
@@ -2586,9 +2586,9 @@ def start_coaching(
     Advice is queued and can be retrieved with get_pending_advice().
 
     Args:
-        backend: LLM mode to use for advice generation.
-            Options: "online", "local", or "auto" (default)
-        model: Optional model name to use. Defaults vary by mode.
+        backend: LLM mode to use for advice generation. Only "online"
+            (the default) exists; the app is online-only.
+        model: Optional model name to use (the gateway pins glm-5.3-flash).
         auto_speak: If True, automatically speak advice via TTS when generated.
             Default False - retrieve advice manually with get_pending_advice().
 

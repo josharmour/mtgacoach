@@ -28,15 +28,6 @@ def _make_backend_with_mock_client():
     return backend, mock_client
 
 
-def test_complete_forwards_request_timeout_to_with_options():
-    backend, mock_client = _make_backend_with_mock_client()
-
-    backend.complete("sys", "user", request_timeout_s=7.5)
-
-    mock_client.with_options.assert_called_once()
-    assert 0 < mock_client.with_options.call_args.kwargs["timeout"] <= 7.5
-
-
 def test_complete_uses_default_budget_when_timeout_omitted():
     backend, mock_client = _make_backend_with_mock_client()
 
