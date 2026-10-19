@@ -3232,7 +3232,9 @@ class ActionPlanner(_ActionLegalityMixin):
             response = self._call_llm(
                 self._PAY_DECLINE_SYSTEM_PROMPT,
                 user_message,
-                256,
+                # 256 was spent on reasoning alone (2026-10-19 12:21:07, empty
+                # answer -> declined): the other decision calls get 1024+.
+                1024,
                 timeout_s=min(self._timeout, 8.0),
                 call_class="decision.pay",
             )
