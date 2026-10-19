@@ -1103,6 +1103,8 @@ class AttackPlan:
 # 15:50:04-15:50:24: 13-17 attackers against 31 creatures, every main-phase state change of
 # ours spent the full 2.0 s on the coaching thread, five times in 20 s).
 BIG_ATTACK_SEARCH = 12
+# Attack searches with this many attackers or more score all-in and the crackback reserve first.
+SEED_ATTACKERS = 8
 QUICK_DEADLINE_S = 0.25
 
 
@@ -1216,10 +1218,11 @@ def _search_attacks(
         extra["creature_died_this_turn"] = creature_died_this_turn
 
     seeds: list[tuple[int, ...]] = []
-    if n > 8:
+    if n >= SEED_ATTACKERS:
         # Big boards (ledger #162, 2026-10-19 15:05:42: 14 attackers, the 2 s deadline hit after
         # "attack with nobody" and a few one-creature attacks): everyone, and everyone but the
         # weakest bodies their crackback needs us to keep home, are scored before anything else.
+        # From eight on (#188, match 9a6ea9be T14: exactly eight attackers were never seeded).
         seeds = [tuple(range(n))]
         reserve = _crackback_reserve(
             candidate_attackers,
@@ -1232,6 +1235,9 @@ def _search_attacks(
             seeds.append(reserve)
     seed_masks = {sum(1 << i for i in seed) for seed in seeds}
     seeded: list[tuple[AttackPlan, int]] = []
+    everyone = (1 << n) - 1
+    hold_plan: AttackPlan | None = None
+    all_in_plan: AttackPlan | None = None
     for subset in _attack_order(candidate_attackers, seeds):
         if seeds and best is not None and best.score >= 10_000.0:
             break  # a big board's all-in (the first seed) is lethal through their best blocks
@@ -1278,8 +1284,63 @@ def _search_attacks(
         if best is None or _attack_rank(plan, mask) > _attack_rank(best, best_mask):
             best = plan
             best_mask = mask
+        if mask == 0:
+            hold_plan = plan
+        if mask == everyone:
+            all_in_plan = plan
+        if _every_attack_doomed(
+            hold_plan,
+            all_in_plan,
+            candidate_attackers,
+            opponent_blockers,
+            opponent_attackers_next_turn,
+            your_life,
+        ):
+            # Ledger #188 (match 9a6ea9be T14, 16:03:47): holding everything home died to their
+            # crackback (44 against our 7) and so did everyone attacking; each single attack then
+            # re-ran their sixteen attackers into our blockers (0.28 s each) until the 2 s
+            # deadline. Every attack is doomed and none gets more through than all of them, so
+            # the full search's answer is already known: all-in when it gets damage through,
+            # else nobody (``_attack_rank``).
+            break
 
     return best
+
+
+def _every_attack_doomed(
+    hold: AttackPlan | None,
+    all_in: AttackPlan | None,
+    candidates: list[dict],
+    blockers: list[dict],
+    crackers: list[dict],
+    your_life: int,
+) -> bool:
+    """Holding and attacking with everyone are both doomed (-1000), and so is every other attack.
+
+    An attack keeps fewer of ours home than holding, so its crackback is at least holding's
+    less what its combat removes from their next attack: at most the power of their creatures
+    that can die blocking one of ours (toughness within our biggest attacker's power, or any
+    against deathtouch), against at most our lifelink attackers' power in life. No attack is
+    lethal when the all-in is not (their best blocks against all of ours stop at least as much of
+    any part of it). When even that best case is lethal for them on their turn, every attack
+    scores -1000 and the all-in gets the most through.
+    """
+    if hold is None or all_in is None or hold.score > -1_000.0 or all_in.score > -1_000.0:
+        return False
+    attacking = [c for c in candidates if _pt(c)[0] > 0]
+    if not attacking:
+        return True
+    strongest = max(_pt(c)[0] for c in attacking)
+    deathtouch = any(_has(c, "deathtouch") for c in attacking)
+    next_attackers = {c.get("instance_id") for c in crackers if c.get("instance_id")}
+    removable = sum(
+        max(0, _pt(b)[0])
+        for b in blockers
+        if b.get("instance_id") in next_attackers
+        and (deathtouch or _pt(b)[1] - int(b.get("damage") or 0) <= strongest)
+    )
+    gained = sum(_pt(c)[0] for c in attacking if _has(c, "lifelink"))
+    return hold.worst_case_crackback - removable >= your_life + gained
 
 
 def gang_block_kill(

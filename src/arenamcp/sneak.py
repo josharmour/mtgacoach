@@ -561,6 +561,39 @@ def sneak_cast_pick(decision: Any, state: dict | None) -> tuple[list[str], str]:
     )
 
 
+_LINE_GAP = re.compile(r"\[LINE: -(\d+) vs best")
+
+
+def sneak_gap(decision: Any, state: dict | None, option_id: str, tag: str, margin: float) -> tuple[int, str]:
+    """(how far below the best line, why) when ``option_id`` is a Sneak cast that is neither lethal
+    nor half their life better than the normal cast (``sneak_cast_pick`` decides those) and its
+    line tag ``tag`` is ``margin`` or more below the best line; (0, '') otherwise.
+
+    Ledger #187 (match 9a6ea9be T8, 15:59:20): a Sneak Leonardo for 4 of their 27, returning a
+    Hare, tagged "[LINE: -13 vs best ...]", was taken at low effort; Leonardo died to removal and
+    every later cast of him cost {2} more.
+    """
+    gap = _LINE_GAP.match(str(tag or ""))
+    if not isinstance(state, dict) or gap is None or int(gap.group(1)) < margin:
+        return 0, ""
+    option = decision.find(option_id) if hasattr(decision, "find") else None
+    meta = (getattr(option, "meta", None) or {}) if option is not None else {}
+    if not is_sneak_option(meta):
+        return 0, ""
+    card = _option_card(option, state)
+    name = str(card.get("name") or "")
+    cast = next((c for c in sneak_casts(state) if c.name == name), None)
+    if cast is None and card:
+        printed = sneak_cost(card)
+        hard = str(card.get("mana_cost") or "")
+        cast = SneakCast(card, name, printed, printed, "hand", 0, hard) if printed else None
+    found = sneak_now(state, cast) if cast is not None else None
+    if found is not None and (found.lethal or found.beats_hard_cast):
+        return 0, ""
+    what = f" ({found.text()})" if found is not None else ""
+    return int(gap.group(1)), f"Sneaking {name or 'it'} now is not lethal{what}"
+
+
 def is_sneak_return(decision: Any) -> bool:
     """The SelectN that pays Sneak's cost: return an unblocked attacking creature to hand."""
     if getattr(decision, "request_type", "") != "SelectN":

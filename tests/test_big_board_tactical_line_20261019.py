@@ -24,9 +24,10 @@ import logging
 import time
 from typing import Any
 
+from tests.test_big_board_combat_20261019 import board_t10
+
 import arenamcp.combat_solver as solver
 import arenamcp.mcts_evaluator as mcts
-from tests.test_big_board_combat_20261019 import board_t10
 
 LOCAL, OPPONENT = 2, 1
 TURN = 21
@@ -125,9 +126,11 @@ def test_the_real_board_answers_within_the_short_deadline_and_not_with_nobody(ca
 
 
 def test_the_deadline_returns_the_all_in_seed_over_a_tied_nobody(monkeypatch):
-    """Match 2b77f14d T10: searched to the end, "nobody" is the verdict (ties go to no attack;
-    test_big_board_combat_20261019). Cut by the deadline after the all-in seed and "nobody" (both
-    -1000, 0 through), the seed is returned."""
+    """Match 2b77f14d T10: "nobody" is the verdict (ties go to no attack;
+    test_big_board_combat_20261019). After the all-in seed and "nobody" (both -1000, 0 through)
+    every attack is provably doomed (#188, ``combat_solver._every_attack_doomed``): the search
+    stops there with that verdict, deadline or not. A search the deadline cuts where "nobody"
+    leads the scored seeds only by the no-attack tie-break returns the best seed."""
     ours, blockers, crackers = board_t10()
     solver._MEMO.clear()
     full = solver.optimal_attacks(ours, blockers, 19, 6, crackers, [])
@@ -139,7 +142,11 @@ def test_the_deadline_returns_the_all_in_seed_over_a_tied_nobody(monkeypatch):
     solver._MEMO.clear()
     cut = solver.optimal_attacks(ours, blockers, 19, 6, crackers, [])
     assert len(scored) == 2  # the all-in seed, then nobody
-    assert sorted(cut.attacker_ids) == sorted(c["instance_id"] for c in ours)
+    assert cut.attacker_ids == [] and cut.score == -1000.0
+    nobody = solver.AttackPlan(attacker_ids=[], score=-1000.0)
+    seed = solver.AttackPlan(attacker_ids=[c["instance_id"] for c in ours], score=-1000.0)
+    everyone = (1 << len(ours)) - 1
+    assert solver._deadline_pick(nobody, 0, [(seed, everyone)]) == (seed, everyone)
 
 
 def test_a_cut_search_keeps_nobody_when_it_is_strictly_better():

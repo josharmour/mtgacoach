@@ -4281,7 +4281,23 @@ class ActionPlanner(_ActionLegalityMixin):
         return self.deterministic_option_pick(decision)
 
     def _board_math_fallback(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
-        """The model gave no usable priority choice: the searched line's play, else land then board math."""
+        """The model gave no usable priority choice: the searched line's play, else land then board math.
+
+        A Sneak set aside by its "sneak_gap" doubt (ledger #187) is not cast: pass."""
+        trace = getattr(self, "_last_decision_trace", None)
+        doubted = trace.get("sneak_gap") if isinstance(trace, dict) else None
+        if (
+            getattr(self, "last_llm_failure", "") == "set_aside"
+            and isinstance(doubted, dict)
+            and decision.find("pass") is not None
+        ):
+            gap = doubted.get("gap")
+            why = f"{doubted.get('why')}, and the line search rates it {gap} below its best line"
+            self._last_decision_option_ids = ["pass"]
+            self._last_decision_reasoning = f"{self._fallback_lead()}; {why}."
+            trace.update(fallback="sneak_gap", validated_ids=["pass"], fallback_reason=why)
+            logger.warning("typed-decision fallback: %s -> ['pass']", why)
+            return ["pass"]
         picked, why = board_math_option_pick(decision, game_state)
         source, board_pick = "board_math", picked
         line = line_fallback_option_pick(decision, game_state, picked)
@@ -4928,6 +4944,9 @@ class ActionPlanner(_ActionLegalityMixin):
         - "line_gap" (ledger #116): any cast the line search rates
           ``LINE_GUARD_MARGIN`` or more below its best line, with no lethal and
           that line playable now (not repeated when "face_burn" already cites it).
+        - "sneak_gap" (ledger #187): a Sneak cast in our declare-blockers step
+          that is not lethal, tagged ``LINE_GUARD_MARGIN`` or more below the best
+          line; without a high-effort answer the fallback passes.
         """
         if (
             decision.request_type != "ActionsAvailable"
@@ -4941,6 +4960,7 @@ class ActionPlanner(_ActionLegalityMixin):
             ("face_burn", self._face_burn_concern),
             ("attack_only", self._attack_only_cast_concern),
             ("line_gap", self._line_gap_concern),
+            ("sneak_gap", self._sneak_gap_concern),
         ):
             if kind == "line_gap" and any(seen == "face_burn" for seen, _text in found):
                 continue
@@ -5251,6 +5271,38 @@ class ActionPlanner(_ActionLegalityMixin):
             f"The line search rates {name} {gap.group(1)} below its best line ({summary}), and nothing is "
             f"lethal this turn. Play the best line ({instead} first) unless you can name what casting {name} "
             "now gains that the search misses."
+        )
+
+    def _sneak_gap_concern(
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        option_id: str,
+        _reasoning: str,
+        source: Any,
+        tags: dict,
+    ) -> str:
+        """A non-lethal Sneak the line search rates ``LINE_GUARD_MARGIN`` or more below its best line
+        (ledger #187, match 9a6ea9be T8: 4 of their 27 for {W}, "[LINE: -13 vs best ...]", taken at low
+        effort; Leonardo died to removal and each later cast cost {2} more). The opposite of #179's
+        hold, which casts a Sneak far better than the normal cast without asking."""
+        from arenamcp import sneak
+        from arenamcp.line_guard import LINE_GUARD_MARGIN
+
+        tag = str(tags.get(option_id) or "")
+        gap, why = sneak.sneak_gap(decision, game_state, option_id, tag, LINE_GUARD_MARGIN)
+        if not gap:
+            return ""
+        best = getattr(source, "best", None)
+        summary = best.summary(90) if best is not None else "the best line"
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict):
+            trace["sneak_gap"] = {"chosen": option_id, "gap": gap, "why": why}
+        logger.info("sneak_gap: %s; %s below the best line (%s)", why, gap, summary)
+        return (
+            f"{why}, and the line search rates it {gap} below its best line ({summary}). Pass unless "
+            "you can name what Sneaking now gains that the search misses: Leonardo comes in for this "
+            "attack, the returned creature is recast, and each later cast of a commander costs {2} more."
         )
 
     _LEAVES_AT_END_RE = re.compile(
