@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import logging.handlers
+import mimetypes
 import os
 import time
 from collections import OrderedDict
@@ -32,6 +33,10 @@ from routers.billing import router as billing_router
 from routers.proxy import router as proxy_router
 
 logger = state.logger
+
+# The slim container image has no /etc/mime.types, so StaticFiles served the
+# landing page's .webp screenshots as application/octet-stream (2026-10-18).
+mimetypes.add_type("image/webp", ".webp")
 
 # Re-init state for this app runtime
 state.init_app_state()
