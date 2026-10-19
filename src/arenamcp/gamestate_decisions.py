@@ -139,6 +139,20 @@ def _set_simple_decision(game_state: "GameState", label: str, dec_type: str, raw
     game_state.decision_context = ctx
 
 
+def _decision_source_name(game_state: "GameState", source_id: int) -> str:
+    """Name a request's source object, following an ability to its card.
+
+    2026-10-18 20:23:55: the Distribute and Numeric Input handlers fell back to
+    ``c.get(...)`` over the zone lists, which hold GameObjects, not dicts, so an
+    unnamed source (The Grand Evolution's ability) raised and the whole
+    GreToClientEvent was dropped.
+    """
+    source_obj = game_state.game_objects.get(source_id)
+    if source_obj is None:
+        return "Unknown"
+    return game_state._resolve_object_display_name(source_obj) or "Unknown"
+
+
 def _resolve_request_source_context(game_state: "GameState", source_id: int) -> dict[str, Any]:
     """Resolve source-card and oracle context for a pending GRE request."""
     if not source_id:
@@ -493,16 +507,7 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         req = msg.get("distributionReq", {})
         total = req.get("amount", req.get("total", req.get("max", 0)))
         source_id = req.get("sourceId", 0)
-        source_obj = game_state.game_objects.get(source_id)
-        source_name = "Unknown"
-        if source_obj:
-            source_name = game_state._resolve_card_name(source_obj.grp_id)
-        if not source_name or source_name.startswith("Card") or source_name == "Unknown":
-            for zone in ("battlefield", "hand", "stack", "graveyard"):
-                for c in getattr(game_state, zone, []):
-                    if c.get("instance_id") == source_id:
-                        source_name = c.get("name", source_name)
-                        break
+        source_name = _decision_source_name(game_state, source_id)
         logger.info(f"Captured Decision: Distribute {total} (source: {source_name})")
         game_state.pending_decision = "Distribute"
         game_state.decision_timestamp = _time.time()
@@ -518,16 +523,7 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
     elif msg_type == "GREMessageType_NumericInputReq":
         req = msg.get("numericInputReq", {})
         source_id = req.get("sourceId", 0)
-        source_obj = game_state.game_objects.get(source_id)
-        source_name = "Unknown"
-        if source_obj:
-            source_name = game_state._resolve_card_name(source_obj.grp_id)
-        if not source_name or source_name.startswith("Card") or source_name == "Unknown":
-            for zone in ("battlefield", "hand", "stack", "graveyard"):
-                for c in getattr(game_state, zone, []):
-                    if c.get("instance_id") == source_id:
-                        source_name = c.get("name", source_name)
-                        break
+        source_name = _decision_source_name(game_state, source_id)
         logger.info(
             f"Captured Decision: Numeric Input for {source_name} ({req.get('min', 0)}-{req.get('max', 0)})"
         )

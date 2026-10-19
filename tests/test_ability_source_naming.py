@@ -107,3 +107,44 @@ def test_pay_costs_legal_actions_have_no_card_id():
     )
     actions = RulesEngine._get_decision_actions({"decision_context": gs.decision_context})
     assert actions[0] == "Pay costs for Wolfwillow Haven's ability"
+
+
+def test_distribution_and_numeric_requests_name_an_ability_source():
+    """2026-10-18 20:23:55: an unnamed source sent the Distribute handler into
+    ``c.get()`` on GameObjects; the exception dropped the whole event."""
+    from arenamcp.gamestate_decisions import _handle_decision_message
+
+    gs = _state_with_ability()
+    _handle_decision_message(
+        gs, "GREMessageType_DistributionReq", {"distributionReq": {"sourceId": 647, "amount": 7}}
+    )
+    assert gs.pending_decision == "Distribute"
+    assert gs.decision_context["source_card"] == "Wolfwillow Haven's ability"
+    assert gs.decision_context["total"] == 7
+
+    gs = _state_with_ability()
+    _handle_decision_message(
+        gs, "GREMessageType_NumericInputReq", {"numericInputReq": {"sourceId": 647, "min": 0, "max": 3}}
+    )
+    assert gs.pending_decision == "Choose Number"
+
+
+def test_distribution_request_with_an_unknown_source_still_registers():
+    from arenamcp.gamestate_decisions import _handle_decision_message
+
+    gs = GameState()
+    gs.local_seat_id = 1
+    gs.game_objects[900] = GameObject(
+        instance_id=900, grp_id=999999999, zone_id=27, owner_seat_id=1, controller_seat_id=1
+    )
+    gs.game_objects[901] = GameObject(
+        instance_id=901, grp_id=999999998, zone_id=28, owner_seat_id=1, controller_seat_id=1
+    )
+    _handle_decision_message(
+        gs, "GREMessageType_DistributionReq", {"distributionReq": {"sourceId": 900, "amount": 2}}
+    )
+    assert gs.pending_decision == "Distribute"
+    _handle_decision_message(
+        gs, "GREMessageType_DistributionReq", {"distributionReq": {"sourceId": 12345, "amount": 2}}
+    )
+    assert gs.decision_context["source_card"] == "Unknown"
