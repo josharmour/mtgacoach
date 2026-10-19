@@ -34,8 +34,20 @@ def test_counted_harm_is_not_misclassified_as_a_buff(verb, quantity):
         ("Exile target creature, then return it to the battlefield under its owner's control.", False),
         ("Exile target creature. Target creature gets +2/+2.", None),
         ("Choose one —\n• Exile two target permanents.\n• Target creature gains hexproof.", None),
+        # Two-sided removal targets our creature too: no polarity, so the
+        # friendly source is never rejected as a bad target.
         ("Target creature you control fights target creature you don't control.", None),
+        (
+            "Target creature you control deals damage equal to its power to target creature an opponent controls.",
+            None,
+        ),
+        (
+            "Target planeswalker you control deals damage equal to its loyalty to target creature or "
+            "planeswalker an opponent controls.",
+            None,
+        ),
         ("This deals 3 damage to up to two target creatures.", True),
+        ("Destroy target creature.", True),
     ],
 )
 def test_only_known_unambiguous_effects_have_polarity(oracle, expected):

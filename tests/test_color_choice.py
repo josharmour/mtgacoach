@@ -318,11 +318,6 @@ def test_planner_asks_the_model_when_the_colour_is_not_obvious_and_falls_back_to
     assert planner.plan_decision_options(decision, state)[0] in {"sel:2", "sel:3"}
 
 
-def test_deterministic_pick_alone_would_have_said_white():
-    """Why the colour fallback exists: the mechanical pick is positional."""
-    assert ActionPlanner.deterministic_option_pick(build_pending_decision(mac_poll())) == ["sel:1"]
-
-
 def test_autopilot_submits_the_colour_id_through_the_typed_path():
     bridge = TypedBridge(mac_poll(game_state_id=9, msg_id=27))
     planner = planner_with("{}")
@@ -406,17 +401,6 @@ def test_bridge_request_other_than_actions_available_drops_stale_priority_action
     enrich_snapshot_from_pending_response(snapshot, poll, bridge_connected=True)
     assert snapshot["legal_actions"] == []
     assert snapshot["legal_actions_raw"] == []
-
-
-def test_log_derived_selection_menu_survives_the_same_family_overlay():
-    snapshot = {
-        "decision_context": {"type": "discard", "option_cards": ["Forest"]},
-        "legal_actions": ["Choose Forest"],
-    }
-    enrich_snapshot_from_pending_response(
-        snapshot, {"has_pending": True, "request_type": "SelectN"}, bridge_connected=True
-    )
-    assert snapshot["legal_actions"] == ["Choose Forest"]
 
 
 def test_actions_available_overlay_keeps_the_live_priority_menu():

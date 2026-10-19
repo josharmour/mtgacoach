@@ -5,7 +5,6 @@ import pytest
 from arenamcp.action_planner import DECLINE_DECISION, ActionPlanner, ActionType
 from arenamcp.decisions import build_pending_decision, submit_option
 from arenamcp.request_tracker import decision_fingerprint
-from arenamcp.target_effects import target_effect_is_harmful
 
 
 def test_casting_options_keep_actual_modes_and_identity():
@@ -66,19 +65,6 @@ def test_optional_choice_carries_the_real_source_and_mechanics():
     )
     assert decision.source_label == "Card draw trigger"
     assert decision.options[0].meta == {"sourceId": 42, "mechanics": ["Draw"], "recipients": [1]}
-
-
-@pytest.mark.parametrize(
-    "rules",
-    [
-        "Target creature you control deals damage equal to its power to target creature an opponent controls.",
-        "Target planeswalker you control deals damage equal to its loyalty to target creature or planeswalker an opponent controls.",
-        "Target creature you control fights target creature you don't control.",
-    ],
-)
-def test_two_sided_removal_does_not_reject_its_friendly_source(rules):
-    assert target_effect_is_harmful(rules) is None
-    assert target_effect_is_harmful("Destroy target creature.") is True
 
 
 def titan_modes_poll():

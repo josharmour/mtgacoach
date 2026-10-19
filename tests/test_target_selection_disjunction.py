@@ -16,6 +16,8 @@ Two defects:
      opponent's creature just hands it back with a +1/+1 counter.
 """
 
+import pytest
+
 from arenamcp.rules_engine import RulesEngine
 
 PLANAR_INCISION = (
@@ -143,17 +145,35 @@ def test_blink_prefers_your_own_permanent():
     assert not any("(OPP)" in a for a in actions), actions
 
 
-def test_real_removal_still_prefers_the_opponent():
-    """The blink carve-out must not disarm actual removal."""
-    actions = RulesEngine._get_target_selection_actions(
-        _state("Destroy target creature.", source_card="Murder")
-    )
+# --- which side a target should be on ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("source_card", "oracle", "side"),
+    [
+        # The blink carve-out must not disarm actual removal.
+        ("Murder", "Destroy target creature.", "theirs first"),
+        ("Swords to Plowshares", "Exile target creature.", "theirs first"),
+        (
+            "Smite the Deathless",
+            "Smite the Deathless deals 3 damage to target creature. That creature loses "
+            "indestructible until end of turn.",
+            "theirs first",
+        ),
+        # Equip and other buffs infer "a creature you control" from the text.
+        (
+            "S.H.I.E.L.D. Spy Kit",
+            "Equipped creature gets +1/+1. Whenever equipped creature attacks alone, untap it and "
+            "scry 1. Equip {1}",
+            "ours only",
+        ),
+    ],
+    ids=["destroy", "exile", "damage", "equip"],
+)
+def test_target_side_follows_the_effect(source_card, oracle, side):
+    actions = RulesEngine._get_target_selection_actions(_state(oracle, source_card=source_card))
     assert actions, actions
-    assert "(OPP)" in actions[0], actions
-
-
-def test_exile_without_return_is_still_removal():
-    actions = RulesEngine._get_target_selection_actions(
-        _state("Exile target creature.", source_card="Swords to Plowshares")
-    )
-    assert "(OPP)" in actions[0], actions
+    if side == "theirs first":
+        assert "(OPP)" in actions[0], actions
+    else:
+        assert all("(YOURS)" in action for action in actions), actions

@@ -11,6 +11,8 @@ PR #427 delivered the C# side of the casting-time X chooser.
      was shown no bounds at all.
 """
 
+import pytest
+
 from arenamcp.coach_prompt_utils import _format_numeric_constraints
 from arenamcp.gre_bridge import _stamp_bridge_fields
 
@@ -143,11 +145,14 @@ def _run_numeric_input(bridge, value=5):
     return executor._try_gre_bridge(action, {})
 
 
-def test_submit_x_is_used_for_x_costs():
+# X=0 is a value, not "no answer" (2026-09-24, Green Sun's Zenith on turn 1:
+# "Bridge couldn't handle numeric_input" three times).
+@pytest.mark.parametrize("value", [0, 5])
+def test_submit_x_is_used_for_x_costs(value):
     bridge = _FakeBridge(x_ok=True)
-    result = _run_numeric_input(bridge)
+    result = _run_numeric_input(bridge, value)
     assert result is not None and result.success
-    assert bridge.calls == [("submit_x", 5)]
+    assert bridge.calls == [("submit_x", value)]
 
 
 def test_falls_back_to_submit_numeric_on_older_plugins():

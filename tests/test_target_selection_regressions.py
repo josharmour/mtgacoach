@@ -3,6 +3,8 @@ from __future__ import annotations
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from arenamcp.action_planner import ActionPlanner, ActionType, GameAction
 from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
 from arenamcp.autopilot_models import ClickResult
@@ -38,122 +40,56 @@ def _planner() -> ActionPlanner:
     return ActionPlanner.__new__(ActionPlanner)
 
 
-def test_removal_filter_flags_friendly_only_enchantment_target() -> None:
-    card = {
-        "name": "Seam Rip",
-        "oracle_text": "Destroy target enchantment.",
-    }
-    game_state = {
+def _one_permanent_state(owner: int, name: str, type_line: str) -> dict:
+    return {
         "players": [
             {"seat_id": 1, "is_local": True},
             {"seat_id": 2, "is_local": False},
         ],
         "battlefield": [
             {
-                "instance_id": 10,
-                "name": "Helpful Aura",
-                "type_line": "Enchantment — Aura",
-                "owner_seat_id": 1,
-                "controller_id": 1,
+                "instance_id": 10 if owner == 1 else 20,
+                "name": name,
+                "type_line": type_line,
+                "owner_seat_id": owner,
+                "controller_id": owner,
             }
         ],
     }
 
-    assert _planner()._removal_lacks_opponent_target(card, game_state) is True
+
+@pytest.mark.parametrize(("owner", "lacks"), [(1, True), (2, False)], ids=["ours_only", "theirs"])
+def test_removal_filter_needs_an_opponent_target(owner, lacks) -> None:
+    card = {"name": "Seam Rip", "oracle_text": "Destroy target enchantment."}
+    game_state = _one_permanent_state(owner, "An Aura", "Enchantment — Aura")
+    assert _planner()._removal_lacks_opponent_target(card, game_state) is lacks
 
 
-def test_removal_filter_allows_spell_when_opponent_has_matching_target() -> None:
-    card = {
-        "name": "Seam Rip",
-        "oracle_text": "Destroy target enchantment.",
-    }
-    game_state = {
-        "players": [
-            {"seat_id": 1, "is_local": True},
-            {"seat_id": 2, "is_local": False},
-        ],
-        "battlefield": [
-            {
-                "instance_id": 20,
-                "name": "Opponent Aura",
-                "type_line": "Enchantment — Aura",
-                "owner_seat_id": 2,
-                "controller_id": 2,
-            }
-        ],
-    }
-
-    assert _planner()._removal_lacks_opponent_target(card, game_state) is False
-
-
-def test_pick_single_target_candidate_declines_friendly_only_harmful_spell() -> None:
+@pytest.mark.parametrize(
+    ("owner", "type_line", "spell", "oracle", "picked"),
+    [
+        # Harmful spell, our permanent the only candidate: decline it.
+        (1, "Enchantment — Aura", "Seam Rip", "Destroy target enchantment.", None),
+        (1, "Creature — Human", "Shardmage's Rescue", "Target creature you control gets +1/+1 until end of turn.", 10),
+        # A buff onto the opponent's only candidate is declined too.
+        (2, "Creature — Soldier", "Mutagen", "Put a +1/+1 counter on target creature.", None),
+        (2, "Creature — Soldier", "Seam Rip", "Destroy target enchantment.", 20),
+    ],
+    ids=["harm_ours", "buff_ours", "buff_theirs", "harm_theirs"],
+)
+def test_pick_single_target_candidate_respects_the_effect(owner, type_line, spell, oracle, picked) -> None:
     engine = AutopilotEngine.__new__(AutopilotEngine)
     engine._gre_bridge = SimpleNamespace(connected=True, connect=lambda: True, get_pending_actions=lambda: {})
-
-    game_state = {
-        "players": [
-            {"seat_id": 1, "is_local": True},
-            {"seat_id": 2, "is_local": False},
-        ],
-        "battlefield": [
-            {
-                "instance_id": 10,
-                "name": "Helpful Aura",
-                "type_line": "Enchantment — Aura",
-                "owner_seat_id": 1,
-                "controller_id": 1,
-            }
-        ],
-        "stack": [
-            {
-                "instance_id": 900,
-                "name": "Seam Rip",
-                "oracle_text": "Destroy target enchantment.",
-            }
-        ],
-        "_bridge_last_poll": {
-            "has_pending": True,
-            "target_candidates": [{"targetInstanceId": 10}],
-        },
-        "decision_context": {"type": "target_selection"},
-    }
-
-    assert engine._pick_single_target_candidate(game_state) is None
-
-
-def test_pick_single_target_candidate_accepts_friendly_buff_spell() -> None:
-    engine = AutopilotEngine.__new__(AutopilotEngine)
-    engine._gre_bridge = SimpleNamespace(connected=True, connect=lambda: True, get_pending_actions=lambda: {})
-
-    game_state = {
-        "players": [
-            {"seat_id": 1, "is_local": True},
-            {"seat_id": 2, "is_local": False},
-        ],
-        "battlefield": [
-            {
-                "instance_id": 10,
-                "name": "Veteran Survivor",
-                "type_line": "Creature — Human",
-                "owner_seat_id": 1,
-                "controller_id": 1,
-            }
-        ],
-        "stack": [
-            {
-                "instance_id": 901,
-                "name": "Shardmage's Rescue",
-                "oracle_text": "Target creature you control gets +1/+1 until end of turn.",
-            }
-        ],
-        "_bridge_last_poll": {
-            "has_pending": True,
-            "target_candidates": [{"targetInstanceId": 10}],
-        },
-        "decision_context": {"type": "target_selection"},
-    }
-
-    assert engine._pick_single_target_candidate(game_state) == 10
+    game_state = _one_permanent_state(owner, "A Permanent", type_line)
+    candidate = game_state["battlefield"][0]["instance_id"]
+    game_state.update(
+        {
+            "stack": [{"instance_id": 900, "name": spell, "oracle_text": oracle}],
+            "_bridge_last_poll": {"has_pending": True, "target_candidates": [{"targetInstanceId": candidate}]},
+            "decision_context": {"type": "target_selection"},
+        }
+    )
+    assert engine._pick_single_target_candidate(game_state) == picked
 
 
 def test_gre_select_target_uses_sole_bridge_candidate_when_name_lookup_fails() -> None:
@@ -187,76 +123,6 @@ def test_gre_select_target_uses_sole_bridge_candidate_when_name_lookup_fails() -
     assert isinstance(result, ClickResult)
     assert result.success is True
     assert bridge.submitted_target_ids == [20]
-
-
-def test_pick_single_target_candidate_declines_opponent_buff_spell() -> None:
-    engine = AutopilotEngine.__new__(AutopilotEngine)
-    engine._gre_bridge = SimpleNamespace(connected=True, connect=lambda: True, get_pending_actions=lambda: {})
-
-    game_state = {
-        "players": [
-            {"seat_id": 1, "is_local": True},
-            {"seat_id": 2, "is_local": False},
-        ],
-        "battlefield": [
-            {
-                "instance_id": 20,
-                "name": "Spectrum Sentinel",
-                "type_line": "Creature — Soldier",
-                "owner_seat_id": 2,
-                "controller_id": 2,
-            }
-        ],
-        "stack": [
-            {
-                "instance_id": 902,
-                "name": "Mutagen",
-                "oracle_text": "Put a +1/+1 counter on target creature.",
-            }
-        ],
-        "_bridge_last_poll": {
-            "has_pending": True,
-            "target_candidates": [{"targetInstanceId": 20}],
-        },
-        "decision_context": {"type": "target_selection"},
-    }
-
-    assert engine._pick_single_target_candidate(game_state) is None
-
-
-def test_pick_single_target_candidate_accepts_opponent_harmful_spell() -> None:
-    engine = AutopilotEngine.__new__(AutopilotEngine)
-    engine._gre_bridge = SimpleNamespace(connected=True, connect=lambda: True, get_pending_actions=lambda: {})
-
-    game_state = {
-        "players": [
-            {"seat_id": 1, "is_local": True},
-            {"seat_id": 2, "is_local": False},
-        ],
-        "battlefield": [
-            {
-                "instance_id": 20,
-                "name": "Spectrum Sentinel",
-                "type_line": "Creature — Soldier",
-                "owner_seat_id": 2,
-                "controller_id": 2,
-            }
-        ],
-        "stack": [
-            {
-                "instance_id": 903,
-                "name": "Seam Rip",
-                "oracle_text": "Destroy target enchantment.",
-            }
-        ],
-        "_bridge_last_poll": {
-            "has_pending": True,
-            "target_candidates": [{"targetInstanceId": 20}],
-        },
-        "decision_context": {"type": "target_selection"},
-    }
-
-    assert engine._pick_single_target_candidate(game_state) == 20
 
 
 def test_rules_engine_compound_flying_target_selection_pure_log_state() -> None:
