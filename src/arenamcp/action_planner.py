@@ -18,6 +18,8 @@ from typing import Any
 
 from arenamcp.backend_health import is_backend_error_text
 from arenamcp.cast_notes import combat_cast_note, loot_mode_note, trick_timing_note, turn_investments_note
+from arenamcp.damage_assignment import fallback_plan as damage_fallback_plan
+from arenamcp.damage_assignment import is_assign_damage_window, spoken_split
 from arenamcp.decision_memory import DecisionMemory, burn_combo_note, critical_decision, lethal_reach
 from arenamcp.decisions import expand_target_selection
 from arenamcp.mana_potential import mana_reach_note
@@ -339,6 +341,8 @@ class ActionPlan:
                     if action.blocker_assignments
                     else "Don't block"
                 )
+            elif kind == ActionType.ASSIGN_DAMAGE and spoken_split(action.distribution):
+                line = "Assign " + spoken_split(action.distribution)
             elif kind == ActionType.NUMERIC_INPUT:
                 line = f"Choose {action.numeric_value}"
             elif kind == ActionType.PASS_PRIORITY:
@@ -1188,6 +1192,19 @@ class ActionPlanner(_ActionLegalityMixin):
             except Exception as error:
                 repair_unavailable = is_llm_unavailable_error(error)
                 logger.warning("Block assignment repair failed: %s", error)
+
+        if not plan.actions and is_assign_damage_window(
+            game_state, decision_context, effective_legal_actions
+        ):
+            # #102 (2026-10-19 12:22:20): the model's assign_damage JSON was cut
+            # off, the fallback picked the menu's "Done", and the bridge can only
+            # send that as a pass, which AssignDamage refuses. No model needed.
+            logger.warning(
+                f"Planner JSON parse returned 0 actions on AssignDamage, response="
+                f"{response[:200] if response else 'None'!r}; assigning the deterministic split"
+            )
+            plan = damage_fallback_plan(game_state, decision_context, trigger)
+            plan.turn_number = current_turn
 
         if not plan.actions:
             logger.warning(
