@@ -7047,7 +7047,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 }
                 answered_high = answered_high or not opponent_turn
             except Exception as error:
-                logger.info("typed-decision: reversal re-check failed (%s); keeping the first answer", error)
+                data, chosen = self._reversal_check_failed(
+                    decision, tag_state, data, chosen, line_tags, reversed_record, error
+                )
         data, chosen = self._second_look(
             decision, tag_state, data, chosen, concerns_for, ask, parse, user_message, answered_high
         )
@@ -7070,6 +7072,70 @@ class ActionPlanner(_ActionLegalityMixin):
             "typed-decision choice %s: %s", chosen, self._last_decision_reasoning or "reason not supplied"
         )
         return chosen
+
+    def _reversal_check_failed(
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        data: dict,
+        chosen: list[str],
+        line_tags: dict[str, str],
+        record: Any,
+        error: Exception,
+    ) -> tuple[dict, list[str]]:
+        """The reversal re-check got no answer: keep the earlier pass unless the reversing pick is line-best or lethal.
+
+        Ledger #151 (2026-10-19 match 633f56bd T7, 13:58:48 -> 13:59:03): in our
+        declare-blockers step the low answer cast Lightning Strike at the face
+        (tagged "[LINE: -7 vs best ...]"), reversing the Main 1 pass ("keep
+        Lightning Strike as instant-speed interaction"). The high-effort
+        re-check ran out its 15 s budget beside a 3,162-token game-plan reform,
+        and the reversing cast stood unexamined. The re-check exists because
+        the reversal is doubtful, so without its answer the earlier pass stands,
+        unless the line search rates the pick best ('[LINE best' / '[LINE:
+        ~best', within its tolerance) or the board math has lethal this turn.
+        """
+        option_id = str(chosen[0]) if chosen else ""
+        tag = str((line_tags or {}).get(option_id) or "")
+        stands = ""
+        if tag.startswith(("[LINE best", "[LINE: ~best")):
+            stands = f"the line search rates it best {tag}"
+        elif _lethal_this_turn(game_state) is True:
+            stands = "the board math has lethal this turn"
+        elif decision.find("pass") is None:
+            stands = "no pass on the menu"
+        trace = getattr(self, "_last_decision_trace", None)
+        check = {"earlier": record.reasoning, "failed": str(error)[:200]}
+        if stands:
+            logger.info(
+                "typed-decision: reversal re-check failed (%s); keeping the first answer (%s)", error, stands
+            )
+            if isinstance(trace, dict):
+                trace["reversal_check"] = {**check, "final": list(chosen), "kept": f"first answer: {stands}"}
+            return data, chosen
+        label = _option_text(decision, option_id)
+        logger.warning(
+            "typed-decision: reversal re-check failed (%s); keeping the earlier pass, not %s %s "
+            "(neither the line's best nor lethal) [model: %s]",
+            error,
+            label,
+            tag or "(no line tag)",
+            str(data.get("reasoning") or "")[:160],
+        )
+        if isinstance(trace, dict):
+            trace["reversal_check"] = {
+                **check,
+                "final": ["pass"],
+                "kept": "earlier pass",
+                "set_aside": list(chosen),
+            }
+        reasoning = " ".join(str(record.reasoning or "").split())
+        return {
+            "option_ids": ["pass"],
+            "reasoning": f"Keeping the earlier pass this turn: {reasoning}"
+            if reasoning
+            else "Keeping the earlier pass this turn.",
+        }, ["pass"]
 
     def _note_false_claims(self, game_state: dict[str, Any], decision: Any, chosen: list[str]) -> None:
         """Annotate the reasoning's claims the board contradicts (ledger #84; no model call).
