@@ -551,12 +551,20 @@ def bullets(text: str) -> list[str]:
 def classify(name: str, bullet: str) -> tuple[str, int, dict | None, bool]:
     """(kind, life gained, removal 'card' for _kills, bounce) of one mode; kind 'other' is worth 0.
 
-    Kinds: removal, bounce, lifegain, tokens (creature tokens ``token_specs``
-    reads) and other.
+    Kinds: removal, sweep (damage to each creature they control and nothing
+    targeted: ``mode_sweep``, no removal card), bounce, lifegain, tokens
+    (creature tokens ``token_specs`` reads) and other.
+
+    Ledger #87 (2026-10-19 c8ea2b6c T14): Iroh's Demonstration's "1 damage to
+    each creature your opponents control" was 'removal' of one 1/1 and tied
+    with "4 damage to target creature" on Healer's Hawk; it kills the Hawk and
+    both Soldier tokens.
     """
     pseudo = {"name": name, "oracle_text": bullet, "type_line": ""}
     match = _LIFEGAIN.search(_text(pseudo))
     gain = int(match.group(1)) if match else 0
+    if mode_sweep(name, bullet) and not any(c.targeted for c in _removal_clauses(pseudo)):
+        return "sweep", gain, None, False
     reach = removal_reach(pseudo)
     if reach is not None:
         return ("bounce" if reach[0] == "bounce" else "removal"), gain, pseudo, reach[0] == "bounce"
@@ -766,6 +774,23 @@ def walker_burn(text: str) -> int:
 def _sweep(text: str) -> int:
     """Damage ``text`` (lower-case cast text) deals each creature the opponent controls (0: none)."""
     return max((int(m.group("n")) for m in _SWEEP.finditer(text or "")), default=0)
+
+
+def mode_sweep(name: str, bullet: str) -> int:
+    """Damage one 'choose one' mode deals each creature the opponent controls (0: none)."""
+    return _sweep(_cast_text({"name": name, "oracle_text": bullet, "type_line": ""}))
+
+
+def swept_now(body: dict, amount: int, card: dict | None) -> bool:
+    """A sweep of ``amount`` damage from ``card`` resolving now kills this creature of theirs:
+    not indestructible, no protection from the spell, toughness within the damage plus what is
+    already marked on it."""
+    if amount <= 0 or has_combat_keyword(body, "indestructible"):
+        return False
+    if _protected_from(body, card or {}, targeted=False):
+        return False
+    marked = max(0, _int((body.get("_card") or {}).get("damage")) or 0)
+    return body["toughness"] <= amount + marked
 
 
 def fully_applied(card: dict) -> bool:
@@ -1207,6 +1232,8 @@ class Moves:
                 loss = life_loss(pseudo) + extra_life
                 mode_alt, mode_each = face_damage(pseudo)
                 specs = tuple(token_specs(_cast_text(pseudo)) or ())
+                # Damage to each of their creatures (#87: Iroh's Demonstration's first mode).
+                sweep = mode_sweep(spell.name, bullet)
                 effect = (
                     kind,
                     gain,
@@ -1215,6 +1242,7 @@ class Moves:
                     mode_alt,
                     mode_each,
                     specs,
+                    sweep,
                 )
                 if (kind == "other" and body is None and not mode_alt and not mode_each) or effect in seen:
                     continue  # a noncreature's 'other' mode does nothing; duplicates add nothing
@@ -1228,6 +1256,7 @@ class Moves:
                     loss=loss,
                     face=mode_each,
                     specs=specs,
+                    sweep=sweep,
                 )
                 variants += [var, *aimed(var, mode_alt)]
             if not variants and plain is not None:
@@ -1557,11 +1586,7 @@ class Moves:
             value += walker_value(loyal) - (walker_value(loyal - damage) if damage < loyal else 0.0)
         # A sweep: each creature of theirs it kills by itself.
         for var in (v for v, _ in choice if v.sweep):
-            value += sum(
-                1 + b["power"] * (1.5 if self.survival else 1.0)
-                for b in theirs
-                if b["toughness"] <= var.sweep and self.swept(var, b)
-            )
+            value += self.sweep_value(var, theirs)
         if any(v.life_tokens for v, _ in choice):
             x = min(10, gained + sum(v.gain for v, _ in choice if not v.life_tokens))
             for var, _target in choice:
@@ -1569,6 +1594,16 @@ class Moves:
                     pseudo = _Spell(token["_card"], token["name"], "creature", 0, (), False)
                     value += _spell_value(pseudo, survival=self.survival, theirs=list(theirs))
         return value
+
+    def sweep_value(self, var: Variant, theirs) -> float:
+        """What a sweep (``Variant.sweep``) is worth: each creature of theirs it kills by itself."""
+        if not var.sweep:
+            return 0.0
+        return sum(
+            1 + b["power"] * (1.5 if self.survival else 1.0)
+            for b in theirs
+            if b["toughness"] <= var.sweep and self.swept(var, b)
+        )
 
     def _life_bodies(self, var: Variant, gained: int) -> tuple[dict, ...]:
         """The token bodies a life-scaled token maker makes with ``gained`` life gained
@@ -2424,6 +2459,8 @@ class Moves:
         if effect.get("target") is not None:
             theirs = [b for b in theirs if b is not effect["target"]]
             returning += [effect["target"]] if effect.get("bounce") else []
+        if effect.get("sweep"):  # a mode's damage to each of their creatures (#87)
+            theirs = [b for b in theirs if not swept_now(b, int(effect["sweep"]), effect.get("source"))]
         return Node(
             k=0,
             abs_turn=self.first_turn,

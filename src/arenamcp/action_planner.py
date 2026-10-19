@@ -6869,13 +6869,27 @@ def _unmodelled_options(result: Any, decision: Any, state: dict[str, Any]) -> di
     return found
 
 
-def _modes_line(comparison: Any, decision: Any, max_chars: int = 320) -> str:
+def _kill_names(names: tuple[str, ...]) -> str:
+    """' (kills Healer's Hawk, Soldier ×2)' / ' (kills nothing)' for a mode's ``ModeComparison.kills``."""
+    counts: dict[str, int] = {}
+    for name in names:
+        counts[name] = counts.get(name, 0) + 1
+    shown = [name if n == 1 else f"{name} ×{n}" for name, n in counts.items()]
+    if len(shown) > 4:
+        shown = [*shown[:3], f"+{sum(list(counts.values())[3:])} more"]
+    return f" (kills {', '.join(shown)})" if shown else " (kills nothing)"
+
+
+def _modes_line(comparison: Any, decision: Any, max_chars: int = 400) -> str:
     """The 'MODES ...' line for a modal menu: each mode's searched outcome, or ''.
 
     The strategy block's role and board facts come from ``assess``, which
     does not resolve this pending choice (2026-10-06 G1 T14: 'ALL-IN: no
     defensive line survives' next to a gain-4 mode that survives T15), so
-    the line says which of the two already counts the choice.
+    the line says which of the two already counts the choice. A removal or
+    sweep mode names what it kills (ledger #87, 2026-10-19 c8ea2b6c T14: the
+    model chose Iroh's Demonstration's 4 damage on Healer's Hawk over the
+    1-to-each sweep that also killed both Soldier tokens).
     """
     try:
         from arenamcp.line_guard import _life_parts
@@ -6894,6 +6908,9 @@ def _modes_line(comparison: Any, decision: Any, max_chars: int = 320) -> str:
             kind = comparison.modes.get(option.option_id) or _option_text(decision, option.option_id)
             if kind == "other":
                 kind = _option_text(decision, option.option_id).split(": ", 1)[-1][:48] + " (not modelled)"
+            killed = (getattr(comparison, "kills", None) or {}).get(option.option_id)
+            if killed is not None:
+                kind += _kill_names(tuple(killed))
             outcome = ", ".join(_life_parts(line, modal=True)) or line.outcome_text()
             parts.append(f"{kind} — {outcome}")
         if len(parts) < 2:

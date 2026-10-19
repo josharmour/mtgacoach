@@ -1229,18 +1229,75 @@ def enrich_with_oracle_text(grp_id: int) -> dict[str, Any]:
     }
 
 
+def enrich_ability(grp_id: int, source_grp_id: int | None = None) -> dict[str, Any]:
+    """Name and rules text of an ABILITY object (a trigger or activation on the stack).
+
+    An ability's grp id is an *ability* id: looked up in the card table it can
+    name an unrelated card. Ledger #88 (2026-10-19 c8ea2b6c): ability 92970,
+    "Whenever you gain life, put a +1/+1 counter on CARDNAME." (Essence
+    Channeler, Ajani's Pridemate, ...), is also card 92970, Deal Gone Bad, so
+    every lifegain opponent showed a phantom "Deal Gone Bad" (-3/-3) on the
+    stack and the concede check reasoned about it. The ability table is
+    read instead and the object is named after its source card: "Essence
+    Channeler ability".
+    """
+    text = ""
+    try:
+        text = str(_get_card_db().get_ability_text(int(grp_id)) or "") if grp_id else ""
+    except Exception as exc:  # a broken DB never breaks serialization
+        logger.debug("ability text lookup failed for %s: %s", grp_id, exc)
+    source_name = ""
+    if source_grp_id:
+        source_name = str(enrich_with_oracle_text(int(source_grp_id)).get("name") or "")
+        if is_unknown_card_name(source_name) or source_name.startswith(
+            ("Card#", "Unknown (ID:", "Ability (ID:")
+        ):
+            source_name = ""
+    return {
+        "grp_id": grp_id,
+        "name": f"{source_name} ability" if source_name else f"Ability (ID: {grp_id})",
+        "oracle_text": text,
+        "type_line": "Ability",
+        "mana_cost": "",
+    }
+
+
+def _is_ability_kind(kind: Any) -> bool:
+    """``object_kind`` (a GameObjectKind, its name, or the GRE's 'GameObjectType_Ability') is an ability."""
+    value = str(getattr(kind, "name", kind) or "").upper()
+    return value == "ABILITY" or value.endswith("_ABILITY")
+
+
+def _parent_grp_id(parent_instance_id: Any, lookup: dict[int, dict[str, Any]] | None = None) -> int | None:
+    """The grp id of an ability's source object: the snapshot's objects first, then the live map."""
+    parent_id = _coerce_int(parent_instance_id)
+    if parent_id is None:
+        return None
+    parent = (lookup or {}).get(parent_id)
+    if parent is not None and _coerce_int(parent.get("grp_id")):
+        return _coerce_int(parent.get("grp_id"))
+    parent_obj = (getattr(game_state, "game_objects", None) or {}).get(parent_id)
+    return _coerce_int(getattr(parent_obj, "grp_id", None)) or None
+
+
 def _serialize_game_object(obj) -> dict[str, Any]:
     """Serialize a GameObject with oracle text enrichment.
 
     For abilities on the stack (objects with parent_instance_id), resolves the
-    source card to provide context about what triggered or activated.
+    source card to provide context about what triggered or activated. An
+    ability's own name and text come from the ability table (``enrich_ability``).
     """
-    enriched = enrich_with_oracle_text(obj.grp_id)
+    parent_obj = (
+        game_state.game_objects.get(obj.parent_instance_id) if obj.parent_instance_id is not None else None
+    )
+    if _is_ability_kind(getattr(obj, "object_kind", None)):
+        enriched = enrich_ability(obj.grp_id, parent_obj.grp_id if parent_obj is not None else None)
+    else:
+        enriched = enrich_with_oracle_text(obj.grp_id)
 
     # Resolve source card for abilities (triggered/activated abilities on stack)
     source_card = None
     if obj.parent_instance_id is not None:
-        parent_obj = game_state.game_objects.get(obj.parent_instance_id)
         if parent_obj:
             source_enriched = enrich_with_oracle_text(parent_obj.grp_id)
             source_card = {
@@ -1310,9 +1367,15 @@ def _normalize_object_kind(raw_kind: Any, fallback_kind: str = "UNKNOWN") -> str
 
 
 def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
-    """Serialize a published-snapshot object with oracle text enrichment."""
+    """Serialize a published-snapshot object with oracle text enrichment.
+
+    An ability is named from the ability table after its source (``enrich_ability``).
+    """
     grp_id = int(obj.get("grp_id", 0) or 0)
-    enriched = enrich_with_oracle_text(grp_id)
+    if _is_ability_kind(obj.get("object_kind")):
+        enriched = enrich_ability(grp_id, _parent_grp_id(obj.get("parent_instance_id")))
+    else:
+        enriched = enrich_with_oracle_text(grp_id)
     name = enriched.get("name") or f"Unknown ({grp_id})"
     type_line = enriched.get("type_line") or ""
     subtypes = obj.get("subtypes", [])
@@ -1398,7 +1461,11 @@ def _serialize_bridge_card(
 
     fallback_grp_id = _coerce_int(fallback.get("grp_id"), 0) or 0
     grp_id = _coerce_int(card.get("grp_id"), fallback_grp_id) or 0
-    enriched = enrich_with_oracle_text(grp_id)
+    if _is_ability_kind(card.get("object_type") or fallback.get("object_kind")):
+        parent_id = card.get("parent_instance_id", fallback.get("parent_instance_id"))
+        enriched = enrich_ability(grp_id, _parent_grp_id(parent_id, snapshot_lookup))
+    else:
+        enriched = enrich_with_oracle_text(grp_id)
 
     name = enriched.get("name") or fallback.get("name") or f"Unknown ({grp_id})"
     type_line = enriched.get("type_line") or fallback.get("type_line") or ""

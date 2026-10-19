@@ -1674,17 +1674,15 @@ class GameState(_GameStateAnnotationsMixin):
                 try:
                     from arenamcp import server
 
-                    card_info = server.enrich_with_oracle_text(grp_id)
+                    is_ability = enriched.get("object_kind") == "ABILITY"
+                    # An ability id read through the card table can name an unrelated card
+                    # (ledger #88: ability 92970 is also card 92970, Deal Gone Bad).
+                    lookup = server.enrich_ability if is_ability else server.enrich_with_oracle_text
+                    card_info = lookup(grp_id)
                     enriched["name"] = card_info.get("name", f"Unknown ({grp_id})")
                     enriched["type_line"] = card_info.get("type_line", "")
                     enriched["mana_cost"] = card_info.get("mana_cost", "")
                     enriched["oracle_text"] = card_info.get("oracle_text", "")
-                    is_ability = enriched.get("object_kind") == "ABILITY"
-                    if is_ability and enriched["type_line"] != "Ability":
-                        enriched["name"] = f"Ability (ID: {grp_id})"
-                        enriched["type_line"] = "Ability"
-                        enriched["mana_cost"] = ""
-                        enriched["oracle_text"] = ""
 
                     parent_instance_id = enriched.get("parent_instance_id")
                     if parent_instance_id is not None:
@@ -1959,7 +1957,31 @@ class GameState(_GameStateAnnotationsMixin):
             if len(self.game_objects) > 200:  # Only cleanup when dict gets large
                 self._cleanup_stale_objects()
 
+            # After the annotations, which may still name a deleted object (ResolutionComplete).
+            self._apply_deleted_instance_ids(message)
+
             self._published_snapshot = self._build_raw_snapshot_locked()
+
+    def _apply_deleted_instance_ids(self, message: dict) -> None:
+        """Forget the objects a GameStateMessage lists in ``diffDeletedInstanceIds``.
+
+        Arena sends a zone whose last object left without ``objectInstanceIds``
+        (``_update_zone`` keeps the old list then) and names the gone object
+        here instead. Ledger #89 (2026-10-19 c8ea2b6c): gsid 440 resolved
+        Essence Channeler's trigger 406, sent the stack zone without ids and
+        ``diffDeletedInstanceIds: [406]``, and 406 stayed on the coach's stack
+        to the end of the game. A deleted id never comes back (a card
+        that changes zones gets a new id through ObjectIdChanged and its old id
+        is deleted from Limbo later), so it leaves every zone and the object map.
+        """
+        deleted = set(_ensure_int_list(message.get("diffDeletedInstanceIds", [])))
+        if not deleted:
+            return
+        for zone in self.zones.values():
+            if any(iid in deleted for iid in zone.object_instance_ids):
+                zone.object_instance_ids = [iid for iid in zone.object_instance_ids if iid not in deleted]
+        for iid in deleted:
+            self.game_objects.pop(iid, None)
 
     def _record_oops_facts(self, annotations: list) -> None:
         """Keep the facts the Oops blunder checks read (arenamcp.oops.message_facts)."""
