@@ -97,6 +97,8 @@ from arenamcp.line_search_moves import (
     ids_of,
     make_tokens,
     mode_label,
+    mode_sweep,
+    swept_now,
     token_specs,
     unmodelled_effect,
 )
@@ -362,6 +364,9 @@ class ModeComparison:
     results: dict[str, LineSearchResult]
     modes: dict[str, str]  # option_id -> 'gain 4 life' / removal text / 'other'
     contingent: list[str]  # what an unmodelled 'other' mode might answer
+    # option_id -> names of their creatures a removal or sweep mode kills as it resolves, in its
+    # best line's run (a removal mode's target, a sweep mode's every victim: ledger #87).
+    kills: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def complete(self) -> bool:
@@ -1119,7 +1124,7 @@ def _noted_variant(
     # A mode the search dropped: it does nothing it can value (a creature keeps its body).
     blank = dataclasses.replace(
         casts[0], mode=index, mode_text=mode_label(kind, 0, texts[index], hs.name), reach=None, gain=0,
-        bounce=False, rock=False, face=0, aim="", tokens=(),
+        bounce=False, rock=False, face=0, aim="", tokens=(), sweep=0,
     )  # fmt: skip
     return blank, "mode not modelled"
 
@@ -1128,6 +1133,7 @@ def _noted_variant(
 _MODE_WORDS = (
     ("lifegain", r"\b(?:gain|gains|life|lifegain|heal)\b"),
     ("removal", r"\b(?:destroy|exile|kill|removal|remove|damage|burn)\b"),
+    ("sweep", r"\b(?:sweep|sweeps|sweeper|wipe|each creature)\b"),
     ("bounce", r"\b(?:return|bounce)\b"),
     ("tokens", r"\b(?:create|token|tokens)\b"),
 )
@@ -1169,6 +1175,8 @@ def _mode_index(hs: HandSpell, texts: list[str], mode: str) -> int | None:
     if len(first) == 1:
         return first[0]
     kinds = {kind for kind, pattern in _MODE_WORDS if re.search(pattern, _plain(mode))}
+    if "removal" in kinds and "sweep" not in kinds:
+        kinds.add("sweep")  # "damage"/"kill" names a sweep as well as targeted removal
     named = [i for i, text in enumerate(texts) if classify(hs.name, text)[0] in kinds]
     return named[0] if len(named) == 1 else None
 
@@ -1198,7 +1206,8 @@ def _default_variant(
             if var.reach
             else None
         )
-        return search.item_value(var, target, node.theirs)
+        # A sweep mode is worth the creatures it kills, as in ``choice_value`` (#87).
+        return search.item_value(var, target, node.theirs) + search.sweep_value(var, node.theirs)
 
     return max(casts, key=worth) if casts else None
 
@@ -1264,7 +1273,9 @@ def compare_modes(
 
     Each mode is applied before T (a creature still on the stack enters with
     it), removal modes on each of the top two killable targets (and an 'any
-    target' mode on the opponent too); the best line per mode is kept.
+    target' mode on the opponent too), a sweep mode on every creature of
+    theirs it kills (``ModeComparison.kills`` names them); the best line per
+    mode is kept.
     ``contingent`` names what an unmodelled 'other' mode might do (hit their
     creatures or combat, answer an engine or anthem): such a verdict must
     never be applied. ``soft_ms``/``hard_ms`` bound the whole comparison, split
@@ -1319,13 +1330,18 @@ def _compare_modes(state: dict, decision: Any, soft_ms: float, hard_ms: float) -
         tokens = make_tokens(
             token_specs(_cast_text(pseudo)) or [], model.turn, model.our_rules, _ROOT_TOKEN_IDS
         )
+        # Damage to each of their creatures: every one it kills dies before T (#87).
+        sweep = mode_sweep(name, text)
         effect = {
             "body": body,
             "gain": gain - life_loss(pseudo),
             "bounce": bounce,
             "face": each,
             "tokens": tokens,
+            "sweep": sweep,
+            "source": source,
         }
+        swept = [b for b in model.theirs if swept_now(b, sweep, source)] if sweep else []
         targets: list = [None]
         if reach is not None:
             killable = sorted(
@@ -1337,13 +1353,21 @@ def _compare_modes(state: dict, decision: Any, soft_ms: float, hard_ms: float) -
                 key=lambda b: (-b["power"], -b["toughness"], b["instance_id"]),
             )
             targets = killable[:2] or [None]
-        runs += [(option.option_id, {**effect, "target": target}) for target in targets]
+        # What the mode kills as it resolves (None: it kills nothing by its kind; a bounce returns).
+        removes = (reach is not None and not bounce) or bool(sweep)
+        for target in targets:
+            killed = [target] if target is not None and not bounce else []
+            killed += [b for b in swept if b is not target]
+            names = tuple(_name(b) for b in killed) if removes else None
+            runs.append((option.option_id, {**effect, "target": target}, names))
         if alt:
-            runs.append((option.option_id, {**effect, "target": None, "face": each + alt}))
+            names = tuple(_name(b) for b in swept) if removes else None
+            runs.append((option.option_id, {**effect, "target": None, "face": each + alt}, names))
     lines: dict[str, Line] = {}
     results: dict[str, LineSearchResult] = {}
+    kills: dict[str, tuple[str, ...]] = {}
     started = time.perf_counter()
-    for position, (option_id, effect) in enumerate(runs):
+    for position, (option_id, effect, killed) in enumerate(runs):
         left = hard_ms - (time.perf_counter() - started) * 1000
         if left <= 0 and option_id in results:
             continue
@@ -1354,9 +1378,11 @@ def _compare_modes(state: dict, decision: Any, soft_ms: float, hard_ms: float) -
         ).run()  # fmt: skip
         if option_id not in results or _order(result.best) > _order(results[option_id].best):
             results[option_id], lines[option_id] = result, result.best
+            if killed is not None:
+                kills[option_id] = killed
     if not lines:
         return None
-    return ModeComparison(name, lines, results, kinds, _contingent(state, model, other))
+    return ModeComparison(name, lines, results, kinds, _contingent(state, model, other), kills)
 
 
 # An 'other' mode whose text touches their creatures or combat: the search can't value it.
