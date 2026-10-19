@@ -3148,6 +3148,10 @@ class ActionPlanner(_ActionLegalityMixin):
             self._memory().record(game_state, decision, chosen, reasoning)
         except Exception as error:  # memory never blocks a decision
             logger.debug("decision memory skipped: %s", error)
+        try:
+            self._remember_cast_intent(decision, game_state, chosen, reasoning)
+        except Exception as error:  # the target step's hint never blocks a decision
+            logger.debug("cast intent skipped: %s", error)
         return chosen
 
     def recent_decisions_text(self) -> str:
@@ -4058,14 +4062,21 @@ class ActionPlanner(_ActionLegalityMixin):
         return value if source_label and label == source_label else None
 
     def _prefer_lethal_damage_target(
-        self, decision: Any, game_state: dict[str, Any], chosen: list[str]
+        self, decision: Any, game_state: dict[str, Any], chosen: list[str], *, fallback: bool = False
     ) -> list[str]:
         """Point fixed-damage removal at a creature it kills, or keep the spell.
 
         2026-10-05: Wrath of the Bloodmane (4 damage) was aimed at a 5/5 while
         a 1/2 it would kill was also attacking; the 5/5's damage was lethal.
+        "Any target" burn goes to :meth:`_aim_any_target_damage` (``fallback``:
+        the pick is ours, not the model's).
         """
-        from arenamcp.play_safety import damage_would_kill, fixed_damage_removal, x_damage_removal
+        from arenamcp.play_safety import (
+            damage_effect,
+            damage_would_kill,
+            fixed_damage_removal,
+            x_damage_removal,
+        )
 
         source = {"oracle_text": self._decision_source_oracle(decision, game_state)}
         parsed = fixed_damage_removal(source)
@@ -4073,6 +4084,14 @@ class ActionPlanner(_ActionLegalityMixin):
             x = self._chosen_x_for(decision, game_state)
             parsed = x_damage_removal(source, x) if x is not None else None
         targets = [oid for oid in chosen if str(oid).startswith("tgt:")]
+        if parsed is None and len(targets) == 1:
+            # Kicked or not is unknown here: the larger damage decides whether
+            # the pick can die, only the unkicked one where else it kills.
+            most, least = damage_effect(source), damage_effect(source, kicked=False)
+            if most is not None and least is not None and most[1] == "any":
+                return self._aim_any_target_damage(
+                    decision, game_state, chosen, most[0], least[0], fallback=fallback
+                )
         if not parsed or len(targets) != 1:
             return chosen
         damage = parsed[0]
@@ -4109,6 +4128,127 @@ class ActionPlanner(_ActionLegalityMixin):
         best = max(alternatives)
         logger.warning("Retargeting: %d damage does not kill %s; %s dies instead", damage, name, best[3])
         return [best[2]]
+
+    def _aim_any_target_damage(
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        chosen: list[str],
+        damage: int,
+        sure_damage: int,
+        *,
+        fallback: bool,
+    ) -> list[str]:
+        """Aim "any target" burn away from a creature it cannot kill: at one it kills, else their face.
+
+        2026-10-19 09:34:23 (match 92c09c7a T10, model down): the power-sorted
+        fallback aimed Lightning Strike's 3 damage at a tapped 7/8 Sazh's
+        Chocobo, while the searched line had it at the opponent (11 life).
+        10:13:47 (match 1e4ccb0c): the model aimed Shock at a 3/4 Battlesong
+        Berserker ("killing the 3/4 Berserker clears the only blocker") after
+        casting it "to face", with the line's Shock on the opponent.
+
+        A pick that stays: a creature the damage may kill (``damage``, the
+        kicked amount when unknown), one in combat or already damaged, the
+        searched line's own target for this cast, or (model picks) a creature
+        that the damage kills together with other burn the reasoning names.
+        Otherwise the line's target for this cast, else the creature with the
+        most power that ``sure_damage`` kills, else the opponent's face. Our
+        own pick also goes face when that damage is lethal.
+        """
+        from arenamcp.play_safety import damage_would_kill, named_burn_damage
+
+        targets = [oid for oid in chosen if str(oid).startswith("tgt:")]
+        if len(targets) != 1:
+            return chosen
+        picked = _as_int(targets[0][4:])
+        cards = {_as_int(card.get("instance_id")): card for card in game_state.get("battlefield", []) or []}
+        local_seat, controllers = self._battlefield_controllers(game_state)
+        face = self._opponent_face_option(decision, game_state)
+        source = str(getattr(decision, "source_label", "") or "") or "the burn"
+        if fallback and face and targets[0] != face:
+            life = next(
+                (
+                    _as_int(player.get("life_total"))
+                    for player in game_state.get("players", []) or []
+                    if f"tgt:{_as_int(player.get('seat_id'))}" == face
+                ),
+                None,
+            )
+            if life is not None and 0 < life <= sure_damage:
+                reason = f"{source}'s {sure_damage} damage to the opponent's face is lethal ({life} life)."
+                logger.warning("Retargeting: %s", reason)
+                self._note_target_choice([face], reason)
+                return [face]
+        card = cards.get(picked)
+        if (
+            card is None
+            or controllers.get(picked) in (None, local_seat)
+            or "creature" not in str(card.get("type_line") or "").lower()
+            or damage_would_kill(card, damage) is not False
+        ):
+            return chosen
+        intent = self._cast_intent_for(decision)
+        line_option = self._line_target_option(decision, game_state, intent) if intent else ""
+        if line_option == targets[0]:
+            return chosen  # the searched line aims it there (a two-spell kill, say)
+        name = card.get("name") or picked
+        if not fallback:
+            bonus = named_burn_damage(self._last_decision_reasoning, game_state, {"name": source})
+            if bonus and damage_would_kill(card, damage + bonus) is not False:
+                return chosen
+        if line_option:
+            reason = f"{source}'s {damage} damage does not kill {name}; the searched line aims it elsewhere."
+            logger.warning("Retargeting: %s %s instead of %s", reason, line_option, chosen)
+            self._note_target_choice([line_option], reason)
+            return [line_option]
+        alternatives = []
+        for option in decision.options:
+            oid = str(option.option_id)
+            iid = _as_int(oid[4:]) if oid.startswith("tgt:") else 0
+            other = cards.get(iid)
+            if other is None or iid == picked or controllers.get(iid) in (None, local_seat):
+                continue
+            type_line = str(other.get("type_line") or "").lower()
+            if "planeswalker" in type_line:
+                alternatives.append((0, 0, oid, other.get("name")))
+            elif (
+                "creature" in type_line
+                and damage_would_kill(other, sure_damage) is True
+                # A vanilla 0-power body is no better use than their face.
+                and ((_as_int(other.get("power")) or 0) > 0 or str(other.get("oracle_text") or "").strip())
+            ):
+                power, toughness = _as_int(other.get("power")), _as_int(other.get("toughness"))
+                alternatives.append((power, toughness, oid, other.get("name")))
+        best = max(alternatives) if alternatives else None
+        if best is not None and expand_target_selection(decision, [best[2]]):
+            reason = f"{source}'s {damage} damage does not kill {name}; {best[3] or best[2]} dies instead."
+            logger.warning("Retargeting: %s", reason)
+            self._note_target_choice([best[2]], reason)
+            return [best[2]]
+        if face and expand_target_selection(decision, [face]):
+            reason = (
+                f"{source}'s {damage} damage does not kill {name} and kills none of their creatures; "
+                "to the opponent's face."
+            )
+            logger.warning("Retargeting: %s", reason)
+            self._note_target_choice([face], reason)
+            return [face]
+        return chosen
+
+    def _opponent_face_option(self, decision: Any, game_state: dict[str, Any]) -> str:
+        """The target option that is the opponent player ("tgt:<seat>"), or ''."""
+        local_seat, _controllers = self._battlefield_controllers(game_state)
+        seats = {
+            _as_int(player.get("seat_id"))
+            for player in game_state.get("players", []) or []
+            if isinstance(player, dict) and _as_int(player.get("seat_id"))
+        }
+        for option in decision.options:
+            oid = str(option.option_id)
+            if oid.startswith("tgt:") and _as_int(oid[4:]) in seats - {local_seat}:
+                return oid
+        return ""
 
     def _opposing_creatures(self, game_state: dict[str, Any]) -> list[dict[str, Any]]:
         local_seat, controllers = self._battlefield_controllers(game_state)
@@ -4218,8 +4358,13 @@ class ActionPlanner(_ActionLegalityMixin):
         Proft for {B} kills Hallway Heckler" — -3/-1 leaves a 2/3 at -1/2.
         The deterministic verdict wins: the empty answer falls through to
         the board-math fallback, which never picks an activation.
+
+        Burn at "any target" and at "each creature" counts too (2026-10-19
+        09:01:42, match 41753907 T5: Tectonic Hazard's 1 damage "kills their
+        only creature", a 2/2 Dawnwing Marshal). Other burn in hand that the
+        reasoning names adds its damage: a two-spell kill is no false claim.
         """
-        from arenamcp.play_safety import claimed_kills, kill_verdict, play_kill_reach
+        from arenamcp.play_safety import claim_kill_reach, claimed_kills, kill_verdict, named_burn_damage
 
         option = decision.find(chosen[0])
         meta = (option.meta if option is not None else None) or {}
@@ -4227,9 +4372,11 @@ class ActionPlanner(_ActionLegalityMixin):
         if action_type not in ("cast", "activate"):
             return chosen
         card = find_source(game_state, meta)
-        reach = play_kill_reach(card, activation=action_type == "activate", metadata=meta)
+        reach = claim_kill_reach(card, game_state, activation=action_type == "activate", metadata=meta)
         if reach is None:
             return chosen
+        if reach[0] == "damage":
+            reach = ("damage", reach[1] + named_burn_damage(self._last_decision_reasoning, game_state, card))
         victims = claimed_kills(self._last_decision_reasoning, self._opposing_creatures(game_state))
         survivors = [victim for victim in victims if kill_verdict(reach, victim) is False]
         if not survivors:
@@ -4284,17 +4431,158 @@ class ActionPlanner(_ActionLegalityMixin):
         -N/-N go to a creature they kill, else the spell is kept (declined);
         then unpayable ward is avoided, as for model picks. Returns the same
         sentinels as the pick ([DECLINE_DECISION], [NO_TARGETS_DECISION]).
+        A cast the board-math fallback chose keeps its searched line's target
+        (:meth:`_follow_line_target`); "any target" burn that kills nothing
+        goes face (:meth:`_aim_any_target_damage`).
         """
         sentinels = ([DECLINE_DECISION], [NO_TARGETS_DECISION])
         picked = self._targeting_fallback_pick(decision, game_state)
         if not picked or picked in sentinels:
             return picked
-        picked = self._prefer_lethal_damage_target(decision, game_state, picked)
+        picked = self._follow_line_target(decision, game_state, picked)
+        picked = self._prefer_lethal_damage_target(decision, game_state, picked, fallback=True)
         if picked not in sentinels:
             picked = self._prefer_lethal_shrink_target(decision, game_state, picked)
         if picked and picked not in sentinels:
             picked = self._avoid_unpayable_ward_targets(decision, game_state, picked)
         return picked
+
+    # How long a cast stays linked to the target request that follows it.
+    _CAST_INTENT_TTL_S = 60.0
+
+    def _remember_cast_intent(
+        self, decision: Any, game_state: dict[str, Any], chosen: list[str], reasoning: str
+    ) -> None:
+        """What a cast chosen in this priority window was for, for the target request that follows.
+
+        The reasoning that chose it (model or fallback) and the searched best
+        line's target for that card ("opponent" or a creature). 2026-10-19
+        09:34:14 (match 92c09c7a T10, model down): the line was "Lightning
+        Strike (on opponent) … opponent at 6"; the target fallback, sorting by
+        power, aimed it at a tapped 7/8. 10:13:45 (match 1e4ccb0c): "Shock to
+        face advances the burn race" and the line "Shock (on opponent)", then
+        the target step's model picked a 3/4 Battlesong Berserker the 2 damage
+        could not kill. Any other priority choice clears it.
+        """
+        if decision.request_type != "ActionsAvailable":
+            return
+        self._cast_intent = None
+        option = decision.find(chosen[0]) if len(chosen or []) == 1 else None
+        meta = (option.meta if option is not None else None) or {}
+        if meta.get("actionType") != "ActionType_Cast":
+            return
+        name = str(find_source(game_state, meta).get("name") or "")
+        if not name:
+            return
+        target, target_id = self._searched_line_target(game_state, name)
+        self._cast_intent = {
+            "card": name,
+            "said": " ".join(str(reasoning or "").split()[: self._MEMORY_REASONING_WORDS]),
+            "line_target": target,
+            "line_target_id": target_id,
+            "at": time.monotonic(),
+        }
+
+    @staticmethod
+    def _searched_line_target(game_state: dict[str, Any], name: str) -> tuple[str, int]:
+        """The searched best line's target for ``name`` this turn: ("opponent" or a creature's
+        name, that creature's instance id or 0), or ("", 0)."""
+        try:
+            from arenamcp.board_assessment import assess
+
+            result = getattr(assess(game_state), "line_search", None)
+            best = getattr(result, "best", None)
+            step = best.steps[0] if best is not None and best.steps else None
+            target = str(dict(step.targets).get(name) or "") if step is not None else ""
+            if not target or target == "opponent":
+                return target, 0
+            plays = step.plays[1] if len(step.plays) == 3 else ()
+            target_id = next(
+                (
+                    _as_int(body.get("instance_id"))
+                    for _variant, body in plays
+                    if isinstance(body, dict) and body.get("name") == target
+                ),
+                0,
+            )
+            return target, target_id
+        except Exception as error:  # the strategic layer never blocks a decision
+            logger.debug("line target not read: %s", error)
+            return "", 0
+
+    def _cast_intent_for(self, decision: Any) -> dict[str, Any] | None:
+        """The remembered intent of the cast whose targets ``decision`` chooses, or None."""
+        intent = getattr(self, "_cast_intent", None)
+        if not intent or time.monotonic() - intent["at"] > self._CAST_INTENT_TTL_S:
+            return None
+        label = str(getattr(decision, "source_label", "") or "").strip().casefold()
+        return intent if label and label == intent["card"].casefold() else None
+
+    def _line_target_option(self, decision: Any, game_state: dict[str, Any], intent: dict[str, Any]) -> str:
+        """The offered target option the remembered line aims this cast at, or ''."""
+        target = intent.get("line_target") or ""
+        if target == "opponent":
+            wanted = self._opponent_face_option(decision, game_state)
+        elif target:
+            local_seat, controllers = self._battlefield_controllers(game_state)
+            battlefield = game_state.get("battlefield", []) or []
+            by_id = {_as_int(card.get("instance_id")): card for card in battlefield}
+            named = [
+                str(option.option_id)
+                for option in decision.options
+                if str(option.option_id).startswith("tgt:")
+                and controllers.get(_as_int(str(option.option_id)[4:])) not in (None, local_seat)
+                and (by_id.get(_as_int(str(option.option_id)[4:])) or {}).get("name") == target
+            ]
+            exact = f"tgt:{intent.get('line_target_id') or 0}"
+            wanted = exact if exact in named else (named[0] if named else "")
+        else:
+            wanted = ""
+        return wanted if wanted and expand_target_selection(decision, [wanted]) else ""
+
+    def _follow_line_target(self, decision: Any, game_state: dict[str, Any], picked: list[str]) -> list[str]:
+        """The fallback's target for a cast chosen this window: the searched line's own, when offered."""
+        intent = self._cast_intent_for(decision)
+        wanted = self._line_target_option(decision, game_state, intent) if intent else ""
+        if not wanted:
+            return picked
+        target = intent["line_target"]
+        where = "the opponent's face" if target == "opponent" else target
+        reason = f"The board-math line aims {intent['card']} at {where}."
+        if [wanted] != picked:
+            logger.warning("Targeting fallback: %s %s instead of %s", reason, wanted, picked)
+        self._note_target_choice([wanted], reason)
+        return [wanted]
+
+    def _cast_intent_note(self, decision: Any, game_state: dict[str, Any]) -> str:
+        """The SelectTargets prompt's reminder of why this spell was cast and where the line aims it."""
+        intent = self._cast_intent_for(decision)
+        if intent is None:
+            return ""
+        parts = [f"CAST INTENT: this window you cast {intent['card']}"]
+        if intent["said"]:
+            parts[0] += f' saying: "{intent["said"]}"'
+        if intent["line_target"]:
+            where = "the opponent's face" if intent["line_target"] == "opponent" else intent["line_target"]
+            parts.append(f"The best searched line aims {intent['card']} at {where}.")
+        from arenamcp.play_safety import damage_effect, damage_would_kill
+
+        source = {"oracle_text": self._decision_source_oracle(decision, game_state)}
+        parsed = damage_effect(source, kicked=False)
+        if parsed is not None and parsed[1] == "any":
+            dying = [
+                str(card.get("name") or card.get("instance_id"))
+                for card in self._opposing_creatures(game_state)
+                if damage_would_kill(card, parsed[0]) is not False
+            ]
+            parts.append(
+                f"{parsed[0]} damage can kill: {', '.join(dying)}."
+                if dying
+                else f"{parsed[0]} damage kills none of their creatures: a creature target that "
+                "survives wastes the card, so aim at the opponent unless a creature is part of a stated plan."
+            )
+        parts.append("Target what that intent said unless the board changed since.")
+        return " ".join(parts)
 
     def _prefer_lethal_shrink_target(
         self, decision: Any, game_state: dict[str, Any], chosen: list[str]
@@ -4934,6 +5222,11 @@ class ActionPlanner(_ActionLegalityMixin):
         if lines_text:
             # Next to the menu: the strategy block comes after ~20k characters of game state.
             lines.insert(lines.index("OPTIONS:"), lines_text)
+        if decision.request_type == "SelectTargets":
+            # The cast step's reason and the line's target (2026-10-19 10:13:47, match 1e4ccb0c).
+            intent_note = self._cast_intent_note(decision, game_state)
+            if intent_note:
+                lines.insert(lines.index("OPTIONS:"), intent_note)
         if decision.request_type == "CastingTimeOptions":
             lines.append(
                 "Choose all required modes together from the SAME childIndex. "
