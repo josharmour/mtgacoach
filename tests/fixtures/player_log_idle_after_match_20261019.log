@@ -1,0 +1,1054 @@
+
+[UnityCrossThreadLogger]==> EventSetDeckV3 {"id":"8d24b275-9393-4c64-bfa2-68292c8d316a","request":"{\"EventName\":\"Ladder\",\"Summary\":{\"DeckId\":\"1543b787-1438-460c-bd4a-e61aa4ea185e\",\"Mana\":\"\",\"Name\":\"Mono-Red Burn\",\"Attributes\":[{\"name\":\"Version\",\"value\":\"11\"},{\"name\":\"TileID\",\"value\":\"65385\"},{\"name\":\"LastPlayed\",\"value\":\"\\\"2026-10-19T10:53:46.823962-07:00\\\"\"},{\"name\":\"LastUpdated\",\"value\":\"\\\"2026-10-19T07:14:24.415334-07:00\\\"\"},{\"name\":\"IsFavorite\",\"value\":\"false\"},{\"name\":\"Format\",\"value\":\"Standard\"}],\"Description\":\"\",\"DeckTileId\":65385,\"DeckArtId\":0,\"IsCompanionValid\":false,\"PreferredCosmetics\":{\"Avatar\":\"\",\"Sleeve\":\"\",\"Pet\":\"\",\"Title\":\"\",\"Emotes\":[]},\"NetDeckFolderId\":null,\"IsNetDeck\":false,\"checkInbox\":false},\"Deck\":{\"MainDeck\":[{\"cardId\":65385,\"quantity\":20},{\"cardId\":75525,\"quantity\":3},{\"cardId\":67992,\"quantity\":1},{\"cardId\":93905,\"quantity\":4},{\"cardId\":97423,\"quantity\":1},{\"cardId\":66263,\"quantity\":3},{\"cardId\":87323,\"quantity\":4},{\"cardId\":90492,\"quantity\":4},{\"cardId\":91668,\"quantity\":4},{\"cardId\":91676,\"quantity\":4},{\"cardId\":93792,\"quantity\":4},{\"cardId\":95628,\"quantity\":4},{\"cardId\":102578,\"quantity\":4}],\"Sideboard\":[],\"CommandZone\":[],\"Companions\":[],\"CardSkins\":[]}}"}
+{ "transactionId": "e2c9398d-a97b-4cc2-8b6d-97ac7358758f", "requestId": 2, "timestamp": "1792432430752", "matchGameRoomStateChangedEvent": { "gameRoomInfo": { "gameRoomConfig": { "reservedPlayers": [ { "userId": "USER", "playerName":"Player", "systemSeatId": 1, "teamId": 1, "courseId": "Avatar_Basic_AjaniGoldmane", "sessionId": "21f4bb46-a136-45bc-9156-71871a53a63d", "platformId": "SteamMac", "eventId": "Ladder" }, { "userId": "USER", "playerName":"Player", "systemSeatId": 2, "teamId": 2, "courseId": "Avatar_Basic_Splinter_TMT", "sessionId": "722a8ff6-4202-40a6-a39c-e83bd0bb3db6", "platformId": "iPad", "eventId": "Ladder" } ], "matchId": "15e0eb20-a63e-4b88-9c8b-2e2d39188258" }, "stateType": "MatchGameRoomStateType_Playing", "players": [ { "userId": "USER", "playerName":"Player", "systemSeatId": 1, "teamId": 1 }, { "userId": "USER", "playerName":"Player", "systemSeatId": 2, "teamId": 2 } ] } } }
+[UnityCrossThreadLogger]10/19/2026 10:58:35 AM: Match to USERID000000000000000000000: MatchGameRoomStateChangedEvent
+{ "transactionId": "14afe39f-1c66-4d62-8b8f-01c61eb2c7bb", "requestId": 47, "timestamp": "1792432715381", "matchGameRoomStateChangedEvent": { "gameRoomInfo": { "gameRoomConfig": { "reservedPlayers": [ { "userId": "USER", "playerName":"Player", "systemSeatId": 1, "teamId": 1, "courseId": "Avatar_Basic_AjaniGoldmane", "sessionId": "21f4bb46-a136-45bc-9156-71871a53a63d", "platformId": "SteamMac", "eventId": "Ladder" }, { "userId": "USER", "playerName":"Player", "systemSeatId": 2, "teamId": 2, "courseId": "Avatar_Basic_Splinter_TMT", "sessionId": "722a8ff6-4202-40a6-a39c-e83bd0bb3db6", "platformId": "iPad", "eventId": "Ladder" } ], "matchId": "15e0eb20-a63e-4b88-9c8b-2e2d39188258" }, "stateType": "MatchGameRoomStateType_MatchCompleted", "finalMatchResult": { "matchId": "15e0eb20-a63e-4b88-9c8b-2e2d39188258", "matchCompletedReason": "MatchCompletedReasonType_Success", "resultList": [ { "scope": "MatchScope_Game", "result": "ResultType_WinLoss", "winningTeamId": 2, "reason": "ResultReason_Concede" }, { "scope": "MatchScope_Match", "result": "ResultType_WinLoss", "winningTeamId": 2, "reason": "ResultReason_Concede" } ] } } } }
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+GreClient.Network.GREConnection:HandleMatchServiceMessage(MatchServiceToClientMessage)
+GreClient.Network.GREConnection:HandleTcpEvent(ITcpEvent)
+GreClient.Network.GREConnection:ProcessMessages()
+GreClient.Network.RateLimitedConnection:ProcessMessages()
+MatchManager:Update()
+PAPA:Update()
+
+[UnityCrossThreadLogger]STATE CHANGED {"old":"Playing","new":"MatchCompleted"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MatchManager:OnCurrentRoomStateChanged(MatchDoorConnectionState, MatchDoorConnectionState)
+GreClient.Network.GREConnection:ProcessRoomState(MatchGameRoomInfo)
+GreClient.Network.GREConnection:HandleMatchServiceMessage(MatchServiceToClientMessage)
+GreClient.Network.GREConnection:HandleTcpEvent(ITcpEvent)
+GreClient.Network.GREConnection:ProcessMessages()
+GreClient.Network.RateLimitedConnection:ProcessMessages()
+MatchManager:Update()
+PAPA:Update()
+
+OnSceneLoaded for MatchEndScene
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MatchSceneManager:OnSceneLoaded(Scene, LoadSceneMode)
+
+OnSceneUnloaded for Battlefield_WOE
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MatchSceneManager:OnSceneUnloaded(Scene)
+
+Can't add component to object that is being destroyed.
+UnityEngine.GameObject:Internal_AddComponentWithType(Type)
+AkUnitySoundEngine:PostEvent(String, GameObject)
+AudioManager:PostEvent(String, GameObject, UInt32, EventCallback)
+LowTimeWarning:OnDestroy()
+
+[ line 1803176936]
+
+OnSceneUnloaded for DuelScene
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MatchSceneManager:OnSceneUnloaded(Scene)
+
+AK Error: Unknown/Dead game object ID used in function PostEvent. Make sure the game object is registered before using it and do not use it once it was unregistered. Name: 4240821864 GO: 18446744073706174522
+OnSceneUnloaded for MatchEndScene
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MatchSceneManager:OnSceneUnloaded(Scene)
+
+10/19/2026 10:59:18 AM OnExitMatchScene
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+<OnExitMatchScene>d__73:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+<ChangeSubSceneCoroutine>d__63:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]Client.TcpConnection.Close {"status":2,"reason":"MatchManager.Reset","host":"matchdoor-mtga-production-2026-64-0-3.w2.mtgarena.com","port":30003,"rtTicksRollingAvg":16.4,"rtTicksSamples":[17.0,18.0,16.0,16.0,15.0],"lastLocalActivity":[{"type":"Send","time":"2026-10-19T17:58:03.764246Z","msgType":"Ping","msgVersion":4},{"type":"Send","time":"2026-10-19T17:58:18.600511Z","msgType":"Pong","msgVersion":4},{"type":"Send","time":"2026-10-19T17:58:18.772273Z","msgType":"Ping","msgVersion":4},{"type":"Send","time":"2026-10-19T17:58:33.600864Z","msgType":"Pong","msgVersion":4},{"type":"Send","time":"2026-10-19T17:58:33.773706Z","msgType":"Ping","msgVersion":4},{"type":"Send","time":"2026-10-19T17:58:34.699034Z","msgType":"ClientToMatchSvcMsgWrapper","msgVersion":4},{"type":"Send","time":"2026-10-19T17:58:35.365917Z","msgType":"ClientToMatchSvcMsgWrapper","msgVersion":4},{"type":"Send","time":"2026-10-19T17:58:48.605225Z","msgType":"Pong","msgVersion":4},{"type":"Send","time":"2026-10-19T17:58:48.78629Z","msgType":"Ping","msgVersion":4},{"type":"Send","time":"2026-10-19T17:59:03.606768Z","msgType":"Pong","msgVersion":4},{"type":"Send","time":"2026-10-19T17:59:03.794891Z","msgType":"Ping","msgVersion":4},{"type":"Close","time":"2026-10-19T17:59:18.061303Z","status":2,"reason":"MatchManager.Reset"}],"lastRemoteActivity":[{"type":"Msg","time":"2026-10-19T17:58:28.780218Z","msgVersion":4},{"type":"Msg","time":"2026-10-19T17:58:31.741041Z","msgVersion":4},{"type":"Pi …[truncated]
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Wizards.Arena.TcpConnection.TcpConnection:Close(TcpConnectionCloseType, String, JObject)
+GreClient.Network.GREConnection:Close(TcpConnectionCloseType, String)
+MatchManager:CloseConnection(String)
+MatchManager:Reset()
+<OnExitMatchScene>d__73:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+<ChangeSubSceneCoroutine>d__63:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+10/19/2026 10:59:18 AM LoadWrapperScene
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+SceneLoading:LoadWrapperScene(IWrapperPageContext)
+<OnExitMatchScene>d__73:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+<ChangeSubSceneCoroutine>d__63:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+Caches cleared
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+<LoadWrapperRoutine>d__7:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+SceneLoading:LoadWrapperScene(IWrapperPageContext)
+<OnExitMatchScene>d__73:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+<ChangeSubSceneCoroutine>d__63:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+Unloading 2 Unused Serialized files (Serialized files now loaded: 361)
+Unloading 13850 unused Assets to reduce memory usage. Loaded Objects now: 17155.
+Total: 72.668833 ms (FindLiveObjects: 0.715917 ms CreateObjectMapping: 0.655125 ms MarkObjects: 56.401917 ms  DeleteObjects: 14.895458 ms)
+
+OnSceneLoaded for MainNavigation
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MatchSceneManager:OnSceneLoaded(Scene, LoadSceneMode)
+
+cannot find async scene load for MainNavigation
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MatchSceneManager:OnSceneLoaded(Scene, LoadSceneMode)
+
+MainNav load in 191ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+<Coroutine_Load>d__113:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+10/19/2026 10:59:18 AM Coroutine_StartupSequence
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+<Init>d__119:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.FrontDoorConnect: 5.5 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.PhaseTimer:Stop()
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]==> StartHook {"id":"8b4dc8d8-54d1-457d-bffa-367b5212d918","request":"{ \"DeckSummariesCacheVersion\": 539155583, \"DecksCacheVersion\": -402959681, \"PreferredCosmeticsCacheVersion\": -60355288, \"TokenDefinitionsCacheVersion\": -291193811, \"KillSwitchNotificationCacheVersion\": -1013701250, \"ClientPeriodicRewardsCacheVersion\": 715382440 }"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogOutgoingMessage(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendOnWire(IFDPromiseWriter)
+MessageRateLimiter:SendWithLimitCheck(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendMetaRequestMessage(Func`2, Func`2, Func`2, Cmd)
+Wotc.Mtga.Network.ServiceWrappers.AwsStartHookServiceWrapper:StartHook()
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+[UnityCrossThreadLogger]==> GraphGetGraphState {"id":"af511743-6a8d-4bec-9631-84be29f5b12b","request":"{\"GraphId\":\"BattlePass_FRA\"}"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogOutgoingMessage(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendOnWire(IFDPromiseWriter)
+MessageRateLimiter:SendWithLimitCheck(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendMetaRequestMessage(Func`2, Func`2, Func`2, Cmd)
+FrontDoorConnectionAWS:SendMessage(Func`2, CmdType, Object)
+Wotc.Mtga.Events.CampaignGraphManager:RefreshGraph(ClientGraphDefinition)
+Wotc.Mtga.Events.CampaignGraphManager:Update(ClientGraphDefinition)
+Core.MainNavigation.RewardTrack.<Refresh>d__39:MoveNext()
+System.Threading.ExecutionContext:RunInternal(ExecutionContext, ContextCallback, Object, Boolean)
+System.Runtime.CompilerServices.MoveNextRunner:Run()
+UnityEngine.WorkRequest:Invoke()
+UnityEngine.UnitySynchronizationContext:Exec()
+
+OnSceneLoaded for NavBar
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MatchSceneManager:OnSceneLoaded(Scene, LoadSceneMode)
+
+cannot find async scene load for NavBar
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MatchSceneManager:OnSceneLoaded(Scene, LoadSceneMode)
+
+[UnityCrossThreadLogger]10/19/2026 10:59:18 AM
+<== GraphGetGraphState(af511743-6a8d-4bec-9631-84be29f5b12b)
+{"NodeStates":{"MasteryPassCSAdmin":{"Status":"Available"},"RewardTierUpgrade":{"Status":"Available"},"LevelTrack_Level_1":{"Status":"Completed"},"LevelTrack_Level_1_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_2":{"Status":"Completed"},"LevelTrack_Level_2_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_3":{"Status":"Completed"},"LevelTrack_Level_3_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_4":{"Status":"Completed"},"LevelTrack_Level_4_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_5":{"Status":"Completed"},"LevelTrack_Level_5_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_6":{"Status":"Completed"},"LevelTrack_Level_6_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_7":{"Status":"Available","ProgressNodeState":{"CurrentProgress":25}}},"MilestoneStates":{}}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogIncomingMessage(CmdType, Guid, IFDPromiseWriter)
+FrontDoorConnectionAWS:HandleTcpEvent(ITcpEvent)
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[UnityCrossThreadLogger]10/19/2026 10:59:18 AM
+<== StartHook(8b4dc8d8-54d1-457d-bffa-367b5212d918)
+{ "InventoryInfo": { "SeqId": 306, "Gems": 6650, "Gold": 5750, "TotalVaultProgress": 14, "WcTrackPosition": 19, "WildCardCommons": 9, "WildCardUnCommons": 15, "WildCardMythics": 5, "CustomTokens": { "Token_JumpIn": 5, "BattlePass_FRA_Orb": 1 }, "Boosters": [ { "CollationId": 100063, "SetCode": "FRA", "Count": 3 } ], "Cosmetics": { "ArtStyles": [ { "Id": "416665.KNOTWORK", "ArtId": 416665, "Variant": "KNOTWORK" }, { "Id": "405657.MANGA", "ArtId": 405657, "Variant": "MANGA" }, { "Id": "403136.GLASS1", "ArtId": 403136, "Variant": "GLASS1" }, { "Id": "409483.INVOCATION", "ArtId": 409483, "Variant": "INVOCATION" }, { "Id": "427371.GLASS1", "ArtId": 427371, "Variant": "GLASS1" }, { "Id": "413171.CRYSTAL", "ArtId": 413171, "Variant": "CRYSTAL" } ], "Avatars": [ { "Id": "Avatar_Basic_ChandraNalaar", "AcquisitionFlagsInternal": 1 }, { "Id": "Avatar_Basic_AjaniGoldmane", "AcquisitionFlagsInternal": 1 }, { "Id": "Avatar_Basic_VivienReid", "AcquisitionFlagsInternal": 1 }, { "Id": "Avatar_Basic_LilianaVess", "AcquisitionFlagsInternal": 1 }, { "Id": "Avatar_Basic_JaceBeleren", "AcquisitionFlagsInternal": 1 }, { "Id": "Avatar_Basic_Elspeth_MOM", "AcquisitionFlagsInternal": 1 }, { "Id": "Avatar_Basic_Ashiok_WAR", "AcquisitionFlagsInternal": 1 }, { "Id": "Avatar_Basic_Kaito_NEO", "AcquisitionFlagsInternal": 1 } ], "Sleeves": [ { "Id": "CardBack_EmbossedDefaultArena", "AcquisitionFlagsInternal": 4 }, { "Id": "CardBack_ZNR_417011" }, { "Id": "CardBack_M21_413716" }, { "Id": "CardBack_DMU_Staine …[truncated]
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogIncomingMessage(CmdType, Guid, IFDPromiseWriter)
+FrontDoorConnectionAWS:HandleTcpEvent(ITcpEvent)
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+[UnityCrossThreadLogger]==> GraphGetGraphState {"id":"678ae380-7af5-4dff-a7dd-8a861c39cdbe","request":"{\"GraphId\":\"BattlePass_FRA\"}"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogOutgoingMessage(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendOnWire(IFDPromiseWriter)
+MessageRateLimiter:SendWithLimitCheck(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendMetaRequestMessage(Func`2, Func`2, Func`2, Cmd)
+FrontDoorConnectionAWS:SendMessage(Func`2, CmdType, Object)
+Wotc.Mtga.Events.CampaignGraphManager:RefreshGraph(ClientGraphDefinition)
+Wotc.Mtga.Events.CampaignGraphManager:Update(ClientGraphDefinition)
+Core.MainNavigation.RewardTrack.<Refresh>d__39:MoveNext()
+System.Threading.ExecutionContext:RunInternal(ExecutionContext, ContextCallback, Object, Boolean)
+System.Runtime.CompilerServices.MoveNextRunner:Run()
+UnityEngine.WorkRequest:Invoke()
+UnityEngine.UnitySynchronizationContext:Exec()
+
+[UnityCrossThreadLogger]10/19/2026 10:59:18 AM
+<== GraphGetGraphState(678ae380-7af5-4dff-a7dd-8a861c39cdbe)
+{"NodeStates":{"MasteryPassCSAdmin":{"Status":"Available"},"RewardTierUpgrade":{"Status":"Available"},"LevelTrack_Level_1":{"Status":"Completed"},"LevelTrack_Level_1_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_2":{"Status":"Completed"},"LevelTrack_Level_2_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_3":{"Status":"Completed"},"LevelTrack_Level_3_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_4":{"Status":"Completed"},"LevelTrack_Level_4_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_5":{"Status":"Completed"},"LevelTrack_Level_5_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_6":{"Status":"Completed"},"LevelTrack_Level_6_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_7":{"Status":"Available","ProgressNodeState":{"CurrentProgress":25}}},"MilestoneStates":{}}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogIncomingMessage(CmdType, Guid, IFDPromiseWriter)
+FrontDoorConnectionAWS:HandleTcpEvent(ITcpEvent)
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[StartupProfiling] Startup.StartHook: 445.2 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.PhaseTimer:Stop()
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.StaticContent: 66.2 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.PhaseTimer:Stop()
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]==> RankGetCombinedRankInfo {"id":"08fa6379-349d-45d4-89d5-5c57d84689d1","request":"{}"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogOutgoingMessage(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendOnWire(IFDPromiseWriter)
+MessageRateLimiter:SendWithLimitCheck(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendMetaRequestMessage(Func`2, Func`2, Func`2, Cmd)
+FrontDoorConnectionAWS:SendMessage(Func`2, CmdType, Object)
+Wotc.Mtga.Network.ServiceWrappers.AwsPlayerRankServiceWrapper:GetPlayerRankInfo()
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]==> RankGetSeasonAndRankDetails {"id":"7e32b5d4-835e-485e-bf0b-70d736e86dd6","request":"{}"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogOutgoingMessage(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendOnWire(IFDPromiseWriter)
+MessageRateLimiter:SendWithLimitCheck(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendMetaRequestMessage(Func`2, Func`2, Func`2, Cmd)
+FrontDoorConnectionAWS:SendMessage(Func`2, CmdType, Object)
+Wotc.Mtga.Network.ServiceWrappers.AwsPlayerRankServiceWrapper:GetSeasonAndRankDetail()
+Wizards.Mtga.SeasonAndRankDataProvider:Refresh()
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.GetAllDecksBarrier: 0.0 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.PhaseTimer:Stop()
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch.GetAllDecks: 0.3 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch.EnsurePreconDecks: 0.3 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch.CurrentRenewal: 61.6 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch.RefreshCards: 92.3 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch.WpnNotificationPreferences: 97.8 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch.VoucherDefinitions: 111.4 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]10/19/2026 10:59:19 AM
+<== RankGetCombinedRankInfo(08fa6379-349d-45d4-89d5-5c57d84689d1)
+{"constructedSeasonOrdinal":94,"constructedClass":"Silver","constructedLevel":2,"constructedStep":3,"constructedMatchesWon":23,"constructedMatchesLost":13,"limitedSeasonOrdinal":94,"limitedLevel":4,"limitedStep":2,"limitedMatchesWon":1,"limitedMatchesLost":2}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogIncomingMessage(CmdType, Guid, IFDPromiseWriter)
+FrontDoorConnectionAWS:HandleTcpEvent(ITcpEvent)
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[UnityCrossThreadLogger]10/19/2026 10:59:19 AM
+<== RankGetSeasonAndRankDetails(7e32b5d4-835e-485e-bf0b-70d736e86dd6)
+{"currentSeason":{"seasonOrdinal":94,"seasonStartTime":"2026-09-30T19:05:00","seasonEndTime":"2026-10-31T19:00:00","seasonLimitedRewards":{"Bronze":{"image1":"ObjectiveIcon_Pack_FRA","image2":"","prefab":"","referenceId":"100063","headerLocKey":"MainNav/Season/BronzeReward","descriptionLocKey":"MainNav/EventRewards/Pack","quantity":"1","locParams":{}},"Silver":{"image1":"ObjectiveIcon_Pack_FRA","image2":"ObjectiveIcon_CoinsSmall","prefab":"","referenceId":"100063","headerLocKey":"MainNav/Season/SilverReward","descriptionLocKey":"MainNav/EventRewards/Pack MainNav/EventRewards/Gold_Reward","quantity":"1","locParams":{"number1":1,"number2":500}},"Gold":{"image1":"ObjectiveIcon_Pack_FRA","image2":"ObjectiveIcon_CoinsLarge","image3":"ObjectiveIcon_PremiumSkin","prefab":"","referenceId":"100063","headerLocKey":"MainNav/Season/GoldReward","descriptionLocKey":"MainNav/EventRewards/Packs MainNav/EventRewards/Gold_Reward MainNav/EventRewards/Skin","quantity":"2","locParams":{"number1":2,"number2":1000,"number3":1}},"Platinum":{"image1":"ObjectiveIcon_Pack_FRA","image2":"ObjectiveIcon_CoinsLarge","image3":"ObjectiveIcon_PremiumSkin","prefab":"","referenceId":"100063","headerLocKey":"MainNav/Season/PlatinumReward","descriptionLocKey":"MainNav/EventRewards/Packs MainNav/EventRewards/Gold_Reward MainNav/EventRewards/Skins","quantity":"3","locParams":{"number1":3,"number2":1000,"number3":2}},"Diamond":{"image1":"ObjectiveIcon_Pack_FRA","image2":"ObjectiveIcon_CoinsLarge","image3":"Objective …[truncated]
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogIncomingMessage(CmdType, Guid, IFDPromiseWriter)
+FrontDoorConnectionAWS:HandleTcpEvent(ITcpEvent)
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[StartupProfiling] Startup.Batch.PlayerRankInfo: 182.3 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch.PlayerPrefsInit: 182.4 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch.PlayBladeConfig: 188.9 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch.NetDeckFolder: 194.8 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch.PlayerInbox: 195.1 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch.PrizeWall: 206.7 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch.ChallengesReconnect: 212.6 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch.SeasonAndRank: 226.6 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch.PreferredPrintings: 243.3 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch.CheckEntitlements: 301.3 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.BatchTimer:Poll()
+<>c__DisplayClass133_0:<Coroutine_StartupSequence>b__19()
+UnityEngine.WaitUntil:get_keepWaiting()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Batch (all): 302.3 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]==> GraphGetGraphState {"id":"cd8adead-7cd1-4675-a5dc-300fb4b6fa37","request":"{\"GraphId\":\"BattlePass_FRA\"}"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogOutgoingMessage(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendOnWire(IFDPromiseWriter)
+MessageRateLimiter:SendWithLimitCheck(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendMetaRequestMessage(Func`2, Func`2, Func`2, Cmd)
+FrontDoorConnectionAWS:SendMessage(Func`2, CmdType, Object)
+Wotc.Mtga.Events.CampaignGraphManager:RefreshGraph(ClientGraphDefinition)
+Wotc.Mtga.Events.CampaignGraphManager:Update(ClientGraphDefinition)
+Core.MainNavigation.RewardTrack.<Refresh>d__39:MoveNext()
+System.Threading.ExecutionContext:RunInternal(ExecutionContext, ContextCallback, Object, Boolean)
+System.Runtime.CompilerServices.MoveNextRunner:Run()
+UnityEngine.WorkRequest:Invoke()
+UnityEngine.UnitySynchronizationContext:Exec()
+
+[UnityCrossThreadLogger]10/19/2026 10:59:19 AM
+<== GraphGetGraphState(cd8adead-7cd1-4675-a5dc-300fb4b6fa37)
+{"NodeStates":{"MasteryPassCSAdmin":{"Status":"Available"},"RewardTierUpgrade":{"Status":"Available"},"LevelTrack_Level_1":{"Status":"Completed"},"LevelTrack_Level_1_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_2":{"Status":"Completed"},"LevelTrack_Level_2_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_3":{"Status":"Completed"},"LevelTrack_Level_3_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_4":{"Status":"Completed"},"LevelTrack_Level_4_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_5":{"Status":"Completed"},"LevelTrack_Level_5_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_6":{"Status":"Completed"},"LevelTrack_Level_6_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_7":{"Status":"Available","ProgressNodeState":{"CurrentProgress":25}}},"MilestoneStates":{}}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogIncomingMessage(CmdType, Guid, IFDPromiseWriter)
+FrontDoorConnectionAWS:HandleTcpEvent(ITcpEvent)
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[StartupProfiling] Startup.MasteryRefresh: 117.4 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.PhaseTimer:Stop()
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.SendPendingManualCompleteNodes: 6.9 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.PhaseTimer:Stop()
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]Beginning to queue outgoing messages.
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MessageRateLimiter:SendWithLimitCheck(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendMetaRequestMessage(Func`2, Func`2, Func`2, Cmd)
+FrontDoorConnectionAWS:SendMessage(Func`2, CmdType, Object)
+Wotc.Mtga.Providers.ListingsProvider:GetSkusAndListings(HashSet`1)
+Wotc.Mtga.Network.ServiceWrappers.AwsMercantileServiceWrapper:GetMercantileCollections()
+<Coroutine_RefreshStoreDataOwner>d__86:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]Sending queued messages. {"queuedMessageCount":1}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MessageRateLimiter:ProcessQueue()
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[UnityCrossThreadLogger]Queued messages sent. {"sent":0,"skipped":0,"pending":1}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MessageRateLimiter:ProcessQueue()
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[UnityCrossThreadLogger]Sending queued messages. {"queuedMessageCount":1}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MessageRateLimiter:ProcessQueue()
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[UnityCrossThreadLogger]Queued messages sent. {"sent":0,"skipped":0,"pending":1}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MessageRateLimiter:ProcessQueue()
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[UnityCrossThreadLogger]Sending queued messages. {"queuedMessageCount":1}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MessageRateLimiter:ProcessQueue()
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[UnityCrossThreadLogger]Queued messages sent. {"sent":0,"skipped":0,"pending":1}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MessageRateLimiter:ProcessQueue()
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[UnityCrossThreadLogger]Sending queued messages. {"queuedMessageCount":1}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MessageRateLimiter:ProcessQueue()
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[UnityCrossThreadLogger]Queued messages sent. {"sent":1,"skipped":0,"pending":0}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+MessageRateLimiter:ProcessQueue()
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+Failed to get favorite stores. Error: Unauthorized
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+DigIT.<GetFavoriteStoresList>d__7:MoveNext()
+System.Threading.ExecutionContext:RunInternal(ExecutionContext, ContextCallback, Object, Boolean)
+System.Runtime.CompilerServices.MoveNextRunner:Run()
+System.Threading.Tasks.AwaitTaskContinuation:RunCallback(ContextCallback, Object, Task&)
+System.Threading.Tasks.Task:FinishContinuations()
+System.Threading.Tasks.Task`1:TrySetResult(TResult)
+System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1:SetResult(TResult)
+Wizards.Arena.DigitAPIWrapper.Profile.<GetStores>d__4:MoveNext()
+System.Threading.ExecutionContext:RunInternal(ExecutionContext, ContextCallback, Object, Boolean)
+System.Runtime.CompilerServices.MoveNextRunner:Run()
+UnityEngine.WorkRequest:Invoke()
+UnityEngine.UnitySynchronizationContext:Exec()
+
+Failed to refresh favorite stores. Error: Failed to get favorite stores. Error: Unauthorized
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Meta.MainNavigation.Profile.<RefreshStoreListAsync>d__16:MoveNext()
+Cysharp.Threading.Tasks.UniTaskCompletionSource`1:TrySignalCompletion(UniTaskStatus)
+Cysharp.Threading.Tasks.<>c__32`1:<AsUniTask>b__32_0(Task`1, Object)
+System.Threading.Tasks.Task:Execute()
+System.Threading.ExecutionContext:RunInternal(ExecutionContext, ContextCallback, Object, Boolean)
+System.Threading.Tasks.Task:ExecuteWithThreadLocal(Task&)
+System.Threading.Tasks.Task:ExecuteEntry(Boolean)
+UnityEngine.WorkRequest:Invoke()
+UnityEngine.UnitySynchronizationContext:Exec()
+
+[UnityCrossThreadLogger]GeneralStore Initializing
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Wizards.Mtga.Store.<ProcessRMTListingsYield>d__12:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger][IAPPurchaseController] Initializing
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Wizards.Mtga.Store.IAPPurchaseController:Initialize(IEnumerable`1)
+Wizards.Mtga.Store.IAPPurchaseController:RequestCatalog(IEnumerable`1)
+Wizards.Mtga.Store.<ProcessRMTListingsYield>d__12:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger][IAPPurchaseController] Connected successfully
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Wizards.Mtga.Store.<InitializeStoreController>d__10:MoveNext()
+System.Runtime.CompilerServices.AsyncTaskMethodBuilder:Start(TStateMachine&)
+Wizards.Mtga.Store.IAPPurchaseController:InitializeStoreController(List`1)
+Wizards.Mtga.Store.IAPPurchaseController:RequestCatalog(IEnumerable`1)
+Wizards.Mtga.Store.<ProcessRMTListingsYield>d__12:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]Fetching products for ContinuationPromise(Wizards.Arena.Promises.WebPromise -> WAS.ItemsResponse)
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Store.Steam.SteamCustomStore:<FetchProducts>b__7_0(Promise`1)
+Wizards.Arena.Promises.<>c__DisplayClass1_0`1:<SideEffectfulContinuation>b__0(Promise`1)
+Wizards.Arena.Promises.<runAsync>d__6:MoveNext()
+System.Threading.ExecutionContext:RunInternal(ExecutionContext, ContextCallback, Object, Boolean)
+System.Runtime.CompilerServices.MoveNextRunner:Run()
+System.Threading.Tasks.AwaitTaskContinuation:RunCallback(ContextCallback, Object, Task&)
+System.Threading.Tasks.Task:FinishContinuations()
+System.Threading.Tasks.Task`1:TrySetResult(TResult)
+System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1:SetResult(TResult)
+Wizards.Arena.Promises.<TryCatch>d__2`1:MoveNext()
+System.Threading.ExecutionContext:RunInternal(ExecutionContext, ContextCallback, Object, Boolean)
+System.Runtime.CompilerServices.MoveNextRunner:Run()
+UnityEngine.WorkRequest:Invoke()
+UnityEngine.UnitySynchronizationContext:Exec()
+
+[UnityCrossThreadLogger][IAPPurchaseController] Filling catalog with 10 products from catalog
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Wizards.Mtga.Store.IAPPurchaseController:FillCatalogRequest(IAPCatalogRequest, IEnumerable`1)
+Wizards.Mtga.Store.IAPPurchaseController:OnProductsFetched(List`1)
+UnityEngine.Purchasing.FetchProductsUseCase:ProcessFetchedProductsAndInvokeCallbacks(ProductFetchRequest, IReadOnlyList`1)
+Wizards.Arena.Promises.<>c__DisplayClass1_0`1:<SideEffectfulContinuation>b__0(Promise`1)
+Wizards.Arena.Promises.<runAsync>d__6:MoveNext()
+System.Threading.ExecutionContext:RunInternal(ExecutionContext, ContextCallback, Object, Boolean)
+System.Runtime.CompilerServices.MoveNextRunner:Run()
+System.Threading.Tasks.AwaitTaskContinuation:RunCallback(ContextCallback, Object, Task&)
+System.Threading.Tasks.Task:FinishContinuations()
+System.Threading.Tasks.Task`1:TrySetResult(TResult)
+System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1:SetResult(TResult)
+Wizards.Arena.Promises.<TryCatch>d__2`1:MoveNext()
+System.Threading.ExecutionContext:RunInternal(ExecutionContext, ContextCallback, Object, Boolean)
+System.Runtime.CompilerServices.MoveNextRunner:Run()
+UnityEngine.WorkRequest:Invoke()
+UnityEngine.UnitySynchronizationContext:Exec()
+
+[UnityCrossThreadLogger][IAPPurchaseController] Catalog finalized and finishing initialization
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Wizards.Mtga.Store.IAPPurchaseController:FinalizeCatalogRequest()
+UnityEngine.Purchasing.FetchProductsUseCase:ProcessFetchedProductsAndInvokeCallbacks(ProductFetchRequest, IReadOnlyList`1)
+Wizards.Arena.Promises.<>c__DisplayClass1_0`1:<SideEffectfulContinuation>b__0(Promise`1)
+Wizards.Arena.Promises.<runAsync>d__6:MoveNext()
+System.Threading.ExecutionContext:RunInternal(ExecutionContext, ContextCallback, Object, Boolean)
+System.Runtime.CompilerServices.MoveNextRunner:Run()
+System.Threading.Tasks.AwaitTaskContinuation:RunCallback(ContextCallback, Object, Task&)
+System.Threading.Tasks.Task:FinishContinuations()
+System.Threading.Tasks.Task`1:TrySetResult(TResult)
+System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1:SetResult(TResult)
+Wizards.Arena.Promises.<TryCatch>d__2`1:MoveNext()
+System.Threading.ExecutionContext:RunInternal(ExecutionContext, ContextCallback, Object, Boolean)
+System.Runtime.CompilerServices.MoveNextRunner:Run()
+UnityEngine.WorkRequest:Invoke()
+UnityEngine.UnitySynchronizationContext:Exec()
+
+[UnityCrossThreadLogger]Process pending purchases 0 @ 13381.08
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Wizards.Mtga.Store.<ProcessPending>d__13:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.StoreRefresh: 924.0 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.PhaseTimer:Stop()
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]==> GraphGetGraphState {"id":"19e32b3c-c14c-4163-adb8-f219362694bd","request":"{\"GraphId\":\"NewPlayerExperience\"}"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogOutgoingMessage(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendOnWire(IFDPromiseWriter)
+MessageRateLimiter:SendWithLimitCheck(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendMetaRequestMessage(Func`2, Func`2, Func`2, Cmd)
+FrontDoorConnectionAWS:SendMessage(Func`2, CmdType, Object)
+Wotc.Mtga.Events.CampaignGraphManager:RefreshGraph(ClientGraphDefinition)
+Wotc.Mtga.Events.CampaignGraphManager:Update(ClientGraphDefinition)
+Wotc.Mtga.Events.CampaignGraphStrategy:UpdateDataAsync(Boolean)
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+10/19/2026 10:59:20 AM Coroutine_StartupSequence - Data retrieved
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]==> EventGetCoursesV2 {"id":"b7cddac9-6441-4e1a-8c70-b37048f4acf9","request":"{}"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogOutgoingMessage(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendOnWire(IFDPromiseWriter)
+MessageRateLimiter:SendWithLimitCheck(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendMetaRequestMessage(Func`2, Func`2, Func`2, Cmd)
+FrontDoorConnectionAWS:SendMessage(Func`2, CmdType, Object)
+Wotc.Mtga.Network.ServiceWrappers.AwsEventServiceWrapper:GetEventCourses()
+Wizards.MDN.<GetEventsAndCourses>d__31:MoveNext()
+System.Runtime.CompilerServices.AsyncTaskMethodBuilder:Start(TStateMachine&)
+Wizards.MDN.EventManager:GetEventsAndCourses()
+Wizards.MDN.EventManager:Coroutine_GetEventsAndCourses()
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]10/19/2026 10:59:20 AM
+<== GraphGetGraphState(19e32b3c-c14c-4163-adb8-f219362694bd)
+{"NodeStates":{"UnlockPlayModes":{"Status":"Completed"},"MigrateFromNPEv1":{"Status":"Completed"},"CheckForForceCloseSDD":{"Status":"Completed"},"SkipNPEV2":{"Status":"Completed"},"SparkyMatch":{"Status":"Available","ProgressNodeState":{},"ProgressionHistoryStateDataState":{}},"SparkyMatchNonRebalanced":{"Status":"Available","ProgressNodeState":{}},"ColorChallengeAnyOneTrackComplete":{"Status":"Available","ProgressionHistoryStateDataState":{"availableDateTimeUTC":"2026-09-25T04:16:04.657Z"}},"CloseSparkyDeckDuel":{"Status":"Completed","ProgressionHistoryStateDataState":{}},"OpenDualColorPreconEvent":{"Status":"Completed"},"DualColorPreconEventWonEnough":{"Status":"Available","ProgressNodeState":{},"ProgressionHistoryStateDataState":{"availableDateTimeUTC":"2026-09-25T04:17:49.936Z"}},"CheckForceCompleteJumpInUnlock":{"Status":"Completed"},"JumpIn_Unlocked":{"Status":"Available"},"SkipSparkRank":{"Status":"Completed"},"GraduateSparkRank":{"Status":"Completed"},"ColorChallengeAnyOneTrackComplete_Rewards":{"Status":"Completed"},"ColorChallengeComplete_Rewards":{"Status":"Completed"},"SparkyChallengeEventWonEnough_Rewards":{"Status":"Completed"},"DualColorPreconEventWonEnough_Rewards":{"Status":"Completed"},"GraduateSparkRank_Rewards":{"Status":"Completed"},"SparkRankTier1_Rewards":{"Status":"Completed"},"SparkRankTier2_Rewards":{"Status":"Completed"},"SparkRankTier3_Rewards":{"Status":"Completed"},"SparkyMatch_Rewards":{"Status":"Completed"},"JumpIn_3_Runs_Rewards":{"Status":"Co …[truncated]
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogIncomingMessage(CmdType, Guid, IFDPromiseWriter)
+FrontDoorConnectionAWS:HandleTcpEvent(ITcpEvent)
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[UnityCrossThreadLogger]10/19/2026 10:59:20 AM
+<== EventGetCoursesV2(b7cddac9-6441-4e1a-8c70-b37048f4acf9)
+{"Courses":[{"CourseId":"07f07563-e8e3-4d76-bb25-4c34d10454e3","InternalEventName":"Play","CurrentModule":"Complete","ModulePayload":"","CourseDeckSummary":{"DeckId":"59ecbc4a-52a2-4b1b-87e5-42d368d2ed35","Name":"Arcane Aerialists","Attributes":[{"name":"Version","value":"11"},{"name":"TileID","value":"94135"},{"name":"LastPlayed","value":"\"2026-09-24T21:33:57.759979-07:00\""},{"name":"LastUpdated","value":"\"0001-01-01T00:00:00\""},{"name":"IsFavorite","value":"false"},{"name":"Format","value":"Standard"}],"Description":"Decks/Precon/Precon_EPPFDN_UW_desc","DeckTileId":94135,"DeckArtId":0,"PreferredCosmetics":{"Avatar":"","Sleeve":"","Pet":"","Title":"","Emotes":[]}},"CourseDeck":{"MainDeck":[{"cardId":93855,"quantity":2},{"cardId":94111,"quantity":4},{"cardId":93854,"quantity":1},{"cardId":93645,"quantity":2},{"cardId":94009,"quantity":3},{"cardId":93741,"quantity":2},{"cardId":93877,"quantity":2},{"cardId":94135,"quantity":1},{"cardId":94019,"quantity":2},{"cardId":93862,"quantity":2},{"cardId":93747,"quantity":1},{"cardId":93952,"quantity":3},{"cardId":94081,"quantity":2},{"cardId":93983,"quantity":4},{"cardId":94126,"quantity":1},{"cardId":94014,"quantity":2},{"cardId":93966,"quantity":2},{"cardId":93751,"quantity":2},{"cardId":93722,"quantity":2},{"cardId":93863,"quantity":2},{"cardId":95193,"quantity":7},{"cardId":95192,"quantity":8},{"cardId":93753,"quantity":1},{"cardId":93860,"quantity":2}],"Sideboard":[],"CommandZone":[],"Companions":[],"CardSkins":[]},"CurrentWin …[truncated]
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogIncomingMessage(CmdType, Guid, IFDPromiseWriter)
+FrontDoorConnectionAWS:HandleTcpEvent(ITcpEvent)
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[StartupProfiling] Startup.EventsAndCourses: 104.7 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.PhaseTimer:Stop()
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] Startup.Total: 1975.6 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:Report(String, Int64)
+Core.Shared.Code.Profiling.PhaseTimer:Stop()
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[StartupProfiling] ===== Startup timing summary (completion order) =====
+  Startup.FrontDoorConnect                             5.5 ms
+  Startup.StartHook                                  445.2 ms
+  Startup.StaticContent                               66.2 ms
+  Startup.GetAllDecksBarrier                           0.0 ms
+  Startup.Batch.GetAllDecks                            0.3 ms
+  Startup.Batch.EnsurePreconDecks                      0.3 ms
+  Startup.Batch.CurrentRenewal                        61.6 ms
+  Startup.Batch.RefreshCards                          92.3 ms
+  Startup.Batch.WpnNotificationPreferences            97.8 ms
+  Startup.Batch.VoucherDefinitions                   111.4 ms
+  Startup.Batch.PlayerRankInfo                       182.3 ms
+  Startup.Batch.PlayerPrefsInit                      182.4 ms
+  Startup.Batch.PlayBladeConfig                      188.9 ms
+  Startup.Batch.NetDeckFolder                        194.8 ms
+  Startup.Batch.PlayerInbox                          195.1 ms
+  Startup.Batch.PrizeWall                            206.7 ms
+  Startup.Batch.ChallengesReconnect                  212.6 ms
+  Startup.Batch.SeasonAndRank                        226.6 ms
+  Startup.Batch.PreferredPrintings                   243.3 ms
+  Startup.Batch.CheckEntitlements                    301.3 ms
+  Startup.Batch (all)                                302.3 ms
+  Startup.MasteryRefresh                             117.4 ms
+  Startup.SendPendingManualCompleteNodes               6.9 ms
+  Startup.StoreRefresh                               924.0 ms
+  Startup.EventsAndCourses                           104.7 ms
+  Startup.Total                                     1975.6 ms
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+Core.Shared.Code.Profiling.StartupProfiling:LogSummary()
+<Coroutine_StartupSequence>d__133:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]Client.SceneChange {"fromSceneName":"None","toSceneName":"Home","initiator":"System","context":"Landing Page 'Home'"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+SceneLoader:LoadContentInternal(NavContentType, SceneChangeInitiator, String, Boolean, Action, Boolean)
+<LandingSequence>d__172:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+Curl error 7: Failed to connect to config.uca.cloud.unity3d.com port 443 after 4 ms: Error
+[UnityCrossThreadLogger]==> QuestGetQuests {"id":"b2f9fa2e-ccce-43f7-ba9c-aca20bb66e04","request":"\"{}\""}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogOutgoingMessage(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendOnWire(IFDPromiseWriter)
+MessageRateLimiter:SendWithLimitCheck(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendMetaRequestMessage(Func`2, Func`2, Func`2, Cmd)
+FrontDoorConnectionAWS:SendMessage(Func`2, CmdType, Object)
+Wotc.Mtga.Network.ServiceWrappers.AwsQuestServiceWrapper:GetQuests()
+Wizards.Mtga.QuestDataProvider:RefreshQuestData()
+<Coroutine_BeginLoad>d__93:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+HomePageContentController:Activate(Boolean)
+<Coroutine_EnterScreen>d__88:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]==> PeriodicRewardsGetStatus {"id":"c34fab95-1f99-4675-b234-ba6b14bcb670","request":"{}"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogOutgoingMessage(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendOnWire(IFDPromiseWriter)
+MessageRateLimiter:SendWithLimitCheck(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendMetaRequestMessage(Func`2, Func`2, Func`2, Cmd)
+FrontDoorConnectionAWS:SendMessage(Func`2, CmdType, Object)
+Wotc.Mtga.Network.ServiceWrappers.AwsQuestServiceWrapper:GetPlayerProgressDailyWeekly()
+Wizards.Mtga.QuestDataProvider:RefreshDailyWeeklyQuests()
+<Coroutine_BeginLoad>d__93:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+HomePageContentController:Activate(Boolean)
+<Coroutine_EnterScreen>d__88:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+PreviousPlayBladeVisualState is being set to the same value as previously: Events
+[UnityCrossThreadLogger]10/19/2026 10:59:21 AM
+<== QuestGetQuests(b2f9fa2e-ccce-43f7-ba9c-aca20bb66e04)
+{"canSwap":true,"quests":[]}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogIncomingMessage(CmdType, Guid, IFDPromiseWriter)
+FrontDoorConnectionAWS:HandleTcpEvent(ITcpEvent)
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[UnityCrossThreadLogger]10/19/2026 10:59:21 AM
+<== PeriodicRewardsGetStatus(c34fab95-1f99-4675-b234-ba6b14bcb670)
+{"_dailyRewardSequenceId":15,"_dailyRewardResetTimestamp":"2026-10-20T09:00:00Z","_weeklyRewardSequenceId":15,"_weeklyRewardResetTimestamp":"2026-10-25T09:00:00Z","_dailyRewardChestDescriptions":{"1":{"image1":"ObjectiveReward_XPSmallCoinLarge","prefab":"RewardPopup3DIcon_XPCoin","headerLocKey":"MainNav/QuestRewards/Gold_And_XP_Reward","descriptionLocKey":"MainNav/EventRewards/Reward_Daily_Reset","quantity":"250","locParams":{"number1":250,"number2":25}},"2":{"image1":"ObjectiveReward_XPSmallCoinSmall","prefab":"RewardPopup3DIcon_XPCoin","headerLocKey":"MainNav/QuestRewards/Gold_And_XP_Reward","descriptionLocKey":"MainNav/EventRewards/Reward_Daily_Reset","quantity":"100","locParams":{"number1":100,"number2":25}},"3":{"image1":"ObjectiveReward_XPSmallCoinSmall","prefab":"RewardPopup3DIcon_XPCoin","headerLocKey":"MainNav/QuestRewards/Gold_And_XP_Reward","descriptionLocKey":"MainNav/EventRewards/Reward_Daily_Reset","quantity":"100","locParams":{"number1":100,"number2":25}},"4":{"image1":"ObjectiveReward_XPSmallCoinSmall","prefab":"RewardPopup3DIcon_XPCoin","headerLocKey":"MainNav/QuestRewards/Gold_And_XP_Reward","descriptionLocKey":"MainNav/EventRewards/Reward_Daily_Reset","quantity":"100","locParams":{"number1":100,"number2":25}},"5":{"image1":"ObjectiveReward_XPCard","prefab":"RewardPopup3DIcon_XPCard","headerLocKey":"MainNav/EventRewards/Card_And_XP","descriptionLocKey":"MainNav/EventRewards/Reward_Daily_Reset","locParams":{"number1":25}},"6":{"image1":"ObjectiveReward_XPSmal …[truncated]
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogIncomingMessage(CmdType, Guid, IFDPromiseWriter)
+FrontDoorConnectionAWS:HandleTcpEvent(ITcpEvent)
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+[UnityCrossThreadLogger]==> GraphGetGraphState {"id":"d1234509-96d5-46d6-b5b7-579ad8e28a78","request":"{\"GraphId\":\"BattlePass_FRA\"}"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogOutgoingMessage(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendOnWire(IFDPromiseWriter)
+MessageRateLimiter:SendWithLimitCheck(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendMetaRequestMessage(Func`2, Func`2, Func`2, Cmd)
+FrontDoorConnectionAWS:SendMessage(Func`2, CmdType, Object)
+Wotc.Mtga.Events.CampaignGraphManager:RefreshGraph(ClientGraphDefinition)
+Wotc.Mtga.Events.CampaignGraphManager:Update(ClientGraphDefinition)
+Core.MainNavigation.RewardTrack.<Refresh>d__39:MoveNext()
+System.Threading.ExecutionContext:RunInternal(ExecutionContext, ContextCallback, Object, Boolean)
+System.Runtime.CompilerServices.MoveNextRunner:Run()
+UnityEngine.WorkRequest:Invoke()
+UnityEngine.UnitySynchronizationContext:Exec()
+
+[UnityCrossThreadLogger]10/19/2026 10:59:21 AM
+<== GraphGetGraphState(d1234509-96d5-46d6-b5b7-579ad8e28a78)
+{"NodeStates":{"MasteryPassCSAdmin":{"Status":"Available"},"RewardTierUpgrade":{"Status":"Available"},"LevelTrack_Level_1":{"Status":"Completed"},"LevelTrack_Level_1_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_2":{"Status":"Completed"},"LevelTrack_Level_2_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_3":{"Status":"Completed"},"LevelTrack_Level_3_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_4":{"Status":"Completed"},"LevelTrack_Level_4_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_5":{"Status":"Completed"},"LevelTrack_Level_5_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_6":{"Status":"Completed"},"LevelTrack_Level_6_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_7":{"Status":"Available","ProgressNodeState":{"CurrentProgress":25}}},"MilestoneStates":{}}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogIncomingMessage(CmdType, Guid, IFDPromiseWriter)
+FrontDoorConnectionAWS:HandleTcpEvent(ITcpEvent)
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+BEGIN home page notification flow
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+<Coroutine_NotificationPopups>d__95:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+HomePageContentController:ShowNotificationPopups()
+HomePageContentController:OnFinishOpen()
+<Coroutine_EnterScreen>d__88:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+END home page notification flow
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+<Coroutine_NotificationPopups>d__95:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+Curl error 7: Failed to connect to cdp.cloud.unity3d.com port 443 after 1 ms: Error
+[UnityCrossThreadLogger]Client.SceneChange {"fromSceneName":"Home","toSceneName":"DeckListViewer","initiator":"System","context":"Navigate to Deck Manager"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+SceneLoader:LoadContentInternal(NavContentType, SceneChangeInitiator, String, Boolean, Action, Boolean)
+UnityEngine.Events.UnityEvent:Invoke()
+CustomButton:OnPointerUp(PointerEventData)
+UnityEngine.EventSystems.ExecuteEvents:Execute(GameObject, BaseEventData, EventFunction`1)
+UnityEngine.InputSystem.UI.InputSystemUIInputModule:ProcessPointerButton(ButtonState&, PointerEventData)
+UnityEngine.InputSystem.UI.InputSystemUIInputModule:ProcessPointer(PointerModel&)
+UnityEngine.InputSystem.UI.InputSystemUIInputModule:Process()
+
+Attempting to get IEmoteDataProvider through static instance of WrapperController. Consider injecting dependency rather than doing this.
+[UnityCrossThreadLogger]Client.SceneChange {"fromSceneName":"DeckListViewer","toSceneName":"DeckBuilder","initiator":"System","context":"deck builder"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+SceneLoader:LoadContentInternal(NavContentType, SceneChangeInitiator, String, Boolean, Action, Boolean)
+UnityEngine.Events.UnityEvent:Invoke()
+CustomButton:OnPointerUp(PointerEventData)
+UnityEngine.EventSystems.ExecuteEvents:Execute(GameObject, BaseEventData, EventFunction`1)
+UnityEngine.InputSystem.UI.InputSystemUIInputModule:ProcessPointerButton(ButtonState&, PointerEventData)
+UnityEngine.InputSystem.UI.InputSystemUIInputModule:ProcessPointer(PointerModel&)
+UnityEngine.InputSystem.UI.InputSystemUIInputModule:Process()
+
+Attempting to get IEmoteDataProvider through static instance of WrapperController. Consider injecting dependency rather than doing this.
+AK Sink: AudioChannelLayout with 8 descriptions results in unsupported channel mask 0x3.
+AK Message: Audio thread resumed, audio restarts.
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+Attempting to refresh mastery pass that's already being refreshed
+[UnityCrossThreadLogger]==> GraphGetGraphState {"id":"49edc059-9316-428f-beaf-8bf8672a5e64","request":"{\"GraphId\":\"BattlePass_FRA\"}"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogOutgoingMessage(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendOnWire(IFDPromiseWriter)
+MessageRateLimiter:SendWithLimitCheck(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendMetaRequestMessage(Func`2, Func`2, Func`2, Cmd)
+FrontDoorConnectionAWS:SendMessage(Func`2, CmdType, Object)
+Wotc.Mtga.Events.CampaignGraphManager:RefreshGraph(ClientGraphDefinition)
+Wotc.Mtga.Events.CampaignGraphManager:Update(ClientGraphDefinition)
+Core.MainNavigation.RewardTrack.<Refresh>d__39:MoveNext()
+System.Threading.ExecutionContext:RunInternal(ExecutionContext, ContextCallback, Object, Boolean)
+System.Runtime.CompilerServices.MoveNextRunner:Run()
+UnityEngine.WorkRequest:Invoke()
+UnityEngine.UnitySynchronizationContext:Exec()
+
+[UnityCrossThreadLogger]10/19/2026 11:03:26 AM
+<== GraphGetGraphState(49edc059-9316-428f-beaf-8bf8672a5e64)
+{"NodeStates":{"MasteryPassCSAdmin":{"Status":"Available"},"RewardTierUpgrade":{"Status":"Available"},"LevelTrack_Level_1":{"Status":"Completed"},"LevelTrack_Level_1_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_2":{"Status":"Completed"},"LevelTrack_Level_2_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_3":{"Status":"Completed"},"LevelTrack_Level_3_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_4":{"Status":"Completed"},"LevelTrack_Level_4_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_5":{"Status":"Completed"},"LevelTrack_Level_5_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_6":{"Status":"Completed"},"LevelTrack_Level_6_Reward":{"Status":"Completed","TierRewardNodeState":{"CurrentTiers":["basic"]}},"LevelTrack_Level_7":{"Status":"Available","ProgressNodeState":{"CurrentProgress":25}}},"MilestoneStates":{}}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogIncomingMessage(CmdType, Guid, IFDPromiseWriter)
+FrontDoorConnectionAWS:HandleTcpEvent(ITcpEvent)
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+Curl error 7: Failed to connect to cdp.cloud.unity3d.com port 443 after 1 ms: Error
+[UnityCrossThreadLogger]==> DeckUpsertDeckV3 {"id":"1c71b2a0-9a66-4c01-b934-85cf00b4a576","request":"{\"Summary\":{\"DeckId\":\"1543b787-1438-460c-bd4a-e61aa4ea185e\",\"Mana\":\"\",\"Name\":\"Mono-Red Burn\",\"Attributes\":[{\"name\":\"Version\",\"value\":\"11\"},{\"name\":\"TileID\",\"value\":\"65385\"},{\"name\":\"LastPlayed\",\"value\":\"\\\"2026-10-19T10:53:46.823962-07:00\\\"\"},{\"name\":\"LastUpdated\",\"value\":\"\\\"2026-10-19T11:05:25.831269-07:00\\\"\"},{\"name\":\"IsFavorite\",\"value\":\"false\"},{\"name\":\"Format\",\"value\":\"Standard\"}],\"Description\":\"\",\"DeckTileId\":65385,\"DeckArtId\":0,\"IsCompanionValid\":false,\"PreferredCosmetics\":{\"Avatar\":\"\",\"Sleeve\":\"\",\"Pet\":\"\",\"Title\":\"\",\"Emotes\":[]},\"NetDeckFolderId\":null,\"IsNetDeck\":false,\"checkInbox\":false},\"Deck\":{\"MainDeck\":[{\"cardId\":65385,\"quantity\":20},{\"cardId\":75525,\"quantity\":4},{\"cardId\":97417,\"quantity\":4},{\"cardId\":93905,\"quantity\":4},{\"cardId\":97423,\"quantity\":1},{\"cardId\":66263,\"quantity\":3},{\"cardId\":87323,\"quantity\":4},{\"cardId\":90492,\"quantity\":4},{\"cardId\":91668,\"quantity\":4},{\"cardId\":91676,\"quantity\":4},{\"cardId\":93792,\"quantity\":4},{\"cardId\":95628,\"quantity\":2},{\"cardId\":94052,\"quantity\":2}],\"Sideboard\":[],\"CommandZone\":[],\"Companions\":[],\"CardSkins\":[]},\"ActionType\":\"Updated\"}"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogOutgoingMessage(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendOnWire(IFDPromiseWriter)
+MessageRateLimiter:SendWithLimitCheck(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendMetaRequestMessage(Func`2, Func`2, Func`2, Cmd)
+FrontDoorConnectionAWS:SendMessage(Func`2, CmdType, Object)
+Wotc.Mtga.Network.ServiceWrappers.AwsDeckServiceWrapper:SendUpsertDeckReq(Client_Deck, DeckActionType)
+Wotc.Mtga.Network.ServiceWrappers.AwsDeckServiceWrapper:UpsertDeck(Client_Deck, DeckActionType)
+Wizards.Mtga.Decks.DeckDataProvider:UpdateDeck(Client_Deck, DeckActionType)
+<Coroutine_UpdateConstructedDeck>d__66:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+<Coroutine_SaveDeck>d__61:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+WrapperDeckBuilder:SaveStep_CardsNeedCommander(DeckInfo, Action)
+WrapperDeckBuilder:SaveStep_CardsNeedSideboard(DeckInfo, Action)
+WrapperDeckBuilder:SaveStep_DeckValid(DeckInfo, Action)
+UnityEngine.Events.UnityEvent:Invoke()
+CustomButton:OnPointerUp(PointerEventData)
+UnityEngine.EventSystems.ExecuteEvents:Execute(GameObject, BaseEventData, EventFunction`1)
+UnityEngine.InputSystem.UI.InputSystemUIInputModule:ProcessPointerButton(ButtonState&, PointerEventData)
+UnityEngine.InputSystem.UI.InputSystemUIInputModule:ProcessPointer(PointerModel&)
+UnityEngine.InputSystem.UI.InputSystemUIInputModule:Process()
+
+[UnityCrossThreadLogger]10/19/2026 11:05:25 AM
+<== DeckUpsertDeckV3(1c71b2a0-9a66-4c01-b934-85cf00b4a576)
+{"DeckId":"1543b787-1438-460c-bd4a-e61aa4ea185e","Name":"Mono-Red Burn","Attributes":[{"name":"Version","value":"11"},{"name":"TileID","value":"65385"},{"name":"LastPlayed","value":"\"2026-10-19T10:53:46.823962-07:00\""},{"name":"LastUpdated","value":"\"2026-10-19T11:05:25.831269-07:00\""},{"name":"IsFavorite","value":"false"},{"name":"Format","value":"Standard"}],"Description":"","DeckTileId":65385,"DeckArtId":0,"PreferredCosmetics":{"Avatar":"","Sleeve":"","Pet":"","Title":"","Emotes":[]}}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogIncomingMessage(CmdType, Guid, IFDPromiseWriter)
+FrontDoorConnectionAWS:HandleTcpEvent(ITcpEvent)
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+[UnityCrossThreadLogger]Client.SceneChange {"fromSceneName":"DeckBuilder","toSceneName":"DeckListViewer","initiator":"System","context":"Navigate to Deck Manager"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+SceneLoader:LoadContentInternal(NavContentType, SceneChangeInitiator, String, Boolean, Action, Boolean)
+<Coroutine_SaveDeckAndExit>d__63:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]==> DeckGetDeckSummariesV3 {"id":"2f26f4f0-8e19-445a-a7a8-65be5ea9afdb","request":"{}"}
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogOutgoingMessage(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendOnWire(IFDPromiseWriter)
+MessageRateLimiter:SendWithLimitCheck(IFDPromiseWriter)
+FrontDoorConnectionAWS:SendMetaRequestMessage(Func`2, Func`2, Func`2, Cmd)
+FrontDoorConnectionAWS:SendMessage(Func`2, CmdType, Object)
+Wotc.Mtga.Network.ServiceWrappers.AwsDeckServiceWrapper:RefreshAllDecks()
+Wizards.Mtga.Decks.DeckDataProvider:ForceRefreshCachedDecks()
+Wizards.Mtga.Decks.DeckDataProvider:refreshDeckSummaries()
+Wizards.Mtga.Decks.DeckDataProvider:GetAllDecks()
+<Coroutine_LoadDecks>d__83:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+DeckManagerController:OnLocalize()
+DeckManagerController:Activate(Boolean)
+<Coroutine_EnterScreen>d__88:MoveNext()
+UnityEngine.SetupCoroutine:InvokeMoveNext(IEnumerator, IntPtr)
+
+[UnityCrossThreadLogger]10/19/2026 11:05:26 AM
+<== DeckGetDeckSummariesV3(2f26f4f0-8e19-445a-a7a8-65be5ea9afdb)
+{"Summaries":[{"DeckId":"af38619e-72fa-4e54-9b92-11551eed8c28","Name":"?=?Loc/Decks/Precon/CC_ANB_W","Attributes":[{"name":"Format","value":"Alchemy"}],"Description":"Decks/Precon/CC_ANB_W_Desc","DeckTileId":75452,"DeckArtId":0,"PreferredCosmetics":{"Avatar":"","Sleeve":"","Pet":"","Title":"","Emotes":[]}},{"DeckId":"d073372e-ba43-440a-a98e-9201803a5e15","Name":"?=?Loc/Decks/Precon/CC_ANB_U","Attributes":[{"name":"Format","value":"Alchemy"}],"Description":"Decks/Precon/CC_ANB_U_Desc","DeckTileId":75472,"DeckArtId":0,"PreferredCosmetics":{"Avatar":"","Sleeve":"","Pet":"","Title":"","Emotes":[]}},{"DeckId":"6c40709b-6e87-4973-a645-bfada529f992","Name":"?=?Loc/Decks/Precon/CC_ANB_B","Attributes":[{"name":"Format","value":"Alchemy"}],"Description":"Decks/Precon/CC_ANB_B_Desc","DeckTileId":75489,"DeckArtId":0,"PreferredCosmetics":{"Avatar":"","Sleeve":"","Pet":"","Title":"","Emotes":[]}},{"DeckId":"4792e924-c693-4b06-b4e7-31bfeedd610d","Name":"?=?Loc/Decks/Precon/CC_ANB_R","Attributes":[{"name":"Format","value":"Alchemy"}],"Description":"Decks/Precon/CC_ANB_R_Desc","DeckTileId":75521,"DeckArtId":0,"PreferredCosmetics":{"Avatar":"","Sleeve":"","Pet":"","Title":"","Emotes":[]}},{"DeckId":"c7df76d9-1c2a-4b25-b41a-85ed0424c86e","Name":"?=?Loc/Decks/Precon/CC_ANB_G","Attributes":[{"name":"Format","value":"Alchemy"}],"Description":"Decks/Precon/CC_ANB_G_Desc","DeckTileId":75543,"DeckArtId":0,"PreferredCosmetics":{"Avatar":"","Sleeve":"","Pet":"","Title":"","Emotes":[]}},{"DeckId":"6c4da …[truncated]
+UnityEngine.DebugLogHandler:Internal_Log(LogType, LogOption, String, Object)
+FrontDoorConnectionAWS:LogIncomingMessage(CmdType, Guid, IFDPromiseWriter)
+FrontDoorConnectionAWS:HandleTcpEvent(ITcpEvent)
+FrontDoorConnectionAWS:ProcessMessages()
+PAPA:Update()
+
+AK Sink: AudioChannelLayout with 8 descriptions results in unsupported channel mask 0x3.
+AK Message: Audio thread resumed, audio restarts.
+AK Sink: AudioChannelLayout with 8 descriptions results in unsupported channel mask 0x3.
+AK Message: Audio thread resumed, audio restarts.
