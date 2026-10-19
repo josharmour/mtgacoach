@@ -180,6 +180,22 @@ def unmet_modified_flag(
     return ""
 
 
+def is_creature_now(card: dict) -> bool:
+    """A creature on the battlefield now: the GRE object's card types decide when it has them,
+    the printed type line only without them.
+
+    Heliod, Sun-Crowned below devotion five is "Legendary Enchantment Creature
+    — God" in print but ``["CardType_Enchantment"]`` in the game. 2026-10-19
+    14:22 and 14:25 (match 2bb162d7 T9/T11) the losing-attack guard held back a
+    27/3 Leonardo because "Heliod 5/5 can block" it, with no creature of theirs
+    untapped; the attack would have taken them from 30 to 3.
+    """
+    types = card.get("card_types")
+    if isinstance(types, list) and any(str(t).startswith("CardType_") for t in types):
+        return "CardType_Creature" in types
+    return "creature" in str(card.get("type_line") or "").lower()
+
+
 def has_combat_keyword(card: dict, keyword: str) -> bool:
     """Printed keywords, plus keywords the game object currently has.
 

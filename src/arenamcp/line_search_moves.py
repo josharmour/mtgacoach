@@ -125,6 +125,14 @@ _CREATES_CREATURES = re.compile(
 )
 # Token clauses read as unknown: a variable count, copies, tokens that enter attacking.
 _TOKEN_UNREAD = re.compile(r"\b(?:for each|equal to|where x|tapped|attacking|blocking|cop(?:y|ies))\b")
+# A count read from the board when it resolves (``named_token_specs``, ledger #157): Hare Apparent's
+# "create a number of 1/1 white Rabbit creature tokens equal to the number of other creatures you
+# control named Hare Apparent" (its own name reads "~").
+_NAMED_COUNT = re.compile(
+    r"\bcreate (?:a number of|x) (?P<p>\d+)/(?P<t>\d+) (?P<desc>[a-z ,'-]*?)\bcreature tokens?\b(?P<rest>[^.\n]*?)"
+    r",?\s*(?:where x is|equal to) the number of (?P<other>other )?creatures you control named "
+    r"(?P<named>~|[a-z0-9' ,-]+?)\s*(?=[.\n]|$)"
+)
 # "Create X 2/2 ... creature tokens named Cadet, where X is the amount of life you gained this turn."
 _LIFE_SCALED_TOKENS = re.compile(
     r"\bcreate x ((?:\d+)/(?:\d+) [^.\n]*?\bcreature tokens?\b[^.\n]*?),? where x is the (?:amount of )?"
@@ -532,6 +540,8 @@ class Variant:
     sweep: int = 0
     # Damage it deals one of their planeswalkers ("any target", "target creature or planeswalker").
     walker: int = 0
+    # Creature tokens counted on the board as it resolves (``named_token_specs``: Hare Apparent).
+    named_tokens: tuple = ()
 
 
 @dataclass(eq=False)
@@ -710,6 +720,8 @@ def token_specs(
             clause = line[create.start() : end if end >= 0 else len(line)]
             if not re.search(r"\btokens?\b", clause) or not _CREATES_CREATURES.search(clause):
                 continue  # Food, Treasure, Clue...: no creature
+            if _NAMED_COUNT.match(line, create.start()):
+                continue  # counted on the board when it resolves (``named_token_specs``)
             prefix = re.sub(r"^\s*[•]?\s*(?:when(?:ever)?\b[^,]*,\s*)?", "", line[start : create.start()])
             match = _TOKEN.match(line, create.start())
             after = line[end:] if end >= 0 else ""
@@ -749,6 +761,49 @@ def token_specs(
     return specs
 
 
+def named_token_specs(text: str, own_name: str = "") -> tuple[tuple[int, int, tuple[str, ...], str, str, bool], ...]:
+    """Creature tokens whose count is the number of creatures we control with a name, read when
+    the effect resolves: ((power, toughness, keywords, token name, counted name, other), ...).
+
+    Hare Apparent (ledger #157, match be1a945f): "create a number of 1/1 white Rabbit creature
+    tokens equal to the number of other creatures you control named Hare Apparent". The count was
+    unread (``token_specs`` None), so every Hare cast was "its tokens, not modelled" and the game
+    plan's line check skipped every plan casting one. ``own_name`` replaces "~".
+    """
+    out = []
+    for match in _NAMED_COUNT.finditer(text or ""):
+        rest = match.group("rest")
+        granted = re.search(r"\bwith (.+)$", rest)
+        keywords = {k for k in _TOKEN_KEYWORDS if granted and re.search(rf"\b{k}\b", granted.group(1))}
+        words = [w for w in re.split(r"[\s,]+", match.group("desc")) if w and w not in _TOKEN_DESC_SKIP]
+        token = (" ".join(words).title() or "Creature") + " token"
+        named = match.group("named").strip()
+        counted = own_name if named == "~" else named.title()
+        if not counted:
+            continue
+        out.append((int(match.group("p")), int(match.group("t")), tuple(sorted(keywords)), token, counted,
+                    bool(match.group("other"))))  # fmt: skip
+    return tuple(out)
+
+
+def named_count(spec, bodies, itself: dict | None = None) -> int:
+    """How many tokens one ``named_token_specs`` entry makes with ``bodies`` (our creatures, the
+    new creature among them) on the battlefield; at most 20."""
+    _p, _t, _kw, _token, counted, other = spec
+    wanted = counted.casefold()
+    count = sum(
+        1
+        for b in bodies
+        if str(b.get("name") or "").casefold() == wanted and not (other and itself is not None and b is itself)
+    )
+    return max(0, min(20, count))
+
+
+def _effect_condition(effect: str) -> bool:
+    """``_EFFECT_CONDITION`` on an effect, a board-counted token clause (``_NAMED_COUNT``) aside."""
+    return bool(_EFFECT_CONDITION.search(_NAMED_COUNT.sub("", effect or "")))
+
+
 def make_tokens(specs, turn: int, rules, first_id: int) -> tuple[dict, ...]:
     """Solver bodies for ``token_specs`` output, ids ``first_id``, ``first_id + 1``, ..."""
     bodies = []
@@ -772,6 +827,7 @@ def _etb_modelled(name: str, effect: str) -> bool:
     reach = removal_reach(pseudo)
     return bool(
         token_specs(_cast_text(pseudo))
+        or named_token_specs(_cast_text(pseudo), name)
         or (reach is not None and reach[0] != "fight")
         or _LIFEGAIN.search(_text(pseudo))
         or any(face_damage(pseudo))
@@ -804,9 +860,7 @@ def applied_text(card: dict, *, enters_triggers: bool = True) -> str:
                 kept.append(line)
             continue
         trigger = _CREATURE_TRIGGER.match(line)
-        skip = trigger is not None and (
-            not enters_triggers or bool(_EFFECT_CONDITION.search(trigger["effect"]))
-        )
+        skip = trigger is not None and (not enters_triggers or _effect_condition(trigger["effect"]))
         if not skip:
             kept.append(line)
     return "\n".join(kept)
@@ -834,7 +888,7 @@ def _trigger_unmodelled(card: dict, name: str) -> bool:
             and own_subject(subject, name)
             and not _OR_ANOTHER.search(subject)
             and not re.search(r"\b(?:attacks|dies|blocks|leaves)\b", rest)
-            and not _EFFECT_CONDITION.search(effect)
+            and not _effect_condition(effect)
             and _etb_modelled(name, effect)
         ):
             continue
@@ -998,6 +1052,7 @@ def _modelled(var: Variant) -> bool:
         var.body is not None
         or var.tokens
         or var.life_tokens
+        or var.named_tokens
         or var.counter
         or var.reach is not None
         or var.gain
@@ -1107,6 +1162,11 @@ class Moves:
         self._cast_pumped_memo: dict = {}  # (id(body), power, toughness) -> (body, its pumped copy)
         self._kinds_memo: dict = {}
         self._next_memo: dict = {}
+        # "+N/+0 for each other creature you control" (Leonardo, Big Brother; ledger #157): instance
+        # id -> (base power, base toughness, +power, +toughness, other only), recomputed per board.
+        self._scale_base: dict[int, tuple[int, int, int, int, bool]] = {}
+        self._scaled_memo: dict = {}
+        self._named_memo: dict = {}  # (id(variant), counts) -> the board-counted token bodies
         # Lands they play each of their turns, for their landfall creatures (ledger #27, match
         # 92c09c7a: Sazh's Chocobo grew +1/+1 a turn while the lines attacked with a static 7/8).
         # Paranoid: one a turn, plus their "play an additional land" permanents.
@@ -1168,8 +1228,67 @@ class Moves:
 
     # -- precomputation ------------------------------------------------------------------
 
+    def _register_scaling(self, body: dict | None, creatures: int | None) -> None:
+        """Note a body whose stats grow with our creature count (``sneak.per_creature_bonus``):
+        ``creatures`` is the count its snapshot stats already include (None: printed stats)."""
+        if body is None:
+            return
+        from arenamcp.sneak import per_creature_bonus
+
+        bonus = per_creature_bonus(body.get("_card") or body)
+        if bonus is None:
+            return
+        per_p, per_t, other = bonus
+        counted = 0 if creatures is None else max(0, creatures - (1 if other else 0))
+        self._scale_base[body["instance_id"]] = (
+            body["power"] - per_p * counted, body["toughness"] - per_t * counted, per_p, per_t, other,
+        )  # fmt: skip
+
+    def rescale(self, bodies: list[dict]) -> list[dict]:
+        """``bodies`` (all our creatures) with every per-creature bonus recomputed for their count."""
+        if not self._scale_base or not bodies:
+            return bodies
+        count = len(bodies)
+        out = []
+        for body in bodies:
+            base = self._scale_base.get(body["instance_id"])
+            if base is None:
+                out.append(body)
+                continue
+            base_p, base_t, per_p, per_t, other = base
+            counted = max(0, count - (1 if other else 0))
+            power, toughness = max(0, base_p + per_p * counted), max(0, base_t + per_t * counted)
+            if (power, toughness) == (body["power"], body["toughness"]):
+                out.append(body)
+                continue
+            key = (body["instance_id"], power, toughness)
+            found = self._scaled_memo.get(key)
+            if found is None:
+                found = self._scaled_memo[key] = {**body, "power": power, "toughness": toughness}
+            out.append(found)
+        return out
+
+    def _named_bodies(self, var: Variant, ours: list[dict]) -> tuple[dict, ...]:
+        """The tokens a board-counted token maker (``named_token_specs``) makes as it resolves with
+        ``ours`` on the battlefield (its own body included), memoised per count."""
+        if not var.named_tokens:
+            return ()
+        counts = tuple(named_count(spec, ours, var.body) for spec in var.named_tokens)
+        key = (id(var), counts)
+        found = self._named_memo.get(key)
+        if found is None:
+            specs = [
+                (n, p, t, kw, token)
+                for n, (p, t, kw, token, _c, _o) in zip(counts, var.named_tokens, strict=True)
+                if n
+            ]
+            found = self._named_memo[key] = (var, self._tokens(specs))
+        return found[1]
+
     def _prepare(self) -> None:
         model = self.model
+        for body in model.ours:
+            self._register_scaling(body, len(model.ours))
         theirs = list(model.theirs)
         # Copies of one name in hand share a key; a commander (zone "command") keeps its own.
         lowest: dict[tuple[str, str], int] = {}
@@ -1190,6 +1309,7 @@ class Moves:
         self.hand0 = tuple(
             sorted(range(len(self.spells)), key=lambda i: (self.spells[i].name, self.spells[i].iid))
         )
+        self.any_named = any(var.named_tokens for hs in self.spells for var in hs.variants)
         lands = []
         for card in model.hand_lands:
             colors = frozenset(_land_colors(card))
@@ -1277,6 +1397,7 @@ class Moves:
         counters = enters_counters(card) if body is not None and self.enters_triggers else 0
         if counters:  # its enters trigger puts its +1/+1 counters on itself
             body = {**body, "power": body["power"] + counters, "toughness": body["toughness"] + counters}
+        self._register_scaling(body, None)  # printed stats: grows with our board once in
         extra_life = extra_life_cost(card)
         # What acts on casting: a spell's text; a permanent's own enters trigger without a
         # condition (``applied_text``). ``etb`` reads it: the card itself when nothing was left out.
@@ -1292,6 +1413,8 @@ class Moves:
         # Outside any 'choose one' bullet: creature tokens there come with every variant.
         outside = "\n".join(line for line in cast_text.splitlines() if not line.startswith("•"))
         base_specs = token_specs(outside, life_gained=0, life_gained_game=self.model.life_gained_game) or []
+        # "... tokens equal to the number of other creatures you control named ~": counted as it resolves.
+        named = named_token_specs(outside, spell.name)
         # "Create X ... tokens, where X is the amount of life you gained this turn": per life.
         per_life = tuple(
             token_specs(_life_scaled(outside, 1), life_gained=0) or ()
@@ -1320,7 +1443,7 @@ class Moves:
             return Variant(
                 hs.index, "cast", mode, text, body, gain, reach, bounce, rock, spell.mana_value, spell.pips,
                 bool(info.instant_speed), loss, face, aim, tokens=self._tokens([*base_specs, *specs]),
-                life_tokens=per_life, counter=counters, sweep=sweep,
+                life_tokens=per_life, counter=counters, sweep=sweep, named_tokens=named,
             )  # fmt: skip
 
         def aimed(var: Variant, alt: int) -> list[Variant]:
@@ -1419,7 +1542,33 @@ class Moves:
                     fetch=fetch,
                 )
             )  # fmt: skip
+        sneak = self._sneak_variant(hs, body)
+        if sneak is not None:
+            variants.append(sneak)
         return tuple(variants), plain
+
+    def _sneak_variant(self, hs: HandSpell, body: dict | None) -> Variant | None:
+        """A creature with Sneak cast in our declare-blockers step (``sneak``; ledger #156): its
+        Sneak cost (plus the commander tax from the command zone), applied in ``finish`` after
+        their blocks by returning one of our unblocked attackers. Its enters trigger is not
+        applied (none on Leonardo, Big Brother, the case it was built for)."""
+        from arenamcp.sneak import sneak_cost, with_tax
+
+        card = hs.spell.card
+        printed = sneak_cost(card) if body is not None else ""
+        if not printed:
+            return None
+        casts = 0
+        if hs.spell.zone == "command":
+            commander = next(
+                (c for c in self.model.commanders if _int(c.card.get("instance_id")) == hs.iid), None
+            )
+            casts = (commander.casts or 0) if commander is not None else 0
+        cost = with_tax(printed, casts)
+        info = hand_info({**card, "mana_cost": cost})
+        return Variant(
+            hs.index, "sneak", None, "", body, 0, None, False, False, info.mana_value, info.pips, False,
+        )  # fmt: skip
 
     # -- small helpers -----------------------------------------------------------------------
 
@@ -1451,6 +1600,14 @@ class Moves:
         if first and attackers and able and (len(attackers) + 1) ** able > _MAX_BLOCK_OPTIONS:
             self.exact_first = False  # the solver falls back to greedy blocks
         key = (tag, ids_of(attackers), ids_of(blockers), max(1, life))
+        if self._scale_base:  # a per-creature body's power follows the board, not its id (#157)
+            key += (
+                tuple(
+                    (b["instance_id"], b["power"], b["toughness"])
+                    for b in (*attackers, *blockers)
+                    if b["instance_id"] in self._scale_base
+                ),
+            )
         found = self._memo.get(key)
         if found is None:
             self.combats += 1
@@ -1718,10 +1875,21 @@ class Moves:
         self._value_memo[key] = value
         return value
 
-    def choice_value(self, choice, theirs, gained: int = 0) -> float:
+    def choice_value(self, choice, theirs, gained: int = 0, ours=()) -> float:
         """The items' values; a life-scaled token maker counts the life ``gained`` this turn
-        before it plus what the rest of the set gains (``_apply_casts`` casts the gains first)."""
+        before it plus what the rest of the set gains (``_apply_casts`` casts the gains first);
+        a board-counted one (Hare Apparent) counts ``ours`` plus the set's bodies before it."""
         value = sum(self.item_value(v, t, theirs) for v, t in choice)
+        if any(v.named_tokens for v, _ in choice):
+            board = list(ours)
+            for var, _target in choice:
+                if var.kind != "cast":
+                    continue
+                board += [var.body] if var.body is not None else []
+                for token in self._named_bodies(var, board):
+                    pseudo = _Spell(token["_card"], token["name"], "creature", 0, (), False)
+                    value += _spell_value(pseudo, survival=self.survival, theirs=list(theirs))
+                    board.append(token)
         # A combined kill is worth one removal of its target (``_spell_value``'s), however many pieces.
         for target in {id(t): t for v, t in choice if v.chip and t is not None}.values():
             value += 3 + target["power"] * (1.5 if self.survival else 1.0)
@@ -1827,6 +1995,7 @@ class Moves:
             marking,
             node.walkers,
             self.gained_at_start(node),
+            ids_of(node.ours) if self.any_named else (),
         )
         found = self._cast_memo.get(key)
         if found is not None:
@@ -1840,7 +2009,7 @@ class Moves:
             for var in hs.variants + hs.chips + hs.walker_vars:
                 if (instant_only and not var.instant) or (var.mana_value > len(sources) and not reduced):
                     continue
-                if (banned and var.kind == "cast") or var.loss >= node.our_life:
+                if (banned and var.kind in ("cast", "sneak")) or var.loss >= node.our_life:
                     continue
                 if var.chip:  # one piece of a combined kill (completed below, or the set is dropped)
                     items.extend((var, t) for t in self.chip_targets(node, position, var, len(sources)))
@@ -1891,7 +2060,8 @@ class Moves:
                     pips = tuple(p for v, _ in choice for p in v.pips)
                     if pips and not _pip_matching(pips, sources):
                         continue
-                    scored.append((choice, self.choice_value(choice, theirs, key[-1]), total))
+                    value = self.choice_value(choice, theirs, self.gained_at_start(node), node.ours)
+                    scored.append((choice, value, total))
         scored.sort(key=lambda item: (-round(item[1], 6), -item[2], self.choice_text(item[0])))
         result = self._cast_memo[key] = [item[0] for item in scored]
         return result
@@ -1934,6 +2104,8 @@ class Moves:
             hs = self.spells[var.spell]
             if var.kind == "cycle":
                 keys.add(("cycle", hs.key_iid))
+            elif var.kind == "sneak":  # not the card's ordinary cast (its own option, its own key)
+                keys.add(("sneak", hs.key_iid))
             else:
                 keys.update({("cast", hs.key_iid, None), ("cast", hs.key_iid, var.mode)})
         if not casts:
@@ -1995,6 +2167,8 @@ class Moves:
         mid.applied = True
         chipped: dict[int, int] = {}  # damage combined-kill pieces dealt each target so far
         for var, target in mid.casts:
+            if var.kind == "sneak":
+                continue  # cast after their blocks (``finish``)
             hs = self.spells[var.spell]
             if var.spell in mid.hand:
                 mid.hand.remove(var.spell)
@@ -2028,6 +2202,9 @@ class Moves:
             for body in ([var.body] if var.body is not None else []) + made:
                 mid.ours.append(body)
                 mid.entered[body["instance_id"]] = mid.node.abs_turn
+            for body in self._named_bodies(var, mid.ours):  # counted with its own body in (#157)
+                mid.ours.append(body)
+                mid.entered[body["instance_id"]] = mid.node.abs_turn
             if target is not None and var.walker:  # burn at one of their planeswalkers
                 iid = target["instance_id"]
                 if iid in mid.walkers:
@@ -2059,6 +2236,7 @@ class Moves:
             mid.gained += var.gain
             if var.rock:
                 mid.rocks.append(SimpleNamespace(produces=frozenset("WUBRGC"), name=hs.name))
+        mid.ours = self.rescale(mid.ours)  # "+1/+0 for each other creature you control" (#157)
 
     def cast_pump(self, body: dict) -> tuple:
         """``cast_triggers.cast_pumps`` of a body, memoised."""
@@ -2254,17 +2432,24 @@ class Moves:
                 damage, dead_ours, dead_theirs, gained, healed = self.combat_life(
                     fighting, blockers, mid.opp_life, tag=tag
                 )
+                swap = self._sneak_swap(mid, fighting, blockers, tag)
+                if swap is not None:  # a Sneak creature in for an unblocked attacker (#156)
+                    gain, returned, entered = swap
+                    damage += gain
+                    attackers = [a for a in attackers if a["instance_id"] != returned["instance_id"]] + [entered]
             # Lifelink on both sides lands with the combat damage: the net change decides lethal.
             mid.opp_life -= damage - healed
             mid.our_life += gained
             mid.gained += gained
             opp_after = mid.opp_life
-            mid.ours = [b for b in mid.ours if b["instance_id"] not in dead_ours]
+            mid.ours = self.rescale([b for b in mid.ours if b["instance_id"] not in dead_ours])
             mid.theirs = [b for b in mid.theirs if b["instance_id"] not in dead_theirs]
             # Non-vigilance attackers stay tapped through their turn.
             mid.our_tapped |= {b["instance_id"] for b in attackers if not has_combat_keyword(b, "vigilance")}
         post_combat: tuple[str, ...] = ()
-        if attackers and not mid.attack_first:
+        # A creature cast before combat grows an attacker counting our creatures (Leonardo): it is
+        # never "after combat" then (#157).
+        if attackers and not mid.attack_first and not any(a["instance_id"] in self._scale_base for a in attackers):
             post_combat = tuple(
                 self.spells[var.spell].name for var, _target in mid.casts if self._attack_neutral(var)
             )
@@ -2342,7 +2527,8 @@ class Moves:
         # Their lifelink attackers (and our lifelink blockers) changed both life totals; each of
         # their planeswalkers used a plus ability (paranoid: +1 loyalty a turn).
         carry.update(
-            our_life=hit["life"], opp_life=hit["opp_life"], ours=tuple(hit["ours"]), theirs=tuple(hit["theirs"]),
+            our_life=hit["life"], opp_life=hit["opp_life"], ours=tuple(self.rescale(list(hit["ours"]))),
+            theirs=tuple(hit["theirs"]),
             hand=hit["hand"], walkers=tuple((iid, name, loyal + 1) for iid, name, loyal in carry["walkers"]),
         )  # fmt: skip
         return dataclasses.replace(
@@ -2357,6 +2543,45 @@ class Moves:
             history=history,
             attacks=attacks,
         )
+
+    def _sneak_swap(self, mid: Mid, fighting: list[dict], blockers: list[dict], tag: str):
+        """A Sneak cast after their blocks (a "sneak" variant in this turn's casts, ledger #156):
+        the Sneak creature enters tapped and attacking for our unblocked attacker dealing the
+        least, which returns to hand. (+damage, the returned attacker, the entered body), or None
+        when there is no Sneak in the set or no unblocked attacker (the card stays in hand).
+
+        Applies the swap to ``mid`` (board, hand, cast names). The entered body's power is the
+        board's (Leonardo, Big Brother: +1/+0 for each other creature we control).
+        """
+        sneaks = [var for var, _t in mid.casts if var.kind == "sneak" and var.spell in mid.hand]
+        if not sneaks or not fighting:
+            return None
+        through = dict(self.combat_detail(fighting, blockers, mid.opp_life, tag=tag)[5])
+        open_ = [a for a in fighting if a["power"] > 0 and through.get(a["instance_id"], 0) >= a["power"]]
+        if not open_:
+            return None
+        returned = min(
+            open_, key=lambda a: (through[a["instance_id"]], a["power"] + a["toughness"], a["instance_id"])
+        )
+        var = sneaks[0]
+        hs = self.spells[var.spell]
+        ours = self.rescale([b for b in mid.ours if b["instance_id"] != returned["instance_id"]] + [var.body])
+        entered = ours[-1]
+        mid.ours = ours
+        mid.hand.remove(var.spell)
+        mid.entered[entered["instance_id"]] = mid.node.abs_turn
+        mid.our_tapped.add(entered["instance_id"])
+        mid.cast_names.append(hs.name)
+        mid.modes.append((hs.name, f"Sneak after blocks, returning {returned['name']}"))
+        return entered["power"] - through[returned["instance_id"]], returned, entered
+
+    def sneak_gain(self, mid: Mid, fighting: list[dict], blockers: list[dict], tag: str) -> int:
+        """What ``_sneak_swap`` would add to this attack, without applying it (greedy lethal checks)."""
+        if not any(var.kind == "sneak" and var.spell in mid.hand for var, _t in mid.casts):
+            return 0
+        scratch = mid.copy()
+        swap = self._sneak_swap(scratch, fighting, blockers, tag)
+        return swap[0] if swap is not None else 0
 
     def _attack_neutral(self, var: Variant) -> bool:
         """A creature cast that changes nothing about our attack this turn: a summoning-sick
@@ -2795,6 +3020,7 @@ class Moves:
         entered: dict = {}
         # Our creature spells on the stack resolve before T's attack (summoning sick on T).
         for body in model.our_stack_bodies:
+            self._register_scaling(body, None)
             ours.append(body)
             entered[body["instance_id"]] = model.turn
         effect = self.root_effect or {}
@@ -2809,6 +3035,7 @@ class Moves:
             returning += [effect["target"]] if effect.get("bounce") else []
         if effect.get("sweep"):  # a mode's damage to each of their creatures (#87)
             theirs = [b for b in theirs if not swept_now(b, int(effect["sweep"]), effect.get("source"))]
+        ours = self.rescale(ours)  # creatures entering before T grow Leonardo-style bodies (#157)
         return Node(
             k=0,
             abs_turn=self.first_turn,
@@ -2934,7 +3161,7 @@ class Moves:
         best = max(
             enumerate(sets),
             key=lambda item: (
-                round(self.choice_value(item[1], node.theirs), 6),
+                round(self.choice_value(item[1], node.theirs, ours=node.ours), 6),
                 sum(v.mana_value for v, _ in item[1]),
                 -item[0],
             ),
@@ -2946,7 +3173,8 @@ class Moves:
             attackers = [b for b in mid.ours if b["instance_id"] in everyone[1]]
             blockers = [b for b in mid.theirs if b["instance_id"] not in node.their_tapped]
             fighting, tag = self.cast_pumped(attackers, mid.pumps)
-            lethal = self.combat(fighting, blockers, mid.opp_life, tag=tag)[0] >= mid.opp_life
+            damage = self.combat(fighting, blockers, mid.opp_life, tag=tag)[0]
+            lethal = damage + self.sneak_gain(mid, fighting, blockers, tag) >= mid.opp_life
             options = [everyone if lethal else options[0]]
         children = [self.finish(mid, option, greedy=True) for option in options]
         return max(enumerate(children), key=lambda item: (self.score(item[1]), -item[0]))[1]

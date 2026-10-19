@@ -606,8 +606,14 @@ def _search_blocks(
     max_options: int = 50_000,
     recovery_credit: Callable[[frozenset[int]], float] | None = None,
     trick_exposure: TrickExposure | None = None,
+    symmetric: bool = False,
 ) -> BlockPlan | None:
     """Enumerate legal block assignments and pick the best.
+
+    ``symmetric``: past ``max_options`` assignments, enumerate one assignment
+    per permutation of interchangeable blockers (``_canonical_choices``)
+    before falling back to the greedy plan (the attack search on big boards,
+    ledger #162). Off by default: the other callers keep their greedy facts.
 
     `blocker_allowed_attackers` maps a blocker's instance_id to the set
     of attacker instance_ids it is allowed to block (from the GRE
@@ -630,14 +636,6 @@ def _search_blocks(
     n_attackers = len(attackers)
     n_blockers = len(blockers)
     n_options = (n_attackers + 1) ** n_blockers
-    if n_options > max_options:
-        return _greedy_block_plan(
-            attackers,
-            blockers,
-            your_life,
-            blocker_allowed_attackers=blocker_allowed_attackers,
-            trick_exposure=trick_exposure,
-        )
 
     # Pre-compute per-blocker option list: indices into `attackers` plus
     # "None" for no-block.
@@ -653,6 +651,25 @@ def _search_blocks(
                 opts.append(i)
         blocker_options.append(opts)
 
+    choices: Iterable[tuple] = ()
+    if n_options <= max_options:
+        choices = product(*blocker_options)
+    else:
+        # Big boards (Brawl token swarms, ledger #162): interchangeable blockers (thirteen 2/2
+        # Squirrels) make most assignments permutations of each other. Enumerate one per
+        # permutation class (``_canonical_choices``); only past the cap is the block greedy.
+        groups = _symmetric_groups(blockers, blocker_options) if symmetric else []
+        interchangeable = any(len(group) > 1 for group in groups)
+        if not interchangeable or _canonical_count(groups, blocker_options) > max_options:
+            return _greedy_block_plan(
+                attackers,
+                blockers,
+                your_life,
+                blocker_allowed_attackers=blocker_allowed_attackers,
+                trick_exposure=trick_exposure,
+            )
+        choices = _canonical_choices(groups, blocker_options)
+
     # A lone attacker into two or more creatures that can block it.
     lone = n_attackers == 1 and sum(1 for opts in blocker_options if len(opts) > 1) >= 2
     trick_p = trick_probability(trick_exposure, lone_attacker=lone)
@@ -667,7 +684,7 @@ def _search_blocks(
     raw_best: float | None = None  # the same search with no trick priced
     raw_choice: tuple = ()
     evaluated = 0
-    for choice in product(*blocker_options):
+    for choice in choices:
         # choice[b] is either None or an attacker index
         assigned_to_atk: dict[int, list[int]] = {}
         for b_idx, atk_idx in enumerate(choice):
@@ -730,6 +747,75 @@ def _search_blocks(
                 f"{rejected.explanation}: {_trick_risk_note(attackers, blockers, raw_choice, trick_exposure)}"
             )
     return plan
+
+
+def symmetry_key(card: dict) -> tuple:
+    """A creature as the solver sees it, without its identity: interchangeable bodies (a
+    swarm of identical Rabbit tokens) share it. Conservative: any field that differs keeps two
+    bodies apart."""
+
+    def plain(node: dict) -> tuple:
+        return tuple(
+            sorted((key, repr(value)) for key, value in node.items() if key not in ("instance_id", "_card"))
+        )
+
+    inner = card.get("_card")
+    return plain(card), plain(inner) if isinstance(inner, dict) else ()
+
+
+def _symmetric_groups(blockers: list[dict], options: list[list]) -> list[list[int]]:
+    """Blocker indices in classes of interchangeable bodies with the same options, in order."""
+    groups: dict[tuple, list[int]] = {}
+    for index, blocker in enumerate(blockers):
+        groups.setdefault((symmetry_key(blocker), tuple(options[index])), []).append(index)
+    return list(groups.values())
+
+
+def _canonical_count(groups: list[list[int]], options: list[list]) -> int:
+    """Block assignments one per permutation class of interchangeable blockers."""
+    from math import comb
+
+    total = 1
+    for group in groups:
+        k = len(options[group[0]])
+        total *= comb(len(group) + k - 1, len(group))
+    return total
+
+
+def _canonical_choices(groups: list[list[int]], options: list[list]) -> Iterable[tuple]:
+    """Each block assignment up to permuting interchangeable blockers, once: within a class
+    the chosen options never decrease (``combinations_with_replacement``)."""
+    from itertools import combinations_with_replacement
+
+    size = sum(len(group) for group in groups)
+    per_group = [list(combinations_with_replacement(options[group[0]], len(group))) for group in groups]
+    for picks in product(*per_group):
+        choice: list = [None] * size
+        for group, values in zip(groups, picks, strict=True):
+            for index, value in zip(group, values, strict=True):
+                choice[index] = value
+        yield tuple(choice)
+
+
+def block_search_size(
+    attackers: list[dict], blockers: list[dict], max_options: int = 50_000, *, symmetric: bool = False
+) -> int:
+    """Assignments ``_search_blocks`` scores for these bodies (``symmetric``: canonical ones past
+    the plain cap; greedy past the cap)."""
+    n_options = (len(attackers) + 1) ** len(blockers)
+    if n_options <= max_options:
+        return n_options
+    if not symmetric:
+        return len(attackers) * len(blockers) + 1
+    options = [
+        [None] + [i for i, attacker in enumerate(attackers) if _can_block(attacker, blocker)]
+        for blocker in blockers
+    ]
+    groups = _symmetric_groups(blockers, options)
+    canonical = _canonical_count(groups, options)
+    if any(len(group) > 1 for group in groups) and canonical <= max_options:
+        return canonical
+    return len(attackers) * len(blockers) + 1
 
 
 def _rebuild_block_plan(
@@ -1094,7 +1180,20 @@ def _search_attacks(
     if creature_died_this_turn is not None:
         extra["creature_died_this_turn"] = creature_died_this_turn
 
-    for subset in _attack_subsets(n):
+    seeds: list[tuple[int, ...]] = []
+    if n > 8:
+        # Big boards (ledger #162, 2026-10-19 15:05:42: 14 attackers, the 2 s deadline hit after
+        # "attack with nobody" and a few one-creature attacks): everyone, and everyone but the
+        # weakest bodies their crackback needs us to keep home, are scored before anything else.
+        seeds = [tuple(range(n))]
+        reserve = _crackback_reserve(
+            candidate_attackers, your_remaining_blockers, opponent_attackers_next_turn, your_life
+        )
+        if reserve is not None:
+            seeds.append(reserve)
+    for subset in _attack_order(candidate_attackers, seeds):
+        if seeds and best is not None and best.score >= 10_000.0:
+            break  # a big board's all-in (the first seed) is lethal through their best blocks
         # Wall-clock backstop for slow machines: the budget alone keeps a
         # normal board well under a second.
         if best is not None and time.monotonic() - started > deadline_s:
@@ -1110,8 +1209,8 @@ def _search_attacks(
         our_defenders = held_back + your_remaining_blockers
         # The crackback search may run twice (combat_strategy.guarded_block_plan
         # re-runs it once without the chumps the chump guard refuses).
-        cost = _block_search_cost(len(attacking), len(opponent_blockers)) + 2 * _block_search_cost(
-            len(opponent_attackers_next_turn), len(our_defenders)
+        cost = block_search_size(attacking, opponent_blockers, symmetric=True) + 2 * block_search_size(
+            opponent_attackers_next_turn, our_defenders
         )
         if cost > remaining:
             continue
@@ -1126,13 +1225,77 @@ def _search_attacks(
             **extra,
         )
         # Ties go to the lowest bitmask (no attack first), whatever order
-        # the subsets were searched in.
+        # the subsets were searched in. When every attack dies to their crackback anyway
+        # (-1000), the one dealing the most damage now is the better loss (board_assessment's
+        # ALL-IN: holding blockers back changes nothing).
         mask = sum(1 << i for i in subset)
-        if best is None or plan.score > best.score or (plan.score == best.score and mask < best_mask):
+        if best is None or _attack_rank(plan, mask) > _attack_rank(best, best_mask):
             best = plan
             best_mask = mask
 
     return best
+
+
+def _attack_rank(plan: AttackPlan, mask: int) -> tuple:
+    doomed = plan.score <= -1_000.0
+    return (plan.score, plan.damage_through if doomed else 0, -mask)
+
+
+def _crackback_reserve(
+    candidates: list[dict], remaining: list[dict], crackers: list[dict], your_life: int
+) -> tuple[int, ...] | None:
+    """Everyone attacks but the fewest weakest bodies (least power, then most toughness) whose
+    staying home keeps their crackback below our life; None when even keeping all home dies."""
+    from arenamcp.combat_strategy import guarded_block_plan
+
+    def crackback(home: list[dict]) -> int:
+        plan = guarded_block_plan(crackers, home, your_life) if crackers else None
+        return plan.damage_through if plan else sum(_pt(a)[0] for a in crackers)
+
+    order = sorted(range(len(candidates)), key=lambda i: (_pt(candidates[i])[0], -_pt(candidates[i])[1], i))
+    home: list[int] = []
+    for i in [None, *order]:
+        if i is not None:
+            home.append(i)
+        if crackback([candidates[j] for j in home] + list(remaining)) < your_life:
+            return tuple(j for j in range(len(candidates)) if j not in home)
+    return None
+
+
+# Distinct attacks up to swapping interchangeable attackers scored on a big board (#162).
+_MAX_CLASS_SUBSETS = 1024
+
+
+def _attack_order(candidates: list[dict], seeds: list[tuple[int, ...]]) -> Iterable[tuple[int, ...]]:
+    """``seeds`` first, then ``_attack_subsets``; past 8 attackers, every attack up to swapping
+    interchangeable bodies (how many of each class attack, ``symmetry_key``) when there are at
+    most ``_MAX_CLASS_SUBSETS`` of them, most attackers first."""
+    n = len(candidates)
+    seen: set[tuple[int, ...]] = set()
+
+    def fresh(subsets: Iterable[tuple[int, ...]]) -> Iterable[tuple[int, ...]]:
+        for subset in subsets:
+            subset = tuple(sorted(subset))
+            if subset not in seen:
+                seen.add(subset)
+                yield subset
+
+    yield from fresh(seeds)
+    groups: dict[tuple, list[int]] = {}
+    for index, card in enumerate(candidates):
+        groups.setdefault(symmetry_key(card), []).append(index)
+    classes = list(groups.values())
+    count = 1
+    for group in classes:
+        count *= len(group) + 1
+    if n <= 8 or count > _MAX_CLASS_SUBSETS:
+        yield from fresh(_attack_subsets(n))
+        return
+    yield from fresh([()])
+    vectors = product(*(range(len(group), -1, -1) for group in classes))
+    yield from fresh(
+        tuple(i for group, k in zip(classes, vector, strict=True) for i in group[:k]) for vector in vectors
+    )
 
 
 def evaluate_attack(
@@ -1161,7 +1324,7 @@ def evaluate_attack(
     """
     # Opponent blocks optimally — from THEIR perspective, lower
     # "damage_through" is good; we invert by using their life.
-    opp_block = _search_blocks(attacking, opponent_blockers, opponent_life)
+    opp_block = _search_blocks(attacking, opponent_blockers, opponent_life, symmetric=True)
     if opp_block is None:
         unblocked = [_resolve_attacker(a, []) for a in attacking]
         damage_through = sum(o.damage_through for o in unblocked)
@@ -1222,11 +1385,6 @@ def evaluate_attack(
     )
     return plan
 
-
-def _block_search_cost(n_attackers: int, n_blockers: int) -> int:
-    """Assignments optimal_blocks will score (greedy past its 50k cap)."""
-    options = (n_attackers + 1) ** n_blockers
-    return options if options <= 50_000 else n_attackers * n_blockers + 1
 
 
 def _attack_subsets(n: int) -> Iterable[tuple[int, ...]]:

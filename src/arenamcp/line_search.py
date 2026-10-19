@@ -31,6 +31,13 @@ raced as if it gained nothing).
 Scores are (class, timing, V): WIN 2 (sooner is better), ALIVE 1, DEAD 0
 (later is better), then V = u(life) - 0.6 opp life + material + 0.3 hand + a
 race term on the top leaves. The constants are hand-tuned (no learned model).
+Lines are ranked by ``Line.ranked``: the score, except that a distant win (on
+our third turn, T+2, which is greedy and blind to their new cards, or one
+finished by greedy rollout) ranks as an alive line valued with only the damage
+dealt on T (ledger #158, match be1a945f T10: "hold, lethal on T14" beat
+attacking them from 12 to 5). And when none of our creatures can block any of
+their creatures that threaten us (all fliers), holding back buys nothing: the
+posture is to attack (``_posture``).
 
 Pure and deterministic: no I/O, no LLM, nothing logged above DEBUG; it reads
 only planner-snapshot facts. The soft limit is a deterministic work budget
@@ -140,11 +147,20 @@ class Line:
     baseline: bool = False
     complete: bool = True  # False: finished by greedy rollout past the soft deadline
     aliases: frozenset = frozenset()  # keys of other T steps reaching the same board
+    # A distant or greedy-tail win (``distant_win``) valued as alive with only T's damage (#158).
+    distant_v: float | None = None
     _leaf: Any = field(default=None, repr=False, compare=False)
 
     @property
     def score(self) -> tuple[int, int, float]:
         return (self.cls, self.timing, self.v)
+
+    @property
+    def ranked(self) -> tuple[int, int, float]:
+        """The key lines are ranked by: ``score``, but a distant win ranks as alive (#158)."""
+        if self.distant_v is not None:
+            return (ALIVE, 0, self.distant_v)
+        return self.score
 
     @property
     def outcome(self) -> str:
@@ -255,8 +271,15 @@ def _deployment(line: Line) -> tuple[int, int, int, int]:
 
 
 def _order(line: Line) -> tuple:
-    """Sort key, higher is better: the score, the T step's deployment, then a stable text tiebreak."""
-    return (line.cls, line.timing, line.v, _deployment(line), tuple(-ord(c) for c in line.summary()))
+    """Sort key, higher is better: the ranked score, the T step's deployment, then a stable text
+    tiebreak."""
+    return (*line.ranked, _deployment(line), tuple(-ord(c) for c in line.summary()))
+
+
+def distant_win(node: Node) -> bool:
+    """A win the search can't vouch for: on our third turn (T+2, played greedily, their new cards
+    and tricks unmodelled) or later, or one finished by greedy rollout (ledger #158)."""
+    return node.win_at is not None and (node.win_at >= 3 or node.rolled)
 
 
 @dataclass
@@ -513,9 +536,28 @@ class _Search(Moves):
             self._race_memo[key] = found
         return found
 
+    def distant_value(self, node: Node) -> float | None:
+        """A distant win's value as an alive line that dealt only T's damage (``distant_win``):
+        the leaf's board and life, their life after our attack on T, the race term from there."""
+        if not distant_win(node):
+            return None
+        first = node.history[0] if node.history else None
+        opp_now = first.opp_life_after if first is not None and first.opp_life_after is not None else None
+        if opp_now is None:
+            opp_now = self.model.opp_life
+        if opp_now <= 0:
+            return None  # (not distant: T itself kills)
+        alive = dataclasses.replace(node, opp_life=opp_now, win_at=None, win_turn=None, overkill=0)
+        value = self.value(
+            alive.our_life, opp_now, alive.ours, alive.theirs + alive.returning, alive.hand, alive.walkers
+        )
+        race = 0.0 if self.past_soft() or self.truncated else self.race(alive)
+        return float(value + race)
+
     def line(self, node: Node, *, race: float = 0.0, baseline=False, aliases=frozenset()) -> Line:
         cls, timing, v = self.score(node)
         return Line(
+            distant_v=self.distant_value(node),
             steps=tuple(node.history),
             cls=cls,
             timing=timing,
@@ -566,7 +608,7 @@ class _Search(Moves):
                 _base, sources = self.sources(node, land)
                 for casts in self.cast_sets(node, sources, instant_only=instant_only):
                     keys = frozenset(self.play_keys(land, casts) | extra)
-                    value = self.choice_value(casts, node.theirs, self.gained_at_start(node))
+                    value = self.choice_value(casts, node.theirs, self.gained_at_start(node), node.ours)
                     pairs.append((value, block, node, land, casts, keys))
         pairs.sort(key=lambda pair: (-round(pair[0], 6), self._pair_text(pair)))
         covered: set = set()
@@ -714,7 +756,7 @@ class _Search(Moves):
         first_action: dict = {}
         for line in [baseline] + ranked:
             for key in line.first_actions:
-                if key not in first_action or line.score > first_action[key].score:
+                if key not in first_action or line.ranked > first_action[key].ranked:
                     first_action[key] = line
         exact_root = root_complete and not self.truncated
         # A T step's node has seen their first attack after T (or died to the one under way).
@@ -763,7 +805,7 @@ class _Search(Moves):
         """
 
         def close(a: Line, b: Line) -> bool:
-            return (a.cls, a.timing) == (b.cls, b.timing) and a.v - b.v < LINE_TOL
+            return a.ranked[:2] == b.ranked[:2] and a.ranked[2] - b.ranked[2] < LINE_TOL
 
         top = ranked[0] if ranked else baseline
         anchor = max(
@@ -771,11 +813,7 @@ class _Search(Moves):
         )
         if top.first_sig != anchor.first_sig and close(top, anchor):
             top = anchor
-        return (
-            baseline
-            if (top.cls, top.timing) < (baseline.cls, baseline.timing) or close(top, baseline)
-            else top
-        )
+        return baseline if top.ranked[:2] < baseline.ranked[:2] or close(top, baseline) else top
 
     @staticmethod
     def _content(group: _Group) -> tuple:
@@ -794,16 +832,50 @@ class _Search(Moves):
         if not attacking or not holding:
             return "either", "" if attacking else "no attack available"
         top, hold = max(attacking, key=_order), max(holding, key=_order)
-        if (top.cls, top.timing) != (hold.cls, hold.timing):
-            posture = "attack" if (top.cls, top.timing) > (hold.cls, hold.timing) else "hold"
-        elif abs(top.v - hold.v) >= POSTURE_MARGIN:
-            posture = "attack" if top.v > hold.v else "hold"
+        reason = f"attack with {', '.join(top.steps[0].attack)}: {top.outcome_text()}; hold: {hold.outcome_text()}"
+        unblockable = self._holding_worthless(top)
+        if unblockable and top.cls != DEAD and not (hold.ranked[0] == WIN and hold.ranked[:2] > top.ranked[:2]):
+            # Ledger #158 (be1a945f T10): their Lathliss and Ureni fly and nothing of ours blocks
+            # either; the creatures kept home only waited while the attack dealt 7.
+            return "attack", f"{reason}; holding back blocks nothing ({unblockable})"
+        if top.ranked[:2] != hold.ranked[:2]:
+            posture = "attack" if top.ranked[:2] > hold.ranked[:2] else "hold"
+        elif abs(top.ranked[2] - hold.ranked[2]) >= POSTURE_MARGIN:
+            posture = "attack" if top.ranked[2] > hold.ranked[2] else "hold"
         else:
             return "either", "attacking and holding end alike"
-        return (
-            posture,
-            f"attack with {', '.join(top.steps[0].attack)}: {top.outcome_text()}; hold: {hold.outcome_text()}",
-        )
+        return posture, reason
+
+    def _holding_worthless(self, top: Line) -> str:
+        """Why keeping creatures home buys nothing for their next attack, or ''.
+
+        Their creatures that threaten us (power 2 or more, able to attack) are
+        all ones no creature of ours can block (fliers against no flier or
+        reach, "can't be blocked"), and the attack ``top`` deals damage now.
+        """
+        from arenamcp.combat_keywords import can_be_blocked_by, has_combat_keyword
+
+        def blocks(attacker: dict, blocker: dict) -> bool:
+            if attacker["_unblockable"]:
+                return False
+            if has_combat_keyword(attacker, "flying") and not _reach_or_flying(blocker):
+                return False
+            return can_be_blocked_by(attacker, blocker)
+
+        model = self.model
+        step = top.steps[0] if top.steps else None
+        if step is None or step.opp_life_after is None or step.opp_life_after >= model.opp_life:
+            return ""
+        threats = [b for b in model.theirs if b["power"] >= 2 and b["_can_attack"]]
+        blockers = [b for b in model.ours if b["_can_block"]]
+        if not threats or not blockers:
+            return ""
+        try:
+            if any(blocks(a, b) for a in threats for b in blockers):
+                return ""
+        except Exception:
+            return ""
+        return f"none of ours can block {', '.join(sorted({a['name'] for a in threats}))}"
 
     def _dead_now(self, node: Node) -> LineSearchResult:
         line = self.line(node, baseline=True)
@@ -886,6 +958,11 @@ def action_key(option: Any, state: dict) -> ActionKey | None:
         return None
     if action in ("play", "playland"):
         return ("land", (frozenset(_land_colors(source)), _enters_tapped(source)))
+    if action == "cast" and str(meta.get("alternative") or "").lower() == "sneak":
+        # The Sneak cast after blocks (ledger #156): not the card's ordinary cast.
+        if zone == "command":
+            return ("sneak", _int(source.get("instance_id")) or 0)
+        return ("sneak", _hand_key(source, state)) if zone == "hand" else None
     if zone == "command":
         # Our commander, cast from the command zone: the search keys it by its own instance id.
         return ("cast", _int(source.get("instance_id")) or 0, None) if action == "cast" else None
