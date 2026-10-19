@@ -151,3 +151,11 @@ def test_a_planner_attack_that_fails_leaves_the_usual_safe_default(engine):
     engine._try_bridge_declare_attackers = lambda action: engine.declared.append(action) or None
     assert engine.watchdog_safe_default(combat_state()) == (True, "submitted the safe default")
     assert engine.declared[1:] == ["usual safe default"]
+
+
+def test_a_forced_attacker_leaves_the_usual_safe_default(engine):
+    forced = {**ATTACK_POLL, "attackers": [dict(entry) for entry in ATTACK_POLL["attackers"]]}
+    forced["attackers"][2]["mustAttack"] = True
+    engine._gre_bridge.get_pending_actions.return_value = forced
+    assert engine.watchdog_safe_default(combat_state()) == (True, "submitted the safe default")
+    assert engine.declared == ["usual safe default"]

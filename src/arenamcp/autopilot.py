@@ -2168,8 +2168,11 @@ class AutopilotEngine(
         from arenamcp.combat_targets import attack_candidates, recipient_key, recipient_label
 
         candidates = attack_candidates(state, poll) or []
-        if any(isinstance(entry, dict) and entry.get("selectedDamageRecipient") for entry in candidates):
-            return None
+        if any(
+            isinstance(entry, dict) and (entry.get("selectedDamageRecipient") or entry.get("mustAttack"))
+            for entry in candidates
+        ):
+            return None  # a selection in progress or a forced attacker: the usual default handles both
         noted = getattr(self, "_advised_attack", None)
         if noted is not None:
             at, match_id, turn, action = noted
@@ -4849,8 +4852,8 @@ class AutopilotEngine(
         from arenamcp.request_tracker import request_window
 
         turn = self._turn_number(game_state)
-        if getattr(self, "_wrap_up_announced_turn", None) != turn:
-            self._wrap_up_announced_turn = turn
+        if getattr(self, "_wrap_up_announced_turn", None) != (game_state.get("match_id"), turn):
+            self._wrap_up_announced_turn = (game_state.get("match_id"), turn)
             logger.warning(
                 "[CLOCK] wrap-up on turn %d: %s — no more optional plays; passing priority", turn, reason
             )
