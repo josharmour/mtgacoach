@@ -26,8 +26,9 @@ Conservative rules: no guard fires with lethal on board for us, when the best
 line wins this turn (posture 'lethal'), on a choice inside a winning line, on
 a pass, on a cast whose effect the search does not model
 (``line_search_moves.unmodelled_effect``: tokens it can't read, an aura, a
-pump, an attack trigger, player damage it has no face variant for; such a
-cast gets no '[LINE ...]' tag either), on the opponent's turn, with a
+pump, an attack trigger other than a fixed ping to players, player damage it
+has no face variant for; such a cast gets no '[LINE ...]' tag either), on the
+opponent's turn, with a
 non-empty stack (the modal source itself excepted), with an unknown-P/T
 creature, or on a truncated search; an override also has to be no worse under
 the +2/+0 trick proxy (``line_search.proxy_outcome``). ARENAMCP_LINE_SEARCH=0

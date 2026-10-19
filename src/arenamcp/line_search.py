@@ -14,16 +14,19 @@ outcome class or death/win timing, or by at least ``LINE_TOL`` in value.
 The opponent (``line_search_moves.ParanoidOpponent``) is paranoid but
 uninventive: if ANY of its attack policies kills us the line is dead there (a
 lethal attack is never filtered out); otherwise it takes the non-suicidal one
-worst for us. It deploys nothing, draws nothing and casts no tricks (v1); an
+worst for us. It deploys nothing, draws nothing and casts no tricks (v1), but
+plays a land each turn for its landfall creatures (since 2026-10-19); an
 unparsed or 'other' mode of a modal card is worth 0; no unknown card is ever
 invented. ``proxy_outcome`` replays a line with +2/+0 on their biggest attacker
 as a robustness check.
 
-Combat goes through ``board_assessment._combat`` (the combat solver's best
-blocks), so flying/reach, menace, trample, deathtouch and "can't be blocked"
-are the solver's, and so are its known gaps: lifelink is ignored, first strike
-counts on both sides, double-strike blockers and marked damage are not
-modelled.
+Combat goes through ``board_assessment._combat_life`` (the combat solver's
+best blocks), so flying/reach, menace, trample, deathtouch and "can't be
+blocked" are the solver's, and so are its known gaps: first strike counts on
+both sides, double-strike blockers and marked combat damage are not
+modelled. Lifelink is: attackers and blockers heal their side with the combat
+damage (since 2026-10-19, match 41753907: a 4/4 lifelink flier the lines
+raced as if it gained nothing).
 
 Scores are (class, timing, V): WIN 2 (sooner is better), ALIVE 1, DEAD 0
 (later is better), then V = u(life) - 0.6 opp life + material + 0.3 hand + a
@@ -70,6 +73,7 @@ from arenamcp.board_assessment import (
     _types,
     face_damage,
     life_loss,
+    lifelink_drain,
     search_hints,
 )
 from arenamcp.board_model import BoardModel, build_board_model
@@ -445,13 +449,16 @@ class _Search(Moves):
         found = self._race_memo.get(key)
         if found is None:
             open_blockers = [b for b in node.theirs if b["instance_id"] not in node.their_tapped]
+            # Each side's lifelink attacks heal it between the other side's attacks.
             ours, _ = _simulate_attacks(
                 list(node.ours), list(node.theirs), node.opp_life,
                 first_attackers=None, first_blockers=open_blockers, horizon=_RACE_HORIZON,
+                drain=lifelink_drain(list(node.theirs), list(node.ours), node.our_life),
             )  # fmt: skip
             theirs, _ = _simulate_attacks(
                 list(node.theirs), list(node.ours), node.our_life,
                 first_attackers=None, first_blockers=None, horizon=_RACE_HORIZON,
+                drain=lifelink_drain(list(node.ours), list(node.theirs), node.opp_life),
             )  # fmt: skip
             if ours is not None and (theirs is None or ours <= theirs):
                 found = _RACE / ours
@@ -560,7 +567,7 @@ class _Search(Moves):
             node.k, node.our_life, node.opp_life, ids_of(node.ours), ids_of(node.theirs), node.our_tapped,
             node.their_tapped, node.entered, node.hand, tuple(x.iid for x in node.lands),
             tuple(sorted(s.name for s in node.played)), len(node.rocks), ids_of(node.returning),
-            node.dead_at, node.win_at, node.overkill, node.block,
+            node.dead_at, node.win_at, node.overkill, node.block, node.walkers,
         )  # fmt: skip
 
     def _rank(self, group: _Group) -> tuple:
@@ -884,6 +891,11 @@ def proxy_outcome(result: LineSearchResult | None, line: Line | None) -> Line | 
             for var, target in casts:
                 if var.spell not in node.hand:
                     continue
+                if var.walker:  # burn at a planeswalker: the same one, at its loyalty in this replay
+                    found = next((w for w in node.walkers if w[0] == target["instance_id"]), None)
+                    if found is not None:
+                        playable.append((var, search.walker_body(*found)))
+                    continue
                 if target is not None:
                     same = [b for b in node.theirs if b["instance_id"] == target["instance_id"]]
                     target = (
@@ -894,7 +906,9 @@ def proxy_outcome(result: LineSearchResult | None, line: Line | None) -> Line | 
                 playable.append((var, target))
             mid = search.begin(node, land, tuple(playable))
             allowed = {i for _n, option in search.attack_choices(mid)[0] for i in option}
-            node = search.finish(mid, ("replay", tuple(i for i in ids if i in allowed)))
+            # A planeswalker attack keeps its split ("at:<walker>:<attackers>").
+            replay = step.walker_attack or "replay"
+            node = search.finish(mid, (replay, tuple(i for i in ids if i in allowed)))
         return search.line(search.rollout(node))
     except Exception:  # never let the robustness check break a decision
         logger.debug("proxy replay failed", exc_info=True)
@@ -1016,6 +1030,19 @@ def _evaluate_plan(result: LineSearchResult, steps: list[dict]) -> PlanEvaluatio
             )
             options = [t for t in options if t["instance_id"] not in taken]
             named = [t for t in options if aim and _plain(t["name"]) == _plain(aim)]
+            walker = next((w for w in node.walkers if aim and _plain(w[1]) == _plain(aim)), None)
+            burn = next((v for v in hs.walker_vars if v.mode == var.mode), None)
+            if walker is not None and burn is not None and not named:
+                casts.append((burn, search.walker_body(*walker)))  # "Lightning Strike (on Kaito)"
+                continue
+            if aim and not named and var.reach is not None:
+                # "Lightning Strike (on Dawnwing Marshal)" + "Burst Lightning (on Dawnwing Marshal)":
+                # a piece of a combined kill; the target dies once the pieces reach its toughness.
+                chip = next((c for c in hs.chips if c.mode == var.mode), None)
+                body = next((b for b in node.theirs if _plain(b["name"]) == _plain(aim)), None)
+                if chip is not None and body is not None and search.burn(chip, body, len(sources)):
+                    casts.append((chip, body))
+                    continue
             casts.append((var, (named or options or [None])[0]))
         mid = search.begin(node, land, tuple(casts))
         options, possible = search.attack_choices(mid)

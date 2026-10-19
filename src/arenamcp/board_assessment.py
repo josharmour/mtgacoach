@@ -29,10 +29,12 @@ asks before planning a turn:
   facts (with the search switched on, the pending check still applies).
 
 Everything is board-only and deliberately conservative. The opponent's hand,
-top-decks, combat tricks, lifelink, cost reductions, engines that add
-attackers (token makers) and anthem changes are NOT modelled; they are listed
-in ``unknowns`` instead of guessed. No LLM, no I/O; a typical board takes a
-few milliseconds.
+top-decks, combat tricks, cost reductions, engines that add attackers (token
+makers) and anthem changes are NOT modelled; they are listed in ``unknowns``
+instead of guessed. Lifelink is (``_combat_life``): a lifelink blocker's
+damage heals its side inside a clock, and a side's own lifelink attacks
+heal it between the other side's attacks (``_simulate_attacks``' drain). No
+LLM, no I/O; a typical board takes a few milliseconds.
 
 Example (2026-10-06 FRA game 1, our T12 at 11 life, no creatures, opponent
 with four creatures and 7 power): role ``control/stabilize``, their clock 2,
@@ -587,10 +589,37 @@ def _reach_or_flying(body: dict) -> bool:
     return has_combat_keyword(body, "flying") or has_combat_keyword(body, "reach")
 
 
+def _lifelink(body: dict) -> bool:
+    return has_combat_keyword(body, "lifelink")
+
+
+def _first_striker(body: dict) -> bool:
+    return has_combat_keyword(body, "first strike") or has_combat_keyword(body, "double strike")
+
+
 def _combat(attackers: list[dict], blockers: list[dict], life: int) -> tuple[int, set[int], set[int]]:
     """One combat with the defender's best blocks: (damage, dead attackers, dead blockers)."""
+    return _combat_life(attackers, blockers, life)[:3]
+
+
+def _combat_life(attackers: list[dict], blockers: list[dict], life: int, *, detail: bool = False) -> tuple:
+    """``_combat`` plus lifelink: (damage, dead attackers, dead blockers, attacker gain, defender gain).
+
+    ``detail``: a sixth item, each attacker's damage through ({instance id: damage}), and a
+    seventh, the ids of the blockers that blocked: an attack split between the player and a
+    planeswalker reads them (``line_search_moves``).
+
+    The attacking side gains what its lifelink attackers deal (to blockers and
+    through, ``combat_solver._resolve_attacker``); the defending side gains a
+    lifelink blocker's power, unless a first-striking attacker killed it
+    before it dealt damage (twice for a double-striking blocker whose attacker
+    survived). Both happen with the combat damage: the net life change is
+    what decides lethal. Before this (match 41753907, 2026-10-19 T7) every
+    line was blind to a 4/4 flying lifelink Dawnwing Marshal that gained the
+    opponent 29 life over the game.
+    """
     if not attackers:
-        return 0, set(), set()
+        return (0, set(), set(), 0, 0, {}, set()) if detail else (0, set(), set(), 0, 0)
     blockers = [b for b in blockers if b["_can_block"]]
     groups: dict[int, list[dict]] = {}
     if blockers:
@@ -610,17 +639,39 @@ def _combat(attackers: list[dict], blockers: list[dict], life: int) -> tuple[int
             if blocker_id in by_id:
                 groups.setdefault(attacker_id, []).append(by_id[blocker_id])
     damage, dead_attackers, dead_blockers = 0, set(), set()
+    attacker_gain = defender_gain = 0
+    through: dict[int, int] = {}
     for attacker in attackers:
         group = groups.get(attacker["instance_id"], [])
         outcome = _resolve_attacker(attacker, group)
         damage += outcome.damage_through
+        through[attacker["instance_id"]] = outcome.damage_through
+        attacker_gain += outcome.life_gained
         if group and outcome.attacker_died:
             dead_attackers.add(attacker["instance_id"])
         dead_blockers.update(dead["instance_id"] for dead in outcome.blockers_died)
-    return damage, dead_attackers, dead_blockers
+        for blocker in group:
+            if blocker["power"] <= 0 or not _lifelink(blocker):
+                continue
+            striker = _first_striker(attacker) and not _first_striker(blocker)
+            if striker and any(dead is blocker for dead in outcome.blockers_died):
+                continue  # killed in the first-strike step, before it dealt damage
+            twice = has_combat_keyword(blocker, "double strike") and not outcome.attacker_died
+            defender_gain += blocker["power"] * (2 if twice else 1)
+    if detail:
+        used = {b["instance_id"] for group in groups.values() for b in group}
+        return damage, dead_attackers, dead_blockers, attacker_gain, defender_gain, through, used
+    return damage, dead_attackers, dead_blockers, attacker_gain, defender_gain
 
 
 def _attack_round(attackers: list[dict], blockers: list[dict], life: int) -> tuple[int, set[int], set[int]]:
+    """``_attack_round_life`` without the lifelink gains."""
+    return _attack_round_life(attackers, blockers, life)[:3]
+
+
+def _attack_round_life(
+    attackers: list[dict], blockers: list[dict], life: int
+) -> tuple[int, set[int], set[int], int, int]:
     """The attacker's better of 'everyone attacks' and 'hold back what just dies'.
 
     Attacking with everything and letting the defender's best blocks answer it
@@ -630,15 +681,28 @@ def _attack_round(attackers: list[dict], blockers: list[dict], life: int) -> tup
     that gets nothing through and kills no blocker is no attack at all: nobody
     is sent to die for nothing (2026-10-08: the survivors of a full attack were
     re-blocked and killed one by one, "losing" creatures that never attacked).
+    Damage is counted net of what lifelink blockers heal the defender.
     """
-    full = _combat(attackers, blockers, life)
+    full = _combat_life(attackers, blockers, life)
     if not full[1]:
         return full
     survivors = [a for a in attackers if a["instance_id"] not in full[1]]
-    held = _combat(survivors, blockers, life) if survivors else (0, set(), set())
+    held = _combat_life(survivors, blockers, life) if survivors else (0, set(), set(), 0, 0)
     if held[0] <= 0 and not held[2]:
-        held = (0, set(), set())
-    return full if full[0] > held[0] else held
+        held = (0, set(), set(), 0, 0)
+    return full if full[0] - full[4] > held[0] - held[4] else held
+
+
+def lifelink_drain(attackers: list[dict], blockers: list[dict], life: int) -> int:
+    """Life the attacking side gains from its lifelink attackers in one ``_attack_round``.
+
+    The other side's clock adds it back between its own attacks
+    (``_simulate_attacks``' ``drain``). 0 without a lifelink attacker.
+    """
+    able = [a for a in attackers if a["_can_attack"]]
+    if not any(_lifelink(a) for a in able):
+        return 0
+    return _attack_round_life(able, blockers, life)[3]
 
 
 def _simulate_attacks(
@@ -649,6 +713,7 @@ def _simulate_attacks(
     first_attackers: list[dict] | None,
     first_blockers: list[dict] | None,
     horizon: int = _HORIZON,
+    drain: int = 0,
 ) -> tuple[int | None, list[int]]:
     """Attacks needed to kill the defender (None when the board stalls) and life after each
     of the first ``horizon`` attacks.
@@ -662,6 +727,12 @@ def _simulate_attacks(
     clock"). While creatures keep dying past the horizon — chump blocks, trades
     — the simulation goes on (at most ``_MAX_CLOCK`` attacks): a chump at the
     horizon is one attack of nothing, not "no clock".
+
+    Lifelink: a lifelink blocker heals the defender in the same combat, and
+    ``drain`` (``lifelink_drain`` of the defender's own attack) heals it
+    between two of these attacks, never before the first. An attack that only
+    keeps pace with what the defender heals is no progress: a 2-power clock
+    against a 4/4 lifelinker that drains 4 a turn is "no clock", not ten turns.
     """
     alive_att = list(attackers)
     alive_def = list(defenders)
@@ -673,19 +744,21 @@ def _simulate_attacks(
         else:
             able = [a for a in alive_att if a["_can_attack"]]
             blockers = list(alive_def)
-        damage, dead_att, dead_def = _attack_round(able, blockers, life)
-        life -= damage
+        damage, dead_att, dead_def, _gain, healed = _attack_round_life(able, blockers, life)
+        life -= damage - healed
         if index < horizon:
             lives.append(life)
         alive_att = [a for a in alive_att if a["instance_id"] not in dead_att]
         alive_def = [d for d in alive_def if d["instance_id"] not in dead_def]
         if life <= 0:
             return index + 1, lives
+        net = damage - healed - drain
         settled = not dead_att and not dead_def
-        if damage <= 0 and settled and index > 0:
+        if net <= 0 and settled and index > 0:
             return None, lives  # a stalled board repeats; no progress
-        if damage > 0 and settled and index + 1 >= horizon:
-            return min(_MAX_CLOCK, index + 1 + math.ceil(life / damage)), lives
+        if net > 0 and settled and index + 1 >= horizon:
+            return min(_MAX_CLOCK, index + 1 + math.ceil(life / net)), lives
+        life += drain
     return None, lives
 
 
@@ -1249,12 +1322,17 @@ def _clock_facts(model: Any) -> SimpleNamespace:
     our_attack_pending, their_attack_pending = model.our_attack_pending, model.their_attack_pending
     first_our_attackers = None if model.first_our_attackers is None else list(model.first_our_attackers)
     first_their_attackers = None if model.first_their_attackers is None else list(model.first_their_attackers)
+    # What each side's lifelink attackers heal it between the other side's attacks
+    # (match 41753907 T7: a 4/4 lifelink flier made a 2-power race "lethal on T9").
+    their_drain = lifelink_drain(theirs, ours, model.our_life)
+    our_drain = lifelink_drain(ours, theirs, model.opp_life)
     our_clock, our_lives = _simulate_attacks(
         ours,
         theirs,
         model.opp_life,
         first_attackers=first_our_attackers,
         first_blockers=list(model.untapped_theirs) if our_attack_pending else None,
+        drain=their_drain,
     )
     their_clock, their_lives = _simulate_attacks(
         theirs,
@@ -1263,6 +1341,7 @@ def _clock_facts(model: Any) -> SimpleNamespace:
         first_attackers=first_their_attackers,
         # On our turn, creatures that attacked stay tapped through theirs.
         first_blockers=list(model.our_first_blockers),
+        drain=our_drain,
     )
     # Their first attack with no blocks at all: when our best blocks stop none
     # of it, their clock is evasive and "hold blockers" is an empty lane
@@ -1611,6 +1690,7 @@ def _assess(state: dict) -> BoardAssessment | None:
         best_line=best,
         line_text=best_text,
         evasive_clock=bool(getattr(clocks, "evasive_clock", False)),
+        walkers=_their_walkers(battlefield, opponent),
         # "Only" claims force no role while a cast or pending effect they can't see could change them.
         only_survivor=bool(found and found.only_survivor) and not caveat,
         greedy_dies=bool(found and getattr(found, "greedy_dies", False)) and not caveat,
@@ -1686,6 +1766,19 @@ def _assess(state: dict) -> BoardAssessment | None:
     )
     result.elapsed_ms = (time.perf_counter() - started) * 1000
     return result
+
+
+def _their_walkers(battlefield: list[dict], opponent: int | None) -> str:
+    """'Kaito, Cunning Infiltrator (loyalty 4), ...' for the opponent's planeswalkers, '' without one."""
+    found = [
+        f"{_name(card)} (loyalty {loyal})"
+        for card in battlefield
+        if isinstance(card, dict)
+        and _controller(card) == opponent
+        and "planeswalker" in _types(card)
+        and (loyal := loyalty(card)) is not None
+    ]
+    return ", ".join(found)
 
 
 def _commander_facts(model: Any, lookahead: list[TurnProjection], search: Any) -> list[str]:
@@ -2093,6 +2186,58 @@ def _untargetable(body: dict) -> bool:
     return bool(re.search(r"(?m)^\s*(?:hexproof|shroud)\s*$", _text(body.get("_card") or body)))
 
 
+# "Lifelink, hexproof from instants" (Elenda, Saint of Dusk), "Protection from red": the
+# quality a spell must not have to target (hexproof) or to target and damage (protection) it.
+_PROTECTED_FROM = re.compile(r"\b(?P<kind>hexproof|protection) from (?P<what>[a-z ,]+)")
+
+
+def _spell_traits(card: dict) -> tuple[str, set[str] | None]:
+    """(type words, colours or None) of the spell a removal text belongs to.
+
+    A mode's or an enters trigger's text (no type line of its own) carries its
+    card's as ``_source_types`` / ``_source_colors`` (``line_search_moves``).
+    """
+    types = str(card.get("_source_types") or _types(card))
+    colors = card.get("_source_colors")
+    return types, (set(colors) if colors is not None else _body_colors(card))
+
+
+def _protected_from(body: dict, card: dict, *, targeted: bool = True) -> bool:
+    """The body has protection (or, for a ``targeted`` effect, hexproof) from a quality
+    ``card`` (the spell) has.
+
+    Match c36db3a3 (2026-10-19): Elenda, Saint of Dusk's "hexproof from
+    instants" read as targetable by an all-instant burn hand. A spell whose
+    type or colour is unknown counts as having none of them.
+    """
+    text = _text(body.get("_card") or body)
+    if " from " not in text:
+        return False
+    types, colors = _spell_traits(card)
+    for line in text.splitlines():
+        match = _PROTECTED_FROM.search(line)
+        if match is None or re.search(r"\b(?:have|has|gains?|gets?|as long as|if)\b", line[: match.start()]):
+            continue  # a grant to others, or a condition: not this body's printed keyword
+        if match.group("kind") == "hexproof" and not targeted:
+            continue
+        for what in re.findall(r"[a-z]+", match.group("what")):
+            if what == "everything":
+                return True
+            if what == "instants" and "instant" in types:
+                return True
+            if what == "sorceries" and "sorcery" in types:
+                return True
+            if colors is None:
+                continue
+            if what in _COLOR_WORDS and _COLOR_WORDS[what] in colors:
+                return True
+            if (what, len(colors)) in (("monocolored", 1), ("colorless", 0)) or (
+                what == "multicolored" and len(colors) > 1
+            ):
+                return True
+    return False
+
+
 _NO_WARD_PAYMENT = 99  # ward paid with life, a discard or a sacrifice: not modelled, never paid
 
 
@@ -2176,10 +2321,13 @@ def _kills(
     and attacking/blocking/tapped targets (legal only for ``attacking``
     bodies, i.e. during their attack). A fight needs a creature of ``ours``
     whose power reaches the target's toughness. Bounce removes anything it may
-    target.
+    target. Hexproof or protection from the spell's type or colour ("hexproof
+    from instants") stops it (``_protected_from``).
     """
     for clause in _removal_clauses(card):
         if not _legal_target(clause, body, attacking=attacking, ward_mana=ward_mana):
+            continue
+        if _protected_from(body, card, targeted=clause.targeted):
             continue
         if clause.kind in ("damage", "shrink"):
             if (
@@ -2199,6 +2347,28 @@ def _kills(
         else:
             return True  # bounce
     return False
+
+
+def burn_damage(card: dict, body: dict, *, ward_mana: int = 0) -> int:
+    """Damage the card's targeted damage text can legally deal this opposing creature (0: none).
+
+    The piece of a combined kill (``line_search_moves``: Lightning Strike +
+    Burst Lightning on a 4/4, match 41753907 T7): the same target rules as
+    ``_kills`` (hexproof, ward, protection, stats, colours), and 0 for an
+    indestructible body, which damage never kills. "Each creature" damage is
+    not one (it targets nothing).
+    """
+    if has_combat_keyword(body, "indestructible"):
+        return 0
+    best = 0
+    for clause in _removal_clauses(card):
+        if clause.kind != "damage" or not clause.targeted or not clause.limit or clause.limit <= best:
+            continue
+        if _legal_target(clause, body, attacking=False, ward_mana=ward_mana) and not _protected_from(
+            body, card
+        ):
+            best = clause.limit
+    return best
 
 
 def _schedule(
@@ -2280,8 +2450,8 @@ def _project(
     now_life: int | None = None
     if their_attack_pending:
         able = [a for a in (first_their_attackers or []) if a["_can_attack"]]
-        damage, dead_att, dead_def = _attack_round(able, blockers_first, life)
-        life -= damage
+        damage, dead_att, dead_def, _gain, healed = _attack_round_life(able, blockers_first, life)
+        life -= damage - healed  # our lifelink blockers heal us
         attacks += 1
         now_life = life
         enemy = [e for e in enemy if e["instance_id"] not in dead_att]
@@ -2309,8 +2479,8 @@ def _project(
         life_after = None
         if dead_in is None:
             able = [a for a in enemy if a["_can_attack"]]
-            damage, dead_att, dead_def = _attack_round(able, blockers, life)
-            life -= damage
+            damage, dead_att, dead_def, _gain, healed = _attack_round_life(able, blockers, life)
+            life -= damage - healed
             attacks += 1
             life_after = life
             enemy = [e for e in enemy if e["instance_id"] not in dead_att] + returning
@@ -2362,6 +2532,7 @@ def _role(
     greedy_dies: bool = False,
     caveat: str = "",
     evasive_clock: bool = False,
+    walkers: str = "",
 ) -> tuple[str, str]:
     """Who's the beatdown: lethal and survival first, then fast clocks, then board/cards/curve.
 
@@ -2382,6 +2553,8 @@ def _role(
     and the opponent-lethal reason calls the line the best modelled one.
     """
     board = f"{ours} vs {theirs} creatures, {our_power} vs {their_power} power"
+    if walkers:  # a51dea64 (2026-10-19): "1 vs 0 creatures" with Kaito and Ajani Resolute out
+        board += f", their planeswalkers {walkers}"
 
     def fast(clock: int | None) -> bool:
         return clock is not None and clock <= _HORIZON
@@ -2429,11 +2602,23 @@ def _role(
             else " and nothing castable stops it"
         )
         return ROLE_CONTROL, f"dead in {dead_in} turns{after} ({board}) — stabilize: block, remove, gain life"
+    # "Race it or remove it" only while we have a clock to race with (2026-10-19 10:24:18: "race
+    # it" with our clock none).
+    answer = "race it or remove it" if our_clock is not None else "remove it"
+    pressure = _line_pressure(best_line, our_life=our_life, opp_life=opp_life, race_term=race_term)
     if race == "behind" and fast(their_clock):
+        if pressure is not None and our_life > opp_life:
+            # The board clock counts creatures on the battlefield only: a hasty creature we
+            # recast each turn and face burn are the line's (2026-10-19 10:31:19, 20 vs 7 life:
+            # "DEFENDER — their clock 5 vs ours none" while the line put them at 1).
+            return ROLE_AGGRESSOR, (
+                f"their clock {their_clock} vs ours {text(our_clock)} on board ({board}), but at {our_life} vs "
+                f"{opp_life} life the best line attacks for {pressure[0]} by T+2 while taking {pressure[1]}"
+            )
         if evasive_clock:
             return ROLE_RACE, (
                 f"their clock {their_clock} vs ours {text(our_clock)} ({board}) is evasive — our blockers stop "
-                "none of it: race it or remove it, holding creatures back changes nothing"
+                f"none of it: {answer}, holding creatures back changes nothing"
             )
         return ROLE_DEFENDER, (
             f"their clock {their_clock} vs ours {text(our_clock)} ({board}) — behind: block, trade, deploy bodies"
@@ -2465,7 +2650,6 @@ def _role(
         curve = f" (avg MV {deck_curve:.1f})" if deck_curve is not None else ""
         return ROLE_DEFENDER, f"empty boards{curve} — develop on curve, trade early"
     slow = f"slow clocks (ours {text(our_clock)}, theirs {text(their_clock)}; {board})"
-    pressure = _line_pressure(best_line, our_life=our_life, opp_life=opp_life, race_term=race_term)
     if pressure is not None:
         return (
             ROLE_AGGRESSOR,
@@ -2479,7 +2663,7 @@ def _role(
         return ROLE_AGGRESSOR, f"{slow} — we're slightly ahead: keep pressure, add evasion"
     if race == "behind" or their_power > our_power:
         if evasive_clock and race == "behind":
-            return ROLE_RACE, f"{slow} — their damage is evasive, blockers stop none of it: race or remove it"
+            return ROLE_RACE, f"{slow} — their damage is evasive, blockers stop none of it: {answer}"
         return ROLE_DEFENDER, f"{slow} — hold blockers, develop bigger threats"
     return ROLE_RACE, f"{slow} — find evasion or removal to break the stall"
 
