@@ -64,3 +64,23 @@ def test_no_sneak_all_in_when_the_line_is_not_lethal():
     state["players"][0]["life_total"] = 60
     state["command"] = []  # no Leonardo to Sneak
     assert _BridgeSubmitMixin._all_in_attack_action(None, state, []) is None
+
+
+def test_the_losing_attack_guard_keeps_the_attack_a_lethal_sneak_follows(monkeypatch):
+    """At 16:20:41 and 16:21:51 the model planned the swing ("attackers 20 + Sneak Leonardo,
+    Big Brother 14 against their 21 life") and this guard held all fifteen attackers one by
+    one: each alone fed Thalia, the Survivor 3/4 lifelink."""
+    from tests.test_combat_guards_20261019 import STRATEGY, lyra_board
+
+    from arenamcp.combat_strategy import losing_attackers
+
+    assert set(losing_attackers(lyra_board(), [368], strategy_text=STRATEGY)) == {368}
+    calls = []
+
+    def lethal_hold(state, *, declare_step=False):
+        calls.append(declare_step)
+        return object()
+
+    monkeypatch.setattr(sneak, "sneak_main_hold", lethal_hold)
+    assert losing_attackers(lyra_board(), [368], strategy_text=STRATEGY) == {}
+    assert calls == [True]
