@@ -161,6 +161,9 @@ class _DraftEventMixin:
             status_fn=status,
             speak_fn=lambda text: self.speak_advice(text, blocking=False),
             narrate_fn=self._narrate_draft_pick,
+            narrate_first_fn=lambda: bool(
+                getattr(self, "settings", None) and self.settings.get("draft_narrate_before_pick", False)
+            ),
             commentary_fn=lambda: bool(
                 getattr(self, "settings", None) and self.settings.get("draft_commentary", True)
             ),

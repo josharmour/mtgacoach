@@ -50,6 +50,10 @@ DEFAULTS = {
     # Draft autoplay explains each pick and where the draft is heading;
     # off = just "Taking <card>." (Tools > Draft Pick Commentary).
     "draft_commentary": True,
+    # Explain each pick before confirming it (selected, spoken, then confirmed;
+    # for viewers). Off: confirm at once and explain while the next pack loads,
+    # so a slow voice never lets Arena's clock or a click overtake the pick.
+    "draft_narrate_before_pick": False,
     # Draft strategy research also reads published draft guides and set reviews
     # (set_research.py) before a set's first draft; off = local only (17lands
     # data, card rules, model synthesis). Tools > Online Draft Research.

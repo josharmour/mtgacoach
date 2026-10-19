@@ -1402,3 +1402,14 @@ Fixes:
   a required target with none legal cancels when Arena allows it.
 - Verify: tests/test_losing_attack_guard.py (tetsuko board), test_llm_down_fallback.py
   (no-target requests).
+
+## 2026-10-18 — Draft picks are confirmed first and explained after
+
+- Live QuickDraft_FRA on Linux/Proton (the BepInEx bridge, reflect-1): with the
+  2026-10-07 order (select, speak, beat, confirm), "P3p6/P3p12 moved on while
+  narrating" — Arena took the pick before the coach finished talking, and the
+  user asked for the pick to be confirmed at once and spoken as the next pack
+  loads. Decision: confirm immediately (`submit_draft_pick`) and say "Taking X:
+  why" without blocking, which is the path low pick clocks already used. The
+  select-explain-confirm order stays available for viewers behind the
+  `draft_narrate_before_pick` setting (off by default).

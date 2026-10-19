@@ -353,3 +353,20 @@ def test_confirm_reports_a_press_that_did_not_draft():
     w, _chosen = selection_world(selected={300, 301}, confirm_works=False)
     result = MacBridgeAdapter(w.send).handle({"action": "confirm_draft_pick", "cards": CARDS})
     assert not result["ok"] and "did not draft" in result["error"]
+
+
+def test_default_confirms_at_once_and_explains_as_the_next_pack_loads(primer):
+    """2026-10-18 (Linux/Proton): with the explanation spoken first, Arena moved on
+    before the confirm ("P3p12 moved on while narrating"). Off by default now:
+    the pick is confirmed straight away and explained afterwards, never blocking."""
+    w = world(primer, narrate_first_fn=lambda: False)
+    w.driver._step()
+    assert actions(w) == ["get_screen", "get_draft_state", "submit_draft_pick"]
+    assert w.clock.now == 1000.0  # nothing waited on the voice
+    assert len(w.spoken) == 1 and w.spoken[0].startswith("Taking Blue Ace: ")
+
+
+def test_narrating_before_the_pick_is_an_opt_in_setting():
+    from arenamcp.settings import DEFAULTS
+
+    assert DEFAULTS["draft_narrate_before_pick"] is False

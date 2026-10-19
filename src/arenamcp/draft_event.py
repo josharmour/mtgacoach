@@ -145,6 +145,7 @@ class DraftEventDriver:
         commentary_fn: Callable[[], bool] = lambda: True,
         queue_fn: Callable[[], bool] = lambda: True,
         narrate_fn: Callable[[str, Callable[[], bool]], bool] | None = None,
+        narrate_first_fn: Callable[[], bool] = lambda: True,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -167,6 +168,10 @@ class DraftEventDriver:
         # narrate_fn(line, cancelled) speaks a pick's explanation and returns once
         # it has been heard (or cancelled() turned true); the pick is confirmed after.
         self._narrate_fn = narrate_fn
+        # Whether to explain a pick before confirming it (setting
+        # draft_narrate_before_pick); off = confirm at once, explain as the next
+        # pack loads, so Arena never moves on while the coach is still talking.
+        self._narrate_first_fn = narrate_first_fn
         self._clock = clock
         self._sleep = sleep
         self._narrator = DraftNarrator()
@@ -440,9 +445,15 @@ class DraftEventDriver:
         except Exception:
             return False
 
+    def _narrate_first(self) -> bool:
+        try:
+            return bool(self._narrate_first_fn())
+        except Exception:
+            return False
+
     def _narration_deadline(self, seconds: Any, read_at: float) -> float | None:
         """When a narrated pick must be confirmed by, or None to pick first and explain after."""
-        if self._narrate_fn is None or not self._commentary_on():
+        if self._narrate_fn is None or not self._commentary_on() or not self._narrate_first():
             return None
         now = self._clock()
         deadline = now + PICK_NARRATION_MAX_S
