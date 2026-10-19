@@ -227,6 +227,33 @@ class FirstTokenTimeout(TimeoutError):
     """No reasoning or content token arrived within ``first_token_timeout_s``."""
 
 
+# The first token waits for the whole prompt's prefill, ~1-1.5K tokens/s on the shared GPUs
+# (ledger #182, 2026-10-19 standalone.log: 11.6K tokens had their first token at 7.87 s at
+# 15:47:09; 38K characters got none within 8.0 s at 15:48:58, both decision legs). A fixed
+# first-token limit is a saturation detector for ordinary prompts; a big prompt gets
+# ``FIRST_TOKEN_S_PER_1K`` more per 1K tokens above ``FIRST_TOKEN_FREE_TOKENS``, up to
+# ``FIRST_TOKEN_CAP_S``. Tokens are estimated from characters (GLM-5.3 on these prompts:
+# 66,090 chars -> 19,593 tokens, 54,464 -> 15,827, 38,263 -> 10,009).
+FIRST_TOKEN_BASE_S = 8.0
+FIRST_TOKEN_FREE_TOKENS = 6000
+FIRST_TOKEN_S_PER_1K = 0.5
+FIRST_TOKEN_CAP_S = 15.0
+CHARS_PER_TOKEN = 3.4
+
+
+def estimated_tokens(chars: int) -> int:
+    """Input tokens for a prompt of ``chars`` characters (GLM-5.3's ratio on game prompts)."""
+    return int(max(0, chars) / CHARS_PER_TOKEN)
+
+
+def first_token_budget(base_s: float, input_chars: int) -> float:
+    """``base_s``, raised for a big prompt: 8 s + 0.5 s per 1K estimated input tokens above 6K,
+    at most ``FIRST_TOKEN_CAP_S`` (never below ``base_s``)."""
+    extra = max(0, estimated_tokens(input_chars) - FIRST_TOKEN_FREE_TOKENS) / 1000.0
+    scaled = min(FIRST_TOKEN_CAP_S, FIRST_TOKEN_BASE_S + FIRST_TOKEN_S_PER_1K * extra)
+    return max(float(base_s), scaled)
+
+
 class StreamStalled(TimeoutError):
     """A stream that had sent its first token sent nothing for ``STREAM_STALL_S``."""
 
