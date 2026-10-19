@@ -48,6 +48,8 @@ RATE_LIMIT_S = 180.0
 CHECK_INTERVAL_S = 30.0
 # The desktop answers a request with prepare_engine_reload within milliseconds.
 ANSWER_TIMEOUT_S = 20.0
+# Longest that navigation waits for the match's records before a pending reload (#190).
+WORK_HOLD_S = 120.0
 _GIT_TIMEOUT_S = 10.0
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off"})
@@ -62,6 +64,17 @@ _BUSY_THREADS = (
     ("debug-report", "a bug report is being saved"),
     ("bug-report", "a bug report is being saved"),
     ("autopilot-stuck-screenshot", "an autopilot bug capture is saving its screenshot"),
+)
+# Blockers that end by themselves within the window between matches: navigation waits for them
+# while a reload is pending (#190). Navigation, a paused autopilot and the rate limit do not.
+_WORK_BLOCKERS = frozenset(
+    {
+        *(why for _prefix, why in _BUSY_THREADS),
+        "an auto-concede is in flight",
+        "an autopilot bug capture is recording",
+        "the game end is not recorded yet",
+        "post-match analysis is running",
+    }
 )
 
 
@@ -358,7 +371,7 @@ class _AutoReloadMixin:
         """
         requested = getattr(self, "_auto_reload_requested_at", 0.0)
         if not requested:
-            return False
+            return self._auto_reload_work_holds(state)
         if getattr(self, "_engine_reload_preparing", False):
             return True
         waited = time.monotonic() - requested
@@ -372,3 +385,41 @@ class _AutoReloadMixin:
             )
             return False
         return not self._auto_reload_between_matches(state)
+
+
+    def _auto_reload_work_holds(self, state: dict) -> bool:
+        """A change found between matches holds navigation while the match's records are written.
+
+        #190 (2026-10-19 16:26:39): the change waited on the advice score for half a minute
+        while auto-queue went on and joined the next queue, so the engine played another match
+        on the old code. Navigation now waits for that work (at most ``WORK_HOLD_S``) and the
+        request goes out as soon as it ends.
+        """
+        if getattr(self, "_auto_reload_baseline", None) is None:
+            return False
+        if getattr(self, "_auto_reload_change", None) is None:
+            return False
+        if self._auto_reload_between_matches(state):
+            self._auto_reload_work_hold_since = 0.0
+            return False
+        blocker = self._auto_reload_blocker()
+        if not blocker:
+            return self._maybe_request_auto_reload(state)
+        if blocker not in _WORK_BLOCKERS:
+            return False
+        now = time.monotonic()
+        since = getattr(self, "_auto_reload_work_hold_since", 0.0)
+        if not since:
+            self._auto_reload_work_hold_since = since = now
+            logger.info("Auto-queue navigation waits for the pending engine reload: %s", blocker)
+        if now - since > WORK_HOLD_S:
+            if not getattr(self, "_auto_reload_work_hold_expired", False):
+                self._auto_reload_work_hold_expired = True
+                logger.warning(
+                    "Auto-queue navigation stops waiting for the engine reload after %.0fs: %s",
+                    now - since,
+                    blocker,
+                )
+            return False
+        self._maybe_request_auto_reload(state)  # logs the blocker once
+        return True
