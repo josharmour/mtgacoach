@@ -681,6 +681,56 @@ def planeswalker_state_facts(walker: dict) -> dict[str, Any]:
     return facts
 
 
+# Its own "when this dies" ability: "When this creature dies, ...", "When Callous Inspector dies, ...".
+_OWN_DEATH_TRIGGER = re.compile(
+    r"^when(?:ever)? (?P<who>this creature|this permanent|this token|this|it|~|cardname|[^,.]+?) "
+    r"(?:dies|is put into a graveyard from the battlefield),\s*(?P<effect>.+)$"
+)
+# What a death trigger gives its controller (an effect only on them, like "deals 1 damage to you",
+# gives nothing).
+_DEATH_BENEFIT = re.compile(
+    r"\b(?:create|creates|investigate|draws?|return|returns|search|scry|surveil|amass|proliferate"
+    r"|connive|mill)\b"
+    r"|\byou gain \d+ life\b|\bput (?:a|an|one|two|three|\w+) [^.]*?counters? on\b"
+    r"|\bdeals? (?:\d+|x) damage to (?:any target|target|each (?:opponent|other creature|creature)"
+    r"|that player|defending player)\b"
+    r"|\b(?:each opponent|target opponent|target player) (?:loses|discards|sacrifices)\b"
+    r"|\b(?:destroy|exile|tap) target\b"
+)
+_DEATH_KEYWORDS = re.compile(r"\b(?:undying|persist|afterlife)\b")
+
+
+def death_trigger_benefit(card: dict) -> str:
+    """The card's own "when this dies" ability when it gives its controller something, else "".
+
+    #126 (2026-10-19 13:14:15): the line search wanted Burst Lightning on a
+    1/1 Callous Inspector ("When this creature dies, it deals 1 damage to
+    you. Create a Clue token."); the model had sent it face because killing
+    the Inspector "only feeds its death trigger and gives a Clue". The line
+    search does not model death triggers, so its preference for that kill
+    misses what the kill gives back. Reminder text is ignored; a trigger
+    that only hurts its controller is no benefit.
+    """
+    text = re.sub(r"<[^>]*>", "", str(card.get("oracle_text") or "")).lower()
+    text = re.sub(r"\([^()]*\)", "", text)
+    name = str(card.get("name") or "").lower()
+    for line in text.splitlines():
+        line = line.strip()
+        if _DEATH_KEYWORDS.search(line):
+            return line
+        found = _OWN_DEATH_TRIGGER.match(line)
+        if found is None:
+            continue
+        who = found.group("who")
+        if who not in ("this creature", "this permanent", "this token", "this", "it", "~", "cardname") and (
+            not name or who not in (name, name.split(",")[0])
+        ):
+            continue  # "When enchanted creature dies", "When another creature dies": not its own
+        if _DEATH_BENEFIT.search(found.group("effect")):
+            return line
+    return ""
+
+
 def damage_removal_kills_nothing(card: dict, state: dict) -> str:
     """Withhold fixed-damage removal when no opposing target would die.
 

@@ -5485,6 +5485,44 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         if life is None or life <= parsed[0] or _lethal_this_turn(game_state) is not False:
             return chosen
+        # #126 (2026-10-19 13:14:15): the line wanted Burst Lightning on a 1/1 Callous Inspector; the
+        # model went face because the kill "only feeds its death trigger and gives a Clue". The line
+        # search does not model death triggers: when the target has one that pays its controller,
+        # the model's face pick stands.
+        from arenamcp.play_safety import death_trigger_benefit
+
+        line_card = next(
+            (
+                card
+                for card in game_state.get("battlefield", []) or []
+                if f"tgt:{_as_int(card.get('instance_id'))}" == line_option
+            ),
+            {},
+        )
+        trigger = death_trigger_benefit(line_card)
+        if trigger:
+            said = self._last_decision_reasoning or ""
+            cited = bool(re.search(r"\bdeath\b|\bdies\b|\bclue\b|\btoken\b", said, re.I))
+            logger.warning(
+                "Not retargeting: the searched line aims %s at %s, but its death trigger (%s) gives its "
+                "controller something the line search does not model; keeping %s%s [model: %s]",
+                intent["card"],
+                intent["line_target"],
+                trigger[:120],
+                chosen,
+                " (the model cited it)" if cited else "",
+                said[:160],
+            )
+            trace = getattr(self, "_last_decision_trace", None)
+            if isinstance(trace, dict):
+                trace["line_over_face_deferred"] = {
+                    "model": chosen,
+                    "line": line_option,
+                    "card": intent["card"],
+                    "death_trigger": trigger[:200],
+                    "model_cited": cited,
+                }
+            return chosen
         reason = (
             f"The searched line aims {intent['card']} at {intent['line_target']}; {parsed[0]} damage to the "
             f"opponent's face is not lethal (they are at {life})."
