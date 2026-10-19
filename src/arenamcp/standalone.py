@@ -3035,6 +3035,12 @@ class StandaloneCoach(
                                     plan = self._autopilot._planner.plan_actions(
                                         curr_state, trigger, legal_actions, decision_context
                                     )
+                                    # The decision watchdog declares this attack
+                                    # if it has to answer the request moments
+                                    # from now (#67, 2026-10-19 11:14:39).
+                                    note_plan = getattr(self._autopilot, "note_advised_plan", None)
+                                    if callable(note_plan):
+                                        note_plan(plan, curr_state)
                                     advice = plan.spoken_actions()
                                 if advice and advice.strip().lower().rstrip(".").startswith(
                                     "no actionable play"
