@@ -8,15 +8,22 @@ The loop detects three boundaries: the parser's game-end event, a match id
 change and a turn-number drop. A new match or game bumps ``_match_number``,
 clears the advice history and the deck strategy; a game end alone stages the
 post-match analysis and leaves them for the next boundary.
+
+Every iteration also syncs the sidebar's plan card from its snapshot, so the
+outlook follows the board even when every trigger is quiet or dropped.
 """
 
 from __future__ import annotations
 
 import threading
+from copy import deepcopy
 
 import pytest
+from tests.strategic_states import G1_T8
 
 from arenamcp import standalone
+from arenamcp.game_plan import GamePlanManager
+from arenamcp.plan_card import PlanCard
 from arenamcp.standalone_tempo import _TempoTracker
 
 
@@ -338,3 +345,131 @@ def test_autopilot_repolls_after_accept_before_handling_search(monkeypatch, serv
         ("Search Library", "decision_required"),
     ]
     assert coach._coach.calls == []
+
+
+# ---------------------------------------------------------------------------
+# The plan card follows the board on the opponent's turn
+# ---------------------------------------------------------------------------
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class PlanCardUI(StubUI):
+    """StubUI plus the desktop's game_plan hook; records (clock time, payload)."""
+
+    def __init__(self, clock: Clock) -> None:
+        super().__init__()
+        self._clock = clock
+        self.game_plans: list[tuple[float, dict]] = []
+
+    def game_plan(self, payload: dict) -> None:
+        self.game_plans.append((round(self._clock(), 3), payload))
+
+
+class DroppingAutopilot:
+    """Drives the match and drops every trigger ("bridge connected but idle — no decision exists")."""
+
+    requires_desktop_poll = False
+
+    def __init__(self) -> None:
+        self.triggers: list[str] = []
+
+    def is_window_given_up(self, _state) -> bool:
+        return False
+
+    def process_trigger(self, _snapshot, trigger) -> bool:
+        self.triggers.append(trigger)
+        return True
+
+
+class NoModelBackend:
+    def complete(self, *args, **kwargs):
+        raise AssertionError("the plan card makes no model call")
+
+
+def opponent_turn() -> dict:
+    """G1_T8 on the opponent's turn 9: they have a clock of 4 on our empty board."""
+    state = deepcopy(G1_T8)
+    state["turn"].update(turn_number=9, active_player=2, priority_player=2)
+    return state
+
+
+def pump_cadet(state: dict) -> None:
+    """Their Cadet becomes 16/16 (2026-10-18: a land drop doubled Mossborn Hydra to 16/16)."""
+    for card in state["battlefield"]:
+        if card["instance_id"] == 244:
+            card.update(power=16, toughness=16)
+
+
+def plan_card_loop(*, step_s: float) -> standalone.StandaloneCoach:
+    """The autopilot drives the opponent's turn and every trigger is quiet or dropped.
+
+    The injected clock moves ``step_s`` at the top of each iteration.
+    """
+    coach = make_loop_coach(state=opponent_turn(), triggers=["stack_spell_opponent"])
+    # Its background thread's sleeps would end run_loop's iterations early.
+    coach._enable_replay_recording = lambda: None  # type: ignore[method-assign]
+    clock = Clock()
+    coach.ui = PlanCardUI(clock)
+    coach._autopilot_enabled = True
+    coach._autopilot = DroppingAutopilot()
+    coach._coach._game_plan_mgr = GamePlanManager(NoModelBackend())
+    coach._plan_card = PlanCard(coach.ui.game_plan, clock=clock)
+
+    def tick() -> None:
+        clock.now += step_s
+
+    coach._mcp.poll_hooks.append(tick)
+    return coach
+
+
+def test_opponent_turn_board_change_repaints_the_outlook_with_every_trigger_dropped(
+    monkeypatch, server_game_state
+):
+    """2026-10-18 match 02fc3a1d: the board said "dead in 2 turns" at 18:28:07 and
+    the card kept "AGGRESSOR, lethal on T14" until the autopilot planned blocks at
+    18:28:30; every trigger in their turn was quiet."""
+    coach = plan_card_loop(step_s=0.6)
+    on_poll(coach, 2, pump_cadet)
+
+    run_loop(monkeypatch, coach, iterations=3)
+
+    # Iteration 1 paints the board, iteration 2 the pumped one, and iteration
+    # 3's unchanged board is not sent again.
+    assert [at for at, _payload in coach.ui.game_plans] == [100.6, 101.2]
+    before, after = (payload for _at, payload in coach.ui.game_plans)
+    assert before["facts"]["role"] == "defender" and before["facts"]["their_clock"] == 4
+    assert after["facts"]["role"] == "control/stabilize" and after["facts"]["their_clock"] == 2
+    assert "DEAD IN 2 TURNS UNLESS WE STABILIZE" in after["facts"]["flags"]
+    assert after["outlook"]["pct"] < before["outlook"]["pct"]
+    assert before["source"] == after["source"] == "autopilot"
+    # Nothing else painted it: no advice call, no speech, no autopilot plan.
+    assert coach._coach.calls == [] and coach.speak_advice_calls == []
+
+
+def test_unchanged_board_sends_the_plan_card_once(monkeypatch, server_game_state):
+    coach = plan_card_loop(step_s=0.6)
+
+    run_loop(monkeypatch, coach, iterations=6)
+
+    assert len(coach.ui.game_plans) == 1
+
+
+def test_board_change_inside_the_sync_interval_is_shown_by_the_next_sync(monkeypatch, server_game_state):
+    coach = plan_card_loop(step_s=0.2)
+    on_poll(coach, 2, pump_cadet)
+
+    run_loop(monkeypatch, coach, iterations=4)
+
+    # Pumped at 100.4, 0.2 s after the first paint: the syncs at 100.4 and
+    # 100.6 are throttled, the one at 100.8 shows it.
+    assert [(at, payload["facts"]["role"]) for at, payload in coach.ui.game_plans] == [
+        (100.2, "defender"),
+        (100.8, "control/stabilize"),
+    ]

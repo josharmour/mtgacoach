@@ -136,7 +136,9 @@ class AutopilotEngine(
         self._given_up_semantics: dict[str, Any] | None = None
         self._ui_turn_plan_fn = ui_turn_plan_fn
         self._ui_game_plan_fn = ui_game_plan_fn
-        self._last_emitted_game_plan: dict[str, Any] | None = None
+        # The sidebar plan card's emitter (arenamcp.plan_card.PlanCard); the
+        # standalone coach shares its own so the loop and this engine dedupe together.
+        self._plan_card: Any | None = None
         # Optional callback to record autopilot-driven decisions into the
         # app's advice_history. Set by standalone after construction.
         self._advice_recorder: Any | None = None
@@ -348,19 +350,14 @@ class AutopilotEngine(
         # Structured plan + current board facts (role, clocks, lookahead) →
         # UI strategy card. Independent of TTS wiring and deduped on payload
         # so the card only repaints when the plan or the facts change.
-        if self._ui_game_plan_fn is not None:
-            try:
-                payload_fn = getattr(self._game_plan_mgr, "ui_payload", None)
-                payload = payload_fn(game_state) if callable(payload_fn) else None
-                if not isinstance(payload, dict):
-                    plan = self._game_plan_mgr.current
-                    payload = dict(plan.as_payload()) if plan else {}
-                payload = dict(payload, source="autopilot") if payload else {}
-                if payload != self._last_emitted_game_plan:
-                    self._last_emitted_game_plan = payload
-                    self._ui_game_plan_fn(payload)
-            except Exception as e:
-                logger.debug("game-plan UI payload failed: %s", e)
+        card = getattr(self, "_plan_card", None)
+        if card is None:
+            if self._ui_game_plan_fn is None:
+                return
+            from arenamcp.plan_card import PlanCard
+
+            card = self._plan_card = PlanCard(self._ui_game_plan_fn)
+        card.publish(self._game_plan_mgr, game_state, source="autopilot")
 
     def _refresh_game_plan(self, game_state: dict[str, Any]) -> None:
         """Attach current strategy and refresh it without delaying tactics."""
@@ -402,7 +399,14 @@ class AutopilotEngine(
 
             def updated() -> None:
                 self._planner.set_game_plan(mgr.plan_text())
-                self._announce_game_plan(game_state)
+                # The answer lands 10-60 s after the reform started: show the
+                # new plan against the board as it is now, not ``game_state``.
+                try:
+                    latest = self._get_game_state()
+                except Exception as error:
+                    logger.debug("game-plan card: latest state unavailable: %s", error)
+                    latest = None
+                self._announce_game_plan(latest if isinstance(latest, dict) and latest else game_state)
 
             mgr.request_reform(game_state, on_updated=updated)
         except Exception as error:
