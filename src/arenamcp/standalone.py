@@ -1074,6 +1074,23 @@ class StandaloneCoach(
             self._bridge_poller.enrich_snapshot(judged)
         return judged
 
+    def _bridge_pending_label(self) -> str | None:
+        """Label of the request the bridge last saw pending ("Search Library"), else None."""
+        poller = getattr(self, "_bridge_poller", None)
+        latest = getattr(poller, "latest_pending", None)
+        if not callable(latest):
+            return None
+        try:
+            resp = latest()
+        except Exception as e:
+            logger.debug(f"bridge pending label failed: {e}")
+            return None
+        if not resp:
+            return None
+        from arenamcp.gre_bridge import _get_bridge_request_label
+
+        return _get_bridge_request_label(resp.get("request_type"), resp.get("request_class"))
+
     def _autopilot_control_status(self) -> str:
         if not self._autopilot_enabled:
             return "AP:OFF"
@@ -2230,6 +2247,14 @@ class StandaloneCoach(
                     # Runs regardless of bridge status — the bridge detects
                     # *transitions* but the autopilot needs to act on *any*
                     # pending decision that hasn't been handled yet.
+                    # The bridge's live request counts even when the log has
+                    # none: a library search's GreToClientEvent exceeds
+                    # Player.log's 50-object limit and is summarized, so the
+                    # log never sees the SearchReq (all 7 Brawl searches on
+                    # 2026-10-18; at 18:35:41 nothing re-forced it and the
+                    # game was lost on time).
+                    if not pending_now and bridge_active:
+                        pending_now = self._bridge_pending_label()
                     if self._autopilot_enabled and self._autopilot and pending_now:
                         if "decision_required" not in triggers:
                             # The loop only overlays bridge fields when poll()

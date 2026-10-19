@@ -1325,6 +1325,14 @@ class MacBridgeAdapter:
 
         Library choices need not appear in Player.log. Read each offered card
         from the client, without enumerating hidden zones or library order.
+
+        ``LatestGameState`` first: it is the GRE state the SearchReq arrived
+        with, which reveals the library to the searcher. ``CurrentGameState``
+        is what playback shows and trails it through combat-damage and
+        trigger animations, so a Search raised mid-combat read every
+        candidate as grpId 0 (seconds-long "unreadable" waits; 2026-10-18
+        18:35:41 the autopilot never answered and the game was lost on time).
+        The current state remains the fallback for each card.
         """
         ids = response["search_candidates"]
         if not ids:
@@ -1332,17 +1340,26 @@ class MacBridgeAdapter:
         ops = _Ops()
         ops.expect_pending(H(snapshot.handle))
         manager = ops.add("find", **{"class": "GameManager"}, depth=0, optional=True)
-        state = ops.get(manager, "CurrentGameState", optional=True)
+        states = [
+            ops.get(manager, "LatestGameState", optional=True),
+            ops.get(manager, "CurrentGameState", optional=True),
+        ]
         grp_refs = []
         for instance_id in ids:
-            card = ops.add(
-                "call", target=state, method="GetCardById", args=[U(instance_id)], depth=0, optional=True
-            )
-            grp_refs.append(ops.get(card, "GrpId", optional=True))
+            refs = []
+            for state in states:
+                card = ops.add(
+                    "call", target=state, method="GetCardById", args=[U(instance_id)], depth=0, optional=True
+                )
+                refs.append(ops.get(card, "GrpId", optional=True))
+            grp_refs.append(refs)
         results = self._run(ops, timeout)
         return [
-            {"instanceId": instance_id, "grpId": num(results[ref["ref"]])}
-            for instance_id, ref in zip(ids, grp_refs, strict=True)
+            {
+                "instanceId": instance_id,
+                "grpId": next((num(results[ref["ref"]]) for ref in refs if num(results[ref["ref"]])), 0),
+            }
+            for instance_id, refs in zip(ids, grp_refs, strict=True)
         ]
 
     def _shape_ActionsAvailableRequest(self, request: dict, getters: dict, response: dict) -> None:

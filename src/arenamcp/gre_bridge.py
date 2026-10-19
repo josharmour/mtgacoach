@@ -2762,6 +2762,7 @@ class BridgeDecisionPoller:
         self._last_action_sig: str | None = None
         self._last_has_pending: bool = False
         self._last_poll_result: dict[str, Any] | None = None
+        self._last_poll_at: float = 0.0
         self._consecutive_errors: int = 0
         self._fallback_mode: bool = False
         self._was_connected: bool = False
@@ -2810,14 +2811,13 @@ class BridgeDecisionPoller:
 
     @classmethod
     def _response_fingerprint(cls, resp: dict[str, Any]) -> tuple:
-        actions = resp.get("actions") or []
         return (
             bool(resp.get("has_pending")),
             resp.get("request_type"),
             resp.get("request_class"),
             resp.get("game_state_id"),
             resp.get("msg_id"),
-            cls._compute_action_sig(actions) if actions else None,
+            cls._compute_request_sig(resp),
         )
 
     def _prefetch_once(self) -> bool:
@@ -2933,6 +2933,7 @@ class BridgeDecisionPoller:
 
         self._consecutive_errors = 0
         self._last_poll_result = resp
+        self._last_poll_at = time.monotonic()
 
         raw_has_pending = resp.get("has_pending", False)
         request_type = resp.get("request_type") if raw_has_pending else None
@@ -2945,7 +2946,7 @@ class BridgeDecisionPoller:
             request_type = None
             request_class = None
             actions = []
-        action_sig = self._compute_action_sig(actions) if actions else None
+        action_sig = self._compute_request_sig(resp) if has_pending else None
 
         # Detect state change
         changed = False
@@ -3037,12 +3038,62 @@ class BridgeDecisionPoller:
         sig_str = "|".join(parts)
         return hashlib.md5(sig_str.encode()).hexdigest()[:12]
 
+    @classmethod
+    def _compute_request_sig(cls, resp: dict[str, Any]) -> str | None:
+        """What a pending request offers: its actions, else its selection candidates.
+
+        A native Search arrives while Arena still plays back the reveal, so its
+        candidates carry grpId 0 and the autopilot waits for their names. The
+        names landing is a new decision; with only the action list in the
+        signature (always empty for Search) the poller never reported it and
+        the autopilot was never woken (2026-10-18 18:35:41, lost on time).
+        """
+        actions = resp.get("actions") or []
+        if actions:
+            return cls._compute_action_sig(actions)
+        candidates = resp.get("search_candidates") or resp.get("select_n_ids") or []
+        if not candidates:
+            return None
+        parts = []
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                parts.append(
+                    f"{candidate.get('instanceId') or candidate.get('id') or 0}:"
+                    f"{candidate.get('grpId') or 0}:{candidate.get('name') or ''}"
+                )
+            else:
+                parts.append(str(candidate))
+        return "sel:" + hashlib.md5("|".join(parts).encode()).hexdigest()[:12]
+
+    # A poll older than this no longer describes what Arena shows.
+    _LATEST_PENDING_MAX_AGE_S = 5.0
+
+    def latest_pending(self) -> dict[str, Any] | None:
+        """The last poll's response while it shows an actionable request of ours, else None.
+
+        The coaching loop overlays bridge fields only when poll() reports a
+        change, so its snapshot can read "no decision" while a request has
+        been pending for minutes. On 2026-10-18 Arena summarized the Search's
+        GreToClientEvent (an 89-card library reveal exceeds Player.log's
+        50-object limit), the log never saw the SearchReq, and the autopilot
+        backstop — keyed on the log's pending_decision — never fired.
+        """
+        resp = self._last_poll_result
+        if not isinstance(resp, dict) or not resp.get("has_pending") or not self.connected:
+            return None
+        if time.monotonic() - self._last_poll_at > self._LATEST_PENDING_MAX_AGE_S:
+            return None
+        if _is_non_actionable_bridge_request(resp.get("request_type"), resp.get("request_class")):
+            return None
+        return resp
+
     def reset(self) -> None:
         """Reset tracked state (e.g., on match start/end)."""
         self._last_request_type = None
         self._last_action_sig = None
         self._last_has_pending = False
         self._last_poll_result = None
+        self._last_poll_at = 0.0
 
 
 # Module-level singleton for convenience

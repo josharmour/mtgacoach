@@ -84,6 +84,8 @@ class LogParser:
         self._current_event_type: str | None = None
         self._pending_line: str = ""  # Incomplete line from previous chunk
         self._last_event_hint: str | None = None  # Event type from previous line
+        # Message types of a GreToClientEvent Arena summarized instead of logging.
+        self._summary_types: list[str] | None = None
 
     def register_handler(self, event_type: str, handler: Callable[[dict], None]) -> None:
         """Register a handler for a specific event type.
@@ -135,6 +137,8 @@ class LogParser:
         Args:
             line: A complete line from the log (without newline).
         """
+        if not self._in_json and self._summary_line(line):
+            return
         if not self._in_json:
             # Check if this line starts a JSON block
             brace_idx = line.find("{")
@@ -166,6 +170,56 @@ class LogParser:
         else:
             # Continue accumulating JSON
             self._accumulate_json(line)
+
+    # Requests a summary can stand for without their payload: the state
+    # handler needs only the type to know a decision is pending.
+    _SUMMARY_REQUESTS = frozenset({"SearchReq"})
+
+    def _summary_line(self, line: str) -> bool:
+        """Consume Arena's summary of an over-limit GreToClientEvent; True when ``line`` belongs to it.
+
+        A GreToClientEvent whose GameStateMessage carries more than 50 objects
+        or annotations is logged as a list of message types instead of JSON::
+
+            [Message summarized because one or more GameStateMessages exceeded ...]
+            ::: GameStateMessage
+            :: GameObject Count = 89
+            ::: SearchReq
+
+        Every library search in a 99-card Brawl deck is summarized this way
+        (7 of 7 on 2026-10-18), so the log never saw the SearchReq and the
+        coach's state showed no pending decision while Arena's clock ran.
+        Known requests are re-emitted as a GreToClientEvent with an empty
+        payload marked ``_summarized``.
+        """
+        text = line.strip()
+        if text.startswith("[Message summarized"):
+            self._summary_types = []
+            self._last_event_hint = None
+            return True
+        if self._summary_types is None:
+            return False
+        if text.startswith(":::"):
+            self._summary_types.append(text[3:].strip())
+            return True
+        if text.startswith("::"):
+            return True
+        types, self._summary_types = self._summary_types, None
+        requests = [name for name in types if name in self._SUMMARY_REQUESTS]
+        logger.warning(
+            "Player.log summarized a GreToClientEvent (%s); its details are missing from the log",
+            ", ".join(types) or "no message types",
+        )
+        if requests:
+            payload = {
+                "greToClientEvent": {
+                    "greToClientMessages": [
+                        {"type": f"GREMessageType_{name}", "_summarized": True} for name in requests
+                    ]
+                }
+            }
+            self._emit_event("GreToClientEvent", payload)
+        return False
 
     def _detect_event_type(self, text: str) -> str:
         """Detect event type from log line text.
