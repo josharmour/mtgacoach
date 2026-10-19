@@ -398,9 +398,10 @@ def sneak_attack(attackers: list[dict], blockers: list[dict], life: int, sneak_p
     return net, net - weakest + sneak_power
 
 
-def sneak_main_hold(state: dict | None) -> SneakHold | None:
+def sneak_main_hold(state: dict | None, *, declare_step: bool = False) -> SneakHold | None:
     """Before our attack: the Sneak line (attack with every able creature, Sneak after blocks)
-    when it is lethal on the current board, else None. Main phase 1 of our turn only."""
+    when it is lethal on the current board, else None. Main phase 1 of our turn only, or also
+    our declare-attackers step with ``declare_step`` (the attack that the Sneak follows)."""
     if not isinstance(state, dict):
         return None
     turn = state.get("turn") or {}
@@ -408,7 +409,8 @@ def sneak_main_hold(state: dict | None) -> SneakHold | None:
     if local is None or turn.get("active_player") != local:
         return None
     phase, step = _norm(turn.get("phase")), _norm(turn.get("step"))
-    if not (phase in ("main1", "beginning") or (phase == "combat" and step in ("", "begincombat"))):
+    combat_steps = ("", "begincombat") + (("declareattack", "declareattackers") if declare_step else ())
+    if not (phase in ("main1", "beginning") or (phase == "combat" and step in combat_steps)):
         return None
     casts = sneak_casts(state)
     if not casts:
