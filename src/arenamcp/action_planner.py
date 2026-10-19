@@ -4220,6 +4220,24 @@ class ActionPlanner(_ActionLegalityMixin):
                 )
         name = cards.get(picked, {}).get("name", picked)
         if not alternatives:
+            # 2026-10-19 11:13: declining here cancels the cast, but the cast
+            # step never learns why and recasts the same spell: Iroh's
+            # Demonstration (mode "4 damage to target creature") at a 7/7
+            # Trostani looped cast -> decline every ~6 s until Arena's turn
+            # timer ran out. Decline a given spell once per turn; the second
+            # time the model's pick stands.
+            turn = ((game_state.get("turn") or {}).get("turn_number")) or 0
+            key = (turn, self._decision_source_instance(game_state) or str(name))
+            declined = self.__dict__.setdefault("_kept_spell_declines", set())
+            if key in declined:
+                logger.warning(
+                    "Keeping the pick: %d damage kills no legal opposing target (picked %s), "
+                    "but this spell was already declined this turn",
+                    damage,
+                    name,
+                )
+                return chosen
+            declined.add(key)
             logger.warning(
                 "Keeping the spell: %d damage kills no legal opposing target (picked %s)", damage, name
             )
