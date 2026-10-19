@@ -545,7 +545,11 @@ class RepairEngine:
 
     def _check_launch_options(self) -> CheckResult | None:
         install = self._install
-        if install is None or not install.platform.startswith("linux"):
+        if install is None:
+            return None
+        if self._is_native_mac(install):
+            return self._mac_launch_options(install)
+        if not install.platform.startswith("linux"):
             return None
         from arenamcp.platform_integration import proton_launch_options_ok
 
@@ -573,6 +577,42 @@ class RepairEngine:
             "Could not read Steam's launch options for MTGA.",
             "Verify in Steam: MTGA → Properties → Launch Options contains "
             'WINEDLLOVERRIDES="winhttp=n,b" %command%',
+        )
+
+    @staticmethod
+    def _mac_launch_options(install) -> CheckResult | None:
+        """Native Mac: MTGA started from Steam loads the bridge only through its launch options.
+
+        The coach launches MTGA with the bridge library itself; a game the
+        user started from Steam without the DYLD option runs without the
+        bridge, so autoplay says MANUAL REQUIRED with nothing else to go on.
+        """
+        from arenamcp import platform_integration as pi
+
+        if install.steam_root is None or not pi.mac_bridge_installed():
+            return None  # not a Steam install, or no bridge library to inject
+        label = "Steam launch options"
+        ok = pi.mac_bridge_launch_options_ok(install)
+        if ok is True:
+            return CheckResult(
+                "launch_options",
+                label,
+                "ok",
+                "MTGA started from Steam loads the coach's native macOS bridge (DYLD_INSERT_LIBRARIES).",
+            )
+        detail = (
+            "MTGA's Steam launch options don't load the coach's native macOS bridge"
+            if ok is False
+            else "No Steam launch option for MTGA loads the coach's native macOS bridge (none set, or "
+            "Steam's settings could not be read)"
+        )
+        return CheckResult(
+            "launch_options",
+            label,
+            "action_needed",
+            detail + ": started from Steam, MTGA runs without it and autoplay is MANUAL REQUIRED.",
+            f"In Steam: MTGA → Properties → Launch Options, set: {pi.mac_bridge_launch_option()} "
+            "(or open MTGA through the coach, which loads the bridge itself).",
         )
 
     def _check_bridge_signal(self) -> CheckResult | None:

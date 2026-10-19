@@ -183,11 +183,56 @@ def test_bridge_checks_native_darwin_not_applicable(tmp_path, check, platform):
     assert "screenshot" not in r.detail
 
 
-def test_launch_options_check_skipped_on_darwin(tmp_path):
-    # Steam-Proton launch options are a Linux-only concept.
-    for plat in ("darwin", "darwin-wine"):
+def test_launch_options_check_skipped_on_darwin_without_steam(tmp_path, monkeypatch):
+    # The Proton override is Linux-only; a bottle has no Steam launch options
+    # and an install found outside Steam (Epic) has nothing to check.
+    monkeypatch.setattr("arenamcp.platform_integration.mac_bridge_installed", lambda: True)
+    for plat in ("darwin", "darwin-epic", "darwin-wine"):
         eng = _engine_with_log(tmp_path, None, plat)
         assert eng._check_launch_options() is None
+
+
+@pytest.mark.parametrize(
+    ("option", "status", "says"),
+    [
+        (None, "ok", "loads the coach's native macOS bridge"),  # filled in below: the bridge option
+        ("%command%", "action_needed", "don't load the coach's native macOS bridge"),
+        ("", "action_needed", "No Steam launch option"),  # no LaunchOptions entry at all
+    ],
+    ids=["set", "other_options", "unset"],
+)
+def test_native_mac_steam_launch_options_load_the_bridge(tmp_path, monkeypatch, option, status, says):
+    """A game started from Steam without the DYLD option has no bridge: autoplay is MANUAL REQUIRED."""
+    from tests.fakes import install_with_launch_options
+
+    from arenamcp import platform_integration as pi
+
+    monkeypatch.setattr(pi, "mac_bridge_installed", lambda: True)
+    if option is None:
+        option = pi.mac_bridge_launch_option().replace('"', '\\"')
+    install = install_with_launch_options(tmp_path, option if option else None)
+    install.platform = "darwin-steam"
+    eng = RepairEngine()
+    eng._install = install
+    result = eng._check_launch_options()
+    assert (result.key, result.status) == ("launch_options", status)
+    assert says in result.detail
+    if status == "action_needed":
+        assert "MANUAL REQUIRED" in result.detail
+        assert pi.mac_bridge_launch_option() in result.action_hint
+
+
+def test_native_mac_launch_options_not_checked_without_the_bridge_library(tmp_path, monkeypatch):
+    from tests.fakes import install_with_launch_options
+
+    from arenamcp import platform_integration as pi
+
+    monkeypatch.setattr(pi, "mac_bridge_installed", lambda: False)
+    install = install_with_launch_options(tmp_path, "%command%")
+    install.platform = "darwin-steam"
+    eng = RepairEngine()
+    eng._install = install
+    assert eng._check_launch_options() is None
 
 
 # ---------------------------------------------------------------------------

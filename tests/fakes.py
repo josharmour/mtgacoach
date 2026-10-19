@@ -256,3 +256,29 @@ def make_engine(bridge=None, planner=None, *, game_state=None, dry_run=False, **
         )
     engine._BRIDGE_CATCH_UP_WAIT_S = 0
     return engine
+
+
+# ---------------------------------------------------------------------------
+# Steam
+# ---------------------------------------------------------------------------
+
+
+def install_with_launch_options(tmp_path, *options):
+    """An MTGA install under a Steam root whose userdata holds one localconfig.vdf per option.
+
+    ``None`` writes a config with no LaunchOptions entry. Options are written
+    as Steam stores them (quotes backslash-escaped by the caller).
+    """
+    from arenamcp.platform_integration import MTGA_STEAM_APPID, MtgaInstall
+
+    for index, option in enumerate(options):
+        config = tmp_path / "userdata" / str(1000 + index) / "config"
+        config.mkdir(parents=True)
+        entry = f'\t\t\t\t\t"LaunchOptions"\t\t"{option}"\n' if option is not None else ""
+        (config / "localconfig.vdf").write_text(
+            '"UserLocalConfigStore"\n{\n\t"Software"\n\t{\n\t\t"Valve"\n\t\t{\n\t\t\t"Steam"\n\t\t\t{\n'
+            f'\t\t\t\t"apps"\n\t\t\t\t{{\n\t\t\t\t\t"{MTGA_STEAM_APPID}"\n\t\t\t\t\t{{\n'
+            f'\t\t\t\t\t\t"LastPlayed"\t\t"1790000000"\n{entry}\t\t\t\t\t}}\n\t\t\t\t}}\n'
+            "\t\t\t}\n\t\t}\n\t}\n}\n"
+        )
+    return MtgaInstall(install_dir=tmp_path / "MTGA", player_log=None, platform="x", steam_root=tmp_path)
