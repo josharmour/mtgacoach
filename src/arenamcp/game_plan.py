@@ -242,7 +242,7 @@ GAME_PLAN_PROMPT = """You are a Magic: The Gathering strategic planner forming a
 Given the current board, hand, mana, life totals, the deterministic BOARD FACTS and the Oracle-grounded deck playbook, decide WHO IS THE BEATDOWN, how this game is won, and what to do on each of our next three turns, like a strong human player looking 2-3 turns ahead.
 
 BOARD FACTS are computed from the live board (clocks through best blocks, race, lethal flags, mana budget per turn). Treat them as hard facts:
-- ROLE must equal the ASSESSED ROLE unless role_reason names a concrete board fact the assessment missed. If the facts say OPPONENT HAS LETHAL ON BOARD or DEAD IN 2, the role is defender or control/stabilize unless we have lethal first.
+- ROLE must equal the ASSESSED ROLE unless role_reason names a concrete board fact the assessment missed. If the facts say OPPONENT HAS LETHAL ON BOARD or DEAD IN 2, the role is defender or control/stabilize unless we have lethal first, or the assessed role is race because only attacking survives (or none of ours can block their lethal attack): then the role is race and T attacks as that line does.
 - The turn plan covers T (this turn if it is ours, else our next turn), T+1 and T+2 (our following turns). Each turn's "cast" list may name ONLY cards in our hand now (or castable from our graveyard), each card at most once, and their combined mana value must fit that turn's MANA BUDGET with the colours available. A card we hope to draw goes in "hold" as "if drawn: <name>", never in "cast".
 - When BOARD FACTS lists CANDIDATE LINES (a deterministic 2-turn search), build "turns" from one of them and keep its attack/hold posture unless you name a concrete card or combat reason.
 - As defender/control, prioritise creatures that block and removal on attackers over card draw, mana rocks or cycling until the clock is under control. As aggressor, maximise damage; spend removal on blockers.
@@ -271,6 +271,12 @@ Respond with ONLY a JSON object, no prose, no markdown:
   "assumptions": ["mana, timing, survival or availability condition to recheck"],
   "lessons": ["what has worked or failed so far THIS match, from the ledger (<=12 words each, up to 4)"]
 }"""
+
+
+# The assessed race reasons that attacking is what survives (``board_assessment._role``, ledger #161).
+_RACE_TO_SURVIVE = re.compile(
+    r"\bonly attacking survives\b|\battacking survives\b|\bnone of ours can block it\b"
+)
 
 
 @dataclass
@@ -528,7 +534,7 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
       or "banking" it, is replaced by "spend spare mana this turn"
       (:func:`_check_mana_holds`).
     """
-    from arenamcp.board_assessment import ROLE_AGGRESSOR, ROLE_CONTROL, ROLE_DEFENDER, ROLES
+    from arenamcp.board_assessment import ROLE_AGGRESSOR, ROLE_CONTROL, ROLE_DEFENDER, ROLE_RACE, ROLES
 
     issues: list[str] = []
     if assessment is None:
@@ -572,6 +578,15 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
         and not getattr(assessment, "all_in", False)
     ):
         issues.append(f"role aggressor rejected: {'; '.join(assessment.flags) or assessment.role_reason}")
+        role = assessment.role
+    elif (
+        role in (ROLE_DEFENDER, ROLE_CONTROL)
+        and assessment.role == ROLE_RACE
+        and _RACE_TO_SURVIVE.search(assessment.role_reason or "")
+    ):
+        # Ledger #161 (c0af235f T12): "control/stabilize" while only the attacking line survived;
+        # the declaration echoed it ("Stabilize behind the token wall") and held.
+        issues.append(f"role {role} rejected: {assessment.role_reason.split(':')[0]}")
         role = assessment.role
     elif role != assessment.role and len((plan.role_reason or "").split()) < 3:
         issues.append(f"role {role} differs from the assessed {assessment.role} without a concrete reason")

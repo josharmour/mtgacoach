@@ -21,9 +21,11 @@ only names the request):
 - ``per_creature_bonus`` / ``scaled_power``: "+N/+0 for each other creature
   you control" recomputed for a board (the line search uses it at each node).
 - ``sneak_now``: in our declare-blockers step, with blocks known, the damage a
-  Sneak cast adds and whether it is lethal.
+  Sneak cast adds and whether it is lethal, or beats casting the card
+  normally by half their life (``beats_hard_cast``, ledger #179).
 - ``sneak_main_hold``: before combat, whether attacking with everything plus a
-  Sneak after their best blocks is lethal, and how much mana to keep for it.
+  Sneak after their best blocks is lethal (or beats the hard cast by half
+  their life), and how much mana to keep for it.
 - ``return_choice``: which unblocked attacker the Sneak cost returns
   (a recastable card over a token, which just vanishes; never the one lethal
   needs).
@@ -126,10 +128,17 @@ class SneakCast:
     cost: str  # what it costs now, commander tax included ("{2}{W}")
     zone: str  # "hand" or "command"
     tax: int
+    # What casting it normally costs now ("{2}{W}" printed, the command zone's with tax, Arena's
+    # own cast action when the snapshot has one: discounts included); "" when unknown.
+    hard_cost: str = ""
 
     @property
     def mana_value(self) -> int:
         return _mana_value(self.cost)
+
+    @property
+    def hard_mana(self) -> int | None:
+        return _mana_value(self.hard_cost) if self.hard_cost else None
 
 
 def sneak_casts(state: dict | None) -> list[SneakCast]:
@@ -141,7 +150,8 @@ def sneak_casts(state: dict | None) -> list[SneakCast]:
         if isinstance(card, dict) and _is_creature(card):
             printed = sneak_cost(card)
             if printed:
-                found.append(SneakCast(card, str(card.get("name") or ""), printed, printed, "hand", 0))
+                hard = str(card.get("mana_cost") or "")
+                found.append(SneakCast(card, str(card.get("name") or ""), printed, printed, "hand", 0, hard))
     try:
         from arenamcp.board_model import our_commanders
 
@@ -154,7 +164,8 @@ def sneak_casts(state: dict | None) -> list[SneakCast]:
             casts = commander.casts or 0
             found.append(
                 SneakCast(
-                    commander.card, commander.name, printed, with_tax(printed, casts), "command", 2 * casts
+                    commander.card, commander.name, printed, with_tax(printed, casts), "command", 2 * casts,
+                    commander.cost,
                 )
             )
     return found
@@ -241,6 +252,15 @@ def _untapped_mana(state: dict, local: int | None) -> int:
     )
 
 
+def beats_hard_cast(cast: SneakCast, gain: int, life: int, hard_mana: int | None = None) -> bool:
+    """A Sneak that adds ``gain`` damage this turn beats casting the card normally (it would come
+    in summoning sick: no damage this turn) by a large margin: at least half their ``life``, at the
+    same or a lower cost (``hard_mana``, default ``cast.hard_mana``; unknown: no). Ledger #179
+    (c0af235f T10): a Sneak Leonardo after blocks was ~20 of their 27; master hard-cast him."""
+    hard = cast.hard_mana if hard_mana is None else hard_mana
+    return hard is not None and cast.mana_value <= hard and life > 0 and 2 * gain >= life
+
+
 @dataclass(frozen=True)
 class SneakNow:
     """A Sneak cast in our declare-blockers step, blocks known."""
@@ -257,6 +277,14 @@ class SneakNow:
     @property
     def lethal(self) -> bool:
         return self.total >= self.life
+
+    @property
+    def gain(self) -> int:
+        return self.total - self.through
+
+    @property
+    def beats_hard_cast(self) -> bool:
+        return beats_hard_cast(self.cast, self.gain, self.life)
 
     def text(self) -> str:
         return (
@@ -372,12 +400,20 @@ class SneakHold:
     def lethal(self) -> bool:
         return self.total >= self.life
 
+    @property
+    def gain(self) -> int:
+        return self.total - self.through
+
     def text(self) -> str:
-        return (
+        text = (
             f"attack with everything, then Sneak {self.cast.name} ({self.cast.cost}) after blocks: "
             f"{self.through} through their best blocks - the returned attacker + {self.power} = "
             f"{self.total} against their {self.life} life"
         )
+        if self.lethal:
+            return text
+        hard = f" ({self.cast.hard_cost})" if self.cast.hard_cost else ""
+        return f"{text}, {self.gain} more than casting it normally{hard}, which comes in summoning sick"
 
 
 def sneak_attack(attackers: list[dict], blockers: list[dict], life: int, sneak_power: int) -> tuple[int, int]:
@@ -400,7 +436,9 @@ def sneak_attack(attackers: list[dict], blockers: list[dict], life: int, sneak_p
 
 def sneak_main_hold(state: dict | None) -> SneakHold | None:
     """Before our attack: the Sneak line (attack with every able creature, Sneak after blocks)
-    when it is lethal on the current board, else None. Main phase 1 of our turn only."""
+    when it is lethal on the current board, or beats casting the card normally by at least half
+    their life at the same or a lower cost (``beats_hard_cast``, ledger #179), else None. Main
+    phase 1 of our turn only, and never when the attack is lethal without it."""
     if not isinstance(state, dict):
         return None
     turn = state.get("turn") or {}
@@ -436,9 +474,11 @@ def sneak_main_hold(state: dict | None) -> SneakHold | None:
         if with_sneak <= without:
             continue
         hold = SneakHold(cast, without, power, with_sneak, life, cast.mana_value)
-        if best is None or hold.total > best.total:
+        if not hold.lethal and not beats_hard_cast(cast, hold.gain, life):
+            continue
+        if best is None or (hold.lethal, hold.total) > (best.lethal, best.total):
             best = hold
-    return best if best is not None and best.lethal and best.through < life else None
+    return best if best is not None and best.through < life else None
 
 
 def option_mana(meta: dict[str, Any]) -> int:
@@ -476,11 +516,16 @@ def _option_card(option: Any, state: dict) -> dict:
 
 
 def sneak_cast_pick(decision: Any, state: dict | None) -> tuple[list[str], str]:
-    """In our declare-blockers step: the Sneak cast option when it is lethal, with why; else ([], '').
+    """In our declare-blockers step: the Sneak cast option when it is lethal, or beats casting
+    the card normally by at least half their life at the same or a lower cost, with why; else
+    ([], '').
 
     Ledger #156 (match be1a945f): T6 the model cast Leonardo through Sneak
     believing it an ordinary cast; T12 the mana for it was gone. A lethal
-    Sneak is a counting job, not a judgement call.
+    Sneak is a counting job, not a judgement call. Ledger #179 (match
+    c0af235f T10): a Sneak Leonardo after blocks was ~20 damage of their 27
+    while casting him normally dealt none that turn; a margin that large is
+    counting too.
     """
     if not isinstance(state, dict) or getattr(decision, "request_type", "") != "ActionsAvailable":
         return [], ""
@@ -495,16 +540,25 @@ def sneak_cast_pick(decision: Any, state: dict | None) -> tuple[list[str], str]:
         cast = casts.get(name)
         if cast is None and card:
             printed = sneak_cost(card)
-            cast = SneakCast(card, name, printed, printed, "hand", 0) if printed else None
+            hard = str(card.get("mana_cost") or "")
+            cast = SneakCast(card, name, printed, printed, "hand", 0, hard) if printed else None
         if cast is None:
             continue
         found = sneak_now(state, cast)
-        if found is not None and found.lethal and (best is None or found.total > best[0].total):
+        if found is None or not (found.lethal or found.beats_hard_cast):
+            continue
+        if best is None or (found.lethal, found.total) > (best[0].lethal, best[0].total):
             best = (found, option.option_id)
     if best is None:
         return [], ""
     found, option_id = best
-    return [option_id], f"Lethal: {found.text()}."
+    if found.lethal:
+        return [option_id], f"Lethal: {found.text()}."
+    hard = f" ({found.cast.hard_cost})" if found.cast.hard_cost else ""
+    return [option_id], (
+        f"Sneak: {found.text()}; {found.gain} more damage than casting it normally{hard}, at least half "
+        f"their life."
+    )
 
 
 def is_sneak_return(decision: Any) -> bool:
@@ -573,8 +627,9 @@ def return_pick(decision: Any, state: dict | None) -> tuple[list[str], str]:
 
 
 def hold_filter(decision: Any, state: dict | None) -> tuple[Any, str]:
-    """Before our attack, when the Sneak line is lethal (``sneak_main_hold``): the decision without
-    the casts that would leave less mana than the Sneak costs, and why; (decision, '') otherwise.
+    """Before our attack, when the Sneak line is lethal or beats the hard cast by half their life
+    (``sneak_main_hold``): the decision without the casts that would leave less mana than the
+    Sneak costs, nor the Sneak card's own normal cast, and why; (decision, '') otherwise.
 
     Ledger #156 (be1a945f T12): six mana, two Hare Apparents in hand and a Sneak
     Leonardo for {2}{W} lethal after blocks; the second Hare took the mana.
@@ -592,10 +647,27 @@ def hold_filter(decision: Any, state: dict | None) -> tuple[Any, str]:
         mana = mana_available(state)
     except Exception:
         return decision, ""
+    if mana < hold.keep:
+        return decision, ""  # the Sneak is not affordable this turn anyway
+    sneak_id = _int(hold.cast.card.get("instance_id"))
+
+    def hard_cast(meta: dict) -> bool:  # the Sneak card cast normally: no Sneak left after it
+        return sneak_id is not None and _int(meta.get("instanceId")) == sneak_id and not is_sneak_option(meta)
+
+    if not hold.lethal:
+        # Ledger #179: the margin is against Arena's own price for the normal cast when it is offered.
+        offered = [
+            option_mana(getattr(o, "meta", {}) or {})
+            for o in decision.options
+            if hard_cast(getattr(o, "meta", {}) or {})
+        ]
+        if offered and not beats_hard_cast(hold.cast, hold.gain, hold.life, min(offered)):
+            return decision, ""
     kept, dropped = [], []
     for option in decision.options:
-        spend = option_mana(getattr(option, "meta", {}) or {})
-        (dropped if spend and mana - spend < hold.keep else kept).append(option)
+        meta = getattr(option, "meta", {}) or {}
+        spend = option_mana(meta)
+        (dropped if spend and (mana - spend < hold.keep or hard_cast(meta)) else kept).append(option)
     if not dropped or not kept:
         return decision, ""
     import dataclasses

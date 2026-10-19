@@ -18,6 +18,9 @@ four narrow, deterministic uses at decision time:
   attackers the best surviving line keeps home, when attacking with them dies
   sooner (``ARENAMCP_ATTACK_LINE_GUARD``, shadow by default), and the
   attack-vs-hold verdict for the declare-attackers prompt.
+- ``attack_push`` (ledger #178): the best line's attackers instead of a
+  declaration (an empty one included) that dies sooner or, with an 'attack'
+  posture, ranks below it (``ARENAMCP_ATTACK_PUSH``, shadow by default).
 
 Both guards are shadow-only by default: they return a verdict whose
 ``applies`` is False, and the caller logs what it would have done. The env vars
@@ -63,6 +66,7 @@ from arenamcp.line_search import (
     ALIVE,
     DEAD,
     LINE_TOL,
+    POSTURE_MARGIN,
     WIN,
     Line,
     LineSearchResult,
@@ -723,6 +727,178 @@ def _attack_line_guard(result, declared_ids, state, *, lethal_now, all_in, unkno
     )
 
 
+# A push on value alone (both lines alive, the same timing) needs twice the posture's margin.
+ATTACK_PUSH_MARGIN = 2 * POSTURE_MARGIN
+
+
+def attack_push_mode() -> str:
+    """'off', 'shadow' or 'on' for the attack push (``ARENAMCP_ATTACK_PUSH``); default 'shadow'.
+
+    The sibling of ``ARENAMCP_ATTACK_LINE_GUARD``: a guard that replaces the model's declaration
+    stays in shadow until the user reviews its logs.
+    """
+    value = str(os.environ.get("ARENAMCP_ATTACK_PUSH", "") or "").strip().lower()
+    return value if value in GUARD_MODES else "shadow"
+
+
+@dataclass
+class AttackPushVerdict:
+    """The searched line's attack, to declare instead of a declaration that ends worse."""
+
+    attack_ids: list[int]
+    attack_names: list[str]
+    at_walkers: dict[str, str]  # attacker name -> planeswalker name, the line's split
+    declared_line: Line
+    attack_line: Line
+    reason: str  # 'hold dead T15, attack survives (life 20, 15, 13; ...); best line: ... [+2/+0 ...]'
+    summary: str  # short text for narration
+    declared_text: str = ""  # 'dead on T15'
+    attack_text: str = ""  # 'survives (life 20, 15, 13; opponent at 26)'
+    robust: bool = False
+    applies: bool = False
+    setting: str = "shadow"
+
+    def as_trace(self) -> dict[str, Any]:
+        return {
+            "attack": list(self.attack_names),
+            "attack_ids": list(self.attack_ids),
+            "declared_line": self.declared_line.summary(),
+            "attack_line": self.attack_line.summary(),
+            "robust": self.robust,
+            "applied": self.applies,
+            "mode": self.setting,
+        }
+
+
+def attack_push(
+    result: LineSearchResult | None,
+    declared_ids: list[int] | tuple[int, ...],
+    state: dict,
+    *,
+    eligible: list[int] | tuple[int, ...] = (),
+    lethal_now: bool,
+    all_in: bool,
+    unknown_bodies: list[str] | tuple[str, ...] = (),
+) -> AttackPushVerdict | None:
+    """The best line's attackers to declare instead of ``declared_ids`` (empty: no attack), or None.
+
+    Ledger #178 (2026-10-19 match c0af235f T12, 15:21:41): twenty attackers
+    (Leonardo 27/3) against seven blockers; the board facts said holding is
+    dead on T15 and attacking the only surviving line, and the empty
+    declaration ("Stabilize behind the token wall") stood: the attack line
+    guard can only hold attackers back. On master the same board goes to the
+    combat solver (20 attackers), which holds all of them.
+
+    Pushes when the best line attacks with creatures the declaration keeps
+    home and either the searched line that attacks as declared (no attack:
+    the line that holds) is dead at least ``ATTACK_LINE_MARGIN`` of their
+    attacks sooner than the best line (which may die later), or the search's posture
+    is 'attack' and the declared line ranks below the best one (a worse
+    outcome or timing, or ``ATTACK_PUSH_MARGIN`` less value); and the +2/+0
+    trick proxy does not reverse it. Every attacker of the line must be in
+    ``eligible`` (the request's legal attackers) when that is given. None when:
+    off; no usable search; lethal now or a winning posture (their own rules);
+    all in; not our turn or not before our attack; an unknown-P/T creature;
+    the declared attack was not searched; or the push would only hold
+    attackers back (``attack_line_guard``). Shadow by default
+    (``ARENAMCP_ATTACK_PUSH``): ``applies`` is then False and the caller only
+    logs the verdict.
+    """
+    try:
+        return _attack_push(
+            result, declared_ids, state, eligible=eligible, lethal_now=lethal_now, all_in=all_in,
+            unknown_bodies=unknown_bodies,
+        )  # fmt: skip
+    except Exception:  # never let the push break a declaration
+        logger.debug("attack push failed", exc_info=True)
+        return None
+
+
+def _ranked_proxy_check(result: LineSearchResult, best: Line, chosen: Line) -> tuple[bool, bool, str] | None:
+    """(not worse, robust, text) under the +2/+0 trick proxy, by ``Line.ranked`` (a distant win
+    ranks as alive, ledger #158, as it does in the posture); None when it can't be replayed."""
+    trick_best, trick_chosen = proxy_outcome(result, best), proxy_outcome(result, chosen)
+    if trick_best is None or trick_chosen is None:
+        return None
+    text = f"+2/+0 trick: {trick_best.outcome_text()} vs {trick_chosen.outcome_text()}"
+    better, worse = trick_best.ranked, trick_chosen.ranked
+    robust = better[:2] > worse[:2] or (
+        better[:2] == worse[:2] and better[2] - worse[2] >= ATTACK_PUSH_MARGIN
+    )
+    return better >= worse, robust, text
+
+
+def _attack_push(result, declared_ids, state, *, eligible, lethal_now, all_in, unknown_bodies):
+    setting = attack_push_mode()
+    if setting == "off" or not _usable(result) or lethal_now or all_in or not _our_turn(state):
+        return None
+    model = result.model
+    if not model.our_turn or not model.our_attack_pending or unknown_bodies or model.unknown_bodies:
+        return None
+    best = result.best
+    if result.posture == "lethal" or (best.cls == WIN and best.win_at == 1):
+        return None
+    best_attack = _attack_ids(best)
+    declared = frozenset(_int(i) for i in declared_ids or () if _int(i) is not None)
+    if not best_attack or not (best_attack - declared):
+        return None
+    allowed = {_int(i) for i in eligible or ()}
+    if allowed and not best_attack <= allowed:
+        return None
+    declared_line = result.first_action.get(("attack", declared) if declared else ("noattack",))
+    if declared_line is None:
+        return None
+    dead_sooner = (
+        declared_line.cls == DEAD and _dies_at(best) - _dies_at(declared_line) >= ATTACK_LINE_MARGIN
+    )
+    ranks_below = result.posture == "attack" and (
+        best.ranked[:2] > declared_line.ranked[:2]
+        or (
+            best.ranked[:2] == declared_line.ranked[:2]
+            and best.ranked[2] - declared_line.ranked[2] >= ATTACK_PUSH_MARGIN
+        )
+    )
+    if not (dead_sooner or ranks_below):
+        return None
+    proxy = _ranked_proxy_check(result, best, declared_line)
+    if proxy is None or not proxy[0]:
+        return None
+    names = {
+        _int(card.get("instance_id")): _name(card)
+        for card in state.get("battlefield") or []
+        if isinstance(card, dict)
+    }
+    attack_ids = sorted(best_attack)
+    attack_names = [names.get(i) or f"#{i}" for i in attack_ids]
+    declared_text, attack_text = declared_line.outcome_text(), best.outcome_text()
+    if not dead_sooner:  # same class: the value gap is the reason
+        declared_text += f" (ranks below: value {declared_line.ranked[2]:.1f} vs {best.ranked[2]:.1f})"
+    what = "hold" if not declared else "attack as declared"
+    reason = (
+        f"{what} {_outcome_brief(declared_line) if dead_sooner else declared_text}, attack "
+        f"{_outcome_brief(best)}; best line: {best.summary()} [{proxy[2]}]"
+    )
+    summary = (
+        f"Attacking with {len(attack_ids)}: by the line search, "
+        f"{'holding' if not declared else 'the declared attack'} ends {declared_text}; this attack "
+        f"{attack_text}."
+    )
+    return AttackPushVerdict(
+        attack_ids=attack_ids,
+        attack_names=attack_names,
+        at_walkers=dict(best.steps[0].at_walkers),
+        declared_line=declared_line,
+        attack_line=best,
+        reason=reason,
+        summary=_clip(summary, _SUMMARY_MAX),
+        declared_text=declared_text,
+        attack_text=attack_text,
+        robust=proxy[1],
+        applies=setting == "on",
+        setting=setting,
+    )
+
+
 def attack_line_note(result: LineSearchResult | None, state: dict) -> str:
     """The line search's attack-vs-hold verdict for a declare-attackers prompt, or '' (ledger #152).
 
@@ -909,6 +1085,8 @@ def line_fallback_pick(result: LineSearchResult | None, decision: Any, state: di
 
 __all__ = [
     "ATTACK_LINE_MARGIN",
+    "ATTACK_PUSH_MARGIN",
+    "AttackPushVerdict",
     "GUARD_MODES",
     "LINE_GUARD_MARGIN",
     "LINE_TOL",
@@ -917,6 +1095,8 @@ __all__ = [
     "attack_line_guard",
     "attack_line_mode",
     "attack_line_note",
+    "attack_push",
+    "attack_push_mode",
     "guard_mode",
     "line_fallback_pick",
     "line_gap_mode",

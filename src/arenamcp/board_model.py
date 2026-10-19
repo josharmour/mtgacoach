@@ -452,6 +452,9 @@ class BoardModel:
     # The line search resolves them at its root; the assessment's own facts do not.
     our_stack_doomed: frozenset[int] = frozenset()
     our_stack_face: int = 0
+    # Each player's starting life total (``starting_life``): 25 in Brawl, else 20 (ledger #177:
+    # "at least 7 life more than your starting life total").
+    starting_life: int = 20
 
     @property
     def unknowns(self) -> list[str]:
@@ -469,6 +472,24 @@ class BoardModel:
             if commander.text_unknown:
                 notes.append(f"our commander {commander.name}: rules text unknown")
         return notes
+
+
+def starting_life(state: dict) -> int:
+    """The game's starting life total: a player's ``starting_life`` (Player.log
+    ``startingLifeTotal``) or the format profile's when the snapshot has one; 25 in a commander
+    game (commanders known, a command zone, or a Brawl format name); 20 otherwise."""
+    for player in state.get("players") or []:
+        value = _int(player.get("starting_life")) if isinstance(player, dict) else None
+        if value:
+            return value
+    profile = state.get("format_profile")
+    if isinstance(profile, dict) and _int(profile.get("starting_life")):
+        return int(profile["starting_life"])
+    if state.get("commander_grp_ids") or state.get("command") or "brawl" in str(
+        state.get("format_name") or state.get("format") or ""
+    ).lower():
+        return 25
+    return 20
 
 
 def build_board_model(state: dict) -> BoardModel | None:
@@ -642,4 +663,5 @@ def build_board_model(state: dict) -> BoardModel | None:
         their_lands_played=max(0, their_lands_played),
         our_stack_doomed=pending.doomed if pending else frozenset(),
         our_stack_face=pending.face if pending else 0,
+        starting_life=starting_life(state),
     )  # fmt: skip

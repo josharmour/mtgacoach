@@ -1091,12 +1091,20 @@ class _BridgeSubmitMixin:
         ]
         if len(pairs) != len(entries):
             logger.info("Omitting zero-power attackers with no visible attack payoff")
-        losing = losing_attackers(
-            state,
-            [entry["attackerInstanceId"] for _, entry in pairs],
-            pending,
-            # #127: an attack at a planeswalker that dies whatever they block is kept.
-            attacker_targets={entry["attackerInstanceId"]: entry["damageRecipient"] for _, entry in pairs},
+        # Ledger #178: the line search's pushed attack already judged every block over its turns;
+        # thinning it here would send the declaration the push replaced.
+        losing = (
+            {}
+            if getattr(action, "line_push", False)
+            else losing_attackers(
+                state,
+                [entry["attackerInstanceId"] for _, entry in pairs],
+                pending,
+                # #127: an attack at a planeswalker that dies whatever they block is kept.
+                attacker_targets={
+                    entry["attackerInstanceId"]: entry["damageRecipient"] for _, entry in pairs
+                },
+            )
         )
         for name, entry in pairs:
             if entry["attackerInstanceId"] in losing:

@@ -172,6 +172,10 @@ class GameAction:
     # A combat guard (crackback, losing attack) emptied this attack declaration on
     # purpose: a decided hold, which the bridge must not refill with the solver's pick.
     guard_hold: bool = False
+    # The line search's attack, pushed over a declaration that ends worse (ledger #178): the
+    # bridge sends it as it is, with no losing-attack thinning (the search already judged
+    # every block) and no solver override.
+    line_push: bool = False
 
     def __str__(self) -> str:
         parts = [self.action_type.value]
@@ -204,6 +208,8 @@ FALLBACK_NO_ACTIONS = "planner_no_actions"
 # A combat declaration on a board too big for the model to answer in time (ledger #155/#162):
 # the combat solver's safe default declares it, the model is not asked.
 FALLBACK_BIG_BOARD = "planner_big_board_solver"
+# The line search's attack replaced a declaration that ends worse (ledger #178).
+FALLBACK_ATTACK_PUSH = "planner_attack_push"
 # The model server could not answer: the circuit breaker is open, the call
 # timed out, or it failed with a transport/HTTP error or an error sentinel.
 # An empty plan carrying this reason means "decide without the model now",
@@ -1094,11 +1100,18 @@ class ActionPlanner(_ActionLegalityMixin):
             # budget, so the solver's safe default decided each combat after the wait anyway.
             logger.warning("Big board (%s): the combat solver declares; the model is not asked", big)
             diag["preflight"] = "big_board_solver"
-            diag["elapsed_ms"] = (time.perf_counter() - start) * 1000
-            self._record_diagnostic(diag)
-            return ActionPlan(
+            plan = ActionPlan(
                 trigger=trigger, turn_number=current_turn, fallback_reason=FALLBACK_BIG_BOARD, fallback_detail=big
             )
+            # Ledger #178 (c0af235f T12): the solver held all twenty attackers while the line
+            # search attacks; the push judges the solver's declaration like the model's.
+            self._push_solver_attack(
+                plan, game_state, decision_context or game_state.get("decision_context") or {}
+            )
+            diag["elapsed_ms"] = (time.perf_counter() - start) * 1000
+            diag["planned_actions"] = len(plan.actions)
+            self._record_diagnostic(diag)
+            return plan
 
         # Circuit open: the model server is known down. Waiting out the full
         # planning budget here stalled the coaching loop 30 s per window in
@@ -1929,6 +1942,142 @@ class ActionPlanner(_ActionLegalityMixin):
             f"and their crackback would leave us at {life_after(attacking)}."
         )
 
+    def _push_solver_attack(self, plan: ActionPlan, state: dict, context: dict) -> None:
+        """On a big board (no model call), push the line search's attack over the combat solver's
+        declaration when it ends worse (``_push_line_attack``, ledger #178).
+
+        The bridge declares the solver's pick (``combat_strategy.combat_choice``) for an empty plan;
+        that pick is computed here on the same snapshot (memoized, so the bridge's own call is
+        free when the board has not moved) and judged like a model's declaration.
+        """
+        if str(context.get("type") or "").lower() != "declare_attackers" or plan.actions:
+            return
+        try:
+            from arenamcp import line_guard
+
+            if line_guard.attack_push_mode() == "off":
+                return
+            from arenamcp.combat_strategy import combat_choice
+
+            choice = combat_choice(state)
+        except Exception as error:  # the strategic layer never blocks a declaration
+            logger.debug("solver attack push skipped: %s", error)
+            return
+        ids = sorted(int(i) for i in (choice.assignments if choice is not None else {}) or {})
+        cards = {_as_int(card.get("instance_id")): card for card in state.get("battlefield") or []}
+        solver = GameAction(
+            ActionType.DECLARE_ATTACKERS,
+            attacker_names=[str((cards.get(i) or {}).get("name") or f"#{i}") for i in ids],
+            attacker_instance_ids=ids,
+            reasoning=f"combat solver: {choice.explanation}" if choice is not None else "combat solver",
+        )
+        probe = ActionPlan(actions=[solver], overall_strategy="the combat solver's declaration")
+        if self._push_line_attack(probe, state, context, solver, source="solver"):
+            plan.actions = probe.actions
+            plan.overall_strategy = probe.overall_strategy
+            plan.voice_advice = probe.voice_advice
+            plan.fallback_reason = FALLBACK_ATTACK_PUSH
+            detail = "the line search's attack over the solver's"
+            plan.fallback_detail = f"{plan.fallback_detail}; {detail}" if plan.fallback_detail else detail
+
+    def _push_line_attack(
+        self,
+        plan: ActionPlan,
+        state: dict,
+        context: dict,
+        declared: GameAction | None,
+        *,
+        source: str = "model",
+    ) -> bool:
+        """Declare the line search's attack instead of one that ends worse (ledger #178); True when done.
+
+        2026-10-19 match c0af235f T12 (15:21:41): twenty attackers (Leonardo
+        27/3) against seven blockers; the board facts said holding is dead on
+        T15 and attacking the only survivor, and the empty declaration
+        ("Stabilize behind the token wall") stood: every combat guard only
+        holds attackers back. See :func:`arenamcp.line_guard.attack_push` (never
+        on lethal, all-in, an unknown-P/T creature or without a usable search).
+        ``declared`` None: the plan attacks with nobody (Done / pass). Shadow by
+        default (``ARENAMCP_ATTACK_PUSH``): 'shadow' logs "attack_push [shadow]:
+        would attack with X (hold dead T15, attack survives ...)"; 'on' replaces
+        the plan with the line's attack, which the bridge sends as it is
+        (``line_push``: no losing-attack thinning, no solver override).
+        """
+        try:
+            from arenamcp import line_guard
+
+            if line_guard.attack_push_mode() == "off":
+                return False
+            from arenamcp.board_assessment import assess
+            from arenamcp.combat_identity import resolve_combatants
+
+            eligible = [int(i) for i in context.get("legal_attacker_ids") or [] if str(i).isdigit()] or [
+                int(entry.get("attackerInstanceId") or 0) for entry in context.get("raw_attackers") or []
+            ]
+            names = list(declared.attacker_names) if declared is not None else []
+            identities = list(declared.attacker_instance_ids) if declared is not None else []
+            if len(identities) != len(names):
+                identities = resolve_combatants(names, state, eligible, local_side=True)
+            assessment = assess(state)
+            result = getattr(assessment, "line_search", None)
+            if assessment is None or result is None:
+                return False
+            verdict = line_guard.attack_push(
+                result,
+                identities,
+                state,
+                eligible=eligible,
+                lethal_now=assessment.lethal_now,
+                all_in=assessment.all_in,
+                unknown_bodies=[u for u in assessment.unknowns if "unknown power/toughness" in u],
+            )
+        except Exception as error:  # the strategic layer never blocks a declaration
+            logger.debug("attack push skipped: %s", error)
+            return False
+        if verdict is None:
+            return False
+        source_action = declared if declared is not None else (plan.actions[0] if plan.actions else None)
+        original = _model_reasoning(plan, source_action) if source_action is not None else ""
+        if not verdict.applies:
+            logger.info(
+                "attack_push [%s]: would attack with %s (%s) [%s planned: %s]",
+                verdict.setting,
+                ", ".join(verdict.attack_names),
+                verdict.reason,
+                source,
+                original[:200] or "no reason given",
+            )
+            return False
+        from arenamcp.narration import spoken_list, spoken_name
+
+        names = list(verdict.attack_names)
+        attack = GameAction(
+            ActionType.DECLARE_ATTACKERS,
+            attacker_names=names,
+            attacker_instance_ids=list(verdict.attack_ids),
+            attacker_targets={name: verdict.at_walkers.get(name, "Opponent") for name in names},
+            reasoning=verdict.summary,
+            model_reasoning=original,
+            line_push=True,
+        )
+        logger.warning(
+            "attack_push: attacking with %s (%s) [%s planned: %s]",
+            ", ".join(names),
+            verdict.reason,
+            source,
+            original[:200] or "no reason given",
+        )
+        who = spoken_list([spoken_name(name) for name in dict.fromkeys(names)])
+        plan.actions = [attack]
+        plan.fallback_reason = FALLBACK_ATTACK_PUSH
+        plan.overall_strategy = (
+            f"Attack with {who}: by the board math, "
+            f"{'holding' if not identities else 'the planned attack'} ends {verdict.declared_text}; "
+            f"this attack {verdict.attack_text}."
+        )
+        plan.voice_advice = f"Attacking with {who}: by the board math, holding back ends worse."
+        return True
+
     def _check_attack_line(self, plan: ActionPlan, state: dict, context: dict) -> None:
         """Hold declared attackers the searched lines keep home when attacking dies sooner (ledger #152).
 
@@ -1946,10 +2095,21 @@ class ActionPlanner(_ActionLegalityMixin):
         (``ARENAMCP_ATTACK_LINE_GUARD``): 'shadow' logs what it would hold;
         'on' holds it, and a declaration emptied this way is a ``guard_hold``
         (#75) the bridge does not refill.
+
+        First the push (ledger #178, ``_push_line_attack``): a declaration
+        (an empty one included) the line search's attack beats is replaced by
+        that attack, and nothing after it thins it. The push only adds
+        attackers; holding them back is this guard's.
         """
         if str(context.get("type") or "").lower() != "declare_attackers":
             return
         declared = next((a for a in plan.actions if a.action_type == ActionType.DECLARE_ATTACKERS), None)
+        no_attack = declared is None and bool(plan.actions) and all(
+            a.action_type in (ActionType.CLICK_BUTTON, ActionType.PASS_PRIORITY) for a in plan.actions
+        )
+        if (declared is not None and len(plan.actions) == 1) or no_attack:
+            if self._push_line_attack(plan, state, context, declared):
+                return
         if declared is None or not declared.attacker_names:
             return
         try:
@@ -3784,13 +3944,16 @@ class ActionPlanner(_ActionLegalityMixin):
 
     def _sneak_policy(self, decision: Any, game_state: dict[str, Any]) -> tuple[Any, list[str]]:
         """Sneak without a model call (``sneak``; ledger #156, match be1a945f): a lethal Sneak cast
-        in our declare-blockers step, the attacker its cost returns, and before combat the casts
-        that would spend the mana a lethal Sneak needs. (decision, []) when none applies."""
+        in our declare-blockers step (or one half their life better than the normal cast, #179:
+        policy 'sneak_margin'), the attacker its cost returns, and before combat the casts that
+        would spend the mana such a Sneak needs. (decision, []) when none applies."""
         from arenamcp import sneak
 
         try:
             for policy, picker in (("sneak_lethal", sneak.sneak_cast_pick), ("sneak_return", sneak.return_pick)):
                 picked, why = picker(decision, game_state)
+                if picked and policy == "sneak_lethal" and not why.startswith("Lethal"):
+                    policy = "sneak_margin"  # ledger #179: half their life more than the normal cast
                 if picked:
                     self._last_decision_option_ids = picked
                     self._last_decision_reasoning = why
