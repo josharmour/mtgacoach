@@ -2578,11 +2578,23 @@ def _role(
             else " and nothing castable stops it"
         )
         return ROLE_CONTROL, f"dead in {dead_in} turns{after} ({board}) — stabilize: block, remove, gain life"
+    # "Race it or remove it" only while we have a clock to race with (2026-10-19 10:24:18: "race
+    # it" with our clock none).
+    answer = "race it or remove it" if our_clock is not None else "remove it"
+    pressure = _line_pressure(best_line, our_life=our_life, opp_life=opp_life, race_term=race_term)
     if race == "behind" and fast(their_clock):
+        if pressure is not None and our_life > opp_life:
+            # The board clock counts creatures on the battlefield only: a hasty creature we
+            # recast each turn and face burn are the line's (2026-10-19 10:31:19, 20 vs 7 life:
+            # "DEFENDER — their clock 5 vs ours none" while the line put them at 1).
+            return ROLE_AGGRESSOR, (
+                f"their clock {their_clock} vs ours {text(our_clock)} on board ({board}), but at {our_life} vs "
+                f"{opp_life} life the best line attacks for {pressure[0]} by T+2 while taking {pressure[1]}"
+            )
         if evasive_clock:
             return ROLE_RACE, (
                 f"their clock {their_clock} vs ours {text(our_clock)} ({board}) is evasive — our blockers stop "
-                "none of it: race it or remove it, holding creatures back changes nothing"
+                f"none of it: {answer}, holding creatures back changes nothing"
             )
         return ROLE_DEFENDER, (
             f"their clock {their_clock} vs ours {text(our_clock)} ({board}) — behind: block, trade, deploy bodies"
@@ -2614,7 +2626,6 @@ def _role(
         curve = f" (avg MV {deck_curve:.1f})" if deck_curve is not None else ""
         return ROLE_DEFENDER, f"empty boards{curve} — develop on curve, trade early"
     slow = f"slow clocks (ours {text(our_clock)}, theirs {text(their_clock)}; {board})"
-    pressure = _line_pressure(best_line, our_life=our_life, opp_life=opp_life, race_term=race_term)
     if pressure is not None:
         return (
             ROLE_AGGRESSOR,
@@ -2628,7 +2639,7 @@ def _role(
         return ROLE_AGGRESSOR, f"{slow} — we're slightly ahead: keep pressure, add evasion"
     if race == "behind" or their_power > our_power:
         if evasive_clock and race == "behind":
-            return ROLE_RACE, f"{slow} — their damage is evasive, blockers stop none of it: race or remove it"
+            return ROLE_RACE, f"{slow} — their damage is evasive, blockers stop none of it: {answer}"
         return ROLE_DEFENDER, f"{slow} — hold blockers, develop bigger threats"
     return ROLE_RACE, f"{slow} — find evasion or removal to break the stall"
 
