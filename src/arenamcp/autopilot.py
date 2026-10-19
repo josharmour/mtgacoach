@@ -48,6 +48,7 @@ from arenamcp.gre_bridge import (
     enrich_snapshot_from_pending_response,
     get_bridge,
 )
+from arenamcp.stack_order import stack_top
 from arenamcp.target_effects import source_effect_text, target_effect_is_harmful
 
 logger = logging.getLogger(__name__)
@@ -1550,7 +1551,7 @@ class AutopilotEngine(
                 except (TypeError, ValueError):
                     continue
         if picked is None and stack:
-            picked = stack[-1]  # top of stack
+            picked = stack_top(game_state)  # index 0 (arenamcp.stack_order)
 
         if picked:
             matched = bool(source_id) and str(picked.get("instance_id")) == str(source_id)
@@ -5192,6 +5193,11 @@ class AutopilotEngine(
                 explanation = f"Choose {', '.join(labels)}." if labels else "Find no cards."
             elif decision.request_type == "SelectTargets" and not labels:
                 explanation = "Choose no targets."
+            elif decision.request_type == "CastingTimeOptions":
+                # "Done" casts the spell; read as a pass it was spoken "Passing" (ledger #119).
+                from arenamcp.casting_options import casting_option_speech
+
+                explanation = casting_option_speech(decision, option_ids, game_state) or explanation
             from arenamcp.narration import submission_narration
 
             explanation = submission_narration(explanation, reasoning)

@@ -277,6 +277,12 @@ def assemble_state(results: list[Any], index: dict[str, int]) -> dict[str, Any]:
             "total_count": _zone_count(result(f"{key}_count")),
             "cards": cards,
         }
+        if key == "stack":
+            # VisibleCards follow insertion order; CardIds is the GRE zone's own
+            # objectInstanceIds, top-first (arenamcp.stack_order).
+            card_ids = _uint_list(field(zone_node, "CardIds"))
+            if card_ids:
+                zones[key]["card_ids"] = card_ids
 
     response: dict[str, Any] = {"ok": True, "turn": turn, "players": player_rows}
     if zones:

@@ -173,20 +173,23 @@ def test_target_options_labeled_with_controller():
 
 
 def _two_triggers_state(source_key):
-    """Seam Rip's exile trigger and Optimistic Scavenger's +1/+1 trigger share the stack."""
+    """Seam Rip's exile trigger and Optimistic Scavenger's +1/+1 trigger share the stack.
+
+    The Scavenger trigger is on top: index 0 (arenamcp.stack_order).
+    """
     state = _state(own_ids=(311,), their_ids=(287,))
     state["stack"] = [
-        {
-            "instance_id": 901,
-            "name": "Seam Rip ability",
-            "controller_seat_id": 1,
-            "oracle_text": "When this enchantment enters, exile target nonland permanent an opponent controls",
-        },
         {
             "instance_id": 902,
             "name": "Optimistic Scavenger ability",
             "controller_seat_id": 1,
             "oracle_text": "Whenever an enchantment you control enters, put a +1/+1 counter on target creature.",
+        },
+        {
+            "instance_id": 901,
+            "name": "Seam Rip ability",
+            "controller_seat_id": 1,
+            "oracle_text": "When this enchantment enters, exile target nonland permanent an opponent controls",
         },
     ]
     state[source_key] = {"sourceId": 901} if source_key == "_bridge_request_payload" else {"source_id": 901}

@@ -3826,6 +3826,8 @@ class ActionPlanner(_ActionLegalityMixin):
             from arenamcp.decisions import default_group_choice
 
             return default_group_choice(decision, game_state)
+        if decision.request_type == "CastingTimeOptions":
+            return self._casting_options_fallback(decision, game_state)
         return self.deterministic_option_pick(decision)
 
     def _board_math_fallback(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
@@ -3835,15 +3837,7 @@ class ActionPlanner(_ActionLegalityMixin):
         line = line_fallback_option_pick(decision, game_state, picked)
         if line is not None:
             (picked, why), source = line, "line"
-        failure = getattr(self, "last_llm_failure", "")
-        if failure == "unavailable" and getattr(self, "_last_llm_too_slow", False):
-            lead = "Model too slow"
-        elif failure == "unavailable":
-            lead = "Model unavailable"
-        elif failure == "set_aside":
-            lead = "The model's pick was set aside"
-        else:
-            lead = "No usable model answer"
+        lead = self._fallback_lead()
         self._last_decision_option_ids = picked
         self._last_decision_reasoning = f"{lead}; {why}."
         trace = getattr(self, "_last_decision_trace", None)
@@ -3874,6 +3868,55 @@ class ActionPlanner(_ActionLegalityMixin):
                 _option_text(decision, picked[0]),
                 why,
             )
+        return picked
+
+    def _fallback_lead(self) -> str:
+        """Why a fallback answers instead of the model, for its reasoning and log line."""
+        failure = getattr(self, "last_llm_failure", "")
+        if failure == "unavailable" and getattr(self, "_last_llm_too_slow", False):
+            return "Model too slow"
+        if failure == "unavailable":
+            return "Model unavailable"
+        if failure == "set_aside":
+            return "The model's pick was set aside"
+        return "No usable model answer"
+
+    def _casting_options_fallback(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
+        """The model gave no usable casting choice: finish the cast we started (ledger #121).
+
+        Kicker when the line's target for this cast needs it and our mana
+        pays it, else Done (cast normally), else the line's mode or the first
+        legal one: see :func:`arenamcp.casting_options.casting_fallback_choice`.
+        Declining here cancelled our own Burst Lightning on every turn of the
+        2026-10-19 13:05 outage, and the self-cancel guard then withheld it.
+        """
+        from types import SimpleNamespace
+
+        from arenamcp.casting_options import casting_fallback_choice, casting_spell
+
+        name = str(casting_spell(decision, game_state).get("name") or "")
+        intent = self._cast_intent_for(SimpleNamespace(source_label=name)) if name else None
+        picked, why = casting_fallback_choice(
+            decision,
+            game_state,
+            line_target=str((intent or {}).get("line_target") or ""),
+            line_target_id=_as_int((intent or {}).get("line_target_id")),
+        )
+        if not picked:
+            return [DECLINE_DECISION]
+        lead = self._fallback_lead()
+        self._last_decision_option_ids = picked
+        self._last_decision_reasoning = f"{lead}; {why}."
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict):
+            trace.update(
+                fallback="casting_options",
+                validated_ids=picked,
+                fallback_reason=why,
+                llm_failure=getattr(self, "last_llm_failure", ""),
+            )
+        logger.warning("typed-decision fallback (%s): %s -> %s", lead.lower(), why, picked)
+        self._remember_chosen_x(decision, picked)
         return picked
 
     def _second_look(
@@ -4841,7 +4884,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 if picked_entry is not None:
                     break
         if picked_entry is None and stack and not source_id:
-            picked_entry = stack[-1]
+            from arenamcp.stack_order import stack_top
+
+            picked_entry = stack_top(game_state)
         context = game_state.get("decision_context") or {}
         context_source = _as_int(context.get("source_id") or context.get("sourceId"))
         context_matches = not source_id or source_id == context_source
@@ -6871,7 +6916,12 @@ class ActionPlanner(_ActionLegalityMixin):
             return [opts[0].option_id]
         if decision.request_type == "Mulligan":
             return ["mull:keep"]
-        if decision.request_type in {"CastingTimeOptions", "OptionalAction", "Search"}:
+        if decision.request_type == "CastingTimeOptions":
+            # Done, else the first legal mode: never a cancel of our own cast (ledger #121).
+            from arenamcp.casting_options import casting_fallback_choice
+
+            return casting_fallback_choice(decision, {})[0] or [DECLINE_DECISION]
+        if decision.request_type in {"OptionalAction", "Search"}:
             return [DECLINE_DECISION]
         if decision.min_weight is not None:
             from itertools import combinations, islice
@@ -7026,7 +7076,7 @@ def own_stack_only(decision: Any, state: dict[str, Any]) -> str:
             card = find_source(state, meta)
             if card.get("type_line") and not hand_card(card).instant_speed:
                 return ""
-    return str(stack[-1].get("name") or "spell")
+    return str(stack[0].get("name") or "spell")  # the top (arenamcp.stack_order)
 
 
 def _controller_seat(card: dict[str, Any]) -> Any:
