@@ -1090,6 +1090,11 @@ def _handle_actions_available(game_state: "GameState", msg: dict) -> bool:
     return False
 
 
+def _mana_count(option: dict) -> int:
+    """Mana one ManaPaymentOption makes."""
+    return sum(_coerce_int(mana.get("count", 1), 1) for mana in _ensure_dict_list(option.get("mana", [])))
+
+
 def _handle_pay_costs(game_state: "GameState", msg: dict) -> bool:
     """Handle PayCostsReq messages."""
     import time as _time
@@ -1178,14 +1183,18 @@ def _handle_pay_costs(game_state: "GameState", msg: dict) -> bool:
         options = _ensure_dict_list(action.get("manaPaymentOptions", []))
         mana = [m for option in options for m in _ensure_dict_list(option.get("mana", []))]
         specs = {str(s.get("type")) for m in mana for s in _ensure_dict_list(m.get("specs", []))}
-        payment_sources.append(
-            {
-                "instance_id": _coerce_int(action.get("instanceId", 0), 0),
-                "ability_grp_id": _coerce_int(action.get("abilityGrpId", 0), 0),
-                "colors": sorted({_MANA_ABBREV.get(str(m.get("color")), str(m.get("color"))) for m in mana}),
-                "treasure": "ManaSpecType_FromTreasure" in specs,
-            }
-        )
+        payment_source = {
+            "instance_id": _coerce_int(action.get("instanceId", 0), 0),
+            "ability_grp_id": _coerce_int(action.get("abilityGrpId", 0), 0),
+            "colors": sorted({_MANA_ABBREV.get(str(m.get("color")), str(m.get("color"))) for m in mana}),
+            "treasure": "ManaSpecType_FromTreasure" in specs,
+        }
+        # A source making more than one mana at once (Sol Ring's {C}{C}):
+        # mana_payment.payment_shortfall must not count it as one.
+        amount = max((_mana_count(option) for option in options), default=1)
+        if amount > 1:
+            payment_source["amount"] = amount
+        payment_sources.append(payment_source)
     # Hybrid/Phyrexian requirements only reach mana_str; a payment plan built
     # from mana_requirements alone would not cover them.
     requirements_modeled = all(
