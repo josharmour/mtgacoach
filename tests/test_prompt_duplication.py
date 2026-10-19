@@ -114,3 +114,164 @@ def test_playbook_quotes_a_card_cited_by_two_mechanisms_once():
     assert rendered.count(counter_rule) == 1
     assert "<nobr>" not in rendered
     assert "Fixture Growing Captain [grp:1001], rule 2: quoted above" in rendered
+
+
+# --- the zones point to the deck reference's rules -----------------------------------
+
+CATALOG = {
+    100: {
+        "name": "Fixture Mana Elf",
+        "type_line": "Creature — Elf Druid",
+        "mana_cost": "{G}",
+        "cmc": 1,
+        "power": 1,
+        "toughness": 1,
+        "oracle_text": "{T}: Add {G}. Spend this mana only to cast creature spells.",
+    },
+    101: {
+        "name": "Fixture Growth",
+        "type_line": "Sorcery",
+        "mana_cost": "{1}{G}",
+        "cmc": 2,
+        "oracle_text": "Put a +1/+1 counter on each creature you control. Draw a card.",
+    },
+    102: {
+        "name": "Forest",
+        "type_line": "Basic Land — Forest",
+        "mana_cost": "",
+        "cmc": 0,
+        "oracle_text": "({T}: Add {G}.)",
+    },
+    200: {
+        "name": "Fixture Matriarch",
+        "type_line": "Legendary Creature — Elf Noble",
+        "mana_cost": "{2}{G}",
+        "cmc": 3,
+        "power": 2,
+        "toughness": 3,
+        "oracle_text": "Whenever another creature you control enters, it gains haste until end of turn.",
+    },
+}
+ELF_RULE = CATALOG[100]["oracle_text"]
+GROWTH_RULE = CATALOG[101]["oracle_text"]
+MATRIARCH_RULE = CATALOG[200]["oracle_text"]
+
+
+def _card(instance_id, grp_id, **extra):
+    return {
+        "instance_id": instance_id,
+        "grp_id": grp_id,
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        **CATALOG[grp_id],
+        **extra,
+    }
+
+
+def _deck_state():
+    return _state(
+        match_id="zones-point-to-reference",
+        deck_cards=[100] * 2 + [101] * 2 + [102] * 16,
+        commander_grp_ids=[200],
+        hand=[_card(11, 100), _card(12, 100), _card(13, 101)],
+        battlefield=[_card(21, 102, turn_entered_battlefield=1)],
+        command=[_card(31, 200)],
+        zones={"library_count": 14, "opponent_hand_count": 5},
+    )
+
+
+class _Capture:
+    def __init__(self, reply):
+        self.reply = reply
+        self.calls = []
+
+    def complete(self, system, user, *args, **kwargs):
+        self.calls.append(user)
+        return self.reply
+
+
+def _typed_prompt(state):
+    from arenamcp.action_planner import ActionPlanner
+    from arenamcp.decisions import build_pending_decision
+
+    decision = build_pending_decision(
+        {
+            "has_pending": True,
+            "request_type": "ActionsAvailable",
+            "can_pass": True,
+            "actions": [
+                {"actionType": "ActionType_Cast", "grpId": 101, "instanceId": 13, "hasAutoTap": True},
+                {"actionType": "ActionType_Pass"},
+            ],
+        },
+        resolve_name=lambda gid: CATALOG.get(gid, {}).get("name", ""),
+        resolve_zone=lambda iid: "hand",
+        activation_unaffordable=lambda action: False,
+    )
+    backend = _Capture('{"option_ids":["pass"]}')
+    ActionPlanner(backend)._llm_decision_options(decision, deepcopy(state))
+    return backend.calls[-1]
+
+
+def _coach_prompt(state):
+    from types import SimpleNamespace
+
+    backend = _Capture("Pass.")
+    coach = CoachEngine(backend=backend)
+    coach._ensure_game_plan_mgr = lambda: None
+    coach._rules_db = SimpleNamespace(get_rules_for_situation=lambda *args, **kwargs: [])
+    coach.get_advice(deepcopy(state), trigger="new_turn")
+    return backend.calls[-1]
+
+
+def _plan_prompt(state):
+    from arenamcp.action_planner import ActionPlanner
+
+    return ActionPlanner(_Capture("{}"))._build_action_prompt(
+        deepcopy(state), "new_turn", legal_actions=["Cast Fixture Growth [OK]", "Pass"]
+    )
+
+
+def test_hand_and_command_zone_rules_are_quoted_once_with_the_deck_reference(monkeypatch):
+    from arenamcp.match_context import reset_seen_rules
+
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, epoch: CATALOG[gid])
+    for build in (_typed_prompt, _coach_prompt, _plan_prompt):
+        reset_seen_rules()
+        prompt = build(_deck_state())
+        # Before: the deck reference, then the hand (once per copy) and the command zone.
+        assert prompt.count(ELF_RULE) == 1, build.__name__
+        assert prompt.count(GROWTH_RULE) == 1, build.__name__
+        assert prompt.count(MATRIARCH_RULE) == 1, build.__name__
+        assert ELF_RULE in prompt.split("\n\n", 1)[0]  # the deck reference, the prompt's first block
+        hand = prompt.split("\nHAND:", 1)[1]
+        assert "Fixture Mana Elf #1" in hand and "Fixture Mana Elf #2" in hand and "Fixture Growth" in hand
+
+
+def test_without_a_deck_list_the_hand_quotes_each_card_once():
+    state = _deck_state()
+    state["deck_cards"] = []
+    context = CoachEngine.__new__(CoachEngine)._format_game_context(state, for_planner=True)
+    assert context.count(ELF_RULE) == 1  # before: once per copy
+    assert context.count(GROWTH_RULE) == 1
+    assert context.count(MATRIARCH_RULE) == 1
+
+
+def test_repeated_board_copies_quote_their_rules_once():
+    token = {
+        "name": "Cadet",
+        "type_line": "Token Creature — Human Soldier",
+        "object_kind": "TOKEN",
+        "power": 1,
+        "toughness": 1,
+        "oracle_text": "When this token dies, you gain 1 life.",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "turn_entered_battlefield": 3,
+    }
+    state = _state(battlefield=[{**token, "instance_id": iid, "is_tapped": iid == 52} for iid in (51, 52, 53)])
+    context = CoachEngine.__new__(CoachEngine)._format_game_context(state, for_planner=True)
+    assert context.count("When this token dies, you gain 1 life.") == 1  # before: 3
+    for number in (1, 2, 3):
+        assert f"*Cadet #{number} 1/1" in context
+    assert "*Cadet #2 1/1 [T]" in context

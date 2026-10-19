@@ -1808,7 +1808,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
     @staticmethod
     def _rules_in_deck_reference(card: dict, game_state: dict[str, Any]) -> bool:
-        """Omit repeated rules only when the exact text is in the shared prefix."""
+        """Omit repeated rules only when the same text is in the shared prefix.
+
+        "Same" ignores markup and Arena's repeated renderings (the reference
+        quotes the card database's text, a zone the bridge's), the way both
+        are rendered (:func:`arenamcp.match_context.oracle_lines`).
+        """
         if not game_state.get("deck_reference"):
             return False
         catalog = game_state.get("deck_catalog") or {}
@@ -1818,10 +1823,23 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         quoted = game_state.get("deck_rules_grp_ids")
         if quoted is not None and card.get("grp_id") not in quoted:
             return False  # the reference lists this card by name only
+        from arenamcp.match_context import oracle_lines
+
         return bool(card.get("oracle_text")) and (
             (card.get("modified_name") or card.get("name")) == entry.get("name")
-            and card.get("oracle_text") == entry.get("oracle_text")
+            and oracle_lines(card.get("oracle_text")) == oracle_lines(entry.get("oracle_text"))
         )
+
+    @staticmethod
+    def _rules_shown_before(card: dict, shown: set[tuple[str, str]]) -> bool:
+        """True for a later copy (same name and rules) on the same side; records a first copy in ``shown``."""
+        key = (str(card.get("name") or ""), str(card.get("oracle_text") or ""))
+        if not key[1]:
+            return False
+        if key in shown:
+            return True
+        shown.add(key)
+        return False
 
     def _format_board_card(
         self,
@@ -2582,6 +2600,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         can_play_land = (lands_played == 0) and is_my_turn and "Main" in phase and len(stack) == 0
         hand_name_counts = Counter(c.get("name", "Unknown") for c in hand)
         hand_name_seen: dict[str, int] = {}
+        hand_rules_shown: set[tuple[str, str]] = set()
         engine_casts = self._engine_cast_actions(game_state)
 
         for card in hand:
@@ -2721,7 +2740,17 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 "basic" in type_line or name in ["Plains", "Island", "Swamp", "Mountain", "Forest"]
             )
             oracle_stripped = self._remove_reminder_text(oracle_text) if oracle_text else ""
-            show_oracle = bool(oracle_text) and not is_basic_land
+            # Rules once per card: the deck reference quotes every card seen
+            # this game, hand included, and a second copy repeats the first.
+            rules_key = (name, oracle_stripped)
+            show_oracle = (
+                bool(oracle_text)
+                and not is_basic_land
+                and rules_key not in hand_rules_shown
+                and not self._rules_in_deck_reference(card, game_state)
+            )
+            if show_oracle:
+                hand_rules_shown.add(rules_key)
 
             type_tag = ""
             if "creature" not in type_line and "land" not in type_line:
@@ -2940,8 +2969,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             for c in your_cmds:
                 cost_str = f" {c.get('mana_cost', '')}" if c.get("mana_cost") else ""
                 cmd_parts.append(f"  YOUR CMD: {c.get('name', 'Unknown')}{cost_str}")
+                # The deck reference's COMMANDER REFERENCE quotes these rules.
                 oracle = (
-                    self._clean_oracle_for_prompt(c.get("oracle_text", "") or "").replace("\n", " ").strip()
+                    ""
+                    if self._rules_in_deck_reference(c, game_state)
+                    else self._clean_oracle_for_prompt(c.get("oracle_text", "") or "").replace("\n", " ").strip()
                 )
                 if oracle:
                     cmd_parts.append(f"    {oracle}")
@@ -3242,6 +3274,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             if your_cards:
                 your_name_counts = Counter(c.get("name", "Unknown") for c in your_cards)
                 your_name_seen: dict[str, int] = {}
+                your_rules_shown: set[tuple[str, str]] = set()
                 for card in your_cards:
                     lines.extend(
                         self._format_board_card(
@@ -3253,7 +3286,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                             your_name_seen,
                             is_local=True,
                             for_planner=for_planner,
-                            rules_in_reference=self._rules_in_deck_reference(card, game_state),
+                            rules_in_reference=self._rules_in_deck_reference(card, game_state)
+                            or self._rules_shown_before(card, your_rules_shown),
                         )
                     )
             else:
@@ -3285,6 +3319,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             if opp_cards:
                 opp_name_counts = Counter(c.get("name", "Unknown") for c in opp_cards)
                 opp_name_seen: dict[str, int] = {}
+                opp_rules_shown: set[tuple[str, str]] = set()
                 for card in opp_cards:
                     # Add inferred ATK flag before formatting
                     if card.get("instance_id") in _inferred_atk_ids and not card.get("is_attacking"):
@@ -3300,7 +3335,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                             opp_name_seen,
                             is_local=False,
                             for_planner=for_planner,
-                            rules_in_reference=self._rules_in_deck_reference(card, game_state),
+                            rules_in_reference=self._rules_in_deck_reference(card, game_state)
+                            or self._rules_shown_before(card, opp_rules_shown),
                         )
                     )
             else:
