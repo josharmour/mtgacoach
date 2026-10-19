@@ -371,7 +371,6 @@ def test_autopilot_announces_plan_with_current_facts():
     engine = AutopilotEngine.__new__(AutopilotEngine)
     engine._game_plan_mgr = GamePlanManager(_Backend("{}"))
     engine._ui_game_plan_fn = Mock()
-    engine._last_emitted_game_plan = None
     engine._announce_game_plan(deepcopy(G1_T12_AFTER_VOLUME))
     payload = engine._ui_game_plan_fn.call_args.args[0]
     assert payload["source"] == "autopilot"

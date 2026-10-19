@@ -60,6 +60,7 @@ from arenamcp.decision_arbiter import arbitrate
 from arenamcp.game_plan import STRATEGIC_LANE, background_llm_allowed, circuit_snapshot, llm_available
 from arenamcp.logging_config import LOG_DIR, LOG_FILE, configure_logging
 from arenamcp.mana import get_local_seat_id
+from arenamcp.plan_card import PlanCard
 from arenamcp.settings import get_settings
 from arenamcp.standalone_auto_queue import _AutoQueueMixin
 from arenamcp.standalone_autopilot_capture import _AutopilotCaptureMixin
@@ -549,29 +550,64 @@ class StandaloneCoach(
                 tracker.record_failure(error=detail)
         return (HealthState.OK if ok else HealthState.DOWN), detail
 
-    def _emit_coach_game_plan(self, game_state: dict | None = None) -> None:
-        """Push the coach's structured game plan to the UI strategy card.
+    def _game_plan_card(self) -> PlanCard | None:
+        """The sidebar plan card's one emitter, shared with the autopilot; None without a UI hook."""
+        card = getattr(self, "_plan_card", None)
+        if card is None:
+            ui = getattr(self, "ui", None)
+            ui_fn = getattr(ui, "game_plan", None) if ui is not None else None
+            if not callable(ui_fn):
+                return None
+            card = self._plan_card = PlanCard(ui_fn)
+        return card
 
-        Advice-mode counterpart of the autopilot's ui_game_plan_fn emission:
-        the plan plus board facts (role, clocks, lookahead) recomputed from
-        ``game_state``; deduped on payload, never raises into the coaching loop.
+    def _publish_game_plan(self, game_state: dict | None = None, *, throttled: bool = False) -> None:
+        """Push the plan card (plan + board facts + outlook for ``game_state``).
+
+        Deduped against what the card shows (the loop and the autopilot share
+        the card); ``throttled`` pushes at most every ``SYNC_INTERVAL_S``. The
+        source is "autopilot" while it is playing, else "coach". Never raises
+        into the coaching loop; safe on a reform thread.
         """
-        ui_fn = getattr(self.ui, "game_plan", None) if self.ui else None
-        if not callable(ui_fn) or self._coach is None:
-            return
         try:
-            mgr = getattr(self._coach, "_game_plan_mgr", None)
-            payload_fn = getattr(mgr, "ui_payload", None) if mgr is not None else None
-            payload = payload_fn(game_state) if callable(payload_fn) else None
-            if not isinstance(payload, dict):
-                plan = getattr(mgr, "current", None) if mgr is not None else None
-                payload = dict(plan.as_payload()) if plan is not None else {}
-            payload = dict(payload, source="coach") if payload else {}
-            if payload != getattr(self, "_last_coach_game_plan", None):
-                self._last_coach_game_plan = payload
-                ui_fn(payload)
-        except Exception as e:
-            logger.debug(f"coach game-plan emit failed: {e}")
+            card = self._game_plan_card()
+            coach = getattr(self, "_coach", None)
+            if card is None or coach is None:
+                return
+            ensure = getattr(coach, "_ensure_game_plan_mgr", None)
+            mgr = ensure() if callable(ensure) else getattr(coach, "_game_plan_mgr", None)
+            if mgr is None:
+                return
+            # No window argument: is_window_given_up clears the given-up
+            # window as it checks, which belongs to the coaching loop alone.
+            source = "autopilot" if self._autopilot_drives() else "coach"
+            push = card.sync if throttled else card.publish
+            push(mgr, game_state, source=source)
+        except Exception as error:
+            logger.debug(f"plan card push failed: {error}")
+
+    def _sync_game_plan(self, state: dict[str, Any]) -> None:
+        """Repaint the plan card from this loop snapshot when what it shows changed (throttled).
+
+        Runs every coaching-loop iteration whoever is playing: the opponent's
+        turn fires only quiet triggers, so no advice or decision call repaints
+        the card there (2026-10-18 match 02fc3a1d: the outlook showed
+        "lethal on T14" for 22 s after the board said "dead in 2 turns").
+        """
+        if getattr(self, "draft_mode", False):
+            return
+        turn = state.get("turn") or {}
+        if turn.get("turn_number") and state.get("match_id"):
+            self._publish_game_plan(state, throttled=True)
+
+    def _latest_game_state(self) -> dict[str, Any] | None:
+        """The current snapshot, or None when it cannot be read (any thread)."""
+        try:
+            state = self._normalize_turn_snapshot(self._mcp.get_game_state())
+        except Exception as error:
+            logger.debug(f"latest game state unavailable: {error}")
+            return None
+        return state if isinstance(state, dict) and state else None
 
     # ----- LLM call discipline -----------------------------------------------
     #
@@ -770,11 +806,11 @@ class StandaloneCoach(
             if mgr is None:
                 return
             mgr.seed(getattr(coach, "_deck_strategy", None))
-            on_updated = None
-            if not self._autopilot_drives():
 
-                def on_updated() -> None:
-                    self._emit_coach_game_plan(state)
+            def on_updated() -> None:
+                # The answer lands 10-60 s after the reform started: show the
+                # new plan against the board as it is now, not ``state``.
+                self._publish_game_plan(self._latest_game_state() or state)
 
             mgr.request_reform(state, on_updated=on_updated)
         except Exception as error:
@@ -978,6 +1014,8 @@ class StandaloneCoach(
                 self._autopilot._request_watch_fn = _watch
             # The log catch-up wait reads Player.log itself (not just the parsed state).
             self._autopilot._poll_log_fn = self._mcp.poll_log if self._mcp else None
+            # One plan card for the loop and the autopilot: one dedupe, one picture.
+            self._autopilot._plan_card = self._game_plan_card()
             if self._coach:
                 self._autopilot._game_plan_mgr = self._coach._ensure_game_plan_mgr()
                 if self._autopilot._game_plan_mgr:
@@ -2067,6 +2105,8 @@ class StandaloneCoach(
                 self._maybe_analyze_deck(curr_state)
                 # Plan our next turn while no decision is pending.
                 self._maybe_refresh_game_plan(curr_state)
+                # Keep the sidebar's plan card on this board, triggers or not.
+                self._sync_game_plan(curr_state)
 
                 # Dead no matter what? Recommend conceding (once per game) and,
                 # with autoplay on, run the cancellable auto-concede countdown.
@@ -2888,7 +2928,8 @@ class StandaloneCoach(
                                 advice = self._coach.get_advice(
                                     curr_state, trigger=trigger, style=self.advice_style
                                 )
-                                self._emit_coach_game_plan(curr_state)
+                                # The advice call took seconds: the card shows the board now.
+                                self._publish_game_plan(self._latest_game_state() or curr_state)
                                 if advice and advice.strip().lower().rstrip(".").startswith(
                                     "no actionable play"
                                 ):
