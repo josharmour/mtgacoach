@@ -20,12 +20,14 @@ creatures follow the rules the board assessment uses; all combat is
 What a cast does: a creature's body; creature tokens a spell (or a mode, or a
 permanent's enters trigger) makes when their count, power/toughness and
 keywords are printed ("Create two 3/1 red Elemental creature tokens with
-haste."); removal, bounce, life gain, damage to the opponent, and a mana rock,
-from the spell's text or a permanent's own enters trigger (not a fight; not
-one with a condition or a reflexive "when you do", ``applied_text``; not a
-trigger on another permanent entering; nothing under Hushbringer).
-``unmodelled_effect`` names what a card does beyond that (an aura, a pump, a
-copy token, an attack trigger, an X spell, ...): a line is no evidence about
+haste."); removal, bounce, life gain, damage to the opponent, damage to each
+of their creatures (``Variant.sweep``), and a mana rock, from the spell's text
+or a permanent's own enters trigger (not a fight; not one with a condition or
+a reflexive "when you do", ``applied_text``; not a trigger on another
+permanent entering; nothing under Hushbringer). A creature's fixed ping to
+players when its side attacks (Hired Claw, ``attack_pings``) hits on each
+attack. ``unmodelled_effect`` names what a card does beyond that (an aura, a
+pump, a copy token, another attack trigger, an X spell, ...): a line is no evidence about
 such a cast, and a cast that does nothing else the search values is never
 made in a line.
 """
@@ -57,6 +59,7 @@ from arenamcp.board_assessment import (
     _kills,
     _lifelink,
     _name,
+    _protected_from,
     _reach_or_flying,
     _removal_clauses,
     _Spell,
@@ -182,6 +185,47 @@ def card_flow(text: str) -> bool:
     return bool(sentences) and all(_CARD_FLOW.match(s) for s in sentences)
 
 
+# A fixed ping to players when we attack: "Whenever you attack with one or more Lizards, this
+# creature deals 1 damage to target opponent." (Hired Claw), "Whenever ~ attacks, it deals 1
+# damage to each opponent", "... defending player loses 2 life". Its subject is who must attack:
+# anyone ("you attack"), a creature type ("with one or more lizards") or the card itself.
+_ATTACK_PING = re.compile(
+    r"^whenever (?:(?P<anyone>you attack)(?: with one or more (?P<kind>[a-z'-]+))?"
+    r"|(?:~|this creature|cardname) attacks)\s*,\s*"
+    r"(?:(?:~|this creature|it|cardname) deals (?P<n>\d+) damage to (?:target opponent|each opponent|any target"
+    r"|target player|(?:the )?defending player|target (?:player|opponent) or planeswalker)"
+    r"|(?:each opponent|target opponent|(?:the )?defending player) loses (?P<m>\d+) life)\.?$"
+)
+
+
+def attack_ping_line(line: str) -> tuple[int, str] | None:
+    """(damage, who must attack: 'any' / 'self' / a creature type) of one lower-case rules line
+    (name as '~') that is a fixed attack-trigger ping to players, else None."""
+    match = _ATTACK_PING.match(line.strip())
+    if match is None:
+        return None
+    amount = int(match.group("n") or match.group("m"))
+    if not match.group("anyone"):
+        return amount, "self"
+    kind = match.group("kind") or ""
+    if kind.endswith("ves"):  # elves, wolves
+        return amount, kind[:-3] + "f"
+    return amount, (re.sub(r"(?<!s)s$", "", kind) if kind else "any")
+
+
+def attack_pings(card: dict) -> tuple[tuple[int, str], ...]:
+    """The card's own fixed attack-trigger pings to players (``attack_ping_line``), () without one.
+
+    Ledger #19 (2026-10-19, matches 7efad315 T2 and f9e0ec3b T8): Hired
+    Claw's ping was "its damage to players", the search couldn't value it, so
+    the line guard and the plan check skipped every Claw choice.
+    """
+    text = _QUOTED.sub("", _text(card))
+    if "attack" not in text:
+        return ()
+    return tuple(found for line in text.splitlines() if (found := attack_ping_line(line)) is not None)
+
+
 # The soft limit is a work budget, not a clock, so the same board always gets the same
 # lines. Work is counted in roughly 10-microsecond units (M-series Mac, 2026-10-07): a
 # node expansion 6, a combat solve 2 + its attackers and able blockers (the solver is
@@ -301,6 +345,8 @@ class Variant:
     # Damage it deals its creature target as one piece of a combined kill (``HandSpell.chips``):
     # the target dies once the pieces aimed at it this turn reach its toughness.
     chip: int = 0
+    # Damage it deals each of their creatures (Tectonic Hazard): it adds to the pieces' damage.
+    sweep: int = 0
 
 
 @dataclass(eq=False)
@@ -583,8 +629,8 @@ def _trigger_unmodelled(card: dict, name: str) -> bool:
     text = _QUOTED.sub("", _text(card))
     for match in _CREATURE_TRIGGER.finditer(text):
         effect = match.group("effect").strip()
-        if card_flow(effect):
-            continue
+        if card_flow(effect) or attack_ping_line(match.group(0)):
+            continue  # card flow, or a fixed ping to players on attack (``Moves.pinged``)
         subject, rest = match.group("subject").strip(), match.group("rest")
         if (
             match.group("event") in ("enters", "enter")
@@ -597,6 +643,48 @@ def _trigger_unmodelled(card: dict, name: str) -> bool:
             continue
         return True
     return False
+
+
+# A sentence of a spell's text the search applies in full: damage or life loss to each opponent,
+# damage to each creature they control, life gain (Boltwave; Tectonic Hazard: "deals 1 damage to
+# each opponent and each creature they control").
+_APPLIED_SENTENCE = re.compile(
+    r"^(?:~ deals \d+ damage to (?:each opponent(?: and each creature (?:they|your opponents) control)?"
+    r"|each creature (?:they|your opponents|an opponent) controls?)"
+    r"|each opponent loses \d+ life|you gain \d+ life)$"
+)
+# Damage to each of their creatures (a one-sided sweep): ``Variant.sweep``.
+_SWEEP = re.compile(
+    r"\bdeals (?P<n>\d+) damage to (?:each opponent and )?each creature (?:they|your opponents|an opponent) controls?\b"
+)
+
+
+def _sweep(text: str) -> int:
+    """Damage ``text`` (lower-case cast text) deals each creature the opponent controls (0: none)."""
+    return max((int(m.group("n")) for m in _SWEEP.finditer(text or "")), default=0)
+
+
+def fully_applied(card: dict) -> bool:
+    """Every sentence of the card's cast text is one the search applies (``_APPLIED_SENTENCE``) or
+    card flow. Ledger #20 / #43 (2026-10-19): Boltwave ("3 damage to each opponent") and Tectonic
+    Hazard were "its effect", which kept every option on their menus from a "LINE best" tag and
+    skipped the game plan's line check (27 and 28 times that morning)."""
+    sentences = [
+        s.strip(" ,")
+        for line in _cast_text(card).splitlines()
+        for s in re.split(r"[.;]\s*", line)
+        if s.strip(" ,")
+    ]
+    return bool(sentences) and all(_APPLIED_SENTENCE.match(s) or card_flow(s) for s in sentences)
+
+
+def _unapplied_harm(card: dict) -> bool:
+    """``harms_players`` without the fixed attack-trigger pings the search applies (Hired Claw)."""
+    if not harms_players(card):
+        return False
+    text = _QUOTED.sub("", _text(card))
+    kept = "\n".join(line for line in text.splitlines() if not attack_ping_line(line))
+    return harms_players({"name": "", "oracle_text": kept})
 
 
 def _x_unmodelled(card: dict, role: str) -> bool:
@@ -616,8 +704,11 @@ def unmodelled_effect(card: dict | None, result: Any = None) -> str:
     The search (``Moves._variants``) values a creature's body, creature
     tokens it can read, removal, bounce, life gain, damage to the opponent, a
     mana rock, 'choose one' modes of those kinds and a permanent's own
-    unconditional enters trigger of those kinds (a fight aside). Card flow
-    (draw, scry, discard) and counterspells change nothing it values.
+    unconditional enters trigger of those kinds (a fight aside), a fixed
+    attack-trigger ping to players (Hired Claw, ``attack_pings``) and a
+    spell that only deals damage to each opponent and each of their creatures
+    (Boltwave, Tectonic Hazard: ``fully_applied``). Card flow (draw, scry,
+    discard) and counterspells change nothing it values.
     Anything else counts as nothing, so a line starting with such a cast is
     no evidence against it: an X spell that touches the board or life ("its
     X cost"), creature tokens it can't read ("its tokens"), any other
@@ -651,9 +742,11 @@ def unmodelled_effect(card: dict | None, result: Any = None) -> str:
                 return "its effect"  # an aura: Pacifism is removal, not a combat trick
             if role == "pump":
                 return "a combat trick"
-            if role == "planeswalker" or (role == "other" and not card_flow(_cast_text(card))):
+            if role == "planeswalker" or (
+                role == "other" and not card_flow(_cast_text(card)) and not fully_applied(card)
+            ):
                 return "its effect"  # (a discard spell is card flow)
-        if result is not None and harms_players(card):
+        if result is not None and _unapplied_harm(card):
             iid = _int(card.get("instance_id"))
             spells = getattr(getattr(result, "_search", None), "spells", None) or []
             if not any(hs.iid == iid and any(v.face for v in hs.variants) for hs in spells):
@@ -684,6 +777,7 @@ def _modelled(var: Variant) -> bool:
         or var.gain
         or var.face
         or var.rock
+        or var.sweep
     )
 
 
@@ -779,6 +873,7 @@ class Moves:
         self._neutral_memo: dict = {}
         self._burn_memo: dict = {}
         self._strength_memo: dict = {}
+        self._ping_memo: dict = {}
         # Hushbringer / Torpor Orb on the battlefield: a creature we cast triggers nothing on entering.
         self.enters_triggers = not any(_NO_ENTERS_TRIGGERS.search(_text(c)) for c in model.battlefield)
         self._prepare()
@@ -883,8 +978,9 @@ class Moves:
         colors = _body_colors(card)
 
         def make(
-            mode=None, text="", gain=0, reach=None, bounce=False, rock=False, loss=0, face=0, aim="", specs=()
-        ):
+            mode=None, text="", gain=0, reach=None, bounce=False, rock=False, loss=0, face=0, aim="", specs=(),
+            sweep=0,
+        ):  # fmt: skip
             if reach is not None and reach is not card and not _types(reach).strip():
                 # A mode's or an enters trigger's text: its card's type and colours decide
                 # protection and "hexproof from instants" (``board_assessment._protected_from``).
@@ -892,7 +988,7 @@ class Moves:
             return Variant(
                 hs.index, "cast", mode, text, body, gain, reach, bounce, rock, spell.mana_value, spell.pips,
                 bool(info.instant_speed), loss, face, aim, tokens=self._tokens([*base_specs, *specs]),
-                life_tokens=per_life, counter=counters,
+                life_tokens=per_life, counter=counters, sweep=sweep,
             )  # fmt: skip
 
         def aimed(var: Variant, alt: int) -> list[Variant]:
@@ -931,6 +1027,7 @@ class Moves:
             rock=spell.role == "ramp",
             loss=life_loss(etb),
             face=each,
+            sweep=0 if oracle_modes else _sweep(_cast_text(etb)),
         )
         if spell.has_x or spell.role == "counter" or spell.uncastable:
             plain, variants = None, []  # never cast proactively (or can't be cast now)
@@ -1194,6 +1291,24 @@ class Moves:
             )
         return found if found and self.ward(body) <= mana else 0
 
+    def swept(self, var: Variant, body: dict) -> bool:
+        """A sweep (``Variant.sweep``) damages this creature of theirs: not indestructible, no
+        protection from the spell."""
+        key = ("sweep", id(var), id(body))
+        found = self._burn_memo.get(key)
+        if found is None:
+            card = self.spells[var.spell].spell.card
+            found = self._burn_memo[key] = bool(var.sweep) and not (
+                has_combat_keyword(body, "indestructible") or _protected_from(body, card, targeted=False)
+            )
+        return found
+
+    def piece(self, index: int, body: dict, sources: int) -> int:
+        """The most damage hand spell ``index`` can add to killing ``body`` this turn: a chip or a sweep."""
+        best = max((self.burn(c, body, sources) for c in self.spells[index].chips), default=0)
+        sweeps = [v.sweep for v in self.spells[index].variants if v.sweep and self.swept(v, body)]
+        return max([best, *sweeps])
+
     def chip_targets(self, node: Node, position: int, var: Variant, sources: int) -> list[dict]:
         """Up to two of their creatures ``var`` (a chip) can be one piece of killing this turn.
 
@@ -1211,11 +1326,7 @@ class Moves:
                 continue  # not a legal target, already dead, or a single-spell kill
             if mine < need:
                 others = sorted(
-                    (
-                        max((self.burn(c, body, sources) for c in self.spells[i].chips), default=0)
-                        for p, i in enumerate(node.hand)
-                        if p != position
-                    ),
+                    (self.piece(i, body, sources) for p, i in enumerate(node.hand) if p != position),
                     reverse=True,
                 )
                 if mine + sum(others[: _MAX_SPELLS_PER_TURN - 1]) < need:
@@ -1264,6 +1375,13 @@ class Moves:
         # A combined kill is worth one removal of its target (``_spell_value``'s), however many pieces.
         for target in {id(t): t for v, t in choice if v.chip and t is not None}.values():
             value += 3 + target["power"] * (1.5 if self.survival else 1.0)
+        # A sweep: each creature of theirs it kills by itself.
+        for var in (v for v, _ in choice if v.sweep):
+            value += sum(
+                1 + b["power"] * (1.5 if self.survival else 1.0)
+                for b in theirs
+                if b["toughness"] <= var.sweep and self.swept(var, b)
+            )
         if any(v.life_tokens for v, _ in choice):
             x = min(10, gained + sum(v.gain for v, _ in choice if not v.life_tokens))
             for var, _target in choice:
@@ -1408,21 +1526,21 @@ class Moves:
         result = self._cast_memo[key] = [item[0] for item in scored]
         return result
 
-    @staticmethod
-    def _pieces(choice, need: dict) -> list | None:
+    def _pieces(self, choice, need: dict) -> list | None:
         """The ids a set's chips kill, or None unless every chip target dies and no piece is spare.
 
-        Each chip target needs its pieces' damage to reach its toughness less
-        the damage already marked (``need``); a piece the kill doesn't need
-        (Shock + Shock + Strike on a 4/4) makes the set a worse copy of a
-        smaller one.
+        Each chip target needs its pieces' damage, plus the set's sweeps
+        (Tectonic Hazard's 1 to each), to reach its toughness less the damage
+        already marked (``need``); a piece the kill doesn't need (Shock + Shock
+        + Strike on a 4/5) makes the set a worse copy of a smaller one.
         """
-        aimed: dict[int, list[int]] = {}
+        aimed: dict[int, tuple[dict, list[int]]] = {}
         for var, target in choice:
             if var.chip and target is not None:
-                aimed.setdefault(target["instance_id"], []).append(var.chip)
-        for iid, damage in aimed.items():
-            total = sum(damage)
+                aimed.setdefault(target["instance_id"], (target, []))[1].append(var.chip)
+        sweeps = [v for v, _ in choice if v.sweep]
+        for iid, (target, damage) in aimed.items():
+            total = sum(damage) + sum(v.sweep for v in sweeps if self.swept(v, target))
             if total < need.get(iid, 10**6) or total - min(damage) >= need.get(iid, 10**6):
                 return None
         return list(aimed)
@@ -1522,6 +1640,13 @@ class Moves:
                 mid.targets.append((hs.name, target["name"]))
                 if var.bounce:
                     mid.returning.append(target)
+            if var.sweep:  # damage to each of their creatures, on top of any pieces aimed at them
+                for body in list(mid.theirs):
+                    if self.swept(var, body):
+                        iid = body["instance_id"]
+                        chipped[iid] = chipped.get(iid, self.marked(body, mid.node)) + var.sweep
+                        if chipped[iid] >= body["toughness"]:
+                            mid.theirs = [b for b in mid.theirs if b is not body]
             mid.our_life += var.gain
             mid.gained += var.gain
             if var.rock:
@@ -1580,6 +1705,9 @@ class Moves:
         attackers = [b for b in mid.ours if b["instance_id"] in ids]
         opp_after = None
         if attackers:
+            # Attack triggers that ping the opponent (Hired Claw) resolve before blocks.
+            if attack[0] != "declared":
+                mid.opp_life -= self.pinged(mid.ours, attackers)
             blockers = [b for b in mid.theirs if b["instance_id"] not in node.their_tapped]
             fighting, tag = attackers, ""
             if attack[0] == "declared" and self.model.step == "Step_FirstStrikeDamage":
@@ -1742,6 +1870,28 @@ class Moves:
                 policies.append((f"keep-{count}", tuple(a for a in able if a["instance_id"] not in home)))
         return policies
 
+    def pinged(self, side, attackers) -> int:
+        """Damage ``side``'s attack-trigger pings (``attack_pings``) deal the defending player when
+        ``attackers`` (of that side) attack: a 'self' ping needs its creature among them, a
+        creature-type ping one attacker of that type, 'you attack' anyone."""
+        if not attackers:
+            return 0
+        total = 0
+        for body in side:
+            pings = self._ping_memo.get(id(body))
+            if pings is None:
+                pings = self._ping_memo[id(body)] = attack_pings(body.get("_card") or body)
+            for amount, who in pings:
+                if who == "any" or (who == "self" and any(a is body for a in attackers)) or who not in ("any", "self") and any(self._is_kind(a, who) for a in attackers):
+                    total += amount
+        return total
+
+    @staticmethod
+    def _is_kind(body: dict, kind: str) -> bool:
+        card = body.get("_card") or body
+        words = f"{card.get('type_line') or ''} {' '.join(str(s) for s in card.get('subtypes') or [])}"
+        return kind in re.findall(r"[a-z'-]+", words.lower().replace("subtype_", ""))
+
     def _strength(self, var: Variant) -> float:
         """``_reach_strength`` memoised: re-reading the removal text on every attack of theirs
         was a sixth of a burn-heavy hand's search (2026-10-19)."""
@@ -1871,8 +2021,9 @@ class Moves:
         )
         dead_att = {abs(i) for i in dead_att}
         # Lifelink lands with the damage: our lifelink blockers heal us, their lifelink
-        # attackers heal them (match 41753907 T7: Dawnwing Marshal's 4 a turn).
-        after = life - damage + healed
+        # attackers heal them (match 41753907 T7: Dawnwing Marshal's 4 a turn). Their attack
+        # triggers' pings hit us too (unless the attack was declared before the snapshot).
+        after = life - damage + healed - (self.pinged(theirs, attackers) if name != "declared" else 0)
         opp_life += gained
         if after <= 0:
             return {
@@ -1902,7 +2053,7 @@ class Moves:
         crack_damage, crack_dead_ours, crack_dead_theirs, crack_gained, crack_healed = (
             self.combat_life(crack, crack_blockers, opp_life) if crack else (0, set(), set(), 0, 0)
         )
-        crack_net = crack_damage - crack_healed
+        crack_net = crack_damage - crack_healed + self.pinged(ours_after, crack)
         suicidal = bool(crack) and crack_net >= opp_life
         # Worst for us means after our reply too: their attackers can't block on our
         # turn, so a policy is valued at the better of our holding and our crackback

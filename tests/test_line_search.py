@@ -1013,7 +1013,16 @@ def test_unmodelled_effect_names_what_the_search_cannot_value():
     assert unmodelled_effect(card(6, "Archive Arbiter", 1)) == ""  # its gain-4 mode is modelled
     assert unmodelled_effect(lifelinker) == ""
     assert unmodelled_effect(card(7, "Elemental Surge", 1)) == "its tokens"  # exiled at end of turn
-    assert unmodelled_effect(pinger) == "its triggered ability"
+    # A fixed ping to players on attack is modelled since 2026-10-19 (ledger #19, Hired Claw:
+    # ``line_search_moves.attack_pings``); an attack trigger that does anything else is not.
+    assert unmodelled_effect(pinger) == ""
+    pumper = {**pinger, "oracle_text": "Whenever this creature attacks, it gets +2/+0 until end of turn."}
+    assert unmodelled_effect(pumper) == "its triggered ability"
+    scaled = {
+        **pinger,
+        "oracle_text": "Whenever this creature attacks, it deals damage equal to its power to each opponent.",
+    }
+    assert unmodelled_effect(scaled) == "its triggered ability"
     assert unmodelled_effect(fighter) == "its triggered ability"
     draw = {"name": "Test Study", "type_line": "Sorcery", "mana_cost": "{2}{R}", "oracle_text": "Draw two cards."}
     assert unmodelled_effect(draw) == ""  # card draw changes nothing the search values

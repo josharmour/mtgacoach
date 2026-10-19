@@ -626,11 +626,13 @@ def _fresh_assessment(source: dict):
 
 
 def test_unmodelled_finishers_are_left_to_the_model():
-    # An attack trigger that pings a player, and a pump: the search can't value either.
+    # An attack trigger whose damage to a player scales (a fixed ping is modelled since
+    # 2026-10-19, see test_an_attack_ping_is_modelled_now), and a pump: the search can't value either.
     source, _ = _burn_board()
     raider = {"name": "Test Raider", "type_line": "Creature — Goblin", "mana_cost": "{2}{R}", "power": 1,
               "toughness": 1, "card_types": ["CardType_Creature"],
-              "oracle_text": "Whenever this creature attacks, it deals 2 damage to each opponent."}  # fmt: skip
+              "oracle_text": "Whenever this creature attacks, it deals damage equal to its power to each "
+                             "opponent."}  # fmt: skip
     pump = {"name": "Test Pump", "type_line": "Instant", "mana_cost": "{R}", "card_types": ["CardType_Instant"],
             "oracle_text": "Target creature gets +3/+0 until end of turn."}  # fmt: skip
     source["hand"] = [{**card(40, "Unsummon", 1), **raider}, {**card(41, "Unsummon", 1), **pump}]
@@ -645,6 +647,20 @@ def test_unmodelled_finishers_are_left_to_the_model():
         assert lg._unmodelled_finisher(result, decision.find(option_id), source)
         assert _guard(source, decision, option_id) is None
         assert lg.option_note(result, decision.find(option_id), source) == ""
+
+
+def test_an_attack_ping_is_modelled_now():
+    # Ledger #19 (2026-10-19, Hired Claw): a fixed ping to players on attack hits on each attack,
+    # so the cast is judged by its line like any other.
+    source, _ = _burn_board()
+    raider = {"name": "Test Raider", "type_line": "Creature — Goblin", "mana_cost": "{2}{R}", "power": 1,
+              "toughness": 1, "card_types": ["CardType_Creature"],
+              "oracle_text": "Whenever this creature attacks, it deals 2 damage to each opponent."}  # fmt: skip
+    source["hand"] = [{**card(40, "Unsummon", 1), **raider}]
+    decision = actions_decision([("idx:1", "Cast Test Raider", cast(40), True), ("pass", "Pass", None, None)])
+    result, _ = _search(source)
+    assert lg.unmodelled_cast(result, decision.find("idx:1"), source) == ""
+    assert not lg._unmodelled_finisher(result, decision.find("idx:1"), source)
 
 
 def test_an_enters_ping_is_modelled_now():
