@@ -8,6 +8,7 @@ import json
 import logging
 import subprocess
 import threading
+from collections import OrderedDict
 from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -21,6 +22,11 @@ logger = logging.getLogger(__name__)
 # background priority and the proxy's one-at-a-time background lane, so they
 # never compete with the first decisions of the next match.
 POSTMATCH_BACKGROUND_CALL_CLASS = "background.postmatch"
+
+# Matches the loop watched in play (whose game ends it records) and recorded
+# game ids, both bounded.
+_WATCHED_MATCHES_KEPT = 4
+_RECORDED_GAMES_KEPT = 32
 
 
 def _background_priority() -> int:
@@ -108,6 +114,157 @@ class _PostMatchMixin:
         except Exception as e:
             logger.debug(f"[BUNDLE] could not restart the match packet for game {next_game}: {e}")
         logger.info(f"[BUNDLE] game {next_game} of {match_id} started; bundling it separately")
+
+    def _start_game_recording(self, match_id: str, game_number: int | None) -> None:
+        """A match id appeared: arm the packet and bundle for its current game (never raises).
+
+        Game n of a Bo3 gets ``<match>-g<n>``, like the turn-drop path. A game
+        whose end is already recorded (Arena re-binds the finished match id
+        after MatchCompleted) or that is already being recorded (Arena resumes
+        a game after a mid-start reset) is left alone.
+        """
+        from arenamcp.match_bundle import game_bundle_id
+
+        game_id = game_bundle_id(match_id, game_number)
+        if game_id in self._recorded_games():
+            return
+        try:
+            from arenamcp.match_packets import get_current_packet, start_match_packet
+
+            current = get_current_packet()
+            if current is None or current.match_id != game_id:
+                packet = start_match_packet(game_id)
+                coach = getattr(self, "_coach", None)
+                if packet and coach:
+                    packet.deck_strategy = coach._deck_strategy
+        except Exception as e:
+            logger.warning(f"Failed to start match packet: {e}")
+        ctx = getattr(self, "_match_bundle_ctx", None)
+        if ctx is not None and getattr(ctx, "bundle_id", None) == game_id:
+            return
+        if ctx is not None:
+            # Its game never ended in view (no signal, no move to another match).
+            self._finish_match_bundle(
+                result="unknown", final_state=None, packet_path=None, reason="superseded"
+            )
+        self._begin_match_bundle(match_id, game_number=game_number or 1)
+
+    # -- game ends (the parser's match-scoped signal) -------------------------------
+
+    def _recorded_games(self) -> OrderedDict:
+        """Game ids (``game_bundle_id``) whose end this coach recorded -> result, oldest first."""
+        recorded = getattr(self, "_recorded_game_ends", None)
+        if recorded is None:
+            recorded = self._recorded_game_ends = OrderedDict()
+        return recorded
+
+    def _remember_recorded_game(self, game_id: str, result: str) -> None:
+        recorded = self._recorded_games()
+        recorded.pop(game_id, None)
+        recorded[game_id] = result
+        while len(recorded) > _RECORDED_GAMES_KEPT:
+            recorded.popitem(last=False)
+
+    def _watched_games(self) -> OrderedDict:
+        """Match ids this loop watched in play -> their last seen game number, oldest first."""
+        watched = getattr(self, "_watched_match_games", None)
+        if watched is None:
+            watched = self._watched_match_games = OrderedDict()
+        return watched
+
+    def _note_watched_game(self, match_id: str | None, game_number: int | None) -> None:
+        """The loop saw *match_id* in play: its game ends are this coach's to record."""
+        if not match_id:
+            return
+        watched = self._watched_games()
+        known = watched.pop(match_id, None)
+        watched[match_id] = game_number or known
+        while len(watched) > _WATCHED_MATCHES_KEPT:
+            watched.popitem(last=False)
+
+    def _take_game_end_signal(self, gs, curr_state: dict) -> bool:
+        """Take the parser's game-end record and, when it is a watched game's, record that game.
+
+        The record names its match and game. It is recorded only for a match
+        this loop watched in play: a record from the log catch-up on startup
+        (a game that ended before the coach watched it) is discarded, and a
+        record is never applied to another match. Each game is recorded
+        once; a later finalMatchResult that disagrees corrects the record.
+        The W/L record, the packet and the bundle are written whether or not
+        there is advice; only the LLM analysis needs advice history.
+
+        2026-10-19 (autopilot): the event was taken only with advice history,
+        so game ends went unrecorded and the event stayed set into the next
+        game, where a concede offer's advice released it mid-game as that
+        game's result ("win vs Doki" recorded 07:52:11 for a game lost at
+        07:52:28). Real ends that raced the match-boundary reset were
+        discarded as "stale on startup" (07:22:51, 07:29:46, ...).
+        Returns True when a game end was recorded.
+        """
+        from arenamcp.match_bundle import game_bundle_id
+
+        record = gs.take_game_end()
+        if not record:
+            return False
+        watched = self._watched_games()
+        match_id = record.get("match_id") or (next(reversed(watched)) if watched else None)
+        result = record.get("result") or "unknown"
+        if not match_id or match_id not in watched:
+            logger.info(
+                f"Discarded stale game-end event (result={result}, match={match_id}): "
+                f"not a game this coach watched in play"
+            )
+            return False
+        game_id = game_bundle_id(match_id, record.get("game_number") or watched.get(match_id))
+        recorded = self._recorded_games()
+        if game_id in recorded:
+            previous = recorded[game_id]
+            # finalMatchResult's correction, or a concrete result for a game
+            # recorded as "unknown" (the bridge-driven end can beat the log).
+            if (record.get("correction") or previous == "unknown") and result not in ("unknown", previous):
+                self._remember_recorded_game(game_id, result)
+                logger.info(f"Corrected game result for {game_id}: {previous} -> {result}")
+                try:
+                    from arenamcp.match_history import MatchHistory
+
+                    MatchHistory().set_result(game_id, result)
+                except Exception as e:
+                    logger.warning(f"Could not correct the match record for {game_id}: {e}")
+            else:
+                logger.info(f"Ignored repeated game-end event for {game_id} (result={result})")
+            return False
+
+        self._remember_recorded_game(game_id, result)
+        self._game_end_handled = True
+        logger.info(f"Game ended (event signal): {result} (game {game_id})")
+        # Use the pre-reset snapshot (full final state) if available,
+        # otherwise fall back to current (already-reset) state
+        final_state = record.get("snapshot") or dict(curr_state)
+        self._stage_post_match_analysis(
+            match_result=result,
+            final_state=final_state,
+            replay_path=self._get_latest_replay_path(),
+            match_id=game_id,
+            reason="event-signal",
+        )
+        packet_path = None
+        try:
+            from arenamcp.match_packets import get_current_packet, stop_match_packet
+
+            current = get_current_packet()
+            if current is not None and current.match_id == game_id:
+                packet_path = self._finalize_match_packet(stop_match_packet(), result)
+        except Exception as e:
+            logger.warning(f"Failed to save match packet on event-signal: {e}")
+        ctx = getattr(self, "_match_bundle_ctx", None)
+        if ctx is None or getattr(ctx, "bundle_id", None) == game_id:
+            self._finish_match_bundle(
+                result=result,
+                final_state=final_state,
+                packet_path=packet_path,
+                reason="event-signal",
+            )
+        return True
 
     def _finalize_match_packet(self, packet, result: str | None) -> Path | None:
         """Fill the packet's end-of-match fields and save it; returns the saved path."""

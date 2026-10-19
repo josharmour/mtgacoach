@@ -111,7 +111,16 @@ class MatchBundleContext:
         the server (which dedupes per id) and the local directory keep them
         apart.
         """
-        return self.match_id if self.game_number <= 1 else f"{self.match_id}-g{self.game_number}"
+        return game_bundle_id(self.match_id, self.game_number)
+
+
+def game_bundle_id(match_id: str, game_number: int | None = None) -> str:
+    """One game's id: the bare match id for game 1, ``<match>-g<n>`` for game n of a Bo3.
+
+    Bundles, match packets and match-history records of a game share it.
+    """
+    number = int(game_number or 1)
+    return str(match_id) if number <= 1 else f"{match_id}-g{number}"
 
 
 def begin_match(

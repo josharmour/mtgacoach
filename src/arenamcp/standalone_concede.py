@@ -187,9 +187,15 @@ class _ConcedeMixin:
 
     @staticmethod
     def _concede_game_over() -> bool:
+        """This game ended (scoped: a previous game's end never counts).
+
+        2026-10-19: the bare event, left set by an earlier game, was already
+        "over" when a countdown armed (ended_at_arm), so the countdown could
+        not see the real end.
+        """
         from arenamcp.server import game_state
 
-        return game_state.game_ended_event.is_set()
+        return game_state.game_over_signalled()
 
     @staticmethod
     def _concede_via_bridge(state: dict) -> dict:

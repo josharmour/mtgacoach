@@ -88,6 +88,7 @@ __all__ = [
     "create_recording_handler",
     "load_match_state",
     "mark_match_ended",
+    "result_rows_for_game",
     "save_match_state",
     "validate_log_identity",
     # Re-exported private helpers — tests and sibling modules import these
@@ -127,6 +128,41 @@ _MANA_COLOR_MAP = {
     "ManaColor_Colorless": "C",
     "ManaColor_Any": "Any",
 }
+
+
+def _same_game(a: tuple | None, b: tuple | None) -> bool:
+    """Whether two (match_id, game_number) identities can be the same game.
+
+    An unknown part matches anything: IntermissionReq's reset clears the
+    match id, and a payload without gameNumber can't tell games apart.
+    """
+    if not a or not b:
+        return True
+    (match_a, game_a), (match_b, game_b) = a, b
+    if match_a and match_b and match_a != match_b:
+        return False
+    return not (game_a and game_b and game_a != game_b)
+
+
+def result_rows_for_game(results: list, game_number: int | None) -> list[dict]:
+    """The result rows that describe game *game_number*, best first.
+
+    Arena lists every finished game of the match (ResultSpec has no game
+    number), so the start of a Bo3 game 2 already carries game 1's row and
+    game 2's end carries both. The game's own MatchScope_Game row comes first
+    and the match-scope rows are a fallback; rows only for earlier games
+    describe nothing about this one.
+    """
+    rows = [row for row in results or [] if isinstance(row, dict)]
+    game_rows = [row for row in rows if row.get("scope") == "MatchScope_Game"]
+    match_rows = [row for row in rows if row.get("scope") in ("MatchScope_Match", "")]
+    if not game_rows:
+        return match_rows
+    if not game_number:
+        return [game_rows[-1], *match_rows]
+    if len(game_rows) < game_number:
+        return []
+    return [game_rows[game_number - 1], *match_rows]
 
 
 class GameState(_GameStateAnnotationsMixin):
@@ -263,16 +299,26 @@ class GameState(_GameStateAnnotationsMixin):
         self._raw_gre_sequence: int = 0
 
         # Persists across reset() so the coaching loop can read it after
-        # match ends.  Cleared only by consume_game_end().
+        # match ends.  Cleared by take_game_end(), and when another game
+        # starts (see _note_game_identity_locked).
         self.last_game_result: str | None = None  # "win", "loss", "draw", or None
+        # The game last_game_result belongs to: (match_id, game_number).
+        # 2026-10-19: a result the loop never took rode into the next games
+        # (prepare_for_game_end reused a stale "win", finalMatchResult was
+        # skipped, the live game read as finished). It never outlives its game.
+        self._result_game: tuple[str | None, int | None] | None = None
 
         # ── Cross-thread game-end signaling ──
         # The parser thread calls prepare_for_game_end() which atomically
-        # stores result + final snapshot into _game_end_data and sets
-        # game_ended_event.  The coaching loop calls consume_game_end()
-        # to retrieve and clear it.
+        # stores the ended game's match id, game number, result and final
+        # snapshot into _game_end_data and sets game_ended_event.  The
+        # coaching loop calls take_game_end() to retrieve and clear it, once.
         self.game_ended_event: threading.Event = threading.Event()
         self._game_end_data: dict[str, Any] | None = None
+        # The most recent game end ({match_id, game_number, result, taken}),
+        # kept after the loop takes the signal and cleared when another game
+        # starts: game_over_signalled() and finalMatchResult read it.
+        self._ended_game: dict[str, Any] | None = None
 
         # Backward-compatible alias -- standalone.py and server.py read
         # _pre_reset_snapshot directly in a few places.
@@ -302,9 +348,9 @@ class GameState(_GameStateAnnotationsMixin):
 
         Clears all per-game fields via ``_apply_field_defaults()``.
         Fields that must survive across matches (``last_game_result``,
-        ``game_ended_event``, ``_game_end_data``, ``_pre_reset_snapshot``)
-        are intentionally preserved -- they are consumed by the coaching
-        loop after the reset.
+        ``game_ended_event``, ``_game_end_data``, ``_ended_game``,
+        ``_pre_reset_snapshot``) are intentionally preserved -- they are
+        consumed by the coaching loop after the reset.
         """
         logger.info("Resetting GameState for new match")
         self._apply_field_defaults()
@@ -362,77 +408,271 @@ class GameState(_GameStateAnnotationsMixin):
         """Capture final state and infer result BEFORE reset().
 
         Called by the IntermissionReq handler (parser thread) right before
-        ``reset()`` wipes the board.  Atomically stores the result and a
-        copy of the current published snapshot into ``_game_end_data``,
-        then sets ``game_ended_event`` so the coaching loop detects it
-        immediately.
+        ``reset()`` wipes the board.  Atomically stores the ended game's
+        match id and game number, its result and a copy of the current
+        published snapshot into ``_game_end_data``, then sets
+        ``game_ended_event`` so the coaching loop detects it immediately.
+        The record names its game so the loop never applies it to another
+        one (2026-10-19: an untaken "win" was applied to the next match).
         """
         with self._state_lock:
+            match_id, game_number = self.match_id, self.game_number
+            ended = self._ended_game
+            if match_id is None and ended is not None:
+                # After the reset the match id is gone: still the ended game.
+                match_id = ended.get("match_id")
+                game_number = game_number or ended.get("game_number")
+            # Called again for a game already ended and reset (the log's
+            # IntermissionReq after the bridge ended it): its board is gone.
+            repeat = (
+                ended is not None
+                and not self.played_cards
+                and not self.game_objects
+                and _same_game((ended.get("match_id"), ended.get("game_number")), (match_id, game_number))
+            )
+
             # 1. Infer game result from the strongest available end-state signal
-            if not self.last_game_result:
+            result = self._current_result_locked()
+            if not result:
                 inferred = (
                     self._infer_result_from_player_status_locked()
                     or self._infer_result_from_life_totals_locked()
                 )
-                self._record_match_result_locked(inferred, "prepare_for_game_end")
+                result = self._record_match_result_locked(inferred, "prepare_for_game_end")
 
             # 2. Capture the published snapshot (already built, no enrichment
             #    overhead).  Deep-copy so it is immune to the upcoming reset().
             final_snapshot = copy.deepcopy(self._published_snapshot)
 
-            # 3. Bundle result + snapshot atomically
-            self._game_end_data = {
-                "result": self.last_game_result,
-                "snapshot": final_snapshot,
+            # 3. Bundle identity + result + snapshot atomically. A repeat for
+            #    a game whose record is still pending keeps the first
+            #    snapshot: after the reset the board is empty.
+            pending = self._game_end_data
+            if pending is not None and _same_game(
+                (pending.get("match_id"), pending.get("game_number")), (match_id, game_number)
+            ):
+                pending["result"] = result or pending.get("result")
+                final_snapshot = pending.get("snapshot") or final_snapshot
+            else:
+                if pending is not None:
+                    # Only a log catch-up ends two games between loop polls.
+                    logger.info(
+                        "Replacing the untaken game end of match %s game %s",
+                        pending.get("match_id"),
+                        pending.get("game_number"),
+                    )
+                self._game_end_data = {
+                    "match_id": match_id,
+                    "game_number": game_number,
+                    "result": result,
+                    "snapshot": final_snapshot,
+                    "source": "game end",
+                }
+                # The loop already took this game's end (the bridge's, before
+                # the log had the result): this one's result supersedes it.
+                if (
+                    ended is not None
+                    and ended.get("taken")
+                    and result
+                    and result != ended.get("result")
+                    and _same_game((ended.get("match_id"), ended.get("game_number")), (match_id, game_number))
+                ):
+                    self._game_end_data["correction"] = True
+            self._ended_game = {
+                "match_id": match_id,
+                "game_number": game_number,
+                "result": self._game_end_data.get("result"),
+                "taken": False,
             }
-            # Keep backward-compatible alias for external readers
-            self._pre_reset_snapshot = final_snapshot
+            if not repeat:
+                # Keep backward-compatible alias for external readers
+                self._pre_reset_snapshot = final_snapshot
 
-            # 3b. Stash opponent play history for between-games sideboarding:
-            # the upcoming reset() wipes played_cards and players, and the
-            # sideboard screen only appears after that reset. Overwritten on
-            # every game end so it stays bounded to the last game.
-            self._last_game_played_cards = {
-                seat_id: list(cards) for seat_id, cards in self.played_cards.items()
-            }
-            self._last_game_opponent_seat = self.opponent_seat_id
+                # 3b. Stash opponent play history for between-games sideboarding:
+                # the upcoming reset() wipes played_cards and players, and the
+                # sideboard screen only appears after that reset. Overwritten on
+                # every game end so it stays bounded to the last game.
+                self._last_game_played_cards = {
+                    seat_id: list(cards) for seat_id, cards in self.played_cards.items()
+                }
+                self._last_game_opponent_seat = self.opponent_seat_id
 
         # 4. Signal the coaching loop (Event.set is thread-safe on its own)
         self.game_ended_event.set()
         logger.info(
-            f"Game-end prepared: result={self.last_game_result}, snapshot={'yes' if final_snapshot else 'no'}"
+            f"Game-end prepared: result={self._ended_game.get('result')}, "
+            f"match={match_id} game={game_number}, snapshot={'yes' if final_snapshot else 'no'}"
         )
+
+    def take_game_end(self) -> dict[str, Any] | None:
+        """Take the pending game-end record, exactly once.
+
+        Called by the coaching loop after detecting ``game_ended_event``.
+        Returns ``{"match_id", "game_number", "result", "snapshot", "source"}``
+        (plus ``"correction": True`` when finalMatchResult overrides a result
+        the loop already took), or None. Clears the event and the pending
+        fields; the ended game's identity stays for ``game_over_signalled()``
+        and finalMatchResult until another game starts.
+        """
+        with self._state_lock:
+            record = self._game_end_data
+            if record is None and (self.last_game_result or self._pre_reset_snapshot):
+                # Fallback: a caller set the legacy fields individually.
+                record = {
+                    "match_id": None,
+                    "game_number": None,
+                    "result": self.last_game_result,
+                    "snapshot": self._pre_reset_snapshot,
+                    "source": "legacy",
+                }
+
+            # Clear all game-end state
+            self._game_end_data = None
+            self._pre_reset_snapshot = None
+            self.last_game_result = None
+            self._result_game = None
+            if self._ended_game is not None:
+                self._ended_game["taken"] = True
+
+        self.game_ended_event.clear()
+        return dict(record) if record else None
 
     def consume_game_end(self) -> tuple[str | None, dict | None]:
         """Consume the game-end signal and return (result, snapshot).
 
-        Called by the coaching loop after detecting ``game_ended_event``.
-        Clears the event and all persistent game-end fields atomically so
-        they don't re-trigger.
+        Older form of ``take_game_end()`` without the game's identity.
 
         Returns:
             Tuple of (result, final_snapshot) where result is "win",
             "loss", or None, and final_snapshot is the board state dict
             captured before reset().
         """
+        record = self.take_game_end() or {}
+        return record.get("result"), record.get("snapshot")
+
+    def game_over_signalled(self) -> bool:
+        """A game ended and no other game has started since.
+
+        Scoped to that game: the next game's gameInfo (or a new match) clears
+        it. 2026-10-19: the bare event, never consumed under autopilot, stayed
+        set through the following games, so concede and Oops read every later
+        game as already over.
+        """
         with self._state_lock:
-            data = self._game_end_data
-            if data is not None:
-                result = data.get("result")
-                snapshot = data.get("snapshot")
+            return self._ended_game is not None
+
+    def last_ended_game(self) -> dict[str, Any] | None:
+        """The most recent game end ({match_id, game_number, result, taken}), or None."""
+        with self._state_lock:
+            return dict(self._ended_game) if self._ended_game is not None else None
+
+    def apply_final_match_result(
+        self, match_id: str | None, result: str | None, source: str = "finalMatchResult"
+    ) -> str:
+        """Attach MatchCompleted's authoritative result to that match's game end.
+
+        Returns what happened: "updated"/"unchanged" (the pending record took
+        it), "corrected" (the loop already took this game's end with another
+        result: a correction record for the same game is signalled),
+        "signalled" (no game end was seen for this match: one is signalled and
+        the loop decides whether it watched that game) or "none".
+        """
+        if not result:
+            return "none"
+
+        def for_match(record: dict | None) -> bool:
+            return record is not None and (match_id is None or record.get("match_id") in (None, match_id))
+
+        signal = False
+        with self._state_lock:
+            ended = self._ended_game
+            pending = self._game_end_data
+            if for_match(pending):
+                previous = pending.get("result")
+                pending["result"] = result
+                pending["source"] = source
+                pending["match_id"] = pending.get("match_id") or match_id
+                if for_match(ended):
+                    ended["result"] = result
+                self.last_game_result = result
+                self._result_game = (pending["match_id"], pending.get("game_number"))
+                outcome = "unchanged" if previous == result else "updated"
+            elif for_match(ended):
+                previous = ended.get("result")
+                if previous == result:
+                    outcome = "unchanged"
+                else:
+                    self._game_end_data = {
+                        "match_id": ended.get("match_id") or match_id,
+                        "game_number": ended.get("game_number"),
+                        "result": result,
+                        "snapshot": None,
+                        "source": source,
+                        "correction": True,
+                    }
+                    ended["result"] = result
+                    outcome = "corrected"
+                    signal = True
             else:
-                # Fallback: read legacy fields for callers that set them
-                # individually (e.g. finalMatchResult in server.py).
-                result = self.last_game_result
+                if pending is not None:
+                    logger.info(
+                        "Replacing the untaken game end of match %s with match %s's (%s)",
+                        pending.get("match_id"),
+                        match_id,
+                        source,
+                    )
+                previous = None
                 snapshot = self._pre_reset_snapshot
+                if not isinstance(snapshot, dict) or snapshot.get("match_id") != match_id:
+                    snapshot = None
+                self._game_end_data = {
+                    "match_id": match_id,
+                    "game_number": None,
+                    "result": result,
+                    "snapshot": snapshot,
+                    "source": source,
+                }
+                self._ended_game = {
+                    "match_id": match_id,
+                    "game_number": None,
+                    "result": result,
+                    "taken": False,
+                }
+                self.last_game_result = result
+                self._result_game = (match_id, None)
+                outcome = "signalled"
+                signal = True
+        if previous and previous != result:
+            logger.info("Updated game result: %s -> %s (%s)", previous, result, source)
+        if signal:
+            self.game_ended_event.set()
+        return outcome
 
-            # Clear all game-end state
-            self._game_end_data = None
-            self._pre_reset_snapshot = None
+    def note_game_identity(self, match_id: str | None, game_number: int | None = None) -> None:
+        """A game was seen starting (a new match room): forget other games' results and ends."""
+        with self._state_lock:
+            self._note_game_identity_locked(match_id, game_number)
+
+    def _note_game_identity_locked(self, match_id: str | None, game_number: int | None) -> None:
+        identity = (match_id, game_number)
+        if self.last_game_result and not _same_game(self._result_game, identity):
+            logger.info(
+                "Cleared the previous game's result %s (game %s): game %s is in play",
+                self.last_game_result,
+                self._result_game,
+                identity,
+            )
             self.last_game_result = None
+            self._result_game = None
+        ended = self._ended_game
+        if ended is not None and not _same_game((ended.get("match_id"), ended.get("game_number")), identity):
+            self._ended_game = None
 
-        self.game_ended_event.clear()
-        return result, snapshot
+    def _current_result_locked(self) -> str | None:
+        """``last_game_result`` when it belongs to the game being tracked, else None."""
+        if self.last_game_result and _same_game(self._result_game, (self.match_id, self.game_number)):
+            return self.last_game_result
+        return None
 
     def export_checkpoint(self) -> dict[str, Any]:
         """Export mutable game state needed to resume mid-match.
@@ -534,6 +774,7 @@ class GameState(_GameStateAnnotationsMixin):
 
                 self.match_id = checkpoint.get("match_id")
                 self.game_number = _coerce_optional_int(checkpoint.get("game_number"))
+                self._result_game = (self.match_id, self.game_number) if self.last_game_result else None
                 self.event_id = str(checkpoint.get("event_id") or "")
                 self.format_name = str(checkpoint.get("format_name") or "")
                 self.local_seat_id = _coerce_optional_int(checkpoint.get("local_seat_id"))
@@ -849,20 +1090,22 @@ class GameState(_GameStateAnnotationsMixin):
             return self._get_local_team_id_locked()
 
     def _record_match_result_locked(self, result: str | None, source: str) -> str | None:
-        """Persist a concrete game result under the state lock."""
+        """Persist a concrete game result for the current game under the state lock."""
         if not result:
             return None
-        if result != self.last_game_result:
-            if self.last_game_result is None:
+        current = self._current_result_locked()
+        if result != current:
+            if current is None:
                 logger.info("Detected game result: %s (%s)", result, source)
             else:
                 logger.info(
                     "Updated game result: %s -> %s (%s)",
-                    self.last_game_result,
+                    current,
                     result,
                     source,
                 )
-            self.last_game_result = result
+        self.last_game_result = result
+        self._result_game = (self.match_id, self.game_number)
         return result
 
     def _infer_result_from_life_totals_locked(self) -> str | None:
@@ -991,22 +1234,20 @@ class GameState(_GameStateAnnotationsMixin):
         game_number = _coerce_optional_int(game_info.get("gameNumber"))
         if game_number:
             self.game_number = game_number
+        # A new game's first gameInfo retires the previous game's result and end.
+        self._note_game_identity_locked(match_id or self.match_id, self.game_number)
 
         results = game_info.get("results", [])
         if results:
-            ordered_results = sorted(
-                results,
-                key=lambda row: 0 if row.get("scope") == "MatchScope_Game" else 1,
-            )
-            for row in ordered_results:
+            # Only this game's row: game 2 of a Bo3 starts with game 1's
+            # (2026-10-06 13:53:35 "Detected game result: loss" at game 2's start).
+            for row in result_rows_for_game(results, self.game_number):
                 scope = row.get("scope", "")
-                if scope not in ("MatchScope_Game", "MatchScope_Match", ""):
-                    continue
                 result = self._resolve_scope_result_locked(row)
                 if self._record_match_result_locked(result, f"gameInfo.{scope or 'unknown'}"):
                     break
 
-        if not self.last_game_result:
+        if not self._current_result_locked():
             inferred = self._infer_result_from_player_status_locked()
             self._record_match_result_locked(inferred, "gameInfo.player_status")
 

@@ -33,6 +33,7 @@ from arenamcp.gamestate import (
     create_game_state_handler,
     load_match_state,
     mark_match_ended,
+    result_rows_for_game,
     save_match_state,
     validate_log_identity,
 )
@@ -735,6 +736,8 @@ def _handle_match_created(payload: dict) -> None:
                 game_state.reset()
             else:
                 logger.info("Binding initial match ID %s; retaining connection metadata", match_id)
+            # A new live match: the previous game's result and end are history.
+            game_state.note_game_identity(match_id)
             if connection_deck is not None:
                 game_state.restore_connection_deck(connection_deck, match_id)
             else:
@@ -822,7 +825,10 @@ def _handle_match_created(payload: dict) -> None:
                 "completed_at": time.time(),
                 "match_complete": True,
             }
-    if results and not game_state.last_game_result:
+    if results:
+        # Always resolved, even after the game-end result: finalMatchResult is
+        # authoritative and corrects an inferred one (2026-10-19: a stale
+        # last_game_result made every later MatchCompleted skip this).
         # IntermissionReq may have already wiped seat/team state via reset().
         our_seat = seat_id or game_state.local_seat_id
         if our_seat is None and game_state._pre_reset_snapshot:
@@ -837,15 +843,16 @@ def _handle_match_created(payload: dict) -> None:
                     our_team = player.get("team_id")
                     break
 
-        ordered_results = sorted(
-            results,
-            key=lambda row: 0 if row.get("scope") == "MatchScope_Game" else 1,
+        # The resultList holds every game of the match: describe the game that
+        # just ended (the last one), not game 1 of a Bo3.
+        ended = game_state.last_ended_game() or {}
+        ended_game_number = (
+            ended.get("game_number")
+            if match_id is None or ended.get("match_id") in (None, match_id)
+            else None
         )
-        for result_row in ordered_results:
+        for result_row in result_rows_for_game(results, ended_game_number):
             scope = result_row.get("scope", "")
-            if scope not in ("MatchScope_Game", "MatchScope_Match", ""):
-                continue
-
             resolved: str | None = None
             winning_team_id = result_row.get("winningTeamId")
             row_seat_id = result_row.get("seatId")
@@ -862,7 +869,6 @@ def _handle_match_created(payload: dict) -> None:
                     resolved = "loss" if row_seat_id == our_seat else "win"
 
             if resolved:
-                game_state.last_game_result = resolved
                 logger.info(
                     "Match result from finalMatchResult: %s (scope=%s, seat=%s, team=%s)",
                     resolved,
@@ -870,9 +876,11 @@ def _handle_match_created(payload: dict) -> None:
                     our_seat,
                     our_team,
                 )
-                if not game_state.game_ended_event.is_set():
-                    game_state.game_ended_event.set()
-                    logger.info("Game-end event set from finalMatchResult")
+                # Attached to this match's game end, never to whatever game
+                # the bare event would be read against.
+                outcome = game_state.apply_final_match_result(match_id, resolved)
+                if outcome in ("corrected", "signalled"):
+                    logger.info("Game-end event set from finalMatchResult (%s, match %s)", outcome, match_id)
                 if state_type == "MatchGameRoomStateType_MatchCompleted" or scope == "MatchScope_Match":
                     mark_match_ended()
                 break

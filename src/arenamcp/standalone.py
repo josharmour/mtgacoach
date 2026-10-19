@@ -230,6 +230,10 @@ class StandaloneCoach(
         self._post_match_analysis_text: str | None = None
         self._post_match_result: str | None = None
         self._game_end_handled: bool = False  # Prevents duplicate triggers
+        # Game-end ownership (_PostMatchMixin): matches watched in play ->
+        # game number, and recorded game ids -> result. Created on first use.
+        self._watched_match_games = None
+        self._recorded_game_ends = None
         self._match_boundary_ts: float = 0.0  # Suppress stale triggers after reset
         self._last_game_end_check_error: str = ""
         self._post_match_analysis_running: bool = False
@@ -1975,50 +1979,19 @@ class StandaloneCoach(
 
                 # Resolve unknown cards via VLM (only when using a local VLM backend)
                 # ── GAME END DETECTION ──
-                # PRIMARY: Check threading.Event set by parser thread
-                # (IntermissionReq or finalMatchResult). This fires immediately
-                # regardless of whether the coaching loop was blocked on LLM.
+                # PRIMARY: the parser thread's game-end signal (IntermissionReq,
+                # the bridge's intermission or finalMatchResult). It fires
+                # immediately even if the loop was blocked on the LLM, names its
+                # match and game, and is taken exactly once: recorded for a game
+                # this loop watched in play (whether or not there is advice),
+                # discarded otherwise (log catch-up on startup). Ownership is the
+                # watched match, not last_match_id, so an end that lands with the
+                # match-boundary reset below (X -> None) is still recorded.
                 try:
                     from arenamcp.server import game_state as gs
 
-                    if gs.game_ended_event.is_set() and not self._game_end_handled:
-                        # Guard: If we haven't coached a full game yet (fresh
-                        # start / reconnect), the event is stale — from a
-                        # previous game found during log catchup.  Consume and
-                        # discard it so it doesn't fire mid-game.
-                        if last_match_id is None:
-                            stale_result, _ = gs.consume_game_end()
-                            self._game_end_handled = True
-                            logger.info(
-                                f"Discarded stale game-end event on startup "
-                                f"(result={stale_result}), current game still active"
-                            )
-                        elif self._advice_history:
-                            self._game_end_handled = True
-                            result, snapshot = gs.consume_game_end()
-                            game_result = result or "unknown"
-                            logger.info(f"Game ended (event signal): {game_result}")
-                            # Use pre-reset snapshot (full final state) if available,
-                            # otherwise fall back to current (already-reset) state
-                            self._stage_post_match_analysis(
-                                match_result=game_result,
-                                final_state=snapshot or dict(curr_state),
-                                replay_path=self._get_latest_replay_path(),
-                                reason="event-signal",
-                            )
-                            packet_path = None
-                            try:
-                                from arenamcp.match_packets import stop_match_packet
-
-                                packet_path = self._finalize_match_packet(stop_match_packet(), game_result)
-                            except Exception as e:
-                                logger.warning(f"Failed to save match packet on event-signal: {e}")
-                            self._finish_match_bundle(
-                                result=game_result,
-                                final_state=snapshot or dict(curr_state),
-                                packet_path=packet_path,
-                                reason="event-signal",
-                            )
+                    if gs.game_ended_event.is_set():
+                        self._take_game_end_signal(gs, curr_state)
                 except Exception as e:
                     msg = str(e)
                     if msg != self._last_game_end_check_error:
@@ -2045,29 +2018,42 @@ class StandaloneCoach(
                     except Exception:
                         pass
 
-                    # Trigger analysis if game_end detection above missed it
-                    if self._advice_history and not self._game_end_handled:
-                        self._game_end_handled = True
-                        self._stage_post_match_analysis(
-                            match_result=self._detect_match_result(),
+                    # Fallback for a game end the signal above never brought.
+                    # A move to another match proves the game is over; a drop
+                    # to no match without a game end is a reset Arena resumes
+                    # from (Bo3 game 2's mulligan "ghost state" reset), so its
+                    # packet and bundle stay open and nothing is recorded.
+                    from arenamcp.match_bundle import game_bundle_id
+
+                    left_game = game_bundle_id(last_match_id, self._watched_games().get(last_match_id))
+                    if left_game not in self._recorded_games() and (
+                        curr_match_id is not None or self._has_explicit_game_end_evidence()
+                    ):
+                        boundary_result = self._detect_match_result() or "unknown"
+                        # Trigger analysis if game_end detection above missed it
+                        if self._advice_history and not self._game_end_handled:
+                            self._game_end_handled = True
+                            self._remember_recorded_game(left_game, boundary_result)
+                            self._stage_post_match_analysis(
+                                match_result=boundary_result,
+                                final_state=dict(prev_state) if prev_state else None,
+                                replay_path=self._get_latest_replay_path(),
+                                match_id=left_game,
+                                reason="match-boundary",
+                            )
+                        packet_path = None
+                        try:
+                            from arenamcp.match_packets import stop_match_packet
+
+                            packet_path = self._finalize_match_packet(stop_match_packet(), boundary_result)
+                        except Exception as e:
+                            logger.warning(f"Failed to save match packet on match-boundary: {e}")
+                        self._finish_match_bundle(
+                            result=boundary_result,
                             final_state=dict(prev_state) if prev_state else None,
-                            replay_path=self._get_latest_replay_path(),
+                            packet_path=packet_path,
                             reason="match-boundary",
                         )
-                    boundary_result = self._detect_match_result() or "unknown"
-                    packet_path = None
-                    try:
-                        from arenamcp.match_packets import stop_match_packet
-
-                        packet_path = self._finalize_match_packet(stop_match_packet(), boundary_result)
-                    except Exception as e:
-                        logger.warning(f"Failed to save match packet on match-boundary: {e}")
-                    self._finish_match_bundle(
-                        result=boundary_result,
-                        final_state=dict(prev_state) if prev_state else None,
-                        packet_path=packet_path,
-                        reason="match-boundary",
-                    )
 
                     prev_state = {}
                     last_advice_turn = 0
@@ -2094,15 +2080,12 @@ class StandaloneCoach(
                 if match_id_changed:
                     last_match_id = curr_match_id
                     if curr_match_id is not None:
-                        try:
-                            from arenamcp.match_packets import start_match_packet
-
-                            packet = start_match_packet(curr_match_id)
-                            if packet and self._coach:
-                                packet.deck_strategy = self._coach._deck_strategy
-                        except Exception as e:
-                            logger.warning(f"Failed to start match packet: {e}")
-                        self._begin_match_bundle(curr_match_id)
+                        # Packet and bundle for this match's current game (game
+                        # 2/3 of a Bo3 after the between-games reset included).
+                        self._start_game_recording(curr_match_id, curr_state.get("game_number"))
+                # A match seen in play: the game-end signal for it is ours.
+                if curr_match_id is not None and turn_num > 0:
+                    self._note_watched_game(curr_match_id, curr_state.get("game_number"))
 
                 # Debug: Log if turn_num is 0 (every 30 seconds)
                 if turn_num == 0:
@@ -2277,7 +2260,9 @@ class StandaloneCoach(
                             try:
                                 from arenamcp.server import game_state as gs
 
-                                if gs.match_id and not gs.game_ended_event.is_set():
+                                # This game's end, not any earlier one's: an
+                                # untaken event once blocked this for whole games.
+                                if gs.match_id and not gs.game_over_signalled():
                                     logger.info(
                                         "Bridge Intermission detected (match=%s) — "
                                         "triggering match-end pipeline",

@@ -127,9 +127,10 @@ class _OopsMixin:
 
     @staticmethod
     def _oops_game_over() -> bool:
+        """This game ended (scoped: an earlier game's untaken end once blocked whole games)."""
         from arenamcp.server import game_state
 
-        return game_state.game_ended_event.is_set()
+        return game_state.game_over_signalled()
 
     def _oops_concede_active(self, game_key: Any = None) -> bool:
         """A concede countdown runs, or this game's concede is being sent, sent or confirmed."""
