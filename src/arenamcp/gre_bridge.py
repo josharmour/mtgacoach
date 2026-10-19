@@ -207,6 +207,10 @@ class GREBridge:
         # speaks generic reflection; the adapter answers plugin commands on it.
         self._mac_adapter = None
         self._recent_commands: deque = deque(maxlen=80)
+        # Monotonic time of the last answer sent to Arena (submit_*/cancel/
+        # auto_respond), whatever its outcome. The decision watchdog measures
+        # how long a pending request has gone unanswered from here.
+        self.last_submission_at: float = 0.0
         # Runtime the connected client reported ("il2cpp-android", "il2cpp-macos",
         # "bepinex"), for the UI; None when disconnected.
         self.client_runtime: str | None = None
@@ -681,6 +685,10 @@ class GREBridge:
         if not self._connected and not self.connect():
             raise GREBridgeError("Not connected to GRE bridge")
 
+        action_name = str(cmd.get("action") or "")
+        answers = action_name.startswith("submit_") or action_name in ("cancel_action", "auto_respond")
+        if answers:
+            self.last_submission_at = time.monotonic()
         try:
             resp = self._send_command(cmd, timeout=timeout)
         except GREBridgeError:
@@ -689,8 +697,7 @@ class GREBridge:
                 resp = self._send_command(cmd, timeout=timeout)
             else:
                 raise
-        action_name = str(cmd.get("action") or "")
-        if action_name.startswith("submit_") or action_name in ("cancel_action", "auto_respond"):
+        if answers:
             self.invalidate_game_state_cache()
         return resp
 

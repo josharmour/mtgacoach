@@ -2032,6 +2032,72 @@ class AutopilotEngine(
         except Exception:
             return False
 
+    def watchdog_safe_default(self, game_state: dict[str, Any], reason: str = "") -> tuple[bool, str]:
+        """Answer the live request with a safe legal default (decision watchdog).
+
+        Called when a request has gone unanswered too long or Arena's clock
+        is nearly out (arenamcp.decision_watchdog). Never races a plan in
+        progress: returns ``(False, "autopilot busy")`` when the engine lock
+        is held. Defaults, by request: priority — the unambiguous
+        plan-advancing play, else pass; Search — the offered cards
+        (``search_safe_default``), never a timeout; Mulligan — keep;
+        everything else — the existing typed safe-default net (solver-checked
+        blocks/attacks, controller-aware targets, group/select defaults,
+        AutoRespond as the last resort). Returns ``(submitted, detail)``.
+        """
+        if self._config.dry_run:
+            return False, "dry run"
+        if self._abort_event.is_set():
+            return False, "autoplay was stopped"
+        if self._gre_bridge is None or not (self._gre_bridge.connected or self._gre_bridge.connect()):
+            return False, "bridge offline"
+        if not self._acquire_lock(blocking=False):
+            return False, "autopilot busy"
+        try:
+            poll = self._gre_bridge.get_pending_actions() or {}
+            if not poll.get("has_pending"):
+                return False, "no request pending"
+            state = dict(game_state or {})
+            enrich_snapshot_from_pending_response(state, poll, bridge_connected=True)
+            self._progress_game_state = state
+            rtype = str(poll.get("request_type") or "")
+            rclass = str(poll.get("request_class") or "")
+            label = rtype or rclass
+            logger.warning("[WATCHDOG] safe default for %s (%s)", label, reason or "unanswered")
+            bridge = self._progress_bridge(state, poll=poll)
+            if rtype in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS or rclass in _ACTIONS_AVAILABLE_BRIDGE_REQUESTS:
+                if self._try_submit_plan_advancing_play(state):
+                    return True, "made the plan's unambiguous play"
+                if poll.get("can_pass") and bridge.submit_pass():
+                    self._log_execution_path(ExecutionPath.GRE_AWARE, "watchdog: passed priority")
+                    return True, "passed priority"
+                return False, "priority window cannot be passed"
+            from arenamcp.decisions import build_pending_decision, search_safe_default, submit_option
+            from arenamcp.request_tracker import decision_fingerprint, request_window
+
+            decision = build_pending_decision(poll)
+            if decision is not None and decision.request_type == "Search":
+                chosen = search_safe_default(decision)
+                if chosen is not None and submit_option(bridge, decision, chosen):
+                    names = [decision.find(option_id).label for option_id in chosen]
+                    self._request_tracker.note_submitted(decision_fingerprint(decision), request_window(state))
+                    self._log_execution_path(ExecutionPath.GRE_AWARE, f"watchdog: search -> {names}")
+                    return True, ("chose " + ", ".join(names)) if names else "found nothing"
+                return False, "search selection was not accepted"
+            if decision is not None and decision.request_type == "Mulligan" and decision.find("mull:keep"):
+                if submit_option(bridge, decision, ["mull:keep"]):
+                    return True, "kept the hand"
+                return False, "keep was not accepted"
+            submitted = self._try_interactive_safe_default(state, "watchdog")
+            if submitted:
+                return True, "submitted the safe default"
+            return False, "no safe default for this request"
+        except Exception as error:
+            logger.warning("[WATCHDOG] safe default failed: %s", error, exc_info=True)
+            return False, f"error: {error}"
+        finally:
+            self._release_lock()
+
     def _format_bridge_gap_hint(self, game_state: dict[str, Any] | None) -> str:
         """Build a short user-facing explanation of why the bridge couldn't act.
 

@@ -1571,6 +1571,40 @@ def expand_target_selection(decision: PendingDecision, chosen_ids: list[str]) ->
     return [instance_id for slot_ids in assigned for instance_id in slot_ids]
 
 
+def search_safe_default(decision: PendingDecision) -> list[str] | None:
+    """A legal Search answer for when nothing better arrives in time (decision watchdog).
+
+    Takes as many offered cards as Arena allows — a tutor's cards are worth
+    more than failing to find, and a fetch's basics are interchangeable —
+    preferring cards whose identity is known and distinct names, in Arena's
+    order. An empty search finishes empty. Only used once the planner had its
+    chance: a blind pick beats losing the game on time (2026-10-18 18:38:20,
+    ResultReason_Timeout on an unanswered Search). None when no selection the
+    request accepts exists.
+    """
+    if decision.request_type != "Search":
+        return None
+    options = list(decision.options)
+    if not options:
+        return [] if decision.selection_is_valid([]) else None
+    known = [option for option in options if option.meta.get("identity_known") is not False]
+    unknown = [option for option in options if option.meta.get("identity_known") is False]
+    distinct: list[DecisionOption] = []
+    seen: set[str] = set()
+    for option in known:
+        if option.label.casefold() not in seen:
+            seen.add(option.label.casefold())
+            distinct.append(option)
+    ordered = distinct + [o for o in known if o not in distinct] + unknown
+    upper = decision.max_select if decision.max_select > 0 else 1
+    count = max(decision.min_select, min(upper, len(ordered)))
+    for size in range(count, decision.min_select - 1, -1):
+        chosen = [option.option_id for option in ordered[:size]]
+        if decision.selection_is_valid(chosen):
+            return chosen
+    return None
+
+
 def submit_option(
     bridge: Any,
     decision: PendingDecision,
