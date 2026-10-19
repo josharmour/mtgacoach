@@ -724,11 +724,14 @@ class ActionPlanner(_ActionLegalityMixin):
             parts.append(self._game_plan)
         return "\n".join(parts)
 
-    def _strategy_context(self, state: dict | None = None, *, with_lines: bool = True) -> str:
+    def _strategy_context(
+        self, state: dict | None = None, *, with_lines: bool = True, request_type: str | None = None
+    ) -> str:
         """Deck strategy or playbook, the grounded plan block, and the playbook's decision rules.
 
         ``with_lines=False``: the plan block leaves out the line search's LINES
-        line (a typed decision shows it above its options).
+        line (a typed decision shows it above its options). ``request_type``
+        (a typed decision's) selects the playbook rules for that request.
         """
         parts = []
         playbook = self._deck_playbook()
@@ -744,7 +747,7 @@ class ActionPlanner(_ActionLegalityMixin):
             # The full Oracle reference already accompanies the live state.
             # Reuse just the plan and relevant rules instead of repeating the
             # entire playbook, every source quotation, and then these rules.
-            parts.append(playbook.decision_context(state))
+            parts.append(playbook.decision_context(state, request_type=request_type))
         return "\n\n".join(parts)
 
     # Decision calls give up on a server that has produced no first token by
@@ -4753,7 +4756,9 @@ class ActionPlanner(_ActionLegalityMixin):
             lines.append(reach)
         lines.append(self._decision_game_context(context_state))
         # The LINES line is shown once, above OPTIONS: not again in the strategy block.
-        strategy_context = self._strategy_context(game_state, with_lines=not lines_text.startswith("LINES"))
+        strategy_context = self._strategy_context(
+            game_state, with_lines=not lines_text.startswith("LINES"), request_type=decision.request_type
+        )
         if strategy_context:
             lines.append(strategy_context)
         memory_block = self._memory().prompt_block(game_state)

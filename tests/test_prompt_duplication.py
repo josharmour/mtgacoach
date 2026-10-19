@@ -351,3 +351,37 @@ def test_the_game_plan_and_questions_keep_the_inventory(monkeypatch):
     coach._rules_db = SimpleNamespace(get_rules_for_situation=lambda *args, **kwargs: [])
     coach.get_advice(_library_state(), question="What can I still draw?")
     assert "MY LIBRARY (16 cards left" in coach_backend.calls[-1]
+
+
+# --- the playbook's rules for the window, not all of them -------------------------
+
+
+def _scoped_playbook():
+    state, catalog, response = deck_case("spells")
+    base = response["decision_rules"][0]
+    response["decision_rules"] = [
+        {**base, "id": f"rule_{kinds[0]}", "decisions": kinds, "prefer": f"Prefer for {kinds[0]}."}
+        for kinds in (["development"], ["combat"], ["targeting"], ["tutor"], ["all"])
+    ]
+    return state, DeckPlaybook.parse(json.dumps(response), catalog, commander_ids(state), deck_identity(state))
+
+
+def _rules_shown(text):
+    return sorted(line.split()[1] for line in text.splitlines() if line.startswith("RULE "))
+
+
+def test_playbook_rules_follow_the_window_including_log_decision_types():
+    state, book = _scoped_playbook()
+    # An upkeep priority window, as Player.log names it ("actions_available"):
+    # before, no hint matched the underscore form and all five rules were sent.
+    upkeep = {**state, "turn": {"phase": "Phase_Beginning"}, "decision_context": {"type": "actions_available"}}
+    assert _rules_shown(book.decision_context(upkeep)) == ["rule_all", "rule_development"]
+    # A typed decision names its request.
+    plain = {**state, "turn": {"phase": "Phase_Ending"}, "decision_context": None}
+    assert _rules_shown(book.decision_context(plain, request_type="SelectTargets")) == ["rule_all", "rule_targeting"]
+    assert _rules_shown(book.decision_context(plain, request_type="Search")) == ["rule_all", "rule_tutor"]
+    damage = {**plain, "decision_context": {"type": "assign_damage"}}
+    assert "rule_combat" in _rules_shown(book.decision_context(damage))
+    # A window no hint classifies still gets every rule.
+    unknown = {**plain, "decision_context": {"type": "numeric_input"}}
+    assert len(_rules_shown(book.decision_context(unknown))) == 5

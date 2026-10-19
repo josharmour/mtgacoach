@@ -371,8 +371,14 @@ class DeckPlaybook:
             f"  Unless: {rule['unless']}",
         ]
 
-    def decision_context(self, state: dict) -> str:
-        """Keep the relevant learned exceptions close to the immediate choice."""
+    def decision_context(self, state: dict, *, request_type: str | None = None) -> str:
+        """Keep the relevant learned exceptions close to the immediate choice.
+
+        ``request_type``: the pending request's type when the caller knows it
+        (a typed decision), e.g. "SelectTargets". Rules whose scope matches
+        none of the window's kinds are left out; a window no hint classifies
+        gets every rule.
+        """
         context = state.get("decision_context") or {}
         request = " ".join(
             str(value)
@@ -385,6 +391,13 @@ class DeckPlaybook:
             )
         ).lower()
         kinds = {kind for needle, kind in _DECISION_HINTS if needle in request}
+        if not kinds:
+            # Player.log's "actions_available" / "assign_damage" and the typed
+            # request ("SelectTargets") classify a window nothing above did:
+            # 2026-10-18 an upkeep or end-step priority window matched no hint
+            # and every rule was sent.
+            flat = f"{request} {request_type or ''}".lower().replace("_", "")
+            kinds = {kind for needle, kind in _DECISION_HINTS + _REQUEST_HINTS if needle in flat}
         if "combat" in kinds:
             # Trading a body changes the same resources as sacrifices and
             # recovery choices, though the actual trigger events still differ.
@@ -562,4 +575,9 @@ _DECISION_HINTS = (
     ("target", "targeting"),
     ("search", "tutor"),
     ("mulligan", "mulligan"),
+)
+# Request names (underscores removed) that only classify a window the hints above left open.
+_REQUEST_HINTS = (
+    ("assigndamage", "combat"),
+    ("distribut", "targeting"),
 )
