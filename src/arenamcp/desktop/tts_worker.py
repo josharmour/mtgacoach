@@ -27,8 +27,31 @@ def _configure_logging() -> None:
     )
 
 
+def _lower_priority() -> None:
+    """Run speech synthesis below the game so a spoken line never costs Arena frames.
+
+    2026-10-18 22:40 (Asahi Linux, Arena in a VM on the 4 performance cores):
+    each line's Kokoro burst took those cores and Arena stuttered. At below-normal
+    priority the scheduler still uses idle cores, so speech stays real-time.
+    """
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            below_normal = 0x00004000  # BELOW_NORMAL_PRIORITY_CLASS
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), below_normal)
+        else:
+            import os
+
+            os.nice(10)
+    except Exception:  # noqa: BLE001 - priority is an optimisation, never fatal
+        logger.debug("could not lower TTS worker priority", exc_info=True)
+
+
 def main() -> int:
     _configure_logging()
+    _lower_priority()
 
     try:
         from arenamcp.tts import VoiceOutput

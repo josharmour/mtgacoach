@@ -271,14 +271,17 @@ class KokoroTTS:
                 raise ImportError("kokoro-onnx not installed. Run: pip install kokoro-onnx") from e
 
             # Cap intra-op threads so TTS inference does not saturate all CPU cores
-            # and starve Windows DWM / game render threads.
+            # and starve Windows DWM / game render threads. Two, not four: on an
+            # Apple M2 (Asahi) 4 threads took all four performance cores Arena's
+            # VM runs on and were slower than 2 (10.9 s vs 7.9 s for a 6.5 s line
+            # on the efficiency cores; 2026-10-18 22:40 benchmark).
             try:
                 import onnxruntime as rt
                 from kokoro_onnx.session import resolve_providers
 
                 opts = rt.SessionOptions()
                 cpu_count = os.cpu_count() or 1
-                opts.intra_op_num_threads = min(4, max(1, cpu_count // 2))
+                opts.intra_op_num_threads = min(2, max(1, cpu_count // 2))
                 opts.inter_op_num_threads = 1
                 session = rt.InferenceSession(
                     str(self._model_path), sess_options=opts, providers=resolve_providers()
