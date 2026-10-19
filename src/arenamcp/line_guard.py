@@ -812,7 +812,9 @@ def option_note(result: LineSearchResult | ModeComparison | None, option: Any, s
     ActionsAvailable options on our turn (nothing on the stack): the best line
     that starts with this play, e.g. '[LINE best: 7 after T13, 5 after T15]',
     '[LINE: -17 vs best; 4 after T13, 4 after T15]', '[LINE: dead T15]'.
-    'pass' is tagged only in our Main2. A modal option needs the decision's
+    'pass' is tagged only in our Main2, or as the best line while only our own
+    spell is on the stack and the line's next casts wait for it
+    (``burn_timing.own_stack_line_waits``). A modal option needs the decision's
     ``ModeComparison`` (``mode_comparison``) as ``result``:
     '[LINE: survives T15 at 2, dead T17]'. Never names an opponent's card.
     """
@@ -841,6 +843,14 @@ def _option_note(result, option, state) -> str:
     if not _usable(result) or meta.get("choiceKind"):
         return ""
     model = result.model
+    if _is_pass(option) and model.our_turn and state.get("stack") and result.posture != "lethal":
+        # Ledger #139 (d9a33232 T4): with only our own spell on the stack and the best line's
+        # next casts all sorcery-speed, passing (letting it resolve) is the line's own next move.
+        from arenamcp.burn_timing import own_stack_line_waits
+
+        if own_stack_line_waits(state, result) is not None:
+            return _note_for(result.best, result.best, is_best=True)
+        return ""
     if not model.our_turn or state.get("stack") or model.stack_nonempty or result.posture == "lethal":
         return ""
     if not _is_pass(option) and _unmodelled_finisher(result, option, state):

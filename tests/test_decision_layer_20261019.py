@@ -558,11 +558,24 @@ ZERO_DOWNSIDE = (
 )
 
 
+def test_sweeper_burn_into_an_empty_board_is_held_without_the_model(monkeypatch):
+    # Ledger #136 (e917434f T1): the sweeper that kills nothing comes off the menu; only Pass is left.
+    monkeypatch.setattr(planner_module, "_lethal_this_turn", lambda state: False)
+    _no_lines(monkeypatch)
+    model = _Model(_reply("idx:2", ZERO_DOWNSIDE))
+    planner = _planner(model)
+    assert planner.plan_decision_options(HAZARD_MENU, _hazard_board()) == ["pass"]
+    assert model.efforts == []
+    assert planner.get_decision_reasoning(["pass"]).startswith("Holding Tectonic Hazard: it kills none")
+
+
 def test_sweeper_burn_into_an_empty_board_gets_a_second_look_at_high_effort(monkeypatch):
+    # The second look itself, when a model answer casts it anyway (no #136 hold in front).
     monkeypatch.setattr(planner_module, "_lethal_this_turn", lambda state: False)
     _no_lines(monkeypatch)
     model = _Model(_reply("idx:2", ZERO_DOWNSIDE), _reply("pass", "Hold Hazard for a creature it kills."))
     planner = _planner(model)
+    monkeypatch.setattr(planner, "_hold_instant_burn", lambda decision, s: (decision, []))
     assert planner.plan_decision_options(HAZARD_MENU, _hazard_board()) == ["pass"]
     assert model.efforts == [None, "high"]
     assert (
@@ -711,13 +724,29 @@ def test_burn_with_a_use_now_is_not_held(case):
     assert "idx:0: Cast Lightning Strike" in options
 
 
-def test_at_their_end_step_the_burn_is_offered_and_the_prompt_says_it_is_the_last_window():
+def test_at_their_end_step_the_held_burn_is_released_without_the_model():
+    # Ledger #137: the release is deterministic (test_burn_timing_20261019 has the real boards).
     board = _strike_board(
         stack=[], active_player=THEM, priority_player=ME, phase="Phase_Ending", step="Step_End"
     )
-    model = _Model(_reply("idx:0", "End step: Strike face."))
+    model = _Model(_reply("pass", "End step: keep both."))
     planner = _planner(model)
-    assert planner.plan_decision_options(STRIKE_MENU, board) == ["idx:0"]
+    assert planner.plan_decision_options(STRIKE_MENU, board) == ["idx:0"]  # 3 face damage for our 2 mana
+    assert model.efforts == []
+    assert planner.get_decision_reasoning(["idx:0"]).startswith(
+        "End-step release: Lightning Strike at their face"
+    )
+
+
+def test_at_their_end_step_a_payable_cast_the_release_does_not_take_gets_the_last_window_note():
+    board = _strike_board(
+        stack=[], active_player=THEM, priority_player=ME, phase="Phase_Ending", step="Step_End"
+    )
+    board["hand"] = [_card(281, "Lightning Strike", ME, oracle_text="Lightning Strike deals 3 damage to target creature.")]
+    model = _Model(_reply("pass", "Nothing to kill."))
+    planner = _planner(model)
+    menu = _menu(_cast("idx:0", board["hand"][0]))
+    assert planner.plan_decision_options(menu, board) == ["pass"]
     assert "OPPONENT'S END STEP: the last window before we untap" in model.prompts[0]
 
 
