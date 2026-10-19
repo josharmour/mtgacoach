@@ -54,6 +54,13 @@ def _as_int(value: Any) -> int:
         return 0
 
 
+def _walker_loyalty(card: dict[str, Any]) -> int | None:
+    """A planeswalker's current loyalty (its loyalty counters first), None when unknown (#130)."""
+    from arenamcp.combat_strategy import loyalty
+
+    return loyalty(card)
+
+
 def _is_opponent_turn(game_state: dict[str, Any], local_seat: Any) -> bool:
     """Whether the opponent is the active player (False when either seat is unknown)."""
     active = _as_int((game_state.get("turn") or {}).get("active_player"))
@@ -4924,7 +4931,9 @@ class ActionPlanner(_ActionLegalityMixin):
             if card is None or controllers.get(iid) == local_seat:
                 return None
             if "planeswalker" in str(card.get("type_line") or "").lower():
-                return True
+                # #130: a walker the damage doesn't finish keeps a pick but is no kill to retarget to.
+                remaining = _walker_loyalty(card)
+                return True if remaining is None or damage >= remaining else None
             if "creature" not in str(card.get("type_line") or "").lower():
                 return None
             return damage_would_kill(card, damage)
@@ -5042,7 +5051,10 @@ class ActionPlanner(_ActionLegalityMixin):
                 continue
             type_line = str(other.get("type_line") or "").lower()
             if "planeswalker" in type_line:
-                alternatives.append((0, 0, oid, other.get("name")))
+                # #130: "dies instead" only for a walker the damage finishes.
+                remaining = _walker_loyalty(other)
+                if remaining is None or sure_damage >= remaining:
+                    alternatives.append((0, 0, oid, other.get("name")))
             elif (
                 "creature" in type_line
                 and damage_would_kill(other, sure_damage) is True
@@ -6179,6 +6191,14 @@ class ActionPlanner(_ActionLegalityMixin):
                     from arenamcp.play_safety import creature_state_facts
 
                     facts.update(creature_state_facts(card, mine=ctrl is not None and ctrl == local_seat))
+                # #130 (2026-10-19, match 3e545401): Ajani Resolute at loyalty 1 was a bare name.
+                if _as_int(o.option_id[4:]) in battlefield_ids and (
+                    "planeswalker" in str(card.get("type_line") or "").lower()
+                    or "CardType_Planeswalker" in (card.get("card_types") or [])
+                ):
+                    from arenamcp.play_safety import planeswalker_state_facts
+
+                    facts.update(planeswalker_state_facts(card))
                 ward = ward_of(card) if _as_int(o.option_id[4:]) in battlefield_ids else None
                 if ward is not None and ctrl not in (None, local_seat) and ward_mana is not None:
                     warded_targets = True

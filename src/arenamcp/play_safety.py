@@ -660,6 +660,27 @@ def creature_state_facts(creature: dict, *, mine: bool) -> dict[str, Any]:
     return facts
 
 
+def planeswalker_state_facts(walker: dict) -> dict[str, Any]:
+    """A battlefield planeswalker's loyalty, and the damage that kills it (all of its loyalty).
+
+    #130 (2026-10-19, match 3e545401): target options carried facts for
+    creatures only, so Ajani Resolute at loyalty 1 was offered as a bare name.
+    Damage to a planeswalker removes that many loyalty counters; at 0 it dies.
+    A creature that is also a planeswalker dies to the smaller of the two.
+    Unknown loyalty says nothing.
+    """
+    from arenamcp.combat_strategy import loyalty
+
+    remaining = loyalty(walker)
+    if remaining is None:
+        return {}
+    facts: dict[str, Any] = {"loyalty": remaining, "dies_to_damage": max(0, remaining)}
+    creature = lethal_damage(walker) if "creature" in str(walker.get("type_line") or "").lower() else None
+    if creature is not None:
+        facts["dies_to_damage"] = min(facts["dies_to_damage"], creature)
+    return facts
+
+
 def damage_removal_kills_nothing(card: dict, state: dict) -> str:
     """Withhold fixed-damage removal when no opposing target would die.
 
