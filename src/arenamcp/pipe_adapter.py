@@ -254,15 +254,6 @@ class PipeAdapter:
         """
         self._emit({"type": "suggested_actions", "actions": list(actions or [])})
 
-    def emit_card_positions(self, payload: dict[str, Any]) -> None:
-        """Forward a `get_card_positions` bridge response to the UI.
-
-        Only the coach process owns the GRE bridge (single-instance pipe).
-        The UI's match overlay needs card screen rects for highlighting,
-        so the coach polls the bridge and relays the result via this event.
-        """
-        self._emit({"type": "card_positions", "data": payload or {}})
-
     def emit_startup_status(self, snapshot: dict[str, Any]) -> None:
         """Keep preparation/readiness separate from connectivity health."""
         self._emit({**snapshot, "type": "startup_status"})

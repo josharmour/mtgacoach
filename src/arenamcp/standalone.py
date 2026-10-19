@@ -1741,24 +1741,6 @@ class StandaloneCoach(
                             _hb_consecutive_failures,
                         )
 
-                # Poll card positions from the bridge and forward to the UI
-                # match overlay. The UI no longer runs its own GREBridge
-                # instance (two servers on the same pipe name was causing
-                # constant disconnect/reconnect loops), so this relay is
-                # how the overlay gets ground-truth card coords.
-                try:
-                    emit_cp = getattr(self.ui, "emit_card_positions", None)
-                    if callable(emit_cp):
-                        from arenamcp.gre_bridge import get_bridge
-
-                        bridge = get_bridge()
-                        if bridge and bridge.connected:
-                            positions = bridge.get_card_positions()
-                            if positions:
-                                emit_cp(positions)
-                except Exception as e:
-                    logger.debug(f"card positions emit failed: {e}")
-
                 # Check for active draft/sealed first
                 draft_pack = self._mcp.get_draft_pack()
                 self._emit_pipe_snapshots(draft_state=draft_pack)
