@@ -124,6 +124,10 @@ class GameObject:
     # and why, from the FaceDown annotation's REASON (ReasonFaceDown: 6 = Disguise).
     face_down: bool = False
     face_down_reason: int | None = None
+    # An attacker's fate once blocks are declared (GameObjectInfo.blockState on the attacker:
+    # BlockState_Blocked / BlockState_Unblocked): True / False, None before blocks or for a
+    # non-attacker. Sneak returns an *unblocked* attacker (ledger #156, match be1a945f).
+    is_blocked: bool | None = None
 
     def to_dict(self) -> dict:
         """Convert to simple dict for snapshot serialization."""
@@ -171,6 +175,8 @@ class GameObject:
             result["keywords"] = list(self.keywords)
         if self.ability_grp_ids:
             result["ability_grp_ids"] = list(self.ability_grp_ids)
+        if self.is_blocked is not None and self.is_attacking:
+            result["is_blocked"] = self.is_blocked
         if self.removed_abilities:
             result["removed_abilities"] = self.removed_abilities
         if self.damaged_this_turn:

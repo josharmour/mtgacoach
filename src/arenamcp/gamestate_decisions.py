@@ -1106,7 +1106,20 @@ def _handle_actions_available(game_state: "GameState", msg: dict) -> bool:
                     logger.debug("RulesEngine affordability fallback failed", exc_info=True)
 
             suffix = " [OK]" if castable else ""
-            legal_list.append(f"Cast {name}{suffix}")
+            via = ""
+            if action.get("alternativeGrpId"):
+                # Ledger #156 (match be1a945f): the Sneak cast in our declare-blockers step read
+                # as a plain "Cast Leonardo, Big Brother"; its alternative cost is named.
+                try:
+                    from arenamcp.decisions import _alternative_cost_kind
+
+                    kind = _alternative_cost_kind(action)
+                    # A [tag]: the "Cast X" name parsers strip it as decoration.
+                    via = f" [{kind.upper()}]" if kind else ""
+                    enriched_actions[action_idx]["_alternative"] = kind
+                except Exception:
+                    logger.debug("alternative cost lookup failed", exc_info=True)
+            legal_list.append(f"Cast {name}{via}{suffix}")
         elif atype == "ActionType_Activate":
             name = ""
             if action.get("grpId"):

@@ -918,6 +918,8 @@ class LethalReach:
     burn: int
     pumps: int
     pumpers: tuple[str, ...]
+    sneak: int = 0  # a Sneak swap after blocks: its creature's power less the attacker it returns
+    sneak_name: str = ""
 
     def text(self) -> str:
         parts = [f"attackers {self.attack}"] if self.attack else []
@@ -925,7 +927,45 @@ class LethalReach:
             parts.append(f"burn {self.burn}")
         if self.pumps:
             parts.append(f"cast pumps +{self.pumps} ({', '.join(self.pumpers)})")
+        if self.sneak:
+            parts.append(f"Sneak {self.sneak_name} after blocks +{self.sneak}")
         return f"up to {self.damage} damage this turn ({', '.join(parts)}) against their {self.life} life"
+
+
+def _sneak_reach(
+    state: dict, attackers: list[dict], mana: int, window: int | None
+) -> tuple[int, str, int | None]:
+    """(+damage, card, unblocked damage or None) a Sneak cast adds this turn: in our
+    declare-blockers step the real swap (``sneak.sneak_now``) and the unblocked attackers'
+    damage; before it, the Sneak creature's power less our weakest attacker's.
+
+    Ledger #156 (match be1a945f T12): the reach read 20 against their 17 and
+    never counted the Sneak Leonardo worth 15 more.
+    """
+    from arenamcp.sneak import entry_power, sneak_casts, sneak_now
+
+    if window == _TURN_STEPS.index("declareblock"):
+        found = sneak_now(state)
+        if found is None or found.affordable is False:
+            return 0, "", None
+        return max(0, found.total - found.through), found.cast.name, found.through
+    if not attackers or window is None or window > _TURN_STEPS.index("declareattack"):
+        return 0, "", None
+    local = _local_seat(state)
+    creatures = sum(
+        1
+        for c in state.get("battlefield") or []
+        if c.get("controller_seat_id") == local and "creature" in _types(c) and not _is_land(c)
+    )
+    weakest = min((c["power"] for c in attackers if type(c.get("power")) is int), default=0)
+    best, name = 0, ""
+    for cast in sneak_casts(state):
+        if cast.mana_value > mana:
+            continue
+        gain = entry_power(cast.card, creatures) - max(0, weakest)
+        if gain > best:
+            best, name = gain, cast.name
+    return best, name, None
 
 
 def lethal_reach(decision: Any, state: dict | None) -> LethalReach | None:
@@ -1004,9 +1044,21 @@ def lethal_reach(decision: Any, state: dict | None) -> LethalReach | None:
                     if candidate[0] > best[spend][0]:
                         best[spend] = candidate
     extra, face, spells = best[mana]
-    if attack + extra < life:
+    sneak, sneak_name = 0, ""
+    if our_turn:
+        try:
+            sneak, sneak_name, unblocked = _sneak_reach(state, attackers, mana, window)
+        except Exception:  # a reading aid: the bound never fails on it
+            sneak, sneak_name, unblocked = 0, "", None
+        if sneak and unblocked is not None:
+            attack = unblocked  # blocks are known: the unblocked attackers' damage
+        elif not sneak:
+            sneak_name = ""
+    if attack + extra + sneak < life:
         return None
-    return LethalReach(attack + extra, life, attack, face, spells * per_spell, tuple(pumpers))
+    return LethalReach(
+        attack + extra + sneak, life, attack, face, spells * per_spell, tuple(pumpers), sneak, sneak_name
+    )
 
 
 def _names_in_plan(name: str, plan_text: str) -> bool:

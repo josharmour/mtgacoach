@@ -110,6 +110,16 @@ def _parse_block_state(value: Any) -> bool:
     return str(value) in ("BlockState_Declared", "BlockState_Blocking")
 
 
+def _parse_attacker_block_state(value: Any) -> bool | None:
+    """An attacker's blockState after blocks: True for Blocked(3), False for Unblocked(4), None
+    for anything else (a blocker's own state, or none yet)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return {3: True, 4: False}.get(value)
+    return {"BlockState_Blocked": True, "BlockState_Unblocked": False}.get(str(value))
+
+
 # GRE CounterType numbers (Wotc.Mtgo.Gre.External.Messaging.CounterType, re-output
 # GreProtobuf/.../CounterType.cs) that Player.log counter annotations are decoded
 # to, under the enum's own names (the Mac bridge reads the same names). The rest

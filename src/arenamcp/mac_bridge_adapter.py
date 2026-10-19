@@ -1756,9 +1756,27 @@ class MacBridgeAdapter:
             return
         self._shape_SelectNRequest(selection, {}, response)
         response["request_type"] = "SelectN"
-        response["source_card"] = "Pay non-mana cost"
         response["payment_selection"] = True
-        response["decision_context"] = {"type": "select_n", "source_id": num(field(request, "SourceId"))}
+        source_id = num(field(request, "SourceId")) or num(field(selection, "SourceId"))
+        # Arena's own prompt for the cost (ledger #160, match be1a945f T6: Sneak's "Return an
+        # unblocked attacking creature you control to its owner's hand." (prompt 8580, CardId =
+        # the spell) reached the model as "Pay non-mana cost", which it read as a tap cost).
+        prompt = _request_prompt(request) or _request_prompt(selection)
+        text = ""
+        if prompt:
+            response["prompt"] = prompt
+            try:
+                from arenamcp.arena_prompts import prompt_text
+
+                text = prompt_text(prompt)
+            except Exception:
+                text = ""
+        response["source_card"] = f"Pay non-mana cost: {text}" if text else "Pay non-mana cost"
+        if source_id:
+            response["source_instance_id"] = source_id
+        response["decision_context"] = {"type": "select_n", "source_id": source_id}
+        if text:
+            response["decision_context"]["prompt_text"] = text
 
     def _shape_GroupRequest(self, request: dict, getters: dict, response: dict) -> None:
         # InstanceIds/GroupSpecs/Context are computed properties over the wrapped
@@ -2798,6 +2816,16 @@ def plain_object(node: Any, depth: int = 0) -> Any:
             if not k.startswith("$") and depth < 3 and v is not None
         }
     return node
+
+
+def _request_prompt(request: dict | None) -> dict | None:
+    """A request's GRE prompt ({promptId, parameters}), from BaseUserRequest.Prompt; None without one."""
+    prompt = field(request, "Prompt")
+    if not isinstance(prompt, dict) or num(field(prompt, "PromptId")) <= 0:
+        return None
+    # The reflected shape ``arena_prompts`` reads (promptId, parameters: parameterName, value...).
+    plain = plain_object(prompt)
+    return plain if isinstance(plain, dict) else None
 
 
 def cost_selection_request(request: dict | None) -> dict | None:

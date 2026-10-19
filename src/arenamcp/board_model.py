@@ -211,11 +211,21 @@ class CommandCast:
         """Mana to cast it now, the additional mana cost included; None when the cost is unknown."""
         return _mana_value(self.cost) + extra_mana_cost(self.card) if self.cost else None
 
+    @property
+    def sneak_cost(self) -> str:
+        """Its Sneak cost now, the tax included ("{2}{W}"); "" without Sneak (``sneak.sneak_cost``)."""
+        from arenamcp.sneak import sneak_cost, with_tax
+
+        printed = sneak_cost(self.card)
+        return with_tax(printed, self.casts) if printed else ""
+
 
 def _action_cost(entries: Any) -> str:
     """A GRE ``manaCost`` array as a braced cost: [{color: [Generic], count: 3}, {color: [Green],
     count: 2}] -> "{3}{G}{G}" (as ``gamestate_decisions._braced_mana_cost``). The Mac bridge
-    writes ``color`` as one enum name or a '[ "ManaColor_White", ... ]' string."""
+    writes ``color`` as one enum name or a '[ "ManaColor_White", ... ]' string, and its
+    ActionsAvailable actions as '[ "White" ]' without the prefix (match be1a945f T12: Leonardo's
+    taxed cost read "{5}", every pip lost)."""
     generic, colored = 0, []
     for entry in entries if isinstance(entries, list) else []:
         if not isinstance(entry, dict):
@@ -225,7 +235,14 @@ def _action_cost(entries: Any) -> str:
         if count <= 0:
             continue
         colors = entry.get("color") or []
-        names = colors if isinstance(colors, list) else re.findall(r"ManaColor_\w+", str(colors))
+        names = (
+            colors
+            if isinstance(colors, list)
+            else [
+                "ManaColor_" + name
+                for name in re.findall(r"(?:ManaColor_)?(White|Blue|Black|Red|Green|Colorless)\b", str(colors))
+            ]
+        )
         symbols = [_MANA_COLORS[c] for c in names if c in _MANA_COLORS]
         if not symbols:
             generic += count
@@ -246,7 +263,12 @@ def _with_generic(cost: str, amount: int) -> str:
 
 
 def _cast_action_cost(state: dict, instance_id: int | None) -> str:
-    """The braced manaCost of Arena's cast action for this card ("" without one)."""
+    """The braced manaCost of Arena's cast action for this card ("" without one).
+
+    A cast through an alternative cost (``alternativeGrpId``: Sneak in our
+    declare-blockers step) is not the commander's cost: Leonardo's Sneak
+    action costs {W} plus tax, his normal cast {2}{W} plus tax (ledger #156).
+    """
     if instance_id is None:
         return ""
     for key in ("_bridge_actions", "legal_actions_raw"):
@@ -255,6 +277,8 @@ def _cast_action_cost(state: dict, instance_id: int | None) -> str:
                 isinstance(action, dict)
                 and str(action.get("actionType") or "").removeprefix("ActionType_").lower() == "cast"
                 and _int(action.get("instanceId")) == instance_id
+                and not action.get("alternativeGrpId")
+                and not action.get("_alternative_grp_id")
             ):
                 cost = _action_cost(action.get("manaCost"))
                 if cost:

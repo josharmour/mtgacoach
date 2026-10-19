@@ -3563,6 +3563,30 @@ class ActionPlanner(_ActionLegalityMixin):
                     return card
         return {}
 
+    def _sneak_policy(self, decision: Any, game_state: dict[str, Any]) -> tuple[Any, list[str]]:
+        """Sneak without a model call (``sneak``; ledger #156, match be1a945f): a lethal Sneak cast
+        in our declare-blockers step, the attacker its cost returns, and before combat the casts
+        that would spend the mana a lethal Sneak needs. (decision, []) when none applies."""
+        from arenamcp import sneak
+
+        try:
+            for policy, picker in (("sneak_lethal", sneak.sneak_cast_pick), ("sneak_return", sneak.return_pick)):
+                picked, why = picker(decision, game_state)
+                if picked:
+                    self._last_decision_option_ids = picked
+                    self._last_decision_reasoning = why
+                    self._last_decision_trace = {"policy": policy, "validated_ids": picked, "reasoning": why}
+                    logger.warning("Sneak guard: %s — deterministic policy, LLM not consulted", why)
+                    return decision, picked
+            held, why = sneak.hold_filter(decision, game_state)
+        except Exception as error:  # the guard never blocks the normal path
+            logger.debug("sneak guard skipped: %s", error, exc_info=True)
+            return decision, []
+        if why:
+            logger.warning("Sneak guard: %s", why)
+            self._sneak_notes = [f"SNEAK HOLD: {why}."]
+        return held, []
+
     def _plan_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         """Choose option ids for a typed PendingDecision.
 
@@ -3575,6 +3599,7 @@ class ActionPlanner(_ActionLegalityMixin):
         self._decline_reason = ""
         self._held_instants = []
         self._held_notes = []
+        self._sneak_notes = []
         self._end_step_kept = []
         self._release_intent = None
         self._last_decision_option_ids = []
@@ -3697,6 +3722,9 @@ class ActionPlanner(_ActionLegalityMixin):
         loop_pick = self._drain_loop_pick(decision, game_state)
         if loop_pick:
             return loop_pick
+        decision, sneak_pick = self._sneak_policy(decision, game_state)
+        if sneak_pick:
+            return sneak_pick
         decision, held_pick = self._hold_instant_burn(decision, game_state)
         if held_pick:
             return held_pick
@@ -4449,7 +4477,7 @@ class ActionPlanner(_ActionLegalityMixin):
         burn the release keeps for our turn and why (#137), else that it is
         the last window for that mana.
         """
-        notes = list(getattr(self, "_held_notes", []) or [])
+        notes = list(getattr(self, "_sneak_notes", []) or []) + list(getattr(self, "_held_notes", []) or [])
         if notes:
             return " ".join(notes)
         held = list(getattr(self, "_held_instants", []) or [])
