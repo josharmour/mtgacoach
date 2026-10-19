@@ -13,6 +13,10 @@ LEGACY = {
     "ollama_url": "http://ollama:11434",
     "api_key": "sk-old-provider",
     "known_backends": ["ollama", "proxy"],
+    # The removed conversation mode.
+    "conversation_mode": "conversation",
+    "conversation_verbosity": "balanced",
+    "conversation_cooldown_seconds": 90,
     # The dev-only local backend (create_backend is online-only).
     "local_url": "http://localhost:8000/v1",
     "local_model": "qwen",

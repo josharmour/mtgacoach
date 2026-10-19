@@ -93,12 +93,15 @@ DEFAULTS = {
 }
 
 # Keys of removed features, stripped from settings.json on load: the old
-# multi-provider backend settings (online-only since 2026-06-11), the
-# dev-only local backend's endpoint, the vision model of the screenshot-driven
-# native Mac autopilot and the desktop runtime's never-shown "restart MTGA"
-# config baseline (the last three removed 2026-10-18). local_api_key stays:
+# multi-provider backend settings (online-only since 2026-06-11), and from
+# 2026-10-18 the dev-only local backend's endpoint, the conversation mode, the
+# vision model of the screenshot-driven native Mac autopilot and the desktop
+# runtime's never-shown "restart MTGA" config baseline. local_api_key stays:
 # it is the remote TTS server's token.
 _OLD_KEYS = {
+    "conversation_mode",
+    "conversation_verbosity",
+    "conversation_cooldown_seconds",
     "local_url",
     "local_model",
     "autopilot_vision_model",
