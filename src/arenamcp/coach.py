@@ -2375,6 +2375,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         solver_plan = None
         try:
             from arenamcp.combat_solver import (
+                attacking_trick_exposure,
                 blocker_options,
                 combat_resource_roles,
                 mana_spending_restriction,
@@ -2401,15 +2402,31 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             from arenamcp.combat_recovery import CombatRecovery
 
             recovery = CombatRecovery(game_state or {})
+            # The attacker's open mana and hand price a trick after blocks (#74:
+            # 2026-10-19 T13 match abde2a07, a zero-slack triple block into two
+            # open mana met Scarblade's Malice and lost all three blockers).
+            exposure = attacking_trick_exposure(game_state)
             solver_plan = optimal_blocks(
                 attacking,
                 usable_blockers,
                 your_life,
                 blocker_allowed_attackers=allowed_map or None,
                 recovery_credit=recovery.credit if recovery.commanders else None,
+                trick_exposure=exposure,
             )
             if solver_plan is not None:
                 lines.append(f"Computed optimal blocks: {solver_plan.explanation}")
+                if solver_plan.trick_rejected:
+                    lines.append(
+                        f"Trick risk: rejected {solver_plan.trick_rejected}. An attack into more untapped "
+                        "blockers than it can survive, with mana open, usually has the trick; above lethal "
+                        "range take the hit or block with one creature rather than risk two or more."
+                    )
+                elif solver_plan.trick_risk:
+                    lines.append(
+                        f"Trick risk: {solver_plan.trick_risk}. Still the computed line: the alternatives "
+                        "cost more here."
+                    )
                 lines.append(
                     "This search prices immediate combat plus supported, affordable commander entry "
                     "recovery below. Future resources are discounted and the full recast cost is charged. "

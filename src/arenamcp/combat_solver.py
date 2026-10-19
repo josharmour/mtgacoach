@@ -408,6 +408,137 @@ class BlockPlan:
     recovery_credit: float = 0.0
     attacker_life_gained: int = 0  # the attacking side's lifelink gain under these blocks
     attackers_killed_ids: frozenset[int] = frozenset()
+    # Expected material lost to a combat trick of the attacking player (TrickExposure).
+    trick_cost: float = 0.0
+    # The blocks in this plan that count on exact damage or two or more blockers into open mana.
+    trick_risk: str = ""
+    # The best plan before trick risk was priced, when trick risk rejected it.
+    trick_rejected: str = ""
+
+
+# --- Combat tricks after blocks (#74) -------------------------------------------
+#
+# 2026-10-19 T13 (match abde2a07): a lone Creakwood Safewright 5/5 attacked into
+# our three untapped creatures with Swamp + Forest open and 4 cards in hand. The
+# solver scored the triple block with exactly 5 power (2+2+1) at 0.0 against
+# -6.67 for no block, at every life total from 8 to 20; the coach prompt called
+# it "Computed optimal blocks" and the model followed. Scarblade's Malice
+# (deathtouch + lifelink, {B}) killed all three blockers and gained them 5.
+# A block that kills the attacker only by exact damage, or only with two or
+# more blockers, is what a pump, a deathtouch grant or a removal spell on one
+# blocker turns into a blowout. Its expected cost is charged when the attacking
+# player has open mana and cards in hand, hardest for a lone attacker swinging
+# into two or more untapped blockers: an attack that only makes sense with a trick.
+
+# Chance one unknown card in hand is a castable combat trick.
+TRICK_RATE_PER_CARD = 0.12
+# One open mana casts fewer tricks than two.
+ONE_MANA_TRICK_FACTOR = 0.6
+# A lone attacker into two or more blockers that can kill it: half the remaining doubt.
+LONE_ATTACKER_TRICK_WEIGHT = 0.5
+TRICK_PROBABILITY_CAP = 0.9
+# The trick shapes priced: a +2/+2 pump, and a deathtouch grant (Scarblade's Malice).
+TRICK_PUMP = 2
+
+
+@dataclass(frozen=True)
+class TrickExposure:
+    """What the attacking player has for a trick once blocks are declared."""
+
+    open_mana: int
+    hand_size: int
+
+    @property
+    def live(self) -> bool:
+        return self.open_mana > 0 and self.hand_size > 0
+
+    def describe(self) -> str:
+        cards = "card" if self.hand_size == 1 else "cards"
+        return f"{self.open_mana} open mana and {self.hand_size} {cards} in hand"
+
+
+def trick_probability(exposure: TrickExposure | None, *, lone_attacker: bool = False) -> float:
+    """Approximate chance the attacking player holds a castable combat trick."""
+    if exposure is None or not exposure.live:
+        return 0.0
+    chance = 1.0 - (1.0 - TRICK_RATE_PER_CARD) ** min(exposure.hand_size, 7)
+    if exposure.open_mana < 2:
+        chance *= ONE_MANA_TRICK_FACTOR
+    if lone_attacker:
+        chance += (1.0 - chance) * LONE_ATTACKER_TRICK_WEIGHT
+    return min(chance, TRICK_PROBABILITY_CAP)
+
+
+def attacking_trick_exposure(state: dict | None, attacking_seat: Any = None) -> TrickExposure | None:
+    """The attacking player's open mana and hand size from a planner-shape state; None when unknown.
+
+    The attacker defaults to the opponent (we are the ones blocking). Mana is
+    their untapped sources that can tap now plus their pool, mana that cannot
+    cast spells left out (``opponent_tricks._mana_sources``).
+    """
+    if not isinstance(state, dict):
+        return None
+    players = [p for p in state.get("players") or [] if isinstance(p, dict)]
+    local = state.get("local_seat_id") or next((p.get("seat_id") for p in players if p.get("is_local")), None)
+    if attacking_seat is None:
+        attacking_seat = state.get("opponent_seat_id") or next(
+            (p.get("seat_id") for p in players if p.get("seat_id") not in (None, local)), None
+        )
+    if attacking_seat is None or attacking_seat == local:
+        return None
+    zones = state.get("zones") if isinstance(state.get("zones"), dict) else {}
+    hand = next(
+        (
+            value
+            for value in (zones.get("opponent_hand_count"), state.get("opponent_hand_count"))
+            if isinstance(value, int) and not isinstance(value, bool)
+        ),
+        None,
+    )
+    if hand is None or hand < 0:
+        return None
+    try:
+        from arenamcp.opponent_tricks import _mana_sources
+
+        sources = _mana_sources(state, attacking_seat)
+    except Exception as error:  # never let the trick estimate break a block search
+        logger.debug("trick exposure: no mana sources (%s)", error)
+        return None
+    open_mana = sum(1 for source in sources if not getattr(source, "restricted", False))
+    return TrickExposure(open_mana=open_mana, hand_size=hand)
+
+
+def _with_keyword(card: dict, keyword: str) -> dict:
+    return {**card, "keywords": [*(card.get("keywords") or ()), keyword]}
+
+
+def _fight_value(attacker: dict, outcome: CombatOutcome) -> int:
+    """Material the blocking side nets in one fight: the attacker if it dies, minus dead blockers."""
+    killed = _material(attacker) if outcome.attacker_died else 0
+    return killed - sum(_material(dead) for dead in outcome.blockers_died)
+
+
+def _blowout_loss(attacker: dict, assigned: list[dict], outcome: CombatOutcome) -> int:
+    """Material a trick of the attacker's controller costs this block; 0 when the block is not exposed.
+
+    Exposed: the block kills the attacker, and it does so only by exact
+    damage (one more toughness and it lives) or only with two or more
+    blockers. The cost is the worst of a +2/+2 pump and a deathtouch grant
+    against what the block was counted to net.
+    """
+    if not assigned or not outcome.attacker_died:
+        return 0
+    power, toughness = _pt(attacker)
+    exact = not _resolve_attacker({**attacker, "toughness": toughness + 1}, assigned).attacker_died
+    if len(assigned) < 2 and not exact:
+        return 0
+    planned = _fight_value(attacker, outcome)
+    pumped = {**attacker, "power": power + TRICK_PUMP, "toughness": toughness + TRICK_PUMP}
+    worst = min(
+        _fight_value(attacker, _resolve_attacker(pumped, assigned)),
+        _fight_value(attacker, _resolve_attacker(_with_keyword(attacker, "deathtouch"), assigned)),
+    )
+    return max(0, planned - worst)
 
 
 def _can_block_this_attacker(attacker: dict, blocker: dict, allowed_ids: set[int] | None) -> bool:
@@ -424,6 +555,7 @@ def optimal_blocks(
     blocker_allowed_attackers: dict[int, set[int]] | None = None,
     max_options: int = 50_000,
     recovery_credit: Callable[[frozenset[int]], float] | None = None,
+    trick_exposure: TrickExposure | None = None,
 ) -> BlockPlan | None:
     """Best block assignment (memoized; see `_search_blocks`)."""
     if recovery_credit is not None:
@@ -436,13 +568,22 @@ def optimal_blocks(
             blocker_allowed_attackers=blocker_allowed_attackers,
             max_options=max_options,
             recovery_credit=recovery_credit,
+            trick_exposure=trick_exposure,
         )
     allowed = (
         None
         if blocker_allowed_attackers is None
         else tuple(sorted((k, tuple(sorted(v))) for k, v in blocker_allowed_attackers.items()))
     )
-    key = ("blocks", _cards_key(attackers), _cards_key(blockers), your_life, allowed, max_options)
+    key = (
+        "blocks",
+        _cards_key(attackers),
+        _cards_key(blockers),
+        your_life,
+        allowed,
+        max_options,
+        trick_exposure,
+    )
     return _memoized(
         key,
         lambda: _search_blocks(
@@ -451,6 +592,7 @@ def optimal_blocks(
             your_life,
             blocker_allowed_attackers=blocker_allowed_attackers,
             max_options=max_options,
+            trick_exposure=trick_exposure,
         ),
     )
 
@@ -463,6 +605,7 @@ def _search_blocks(
     blocker_allowed_attackers: dict[int, set[int]] | None = None,
     max_options: int = 50_000,
     recovery_credit: Callable[[frozenset[int]], float] | None = None,
+    trick_exposure: TrickExposure | None = None,
 ) -> BlockPlan | None:
     """Enumerate legal block assignments and pick the best.
 
@@ -470,6 +613,11 @@ def _search_blocks(
     of attacker instance_ids it is allowed to block (from the GRE
     `DeclareBlockersReq.blockers[].attackerInstanceIds` list). When None,
     any attacker the blocker can legally block by keyword is allowed.
+
+    `trick_exposure` (the attacking player's open mana and hand) charges each
+    block that counts on exact damage or two or more blockers its expected
+    blowout (``_blowout_loss`` times ``trick_probability``); None charges
+    nothing (the opponent's view, forecasts, unknown hands).
 
     Returns None if there are no attackers.
     """
@@ -488,6 +636,7 @@ def _search_blocks(
             blockers,
             your_life,
             blocker_allowed_attackers=blocker_allowed_attackers,
+            trick_exposure=trick_exposure,
         )
 
     # Pre-compute per-blocker option list: indices into `attackers` plus
@@ -504,13 +653,19 @@ def _search_blocks(
                 opts.append(i)
         blocker_options.append(opts)
 
+    # A lone attacker into two or more creatures that can block it.
+    lone = n_attackers == 1 and sum(1 for opts in blocker_options if len(opts) > 1) >= 2
+    trick_p = trick_probability(trick_exposure, lone_attacker=lone)
+
     menace = [_has(a, "menace") for a in attackers]
     # An attacker's fight depends only on which blockers it gets, and the
     # same (attacker, blockers) pairs recur across thousands of choices.
-    fights: dict[tuple[int, tuple[int, ...]], tuple[int, int, int, frozenset[int]]] = {}
+    fights: dict[tuple[int, tuple[int, ...]], tuple[int, int, int, frozenset[int], int]] = {}
 
     best_score: float | None = None
     best_choice: tuple = ()
+    raw_best: float | None = None  # the same search with no trick priced
+    raw_choice: tuple = ()
     evaluated = 0
     for choice in product(*blocker_options):
         # choice[b] is either None or an attacker index
@@ -528,46 +683,79 @@ def _search_blocks(
         total_damage = 0
         atk_killed_material = 0
         blocker_lost_material = 0
+        blowout = 0
         lost_ids: set[int] = set()
         for a_idx in range(n_attackers):
             key = (a_idx, tuple(assigned_to_atk.get(a_idx, ())))
             fight = fights.get(key)
             if fight is None:
-                outcome = _resolve_attacker(attackers[a_idx], [blockers[b] for b in key[1]])
+                assigned = [blockers[b] for b in key[1]]
+                outcome = _resolve_attacker(attackers[a_idx], assigned)
                 fight = (
                     outcome.damage_through,
                     _material(attackers[a_idx]) if outcome.attacker_died else 0,
                     sum(_material(dead) for dead in outcome.blockers_died),
                     frozenset(dead.get("instance_id", 0) for dead in outcome.blockers_died),
+                    _blowout_loss(attackers[a_idx], assigned, outcome) if trick_p > 0 else 0,
                 )
                 fights[key] = fight
             total_damage += fight[0]
             atk_killed_material += fight[1]
             blocker_lost_material += fight[2]
             lost_ids.update(fight[3])
+            blowout += fight[4]
 
         score = _block_score(total_damage, atk_killed_material, blocker_lost_material, your_life)
         if recovery_credit is not None and total_damage < your_life:
             score += recovery_credit(frozenset(lost_ids))
+        if raw_best is None or score > raw_best:
+            raw_best = score
+            raw_choice = choice
+        score -= trick_p * blowout
         if best_score is None or score > best_score:
             best_score = score
             best_choice = choice
 
     # Rebuild the winner in full (plan, kills, explanation) once.
-    assigned_to_atk = {}
-    for b_idx, atk_idx in enumerate(best_choice):
+    plan = _rebuild_block_plan(
+        attackers, blockers, best_choice, your_life, recovery_credit=recovery_credit, trick_p=trick_p
+    )
+    plan.evaluated = evaluated
+    if plan.trick_cost > 0:
+        plan.trick_risk = _trick_risk_note(attackers, blockers, best_choice, trick_exposure)
+    if raw_choice != best_choice:
+        rejected = _rebuild_block_plan(attackers, blockers, raw_choice, your_life, trick_p=trick_p)
+        if rejected.trick_cost > 0:
+            plan.trick_rejected = (
+                f"{rejected.explanation}: {_trick_risk_note(attackers, blockers, raw_choice, trick_exposure)}"
+            )
+    return plan
+
+
+def _rebuild_block_plan(
+    attackers: list[dict],
+    blockers: list[dict],
+    choice: tuple,
+    your_life: int,
+    *,
+    recovery_credit: Callable[[frozenset[int]], float] | None = None,
+    trick_p: float = 0.0,
+) -> BlockPlan:
+    """One block assignment in full: plan, kills, losses, score (trick cost included) and explanation."""
+    assigned_to_atk: dict[int, list[dict]] = {}
+    for b_idx, atk_idx in enumerate(choice):
         if atk_idx is not None:
             assigned_to_atk.setdefault(atk_idx, []).append(blockers[b_idx])
     plan = BlockPlan(
         assignments={
             int(blockers[b_idx].get("instance_id") or 0): int(attackers[atk_idx].get("instance_id") or 0)
-            for b_idx, atk_idx in enumerate(best_choice)
+            for b_idx, atk_idx in enumerate(choice)
             if atk_idx is not None
         },
-        evaluated=evaluated,
     )
     killed_attackers: list[dict] = []
     lost_blockers: list[dict] = []
+    blowout = 0
     for a_idx, atk in enumerate(attackers):
         assigned = assigned_to_atk.get(a_idx, [])
         outcome = _resolve_attacker(atk, assigned)
@@ -580,16 +768,70 @@ def _search_blocks(
             for dead in outcome.blockers_died:
                 plan.blockers_lost_material += _material(dead)
                 lost_blockers.append(dead)
+            if trick_p > 0:
+                blowout += _blowout_loss(atk, assigned, outcome)
     plan.score = _score_block_plan(plan, your_life)
     plan.blockers_lost_ids = frozenset(c.get("instance_id", 0) for c in lost_blockers)
     plan.attackers_killed_ids = frozenset(c.get("instance_id", 0) for c in killed_attackers)
     if recovery_credit is not None and plan.damage_through < your_life:
         plan.recovery_credit = recovery_credit(plan.blockers_lost_ids)
         plan.score += plan.recovery_credit
-    plan.explanation = _explain_block_plan(
-        plan, attackers, blockers, best_choice, killed_attackers, lost_blockers
-    )
+    plan.trick_cost = trick_p * blowout
+    plan.score -= plan.trick_cost
+    plan.explanation = _explain_block_plan(plan, attackers, blockers, choice, killed_attackers, lost_blockers)
     return plan
+
+
+def _trick_risk_note(
+    attackers: list[dict], blockers: list[dict], choice: tuple, exposure: TrickExposure | None
+) -> str:
+    """Why the blocks of ``choice`` are exposed to a trick, one clause per exposed attacker."""
+    groups: dict[int, list[dict]] = {}
+    for b_idx, atk_idx in enumerate(choice):
+        if atk_idx is not None:
+            groups.setdefault(atk_idx, []).append(blockers[b_idx])
+
+    def killed(count: int, of: int) -> str:
+        if of == 1:
+            return "the blocker"
+        return f"all {of} blockers" if count == of else f"{count} of the {of} blockers"
+
+    notes = []
+    for atk_idx, assigned in groups.items():
+        attacker = attackers[atk_idx]
+        outcome = _resolve_attacker(attacker, assigned)
+        if _blowout_loss(attacker, assigned, outcome) <= 0:
+            continue
+        power, toughness = _pt(attacker)
+        exact = not _resolve_attacker({**attacker, "toughness": toughness + 1}, assigned).attacker_died
+        pumped = _resolve_attacker(
+            {**attacker, "power": power + TRICK_PUMP, "toughness": toughness + TRICK_PUMP}, assigned
+        )
+        deathtouch = _resolve_attacker(_with_keyword(attacker, "deathtouch"), assigned)
+        names = [str(card.get("name") or "a creature") for card in assigned]
+        who = names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
+        how = "exactly lethal damage" if exact else f"{len(assigned)} blockers"
+        pump = f"a +{TRICK_PUMP}/+{TRICK_PUMP} pump"
+        tricks = []
+        if not pumped.attacker_died:
+            kills = (
+                f" and kills {killed(len(pumped.blockers_died), len(assigned))}"
+                if pumped.blockers_died
+                else ""
+            )
+            tricks.append(f"{pump} saves it{kills}")
+        elif len(pumped.blockers_died) > len(outcome.blockers_died):
+            tricks.append(f"{pump} kills {killed(len(pumped.blockers_died), len(assigned))}")
+        if len(deathtouch.blockers_died) > len(outcome.blockers_died):
+            tricks.append(f"a deathtouch trick kills {killed(len(deathtouch.blockers_died), len(assigned))}")
+        notes.append(
+            f"{who} on {attacker.get('name') or 'the attacker'} {power}/{toughness} needs {how}: "
+            + (", ".join(tricks) if tricks else "a trick turns the fight")
+        )
+    if not notes:
+        return ""
+    held = f" (they have {exposure.describe()})" if exposure is not None else ""
+    return "; ".join(notes) + held
 
 
 def _block_score(
@@ -656,6 +898,7 @@ def _greedy_block_plan(
     your_life: int,
     *,
     blocker_allowed_attackers: dict[int, set[int]] | None,
+    trick_exposure: TrickExposure | None = None,
 ) -> BlockPlan:
     """Fallback for large combat — one blocker per attacker, biggest attackers first.
 
@@ -666,8 +909,10 @@ def _greedy_block_plan(
     the hit costs. The old rule took the cheapest body that could block and
     chump-blocked with it (2026-10-08: Rank Rat 1/1 died to Hallway Heckler
     2/3 while Prudent Fateseer 1/4 stood idle, and the line search read the
-    0 damage as "their attacks are stopped"). Multi-blocks are not tried.
+    0 damage as "their attacks are stopped"). Multi-blocks are not tried; an
+    exactly lethal trade into open mana is charged its trick risk (#74).
     """
+    trick_p = trick_probability(trick_exposure)
     sorted_atk = sorted(enumerate(attackers), key=lambda ia: -_pt(ia[1])[0])
     remaining_blockers = list(blockers)
     assignments: dict[int, int] = {}
@@ -676,6 +921,7 @@ def _greedy_block_plan(
     blocker_lost_material = 0
     killed_attackers: list[dict] = []
     lost_blockers: list[dict] = []
+    trick_cost = 0.0
 
     for _atk_idx, atk in sorted_atk:
         atk_iid = int(atk.get("instance_id") or 0)
@@ -693,6 +939,8 @@ def _greedy_block_plan(
             killed = _material(atk) if outcome.attacker_died else 0
             lost = sum(_material(dead) for dead in outcome.blockers_died)
             score = _block_score(outcome.damage_through, killed, lost, life_left)
+            if trick_p > 0:
+                score -= trick_p * _blowout_loss(atk, [blk], outcome)
             # Ties: the cheapest surviving body, then the tougher one.
             key = (score, -_material(blk), _pt(blk)[1])
             if best is None or key > best[:3]:
@@ -705,6 +953,8 @@ def _greedy_block_plan(
         remaining_blockers.remove(chosen)
         assignments[int(chosen.get("instance_id") or 0)] = atk_iid
         total_damage += outcome.damage_through
+        if trick_p > 0:
+            trick_cost += trick_p * _blowout_loss(atk, [chosen], outcome)
         if outcome.attacker_died:
             atk_killed_material += _material(atk)
             killed_attackers.append(atk)
@@ -719,8 +969,9 @@ def _greedy_block_plan(
         blockers_lost_material=blocker_lost_material,
         blockers_lost_ids=frozenset(c.get("instance_id", 0) for c in lost_blockers),
         attackers_killed_ids=frozenset(c.get("instance_id", 0) for c in killed_attackers),
+        trick_cost=trick_cost,
     )
-    plan.score = _score_block_plan(plan, your_life)
+    plan.score = _score_block_plan(plan, your_life) - trick_cost
     plan.explanation = "greedy: " + ", ".join(
         f"{b.get('name', '?')} -> atk#{assignments[int(b.get('instance_id') or 0)]}"
         for b in blockers
