@@ -103,6 +103,24 @@ def test_returning_a_card_from_our_graveyard_is_beneficial():
     assert target_effect_is_harmful("Exile target card from a graveyard.") is True
 
 
+ULDAROS = (
+    "Flying\nWhen Uldaros Theorix enters, if you cast him, exile up to one target nonland card of each "
+    "card type from your graveyard. Copy those cards. You may cast any number of spells with total mana "
+    "value 6 or less from among the copies without paying their mana costs. <i>(Permanent spells cast "
+    "this way become tokens.)</i>"
+)
+
+
+def test_exiling_our_own_graveyard_cards_is_not_harm():
+    """2026-10-18 21:15: Uldaros Theorix's picks of our Apex Witchstalker and Extended
+    Absence were replaced with no targets, which the BepInEx bridge cannot submit."""
+    assert target_effect_is_harmful(ULDAROS) is None
+    assert not effect_mentions_harm(ULDAROS)
+    assert target_effect_is_harmful("Exile target card from your graveyard. You gain 2 life.") is None
+    assert target_effect_is_harmful("Exile target card from a graveyard.") is True
+    assert target_effect_is_harmful("Exile target creature.") is True
+
+
 def test_damage_to_any_target_is_harmful_and_the_charm_is_mixed():
     assert target_effect_is_harmful(ABILITIES[70361]) is True
     assert target_effect_is_harmful("Lightning Bolt deals 3 damage to any target.") is True

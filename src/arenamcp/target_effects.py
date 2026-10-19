@@ -56,6 +56,14 @@ _RECURSION = re.compile(
     rf"\b(?:return|put) (?:{_QUANTITY})?target [^.]*?\bcards?\b[^.]*?\bfrom (?:your|my) graveyard\b"
     rf"|\b(?:return|put) (?:{_QUANTITY})?target [^.]*?\bcards?\b[^.]*?\bfrom a graveyard\b[^.]*?\bunder your control\b"
 )
+# Exiling a card from your own graveyard spends it as a resource (copy it, cast
+# it, feed a cost); it does not hurt the target, and the model's pick should
+# stand. 2026-10-18 21:15: Uldaros Theorix's "exile up to one target nonland card
+# of each card type from your graveyard. Copy those cards..." read as harmful,
+# the model's picks were replaced with no targets, and the BepInEx bridge (which
+# cannot submit an empty selection) went MANUAL REQUIRED. "Exile target card
+# from a graveyard" (graveyard hate) stays harmful.
+_OWN_YARD_EXILE = re.compile(rf"\bexile (?:{_QUANTITY})?target [^.]*?\bcards?\b[^.]*?\bfrom (?:your|my) graveyard\b")
 _ATTACH_KEYWORD = re.compile(r"^\s*(?:equip|reconfigure)\b[^\n]*$", re.IGNORECASE)
 
 
@@ -96,6 +104,7 @@ def _polarity(oracle: str) -> tuple[bool, bool]:
             if helpful.search(sentence):
                 beneficial = True
                 sentence = helpful.sub("", sentence)
+        sentence = _OWN_YARD_EXILE.sub("", sentence)  # neutral: neither side
         harmful = harmful or bool(_HARMFUL.search(sentence))
         beneficial = beneficial or bool(_BENEFICIAL.search(sentence))
     for sentence in re.split(r"[.\n]", _QUOTED.sub("", text)):
@@ -120,7 +129,7 @@ def effect_mentions_harm(oracle: str) -> bool:
     """True when the text could hurt what it targets, costs and granted abilities aside."""
     text = _QUOTED.sub("", re.sub(r"<[^>]*>", "", (oracle or "").lower()))
     for sentence in re.split(r"[.\n]", _ACTIVATION_COST.sub("", text)):
-        for helpful in (_BLINK, _RECURSION):
+        for helpful in (_BLINK, _RECURSION, _OWN_YARD_EXILE):
             sentence = helpful.sub("", sentence)
         if _TARGET_HARM.search(sentence):
             return True
