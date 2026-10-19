@@ -1,0 +1,14 @@
+# The subscriber database and logs live on the mounted data volume (/app/data);
+# baking them into every image copied customer records and keys into the layers
+# (found during the 2026-10-18 deploy).
+data/
+*.db
+*.db-wal
+*.db-shm
+*.log
+# Hand-made backups left in the build context.
+*.before-*
+*.bak
+*.bak*
+__pycache__/
+.env
