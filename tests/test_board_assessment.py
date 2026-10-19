@@ -169,6 +169,11 @@ def test_planning_block_lists_the_candidate_lines():
     start = next(n for n, line in enumerate(lines) if line.startswith("CANDIDATE LINES"))
     assert lines[start + 1].startswith("  1. T12: Island + Undulating Witness -> life 7")
     assert 1 <= len(a.lines) <= 5
+    # The decision prompts' one-line "LINES ..." summary of candidates 1-2 is
+    # not repeated above the full list, nor the library count the plan
+    # prompt's game view states (2026-10-18 prompt audit).
+    assert "  LINES (" in a.prompt_block() and "  LINES (" not in block
+    assert "Our library:" not in block
 
 
 def test_the_line_search_names_landcycling_and_the_attack_posture():
