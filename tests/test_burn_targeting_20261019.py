@@ -212,16 +212,28 @@ HAZARD_SAID = (
 )
 
 
-def test_hazard_claiming_to_kill_a_two_toughness_marshal_is_rejected(caplog):
+def _without_burn_timing(monkeypatch, planner):
+    """The model's own answer reaches the guards: no #80/#136 hold first.
+
+    Since ledger #136 a sweeper that kills nothing (Hazard at a 2/2) comes off
+    the menu before the model is asked (``test_burn_timing_20261019``); these
+    tests are about the false-kill guard on an answer that casts it anyway.
+    """
+    monkeypatch.setattr(planner, "_hold_instant_burn", lambda decision, s: (decision, []))
+    return planner
+
+
+def test_hazard_claiming_to_kill_a_two_toughness_marshal_is_rejected(caplog, monkeypatch):
     state, menu = _hazard_window()
     planner = _planner(json.dumps({"option_ids": ["idx:0"], "reasoning": HAZARD_SAID}))
+    _without_burn_timing(monkeypatch, planner)
     with caplog.at_level(logging.WARNING, logger="arenamcp.action_planner"):
         planner.plan_decision_options(menu, state)
     assert "claims kills Dawnwing Marshal (2/2) but 1 damage of Tectonic Hazard cannot kill it" in caplog.text
     assert planner.get_last_decision_trace()["false_kill_claim"] == ["Dawnwing Marshal"]
 
 
-def test_hazard_claiming_to_kill_bristly_bill_is_rejected(caplog):
+def test_hazard_claiming_to_kill_bristly_bill_is_rejected(caplog, monkeypatch):
     """10:30:16 (match 10a78106, packet decision 10): Hazard over the line's Joke on Bill."""
     bill = _creature(330, "Bristly Bill, Spine Sower", OPP, 2, 2, "Landfall — put a +1/+1 counter.")
     hazard = _spell(219, "Tectonic Hazard", "Sorcery", "{R}", HAZARD)
@@ -231,6 +243,7 @@ def test_hazard_claiming_to_kill_bristly_bill_is_rejected(caplog):
         "opponent for 1."
     )
     planner = _planner(json.dumps({"option_ids": ["idx:0"], "reasoning": said}))
+    _without_burn_timing(monkeypatch, planner)
     with caplog.at_level(logging.WARNING, logger="arenamcp.action_planner"):
         planner.plan_decision_options(_cast_menu((219, "Tectonic Hazard")), state)
     assert planner.get_last_decision_trace()["false_kill_claim"] == ["Bristly Bill, Spine Sower"]
