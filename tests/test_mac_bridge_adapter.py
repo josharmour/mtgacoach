@@ -1168,7 +1168,7 @@ def survey_world(*, shown=True, awaiting=True, interactable=True):
     and clears the callbacks; the scene manager drops its handler on any
     answer, so a pressed Skip reads back as FeedbackSubmitted == null.
     """
-    from test_draft_autoplay import Obj, World
+    from tests.mac_world import Obj, World
 
     world = World()
     world.finds["MatchEndScene"] = world.add(10, "MatchEndScene")

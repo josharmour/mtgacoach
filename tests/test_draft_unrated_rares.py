@@ -69,10 +69,15 @@ def test_the_mythic_outranks_an_average_common_of_its_color():
     assert picks[0].grp_id == PHOENIX.grp_id
 
 
-def test_a_late_picked_rare_starts_below_average():
+def test_pick_order_prior_needs_the_cards_own_pick_order():
     late = SetCard(101, "Bulk Rare", "B", "R", "Creature", cmc=4, games=0, play_rate=0.6, alsa=8.5)
     score, reason, _ = card_value(late, _set_stats(_set(late)))
     assert score < 0 and "around pick 8.5" in reason
+    # The set has a pick-order fit, but a rare without an ALSA of its own keeps the rarity prior.
+    bare = SetCard(104, "Scarce Mythic", "B", "M", "Creature", games=400)
+    stats = _set_stats(_set(bare))
+    assert stats.alsa_fit is not None
+    assert card_value(bare, stats) == (0.2, "unrated rare; rarity prior", False)
 
 
 def test_a_large_sample_still_moves_the_estimate():
@@ -85,8 +90,3 @@ def test_a_large_sample_still_moves_the_estimate():
     stats = _set_stats(_set(strong, weak))
     assert card_value(strong, stats)[0] >= 1.0  # late pick order, but 3000 games say it is great
     assert card_value(weak, stats)[0] < 0  # early pick order, but 3000 games say it is not
-
-
-def test_without_pick_order_data_the_rarity_prior_remains():
-    bare = SetCard(104, "Scarce Mythic", "B", "M", "Creature", games=400)
-    assert card_value(bare, _set_stats(_set(bare))) == (0.2, "unrated rare; rarity prior", False)

@@ -8,15 +8,17 @@ rates come from the Alchemy format itself.
 
 The second half replays a draft a professional player made by hand (Selesnya
 around Emrakul, Garruk and the Alchemy lifegain cards; it won its first match).
-Picks where the ranker already agrees are regressions; the lessons it has not
-learned yet are strict xfails, so fixing one forces the marker off.
+Picks where the ranker agrees with the pro are regression tests. (The deck-build
+lessons not learned yet are strict xfails in test_pro_deck_builds.)
 """
 
 from __future__ import annotations
 
+import functools
 import sqlite3
 
 import pytest
+from tests import fra_alchemy_draft2_2026_10_18 as fx2
 from tests import fra_alchemy_draft_2026_10_18 as fx
 
 import arenamcp.draftstats as draftstats
@@ -228,25 +230,40 @@ def test_card_text_comes_once_and_without_arena_markup(tmp_path):
 # -- the pro's draft ----------------------------------------------------------------
 
 
-def signals_at(key: str) -> dict[str, float]:
+@functools.cache
+def _signals_by_pick() -> dict[str, dict[str, float]]:
+    """The table's signals after each pick, accumulated in one pass over the draft."""
     store: dict = {}
-    for seen in fx.ORDER[: fx.ORDER.index(key) + 1]:
+    signals = {}
+    for seen in fx.ORDER:
         pack_no, pick_no = (int(part) for part in seen[1:].split("p"))
         note_openness(store, pack_no, color_openness(fx.PACKS[seen], pick_no, PRIMER))
-    return color_signals(store, int(key[1:].split("p")[0]))
+        signals[seen] = color_signals(store, pack_no)
+    return signals
+
+
+def signals_at(key: str) -> dict[str, float]:
+    return dict(_signals_by_pick()[key])
 
 
 def ranked(key: str):
+    return list(_ranked(key))
+
+
+@functools.cache
+def _ranked(key: str) -> tuple:
     pack_no, pick_no = (int(part) for part in key[1:].split("p"))
-    return rank_pack(
-        fx.PACKS[key],
-        fx.pool_before(key),
-        PRIMER,
-        pack_number=pack_no,
-        pick_number=pick_no,
-        names=fx.NAMES,
-        mana_costs=fx.COSTS,
-        signals=signals_at(key),
+    return tuple(
+        rank_pack(
+            fx.PACKS[key],
+            fx.pool_before(key),
+            PRIMER,
+            pack_number=pack_no,
+            pick_number=pick_no,
+            names=fx.NAMES,
+            mana_costs=fx.COSTS,
+            signals=signals_at(key),
+        )
     )
 
 
@@ -402,18 +419,6 @@ def test_the_lifegain_payoff_beats_a_planeswalker_payoff_for_this_pool():
     assert position("P3p1", "Flourishing Forces") < position("P3p1", "Way of the Healer")
 
 
-# The same pro's second draft that day (pick order lost to a log rotation): Azorius
-# around real planeswalkers (Ajani Resolute, Chandra, Chill of Compliance) plus the
-# empower cards, 5-1. Its pool, as 17lands and Arena list it.
-SECOND_DRAFT_POOL = [
-    106226, 106227, 106229, 106231, 106231, 106233, 106234, 106237, 106241, 106241, 106242,
-    106244, 106253, 106262, 106262, 106267, 106272, 106303, 106327, 106332, 106344, 106350,
-    106358, 106367, 106379, 106384, 106389, 106405, 106418, 106418, 106429, 106439, 106440,
-    106443, 106448, 106457, 106460, 106465, 106467, 106471, 106476, 106502, 106517, 106524,
-    106525,
-]
-
-
 def _walker_support(pool, colors, engine):
     from dataclasses import replace
 
@@ -432,7 +437,9 @@ def test_a_planeswalker_payoff_keeps_full_credit_in_a_walker_rich_pool():
     # not call them weak. Two planeswalker cards and a Jace token back Way of the Healer
     # fully; the first draft's one Garruk and Jace token, already serving Way of the
     # Wildspeaker, back it about half.
-    rich = _walker_support(SECOND_DRAFT_POOL, "WU", ("surveil", "planeswalker"))
+    # fx2: the same pro's second draft that day, Azorius around real planeswalkers
+    # (Ajani Resolute, Chandra, Chill of Compliance) plus the empower cards, 5-1.
+    rich = _walker_support(fx2.pool(), "WU", ("surveil", "planeswalker"))
     thin = _walker_support(fx.pool_before("P3p1"), "WG", ("lifegain", "planeswalker"))
     assert rich == 1.0
     assert thin < 0.6

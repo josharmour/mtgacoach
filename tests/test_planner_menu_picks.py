@@ -1,4 +1,8 @@
-"""R3: indexed-menu picks resolve to legal actions by construction."""
+"""Numbered-menu answers ({"pick": N}) resolve to legal actions by construction.
+
+The planner prompt lists the legal actions as a numbered menu and asks for the
+entry's number, so a pick can only name something the GRE offers.
+"""
 
 from arenamcp.action_planner import ActionPlanner, ActionType
 
@@ -15,18 +19,6 @@ def _planner_with_menu(menu):
 
 
 MENU = ["Cast The Spirit Oasis [OK]", "Play Land: Forest", "Pass"]
-
-
-def test_pick_resolves_to_menu_entry():
-    p = _planner_with_menu(MENU)
-    plan = p._parse_response(
-        '{"actions": [{"pick": 1, "reasoning": "best play"}], "overall_strategy": "develop"}',
-        MENU,
-    )
-    assert len(plan.actions) == 1
-    assert plan.actions[0].action_type == ActionType.CAST_SPELL
-    assert plan.actions[0].card_name == "The Spirit Oasis"
-    assert plan.actions[0].reasoning == "best play"
 
 
 def test_pick_land_and_pass():
@@ -162,11 +154,6 @@ def test_x_value_menu_entry_resolves_to_numeric_input():
     assert a is not None
     assert a.action_type == AT.NUMERIC_INPUT
     assert a.numeric_value == 3
-
-    menu = ["X = 0", "X = 1", "X = 2", "Done (confirm cast)"]
-    p._last_menu = menu
-    plan = p._parse_response('{"actions": [{"pick": 3}]}', menu)
-    assert plan.actions[0].numeric_value == 2
 
 
 def test_x_cost_cast_kept_when_bridge_connected():

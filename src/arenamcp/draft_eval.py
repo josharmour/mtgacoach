@@ -70,9 +70,6 @@ class CardEvaluation:
     per_pair_scores: dict[str, float] = field(default_factory=dict)
     best_pair: str | None = None
     alsa: float | None = None
-    synergy_badge: str | None = None
-    is_locked: bool = False
-    locked_color_pair: str | None = None
 
 
 def get_deck_colors(picked_cards: list[int], scryfall: ScryfallCache) -> set[str]:
@@ -241,7 +238,7 @@ def get_card_type_score(type_line: str, oracle_text: str) -> tuple[float, str]:
 
 def check_synergy(
     card: ScryfallCard, picked_cards: list[int], scryfall: ScryfallCache
-) -> tuple[float, str, str | None]:
+) -> tuple[float, str]:
     """Check for synergies with picked cards.
 
     Scans ALL picked cards (not just recent) to detect:
@@ -250,17 +247,16 @@ def check_synergy(
     - Mechanic density (shared keyword/mechanic themes)
     - Archetype themes (enchantments-matter, spells-matter, etc.)
 
-    Returns (score, reason, badge) tuple for highest-scoring synergy found.
+    Returns (score, reason) for the highest-scoring synergy found.
     """
     if not picked_cards or not card:
-        return (0.0, "", None)
+        return (0.0, "")
 
     card_oracle = (card.oracle_text or "").lower()
     card_types = (card.type_line or "").lower()
 
     best_score = 0.0
     best_reason = ""
-    best_badge = None
 
     # Build picked card profiles (cache oracle text and types)
     picked_profiles: list[tuple[str, str, str]] = []  # (name, oracle, types)
@@ -276,12 +272,12 @@ def check_synergy(
             )
 
     if not picked_profiles:
-        return (0.0, "", None)
+        return (0.0, "")
 
     # 1. Direct name reference (strongest synergy)
     for name, _, _ in picked_profiles:
         if name.lower() in card_oracle:
-            return (12.0, f"synergy with {name}", f"🔗 {name}")
+            return (12.0, f"synergy with {name}")
 
     # 2. Tribal density — count how many picked creatures share a type
     creature_types = [
@@ -327,17 +323,14 @@ def check_synergy(
             if tribe_count >= 3:
                 score = 10.0
                 reason = f"{tribe} tribal ({tribe_count} in deck)"
-                badge = f"⚡ {tribe.capitalize()} ({tribe_count})"
             elif tribe_count >= 1:
                 score = 5.0
                 reason = f"{tribe} synergy"
-                badge = f"⚡ {tribe.capitalize()}"
             else:
                 continue
             if score > best_score:
                 best_score = score
                 best_reason = reason
-                best_badge = badge
 
     # 3. Mechanic/keyword density — shared draft archetypes
     mechanics = [
@@ -390,32 +383,26 @@ def check_synergy(
             if mech_count >= 4:
                 score = 10.0
                 reason = f"{mech} theme ({mech_count} in deck)"
-                badge = f"✨ {mech.capitalize()} ({mech_count})"
             elif mech_count >= 2:
                 score = 6.0
                 reason = f"{mech} synergy"
-                badge = f"✨ {mech.capitalize()}"
             elif mech_count >= 1:
                 score = 3.0
                 reason = f"{mech} synergy"
-                badge = f"✨ {mech.capitalize()}"
             else:
                 continue
             if score > best_score:
                 best_score = score
                 best_reason = reason
-                best_badge = badge
 
     # 4. Archetype themes — enchantments-matter, spells-matter, go-wide
     enchantment_count = sum(1 for _, _, types in picked_profiles if "enchantment" in types)
     if ("enchantment" in card_types or "enchant" in card_oracle) and enchantment_count >= 2:
         score = 8.0 if enchantment_count >= 4 else 5.0
         reason = f"enchantments theme ({enchantment_count} in deck)"
-        badge = f"✨ Enchantments ({enchantment_count})"
         if score > best_score:
             best_score = score
             best_reason = reason
-            best_badge = badge
 
     instant_sorcery_count = sum(
         1 for _, _, types in picked_profiles if "instant" in types or "sorcery" in types
@@ -423,13 +410,11 @@ def check_synergy(
     if ("instant" in card_types or "sorcery" in card_types) and instant_sorcery_count >= 3:
         score = 6.0
         reason = f"spells theme ({instant_sorcery_count} in deck)"
-        badge = f"✨ Spells ({instant_sorcery_count})"
         if score > best_score:
             best_score = score
             best_reason = reason
-            best_badge = badge
 
-    return (best_score, best_reason, best_badge)
+    return (best_score, best_reason)
 
 
 def _compute_pair_affinities(
@@ -471,19 +456,6 @@ def _compute_pair_affinities(
     return affinities
 
 
-def normalize_color_pair(pair_str: str) -> str | None:
-    """Normalize a color pair string to standard two-color pair key (e.g. 'UR', 'WB')."""
-    if not pair_str:
-        return None
-    raw = "".join([c for c in pair_str.upper() if c in "WUBRG"])
-    for pair in TWO_COLOR_PAIRS:
-        if set(raw) == set(pair):
-            return pair
-    if len(raw) == 1 and raw in "WUBRG":
-        return raw
-    return None
-
-
 def evaluate_pack(
     cards_in_pack: list[int],
     picked_cards: list[int],
@@ -491,7 +463,6 @@ def evaluate_pack(
     scryfall: ScryfallCache,
     draft_stats: DraftStatsCache | None = None,
     mtgadb: MTGADatabase | None = None,
-    locked_color_pair: str | None = None,
 ) -> list[CardEvaluation]:
     """Evaluate all cards in a pack with composite per-color-pair scoring.
 
@@ -506,24 +477,12 @@ def evaluate_pack(
         scryfall: Scryfall cache for card data
         draft_stats: Optional 17lands stats cache
         mtgadb: Optional MTGA database for card names
-        locked_color_pair: Optional user preference locked color pair (e.g. "UR")
 
     Returns:
         List of CardEvaluation sorted by score (highest first). Each
         evaluation includes per_pair_scores and a best_pair recommendation.
     """
     pick_depth = len(picked_cards)
-
-    # Normalize locked color pair if provided
-    locked_pair: str | None = normalize_color_pair(locked_color_pair or "")
-
-    # A mono-color lock applies to every two-color pair containing that color
-    locked_pairs: list[str] = []
-    if locked_pair:
-        if len(locked_pair) == 1:
-            locked_pairs = [p for p in TWO_COLOR_PAIRS if locked_pair in p]
-        else:
-            locked_pairs = [locked_pair]
 
     # Weighted commitment signal per color (stronger than binary on/off)
     commitment = compute_color_commitment(picked_cards, scryfall, draft_stats, set_code)
@@ -536,9 +495,6 @@ def evaluate_pack(
     # Affinity per pair based on user commitment + format strength
     pair_affinities = _compute_pair_affinities(commitment, pair_stats)
 
-    for p in locked_pairs:
-        pair_affinities[p] = pair_affinities.get(p, 0.0) + 100.0
-
     # Color-commitment discipline (fixes #375 — "all colors suggested, never
     # centralizes").
     if pick_depth <= 2:
@@ -550,9 +506,9 @@ def evaluate_pack(
     else:
         commit_weight = 1.5
 
-    # Leading archetype = the pair the drafter is most committed to (or locked to)
-    anchor_pair = locked_pair
-    if not anchor_pair and pick_depth >= 3 and pair_affinities:
+    # Leading archetype = the pair the drafter is most committed to
+    anchor_pair = None
+    if pick_depth >= 3 and pair_affinities:
         anchor_pair = max(pair_affinities, key=pair_affinities.get)
         avg_aff = sum(pair_affinities.values()) / len(pair_affinities)
         if pair_affinities[anchor_pair] <= avg_aff + 1.0:
@@ -623,7 +579,6 @@ def evaluate_pack(
                 base_score += signal_bonus
                 reasons.append(f"open lane signal +{signal_bonus:.0f}")
 
-        syn_badge = None
         if card:
             type_score, type_reason = get_card_type_score(card.type_line, card.oracle_text)
             if not gih_wr:
@@ -660,7 +615,7 @@ def evaluate_pack(
                 reasons.append(type_reason)
 
             # Synergy bonus (keyword/tribal)
-            syn_score, syn_reason, syn_badge = check_synergy(card, picked_cards, scryfall)
+            syn_score, syn_reason = check_synergy(card, picked_cards, scryfall)
             if syn_score:
                 base_score += syn_score
                 reasons.append(syn_reason)
@@ -671,8 +626,6 @@ def evaluate_pack(
                 bonus = min(graph_score * 15, 15.0)
                 base_score += bonus
                 reasons.append(f"graph synergy +{bonus:.0f}")
-                if not syn_badge:
-                    syn_badge = "🌐 Graph Synergy"
 
         card_colors = set(card.colors) if card and card.colors else set()
 
@@ -692,27 +645,13 @@ def evaluate_pack(
             weighted = pair_score + pair_affinities[pair] * commit_weight
             per_pair[pair] = weighted
 
-        if locked_pair:
-            locked_scores = {p: per_pair[p] for p in locked_pairs if p in per_pair}
-            if locked_scores:
-                best_pair = max(locked_scores, key=locked_scores.get)
-                final_score = locked_scores[best_pair]
-            else:
-                best_pair = locked_pair
-                final_score = base_score
-        else:
-            best_pair = max(per_pair, key=per_pair.get) if per_pair else None
-            final_score = per_pair[best_pair] if best_pair and best_pair in per_pair else base_score
+        best_pair = max(per_pair, key=per_pair.get) if per_pair else None
+        final_score = per_pair[best_pair] if best_pair and best_pair in per_pair else base_score
 
         ref_pair = anchor_pair or best_pair
-        card_is_locked = False
         if ref_pair and card_colors:
             if card_colors.issubset(set(ref_pair)):
-                if locked_pair and ref_pair == locked_pair:
-                    reasons.append(f"fits locked {ref_pair}")
-                    card_is_locked = True
-                else:
-                    reasons.append(f"fits {ref_pair}")
+                reasons.append(f"fits {ref_pair}")
             elif card_colors & set(ref_pair):
                 reasons.append(f"splash in {ref_pair}")
             elif anchor_pair:
@@ -737,9 +676,6 @@ def evaluate_pack(
                 per_pair_scores=per_pair,
                 best_pair=best_pair,
                 alsa=alsa,
-                synergy_badge=syn_badge,
-                is_locked=card_is_locked,
-                locked_color_pair=locked_pair if card_is_locked else None,
             )
         )
 

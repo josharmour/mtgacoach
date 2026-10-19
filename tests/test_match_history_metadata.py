@@ -1,4 +1,6 @@
-from arenamcp.match_history import record_from_game_end
+import json
+
+from arenamcp.match_history import parse_replay_cosmetics, record_from_game_end
 
 
 def test_record_from_game_end_extracts_metadata():
@@ -59,3 +61,15 @@ def test_record_from_game_end_extracts_metadata():
     assert rec.opponent_life_final == 0
     # Opponent had Island (U), Mountain (R), Lightning Bolt (R)
     assert rec.opponent_colors_seen == ["R", "U"]
+
+
+def test_parse_replay_cosmetics_reads_the_replay_header(tmp_path):
+    header = {"Local": {"ScreenName": "me"}, "Opponent": {"ScreenName": "Sparky_Bot"}, "BattlefieldId": 7}
+    replay = tmp_path / "match.rply"
+    replay.write_text("#Version 3\n" + json.dumps(header) + '\n{"greToClientEvent": {}}\n', encoding="utf-8")
+    assert parse_replay_cosmetics(str(replay)) == header
+
+    not_a_replay = tmp_path / "notes.txt"
+    not_a_replay.write_text(json.dumps(header) + "\n", encoding="utf-8")
+    assert parse_replay_cosmetics(str(not_a_replay)) is None
+    assert parse_replay_cosmetics(str(tmp_path / "missing.rply")) is None

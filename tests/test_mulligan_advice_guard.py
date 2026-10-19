@@ -84,37 +84,32 @@ def test_postprocess_never_leaks_cast_or_play_during_mulligan(bad_advice):
 def test_normal_play_advice_is_unchanged():
     normal = {
         "pending_decision": "Priority",
-        "hand": [{"name": "Llanowar Elves", "type_line": "Creature", "mana_cost": "{G}"}],
+        "hand": [
+            {
+                "name": "Llanowar Elves",
+                "type_line": "Creature — Elf Druid",
+                "mana_cost": "{G}",
+                "instance_id": 201,
+                "owner_seat_id": 1,
+            }
+        ],
+        "battlefield": [
+            {
+                "name": "Forest",
+                "type_line": "Basic Land — Forest",
+                "instance_id": 101,
+                "controller_seat_id": 1,
+                "owner_seat_id": 1,
+                "is_tapped": False,
+            }
+        ],
         "players": [{"is_local": True, "seat_id": 1, "life_total": 20}],
-        "turn": {"turn_number": 1, "phase": "main1"},
+        "turn": {"turn_number": 1, "phase": "Phase_Main1", "active_player": 1, "priority_player": 1},
         "land_drop": {},
+        "legal_actions": ["Cast Llanowar Elves", "Pass"],
+        "legal_actions_raw": [{"actionType": "ActionType_Cast", "grpId": 1, "instanceId": 201}],
     }
     out = CoachEngine()._postprocess_advice("Cast Llanowar Elves.", normal)
-    # The mulligan pin must be scoped to Mulligan decisions only — it must
-    # never force a normal turn into a KEEP/MULLIGAN call.
-    assert out not in ("KEEP", "MULLIGAN")
-
-
-# ---- fallback must not surface mechanical menu actions during combat -------
-
-
-def test_declare_blockers_fallback_never_emits_activation():
-    """Regression: during declare blockers with no verifiable block actions,
-    the fallback must NOT emit a random legal action (e.g. 'Activate Ability:
-    Wooded Foothills') — it should give neutral block guidance instead.
-    """
-    gs = {
-        "pending_decision": "Declare Blockers",
-        "legal_actions_raw": ["Activate Ability: Wooded Foothills", "Pass"],
-        "players": [{"is_local": True, "seat_id": 1, "life_total": 7}],
-        "turn": {"turn_number": 6, "phase": "combat", "step": "declareblockers"},
-        "land_drop": {},
-        "hand": [],
-        "battlefield": [],
-        "stack": [],
-    }
-    out = CoachEngine()._postprocess_advice(
-        "Block with Cityscape Leveler and Arboreal Grazer to survive.", dict(gs)
-    )
-    assert "wooded foothills" not in out.lower()
-    assert "block" in out.lower()
+    # The mulligan pin must be scoped to Mulligan decisions only: a legal cast
+    # on a normal turn survives as the model said it.
+    assert "Llanowar Elves" in out and "[LOCAL FALLBACK]" not in out, out

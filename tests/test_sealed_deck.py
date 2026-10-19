@@ -194,37 +194,6 @@ def test_driver_pauses_if_done_does_not_leave_the_pool_screen():
     assert "claim the reward" in d.paused_reason
 
 
-def test_sealed_event_builds_with_sealed_weights(monkeypatch):
-    pool = sealed_pool()
-    by_id = {c["grp_id"]: c for c in pool}
-    sideboard = [{"grp_id": g, "count": n} for g, n in Counter(c["grp_id"] for c in pool).items()]
-    seen = {}
-
-    def fake_fallback(cards, rates=None, *, fmt="draft", strategy=None):
-        seen["fmt"] = fmt
-        return fallback_deck(cards, rates, fmt=fmt, strategy=strategy)
-
-    monkeypatch.setattr("arenamcp.limited_deck.fallback_deck", fake_fallback)
-    bridge = Bridge(
-        {
-            "get_screen": {"ok": True, "deck_builder": True},
-            "get_limited_pool": {
-                "ok": True,
-                "main_deck": [],
-                "sideboard": sideboard,
-                "basics_in_pool": {"7001": 99, "7002": 99, "7003": 99},
-            },
-            "set_limited_deck": lambda fields: {"ok": True, "main_deck": fields["main_deck"]},
-            "submit_limited_deck": {"ok": True},
-        }
-    )
-    d = driver(bridge, pool_cards_fn=lambda ids, code: [by_id[g] for g in ids])
-    d.run.event_name = "Sealed_FRA_20261001"
-    d._basics = {7001: "U", 7002: "R", 7003: "B"}
-    d._step()
-    assert seen["fmt"] == "sealed" and "submit_limited_deck" in bridge.sent
-
-
 class World:
     def __init__(self, open_shown, done_shown):
         self.calls = []

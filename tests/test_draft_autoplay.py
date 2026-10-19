@@ -6,64 +6,27 @@ import json
 import time
 from collections import Counter
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
+from tests.draft_fakes import PAIRS, PICK_STATE, RATINGS, FakeBridge, draft_world, driver_for, make_primer
+from tests.mac_world import Obj, World
 
 from arenamcp.draft_autopick import choose_picks, pool_lane, rank_pack
-from arenamcp.draft_event import DraftEventDriver, deck_entries
+from arenamcp.draft_event import deck_entries
 from arenamcp.event_course import CourseTracker
 from arenamcp.mac_bridge_adapter import MacBridgeAdapter
 from arenamcp.parser import LogParser
 from arenamcp.set_primer import (
     SetPrimer,
     SetPrimerService,
-    data_primer,
     mana_value,
-    merge_synthesis,
     synthesize,
 )
-
-# ---------------------------------------------------------------------------
-# A small 17lands-shaped set: two good blue cards, two good red, filler, a trap.
-# ---------------------------------------------------------------------------
-
-
-def rating(grp_id, name, color, rarity="C", gih=0.55, ata=6.0, games=1000):
-    return {
-        "mtga_id": grp_id,
-        "name": name,
-        "color": color,
-        "rarity": {"C": "common", "U": "uncommon", "R": "rare", "M": "mythic"}[rarity],
-        "types": ["Creature"],
-        "ever_drawn_win_rate": gih,
-        "drawn_improvement_win_rate": gih - 0.55,
-        "avg_seen": ata + 1,
-        "avg_pick": ata,
-        "opening_hand_win_rate": gih,
-        "ever_drawn_game_count": games,
-    }
-
-
-RATINGS = [
-    rating(1, "Blue Ace", "U", "U", 0.62, 2.0),
-    rating(2, "Blue Common", "U", "C", 0.58, 4.0),
-    rating(3, "Red Ace", "R", "U", 0.61, 2.0),
-    rating(4, "Red Common", "R", "C", 0.57, 4.0),
-    rating(5, "Izzet Signpost", "UR", "U", 0.60, 3.0),
-    rating(6, "Shiny Trap", "B", "R", 0.45, 1.5),
-    *[rating(10 + i, f"Filler {i}", "WUBRG"[i % 5], "C", 0.50 + (i % 4) * 0.01, 8.0) for i in range(20)],
-]
-PAIRS = {
-    "UR": SimpleNamespace(win_rate=0.58, games=9000),
-    "WB": SimpleNamespace(win_rate=0.52, games=7000),
-    "BG": SimpleNamespace(win_rate=0.55, games=8000),
-}
 
 
 @pytest.fixture
 def primer() -> SetPrimer:
-    return data_primer("TST", RATINGS, PAIRS, lambda grp, name: {"oracle_text": f"{name} text", "cmc": 3.0})
+    return make_primer()
 
 
 def test_data_primer_scores_cards_and_ranks_archetypes(primer):
@@ -79,41 +42,6 @@ def test_mana_value_reads_arena_and_scryfall_costs():
     assert mana_value("o2oUoU") == 4.0
     assert mana_value("{X}{R}{R}") == 2.0
     assert mana_value("") is None
-
-
-def test_model_synthesis_is_validated_against_the_set(primer):
-    merged = merge_synthesis(
-        primer,
-        {
-            "overview": "Tempo format.",
-            "speed": "fast",
-            "archetypes": [
-                {
-                    "colors": "UR",
-                    "name": "Spells",
-                    "plan": "Cast spells.",
-                    "tier": 1,
-                    "payoffs": ["Izzet Signpost", "Invented Card"],
-                    "enablers": ["Blue Common"],
-                },
-                {"colors": "WB", "name": "Drain", "plan": "Drain.", "payoffs": ["Filler 0"]},
-                {"colors": "BG", "name": "Grind", "plan": "Grind.", "payoffs": ["Filler 2"]},
-                {"colors": "XX", "name": "Bogus"},
-            ],
-            "synergy_notes": [
-                {"cards": ["Blue Common", "Izzet Signpost"], "why": "cheap spells"},
-                {"cards": ["Invented Card", "Blue Ace"], "why": "made up"},
-            ],
-            "pick_principles": ["Removal early"],
-            "traps": [{"card": "Shiny Trap", "why": "slow"}, {"card": "Nope", "why": "x"}],
-        },
-    )
-    izzet = merged.archetype("UR")
-    assert izzet["payoffs"] == ["Izzet Signpost"] and izzet["enablers"] == ["Blue Common"]
-    assert len(merged.synergy_notes) == 1 and merged.source == "model" and merged.speed == "fast"
-    assert [trap["card"] for trap in merged.traps] == ["Shiny Trap"]
-    with pytest.raises(ValueError):
-        merge_synthesis(primer, {"archetypes": [{"colors": "UR", "payoffs": []}]})
 
 
 class FakeBackend:
@@ -135,7 +63,7 @@ def test_per_archetype_synthesis_merges_valid_pieces_and_keeps_data_for_the_rest
             "name": "Izzet Spells",
             "plan": "Cheap spells.",
             "tier": 1,
-            "payoffs": ["Izzet Signpost"],
+            "payoffs": ["Izzet Signpost", "Invented Card"],
             "enablers": ["Blue Common", "Red Common"],
             "synergy_notes": [{"cards": ["Blue Common", "Izzet Signpost"], "why": "spells"}],
         }
@@ -145,12 +73,15 @@ def test_per_archetype_synthesis_merges_valid_pieces_and_keeps_data_for_the_rest
             "overview": "Fast.",
             "speed": "fast",
             "pick_principles": ["Two drops"],
-            "traps": [{"card": "Shiny Trap", "why": "bad"}],
+            "traps": [{"card": "Shiny Trap", "why": "bad"}, {"card": "Nope", "why": "x"}],
         }
     )
     backend = FakeBackend({"Archetype Izzet (UR)": izzet, "Two-color win rates": fmt})
     result = synthesize(primer, backend, workers=1)
     assert result.archetype("UR")["plan"] == "Cheap spells."
+    # Names the model invented are dropped: cards and traps must exist in the set.
+    assert result.archetype("UR")["payoffs"] == ["Izzet Signpost"]
+    assert [trap["card"] for trap in result.traps] == ["Shiny Trap"]
     assert result.archetype("WB")["plan"] == ""  # failed piece keeps the data version
     assert result.overview == "Fast." and result.synergy_notes and result.source == "model"
 
@@ -265,98 +196,6 @@ def test_parser_routes_course_replies():
 # ---------------------------------------------------------------------------
 # Mac bridge hands, against a scripted object world
 # ---------------------------------------------------------------------------
-
-
-class World:
-    """Interprets reflect batches over scripted objects; records calls."""
-
-    def __init__(self) -> None:
-        self.objects: dict[int, dict[str, Any]] = {}
-        self.classes: dict[int, str] = {}
-        self.finds: dict[str, int] = {}
-        self.results: dict[tuple[int, str], Any] = {}
-        self.calls: list[tuple[int, str, list]] = []
-
-    def add(self, handle: int, cls: str, **members: Any) -> int:
-        self.objects[handle], self.classes[handle] = members, cls
-        return handle
-
-    def node(self, value: Any) -> Any:
-        if isinstance(value, Obj):
-            return {"$c": self.classes[value.handle], "$h": value.handle}
-        if isinstance(value, list):
-            return {"$n": len(value), "$items": [self.node(v) for v in value]}
-        return value
-
-    def target(self, ref: dict, results: list) -> int | None:
-        if "h" in ref:
-            return ref["h"]
-        value = results[ref["ref"]]
-        return value.get("$h") if isinstance(value, dict) else None
-
-    def send(self, command: dict, timeout: float | None) -> dict:
-        results: list[Any] = []
-        for op in command["ops"]:
-            kind = op["op"]
-            if kind == "find":
-                handle = self.finds.get(op["class"])
-                results.append({"$c": op["class"], "$h": handle} if handle else {"$none": "not found"})
-                continue
-            handle = self.target(op["target"], results)
-            if handle is None:
-                if op.get("optional"):
-                    results.append(None)
-                    continue
-                return {"ok": False, "error": f"null target for {op}"}
-            members = self.objects[handle]
-            if kind == "get":
-                results.append(self.node(members.get(op["member"])))
-            elif kind == "expect":
-                if members.get(op["member"]) != op["equals"]:
-                    return {"ok": False, "error": f"expect {op['member']} failed"}
-                results.append(True)
-            elif kind == "call":
-                self.calls.append((handle, op["method"], op["args"]))
-                result = self.results.get((handle, op["method"]))
-                results.append(self.node(result(op["args"]) if callable(result) else result))
-            elif kind == "set":
-                members[op["member"]] = op["value"]
-                results.append(None)
-        return {"ok": True, "results": results}
-
-
-class Obj:
-    def __init__(self, handle: int) -> None:
-        self.handle = handle
-
-
-def draft_world(ok=True, reserved=0, human=True) -> World:
-    world = World()
-    cards = [world.add(200 + i, "CardData", GrpId=grp, TitleId=grp * 10) for i, grp in enumerate((1, 3, 12))]
-    views = [world.add(300 + i, "DraftPackCardView", Card=Obj(card)) for i, card in enumerate(cards)]
-    holder = world.add(400, "DraftPackHolder", IsAnimating=False, CardViews=[Obj(v) for v in views])
-    manager = world.add(500, "DraftDeckManager")
-    world.results[(manager, "ReservedCardCount")] = reserved
-    info = world.add(610, "PickInfo", SelfPack=1, SelfPick=4)
-    pod_class = "Wotc.Mtga.Wrapper.Draft.HumanDraftPod" if human else "Wotc.Mtga.Wrapper.Draft.BotDraftPod"
-    pod = world.add(
-        600,
-        pod_class,
-        PickNumCardsToTake=1,
-        _currentPickInfo=Obj(info),
-        PickSecondsRemaining=50,
-        _currentPack=0,
-        _currentPick=3,
-    )
-    world.finds["Wotc.Mtga.Wrapper.Draft.DraftContentController"] = world.add(
-        100,
-        "DraftContentController",
-        _okToPickCard=ok,
-        _draftPackHolder=Obj(holder),
-        DraftPod=Obj(pod),
-        _draftDeckManager=Obj(manager),
-    )
-    return world
 
 
 def test_draft_state_reads_the_pack_and_pick_through_the_controller():
@@ -496,54 +335,6 @@ def test_event_play_requires_the_expected_event():
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
-
-
-class FakeBridge:
-    connected = True
-
-    def __init__(self, replies: dict[str, Any]) -> None:
-        self.replies = replies
-        self.sent: list[tuple[str, dict]] = []
-
-    def draft_command(self, action, **fields):
-        self.sent.append((action, fields))
-        reply = self.replies.get(action, {"ok": False, "error": "unscripted"})
-        return reply(fields) if callable(reply) else reply
-
-
-class FakeDB:
-    names = {1: "Blue Ace", 3: "Red Ace", 12: "Filler 2", 2: "Blue Common"}
-
-    def get_card(self, grp_id):
-        return SimpleNamespace(name=self.names.get(grp_id, f"Card {grp_id}"), expansion_code="TST")
-
-
-def driver_for(bridge, primer, **kwargs) -> DraftEventDriver:
-    service = SimpleNamespace(get=lambda code: primer, ensure=lambda code: None, quick=lambda code: primer)
-    driver = DraftEventDriver(
-        bridge_fn=lambda: bridge,
-        tracker_fn=lambda: CourseTracker(),
-        primer_service=service,
-        card_db=FakeDB(),
-        **kwargs,
-    )
-    driver.set_enabled(True)
-    return driver
-
-
-PICK_STATE = {
-    "ok": True,
-    "is_open": True,
-    "ok_to_pick": True,
-    "animating": False,
-    "reserved_count": 0,
-    "pick_num_cards_to_take": 1,
-    "pack_number": 1,
-    "pick_number": 1,
-    "pick_seconds_remaining": 10,
-    "pack_cards": [12, 1, 3],
-    "pack_views": [{"grp_id": g, "title_id": g * 10} for g in (12, 1, 3)],
-}
 
 
 def test_driver_picks_the_ranked_card_once_and_waits_for_it_to_land(primer):
@@ -920,75 +711,6 @@ def test_driver_keeps_the_counted_build_when_the_model_deck_scores_much_worse(pr
     assert counted <= {e["grp_id"] for e in written}
 
 
-# ---------------------------------------------------------------------------
-# Damage removal must kill something (2026-10-05 Arena Direct, Wrath at a 5/5)
-# ---------------------------------------------------------------------------
-
-WRATH = {
-    "name": "Wrath of the Bloodmane",
-    "type_line": "Instant",
-    "oracle_text": "This spell costs {1} less to cast if you control a legendary creature.\n"
-    "Wrath of the Bloodmane deals 4 damage to target creature or planeswalker.",
-}
-
-
-def board(*creatures, walker=False):
-    battlefield = [
-        {
-            "instance_id": iid,
-            "name": name,
-            "type_line": "Creature",
-            "power": p,
-            "toughness": t,
-            "controller_seat_id": 1,
-            **extra,
-        }
-        for iid, name, p, t, extra in creatures
-    ]
-    if walker:
-        battlefield.append(
-            {
-                "instance_id": 900,
-                "name": "Walker",
-                "type_line": "Legendary Planeswalker",
-                "controller_seat_id": 1,
-            }
-        )
-    return {
-        "players": [{"seat_id": 2, "is_local": True}, {"seat_id": 1, "is_local": False}],
-        "battlefield": battlefield,
-    }
-
-
-def test_fixed_damage_removal_is_withheld_when_nothing_dies():
-    from arenamcp.play_safety import damage_removal_kills_nothing, fixed_damage_removal
-
-    assert fixed_damage_removal(WRATH) == (4, True)
-    big = board((275, "Uldaros", 5, 5, {}), (276, "Ruric", 4, 6, {}))
-    assert "kills no opposing creature" in damage_removal_kills_nothing(WRATH, big)
-    assert (
-        damage_removal_kills_nothing(WRATH, board((275, "Uldaros", 5, 5, {}), (300, "Geist", 1, 2, {}))) == ""
-    )
-    assert damage_removal_kills_nothing(WRATH, board((275, "Uldaros", 5, 5, {"is_attacking": True}))) == ""
-    assert damage_removal_kills_nothing(WRATH, board((275, "Uldaros", 5, 5, {}), walker=True)) == ""
-    burn = {**WRATH, "oracle_text": "Deals 4 damage to any target."}
-    assert damage_removal_kills_nothing(burn, big) == ""
-
-
-def test_damage_removal_is_pointed_at_a_creature_it_kills():
-    from arenamcp.action_planner import DECLINE_DECISION, ActionPlanner
-
-    planner = ActionPlanner.__new__(ActionPlanner)
-    planner._decision_source_oracle = lambda decision, state: WRATH["oracle_text"].lower()
-    state = board((275, "Uldaros", 5, 5, {}), (276, "Ruric", 4, 6, {}), (300, "Geist", 1, 2, {}))
-    decision = SimpleNamespace(options=[SimpleNamespace(option_id=f"tgt:{i}") for i in (275, 276, 300)])
-    assert planner._prefer_lethal_damage_target(decision, state, ["tgt:275"]) == ["tgt:300"]
-    assert planner._prefer_lethal_damage_target(decision, state, ["tgt:300"]) == ["tgt:300"]
-    no_kill = board((275, "Uldaros", 5, 5, {}), (276, "Ruric", 4, 6, {}))
-    two = SimpleNamespace(options=[SimpleNamespace(option_id=f"tgt:{i}") for i in (275, 276)])
-    assert planner._prefer_lethal_damage_target(two, no_kill, ["tgt:275"]) == [DECLINE_DECISION]
-
-
 # -- the coach's in-match gate ------------------------------------------------
 
 
@@ -1119,7 +841,7 @@ def test_claimed_event_waits_for_reentry_instead_of_pausing(primer):
     driver._next_poll = 0.0
     driver._step()
     assert not driver.paused_reason and not driver.run.event_name
-    assert driver.tick() is False or not driver.paused_reason  # still running, not paused
+    assert driver.enabled and driver.tick() is False  # still running, not owning the Join screen
     bridge.replies["get_screen"] = {"ok": True, "draft": True}
     bridge.replies["get_draft_state"] = dict(PICK_STATE)
     bridge.replies["submit_draft_pick"] = {"ok": True}

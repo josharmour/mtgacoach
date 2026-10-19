@@ -13,7 +13,9 @@ Tests import these instead of reading ~/.arenamcp or Player.log.
 
 from __future__ import annotations
 
+import functools
 import os
+import subprocess
 import time
 from collections.abc import Callable
 from copy import deepcopy
@@ -47,11 +49,28 @@ def cpu_ms(run: Callable[[], Any], times: int = 5) -> float:
     return best
 
 
+@functools.lru_cache(maxsize=1)
+def _fast_cores() -> int:
+    """Performance cores on a hybrid Mac (``hw.perflevel0``), else every core."""
+    try:
+        found = subprocess.run(
+            ["sysctl", "-n", "hw.perflevel0.logicalcpu"], capture_output=True, text=True, timeout=5
+        ).stdout.strip()
+        return int(found) if found.isdigit() and int(found) > 0 else os.cpu_count() or 1
+    except (OSError, subprocess.SubprocessError):
+        return os.cpu_count() or 1
+
+
 def latency_bound(target_ms: float) -> float:
     """``target_ms``, or three times it while the machine is busy (1-minute load above a quarter
-    of the cores): every run then lands on slower (efficiency) cores alike, CPU time included."""
+    of the fast cores): every run then lands on slower (efficiency) cores alike, CPU time included.
+
+    Fast cores, not all of them: an M-series Mac with 6 performance and 12 efficiency
+    cores moved test runs onto efficiency cores at a load of 3.6 (an 82 ms run against
+    an 80 ms target, 2026-10-18), well under a quarter of its 18 cores.
+    """
     try:
-        busy = os.getloadavg()[0] > 0.25 * (os.cpu_count() or 1)
+        busy = os.getloadavg()[0] > 0.25 * _fast_cores()
     except OSError:
         busy = False
     return 3 * target_ms if busy else target_ms

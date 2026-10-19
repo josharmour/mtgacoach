@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-from tests.fra_quickdraft_states import state
+from tests.boards_fra_quickdraft_2026_10_08 import state
 
 import arenamcp.autopilot as autopilot_module
 from arenamcp.autopilot import AutopilotConfig, AutopilotEngine, AutopilotState
@@ -57,9 +57,12 @@ def test_a_manual_required_combat_window_is_not_replanned(monkeypatch):
     engine._planner.plan_actions.assert_not_called()
 
 
-def test_the_next_combat_step_is_planned_normally(monkeypatch):
-    engine = _engine(monkeypatch)
-    engine._manual_window = AutopilotEngine._combat_window_key(state("G2_T18_ATTACK"))
-    later = state("G2_T18_ATTACK")
-    later["turn"]["turn_number"] = 20
-    assert AutopilotEngine._combat_window_key(later) != engine._manual_window
+def test_a_later_turn_or_combat_step_is_a_new_window():
+    handed_over = AutopilotEngine._combat_window_key(state("G2_T18_ATTACK"))
+    later_turn = state("G2_T18_ATTACK")
+    later_turn["turn"]["turn_number"] = 20
+    blocks = state("G2_T18_ATTACK")
+    blocks["turn"]["step"] = "Step_DeclareBlock"
+    blocks["decision_context"] = {**blocks["decision_context"], "type": "declare_blockers"}
+    assert AutopilotEngine._combat_window_key(later_turn) != handed_over
+    assert AutopilotEngine._combat_window_key(blocks) != handed_over

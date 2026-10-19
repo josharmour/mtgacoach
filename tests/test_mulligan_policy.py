@@ -231,6 +231,38 @@ def test_unknown_count_never_forces_a_mulligan():
     assert verdict(G2_SEVEN, mulligans=None, on_play=True)[0] == "keep"
 
 
+# Colour screw: lands that cannot make the spells' colours are not "lands" for a keep.
+BLUE_SPELLS = [106273, 106256, 106259, 106268]  # Unsummon, Icy Reception, Oculus, Sphinx's Approach
+
+
+def hand_cards(*grp_ids):
+    return [mp.hand_card(card(300 + index, grp_id)) for index, grp_id in enumerate(grp_ids)]
+
+
+def test_castability_needs_the_right_colours_and_enough_sources():
+    mountains, islands = hand_cards(MOUNTAIN, MOUNTAIN, MOUNTAIN), hand_cards(ISLAND, ISLAND, ISLAND)
+    unsummon, approach = hand_cards(106273, 106268)
+    assert not mp.colors_reachable(unsummon, mountains) and not mp.castable_with(unsummon, mountains)
+    assert mp.colors_reachable(unsummon, islands) and mp.castable_with(unsummon, islands)
+    # {1}{U}{U} with one Island: the colour is reachable but needs two blue sources.
+    one_island = hand_cards(ISLAND, MOUNTAIN, MOUNTAIN)
+    assert mp.colors_reachable(approach, one_island) and not mp.castable_with(approach, one_island)
+    assert mp.castable_with(approach, islands)
+
+
+def test_three_off_colour_lands_are_not_an_automatic_keep():
+    assert verdict([ISLAND] * 3 + BLUE_SPELLS, mulligans=0)[0] == "keep"
+    assert verdict([MOUNTAIN] * 3 + BLUE_SPELLS, mulligans=0) is None  # left to the model
+    lines = mp.describe(state([MOUNTAIN] * 3 + BLUE_SPELLS, mulligans=0))
+    assert any(line.startswith("  - Unsummon") and "needs U mana this hand cannot make" in line for line in lines)
+
+
+def test_a_one_lander_at_five_mulligans_when_its_land_casts_nothing():
+    spells = BLUE_SPELLS + [106273, 106256]
+    assert verdict([MOUNTAIN] + spells, mulligans=2)[0] == "mulligan"
+    assert verdict([ISLAND] + spells, mulligans=2)[0] == "keep"
+
+
 # --- planner integration -----------------------------------------------------------------
 
 

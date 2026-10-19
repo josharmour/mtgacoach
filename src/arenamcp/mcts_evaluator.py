@@ -1,9 +1,11 @@
-"""MCTS Search & Multi-Ply Tactical Lookahead Evaluator for MTGA Coach.
+"""Heuristic tactical hints for MTGA Coach (named "MCTS" historically; no tree search runs).
 
-Evaluates available game state decisions, simulates forward state rollouts
-(including combat permutations, mana curves, spell resolutions, and opponent
-counterplay reaction envelopes), and leverages the OpponentModel for
-metagame-aware tactical synthesis.
+On our own open main phase it scores a handful of candidate plays (casts, a
+land drop then a cast, attacks, holding mana up) with rules of thumb — life,
+power and hand deltas plus fixed bonuses — flags combat-solver blunder traps,
+and adds the OpponentModel's archetype warnings. The prompt labels the result
+"rules of thumb, not a simulation" (coach_prompts.py), and the line search
+(line_search.py) replaces its suggested line whenever it has lines.
 """
 
 from __future__ import annotations

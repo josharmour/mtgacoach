@@ -2344,7 +2344,7 @@ def _apply_bridge_blockers(snapshot: dict[str, Any], poll: dict[str, Any]) -> No
     """Merge the plugin's DeclareBlockers `blockers` payload into the snapshot.
 
     Writes `raw_blockers` + `legal_blocker_ids` onto decision_context (the
-    shape combat_solver.collect_blockers_from_decision / the autopilot block
+    shape combat_solver.blocker_allowed_attackers_map / the autopilot block
     submitter already expect) and flags the GRE-authoritative attackers with
     `is_attacking=True` on the battlefield so _format_block_combat and
     optimal_blocks can enumerate the actual combat. Idempotent and defensive:
@@ -2372,8 +2372,8 @@ def _apply_bridge_blockers(snapshot: dict[str, Any], poll: dict[str, Any]) -> No
                 continue
 
     # Resolve blocker names paired 1:1 with legal_blocker_ids, so this matches
-    # the log-path decision_context shape (gamestate.py) and the name->id map
-    # autopilot builds (_build_blocker_id_map requires len(names) == len(ids)).
+    # the log-path decision_context shape (gamestate.py), where names and ids
+    # are parallel lists (len(names) == len(ids)).
     # Falls back to a stable per-id label when a name isn't on the battlefield
     # yet, so lengths always match and resolved names still map correctly.
     name_by_id: dict[int, str] = {}

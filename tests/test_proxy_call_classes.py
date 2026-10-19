@@ -155,7 +155,7 @@ def test_blank_call_class_falls_back_to_auto_label():
 
 def test_thinking_without_effort_is_reported_as_template_default():
     be = make_backend()
-    be.complete("s", "u", enable_thinking=True, call_class="coach.deck_brief")
+    be.complete("s", "u", enable_thinking=True, call_class="coach.sideboard")
     assert be.last_request_metrics["reasoning_effort"] == "default"
     # chat_template_kwargs semantics are unchanged: no effort is invented.
     assert ctk(be._client.calls[0]) == {"thinking": True}
@@ -168,7 +168,7 @@ def test_documented_classes_cover_every_call_site_family():
         "decision.block_repair",
         "decision.pay",
         "coach.advice",
-        "coach.deck_brief",
+        "coach.sideboard",
         "background.game_plan",
         "background.deck_playbook",
         "background.win_plan",

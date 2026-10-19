@@ -1421,7 +1421,7 @@ def _trick_risk(state: dict | None, table: TrickTable | None, deck_size: int | N
         else:
             deck_size, assumed = DECK_REFERENCE, True
     shrink = _shrink_weight(deck_size)
-    posterior = _posterior(table, _evidence([*public, *revealed], table))
+    posterior = deck_posterior(state, table)
 
     spell_sources = _spell_sources(sources)
     castable = {

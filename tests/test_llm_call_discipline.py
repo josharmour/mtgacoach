@@ -20,7 +20,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from tests.test_deck_strategy import deck_case
+from tests.deck_fakes import deck_case
 
 from arenamcp import game_plan as game_plan_module
 from arenamcp import standalone

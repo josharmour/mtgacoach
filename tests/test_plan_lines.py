@@ -46,6 +46,9 @@ def _offline_service() -> ot.TrickTableService:
     )
 
 
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
+
+
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch):
     """Deck lookups from the fixture catalog; no real trick tables; fresh caches."""
@@ -386,23 +389,13 @@ def test_a_token_maker_plan_is_judged_now():
     )
 
 
-def test_unmodelled_effects_are_named_and_modelled_cards_are_not(synthetic_cards):
-    # One check for the search, the guards, the board facts and the plan (line_search_moves).
+def test_the_plan_names_unmodelled_effects_with_the_search_s_own_check():
+    # One check for the search, the guards, the board facts and the plan; its cases are
+    # in test_line_search::test_unmodelled_effect_names_what_the_search_cannot_value.
     from arenamcp.line_search_moves import unmodelled_effect as canonical
 
-    unmodelled = gp.unmodelled_effect
-    assert unmodelled(S.card(1, "Elemental Uprising", 1)) == ""  # its tokens have bodies now
-    assert unmodelled(S.card(2, "Elemental Surge", 1)) == "its tokens"  # exiled at end of turn
-    assert unmodelled(S.card(3, "Reckless Study", 1)) == ""  # card draw changes nothing it values
-    assert unmodelled(S.card(4, "Grizzly Bears", 1)) == ""
-    assert unmodelled(S.card(5, "Archive Arbiter", 1)) == ""  # its gain-4 mode is modelled
-    assert unmodelled(S.card(6, "Heartstring Puller", 1)) == ""  # its enters token is modelled
-    assert unmodelled(S.card(7, "Unsummon", 1)) == ""  # bounce
-    assert unmodelled(S.card(8, "Splinter Twin", 1))  # an aura granting a copy ability
-    assert unmodelled(S.card(9, "Chupacabra", 1)) == ""  # enters removal
-    assert unmodelled(None) == "" and unmodelled({}) == ""
-    for name in ("Elemental Surge", "Pacifism", "Seismic Jolt", "Beast Summons", "Archive Arbiter"):
-        assert unmodelled(S.card(10, name, 1)) == canonical(S.card(10, name, 1))
+    for name in ("Elemental Surge", "Pacifism", "Seismic Jolt", "Beast Summons", "Archive Arbiter", "Splinter Twin"):
+        assert gp.unmodelled_effect(S.card(10, name, 1)) == canonical(S.card(10, name, 1))
 
 
 # --- validate_plan: cast names as the prompt writes them ------------------------------------------

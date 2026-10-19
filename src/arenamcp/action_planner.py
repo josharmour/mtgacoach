@@ -175,10 +175,9 @@ class GameAction:
 
 
 # WP-0.4 fallback reason codes. A non-empty reason means a DEFAULT PATH, not the
-# model, chose the action — so the resulting trajectory record must be excluded
-# from positive training credit. Note "[pick-salvage]" is deliberately absent:
-# that is the model's own pick index recovered from malformed JSON, so the
-# decision is still the model's and the record is legitimate training data.
+# model, chose the action; bug reports and logs use it to tell the two apart.
+# Note "[pick-salvage]" is deliberately absent: that is the model's own pick
+# index recovered from malformed JSON, so the decision is still the model's.
 FALLBACK_AUTO_PICK = "planner_auto_pick"
 FALLBACK_PREFLIGHT_LAND_DROP = "planner_preflight_land_drop"
 FALLBACK_NO_ACTIONS = "planner_no_actions"
@@ -255,32 +254,6 @@ def is_llm_unavailable_error(error: BaseException) -> bool:
     ):
         return True
     return any(cls.__name__ in _BACKEND_FAILURE_TYPES for cls in type(error).__mro__)
-
-
-# Strategy prefixes that used to be the ONLY fallback signal. Retained solely to
-# classify plan objects built before ActionPlan.fallback_reason existed.
-_LEGACY_FALLBACK_STRATEGY_TAGS = {
-    "[auto-pick]": FALLBACK_AUTO_PICK,
-    "[land-drop-first]": FALLBACK_PREFLIGHT_LAND_DROP,
-}
-
-
-def plan_fallback_reason(plan: Any) -> str:
-    """Return why this plan is a fallback, or "" when the model decided it.
-
-    Prefers the structured ``ActionPlan.fallback_reason`` and falls back to the
-    legacy strategy-prefix sniff so older plan objects still classify correctly.
-    """
-    if plan is None or not getattr(plan, "actions", None):
-        return FALLBACK_NO_ACTIONS
-    reason = (getattr(plan, "fallback_reason", "") or "").strip()
-    if reason:
-        return reason
-    strategy = (getattr(plan, "overall_strategy", "") or "").strip()
-    for tag, legacy_reason in _LEGACY_FALLBACK_STRATEGY_TAGS.items():
-        if strategy.startswith(tag):
-            return legacy_reason
-    return ""
 
 
 @dataclass
@@ -360,11 +333,6 @@ class ActionPlan:
                 line += f" — {action.override_note.rstrip('.')}"
             lines.append(f"{line}.")
         return " ".join(lines)
-
-    @property
-    def fallback(self) -> bool:
-        """True when a default path, not the model, chose these actions."""
-        return bool(self.fallback_reason)
 
     def __str__(self) -> str:
         lines = [f"Plan ({self.trigger}, turn {self.turn_number}): {self.overall_strategy}"]
@@ -453,63 +421,6 @@ short "reasoning"); a structured action needs ONLY action_type + its own
 fields. Never emit empty placeholder fields."""
 
 
-def game_action_to_schema_json(action: Any) -> str:
-    """Serialize a GameAction, dict, int (pick), or string into a JSON string conforming to ACTION_SCHEMA."""
-    if isinstance(action, str):
-        s = action.strip()
-        if s.startswith("{") and s.endswith("}"):
-            try:
-                parsed = json.loads(s)
-                if isinstance(parsed, dict) and "actions" in parsed:
-                    return s
-                if isinstance(parsed, dict):
-                    return json.dumps({"actions": [parsed]}, ensure_ascii=False)
-            except Exception:
-                pass
-        return json.dumps({"actions": [{"reasoning": s}]}, ensure_ascii=False)
-
-    if isinstance(action, int):
-        return json.dumps({"actions": [{"pick": action}]}, ensure_ascii=False)
-
-    if isinstance(action, dict):
-        if "actions" in action:
-            return json.dumps(action, ensure_ascii=False)
-        return json.dumps({"actions": [action]}, ensure_ascii=False)
-
-    if hasattr(action, "action_type"):
-        action_type_val = (
-            action.action_type.value if hasattr(action.action_type, "value") else str(action.action_type)
-        )
-        item: dict[str, Any] = {"action_type": action_type_val}
-        if getattr(action, "card_name", ""):
-            item["card_name"] = action.card_name
-        if getattr(action, "target_names", None):
-            item["target_names"] = action.target_names
-        if getattr(action, "attacker_names", None):
-            item["attacker_names"] = action.attacker_names
-        if getattr(action, "attacker_targets", None):
-            item["attacker_targets"] = action.attacker_targets
-        if getattr(action, "blocker_assignments", None):
-            item["blocker_assignments"] = action.blocker_assignments
-        if getattr(action, "modal_index", 0):
-            item["modal_index"] = action.modal_index
-        if getattr(action, "select_card_names", None):
-            item["select_card_names"] = action.select_card_names
-        if getattr(action, "scry_position", ""):
-            item["scry_position"] = action.scry_position
-        if getattr(action, "numeric_value", 0):
-            item["numeric_value"] = action.numeric_value
-        if getattr(action, "distribution", None):
-            item["distribution"] = action.distribution
-        if getattr(action, "play_or_draw", ""):
-            item["play_or_draw"] = action.play_or_draw
-        if getattr(action, "reasoning", ""):
-            item["reasoning"] = action.reasoning
-        return json.dumps({"actions": [item]}, ensure_ascii=False)
-
-    return json.dumps({"actions": [{"reasoning": str(action)}]}, ensure_ascii=False)
-
-
 AUTOPILOT_SYSTEM_PROMPT = (
     """You are an MTG Arena autopilot. Given the game state and trigger, output a JSON action plan to execute.
 
@@ -578,23 +489,6 @@ SCHEMA:
 """
     + ACTION_SCHEMA
 )
-
-
-# P0-8 (2026-07-05): plan_turn used to reuse AUTOPILOT_SYSTEM_PROMPT, whose
-# "Output ONLY JSON matching the schema" hard-demanded the actions envelope
-# while the user message asked for turn_plan — a model-dependent coin flip
-# that yielded ZERO turn plans for match 1 (the 12B obeyed the system prompt
-# all 3 times, perfectly valid JSON in the wrong shape).
-TURN_PLAN_SYSTEM_PROMPT = """You are an MTG Arena turn planner. Given the game state, output the ordered list of user-visible plays for this whole turn.
-
-RULES:
-- TRUST [OK] tags: MTGA's mana solver already verified those costs are payable.
-- Payable does not mean useful: budget X beyond the fixed cost and identify an eligible remaining tutor target before casting. Do not spend removal or sacrifice an ability source when its only targets are your own permanents.
-- LAND PLAY PRIORITY: On Precombat Main (Main1), if you hold an unplayed land in hand, playing your land MUST be Step 1 of your turn plan before casting spells.
-- Skip mana abilities, casting-time sub-decisions, and search prompts — list only user-visible plays (Play Land, Cast X, Activate X, Attack).
-- Output ONLY a JSON object of this exact shape (no prose, no markdown):
-{"turn_plan": {"steps": [{"action_type": "play_land|cast_spell|activate_ability|declare_attackers", "card_name": "string", "target_names": [], "rationale": "string (max 10 words)"}]}}
-"""
 
 
 def _strip_attacker_annotations(tail: str) -> str:
@@ -711,15 +605,15 @@ class ActionPlanner(_ActionLegalityMixin):
         # detection and the game-plan reform's action feed (decision_memory.py).
         self._decision_memory: DecisionMemory | None = DecisionMemory()
         # Active multi-step turn plan: the ordered list of user-visible plays
-        # we intend to make this turn. Built once on the first non-trivial
-        # own-turn LLM call (an additional `plan_turn` LLM call), then
-        # advanced as actions execute and replaced wholesale on divergence.
+        # we intend to make this turn. Parsed from a "turn_plan" key requested
+        # on the first own-turn action call (one merged LLM call), then
+        # advanced as actions execute and dropped on divergence.
         # Cleared on turn change.
         self._active_turn_plan: TurnPlan | None = None
-        # Turn number we last attempted plan_turn on. Used to suppress
-        # repeated plan_turn calls within the same turn after a failure
-        # — without this, every priority window in a turn where plan_turn
-        # fails would burn an extra LLM call.
+        # Turn number we last requested a turn plan on. Used to suppress
+        # repeated requests within the same turn after a failure — without
+        # this, every priority window in a turn whose turn plan failed to
+        # parse would ask for it again.
         self._turn_plan_attempted_for_turn: int = -1
         # Persistent GAME PLAN block (strategic spine) injected into every
         # per-decision prompt. Owned externally by a GamePlanManager and set via
@@ -754,11 +648,11 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         self._decision_cancel_event = event
 
-    def set_game_plan_source(self, source: Callable[[dict], str] | None) -> None:
+    def set_game_plan_source(self, source: Callable[..., str] | None) -> None:
         """Render the strategy block per decision from the live snapshot.
 
-        ``source(state)`` returns ROLE + this turn's plan + board facts, then
-        the game plan. Without a source the static plan text from
+        ``source(state, with_lines=...)`` (``GamePlanManager.strategy_block``)
+        returns ROLE + this turn's plan + board facts, then the game plan. Without a source the static plan text from
         :meth:`set_game_plan` follows freshly computed board facts.
         """
         self._game_plan_source = source
@@ -813,16 +707,12 @@ class ActionPlanner(_ActionLegalityMixin):
         """ROLE + this turn + clocks/lethal facts for ``state``, then the game plan.
 
         ``with_lines=False`` asks for the block without the search's LINES line
-        (``GamePlanManager.strategy_block`` / ``grounded_facts_block``); a
-        source that takes no ``with_lines`` keyword renders its block as is.
+        (``GamePlanManager.strategy_block`` / ``grounded_facts_block``).
         """
         source = getattr(self, "_game_plan_source", None)
         if state is not None and callable(source):
             try:
-                if not with_lines and _accepts_keyword(source, "with_lines"):
-                    block = source(state, with_lines=False)
-                else:
-                    block = source(state)
+                block = source(state, with_lines=with_lines)
                 if isinstance(block, str) and block.strip():
                     return block.strip()
             except Exception as error:  # the strategic layer never blocks a decision
@@ -1037,7 +927,7 @@ class ActionPlanner(_ActionLegalityMixin):
             # fresh plan, computed lazily the next time we make an LLM
             # call from our own active turn.
             self._active_turn_plan = None
-            # Reset the per-turn plan_turn attempt guard so the new turn
+            # Reset the per-turn turn-plan attempt guard so the new turn
             # gets one attempt to build a fresh plan.
             self._turn_plan_attempted_for_turn = -1
         # P1-7: _turn_executed is now appended ONLY from the autopilot's
@@ -1853,97 +1743,16 @@ class ActionPlanner(_ActionLegalityMixin):
         active_player = (game_state.get("turn") or {}).get("active_player")
         return active_player == local_seat
 
-    def plan_turn(
-        self,
-        game_state: dict[str, Any],
-        effective_legal_actions: list[str],
-        decision_context: dict[str, Any] | None = None,
-    ) -> TurnPlan | None:
-        """One-shot LLM call that lays out the user-visible plays for the turn.
-
-        Stores the result on `self._active_turn_plan`. Returns the plan or
-        None if the call failed / produced no useful steps.
-        """
-        if llm_circuit_open(self._backend):
-            logger.info("plan_turn skipped: model server unavailable (circuit open)")
-            return None
-        game_state = prepare_match_context(game_state)
-        current_turn = (game_state.get("turn") or {}).get("turn_number", 0) or 0
-
-        # Build a lightweight prompt: reuse the same context formatter as
-        # the per-window planner, but ask for an ordered turn plan in JSON
-        # rather than a single action.
-        try:
-            from arenamcp.coach import CoachEngine
-
-            formatter = CoachEngine.__new__(CoachEngine)
-            context = formatter._format_game_context(game_state, for_planner=True)
-        except Exception as e:
-            logger.warning(f"plan_turn: context formatter failed: {e}")
-            context = self._fallback_format(game_state)
-
-        instructions = (
-            "Output the FULL ordered list of plays for this turn (3-7 items). "
-            "Skip mana abilities, casting-time sub-decisions, and search-prompts — "
-            "list only the user-visible plays (Play Land, Cast X, Activate X, Attack)."
-        )
-        schema_example = (
-            '{"turn_plan": {"steps": ['
-            '{"action_type": "play_land", "card_name": "Forest", "rationale": "fix mana"},'
-            '{"action_type": "cast_spell", "card_name": "Optimistic Scavenger", '
-            '"target_names": [], "rationale": "early pressure"}'
-            "]}}"
-        )
-        game_plan_block = self._strategy_context(game_state) + "\n\n"
-        user_message = (
-            f"TRIGGER: turn_plan (turn {current_turn})\n\n"
-            f"{context}\n\n"
-            f"{game_plan_block}"
-            f"INSTRUCTIONS: {instructions}\n"
-            f"Order the plays so they ADVANCE the game plan above.\n"
-            f"Output ONLY a JSON object matching this shape (no prose, no markdown):\n"
-            f"{schema_example}"
-        )
-        user_message = with_deck_reference(user_message, game_state)
-
-        def _complete() -> str:
-            return self._call_llm(
-                TURN_PLAN_SYSTEM_PROMPT + "\n" + STRATEGIC_POLICY,
-                user_message,
-                4096,
-                timeout_s=self._timeout,
-                call_class="decision.turn_plan",
-            )
-
-        try:
-            response = self._bounded_call(_complete)
-        except concurrent.futures.TimeoutError:
-            logger.warning("plan_turn LLM call timed out — leaving turn plan unset")
-            return None
-        except Exception as e:
-            logger.warning(f"plan_turn LLM call failed: {e}")
-            return None
-
-        plan = self._parse_turn_plan_response(response, current_turn)
-        if plan is None or not plan.steps:
-            logger.info(f"plan_turn: no steps parsed from response={(response or '')[:200]!r}")
-            return None
-
-        self._active_turn_plan = plan
-        logger.info(
-            f"Turn plan locked (turn {current_turn}): "
-            + ", ".join(
-                (f"{s.action_type}:{s.card_name}" if s.card_name else s.action_type) for s in plan.steps
-            )
-        )
-        return plan
-
     def _parse_turn_plan_response(
         self,
         response: str,
         current_turn: int,
     ) -> TurnPlan | None:
-        """Defensively parse the JSON {"turn_plan": {"steps": [...]}} shape."""
+        """Defensively parse the JSON {"turn_plan": {"steps": [...]}} shape.
+
+        The turn plan rides along on the first own-turn action call (R2,
+        2026-07-06), so ``response`` is that merged action response.
+        """
         if not response:
             return None
         text = response.strip()
@@ -1955,7 +1764,7 @@ class ActionPlanner(_ActionLegalityMixin):
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            logger.debug("plan_turn: response was not valid JSON")
+            logger.debug("turn plan: response was not valid JSON")
             return None
 
         if not isinstance(data, dict):
@@ -1968,8 +1777,8 @@ class ActionPlanner(_ActionLegalityMixin):
         else:
             steps_data = data.get("steps", [])
 
-        # P0-8 belt-and-braces: a model that obeyed the actions envelope
-        # anyway still described the turn — map actions→steps
+        # P0-8 belt-and-braces: a response without a turn_plan block still
+        # describes the turn through its actions — map actions→steps
         # (reasoning→rationale) instead of discarding the whole response.
         if (not isinstance(steps_data, list) or not steps_data) and isinstance(data.get("actions"), list):
             steps_data = [
@@ -2095,7 +1904,7 @@ class ActionPlanner(_ActionLegalityMixin):
         # last event with the explanation before the panel hides / replans.
         logger.info(f"Turn plan invalidated: {reason or '<no reason>'}")
         plan.last_replanned_reason = reason or "diverged"
-        # Clear; a future plan_turn call will rebuild it.
+        # Clear; the next turn's first own-turn call requests a fresh one.
         self._active_turn_plan = None
 
     def _format_turn_plan_for_prompt(self, plan: TurnPlan) -> str:
@@ -2498,7 +2307,7 @@ class ActionPlanner(_ActionLegalityMixin):
 
         ``fallback_reason`` is required, not defaulted: a preflight plan is by
         definition not a model decision, and defaulting it to "" would let a new
-        preflight path silently produce untagged training records (WP-0.4).
+        preflight path pass for a model decision in logs and bug reports (WP-0.4).
         """
         plan = ActionPlan(trigger=trigger, turn_number=turn_number)
         action = self._legal_action_to_action(legal_action)
@@ -5195,18 +5004,6 @@ def _option_grp_ids(decision: Any) -> list[int]:
             if isinstance(value, int) and value > 0 and value not in out:
                 out.append(value)
     return out
-
-
-def _accepts_keyword(fn: Callable, name: str) -> bool:
-    """``fn`` takes the keyword argument ``name`` (or any keyword); False when it can't be inspected."""
-    try:
-        parameters = inspect.signature(fn).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    return any(
-        (p.name == name and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)) or p.kind == p.VAR_KEYWORD
-        for p in parameters
-    )
 
 
 def _local_seat(state: dict[str, Any]) -> Any:

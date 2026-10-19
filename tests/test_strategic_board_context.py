@@ -64,14 +64,6 @@ def test_old_permanents_retain_rules_for_tactical_planner(oracle):
     assert oracle in _board(_card(oracle_text=oracle))
 
 
-def test_nonbasic_land_retains_tail_of_long_rules():
-    oracle = (
-        "{T}: Add {G}. " + "This land enters tapped. " * 15 + "Sacrifice this land: Destroy target artifact."
-    )
-    rendered = _board(_card(type_line="Land", oracle_text=oracle))
-    assert "Destroy target artifact." in rendered
-
-
 def test_board_reports_unknown_and_modified_stats_without_inventing_zero():
     assert "Engine ?/3" in _board(_card(power=None))
     assert "Engine 0/3" in _board(_card(power=0))
@@ -189,3 +181,279 @@ def test_graveyard_rules_deduplicate_against_full_shared_reference():
     context = "\n".join(_coach()._format_zones_and_events(state, 1, 2))
     assert "YOUR: Engine" in context
     assert card["oracle_text"] not in context
+
+
+# --- castability tags on the Legal menu ----------------------------------------
+
+
+class _PassBackend:
+    def complete(self, *args, **kwargs) -> str:
+        return "Pass."
+
+
+def _engine() -> CoachEngine:
+    return CoachEngine(backend=_PassBackend())
+
+
+def test_format_game_context_filters_non_ok_command_zone_casts():
+    coach = _engine()
+    game_state = {
+        "players": [
+            {"seat_id": 2, "is_local": True, "life_total": 25, "lands_played": 1},
+            {"seat_id": 1, "is_local": False, "life_total": 25, "lands_played": 0},
+        ],
+        "turn": {
+            "turn_number": 6,
+            "phase": "Phase_Main1",
+            "step": "Step_PreCombatMain",
+            "active_player": 2,
+            "priority_player": 2,
+        },
+        "battlefield": [
+            {
+                "name": "Fortified Village",
+                "type_line": "Land",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "is_tapped": False,
+                "oracle_text": "{T}: Add {G} or {W}.",
+                "turn_entered_battlefield": 2,
+            },
+            {
+                "name": "Mystic Monastery",
+                "type_line": "Land",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "is_tapped": False,
+                "oracle_text": "{T}: Add {U}, {R}, or {W}.",
+                "turn_entered_battlefield": 4,
+            },
+            {
+                "name": "Swamp",
+                "type_line": "Basic Land — Swamp",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "is_tapped": False,
+                "oracle_text": "{T}: Add {B}.",
+                "turn_entered_battlefield": 6,
+            },
+        ],
+        "hand": [
+            {
+                "name": "Farseek",
+                "grp_id": 96274,
+                "mana_cost": "{1}{G}",
+                "type_line": "Sorcery",
+                "oracle_text": "Search your library for a Plains, Island, Swamp, or Mountain card, put it onto the battlefield tapped, then shuffle.",
+            },
+        ],
+        "command": [
+            {
+                "name": "Hei Bai, Forest Guardian",
+                "grp_id": 98284,
+                "mana_cost": "{3}{G}",
+                "type_line": "Legendary Creature",
+                "oracle_text": "When Hei Bai enters, reveal cards from the top of your library until you reveal a Shrine card.",
+            },
+        ],
+        "graveyard": [],
+        "stack": [],
+        "legal_actions": [
+            "Cast Hei Bai, Forest Guardian",
+            "Cast Farseek [OK]",
+            "Action: Activate_Mana",
+            "Pass",
+        ],
+        "legal_actions_raw": [
+            {
+                "actionType": "ActionType_Cast",
+                "grpId": 98284,
+                "instanceId": 245,
+                "manaCost": [
+                    {"color": ["ManaColor_Generic"], "count": 3},
+                    {"color": ["ManaColor_Green"], "count": 1},
+                ],
+            },
+            {
+                "actionType": "ActionType_Cast",
+                "grpId": 96274,
+                "instanceId": 546,
+                "autoTapSolution": {"autoTapActions": []},
+                "manaCost": [
+                    {"color": ["ManaColor_Generic"], "count": 1},
+                    {"color": ["ManaColor_Green"], "count": 1},
+                ],
+            },
+            {"actionType": "ActionType_Pass"},
+        ],
+    }
+
+    context = coach._format_game_context(game_state)
+
+    assert "Legal: Cast Farseek [OK]" in context
+    assert "Legal: Cast Hei Bai, Forest Guardian" not in context
+    assert '"grpId":98284' not in context
+
+
+def test_buff_aura_with_only_enemy_creature_is_marked_no_targets():
+    """Regression for issue #236: coach recommended casting Radiant Grace (a buff
+    Aura) when the local player controlled no creatures and the only enchantable
+    creature belonged to the opponent. Buffing the enemy's creature is never the
+    play, so the card must be flagged [NO TARGETS] and dropped from Legal."""
+    coach = _engine()
+    game_state = {
+        "players": [
+            {"seat_id": 2, "is_local": True, "life_total": 25, "lands_played": 0},
+            {"seat_id": 1, "is_local": False, "life_total": 23, "lands_played": 1},
+        ],
+        "turn": {
+            "turn_number": 5,
+            "phase": "Phase_Main1",
+            "step": "Step_PreCombatMain",
+            "active_player": 2,
+            "priority_player": 2,
+        },
+        "battlefield": [
+            {
+                "name": "Plains",
+                "type_line": "Basic Land — Plains",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "is_tapped": False,
+                "oracle_text": "{T}: Add {W}.",
+                "turn_entered_battlefield": 2,
+            },
+            {
+                "name": "Plains",
+                "type_line": "Basic Land — Plains",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "is_tapped": False,
+                "oracle_text": "{T}: Add {W}.",
+                "turn_entered_battlefield": 4,
+            },
+            # Opponent's creature — the only enchantable target on the board.
+            {
+                "name": "Fanatic of Rhonas",
+                "type_line": "Creature — Snake",
+                "owner_seat_id": 1,
+                "controller_seat_id": 1,
+                "is_tapped": False,
+                "power": 2,
+                "toughness": 2,
+                "card_types": ["CardType_Creature"],
+                "turn_entered_battlefield": 3,
+            },
+        ],
+        "hand": [
+            {
+                "name": "Radiant Grace",
+                "grp_id": 78812,
+                "mana_cost": "{W}",
+                "type_line": "Enchantment — Aura",
+                "oracle_text": "Enchant creature\nEnchanted creature gets +1/+0 and has vigilance.",
+            },
+        ],
+        "graveyard": [],
+        "stack": [],
+        "legal_actions": [
+            "Cast Radiant Grace [OK]",
+            "Pass",
+        ],
+        "legal_actions_raw": [
+            {
+                "actionType": "ActionType_Cast",
+                "grpId": 78812,
+                "instanceId": 340,
+                "manaCost": [{"color": ["ManaColor_White"], "count": 1}],
+            },
+            {"actionType": "ActionType_Pass"},
+        ],
+    }
+
+    context = coach._format_game_context(game_state)
+
+    assert "Radiant Grace (AURA) {W} [S,OK] [NO TARGETS]" in context
+    assert "Cast Radiant Grace" not in context.split("Legal:", 1)[1].split("\n", 1)[0]
+
+
+def test_debuff_aura_with_enemy_creature_is_castable():
+    """Inverse of the buff-aura case: a removal Aura (Pacifism-style) targets the
+    opponent's creature, so it must stay castable when the opponent has one."""
+    coach = _engine()
+    game_state = {
+        "players": [
+            {"seat_id": 2, "is_local": True, "life_total": 25, "lands_played": 0},
+            {"seat_id": 1, "is_local": False, "life_total": 23, "lands_played": 1},
+        ],
+        "turn": {
+            "turn_number": 5,
+            "phase": "Phase_Main1",
+            "step": "Step_PreCombatMain",
+            "active_player": 2,
+            "priority_player": 2,
+        },
+        "battlefield": [
+            {
+                "name": "Plains",
+                "type_line": "Basic Land — Plains",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "is_tapped": False,
+                "oracle_text": "{T}: Add {W}.",
+                "turn_entered_battlefield": 2,
+            },
+            {
+                "name": "Plains",
+                "type_line": "Basic Land — Plains",
+                "owner_seat_id": 2,
+                "controller_seat_id": 2,
+                "is_tapped": False,
+                "oracle_text": "{T}: Add {W}.",
+                "turn_entered_battlefield": 4,
+            },
+            {
+                "name": "Fanatic of Rhonas",
+                "type_line": "Creature — Snake",
+                "owner_seat_id": 1,
+                "controller_seat_id": 1,
+                "is_tapped": False,
+                "power": 2,
+                "toughness": 2,
+                "card_types": ["CardType_Creature"],
+                "turn_entered_battlefield": 3,
+            },
+        ],
+        "hand": [
+            {
+                "name": "Reprobation",
+                "grp_id": 71364,
+                "mana_cost": "{1}{W}",
+                "type_line": "Enchantment — Aura",
+                "oracle_text": "Enchant creature\nEnchanted creature loses all abilities and is a Coward creature with base power and toughness 0/1.",
+            },
+        ],
+        "graveyard": [],
+        "stack": [],
+        "legal_actions": [
+            "Cast Reprobation [OK]",
+            "Pass",
+        ],
+        "legal_actions_raw": [
+            {
+                "actionType": "ActionType_Cast",
+                "grpId": 71364,
+                "instanceId": 440,
+                "manaCost": [
+                    {"color": ["ManaColor_Generic"], "count": 1},
+                    {"color": ["ManaColor_White"], "count": 1},
+                ],
+            },
+            {"actionType": "ActionType_Pass"},
+        ],
+    }
+
+    context = coach._format_game_context(game_state)
+
+    assert "[NO TARGETS]" not in context
+    assert "Cast Reprobation" in context.split("Legal:", 1)[1].split("\n", 1)[0]

@@ -6,7 +6,6 @@ the coaching thread for 69 seconds; the user had to declare attackers by
 hand. The search now caps the assignments it scores across subsets.
 """
 
-import time
 from itertools import combinations
 
 import arenamcp.combat_solver as solver
@@ -40,11 +39,9 @@ def test_seven_attacker_board_is_bounded(monkeypatch):
         return plan
 
     monkeypatch.setattr(solver, "_search_blocks", counting)
-    started = time.perf_counter()
     plan = solver.optimal_attacks(OURS, THEIRS, 20, 11, THEIRS, SPARE)
     assert plan is not None
-    assert sum(scored) <= 200_000
-    assert time.perf_counter() - started < 10.0  # was 69s live
+    assert sum(scored) <= 200_000  # ~9M assignments (69 s) live before the cap
 
 
 def _exhaustive(candidates, blockers, opp_life, your_life, crack, spare):

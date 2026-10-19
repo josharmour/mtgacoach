@@ -51,25 +51,46 @@ def _wait_for(predicate, timeout=2.0):
     return False
 
 
+def _finish(lib, in_match=None):
+    """Let any run end, so a failed assert never leaves the process-wide lock held."""
+    if in_match is not None:
+        in_match[0] = False
+    lib.release.set()
+    assert _wait_for(lambda: not standalone_decks._ANALYZE_ALL_LOCK.locked())
+
+
 def test_a_second_analyze_all_while_one_runs_is_ignored():
     lib = _Library(_records("a", "b"), in_match=lambda: False)
     lib.release.clear()
-    assert lib.analyze_all_decks_async() is True
-    assert lib.analyze_all_decks_async() is False
-    lib.release.set()
-    assert _wait_for(lambda: lib.analysed == ["a", "b"])
-    assert _wait_for(lambda: not standalone_decks._ANALYZE_ALL_LOCK.locked())
-    assert lib.analyze_all_decks_async() is True  # free again once the run ended
-    assert _wait_for(lambda: not standalone_decks._ANALYZE_ALL_LOCK.locked())
+    try:
+        assert lib.analyze_all_decks_async() is True
+        assert lib.analyze_all_decks_async() is False
+        lib.release.set()
+        assert _wait_for(lambda: lib.analysed == ["a", "b"])
+        assert _wait_for(lambda: not standalone_decks._ANALYZE_ALL_LOCK.locked())
+        assert lib.analyze_all_decks_async() is True  # free again once the run ended
+    finally:
+        _finish(lib)
 
 
 def test_no_deck_starts_during_a_match(monkeypatch):
-    monkeypatch.setattr(_Library, "_ANALYZE_ALL_MATCH_POLL_S", 0.01)
+    monkeypatch.setattr(_Library, "_ANALYZE_ALL_MATCH_POLL_S", 0.001)
     in_match = [True]
-    lib = _Library(_records("a", "b"), in_match=lambda: in_match[0])
-    assert lib.analyze_all_decks_async() is True
-    time.sleep(0.1)
-    assert lib.analysed == []
-    in_match[0] = False
-    assert _wait_for(lambda: lib.analysed == ["a", "b"])
-    assert _wait_for(lambda: not standalone_decks._ANALYZE_ALL_LOCK.locked())
+    polls = []
+    paused = threading.Event()
+
+    def match_running():
+        polls.append(in_match[0])
+        if len(polls) >= 3:
+            paused.set()  # the run has checked the match several times while it waits
+        return in_match[0]
+
+    lib = _Library(_records("a", "b"), in_match=match_running)
+    try:
+        assert lib.analyze_all_decks_async() is True
+        assert paused.wait(2)
+        assert lib.analysed == []
+        in_match[0] = False
+        assert _wait_for(lambda: lib.analysed == ["a", "b"])
+    finally:
+        _finish(lib, in_match)

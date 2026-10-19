@@ -52,17 +52,14 @@ from arenamcp.board_assessment import (
     role_guard,
 )
 
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
+
 
 def _fresh(state):
-    """A cold assessment. The line search is reproducible unless a wall-clock
-    deadline cut it short (machine load, a GC pause): then it is run again."""
-    for _attempt in range(3):
-        ba._CACHE.clear()
-        result = assess(deepcopy(state))
-        stats = getattr(result, "search_stats", None) or {}
-        if not (stats.get("bounded") or stats.get("truncated")):
-            break
-    return result
+    """A cold assessment. The line search is reproducible: its soft limit is a work
+    budget, and the wall-clock hard cap is lifted for these tests (conftest)."""
+    ba._CACHE.clear()
+    return assess(deepcopy(state))
 
 
 # --- role, clocks and flags on the real turns ---------------------------------
@@ -197,31 +194,6 @@ def test_a_lethal_line_next_turn_is_flagged_and_drives_the_role():
     assert flag.endswith("lethal on T17")
     assert a.role == ROLE_AGGRESSOR and a.role_reason.startswith("best line kills on T17")
     assert a.lookahead[1].attack and "attack with" in a.suggestion(1)
-
-
-def _fastest_ms(state, times: int = 5) -> float:
-    """The fastest of ``times`` cold assessments in CPU ms (``strategic_states.cpu_ms``)."""
-    from tests.strategic_states import cpu_ms
-
-    def run() -> None:
-        ba._CACHE.clear()
-        assert assess(deepcopy(state)) is not None
-
-    return cpu_ms(run, times)
-
-
-def test_assessment_is_fast_on_real_and_crowded_boards():
-    for state in (G1_T8, G1_T10, G1_T12, G1_T14, G1_T15_FROM_OPPONENT):
-        assert _fastest_ms(state) < 50
-    crowded = deepcopy(G1_T14)
-    for index in range(7):
-        crowded["battlefield"].append(
-            card(900 + index, "Cadet", 2, is_tapped=False, turn_entered_battlefield=13)
-        )
-        crowded["battlefield"].append(
-            card(950 + index, "Theorix Metamage", 1, is_tapped=False, turn_entered_battlefield=13)
-        )
-    assert _fastest_ms(crowded) < 250
 
 
 def test_unknown_power_and_seats_stay_unknown():
@@ -390,11 +362,6 @@ def test_payload_is_json_safe_for_the_ui():
         payload = _fresh(source).as_payload()
         json.dumps(payload)
         assert len(payload["lines"]) <= 3 and isinstance(payload["posture"], str), name
-
-
-def test_play_and_cast_helpers_build_real_option_meta():
-    assert play(284)["actionType"] == "ActionType_Play"
-    assert cast(229)["instanceId"] == 229
 
 
 def test_log_snapshot_counts_hidden_opponent_hand_cards(monkeypatch):

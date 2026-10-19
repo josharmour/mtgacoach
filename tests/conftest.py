@@ -20,6 +20,7 @@ import shutil
 import socket
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -280,9 +281,6 @@ def _sandbox_arenamcp_home(monkeypatch, tmp_path_factory):
     settings = sys.modules.get("arenamcp.settings")
     if settings is not None:
         monkeypatch.setattr(settings, "_settings", None)
-    match_history = sys.modules.get("arenamcp.match_history")
-    if match_history is not None:
-        monkeypatch.setattr(match_history, "_history", None)
     # A packet left recording by an earlier test would be salvage-saved by
     # this test's start_match_packet(), and a finalized "m1" would stop this
     # test from recording at all.
@@ -366,3 +364,60 @@ def qapp(qapp_args):
     if app is None:
         app = QApplication(qapp_args)
     yield app
+
+
+@pytest.fixture
+def unlimited_search_deadline(monkeypatch):
+    """The line search's wall-clock hard cap never fires; an explicit ``hard_ms`` still wins.
+
+    Its soft limit is a deterministic work budget; only the hard cap (350 ms
+    for the assessment, 200 ms for a mode comparison) is a clock, and a loaded
+    test machine must not truncate the lines a test pins.
+    """
+    from arenamcp import line_guard, line_search
+
+    search, compare = line_search.search_lines, line_search.compare_modes
+
+    def unlimited_search(model, **kwargs):
+        return search(model, **{"hard_ms": 1e9, **kwargs})
+
+    def unlimited_compare(state, decision, **kwargs):
+        return compare(state, decision, **{"hard_ms": 1e9, **kwargs})
+
+    monkeypatch.setattr(line_search, "search_lines", unlimited_search)
+    monkeypatch.setattr(line_search, "compare_modes", unlimited_compare)
+    monkeypatch.setattr(line_guard, "compare_modes", unlimited_compare)
+
+
+@pytest.fixture
+def instant_combat_acks(monkeypatch):
+    """Combat submissions stop waiting for the GRE to acknowledge them (autopilot_bridge)."""
+    from arenamcp import autopilot_bridge
+
+    for name in ("_BLOCK_ACK_MAX_WAIT_S", "_ATTACK_ACK_MAX_WAIT_S", "_COMBAT_ACK_SETTLE_S"):
+        monkeypatch.setattr(autopilot_bridge, name, 0.0)
+
+
+@pytest.fixture
+def plan_threads(monkeypatch):
+    """The game plan's background threads, joined (and checked finished) after the test.
+
+    One background strategy job runs at a time, process-wide: first wait out a
+    plan refresh another test may have left running.
+    """
+    from arenamcp.game_plan import STRATEGIC_LANE
+
+    assert STRATEGIC_LANE.wait_idle(5)
+    started: list[threading.Thread] = []
+    real_thread = threading.Thread
+
+    def make(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        started.append(thread)
+        return thread
+
+    monkeypatch.setattr("arenamcp.game_plan.threading.Thread", make)
+    yield started
+    for thread in started:
+        thread.join(timeout=3)
+        assert not thread.is_alive()

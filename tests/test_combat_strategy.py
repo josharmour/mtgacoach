@@ -90,7 +90,9 @@ def test_unknown_loyalty_never_claims_a_planeswalker_kill():
 
 def test_one_blocker_cannot_block_both_split_attackers():
     result = combat_choice(board([creature(10, 3, 4), creature(11, 3, 4)], [creature(20, 0, 4, owner=2)]))
-    assert result.player_damage + 3 * len(result.planeswalkers_removed) > 0
+    # The 0/4 can stop only one of them, so both go at the 3-loyalty walker.
+    assert result.planeswalkers_removed == [99]
+    assert {result.assignments[i]["planeswalkerInstanceId"] for i in (10, 11)} == {99}
 
 
 def test_search_budget_is_bounded_and_double_strike_counts():

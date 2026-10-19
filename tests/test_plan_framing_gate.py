@@ -14,6 +14,8 @@ PLAN = "GAME PLAN: win=Overwhelm with tokens | path=Develop board"
 
 
 def _recites(s: str) -> bool:
+    # The recite instruction puts the MOVE first (fixes the wordy
+    # "Plan: ...; win: ..." preamble that buried the actual action).
     return "Lead with the concrete recommended move FIRST" in s
 
 
@@ -40,10 +42,3 @@ def test_opponent_turn_recites():
 def test_plan_changed_recites_even_on_our_turn():
     s = f(PLAN, our_turn=True, plan_changed=True)
     assert _recites(s) and not _silent(s)
-
-
-def test_recite_leads_with_move_not_plan_name():
-    # The recite instruction must put the MOVE first (fixes the wordy
-    # "Plan: ...; win: ..." preamble that buried the actual action).
-    s = f(PLAN, our_turn=False, plan_changed=False)
-    assert "Lead with the concrete recommended move FIRST" in s

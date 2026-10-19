@@ -1,4 +1,5 @@
 import json
+import re
 from copy import deepcopy
 from unittest.mock import Mock
 
@@ -118,21 +119,33 @@ def test_deck_explanation_uses_selected_cards_and_states_a_real_weakness():
     assert len(explanation.split()) <= 100
 
 
-def test_deck_explanation_preserves_accepted_model_strategy():
-    build = validate_deck(model_build(), pool(), source="card_rules")
-    explanation = deck_choice_summary(build, pool())
-    assert "Its plan: Green creature pressure with a low curve, " in explanation
-
-
-def test_model_plan_about_assembling_the_deck_is_not_spoken_as_a_game_plan():
-    """2026-10-06: "Play the top-scoring pure UG build ... keep the mana base fully legal"."""
-    payload = {
-        **model_build(),
-        "plan": "Play the top-scoring pure UG build to keep the mana base fully legal.",
-    }
+@pytest.mark.parametrize(
+    ("plan", "spoken", "unspoken"),
+    [
+        # An accepted model strategy is spoken as the plan.
+        ("Green creature pressure with a low curve.", "Its plan: Green creature pressure with a low curve, ", None),
+        # A long plan is cut to one clause so the summary stays two sentences.
+        (
+            "Fly over the top with drakes. Burn blockers early; bounce their best threat. Then race.",
+            "Its plan: Fly over the top with drakes, ",
+            "Burn blockers",
+        ),
+        # 2026-10-06: "Play the top-scoring pure UG build ... keep the mana base fully
+        # legal" is about assembling the deck, not a game plan: the card-derived plan is spoken.
+        (
+            "Play the top-scoring pure UG build to keep the mana base fully legal.",
+            "Its plan is to curve out",
+            "top-scoring",
+        ),
+    ],
+)
+def test_model_plan_wording_in_the_deck_explanation(plan, spoken, unspoken):
+    payload = {**model_build(), "plan": plan}
     explanation = deck_choice_summary(validate_deck(payload, pool(), source="card_rules"), pool())
-    assert "top-scoring" not in explanation and "Its plan is to curve out" in explanation
+    assert spoken in explanation
+    assert unspoken is None or unspoken not in explanation
     assert "Green creature 1" in explanation
+    assert len(re.split(r"(?<=[.!?])\s+", explanation.strip())) == 2, explanation
 
 
 def test_deck_explanation_does_not_invent_details_for_unknown_cards():

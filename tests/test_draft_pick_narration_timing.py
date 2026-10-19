@@ -9,12 +9,10 @@ beat; the hold is bounded by the pick clock so a draft never stalls.
 
 from __future__ import annotations
 
-import threading
-import time
 from types import SimpleNamespace
 
 import pytest
-from tests.test_draft_autoplay import PICK_STATE, draft_world, driver_for
+from tests.draft_fakes import PICK_STATE, FakeTime, draft_world, driver_for, make_primer
 
 from arenamcp import draft_event
 from arenamcp.mac_bridge_adapter import MacBridgeAdapter
@@ -23,11 +21,7 @@ from arenamcp.speech_completion import SpeechCompletion, narrate_and_wait
 
 @pytest.fixture
 def primer():
-    from tests.test_draft_autoplay import PAIRS, RATINGS
-
-    from arenamcp.set_primer import data_primer
-
-    return data_primer("TST", RATINGS, PAIRS, lambda grp, name: {"oracle_text": f"{name} text", "cmc": 3.0})
+    return make_primer()
 
 
 class Clock:
@@ -239,33 +233,43 @@ def test_pick_narration_waits_for_the_desktop_and_stops_at_the_deadline():
     from arenamcp.standalone_draft_event import _DraftEventMixin
 
     completion = SpeechCompletion()
-    coach = _DraftEventMixin()
-    coach._voice_output = SimpleNamespace(current_voice=("am_eric", "Eric"), speed=1.0, muted=False)
+    emitted = []
 
     def finished(**kwargs):
-        threading.Timer(
-            0.05, lambda: [completion.update(kwargs["speech_id"], s) for s in ("started", "finished")]
-        ).start()
+        emitted.append(kwargs)
+        for state in ("accepted", "started", "finished"):
+            completion.update(kwargs["speech_id"], state)
 
+    coach = _DraftEventMixin()
+    coach._voice_output = SimpleNamespace(current_voice=("am_eric", "Eric"), speed=1.2, muted=False)
     coach.ui = SimpleNamespace(speech_completion=completion, emit_speech_request=finished)
     assert coach._narrate_draft_pick("Choosing Blue Ace.", lambda: False)
+    # Sent with a speech id, in the user's voice and speed, then held until "finished".
+    assert emitted[0]["speech_id"] and emitted[0]["voice_id"] == "am_eric" and emitted[0]["speed"] == 1.2
 
-    # A desktop that never acknowledges: the pick's deadline ends the wait.
-    coach.ui = SimpleNamespace(speech_completion=completion, emit_speech_request=lambda **kwargs: None)
-    deadline = time.monotonic() + 0.4
-    began = time.monotonic()
-    coach._narrate_draft_pick("Choosing Blue Ace.", lambda: time.monotonic() >= deadline)
-    assert time.monotonic() - began < 1.5
+    # A desktop that never acknowledges: the pick's deadline ends the wait (not the
+    # 5 s acknowledgment timeout, nor the speaking time after it).
+    clock = FakeTime()
+    coach.ui = SimpleNamespace(
+        speech_completion=SpeechCompletion(clock=clock, idle=clock.advance),
+        emit_speech_request=lambda **kwargs: None,
+    )
+    assert not coach._narrate_until_heard(
+        "Choosing Blue Ace.", lambda: clock.now >= 0.4, "draft pick", clock=clock, sleep=clock.advance
+    )
+    assert clock.now == pytest.approx(0.5)  # the first 0.25 s poll past the deadline
 
     # In-process voice: played in the background, held only while not cancelled.
     calls = []
+    clock = FakeTime()
     coach.ui = SimpleNamespace()
     coach._voice_output = SimpleNamespace(
         muted=False, speed=1.0, speak=lambda text, blocking: calls.append(blocking)
     )
-    began = time.monotonic()
-    coach._narrate_draft_pick("Choosing Blue Ace.", lambda: time.monotonic() - began > 0.3)
-    assert calls == [False] and time.monotonic() - began < 1.5
+    assert not coach._narrate_until_heard(
+        "Choosing Blue Ace.", lambda: clock.now > 0.3, "draft pick", clock=clock, sleep=clock.advance
+    )
+    assert calls == [False] and clock.now == pytest.approx(0.5)
 
 
 # ---------------------------------------------------------------------------

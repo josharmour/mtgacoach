@@ -1,9 +1,8 @@
-"""Tests for Bo3 sideboarding recommendations and post-match /analyze review prompt generator."""
+"""Tests for Bo3 sideboarding recommendations and the /sideboard and /analyze slash commands."""
 
 from unittest.mock import MagicMock, patch
 
 from arenamcp.coach import SIDEBOARD_RECOMMENDATION_PROMPT, CoachEngine
-from arenamcp.match_history import MatchRecord, generate_match_review_prompt
 from arenamcp.pipe_adapter import PipeAdapter
 from arenamcp.standalone import StandaloneCoach
 
@@ -90,65 +89,6 @@ def test_coach_recommend_sideboard_error_fallback():
     )
 
     assert result is None
-
-
-def test_match_history_generate_match_review_prompt():
-    """Test match_history.generate_match_review_prompt formatting."""
-    record = MatchRecord(
-        match_id="match_12345",
-        timestamp="2026-07-22T09:00:00Z",
-        result="win",
-        opponent_name="Opponent42",
-        local_deck_colors=["U", "B"],
-        opponent_colors_seen=["R", "G"],
-        format_name="Standard",
-        turns=12,
-        local_life_final=14,
-        opponent_life_final=0,
-    )
-
-    advice_history = [
-        {
-            "game_snapshot": {"turn_number": 3, "phase": "Main1"},
-            "trigger": "decision",
-            "advice": "Cast Counterspell targeting Bloodbraid Elf.",
-        }
-    ]
-    opp_cards = ["Bloodbraid Elf", "Lightning Bolt"]
-    missed_decisions = [
-        {"turn": 5, "phase": "Combat", "decision_type": "declare_blockers", "prompt_text": "Select blockers"}
-    ]
-
-    prompt = generate_match_review_prompt(
-        record=record,
-        advice_history=advice_history,
-        opponent_cards=opp_cards,
-        missed_decisions=missed_decisions,
-        replay_summary="Turn 3: Cast Bloodbraid Elf",
-    )
-
-    assert "POST-MATCH REVIEW REQUEST (/analyze)" in prompt
-    assert "Match ID: match_12345" in prompt
-    assert "Result: WIN" in prompt
-    assert "Opponent: Opponent42" in prompt
-    assert "Format: Standard" in prompt
-    assert "Player Deck Colors: U, B" in prompt
-    assert "Opponent Colors Seen: R, G" in prompt
-    assert "Match Duration: 12 turns" in prompt
-    assert "Player=14, Opponent=0" in prompt
-    assert "Bloodbraid Elf" in prompt
-    assert "Turn 3 (Main1) [decision]: Cast Counterspell" in prompt
-    assert "MISSED DECISION POINTS" in prompt
-    assert "REPLAY SUMMARY" in prompt
-
-    # Test dataclass method round-trip
-    method_prompt = record.to_review_prompt(
-        advice_history=advice_history,
-        opponent_cards=opp_cards,
-    )
-    assert method_prompt == generate_match_review_prompt(
-        record, advice_history=advice_history, opponent_cards=opp_cards
-    )
 
 
 def test_standalone_get_sideboard_recommendations():

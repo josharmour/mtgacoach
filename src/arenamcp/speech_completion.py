@@ -32,9 +32,17 @@ def speaking_seconds(text: str, speed: float = 1.0) -> float:
 class SpeechCompletion:
     """Desktop acknowledgments for utterances the engine is waiting on."""
 
-    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        clock: Callable[[], float] = time.monotonic,
+        idle: Callable[[float], object] | None = None,
+    ) -> None:
+        """``idle(poll)`` waits for the next acknowledgment or the poll interval;
+        by default it blocks on the condition. Tests pass one that advances a fake
+        ``clock`` instead (and delivers the acknowledgments due by then)."""
         self._clock = clock
         self._cond = threading.Condition()
+        self._idle = idle if idle is not None else self._cond.wait
         self._states: dict[str, list[tuple[str, float]]] = {}
 
     def begin(self) -> str:
@@ -88,7 +96,7 @@ class SpeechCompletion:
                             return "timeout"
                     elif now - states[0][1] >= render_timeout:
                         return "timeout"
-                    self._cond.wait(poll)
+                    self._idle(poll)
         finally:
             with self._cond:
                 self._states.pop(speech_id, None)

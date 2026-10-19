@@ -230,10 +230,10 @@ def test_attachment_from_a_separate_battlefield_object_preserves_investment(repo
     assert CombatRecovery(report).credit(frozenset({1034, 1057})) == 0
 
 
-def test_planner_checks_the_trade_and_updates_identity_narration_and_training_origin(report, monkeypatch):
+def test_planner_checks_the_trade_and_updates_identity_narration_and_fallback_tag(report, monkeypatch):
     from unittest.mock import Mock
 
-    from arenamcp.action_planner import ActionPlanner, plan_fallback_reason
+    from arenamcp.action_planner import ActionPlanner
 
     monkeypatch.setattr("arenamcp.match_context._local_card", lambda *args: {})
     backend = Mock()
@@ -264,7 +264,7 @@ def test_planner_checks_the_trade_and_updates_identity_narration_and_training_or
     assert "command zone" in plan.voice_advice and "I'm" not in plan.voice_advice
     assert plan.actions[0].reasoning.startswith("Identical copy")
     assert "9 mana including observed commander tax" in plan.actions[0].reasoning
-    assert plan_fallback_reason(plan) == "planner_commander_identity"
+    assert plan.fallback_reason == "planner_commander_identity"
     backend.complete.assert_called_once()
     assert planner._committed_commander_return(report, {"recipient_ids": [1034]})
     assert not planner._committed_commander_return(report, {"recipient_ids": [1042]})

@@ -34,11 +34,14 @@ PRIMER = pro1.primer()
 RARITY = {"C": "common", "U": "uncommon", "R": "rare", "M": "mythic"}
 
 
-@pytest.fixture(autouse=True)
-def _isolated(monkeypatch, tmp_path):
-    monkeypatch.setattr(limited_formats, "_event_expansions", {})
-    # No saved draft runs from this machine: the lane comes from the pool.
-    monkeypatch.setattr(draft_event, "DRAFT_RUN_DIR", tmp_path)
+@pytest.fixture(scope="module", autouse=True)
+def _isolated(tmp_path_factory):
+    """Module-scoped, so it is in place before the module-scoped builds below run."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(limited_formats, "_event_expansions", {})
+        # No saved draft runs from this machine: the lane comes from the pool.
+        patch.setattr(draft_event, "DRAFT_RUN_DIR", tmp_path_factory.mktemp("draft_runs"))
+        yield
 
 
 def _card(grp_id: int) -> dict:
@@ -96,12 +99,12 @@ def _land_count(build: dict) -> int:
 
 
 @pytest.fixture(scope="module")
-def selesnya() -> dict:
+def selesnya(_isolated) -> dict:
     return _build(pro1)
 
 
 @pytest.fixture(scope="module")
-def azorius() -> dict:
+def azorius(_isolated) -> dict:
     return _build(pro2)
 
 

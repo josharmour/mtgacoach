@@ -235,8 +235,9 @@ def test_pipe_commands_drive_the_library_and_emit_events():
 
 
 def test_prepare_playbook_builds_and_caches_without_publishing(monkeypatch, tmp_path):
+    from tests.deck_fakes import deck_case
+
     from arenamcp.coach import CoachEngine
-    from test_deck_strategy import deck_case
 
     state, catalog, response = deck_case()
     monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, epoch: catalog[gid])

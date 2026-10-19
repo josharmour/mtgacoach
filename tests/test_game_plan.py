@@ -59,10 +59,11 @@ def _state(turn=1, my_life=20, opp_life=20, my_creatures=0, opp_creatures=0, my_
 
 
 def test_parse_strict_json():
-    plan = GamePlanManager._parse(_plan_json(), turn_num=3)
+    three_wins = json.loads(_plan_json())
+    three_wins["win_conditions"].append("deck them")
+    plan = GamePlanManager._parse(json.dumps(three_wins), turn_num=3)
     assert plan is not None
-    assert plan.win_conditions[0] == "aggro beatdown"
-    assert len(plan.win_conditions) == 2  # capped at 2
+    assert plan.win_conditions == ["aggro beatdown", "grind with card advantage"]  # capped at 2
     assert plan.path == "race for lethal ~T6"
     assert plan.turn_formed == 3
     assert not plan.is_empty()
@@ -92,7 +93,7 @@ def test_planner_block_and_intro_render():
     block = plan.as_planner_block()
     assert "GAME PLAN" in block
     assert "race for lethal" in block
-    assert "do NOT just react" in block.lower() or "develop toward" in block.lower()
+    assert "Develop toward this win" in block
     intro = plan.as_coach_intro()
     assert intro.startswith("Plan:")
 
@@ -110,25 +111,6 @@ def test_first_call_seeds_then_no_reform_same_turn():
     assert p2 is p1
 
 
-def test_plans_our_next_turn_during_the_opponents_turn_once():
-    """The plan call takes ~30 s on a busy gateway, so it runs while they play."""
-    be = FakeBackend([_plan_json(), _plan_json("plan B")])
-    mgr = GamePlanManager(be)
-    mgr.maybe_reform(_state(turn=1))
-    assert be.calls == 1
-    # The opponent's turn re-plans for our coming turn, even on a static board.
-    opponent_turn = _state(turn=2)
-    opponent_turn["turn"]["active_player"] = 2
-    mgr.maybe_reform(opponent_turn)
-    assert be.calls == 2 and mgr.current.path == "plan B"
-    # ...once, not on every decision of that turn.
-    mgr.maybe_reform(opponent_turn)
-    assert be.calls == 2
-    # Our own turn on an unchanged board keeps the plan made for it.
-    mgr.maybe_reform(_state(turn=3))
-    assert be.calls == 2
-
-
 def test_board_churn_on_our_turn_needs_a_role_or_lethal_flip_to_reform(monkeypatch):
     """2026-10-06: 139 plan calls in 1.8 h, because card identities, creature
     counts and life changed after nearly every action. Mid-turn, only a flip
@@ -136,7 +118,8 @@ def test_board_churn_on_our_turn_needs_a_role_or_lethal_flip_to_reform(monkeypat
     be = FakeBackend([_plan_json(), _plan_json("plan B")])
     mgr = GamePlanManager(be)
     facts = {"now": ("aggressor", False, False, False)}
-    monkeypatch.setattr(mgr, "_strategic_key", lambda state, sig=None: (facts["now"], (), ()))
+    # The real key: (role/lethal facts, commander zone, commander tax, opposing engines).
+    monkeypatch.setattr(mgr, "_strategic_key", lambda state, sig=None: (facts["now"], (), (), ()))
     mgr.maybe_reform(_state(turn=1, my_creatures=0))
     assert be.calls == 1
     # Creatures entered and life moved, but the role and lethal flags held.
@@ -267,29 +250,7 @@ def test_new_match_id_clears_plan_even_when_turn_number_is_unchanged():
     assert mgr._seed is None
 
 
-@pytest.fixture
-def refresh_threads(monkeypatch):
-    from arenamcp.game_plan import STRATEGIC_LANE
-
-    # One background strategy job at a time, process-wide: wait out a plan
-    # refresh another test's get_advice() may have left running.
-    assert STRATEGIC_LANE.wait_idle(5)
-    real_thread = threading.Thread
-    started = []
-
-    def create_thread(*args, **kwargs):
-        thread = real_thread(*args, **kwargs)
-        started.append(thread)
-        return thread
-
-    monkeypatch.setattr("arenamcp.game_plan.threading.Thread", create_thread)
-    yield started
-    for thread in started:
-        thread.join(timeout=2)
-        assert not thread.is_alive()
-
-
-def test_background_refresh_returns_while_model_is_blocked_and_uses_snapshot(refresh_threads):
+def test_background_refresh_returns_while_model_is_blocked_and_uses_snapshot(plan_threads):
     entered, release, updated = threading.Event(), threading.Event(), threading.Event()
     be = FakeBackend([_plan_json()])
     original = be.complete
@@ -317,7 +278,7 @@ def test_background_refresh_returns_while_model_is_blocked_and_uses_snapshot(ref
     assert "Changed Later" not in be.requests[0][1]
 
 
-def test_old_match_inflight_result_is_discarded(refresh_threads):
+def test_old_match_inflight_result_is_discarded(plan_threads):
     entered, release = threading.Event(), threading.Event()
 
     class DelayedBackend:
@@ -334,31 +295,31 @@ def test_old_match_inflight_result_is_discarded(refresh_threads):
         assert mgr.current is None
     finally:
         release.set()
-    refresh_threads[0].join(timeout=2)
+    plan_threads[0].join(timeout=2)
     assert mgr.current is None
     assert mgr._match_id == "new"
 
 
 @pytest.mark.parametrize("response", [_plan_json(), "unusable response"])
-def test_background_refresh_cooldown_applies_to_success_and_failure(monkeypatch, refresh_threads, response):
+def test_background_refresh_cooldown_applies_to_success_and_failure(monkeypatch, plan_threads, response):
     now = [100.0]
     monkeypatch.setattr("arenamcp.game_plan.time.monotonic", lambda: now[0])
     be = FakeBackend([response, _plan_json("new line")])
     mgr = GamePlanManager(be)
     state = _state(turn=3)
     assert mgr.request_reform(state)
-    refresh_threads[-1].join(timeout=2)
+    plan_threads[-1].join(timeout=2)
     state = _state(turn=4)
     state["turn"]["active_player"] = 2
     assert not mgr.request_reform(state)
     assert be.calls == 1
     now[0] += mgr._REFRESH_INTERVAL_S
     assert mgr.request_reform(state)
-    refresh_threads[-1].join(timeout=2)
+    plan_threads[-1].join(timeout=2)
     assert be.calls == 2
 
 
-def test_mid_turn_reforms_wait_for_the_opponents_turn(monkeypatch, refresh_threads):
+def test_mid_turn_reforms_wait_for_the_opponents_turn(monkeypatch, plan_threads):
     # 2026-10-11 audit: 72 of 168 plan calls were cancelled or discarded and
     # overlapping decision calls had ~2x TTFT. Only the first plan may start
     # on our own turn; everything else plans our next turn on theirs.
@@ -367,7 +328,7 @@ def test_mid_turn_reforms_wait_for_the_opponents_turn(monkeypatch, refresh_threa
     be = FakeBackend([_plan_json(), _plan_json("next turn line")])
     mgr = GamePlanManager(be)
     assert mgr.request_reform(_state(turn=3))  # first plan, on our turn
-    refresh_threads[-1].join(timeout=2)
+    plan_threads[-1].join(timeout=2)
     now[0] += mgr._REFRESH_INTERVAL_S
     mgr._stall_count = mgr._STALL_REFORM_THRESHOLD  # "plan stalled"
     assert not mgr.request_reform(_state(turn=3))
@@ -377,23 +338,23 @@ def test_mid_turn_reforms_wait_for_the_opponents_turn(monkeypatch, refresh_threa
     theirs = _state(turn=8)
     theirs["turn"]["active_player"] = 2
     assert mgr.request_reform(theirs)  # their turn: plan our next one, at full effort
-    refresh_threads[-1].join(timeout=2)
+    plan_threads[-1].join(timeout=2)
     assert be.calls == 2
     assert be.requests[-1][2].get("reasoning_effort") == GamePlanManager._PLAN_REASONING_EFFORT
 
 
-def test_background_refresh_defers_to_live_stack_and_skips_empty_snapshots(refresh_threads):
+def test_background_refresh_defers_to_live_stack_and_skips_empty_snapshots(plan_threads):
     mgr = GamePlanManager(FakeBackend([_plan_json()]))
     assert not mgr.request_reform({})
     assert not mgr.request_reform(dict(_state(), stack=[{"name": "Urgent Threat"}]))
-    assert refresh_threads == []
+    assert plan_threads == []
 
 
-def test_background_refresh_waits_for_deck_analysis(refresh_threads):
+def test_background_refresh_waits_for_deck_analysis(plan_threads):
     mgr = GamePlanManager(FakeBackend([_plan_json()]))
     mgr.background_suspended_fn = lambda: True
     assert not mgr.request_reform(_state())
-    assert refresh_threads == []
+    assert plan_threads == []
 
 
 def test_background_snapshot_does_not_reset_a_newer_turn():
@@ -415,7 +376,8 @@ def test_backend_error_text_is_logged_not_silently_dropped(caplog):
     be = FakeBackend(["[BACKEND ERROR] LLM streaming time budget exhausted"])
     mgr = GamePlanManager(be)
     with caplog.at_level("WARNING", logger="arenamcp.game_plan"):
-        assert mgr.maybe_reform(_state(turn=1)) is None or mgr.current is None or mgr.current.is_empty()
+        assert mgr.maybe_reform(_state(turn=1)) is None
+    assert mgr.current is None
     assert "game-plan LLM call failed" in caplog.text
 
 
@@ -511,3 +473,119 @@ def test_a_new_opposing_engine_reforms_the_same_turn():
     state["battlefield"] = [card for card in state["battlefield"] if card["instance_id"] != 1]
     mgr.maybe_reform(state)
     assert be.calls == 2
+
+
+# --- reform scheduling: yielding to decisions, plan status, effort ---
+
+
+def test_a_decision_call_makes_an_inflight_reform_yield_and_resume_later():
+    import threading
+
+    mgr = GamePlanManager(backend=None)
+    mgr._plan = GamePlan(win_conditions=["x"], path="y", turn_formed=3)
+    mgr._last_sig = (4,)
+    mgr._last_reform_turn = 4
+    mgr._seed = mgr._last_seed = None
+    cancel = threading.Event()
+    mgr._inflight = True
+    mgr._inflight_cancel = cancel
+    mgr._inflight_lane = None
+    mgr.yield_for_decision()
+    assert cancel.is_set() and mgr._inflight is False
+    assert mgr._should_reform((5,), our_turn=False, key=mgr._last_key) == "resumed after a decision"
+    mgr.yield_for_decision()  # nothing in flight: a no-op
+    assert "resumed after a decision" in GamePlanManager._ROUTINE_REASONS
+
+
+def test_a_reform_that_has_run_a_while_does_not_yield():
+    import threading
+    import time
+
+    mgr = GamePlanManager(backend=None)
+    mgr._plan = GamePlan(win_conditions=["x"], path="y", turn_formed=3)  # the first plan never yields
+    cancel = threading.Event()
+    mgr._inflight = True
+    mgr._inflight_cancel = cancel
+    mgr._inflight_lane = None
+    mgr._inflight_started_at = time.monotonic() - 10.0
+    mgr.yield_for_decision()
+    assert not cancel.is_set() and mgr._inflight is True
+    mgr._inflight_started_at = time.monotonic()
+    mgr.yield_for_decision()
+    assert cancel.is_set() and mgr._inflight is False
+
+
+def test_plan_status_reports_none_forming_and_ready_and_the_first_plan_never_yields(caplog):
+    import logging
+    import threading
+    import time
+
+    mgr = GamePlanManager(backend=None)
+    board = {"turn": {"turn_number": 5}}
+    with caplog.at_level(logging.WARNING, logger="arenamcp.game_plan"):
+        status = mgr.plan_status(board)
+    assert status["state"] == "none" and status["attempts"] == 0
+    assert any(m.startswith("No game plan on turn 5") for m in caplog.messages)
+    # A reform in flight with no plan: "forming", and a decision call does not cancel it.
+    cancel = threading.Event()
+    mgr._inflight = True
+    mgr._inflight_cancel = cancel
+    mgr._inflight_lane = None
+    mgr._inflight_plan_turn = 6
+    mgr._inflight_started_at = time.monotonic() - 1.0
+    mgr.yield_for_decision()
+    assert not cancel.is_set()
+    status = mgr.plan_status(board)
+    assert status["state"] == "forming" and status["inflight_for_turn"] == 6
+    # With a plan in hand, a fresh reform yields and the status says so.
+    mgr._plan = GamePlan(win_conditions=["x"], path="y", turn_formed=3)
+    mgr.yield_for_decision()
+    assert cancel.is_set()
+    status = mgr.plan_status({"turn": {"turn_number": 8}})
+    assert status["state"] == "ready" and status["age_turns"] == 5 and status["cancels"] == 1
+    assert status["last_outcome"] == "yielded to a decision"
+    assert mgr.ui_payload({"turn": {"turn_number": 8}})["plan_status"]["state"] == "ready"
+
+
+def test_the_first_plan_is_not_superseded_when_its_turn_passes():
+    import threading
+
+    mgr = GamePlanManager(backend=None)
+    cancel = threading.Event()
+    mgr._inflight = True
+    mgr._inflight_cancel = cancel
+    mgr._inflight_lane = None
+    mgr._inflight_plan_turn = 20
+    mgr._supersede_stale_inflight_locked({"turn": {"turn_number": 21}})
+    assert not cancel.is_set() and mgr._inflight is True
+    mgr._plan = GamePlan(win_conditions=["x"], path="y", turn_formed=18)
+    mgr._supersede_stale_inflight_locked({"turn": {"turn_number": 21}})
+    assert cancel.is_set() and mgr._plan_outcome == "superseded by a newer turn"
+
+
+def test_the_first_plan_runs_at_low_effort_and_later_ones_at_high():
+    calls = []
+
+    class Backend:
+        def complete(self, system, user, max_tokens, **kwargs):
+            calls.append(kwargs.get("reasoning_effort"))
+            return '{"win_conditions": ["x"], "path": "y", "role": "aggressor", "turns": []}'
+
+    mgr = GamePlanManager(Backend())
+    state = {
+        "match_id": "m1",
+        "turn": {"turn_number": 3, "active_player": 1},
+        "local_seat_id": 1,
+        "players": [{"seat_id": 1, "life_total": 20, "is_local": True}, {"seat_id": 2, "life_total": 20}],
+        "battlefield": [],
+        "hand": [],
+        "graveyard": [],
+        "stack": [],
+    }
+    assert mgr._reform(state, 3) is not None
+    assert calls == ["low"]
+    mgr._plan = GamePlan(win_conditions=["x"], path="y", turn_formed=3, effort="low")
+    assert mgr.plan_status(state)["effort"] == "low"
+    deeper = mgr._reform(state, 4)
+    assert deeper is not None and deeper.effort == "high"
+    assert calls == ["low", "high"]

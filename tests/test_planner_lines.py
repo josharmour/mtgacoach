@@ -65,7 +65,6 @@ from tests.strategic_states import (
 
 from arenamcp import board_assessment as ba
 from arenamcp import line_guard as lg
-from arenamcp import line_search
 from arenamcp import opponent_tricks as ot
 from arenamcp.action_planner import (
     DECLINE_DECISION,
@@ -80,6 +79,8 @@ from arenamcp.line_search import action_key, compare_modes
 LOGGER = "arenamcp.action_planner"
 DESTROY, GAIN = "idx:0", "idx:1"
 ROCK, ISLAND, ROOM = "idx:1", "idx:5", "idx:6"
+
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
 
 
 @pytest.fixture(autouse=True)
@@ -218,7 +219,8 @@ def test_t14_mode_guard_on_still_never_applies_the_contingent_verdict(monkeypatc
     assert trace["applied"] is False and trace["mode"] == "on" and trace["contingent"]
 
 
-@pytest.mark.parametrize("setting", [None, "shadow", "on"])
+# None: ARENAMCP_MODE_GUARD unset, i.e. the default "shadow" (line_guard.guard_mode).
+@pytest.mark.parametrize("setting", [None, "on"])
 def test_a_verdict_against_an_unmodelled_chosen_mode_never_applies(monkeypatch, caplog, setting):
     # Without Splinter Twin compare_modes has no contingent note, but the chosen
     # destroy mode is still unmodelled (worth 0 to the search): review 2026-10-07.
@@ -299,9 +301,8 @@ def _modal_board(monkeypatch, name: str) -> tuple[dict, object]:
     return source, modal_decision(menu, (500, 600))
 
 
-@pytest.mark.parametrize(
-    ("setting", "expected"), [(None, ["idx:1"]), ("shadow", ["idx:1"]), ("on", ["idx:0"])]
-)
+# None: ARENAMCP_MODE_GUARD unset, i.e. the default "shadow" (line_guard.guard_mode).
+@pytest.mark.parametrize(("setting", "expected"), [(None, ["idx:1"]), ("on", ["idx:0"])])
 def test_a_fully_modelled_mode_verdict_applies_only_when_on(monkeypatch, caplog, setting, expected):
     # Gaining 3 at 2 life dies to the Giant on T13; destroying the Giant survives.
     if setting is not None:
@@ -568,31 +569,29 @@ def _burn_board() -> tuple[dict, object]:
     return source, actions_decision(menu)
 
 
-@pytest.mark.parametrize("pick", ["idx:1", "idx:2", "pass"])
-def test_never_steers_away_from_or_toward_lethal(monkeypatch, caplog, pick):
+def _lethal_on_board() -> tuple[dict, object]:
+    """G1 T15 from the opponent's side: lethal on board, two casts in hand."""
+    source = deepcopy(G1_T15_FROM_OPPONENT)
+    source["hand"] = [card(801, "Twinned Vision", 2), card(802, "Theorix Metamage", 2)]
+    menu = [("idx:0", "Cast Twinned Vision", cast(801), True), ("idx:1", "Cast Theorix Metamage", cast(802), True)]
+    return source, actions_decision(menu)
+
+
+@pytest.mark.parametrize(
+    ("board", "pick"),
+    [(_burn_board, "idx:1"), (_burn_board, "idx:2"), (_burn_board, "pass"), (_lethal_on_board, "idx:0")],
+    ids=["burn-shock", "burn-wall", "burn-pass", "lethal-on-board"],
+)
+def test_never_steers_away_from_or_toward_lethal(monkeypatch, caplog, board, pick):
     monkeypatch.setenv("ARENAMCP_LINE_GUARD", "on")
-    source, decision = _burn_board()
+    source, decision = board()
     planner, backend = _planner([pick], "Go.")
     with caplog.at_level(logging.INFO, logger=LOGGER):
         assert planner.plan_decision_options(decision, source) == [pick]
     assert _line_logs(caplog) == [] and "line_guard" not in planner.get_last_decision_trace()
     assert "[LINE" not in _header(backend.prompts[-1])  # a winning line on the table: no tags
-    assert "lethal on T10" in _header(backend.prompts[-1])  # the LINES line says so
-
-
-def test_lethal_on_board_is_left_alone():
-    state_ = deepcopy(G1_T15_FROM_OPPONENT)
-    state_["hand"] = [card(801, "Twinned Vision", 2), card(802, "Theorix Metamage", 2)]
-    decision = actions_decision(
-        [
-            ("idx:0", "Cast Twinned Vision", cast(801), True),
-            ("idx:1", "Cast Theorix Metamage", cast(802), True),
-        ]
-    )
-    with mock.patch.dict("os.environ", {"ARENAMCP_LINE_GUARD": "on"}):
-        planner, _ = _planner(["idx:0"], "Draw first.")
-        assert planner.plan_decision_options(decision, state_) == ["idx:0"]
-    assert "line_guard" not in planner.get_last_decision_trace()
+    turn = source["turn"]["turn_number"]
+    assert f"lethal on T{turn}" in _header(backend.prompts[-1])  # the LINES line says so
 
 
 # Boards from the 2026-10-07 safety review (tests/strategic_states.py): with
@@ -821,14 +820,6 @@ def test_the_typed_lines_say_our_pending_choice_resolves_first():
     assert lines.endswith(" — before our pending Archive Arbiter (choose one) resolves") and len(lines) <= 320
 
 
-def test_a_plan_source_without_the_keyword_is_called_as_before():
-    planner, backend = _planner([ISLAND], "Island first.")
-    seen = []
-    planner.set_game_plan_source(lambda state: seen.append(state) or "STRATEGIC ROLE: from a custom source")
-    planner.plan_decision_options(actions_decision(G1_T12_MENU), deepcopy(G1_T12))
-    assert seen and "STRATEGIC ROLE: from a custom source" in backend.prompts[-1]
-
-
 # Recorded boards (tests/strategic_states.py) and the review's synthetic ones, our turn
 # (LINES above OPTIONS) and theirs (the block's LINES only), with the bridge's phase names too.
 _GROWTH_BOARDS = (
@@ -850,14 +841,9 @@ def _growth_cases() -> dict[str, tuple[object, dict]]:
 def test_whole_typed_prompt_growth_stays_within_budget(monkeypatch, tmp_path):
     # Review 2026-10-07 (I4): with the strategy block wired the way the autopilot wires it,
     # the whole typed prompt grew p50 475 / p90 830 / max 1056 characters over the kill
-    # switch on 122 real bug-report decisions (budget ~700). Unlimited deadlines keep the
-    # searched lines, and so the text, independent of machine load.
+    # switch on 122 real bug-report decisions (budget ~700). Unlimited deadlines (module-wide)
+    # keep the searched lines, and so the text, independent of machine load.
     _offline_tricks(monkeypatch, tmp_path)
-    search, modes = line_search.search_lines, lg.compare_modes
-    monkeypatch.setattr(
-        line_search, "search_lines", lambda model, **kw: search(model, **{**kw, "hard_ms": 1e9})
-    )
-    monkeypatch.setattr(lg, "compare_modes", lambda st, dec, **kw: modes(st, dec, **{**kw, "hard_ms": 1e9}))
 
     def prompt(decision, source) -> str:
         ba._CACHE.clear()

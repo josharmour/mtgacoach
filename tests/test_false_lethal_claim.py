@@ -29,7 +29,7 @@ def _planner(monkeypatch, reasoning: str, facts) -> ActionPlanner:
         planner._last_decision_option_ids = ["idx:0"]
         return ["idx:0"]
 
-    monkeypatch.setattr(planner, "_llm_decision_options", answer, raising=False)
+    monkeypatch.setattr(planner, "_llm_decision_options", answer)
     monkeypatch.setattr("arenamcp.action_planner.filter_play_options", lambda d, s: d)
     monkeypatch.setattr(board_assessment, "assess", lambda state: facts)
     return planner

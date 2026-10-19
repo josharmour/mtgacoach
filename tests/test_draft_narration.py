@@ -1,4 +1,4 @@
-"""Spoken draft commentary: grounded reasons per pick, story beats, and the on/off toggle."""
+"""Spoken draft commentary: grounded reasons per pick, story beats and the plan's lane."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+from tests.draft_fakes import PICK_STATE, FakeBridge, driver_for, make_primer
 
 from arenamcp.draft_autopick import Lane, PickScore
 from arenamcp.draft_narration import DraftNarrator
@@ -122,32 +123,7 @@ def test_end_of_pack_summary_names_best_cards_and_needs():
 
 @pytest.fixture
 def primer():
-    from tests.test_draft_autoplay import PAIRS, RATINGS
-
-    from arenamcp.set_primer import data_primer
-
-    return data_primer("TST", RATINGS, PAIRS, lambda grp, name: {"oracle_text": f"{name} text", "cmc": 3.0})
-
-
-def test_driver_commentary_toggle(primer):
-    from tests.test_draft_autoplay import PICK_STATE, FakeBridge, driver_for
-
-    for enabled in (False, True):
-        bridge = FakeBridge(
-            {
-                "get_screen": {"ok": True, "draft": True},
-                "get_draft_state": dict(PICK_STATE),
-                "submit_draft_pick": {"ok": True},
-            }
-        )
-        spoken: list[str] = []
-        driver = driver_for(bridge, primer, speak_fn=spoken.append, commentary_fn=lambda e=enabled: e)
-        driver._step()
-        assert len(spoken) == 1
-        if enabled:
-            assert spoken[0].startswith("Taking ") and ":" in spoken[0]
-        else:
-            assert spoken[0] == "Taking Blue Ace."
+    return make_primer()
 
 
 # ---------------------------------------------------------------------------
@@ -237,19 +213,6 @@ def score_in(primer, grp_id, *reasons):
     return PickScore(grp_id=grp_id, name=primer.card(grp_id).name, score=0.0, reasons=list(reasons))
 
 
-def test_plan_colors_reads_guilds_archetypes_words_and_codes():
-    from arenamcp.draft_narration import plan_colors
-
-    assert plan_colors("Izzet spells built around Jace", PRIMER) == "UR"
-    assert plan_colors("Settle into the Dimir Control deck with mill", PRIMER) == "UB"
-    assert plan_colors("A blue-red tempo deck with cheap spells", PRIMER) == "UR"
-    assert plan_colors("red and green stompy", PRIMER) == "RG"
-    assert plan_colors("UB tempo with evasive threats", PRIMER) == "UB"
-    assert plan_colors("Aggressive tempo deck with cheap creatures", PRIMER) == ""
-    assert plan_colors("blue, black and red goodstuff", PRIMER) == ""
-    assert plan_colors("", PRIMER) == ""
-
-
 def test_model_plan_holds_the_lane_when_the_pool_estimate_flips():
     narrator = DraftNarrator()
     first = line(narrator, score(1), [score(1)], before="U", after="UR", reason="Izzet spells with Jace")
@@ -305,8 +268,6 @@ def test_model_plan_without_colors_falls_back_to_the_pool_estimate():
 
 
 def test_driver_passes_the_models_plan_to_the_narrator(primer):
-    from tests.test_draft_autoplay import PICK_STATE, FakeBridge, driver_for
-
     driver = driver_for(FakeBridge({"get_draft_state": PICK_STATE}), primer)
     seen = {}
 
@@ -330,13 +291,6 @@ def test_driver_passes_the_models_plan_to_the_narrator(primer):
         == "spoken"
     )
     assert seen.get("model_plan") == "Izzet spells with Jace"
-
-
-def test_plan_colors_ignores_a_splash():
-    from arenamcp.draft_narration import plan_colors
-
-    assert plan_colors("Blue-red spells splashing black for Garruk", PRIMER) == "UR"
-    assert plan_colors("blue-red tempo with a black splash", PRIMER) == "UR"
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +400,18 @@ REAL_PLANS = [
         "",
     ),
     ("Open toward Dimir Threshold Mill, starting with a cheap self-milling threat.", "", ""),
+    # Guild names, archetype names, color words and codes; no pair named; three colors.
+    ("Izzet spells built around Jace", "UR", ""),
+    ("Settle into the Dimir Control deck with mill", "UB", ""),
+    ("A blue-red tempo deck with cheap spells", "UR", ""),
+    ("red and green stompy", "RG", ""),
+    ("UB tempo with evasive threats", "UB", ""),
+    ("Aggressive tempo deck with cheap creatures", "", ""),
+    ("blue, black and red goodstuff", "", ""),
+    ("", "", ""),
+    # A splash is not a lane color.
+    ("Blue-red spells splashing black for Garruk", "UR", "B"),
+    ("blue-red tempo with a black splash", "UR", "B"),
 ]
 
 
@@ -570,8 +536,6 @@ def test_one_color_plan_keeps_the_second_color_open():
 
 
 def test_driver_logs_the_plans_lane_beside_the_pool_estimate(primer, caplog):
-    from tests.test_draft_autoplay import PICK_STATE, FakeBridge, driver_for
-
     def recommend(details, fallback):
         return {
             "reasoning_source": "card_rules",

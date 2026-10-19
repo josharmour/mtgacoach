@@ -1,4 +1,4 @@
-"""Canonical mana calculation, color identity parsing, and player seat utilities."""
+"""Canonical mana calculation and player seat utilities."""
 
 from __future__ import annotations
 
@@ -8,9 +8,6 @@ from typing import Any
 
 from arenamcp.combat_keywords import printed_combat_keywords
 
-# Standard WUBRG color order
-COLOR_ORDER = ("W", "U", "B", "R", "G")
-COLOR_SET = frozenset(COLOR_ORDER)
 ALL_MANA_COLORS = frozenset({"W", "U", "B", "R", "G", "C"})
 
 _MANA_SYMBOL_RE = re.compile(r"\{([^}]+)\}")
@@ -63,33 +60,6 @@ def mana_cost_to_cmc(mana_cost: str | None) -> int:
             cmc += 1
 
     return cmc
-
-
-def parse_color_identity(mana_cost: str | None) -> str:
-    """Extract colored mana symbols in canonical WUBRG order.
-
-    Examples:
-        >>> parse_color_identity("{1}{U}{R}")
-        'UR'
-        >>> parse_color_identity("{2}{G}{W}")
-        'WG'
-        >>> parse_color_identity("{3}")
-        ''
-    """
-    if not mana_cost:
-        return ""
-
-    found_colors = set()
-    for sym in _MANA_SYMBOL_RE.findall(mana_cost):
-        sym_upper = sym.upper()
-        if "/" in sym_upper:
-            for part in sym_upper.split("/"):
-                if part in COLOR_SET:
-                    found_colors.add(part)
-        elif sym_upper in COLOR_SET:
-            found_colors.add(sym_upper)
-
-    return "".join(c for c in COLOR_ORDER if c in found_colors)
 
 
 def get_local_seat_id(game_state: dict[str, Any] | None) -> int | None:

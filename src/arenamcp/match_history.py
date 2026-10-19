@@ -52,22 +52,6 @@ class MatchRecord:
     # One-sentence explanation behind coach_rating (why this score was given).
     coach_score_reason: str = ""
 
-    def to_review_prompt(
-        self,
-        advice_history: list[dict[str, Any]] | None = None,
-        opponent_cards: list[str] | None = None,
-        missed_decisions: list[dict[str, Any]] | None = None,
-        replay_summary: str | None = None,
-    ) -> str:
-        """Generate a post-match breakdown review prompt (/analyze) for this match."""
-        return generate_match_review_prompt(
-            record=self,
-            advice_history=advice_history,
-            opponent_cards=opponent_cards,
-            missed_decisions=missed_decisions,
-            replay_summary=replay_summary,
-        )
-
 
 class MatchHistory:
     """Persistent match history database backed by a JSON file."""
@@ -211,30 +195,6 @@ def parse_replay_cosmetics(replay_path: str) -> dict[str, Any] | None:
     return None
 
 
-def parse_replay_result(replay_path: str) -> str | None:
-    """Scan a replay file for game result (win/loss).
-
-    Looks for LossOfGame/WinTheGame annotations in GRE messages.
-    """
-    try:
-        with open(replay_path, encoding="utf-8") as f:
-            # Skip header
-            f.readline()
-            f.readline()
-            # Scan messages from the end (result is near the end)
-            lines = f.readlines()
-            for line in reversed(lines):
-                if "LossOfGame" in line or "WinTheGame" in line:
-                    # Determine if local player won
-                    if "WinTheGame" in line:
-                        return "win"
-                    elif "LossOfGame" in line:
-                        return "loss"
-    except Exception as e:
-        logger.debug(f"Failed to parse replay result: {e}")
-    return None
-
-
 def record_from_game_end(
     match_id: str,
     result: str,
@@ -357,97 +317,3 @@ def record_from_game_end(
 
     record.opponent_colors_seen = sorted(colors_seen)
     return record
-
-
-# Module-level singleton
-_history: MatchHistory | None = None
-
-
-def get_history() -> MatchHistory:
-    """Get or create the module-level match history singleton."""
-    global _history
-    if _history is None:
-        _history = MatchHistory()
-    return _history
-
-
-def generate_match_review_prompt(
-    record: MatchRecord,
-    advice_history: list[dict[str, Any]] | None = None,
-    opponent_cards: list[str] | None = None,
-    missed_decisions: list[dict[str, Any]] | None = None,
-    replay_summary: str | None = None,
-) -> str:
-    """Generate a post-match review prompt for /analyze match breakdowns.
-
-    Args:
-        record: MatchRecord instance with metadata.
-        advice_history: Chronological log of turn decisions/advice.
-        opponent_cards: List of card names revealed by the opponent.
-        missed_decisions: Vision watchdog detections or unmapped decisions.
-        replay_summary: Authoritative GRE replay decision summary.
-
-    Returns:
-        Formatted prompt string ready for LLM completion.
-    """
-    lines = [
-        "POST-MATCH REVIEW REQUEST (/analyze)",
-        f"Match ID: {record.match_id or 'unknown'}",
-        f"Timestamp: {record.timestamp or 'unknown'}",
-        f"Result: {record.result.upper() if record.result else 'UNKNOWN'}",
-        f"Opponent: {record.opponent_name or 'Unknown'}",
-    ]
-
-    if record.format_name:
-        lines.append(f"Format: {record.format_name}")
-    if record.local_deck_colors:
-        lines.append(f"Player Deck Colors: {', '.join(record.local_deck_colors)}")
-    if record.opponent_colors_seen:
-        lines.append(f"Opponent Colors Seen: {', '.join(record.opponent_colors_seen)}")
-
-    if record.turns:
-        lines.append(f"Match Duration: {record.turns} turns")
-    if record.local_life_final or record.opponent_life_final:
-        lines.append(
-            f"Final Life Totals: Player={record.local_life_final}, Opponent={record.opponent_life_final}"
-        )
-
-    if opponent_cards or record.opponent_colors_seen:
-        opp_list = opponent_cards or []
-        lines.append(
-            f"\nOPPONENT CARDS SEEN:\n{', '.join(opp_list[:30]) if opp_list else 'Colors: ' + ', '.join(record.opponent_colors_seen)}"
-        )
-
-    if advice_history:
-        lines.append("\nCHRONOLOGICAL ADVICE LOG:")
-        for entry in advice_history:
-            snap = entry.get("game_snapshot") or {}
-            turn = snap.get("turn_number", "?")
-            phase = snap.get("phase", "?")
-            trigger = entry.get("trigger", "unknown")
-            advice_text = entry.get("advice", "")
-            lines.append(f"Turn {turn} ({phase}) [{trigger}]: {advice_text}")
-
-    if missed_decisions:
-        lines.append(f"\nMISSED DECISION POINTS ({len(missed_decisions)} detected):")
-        for md in missed_decisions:
-            lines.append(
-                f"Turn {md.get('turn', '?')}, {md.get('phase', '?')}: "
-                f"{md.get('decision_type', 'unknown')} - {md.get('prompt_text', '')}"
-            )
-
-    if replay_summary:
-        lines.append(f"\nREPLAY SUMMARY:\n{replay_summary}")
-
-    lines.extend(
-        [
-            "\nANALYSIS INSTRUCTIONS:",
-            "Provide a comprehensive post-match breakdown covering:",
-            "1. MATCH SUMMARY & TURNING POINTS: Key moments that decided the game.",
-            "2. PLAY EVALUATION & MISTAKES: Specific plays/advice that were optimal vs suboptimal.",
-            "3. MATCHUP & SIDEBOARD LESSONS: Tactical takeaways for future games against this archetype.",
-            "At the end, include a 2-sentence summary line starting with 'SPOKEN:' for audio playback.",
-        ]
-    )
-
-    return "\n".join(lines)

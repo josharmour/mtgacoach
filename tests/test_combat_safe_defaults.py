@@ -252,6 +252,7 @@ def test_planner_failure_on_blockers_submits_a_checked_no_block():
     assert bridge.blocker_calls == [[]]
 
 
+@pytest.mark.usefixtures("instant_combat_acks")
 def test_planner_failure_on_lethal_blockers_submits_the_survival_block():
     attackers = [creature(299 + i, f"Raider {i}", 3, 3, OPPONENT, is_attacking=True) for i in range(2)]
     blocker = creature(322, "Dark Matter Manipulator", 1, 2, LOCAL)
@@ -285,6 +286,7 @@ def test_bridge_blocker_submission_drops_the_trample_chump():
     assert result.submitted_action.blocker_assignments == {}
 
 
+@pytest.mark.usefixtures("instant_combat_acks")
 def test_bridge_blocker_submission_keeps_a_lethal_saving_chump():
     state = board(4, [BEAST, OCULUS], OCULUS_BLOCKS)
     bridge = FakeBridge(blockers_pending(OCULUS_BLOCKS))

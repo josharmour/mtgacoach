@@ -1765,10 +1765,6 @@ class GamePlanManager:
         """Where the ledger reads one turn's decisions (ActionPlanner.decisions_for_turn)."""
         self._turn_decisions_source = source
 
-    def ledger_block(self) -> str:
-        """The match ledger as rendered for the reform prompt ("" before the first turn)."""
-        return self._ledger.prompt_block()
-
     def ledger_payload(self) -> dict[str, Any]:
         """The ledger for bug reports: the rendered block plus per-turn entries."""
         return {
@@ -2759,43 +2755,27 @@ class GamePlanManager:
         cancel: threading.Event | None = None,
         effort: str | None = None,
     ) -> str:
-        """Call the backend, tolerating the small signature differences across clients.
+        """Call the backend for a background strategy plan.
 
         Background strategy: high reasoning effort (the per-decision calls
-        use low) with a larger token/time budget (3000 tokens, 75 s). Labelled as
-        background work at low scheduling priority, and cancellable once its
-        turn has passed, where the backend supports those keywords.
+        use low) with a larger token/time budget (_PLAN_MAX_TOKENS, 75 s).
+        Labelled as background work at low scheduling priority, and
+        cancellable once its turn has passed, where the backend supports
+        those keywords.
         """
         labels = accepted_call_kwargs(
             self._backend, call_class=self._CALL_CLASS, priority=BACKGROUND_PRIORITY, cancel_event=cancel
         )
-        try:
-            return self._backend.complete(
-                system_prompt,
-                user_message,
-                self._PLAN_MAX_TOKENS,
-                temperature=0.0,
-                request_timeout_s=self._timeout,
-                background=True,
-                reasoning_effort=effort or self._PLAN_REASONING_EFFORT,
-                **labels,
-            )
-        except TypeError:
-            pass
-        try:
-            return self._backend.complete(
-                system_prompt,
-                user_message,
-                self._PLAN_MAX_TOKENS,
-                temperature=0.0,
-                request_timeout_s=self._timeout,
-            )
-        except TypeError:
-            # Local backends may not accept request_timeout_s / temperature.
-            try:
-                return self._backend.complete(system_prompt, user_message, self._PLAN_MAX_TOKENS)
-            except TypeError:
-                return self._backend.complete(system_prompt, user_message)
+        return self._backend.complete(
+            system_prompt,
+            user_message,
+            self._PLAN_MAX_TOKENS,
+            temperature=0.0,
+            request_timeout_s=self._timeout,
+            background=True,
+            reasoning_effort=effort or self._PLAN_REASONING_EFFORT,
+            **labels,
+        )
 
     @staticmethod
     def _parse(response: str, turn_num: int) -> GamePlan | None:

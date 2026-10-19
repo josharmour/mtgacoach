@@ -26,13 +26,36 @@ import pytest
 
 import arenamcp.autopilot as autopilot_module
 from arenamcp.action_planner import ActionPlan, ActionType, GameAction
-from arenamcp.autopilot import AutopilotConfig, AutopilotEngine, _canonical_turn
+from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
 from arenamcp.autopilot_models import ClickResult
 
 FIXTURE = Path(__file__).parent / "fixtures" / "bug_20261006_185403_game_state.json"
 LOCAL, OPPONENT = 2, 1
 
 NAMES = pytest.mark.parametrize("log_names", [False, True], ids=["bridge-names", "log-names"])
+
+
+class _FakeTime:
+    """autopilot's ``time`` module where sleeping advances the clock instead of waiting."""
+
+    def __init__(self) -> None:
+        self.now = time.time()
+
+    def time(self) -> float:
+        return self.now
+
+    monotonic = perf_counter = time
+
+    def sleep(self, seconds: float) -> None:
+        self.now += max(0.0, seconds)
+
+
+@pytest.fixture
+def fake_time(monkeypatch) -> _FakeTime:
+    """The post-plan settle loop (500 ms) and the verification polls run on a fake clock."""
+    clock = _FakeTime()
+    monkeypatch.setattr(autopilot_module, "time", clock)
+    return clock
 
 
 def _state(step: str, *, log_names: bool, active: int = LOCAL, context: bool = False) -> dict[str, Any]:
@@ -135,21 +158,6 @@ def _bridge_pending(request_class: str) -> dict[str, Any]:
     }
 
 
-@pytest.mark.parametrize(
-    ("turn", "expected"),
-    [
-        ({"phase": "Combat", "step": "DeclareBlock"}, ("Phase_Combat", "Step_DeclareBlock")),
-        ({"phase": "Phase_Combat", "step": "Step_DeclareAttack"}, ("Phase_Combat", "Step_DeclareAttack")),
-        ({"phase": "Main1", "step": "None"}, ("Phase_Main1", "")),
-        ({"phase": "Phase_Main1", "step": ""}, ("Phase_Main1", "")),
-        ({}, ("", "")),
-        (None, ("", "")),
-    ],
-)
-def test_canonical_turn_puts_both_sources_in_log_form(turn, expected):
-    assert _canonical_turn(turn) == expected
-
-
 @NAMES
 def test_declare_context_is_stashed_on_both_names(monkeypatch, log_names):
     # The recorded state as captured: declare_attackers context, bridge names.
@@ -248,7 +256,7 @@ def _cast_plan() -> ActionPlan:
 
 
 @pytest.mark.parametrize("fresh_log_names", [False, True], ids=["fresh-bridge", "fresh-log"])
-def test_staleness_check_ignores_a_naming_change(monkeypatch, fresh_log_names):
+def test_staleness_check_ignores_a_naming_change(monkeypatch, fake_time, fresh_log_names):
     """The re-polled state may come from the other source; the phase did not change."""
     pre = _state("DeclareBlock", log_names=not fresh_log_names, active=OPPONENT)
     fresh = _state("DeclareBlock", log_names=fresh_log_names, active=OPPONENT)
@@ -280,7 +288,7 @@ def _verify(monkeypatch, pre: dict[str, Any], post: dict[str, Any]) -> bool:
 
 
 @NAMES
-def test_verification_does_not_count_a_naming_change_as_progress(monkeypatch, log_names):
+def test_verification_does_not_count_a_naming_change_as_progress(monkeypatch, fake_time, log_names):
     pre = _state("DeclareBlock", log_names=log_names, active=OPPONENT)
     post = _state("DeclareBlock", log_names=not log_names, active=OPPONENT)
     assert _verify(monkeypatch, pre, post) is False

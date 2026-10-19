@@ -1,4 +1,9 @@
-"""In-match fixes from the 2026-10-05 sealed and Premier Draft runs."""
+"""In-match fixes from the 2026-10-05 sealed and Premier Draft runs.
+
+Power-only shrinks wait for combat, GRE-granted abilities count as combat
+keywords (and in combat math), and a linked cast names the prepared spell.
+None of this is Limited-specific; it was found in Limited games.
+"""
 
 from __future__ import annotations
 

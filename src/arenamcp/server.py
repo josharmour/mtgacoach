@@ -2296,66 +2296,6 @@ def evaluate_draft_pack_for_standalone() -> dict[str, Any]:
     }
 
 
-@mcp.tool()
-def get_draft_guidance() -> dict[str, Any]:
-    """Get draft guidance using the pure guidance engine."""
-    if not draft_state.is_active or draft_state.is_sealed:
-        return {"is_active": False}
-
-    if not draft_state.cards_in_pack:
-        return {"is_active": True, "evaluations": []}
-
-    draft_stats_cache = _get_draft_stats()
-    set_code = draft_state.set_code
-
-    fmt_context = None
-    if set_code:
-        pair_stats = draft_stats_cache.get_color_pair_stats(set_code)
-        fmt_context = draft_guidance.format_context_from_pair_stats(pair_stats)
-
-    pool_cards_data = []
-    for grp_id in draft_state.picked_cards:
-        card_info = enrich_with_oracle_text(grp_id)
-        stats = None
-        if set_code and card_info.get("name") and "Unknown" not in card_info["name"]:
-            stats = draft_stats_cache.get_draft_rating(card_info["name"], set_code)
-        pool_cards_data.append(draft_guidance.normalize_card(card_info, stats=stats))
-
-    pack_cards_data = []
-    for grp_id in draft_state.cards_in_pack:
-        card_info = enrich_with_oracle_text(grp_id)
-        stats = None
-        if set_code and card_info.get("name") and "Unknown" not in card_info["name"]:
-            stats = draft_stats_cache.get_draft_rating(card_info["name"], set_code)
-        pack_cards_data.append(draft_guidance.normalize_card(card_info, stats=stats))
-
-    evaluations = draft_guidance.evaluate_pack(
-        pack=pack_cards_data,
-        pool=pool_cards_data,
-        pick_number=draft_state.pick_number,
-        pack_number=draft_state.pack_number,
-        fmt=fmt_context,
-    )
-
-    return {
-        "is_active": True,
-        "pack_number": draft_state.pack_number,
-        "pick_number": draft_state.pick_number,
-        "evaluations": [
-            {
-                "grp_id": e.grp_id,
-                "name": e.name,
-                "score": e.score,
-                "tier": e.tier,
-                "reasons": e.reasons,
-                "lane": e.lane,
-                "wheel_probability": e.wheel_probability,
-            }
-            for e in evaluations
-        ],
-    }
-
-
 def get_sealed_pool() -> dict[str, Any]:
     """Get sealed pool analysis with deck building recommendations.
 

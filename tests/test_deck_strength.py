@@ -255,9 +255,19 @@ def _run_deck_step(caplog):
     return sent
 
 
-def test_draft_event_logs_strength_and_still_submits(caplog):
+def test_sealed_event_builds_with_sealed_weights_logs_strength_and_submits(caplog, monkeypatch):
+    import arenamcp.limited_deck as limited_deck
+
+    seen = {}
+    real_fallback = limited_deck.fallback_deck
+
+    def fake_fallback(cards, rates=None, *, fmt="draft", strategy=None):
+        seen["fmt"] = fmt
+        return real_fallback(cards, rates, fmt=fmt, strategy=strategy)
+
+    monkeypatch.setattr(limited_deck, "fallback_deck", fake_fallback)
     sent = _run_deck_step(caplog)
-    assert "submit_limited_deck" in sent
+    assert seen["fmt"] == "sealed" and "submit_limited_deck" in sent
     assert any(r.getMessage().startswith("Deck strength (sealed): predicted") for r in caplog.records)
 
 

@@ -312,13 +312,6 @@ Start your response with exactly one of:
 Then give the plan in 2-4 short lines max."""
 
 
-DECK_STRATEGY_BRIEF_PROMPT = """You are an expert MTG coach. Given a deck list, provide a brief spoken strategy summary in 3-5 sentences.
-
-Cover: the deck's archetype, primary win condition, and the 1-2 most important sequencing tips.
-
-Be specific — name actual cards from the list. Keep it conversational and under 200 characters. This will be read aloud via TTS."""
-
-
 POST_MATCH_ANALYSIS_PROMPT = """You are an expert Magic: The Gathering coach providing a post-match debrief. You are also reviewing your OWN coaching performance — the advice log shows what YOU told the player to do during the match.
 
 Given a chronological log of coaching advice given during the match, the match result, game event data, and optionally a REPLAY DATA section with authoritative GRE decision history, provide a strategic analysis:

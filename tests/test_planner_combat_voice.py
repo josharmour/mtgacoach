@@ -1,9 +1,9 @@
-"""Tests for combat voice phrasing in action_planner._humanize_legal_action.
+"""Tests for combat voice phrasing in ``_humanize_legal_action`` (action_legality.py).
 
 The deterministic fallback voice_advice should be a clean, concrete spoken
 sentence — no "(P/T)"/"[tag]" clutter, and a non-block rendered as "Don't block."
 rather than a confusing "Confirm." This complements the system-prompt VOICE
-CLARITY rule (which shapes the LLM path).
+CLARITY rule (which shapes the LLM path; test_stack_and_solver_prompt).
 """
 
 from __future__ import annotations
@@ -42,9 +42,3 @@ def test_cast_and_land_unchanged():
 def test_pass_is_terse():
     assert h("Pass (Opponent has priority)") == "Pass."
 
-
-def test_voice_clarity_rule_present_in_prompt():
-    from arenamcp.action_planner import AUTOPILOT_SYSTEM_PROMPT
-
-    assert "VOICE CLARITY" in AUTOPILOT_SYSTEM_PROMPT
-    assert "Computed optimal blocks" in AUTOPILOT_SYSTEM_PROMPT

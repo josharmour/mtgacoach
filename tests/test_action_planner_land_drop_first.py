@@ -7,6 +7,8 @@ pattern observed in bug_20260501_085853.
 
 from typing import Any
 
+import pytest
+
 from arenamcp.action_planner import ActionPlanner, ActionType
 
 
@@ -60,57 +62,30 @@ def test_preflight_forces_land_drop_when_zero_lands_played():
     assert "land-drop-first" in plan.overall_strategy
 
 
-def test_preflight_skipped_when_lands_played_already():
+_ACTIONS = {"type": "actions_available"}
+
+
+@pytest.mark.parametrize(
+    ("state_kwargs", "land_drop_first", "legal", "context"),
+    [
+        pytest.param({"lands_played": 1}, True, ["Cast Spelunking [OK]", "Play Land: Forest", "Pass"], _ACTIONS,
+                     id="land_already_played"),
+        # "Play Land" would never be legal on the opponent's turn in a real game.
+        pytest.param({"active": 2, "local_seat": 1}, True, ["Play Land: Forest", "Pass"], _ACTIONS,
+                     id="opponent_turn"),
+        pytest.param({}, False, ["Play Land: Forest", "Pass"], _ACTIONS, id="disabled"),
+        # CastingTimeOption / Search / SelectN etc.: not a priority window.
+        pytest.param({"bridge_request": "CastingTimeOptions", "bridge_class": "CastingTimeOptionRequest"}, True,
+                     ["Play Land: Forest", "Pass"], {"type": "modal_choice"}, id="non_priority_window"),
+        pytest.param({}, True, ["Cast Foo [OK]", "Activate Ability: Bar", "Pass"], _ACTIONS,
+                     id="no_play_land_legal"),
+    ],
+)  # fmt: skip
+def test_preflight_skipped_and_the_model_decides(state_kwargs, land_drop_first, legal, context):
+    calls = []
     backend = _FakeBackend()
-    backend.complete = lambda *a, **k: '{"actions":[{"action_type":"pass_priority"}]}'
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=True)
-    legal = ["Cast Spelunking [OK]", "Play Land: Forest", "Pass"]
-    plan = p.plan_actions(_state(lands_played=1), "decision_required", legal, {"type": "actions_available"})
-    assert plan.actions[0].action_type != ActionType.PLAY_LAND
-
-
-def test_preflight_skipped_on_opponent_turn():
-    legal = ["Play Land: Forest", "Pass"]  # would never be legal on opponent's turn IRL
-    backend = _FakeBackend()
-    backend.complete = lambda *a, **k: '{"actions":[{"action_type":"pass_priority"}]}'
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=True)
-    plan = p.plan_actions(
-        _state(active=2, local_seat=1),
-        "decision_required",
-        legal,
-        {"type": "actions_available"},
-    )
-    assert plan.actions[0].action_type != ActionType.PLAY_LAND
-
-
-def test_preflight_skipped_when_disabled():
-    backend = _FakeBackend()
-    backend.complete = lambda *a, **k: '{"actions":[{"action_type":"pass_priority"}]}'
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=False)
-    legal = ["Play Land: Forest", "Pass"]
-    plan = p.plan_actions(_state(), "decision_required", legal, {"type": "actions_available"})
-    assert plan.actions[0].action_type != ActionType.PLAY_LAND
-
-
-def test_preflight_skipped_for_non_priority_window():
-    # CastingTimeOption / Search / SelectN etc — preflight must not fire
-    backend = _FakeBackend()
-    backend.complete = lambda *a, **k: '{"actions":[{"action_type":"pass_priority"}]}'
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=True)
-    legal = ["Play Land: Forest", "Pass"]
-    plan = p.plan_actions(
-        _state(bridge_request="CastingTimeOptions", bridge_class="CastingTimeOptionRequest"),
-        "decision_required",
-        legal,
-        {"type": "modal_choice"},
-    )
-    assert plan.actions[0].action_type != ActionType.PLAY_LAND
-
-
-def test_preflight_skipped_when_no_play_land_in_legal():
-    backend = _FakeBackend()
-    backend.complete = lambda *a, **k: '{"actions":[{"action_type":"pass_priority"}]}'
-    p = ActionPlanner(backend, timeout=1.0, land_drop_first=True)
-    legal = ["Cast Foo [OK]", "Activate Ability: Bar", "Pass"]
-    plan = p.plan_actions(_state(), "decision_required", legal, {"type": "actions_available"})
+    backend.complete = lambda *a, **k: calls.append(a) or '{"actions":[{"action_type":"pass_priority"}]}'
+    p = ActionPlanner(backend, timeout=1.0, land_drop_first=land_drop_first)
+    plan = p.plan_actions(_state(**state_kwargs), "decision_required", legal, context)
+    assert len(calls) == 1
     assert plan.actions[0].action_type != ActionType.PLAY_LAND

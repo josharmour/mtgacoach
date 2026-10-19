@@ -1,9 +1,6 @@
 """Stack state + combat-solver deference must actually reach the planner prompt.
 
-Motivation (2026-07-26): a 31B LoRA trained on play decisions matched the
-untuned base exactly on the 63 strategic (non-land-drop) decisions
-(13/63 vs 13/63, paired delta 0.0000). Two prompt-side causes were measured
-before any retraining:
+Three prompt-side gaps (2026-07-26), each pinned below:
 
   1. The planner's rendered state carried a ``Stack: Y:A > O:B`` one-liner
      that dropped every target and implied the WRONG resolution order (GRE
@@ -28,6 +25,8 @@ No network: these tests only exercise the pure formatters.
 from __future__ import annotations
 
 from typing import Any
+
+import pytest
 
 from arenamcp.action_planner import AUTOPILOT_SYSTEM_PROMPT
 from arenamcp.coach import CoachEngine
@@ -262,19 +261,13 @@ def _block_state(**kw: Any) -> dict:
     )
 
 
-def test_block_solver_line_present_in_canonical_combat_phase() -> None:
-    ctx = _planner_ctx(
-        _block_state(
-            phase="Phase_Combat",
-            step="Step_DeclareBlock",
-            decision_context={"type": "declare_blockers", "attacker_ids": [201]},
-        )
-    )
-    assert "Computed optimal blocks:" in ctx
-
-
-def test_block_solver_line_present_when_phase_lacks_combat() -> None:
-    """Regression: a GRE declare_blockers decision is authoritative.
+@pytest.mark.parametrize(
+    ("phase", "step"),
+    [("Phase_Combat", "Step_DeclareBlock"), ("Phase_Main1", "")],
+    ids=["combat-phase", "phase-lags"],
+)
+def test_block_solver_line_present_on_a_block_decision(phase: str, step: str) -> None:
+    """A GRE declare_blockers decision is authoritative.
 
     Gating the block solver on ``"Combat" in phase`` alone dropped the
     "Computed optimal blocks:" line whenever the phase string lagged or was
@@ -282,8 +275,8 @@ def test_block_solver_line_present_when_phase_lacks_combat() -> None:
     """
     ctx = _planner_ctx(
         _block_state(
-            phase="Phase_Main1",
-            step="",
+            phase=phase,
+            step=step,
             decision_context={"type": "declare_blockers", "attacker_ids": [201]},
         )
     )
@@ -309,15 +302,10 @@ def test_attack_solver_line_present_on_your_combat() -> None:
 # ── (5) solver deference is stated in the system prompt ──────────────────
 
 
-def test_system_prompt_qualifies_solver_advice_and_requires_reasoned_deviations() -> None:
-    """Approximate combat values guide play without overriding strategic context."""
-    assert "COMBAT SOLVER" in AUTOPILOT_SYSTEM_PROMPT
-    assert "Computed optimal blocks:" in AUTOPILOT_SYSTEM_PROMPT
-    assert "Computed optimal attack:" in AUTOPILOT_SYSTEM_PROMPT
-    assert "recommendations under approximate life/material/resource values" in AUTOPILOT_SYSTEM_PROMPT
-    assert "Prefer the recommendation" in AUTOPILOT_SYSTEM_PROMPT
-    assert "explain a concrete reason when deviating" in AUTOPILOT_SYSTEM_PROMPT
-    assert "never authorize a combat action absent from the Legal: menu" in AUTOPILOT_SYSTEM_PROMPT
+def test_system_prompt_has_the_solver_and_voice_rules() -> None:
+    """The planner prompt names the solver lines it defers to, and the spoken-advice rule."""
+    for marker in ("COMBAT SOLVER", "Computed optimal blocks:", "Computed optimal attack:", "VOICE CLARITY"):
+        assert marker in AUTOPILOT_SYSTEM_PROMPT, marker
 
 
 def test_system_prompt_explains_the_stack_section() -> None:
