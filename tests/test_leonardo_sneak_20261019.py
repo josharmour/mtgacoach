@@ -19,6 +19,7 @@ Boards: ``tests/leonardo_boards_20261019.py`` (replayed from Player.log).
 
 from __future__ import annotations
 
+import dataclasses
 from copy import deepcopy
 
 import pytest
@@ -191,6 +192,18 @@ def test_the_sneak_cost_keeps_lethal_before_card_advantage():
     state["players"][1]["life_total"] = 26
     picked, _why = sneak.return_pick(_return_request([798, 761]), state)
     assert picked == ["sel:761"]
+
+
+def test_the_return_request_without_its_prompt_is_recognised_by_the_board():
+    # T6 as the bridge sent it: "Pay non-mana cost", no prompt; Leonardo on the stack, our attacker.
+    state = lb.t12_declare_blockers()
+    request = dataclasses.replace(_return_request([798, 761]), prompt_text="")
+    assert sneak.return_pick(request, state) == ([], "")  # no Sneak creature on the stack
+    state["stack"] = [lb.card(821, "Leonardo, Big Brother", lb.LOCAL)]
+    picked, _why = sneak.return_pick(request, state)
+    assert picked == ["sel:798"]
+    tapped = dataclasses.replace(request, options=(DecisionOption("sel:9000", "Plains"),))
+    assert sneak.return_pick(tapped, state) == ([], "")  # a land to tap is no attacker
 
 
 def test_the_return_request_is_recognised_by_arenas_prompt_only():

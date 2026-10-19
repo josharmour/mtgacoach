@@ -17,6 +17,7 @@ from enum import Enum
 from typing import Any
 
 from arenamcp.backend_health import is_backend_error_text
+from arenamcp.big_board import big_board_declaration, compress_menu, declaration_effort, group_menu
 from arenamcp.cast_notes import combat_cast_note, loot_mode_note, trick_timing_note, turn_investments_note
 from arenamcp.damage_assignment import fallback_plan as damage_fallback_plan
 from arenamcp.damage_assignment import is_assign_damage_window, spoken_split
@@ -200,6 +201,9 @@ class GameAction:
 FALLBACK_AUTO_PICK = "planner_auto_pick"
 FALLBACK_PREFLIGHT_LAND_DROP = "planner_preflight_land_drop"
 FALLBACK_NO_ACTIONS = "planner_no_actions"
+# A combat declaration on a board too big for the model to answer in time (ledger #155/#162):
+# the combat solver's safe default declares it, the model is not asked.
+FALLBACK_BIG_BOARD = "planner_big_board_solver"
 # The model server could not answer: the circuit breaker is open, the call
 # timed out, or it failed with a transport/HTTP error or an error sentinel.
 # An empty plan carrying this reason means "decide without the model now",
@@ -488,6 +492,7 @@ RULES:
 - LANDFALL ORDER: an [OK] permanent with a landfall trigger ("whenever a land you control enters") that you will cast this turn comes BEFORE the land drop, so the land triggers it.
 - EXCEPTION: declare_attackers/declare_blockers carry the full set in one action — do NOT add a "done" click.
 - ATTACK TARGETS: Supply attacker_names AND attacker_targets mapping each chosen creature to its legal recipient. When a planeswalker and the opponent are available, explicitly choose who each creature attacks; split attacks when useful. Compare killing the planeswalker (loyalty, abilities, future value) with lethal or pressure on the player. Damage to a planeswalker is NOT damage to the opponent. Prefer the recipient-aware combat search over the older player-only attack line when both appear. The search models visible combat approximately, not hidden tricks, triggered abilities, or future loyalty activations; never invent unknown loyalty. Say the chosen recipients in voice_advice; never leave that choice to a default UI target.
+- MANY ATTACKERS: attacker_names may be ["all"] (every attacker on the menu) or ["all except <names>"]; with attacker_targets {"all": "Opponent"} when every one attacks the player. A menu line "N-M. Attack with: Rabbit #1..#12 (1/1): 12 identical" stands for twelve interchangeable tokens; name them "Rabbit #1" ... "Rabbit #12".
 - ZERO-POWER ATTACKERS: A legal attacker need not be a useful attacker. Leave zero-power creatures untapped for mana or defense unless an actual attack trigger, required attack, pump plan, or damage-replacement effect gives attacking a concrete benefit. Flying alone does not make a zero-power attack useful.
 - BLOCKERS: "Block with: X" names an eligible blocker, NOT a complete move. Supply action_type="declare_blockers" and blocker_assignments mapping each blocker to a named attacker. Never use a bare menu pick or an empty attacker name. Use an explicit empty mapping only when intentionally declaring no blocks.
 - RESOURCE TRADES: For blocks, sacrifices or discards, compare the resulting board now AND after the earliest feasible recovery under the deck playbook. Price trigger payoffs, lost persistent resources, colored mana, tax and timing. A token label, legendary status, or generic material score cannot decide this comparison by itself.
@@ -896,6 +901,31 @@ class ActionPlanner(_ActionLegalityMixin):
         finally:
             pool.shutdown(wait=False)
 
+    def _hedged_declaration(self, complete: Callable[..., str]) -> str:
+        """A high-effort declaration with a low-effort one racing alongside (ledger #159).
+
+        The high answer wins when it arrives within the budget; when it fails or
+        runs out, the low answer stands (if it came). Both failing raises the
+        high call's error, as ``_bounded_call`` would.
+        """
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="planner-llm")
+        deadline = time.monotonic() + float(self._timeout or 0.0)
+        try:
+            high = pool.submit(complete, "decision.plan", "high")
+            low = pool.submit(complete, "decision.plan", None)
+            try:
+                return high.result(timeout=max(0.1, deadline - time.monotonic()))
+            except Exception as error:
+                logger.info("Declaration plan: high effort failed (%s); trying the low-effort answer", error)
+                try:
+                    answer = low.result(timeout=max(0.1, deadline - time.monotonic()))
+                except Exception:
+                    raise error from None
+                logger.info("Declaration plan: the low-effort answer stands")
+                return answer
+        finally:
+            pool.shutdown(wait=False)
+
     def _llm_unavailable_plan(
         self, trigger: str, turn: int, diag: dict[str, Any], start: float, failure: str
     ) -> ActionPlan:
@@ -1057,6 +1087,19 @@ class ActionPlanner(_ActionLegalityMixin):
                 )
                 return plan
 
+        big = big_board_declaration(game_state, effective_legal_actions)
+        if big:
+            # Ledger #155/#162 (match 2bb162d7, 14:27-14:29): 25-39 attackers and 41 creatures on
+            # the battlefield; every attack answer was dropped and the block plans ran out the 15 s
+            # budget, so the solver's safe default decided each combat after the wait anyway.
+            logger.warning("Big board (%s): the combat solver declares; the model is not asked", big)
+            diag["preflight"] = "big_board_solver"
+            diag["elapsed_ms"] = (time.perf_counter() - start) * 1000
+            self._record_diagnostic(diag)
+            return ActionPlan(
+                trigger=trigger, turn_number=current_turn, fallback_reason=FALLBACK_BIG_BOARD, fallback_detail=big
+            )
+
         # Circuit open: the model server is known down. Waiting out the full
         # planning budget here stalled the coaching loop 30 s per window in
         # the 2026-10-06 18:53 outage; the autopilot's deterministic paths
@@ -1109,7 +1152,7 @@ class ActionPlanner(_ActionLegalityMixin):
         # reach the JSON parser — during a backend outage the parse yields 0
         # actions and _fallback_plan would submit a real game action (blind
         # passes, 2026-07-05). _call_llm raises on a sentinel as well.
-        def _complete(call_class: str = "decision.plan") -> str:
+        def _complete(call_class: str = "decision.plan", effort: str | None = None) -> str:
             return self._call_llm(
                 system_prompt,
                 user_message,
@@ -1117,10 +1160,19 @@ class ActionPlanner(_ActionLegalityMixin):
                 timeout_s=self._timeout,
                 call_class=call_class,
                 first_token_timeout_s=self._plan_first_token_timeout(),
+                reasoning_effort=effort,
             )
 
+        # Ledger #159 (be1a945f T10): declarations ran at low effort with 25 power against their
+        # 12 life. Within lethal reach or in danger they think at high effort, a low-effort
+        # answer racing alongside as the hedge (``_hedged_declaration``).
+        effort, effort_why = declaration_effort(game_state, effective_legal_actions)
+        if effort:
+            logger.info("Declaration plan: high reasoning effort (%s)", effort_why)
+            diag["effort"] = effort_why
+
         try:
-            response = self._bounded_call(_complete)
+            response = self._hedged_declaration(_complete) if effort else self._bounded_call(_complete)
             elapsed = (time.perf_counter() - start) * 1000
             logger.info(f"Action planning took {elapsed:.0f}ms")
         except concurrent.futures.TimeoutError:
@@ -2726,9 +2778,15 @@ class ActionPlanner(_ActionLegalityMixin):
                     option_cards = [c.get("name") for c in game_state.get("hand", []) if c.get("name")]
                 if option_cards:
                     menu = [f"Discard {c}" for c in option_cards]
+            combat_menu = any(a.strip().lower().startswith(("attack with:", "block with:")) for a in menu)
+            if combat_menu:
+                # A swarm's identical tokens gathered and shown as one line each (ledger #162).
+                menu = group_menu(menu)
             self._last_menu = menu
             if menu:
-                menu_lines = "\n".join(f"  {i + 1}. {a}" for i, a in enumerate(menu))
+                menu_lines = "\n".join(
+                    compress_menu(menu) if combat_menu else (f"  {i + 1}. {a}" for i, a in enumerate(menu))
+                )
                 if dec_type == "discard":
                     count = dec_ctx.get("count", 1)
                     eff_str = f"(pick {count} by number to discard)\n{menu_lines}"
@@ -3051,6 +3109,16 @@ class ActionPlanner(_ActionLegalityMixin):
                     )
             if action is None:
                 action = self._parse_action(action_data)
+            if action is not None and action.action_type == ActionType.DECLARE_ATTACKERS:
+                from arenamcp.action_legality import normalize_attack_declaration
+
+                context = decision_context or {}
+                ids = context.get("legal_attacker_ids") or [
+                    a.get("attackerInstanceId") for a in context.get("raw_attackers") or [] if isinstance(a, dict)
+                ]
+                repaired = normalize_attack_declaration(action, legal_actions, ids)
+                if repaired:
+                    logger.info("Attack declaration repaired: %s", repaired)
             if action and game_state and game_state.get("battlefield"):
                 try:
                     self._bind_combat_identities(action, game_state, decision_context or {})
@@ -3068,6 +3136,15 @@ class ActionPlanner(_ActionLegalityMixin):
                     (decision_context or {}).get("type"),
                     legal_actions,
                 )
+                if action.action_type in (ActionType.DECLARE_ATTACKERS, ActionType.DECLARE_BLOCKERS):
+                    # Ledger #155: the log kept 200 characters of the answer, never why it failed.
+                    logger.warning(
+                        "Dropped declaration: attackers=%s targets=%s blocks=%s; answer: %s",
+                        action.attacker_names,
+                        action.attacker_targets,
+                        action.blocker_assignments,
+                        (response or "")[:4000],
+                    )
 
         # Spoken line derives from what was actually ACCEPTED (a rejected
         # target's instruction must not survive — test_planning_consistency).

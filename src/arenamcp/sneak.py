@@ -515,6 +515,22 @@ def is_sneak_return(decision: Any) -> bool:
     return bool(RETURN_PROMPT.search(text))
 
 
+def _looks_like_sneak_payment(decision: Any, state: dict) -> bool:
+    """A non-mana payment without Arena's prompt text whose choices are all our attacking
+    creatures while a Sneak creature of ours is on the stack (the prompt may not reach us)."""
+    if getattr(decision, "request_type", "") != "SelectN":
+        return False
+    if not str(getattr(decision, "source_label", "") or "").lower().startswith("pay non-mana cost"):
+        return False
+    local, _opponent = _seats(state)
+    attacking = {
+        int(c.get("instance_id") or 0) for c in _our_creatures(state, local) if c.get("is_attacking")
+    }
+    ids = [_int(str(o.option_id)[4:]) for o in getattr(decision, "options", ()) or ()]
+    stack = [c for c in state.get("stack") or [] if isinstance(c, dict) and _controller(c) == local]
+    return bool(ids) and all(i in attacking for i in ids) and any(sneak_cost(c) for c in stack)
+
+
 def return_pick(decision: Any, state: dict | None) -> tuple[list[str], str]:
     """Which unblocked attacker the Sneak cost returns, with why; ([], '') when not that request.
 
@@ -522,7 +538,9 @@ def return_pick(decision: Any, state: dict | None) -> tuple[list[str], str]:
     Rabbits again); a token just vanishes. When the attack is lethal only
     without the bigger one, the lethal choice wins.
     """
-    if not isinstance(state, dict) or not is_sneak_return(decision):
+    if not isinstance(state, dict) or not (
+        is_sneak_return(decision) or _looks_like_sneak_payment(decision, state)
+    ):
         return [], ""
     by_id = _by_id(state)
     candidates = []

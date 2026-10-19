@@ -110,3 +110,20 @@ def test_canonical_choices_are_one_per_permutation_class():
     assert len(choices) == solver._canonical_count(groups, options) == 10 * 2
     classes = {(tuple(sorted(c[:3], key=repr)), c[3]) for c in product(*options)}
     assert len(classes) == len(choices)
+
+
+def test_a_god_below_its_devotion_is_no_blocker():
+    """Match 2bb162d7 T9/T11 (14:22:21, 14:25): "Heliod, Sun-Crowned 5/5 can block Leonardo, Big
+    Brother" held back a 27/3 Leonardo; Player.log L364471 shows Heliod as CardType_Enchantment only
+    (devotion to white below five) and no creature of theirs untapped."""
+    from arenamcp.combat_keywords import is_creature_now
+    from arenamcp.combat_strategy import _eligible_blockers
+
+    heliod = _c(
+        480, "Heliod, Sun-Crowned", 5, 5, 2, type_line="Legendary Enchantment Creature — God",
+        card_types=["CardType_Enchantment"],
+    )  # fmt: skip
+    awake = {**heliod, "instance_id": 481, "card_types": ["CardType_Enchantment", "CardType_Creature"]}
+    assert not is_creature_now(heliod) and is_creature_now(awake)
+    assert is_creature_now({"type_line": "Creature — Rabbit"})  # no GRE types: the printed line
+    assert [c["instance_id"] for c in _eligible_blockers({"battlefield": [heliod, awake]}, 2)] == [481]

@@ -11,6 +11,106 @@ from arenamcp.action_planner import ActionType, GameAction, _strip_attacker_anno
 logger = logging.getLogger(__name__)
 
 
+# "Attack with everything" shorthand in attacker_names (ledger #155): "all", "all creatures",
+# "everyone", "all except Leonardo, Big Brother", "everything but the Rabbits".
+_ALL_ATTACK = re.compile(
+    r"^\s*(?:attack with\s+)?(?:all|every(?:thing|one|body)|all (?:creatures|attackers|available|legal attackers)"
+    r"|all of them)(?:\s+(?:except|but|minus|other than)\s+(?P<rest>.+))?\s*$",
+    re.IGNORECASE,
+)
+_ALL_TARGET_KEYS = {"all", "*", "everyone", "everything", "all attackers", "all creatures", "default"}
+
+
+def _menu_attackers(legal_actions: list[str]) -> list[str]:
+    """The attackers of an "Attack with: X (p/t)" menu, as their menu names ("Rabbit #3")."""
+    names = []
+    for entry in legal_actions or []:
+        text = str(entry or "").strip()
+        if text.lower().startswith("attack with:"):
+            name = re.sub(r"\s*\([\dxX*+-]+/[\dxX*+-]+\)\s*$", "", text.split(":", 1)[1]).strip()
+            if name:
+                names.append(name)
+    return names
+
+
+def _base_name(name: str) -> str:
+    from arenamcp.combat_identity import plain_combat_name
+
+    return re.sub(r"\s*#\d+\s*$", "", plain_combat_name(str(name or ""))).strip().casefold()
+
+
+def normalize_attack_declaration(
+    action: GameAction, legal_actions: list[str], attacker_ids: list[int] | None = None
+) -> str:
+    """Repair a declare_attackers answer's shape before it is validated; what changed, or ''.
+
+    Ledger #155 (match 2bb162d7, 14:27:34 and 14:29:23, 25 and 39 attackers):
+    the model's declaration named every attacker ("Hare Apparent [id:442]",
+    "*Rabbit [id:470]", ...) but its attacker_targets did not key them the same
+    way, and the whole declaration was dropped as illegal; the solver's safe
+    default then attacked instead. Shorthand ("all", "all except X") expands to
+    the menu's attackers; target keys match by name without decoration; an
+    "all" key applies to every attacker; attackers without a target attack the
+    opponent; targets for creatures not attacking are dropped. ``attacker_ids``
+    (the menu's attackers, in menu order) name expanded attackers by id.
+    """
+    if action.action_type != ActionType.DECLARE_ATTACKERS:
+        return ""
+    notes = []
+    names = action.attacker_names
+    if isinstance(names, str):
+        names = [names]
+    names = [str(n) for n in names or [] if isinstance(n, str) and n.strip()]
+    menu = _menu_attackers(legal_actions)
+    if menu and len(names) == 1 and (shorthand := _ALL_ATTACK.match(names[0])):
+        excluded = [x.strip() for x in re.split(r",\s*|\s+and\s+", shorthand.group("rest") or "") if x.strip()]
+        ids = list(attacker_ids or [])
+        keep = [
+            re.sub(r"\s*#\d+\s*$", "", m) + f" [id:{ids[i]}]" if len(ids) == len(menu) else m
+            for i, m in enumerate(menu)
+            if not any(m.casefold() == x.casefold() or _base_name(m) == _base_name(x) for x in excluded)
+        ]
+        notes.append(f"'{names[0]}' -> {len(keep)} attackers")
+        names = keep
+    action.attacker_names = names
+    raw = action.attacker_targets
+    if isinstance(raw, str):
+        raw = {"all": raw}
+    elif isinstance(raw, list):
+        raw = {
+            str(item.get("attacker") or item.get("name") or ""): str(item.get("target") or "")
+            for item in raw
+            if isinstance(item, dict)
+        }
+    elif not isinstance(raw, dict):
+        raw = {}
+    targets: dict[str, str] = {}
+    default = next(
+        (str(v) for k, v in raw.items() if str(k).strip().casefold() in _ALL_TARGET_KEYS and str(v or "").strip()),
+        "",
+    )
+    by_exact = {str(k).strip().casefold(): v for k, v in raw.items()}
+    by_base: dict[str, list] = {}
+    for key, value in raw.items():
+        by_base.setdefault(_base_name(str(key)), []).append(value)
+    for name in names:
+        value = by_exact.get(name.strip().casefold())
+        if value is None:
+            from arenamcp.combat_identity import plain_combat_name
+
+            value = by_exact.get(plain_combat_name(name).casefold())
+        if value is None:
+            values = {str(v) for v in by_base.get(_base_name(name), [])}
+            value = values.pop() if len(values) == 1 else None
+        value = str(value or default or "").strip()
+        if raw or value:
+            targets[name] = value or "Opponent"
+    if raw and targets != {k: v for k, v in raw.items() if k in names}:
+        notes.append("attacker_targets keyed to the attackers")
+    action.attacker_targets = targets
+    return "; ".join(notes)
+
+
 class _ActionLegalityMixin:
     """Methods for validating action legality against current GRE state and mapping legal actions."""
 
