@@ -278,16 +278,24 @@ def _one_time_enters(line: str) -> bool:
     return head.startswith(("when ", "as ")) and "enter" in head and not re.search(r"\b(?:or|and)\b", head)
 
 
-def _card_line(info: dict, count: int, grp_id: int) -> str:
+def _mana_value(value: Any) -> str:
+    return str(int(value)) if isinstance(value, float) and value.is_integer() else str(value)
+
+
+def _card_line(info: dict, count: int, grp_id: int, *, listed: bool = False) -> str:
+    """A card's rules line. ``listed``: the deck list above already gives its count, cost, type and stats."""
     name = info.get("name") or f"Unknown({grp_id})"
-    fields = [
-        f"{count}x {name} [grp:{grp_id}]",
-        str(info.get("mana_cost") or ""),
-        str(info.get("type_line") or ""),
-    ]
+    if listed:
+        fields = [f"{name} [grp:{grp_id}]"]
+    else:
+        fields = [
+            f"{count}x {name} [grp:{grp_id}]",
+            str(info.get("mana_cost") or ""),
+            str(info.get("type_line") or ""),
+        ]
     if info.get("cmc") is not None and info.get("cmc") != "":
-        fields.append(f"MV {info['cmc']}")
-    if info.get("power") not in (None, "") and info.get("toughness") not in (None, ""):
+        fields.append(f"MV {_mana_value(info['cmc'])}")
+    if not listed and info.get("power") not in (None, "") and info.get("toughness") not in (None, ""):
         fields.append(f"printed {info['power']}/{info['toughness']}")
     fields.append(
         " ".join(oracle_lines(info.get("oracle_text"))) or "Rules text unavailable; do not invent abilities."
@@ -378,14 +386,19 @@ def prepare_match_context(
         )
     quoted = [gid for gid in quoted if gid not in commanders]
     if quoted:
+        # Each card's count, cost, type and printed stats are on its deck-list
+        # line above; its rules line adds only MV and rules (2026-10-18: every
+        # seen card's facts were sent twice in the same reference).
         reference.append(
             "RULES OF THE CARDS SEEN THIS GAME (hand, battlefield, graveyards, exile, stack"
             + (", and the pending decision's candidates" if reveal else "")
-            + "; the rest of the library is listed above by name only: do not invent its rules)"
+            + "; cost, type and printed stats as listed above; the rest of the library is listed above "
+            "by name only: do not invent its rules)"
             if not full_rules
-            else "RULES (every card in the deck: a tutor in hand or a library inspection can reach any of them)"
+            else "RULES (every card in the deck: a tutor in hand or a library inspection can reach any of them; "
+            "cost, type and printed stats as listed above)"
         )
-        reference.extend(_card_line(catalog[gid], deck[gid], gid) for gid in quoted)
+        reference.extend(_card_line(catalog[gid], deck[gid], gid, listed=True) for gid in quoted)
     result["deck_reference"] = "\n".join(reference)
     result["deck_catalog"] = catalog
     result["deck_rules_grp_ids"] = sorted(set(quoted) | set(commanders))
