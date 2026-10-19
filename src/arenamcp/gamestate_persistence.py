@@ -6,8 +6,12 @@ session-aware resume. Re-exported from arenamcp.gamestate for backwards
 compatibility.
 """
 
+import contextlib
 import json
 import logging
+import os
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -19,6 +23,61 @@ logger = logging.getLogger(__name__)
 
 MATCH_STATE_PATH = Path.home() / ".arenamcp" / "last_match.json"
 MATCH_STATE_MAX_AGE = 1800  # 30 minutes
+
+# 2026-10-19 10:11:10 "Failed to mark match ended: Expecting value: line 1
+# column 1 (char 0)" (also "Extra data" 2026-10-18 21:13:05): the checkpoint
+# save truncated the file in place while the parser thread read it. Every
+# write now goes to a temp file in the same directory and is swapped in with
+# os.replace, and read-modify-write (mark ended, the sticky "ended" check) runs
+# under one lock.
+_STATE_LOCK = threading.RLock()
+
+
+def _read_state_file(path: Path) -> dict[str, Any] | None:
+    """The saved state, or None when there is none (the caller holds _STATE_LOCK)."""
+    if not path.exists():
+        return None
+    with open(path, encoding="utf-8") as f:
+        state = json.load(f)
+    return state if isinstance(state, dict) else None
+
+
+def _write_state_file(path: Path, state: dict[str, Any]) -> None:
+    """Replace *path* atomically: readers see the old file or the new one, never a partial one."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def _ended_game_still_over(existing: dict[str, Any] | None, match_id: str, game_number: Any) -> bool:
+    """mark_match_ended() closed this match and no later game of it has started.
+
+    2026-10-19 09:34:55 and 10:05:59: after the match ended, Arena's
+    MatchCompleted re-bound the finished match id to the reset game state, and
+    the next checkpoint save rewrote the "ended" file as "active" (turn 0). The
+    coach restarts at 09:53:35 and 10:06:23 then resumed that finished match,
+    re-recorded it and overwrote its match bundle (#29). Only the match-scope
+    mark sticks (it records ended_game_number); a save's own "ended" for a
+    game result still gives way to the next game (Bo3 sideboarding resumes).
+    """
+    if not existing or existing.get("match_id") != match_id or existing.get("status") != "ended":
+        return False
+    if existing.get("ended_game_number") is None:
+        return False
+    try:
+        number = int(game_number or 0)
+        ended_number = int(existing.get("ended_game_number") or 1)
+    except (TypeError, ValueError):
+        return True
+    # A Bo3 whose intermission carried no scope was marked ended after game 1.
+    return number <= ended_number
 
 
 def _match_state_path() -> Path:
@@ -81,9 +140,16 @@ def save_match_state(
 
     match_state_path = _match_state_path()
     try:
-        match_state_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(match_state_path, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
+        with _STATE_LOCK:
+            existing = None
+            with contextlib.suppress(Exception):
+                existing = _read_state_file(match_state_path)
+            if _ended_game_still_over(existing, state["match_id"], getattr(game_state, "game_number", None)):
+                state["status"] = "ended"
+                for key in ("ended_at", "ended_game_number"):
+                    if key in existing:
+                        state[key] = existing[key]
+            _write_state_file(match_state_path, state)
         logger.debug(f"Saved match state: turn {state['turn_number']}, offset {log_offset}")
     except Exception as e:
         logger.warning(f"Failed to save match state: {e}")
@@ -186,8 +252,10 @@ def load_match_state() -> dict[str, Any] | None:
         return None
 
     try:
-        with open(match_state_path, encoding="utf-8") as f:
-            state = json.load(f)
+        with _STATE_LOCK:
+            state = _read_state_file(match_state_path)
+        if state is None:
+            return None
 
         # Validate age
         age = time.time() - state.get("timestamp", 0)
@@ -218,14 +286,21 @@ def mark_match_ended() -> None:
         return
 
     try:
-        with open(match_state_path, encoding="utf-8") as f:
-            state = json.load(f)
-
-        state["status"] = "ended"
-        state["ended_at"] = time.time()
-
-        with open(match_state_path, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
+        with _STATE_LOCK:
+            state = _read_state_file(match_state_path)
+            if state is None:
+                return
+            state["status"] = "ended"
+            state["ended_at"] = time.time()
+            # Which game ended: a later game of the same (Bo3) match may resume.
+            checkpoint = state.get("checkpoint")
+            game_number = checkpoint.get("game_number") if isinstance(checkpoint, dict) else None
+            try:
+                ended = max(int(game_number or 1), int(state.get("ended_game_number") or 1))
+            except (TypeError, ValueError):
+                ended = 1
+            state["ended_game_number"] = ended
+            _write_state_file(match_state_path, state)
         logger.info("Marked match state as ended")
     except Exception as e:
         logger.warning(f"Failed to mark match ended: {e}")

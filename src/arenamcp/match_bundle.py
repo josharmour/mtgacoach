@@ -704,13 +704,54 @@ def encode_bundle(bundle: dict[str, Any], gzip_cap: int = GZIP_CAP) -> bytes:
             return data
 
 
+def bundle_path(match_id: str, bundle_dir: Path | None = None) -> Path:
+    """Where the local copy of *match_id*'s bundle is saved."""
+    target_dir = Path(bundle_dir) if bundle_dir is not None else BUNDLE_DIR
+    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(match_id))[:80] or "match"
+    return target_dir / f"{safe_id}.json.gz"
+
+
+def _decision_count(bundle: dict[str, Any] | None) -> int:
+    packet = (bundle or {}).get("packet")
+    decisions = packet.get("decisions") if isinstance(packet, dict) else None
+    return len(decisions) if isinstance(decisions, list) else 0
+
+
+def _saved_bundle(path: Path) -> tuple[int, int, str] | None:
+    """(decisions, bytes, result) of a bundle saved earlier, or None when there is none to keep."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    try:
+        saved = json.loads(gzip.decompress(data).decode("utf-8"))
+    except Exception:
+        return None  # unreadable: nothing worth keeping
+    if not isinstance(saved, dict):
+        return None
+    return _decision_count(saved), len(data), str(saved.get("result") or "unknown")
+
+
+def _downgrade_reason(saved: tuple[int, int, str] | None, decisions: int, size: int, result: str) -> str:
+    """Why the new bundle must not replace the saved one ("" when it may)."""
+    if saved is None:
+        return ""
+    saved_decisions, saved_size, saved_result = saved
+    known = saved_result != "unknown" and (result or "unknown") == "unknown"
+    if decisions < saved_decisions or known or (decisions == saved_decisions and size < saved_size):
+        return (
+            f"the saved bundle has {saved_decisions} decisions, result {saved_result} "
+            f"({saved_size // 1024} KB); this one {decisions}, result {result or 'unknown'} ({size // 1024} KB)"
+        )
+    return ""
+
+
 def save_bundle(
     data: bytes, match_id: str, bundle_dir: Path | None = None, max_bundles: int = MAX_BUNDLES
 ) -> Path:
-    target_dir = Path(bundle_dir) if bundle_dir is not None else BUNDLE_DIR
+    path = bundle_path(match_id, bundle_dir)
+    target_dir = path.parent
     target_dir.mkdir(parents=True, exist_ok=True)
-    safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(match_id))[:80] or "match"
-    path = target_dir / f"{safe_id}.json.gz"
     tmp = path.with_suffix(".tmp")
     tmp.write_bytes(data)
     tmp.replace(path)
@@ -806,7 +847,11 @@ def upload_bundle(
         except Exception as e:  # URLError, timeouts, anything
             status, body = 0, f"{type(e).__name__}: {e}"
         if status in (200, 201, 202, 204, 409):
-            logger.info(f"[BUNDLE] uploaded {match_id} (HTTP {status}, {len(data) // 1024} KB)")
+            if status == 409 or '"duplicate"' in (body or ""):
+                # The server keeps the first upload per id (website/match_bundles.py).
+                logger.info(f"[BUNDLE] {match_id} was already uploaded; the server kept its first copy")
+            else:
+                logger.info(f"[BUNDLE] uploaded {match_id} (HTTP {status}, {len(data) // 1024} KB)")
             return True
         retryable = status in (0, 429) or status >= 500
         if not retryable or attempt == attempts - 1:
@@ -901,6 +946,19 @@ def process_match(
             bug_dir=bug_dir,
         )
         data = encode_bundle(bundle)
+        # 2026-10-19 09:54:09 and 10:07:00 (#29): a restarted coach saved a
+        # 0-decision, result=unknown bundle over the finished game's real one
+        # (100 KB -> 4 KB, 137 KB -> 3 KB) and uploaded it. A bundle never
+        # replaces a saved one with more decisions, or as many and more log.
+        downgrade = _downgrade_reason(
+            _saved_bundle(bundle_path(ctx.bundle_id, bundle_dir)),
+            _decision_count(bundle),
+            len(data),
+            str(bundle.get("result") or "unknown"),
+        )
+        if downgrade:
+            logger.info(f"[BUNDLE] skipped: kept the saved bundle for {ctx.bundle_id}: {downgrade}")
+            return None
         path = save_bundle(data, ctx.bundle_id, bundle_dir)
         logger.info(f"[BUNDLE] saved {path} ({len(data) // 1024} KB)")
         if upload:

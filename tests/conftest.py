@@ -63,6 +63,7 @@ _HOME_PATHS = (
     ("arenamcp.draft_event", "DRAFT_RUN_DIR", "draft_runs"),
     ("arenamcp.set_research", "RESEARCH_DIR", "cache/set_research"),
     ("arenamcp.match_packets", "PACKETS_DIR", "match_packets"),
+    ("arenamcp.match_packets", "FINALIZED_PATH", "finalized_matches.json"),
     ("arenamcp.match_history", "HISTORY_DIR", "match_history"),
     ("arenamcp.match_history", "HISTORY_FILE", "match_history/history.json"),
     ("arenamcp.match_review", "REVIEW_DIR", "match_reviews"),

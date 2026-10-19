@@ -21,6 +21,7 @@ from collections import Counter, deque
 from typing import Any
 
 from arenamcp.backend_health import is_backend_error_text
+from arenamcp.backends.proxy import is_backend_unavailable
 from arenamcp.native_mac_input import (
     DesktopAction,
     DesktopUnavailable,
@@ -146,6 +147,15 @@ _SCREEN_WAIT_LIMIT_S = 180.0
 # _PAUSE_RETRIES times per navigation, before it waits for the user.
 _PAUSE_RETRY_S = 30.0
 _PAUSE_RETRIES = 3
+# 2026-10-19 09:34:55-09:35:03: vLLM was hung (circuit open) and three skipped
+# navigation calls counted as navigation failures, so navigation paused, and
+# stayed paused 18 min after the model was back (a vLLM restart takes ~2m45s).
+# A model that is down is waited for instead: checked every _MODEL_POLL_S with
+# no screenshot, navigation resumes by itself when it answers again, and it
+# pauses only after _MODEL_WAIT_LIMIT_S.
+_MODEL_POLL_S = 5.0
+_MODEL_WAIT_LIMIT_S = 900.0
+_MODEL_PROBE_TIMEOUT_S = 8.0
 # At most this many clicks per finished match (they usually take 3-6).
 _CLICK_LIMIT = 20
 _REFINE_CROP = 0.3
@@ -456,6 +466,8 @@ class AutoQueueNavigator:
         self._step_started = 0.0
         self._step_phase = ""
         self._screen_wait_since = 0.0
+        # When navigation started waiting for the model server (monotonic; 0 = not waiting).
+        self._model_wait_since = 0.0
 
     def _status(self, detail: str) -> None:
         if self._recheck_pending:
@@ -521,9 +533,9 @@ class AutoQueueNavigator:
             self._next_poll = 0.0
             self._recheck_pending = True
             return
-        if self.paused_reason or self._queue_observed:
-            # A pause awaits the user and matchmaking awaits Arena; the
-            # still-waiting log covers both.
+        if self.paused_reason or self._queue_observed or self._model_wait_since:
+            # A pause awaits the user, matchmaking awaits Arena and a model
+            # wait awaits the server; the still-waiting log covers them.
             return
         stalled = now - self._progress_at
         interval = _WATCHDOG_S if stalled < _SLOW_AFTER_S else _WATCHDOG_SLOW_S
@@ -572,7 +584,7 @@ class AutoQueueNavigator:
                 self._clicks = 0
                 self._next_poll = 0
                 self._stage = "resuming"
-                self._screen_wait_since = self._last_watchdog = 0.0
+                self._screen_wait_since = self._last_watchdog = self._model_wait_since = 0.0
                 self._progress("navigation was retried")
                 self._status("Retrying navigation for the finished match")
             else:
@@ -621,7 +633,7 @@ class AutoQueueNavigator:
             self._awaiting_result_dismissal = False
             self._last_click = None
             self._next_poll = 0
-            self._screen_wait_since = self._last_watchdog = 0.0
+            self._screen_wait_since = self._last_watchdog = self._model_wait_since = 0.0
             self._recheck_pending = False
             self._progress(f"match {match_id} ended")
             self._armed_at = self._progress_at
@@ -710,7 +722,7 @@ class AutoQueueNavigator:
         self._failures = self._result_waits = 0
         self._next_poll = 0.0
         self._stage = "resuming"
-        self._screen_wait_since = self._last_watchdog = 0.0
+        self._screen_wait_since = self._last_watchdog = self._model_wait_since = 0.0
         logger.info(
             "Auto queue: retrying automatically (%d/%d) after: %s",
             self._pause_retries,
@@ -739,6 +751,57 @@ class AutoQueueNavigator:
             self._pause("Arena's post-match survey did not close")
         else:
             self._status("Waiting for Arena's post-match survey to offer Skip or close")
+
+    def _model_down(self) -> bool:
+        """The shared circuit breaker reports the model server down (an explicit False from available())."""
+        available = getattr(self._backend, "available", None)
+        try:
+            return callable(available) and available() is False
+        except Exception:
+            return False
+
+    def _model_answers(self) -> bool:
+        """One 1-token inference probe: False only when the model server did not answer.
+
+        Image calls never count toward the circuit breaker, so after a failed
+        navigation call it may not know the server is down. The probe also
+        records its outcome there. Backends without a probe count as answering.
+        """
+        if self._model_down():
+            return False
+        probe = getattr(self._backend, "probe_inference", None)
+        if not callable(probe):
+            return True
+        try:
+            result = probe(timeout=_MODEL_PROBE_TIMEOUT_S)
+        except Exception as error:
+            logger.info("Auto queue: model probe failed: %s", error)
+            return False
+        return not (isinstance(result, tuple) and result and result[0] is False)
+
+    def _wait_for_model(self, why: str) -> None:
+        """The model server is down: wait for it, which is not a navigation failure."""
+        now = time.monotonic()
+        if not self._model_wait_since:
+            self._model_wait_since = now
+            logger.info("Auto queue: the model server is unavailable (%s); waiting for it to come back", why)
+        waited = now - self._model_wait_since
+        self._failures = 0
+        if waited >= _MODEL_WAIT_LIMIT_S:
+            self._model_wait_since = 0.0
+            self._pause(f"The model server stayed unavailable for {waited / 60:.0f} min")
+            return
+        self._next_poll = now + _MODEL_POLL_S
+        self._status("Waiting for the model server to come back; navigation continues by itself")
+
+    def _model_returned(self) -> None:
+        if self._model_wait_since:
+            waited = time.monotonic() - self._model_wait_since
+            self._model_wait_since = 0.0
+            logger.info(
+                "Auto queue: the model server answers again after %.0fs; continuing navigation", waited
+            )
+            self._progress("the model server came back")
 
     def _joined_wrong_queue(self) -> str:
         """Arena's log, not a screenshot, proves which deck and event a Play click joined."""
@@ -863,6 +926,16 @@ class AutoQueueNavigator:
             if not callable(getattr(self._backend, "complete_with_image", None)):
                 self._pause("Auto queue needs a model that accepts screenshots")
                 return
+            # No screenshot (or bringing Arena forward) for a model that cannot read it.
+            if self._model_down():
+                self._wait_for_model("circuit open")
+                return
+            if self._model_wait_since:
+                self._step_phase = "model probe"
+                if not self._model_answers():
+                    self._wait_for_model("no answer")
+                    return
+                self._model_returned()
             self._step_phase = "screenshot"
             frame = self._controller.capture()
             if not self._current(generation, aborted):
@@ -930,8 +1003,16 @@ class AutoQueueNavigator:
             )
             if not self._current(generation, aborted):
                 return
+            if is_backend_unavailable(response):
+                self._wait_for_model("circuit open")
+                return
             if is_backend_error_text(response):
+                self._step_phase = "model probe"
+                if not self._model_answers():
+                    self._wait_for_model("no answer")
+                    return
                 raise ValueError("Navigation model request failed")
+            self._model_returned()
             proposal = json.loads(response)
             if isinstance(proposal, dict):
                 # Preserve rejected proposals too; logging only successfully

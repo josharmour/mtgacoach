@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 PACKETS_DIR = Path.home() / ".arenamcp" / "match_packets"
 MAX_PACKETS = 500  # Cap total history to avoid disk bloat
+# Game ids whose packet was saved, across coach restarts (newest last).
+FINALIZED_PATH = Path.home() / ".arenamcp" / "finalized_matches.json"
+MAX_FINALIZED = 200
 
 
 class MatchPacket:
@@ -223,24 +227,68 @@ _current_packet: MatchPacket | None = None
 # decisions=0/result=unknown packet at the next boundary (P0-9,
 # 2026-07-05 22:55:22).
 _finalized_match_ids: set[str] = set()
+# FINALIZED_PATH is read-modify-written from the coaching loop and the packet
+# salvage path.
+_finalized_lock = threading.Lock()
+
+
+def _read_finalized_file() -> list[str]:
+    try:
+        data = json.loads(FINALIZED_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    ids = data.get("match_ids") if isinstance(data, dict) else None
+    return [str(i) for i in ids] if isinstance(ids, list) else []
 
 
 def mark_match_finalized(match_id: str) -> None:
+    """Remember that this game's packet is on disk, in memory and in FINALIZED_PATH.
+
+    2026-10-19 #29: the in-memory set was empty after the coach restarts at
+    09:53:35 and 10:06:23, so the restored finished matches 92c09c7a and
+    6175f002 were recorded again and their empty packets and bundles saved at
+    the next match boundary.
+    """
     _finalized_match_ids.add(match_id)
+    try:
+        with _finalized_lock:
+            ids = [i for i in _read_finalized_file() if i != match_id]
+            ids.append(str(match_id))
+            payload = json.dumps({"match_ids": ids[-MAX_FINALIZED:]}, indent=1)
+            FINALIZED_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp = FINALIZED_PATH.with_name(f".{FINALIZED_PATH.name}.{threading.get_ident()}.tmp")
+            tmp.write_text(payload, encoding="utf-8")
+            tmp.replace(FINALIZED_PATH)
+    except Exception as e:
+        logger.warning(f"Could not persist finalized match {match_id}: {e}")
+
+
+def is_match_finalized(match_id: str | None) -> bool:
+    """This game's packet was saved, by this coach or one before a restart."""
+    if not match_id:
+        return False
+    if match_id in _finalized_match_ids:
+        return True
+    with _finalized_lock:
+        persisted = match_id in _read_finalized_file()
+    if persisted:
+        _finalized_match_ids.add(match_id)
+    return persisted
 
 
 def start_match_packet(match_id: str) -> MatchPacket | None:
     """Initialize a fresh match packet.
 
     Returns None (no recording) when this match id was already finalized —
-    a late re-surfacing of a finished match must not restart recording.
+    a late re-surfacing of a finished match, or a finished match restored
+    after a coach restart, must not restart recording.
 
     If a previous packet is still active (its game-end event never fired —
     crash, missed boundary), salvage it to disk as result="abandoned"
     instead of silently discarding its recorded decisions.
     """
     global _current_packet
-    if match_id in _finalized_match_ids:
+    if is_match_finalized(match_id):
         logger.info(f"Not restarting match packet for already-finalized match {match_id}")
         return None
     prev = _current_packet

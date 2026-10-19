@@ -42,7 +42,7 @@ from arenamcp.mtgadb import MTGADatabase
 from arenamcp.parser import LogParser
 from arenamcp.scryfall import ScryfallCache
 from arenamcp.sealed_eval import analyze_sealed_pool, format_sealed_detailed, format_sealed_recommendation
-from arenamcp.watcher import MTGALogWatcher
+from arenamcp.watcher import DRAFT_ACTIVITY_TOKENS, MTGALogWatcher
 
 # Defer voice/audio imports — sounddevice initializes PortAudio on import
 # which can hang if an audio device/driver is misbehaving.
@@ -618,6 +618,105 @@ def _queue_selection_from_log() -> dict[str, Any] | None:
     return None
 
 
+# What follows a finished match in Player.log when Arena is NOT idle on Home /
+# Recently Played: a queue request, another match room, gameplay, a draft.
+_NOT_IDLE_TOKENS = (
+    "==> EventJoin",
+    "Event_Join",
+    "==> EventSetDeckV3",
+    "==> EventEnterPairing",
+    "==> EventAiBotMatch",
+    "atchGameRoomStateChangedEvent",
+    "MatchCreated",
+    "greToClientEvent",
+    "==> BotDraft",
+    "DraftMakePick",
+    *DRAFT_ACTIVITY_TOKENS,
+)
+_RESTART_SCAN_BYTES = 8 * 1024 * 1024
+_MATCH_COMPLETED_TOKEN = "MatchGameRoomStateType_MatchCompleted"
+
+
+def _match_completed_in_tail(tail: bytes, match_id: str) -> bool:
+    """A MatchCompleted room event for *match_id* is in this chunk of Player.log."""
+    needle = match_id.encode()
+    token = _MATCH_COMPLETED_TOKEN.encode()
+    return any(token in line and needle in line for line in tail.splitlines())
+
+
+def idle_completed_match_from_log(max_age_s: float = 1800.0) -> dict[str, Any] | None:
+    """The last match Player.log shows completed, when Arena has done nothing since.
+
+    For a coach that restarts while Arena sits on Home or Recently Played after
+    a match (2026-10-19 09:53:35 and 10:06:23: auto-queue waited "for this
+    match to finish" and a human clicked Play). Returns the record
+    ``get_completed_match_for_navigation()`` would hold, or None when the log
+    shows a queue request, another match, gameplay or a draft after the
+    completion, when it completed more than *max_age_s* ago, when it was a
+    draft or sealed event, or when the deck it used is unknown.
+    """
+    try:
+        path = _log_path()
+        size = path.stat().st_size
+        with open(path, "rb") as log:
+            log.seek(max(0, size - _RESTART_SCAN_BYTES))
+            lines = log.read().decode("utf-8", errors="replace").splitlines()
+    except OSError as error:
+        logger.info("Could not scan Player.log for the last completed match: %s", error)
+        return None
+    completed: dict[str, Any] | None = None
+    selection = None
+    for line in reversed(lines):
+        if completed is None:
+            if _MATCH_COMPLETED_TOKEN in line:
+                try:
+                    payload = json.loads(line[line.index("{") :])
+                except ValueError:
+                    return None
+                info = (payload.get("matchGameRoomStateChangedEvent") or {}).get("gameRoomInfo") or {}
+                config = info.get("gameRoomConfig") or {}
+                match_id = config.get("matchId") or (info.get("finalMatchResult") or {}).get("matchId")
+                players = config.get("reservedPlayers") or []
+                event_id = next(
+                    (p.get("eventId") for p in players if isinstance(p, dict) and p.get("eventId")), ""
+                )
+                try:
+                    completed_at = int(payload.get("timestamp")) / 1000.0
+                except (TypeError, ValueError):
+                    return None
+                if not match_id:
+                    return None
+                completed = {
+                    "match_id": str(match_id),
+                    "event_id": str(event_id or _match_event_from_log(str(match_id))),
+                    "completed_at": completed_at,
+                    "match_complete": True,
+                }
+            elif any(token in line for token in _NOT_IDLE_TOKENS):
+                return None
+            continue
+        # The queue request that started the completed match.
+        found = _QUEUE_SELECTION_LINE.search(line)
+        if found:
+            try:
+                selection = parse_queue_selection(json.loads(found.group(2)), found.group(1))
+            except ValueError:
+                selection = None
+            break
+    if completed is None or time.time() - completed["completed_at"] > max_age_s:
+        return None
+    event_id = completed["event_id"]
+    if not event_id or re.search(r"draft|sealed", event_id, re.IGNORECASE):
+        return None
+    if not selection or selection.get("event_id") != event_id:
+        selection = _queue_selection_for_event(event_id)
+    elif not selection.get("deck_name") and selection.get("deck_id"):
+        selection = {**selection, "deck_name": _deck_name_from_log(selection["deck_id"])}
+    if not selection or not selection.get("deck_name"):
+        return None
+    return {**completed, "deck_name": selection["deck_name"], "deck_id": selection.get("deck_id", "")}
+
+
 def _match_event_from_log(match_id: str) -> str:
     """The eventId Arena logged for this match's room (when the watcher missed its start)."""
     pattern = re.compile(r'"eventId":\s*"([^"]+)"')
@@ -949,6 +1048,7 @@ def start_watching() -> None:
         # the saved offset points into an older game we should not replay.
         saved_match_id = saved_state.get("match_id")
         live_tail_match_id: str | None = None
+        tail_bytes = b""
         if saved_match_id:
             try:
                 from pathlib import Path
@@ -969,6 +1069,13 @@ def start_watching() -> None:
                 f"Discarding saved resume state: live tail match {live_tail_match_id} "
                 f"differs from saved match {saved_match_id} "
                 f"(saved offset would replay an older game)"
+            )
+            saved_state = None
+        elif saved_match_id and _match_completed_in_tail(tail_bytes, saved_match_id):
+            # 2026-10-19 09:53:35 / 10:06:23 (#29): a finished match saved as
+            # "active" was resumed, re-recorded and its bundle overwritten.
+            logger.info(
+                f"Discarding saved resume state: match {saved_match_id} already completed in Player.log"
             )
             saved_state = None
         elif resume_decision in ("resume_same_session", "resume_no_identity"):
