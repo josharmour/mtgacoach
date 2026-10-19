@@ -1499,6 +1499,12 @@ def _kill_corrections(
 
 _HASTE_CLAIM = re.compile(r"\bhast(?:e|y)\b")
 _NONCREATURE_TRIGGER = re.compile(r"\bnon-?creature[- ]spell\b|\bprowess\b|\bspell trigger\b")
+# The cast doing it (ledger #108): "grows Slickshot via the noncreature-spell trigger" is a
+# claim; "the hasty attacker with Prowess/Valiant upside" or "a hasty prowess engine" names
+# the card's own ability. A verb describing every later spell ("grows with each burn spell")
+# is that ability too.
+_CAST_TRIGGER_VERB = re.compile(r"\b(?:trigger(?:s|ed|ing)?|grow(?:s|ing|n)?|pump(?:s|ed|ing)?)\b")
+_EVERY_SPELL = re.compile(r"\b(?:each|every|whenever|later|future)\b")
 _ATTACK_CLAIM = re.compile(
     r"\b(?:attack(?:s|ing)?|swing(?:s|ing)?|ping(?:s|ing)?|crew(?:s|ing)?|tap(?:s|ping)? (?:it|~)"
     r"|attack trigger)\b"
@@ -1509,6 +1515,20 @@ _NOT_NOW = re.compile(
     r"|\bt\d+\b|\bturn \d+\b"
 )
 _CLAUSE_END = re.compile(r"[;.|\n]|\bthen\b|\bwhile\b|\band then\b")
+# The card's own ability described, not a this-turn claim (ledger #117, 2026-10-19 12:52:10:
+# "the free-value Hired Claw — its attack ping chips for 1" on a Claw cast that turn; also
+# "develops a recurring ping attacker", "starts its ping/pump engine"). The window after a
+# card's name starts right after it, so "Hired Claw's ping" leads with "'s".
+_POSSESSIVE_LEAD = re.compile(r"(?:\bits|^'s)\s+(?:[a-z/+-]+\s+)?$")
+_GENERIC_LEAD = re.compile(r"\b(?:recurring|repeatable|repeated|ongoing|future|steady)\s+(?:[a-z/+-]+\s+)?$")
+_GENERIC_TAIL = re.compile(r"[a-z/+-]*\s*(?:engine|attacker|threat|source)\b")
+_THIS_TURN = re.compile(r"\bthis (?:turn|combat)\b|\bimmediately\b|\bright (?:now|away)\b")
+
+
+def _describes_card(window: str, claim: re.Match) -> bool:
+    """The claim word only describes the card ("its attack ping", "a recurring ping attacker")."""
+    lead, tail = window[: claim.start()], window[claim.end() :]
+    return bool(_POSSESSIVE_LEAD.search(lead) or _GENERIC_LEAD.search(lead) or _GENERIC_TAIL.match(tail))
 
 
 def _summoning_sick(card: dict, turn: int, global_haste: bool) -> bool:
@@ -1614,7 +1634,11 @@ def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[
                 and c.get("instance_id") not in cast_ids
                 and _named_creatures(sentence, [str(c.get("name"))])
             ]
-            if _NONCREATURE_TRIGGER.search(sentence) and not other_spells:
+            cast_trigger = any(
+                not _EVERY_SPELL.search(sentence[verb.end() : verb.end() + 30])
+                for verb in _CAST_TRIGGER_VERB.finditer(sentence)
+            )
+            if _NONCREATURE_TRIGGER.search(sentence) and cast_trigger and not other_spells:
                 fact = (
                     f"{name} is a creature spell: casting it triggers no noncreature-spell ability (prowess)"
                 )
@@ -1644,9 +1668,16 @@ def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[
             after = window(index)
             before = lowered[max(0, start - 40) : start]
             before = before[_last_clause_start(before) :]
-            claim = _ATTACK_CLAIM.search(after) or re.search(
-                r"\battack(?:s|ing)? with\s+(?:the\s+)?$", before
-            )
+            # A description counts as a claim when its own clause says this turn.
+            this_turn = bool(_THIS_TURN.search(after))
+            claim = next(
+                (
+                    match
+                    for match in _ATTACK_CLAIM.finditer(after)
+                    if this_turn or not _describes_card(after, match)
+                ),
+                None,
+            ) or re.search(r"\battack(?:s|ing)? with\s+(?:the\s+)?$", before)
             if claim and not _NOT_NOW.search(after) and not _NOT_NOW.search(before):
                 fact = f"{name} is summoning sick: it can't attack, tap or make an attack trigger this turn"
                 if fact not in notes:

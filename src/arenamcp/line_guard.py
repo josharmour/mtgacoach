@@ -86,6 +86,17 @@ def guard_mode(kind: str) -> str:
     return value if value in GUARD_MODES else "shadow"
 
 
+def line_gap_mode() -> str:
+    """'off', 'shadow' or 'on' for the planner's line-gap second look (ledger #116); default 'on'.
+
+    ``ARENAMCP_LINE_GAP``: 'on' doubts a cast tagged ``LINE_GUARD_MARGIN`` or
+    more below the best line (the low answer waits for high effort, else the
+    line's pick decides); 'shadow' only logs what it would replace.
+    """
+    value = str(os.environ.get("ARENAMCP_LINE_GAP", "") or "").strip().lower()
+    return value if value in GUARD_MODES else "on"
+
+
 @dataclass
 class LineVerdict:
     """A guard's replacement, shaped like ``board_assessment.GuardVerdict``.
@@ -684,6 +695,7 @@ __all__ = [
     "LineVerdict",
     "guard_mode",
     "line_fallback_pick",
+    "line_gap_mode",
     "line_guard",
     "lines_summary",
     "mode_comparison",

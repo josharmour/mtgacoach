@@ -891,6 +891,111 @@ class _Doomed:
     shield: int  # extra damage the rest of the attack gets through while ``group`` eats it
     gained: int  # the opponent's lifelink gain from the block
     deficit: int  # its own damage minus what it buys (the larger, the worse the attack)
+    kind: str = "fed"  # "fed": dies for nothing; "bounce" / "engine": see _wasted_attack
+    note: str = ""  # bounce: their trick exposure; engine: the burn spell that kills the blocker
+
+
+# A creature our noncreature casts grow (decision_memory._CAST_PAYOFF_RE): the burn deck's engine.
+_CAST_ENGINE = re.compile(
+    r"\bprowess\b|\bmagecraft\b|\bwhenever you cast (?:a|an|your first|your second) "
+    r"(?:noncreature|instant|sorcery|instant or sorcery)\b|\bwhenever you cast a spell\b"
+)
+
+
+def _hand_burn(state: dict) -> list[tuple[str, int]]:
+    """(name, damage) of the fixed-damage spells in our hand that hit a creature, unkicked."""
+    from arenamcp.play_safety import damage_effect
+
+    found = []
+    for card in state.get("hand") or []:
+        if not isinstance(card, dict):
+            continue
+        try:
+            effect = damage_effect(card, kicked=False)
+        except Exception:  # an unreadable card is no burn
+            effect = None
+        if effect is not None:
+            found.append((str(card.get("name") or "a burn spell"), effect[0]))
+    return found
+
+
+def _wasted_attack(
+    attacker: dict,
+    attacking: list[dict],
+    blockers: list[dict],
+    *,
+    opp_life: int,
+    removal_tricks: list[str],
+    payoff: int,
+    pumps: list[tuple[int | None, int, int]],
+    exposure: combat_solver.TrickExposure | None,
+    burn: list[tuple[str, int]],
+) -> _Doomed | None:
+    """An attack one blocker answers for free although it does not kill it (``_doomed``'s other case).
+
+    - "bounce" (ledger #120, 2026-10-19 T10, match 2c67eed8): Emberheart
+      Challenger 2/2 attacked into an untapped Youthful Valkyrie 1/3 with the
+      opponent holding Shock and mana open. The blocker and the attacker both
+      survive and nothing gets through, so the attack buys nothing when
+      blocked; with their open mana and cards in hand (``exposure``) a pump on
+      the blocker (+``combat_solver.TRICK_PUMP``/+``TRICK_PUMP``) makes that
+      block a kill.
+    - "engine" (ledger #113, 2026-10-19 T4, match ba060a28): Emberheart traded
+      with an untapped Vampire Gourmand 2/2 while two Shocks in hand killed the
+      Gourmand on their own next turn. A creature our spells grow (prowess,
+      magecraft, "whenever you cast...") is not traded for a blocker with no
+      bigger a body (power + toughness) that burn in hand (``burn``,
+      unkicked) kills.
+
+    Only without an attack trigger (``payoff``), a pump of ours for it, or an
+    affordable removal trick that changes the combat, and only when the rest of
+    the attack gets nothing more through (net of lifelink) while that blocker
+    is busy.
+    """
+    if payoff or any(source in (None, attacker.get("instance_id")) for source, _p, _t in pumps):
+        return None
+    if any(_trick_changes_combat(text, [attacker], blockers) for text in removal_tricks):
+        return None
+    keywords = " ".join(str(keyword) for keyword in attacker.get("keywords") or [])
+    engine = bool(_CAST_ENGINE.search(f"{_rules_text(attacker)} {keywords.lower()}"))
+    rest = [card for card in attacking if card is not attacker]
+    free = None
+    for blocker in blockers:
+        if not _group_can_block(attacker, [blocker]):
+            continue
+        outcome = _resolve_attacker(attacker, [blocker])
+        if outcome.damage_through:
+            continue
+        if not outcome.attacker_died and not outcome.blockers_died:
+            if exposure is None or not exposure.live:
+                continue
+            tricked = _pumped(blocker, combat_solver.TRICK_PUMP, combat_solver.TRICK_PUMP)
+            if not _resolve_attacker(attacker, [tricked]).attacker_died:
+                continue
+            kind, note = "bounce", exposure.describe()
+        elif outcome.attacker_died and len(outcome.blockers_died) == 1 and engine:
+            # Bodies, not _material: that prices the Gourmand's card draw and not our prowess.
+            if int(blocker["power"]) + int(blocker["toughness"]) > int(attacker["power"]) + int(
+                attacker["toughness"]
+            ):
+                continue  # trading into a bigger body is still worth it
+            from arenamcp.play_safety import damage_would_kill
+
+            note = next((name for name, damage in burn if damage_would_kill(blocker, damage) is True), "")
+            if not note:
+                continue
+            kind = "engine"
+        else:
+            continue
+        if free is None:
+            free = _best_through(rest, blockers, opp_life)
+        others = [card for card in blockers if card is not blocker]
+        shield = _best_through(rest, others, opp_life) - free
+        gained = _lifelink_gain(blocker)
+        if shield - gained > 0:
+            continue
+        return _Doomed([blocker], shield, gained, 1, kind=kind, note=note)
+    return None
 
 
 def _doomed(
@@ -904,6 +1009,8 @@ def _doomed(
     removal_tricks: list[str],
     payoff: int = 0,
     pumps: list[tuple[int | None, int, int]] = (),
+    exposure: combat_solver.TrickExposure | None = None,
+    burn: list[tuple[str, int]] = (),
 ) -> _Doomed | None:
     """Whether this attacker only feeds a blocker, judged on its own (``losing_attackers``).
 
@@ -918,11 +1025,24 @@ def _doomed(
     each attack: its damage plus that same ping, which every later attack
     fires again. (#78, 2026-10-19 T10 match abde2a07: Hired Claw 1/2 pinging
     1 into an untapped 4/4 was "1 damage for 1 damage" and attacked; it bought
-    the ping once and lost the creature that pings every turn.)
+    the ping once and lost the creature that pings every turn.) With no such
+    group, an attack a blocker absorbs for free under their trick exposure, or
+    an engine creature's even trade into a blocker our burn kills, is held too
+    (``_wasted_attack``).
     """
     groups = _answer_groups(attacker, blockers, battlefield=battlefield, strategy_text=strategy_text)
     if not groups:
-        return None
+        return _wasted_attack(
+            attacker,
+            attacking,
+            blockers,
+            opp_life=opp_life,
+            removal_tricks=removal_tricks,
+            payoff=payoff,
+            pumps=pumps,
+            exposure=exposure,
+            burn=burn,
+        )
     if any(_trick_changes_combat(text, [attacker], blockers) for text in removal_tricks):
         return None
     mine = [pump for pump in pumps if pump[0] in (None, attacker.get("instance_id"))]
@@ -986,7 +1106,10 @@ def losing_attackers(
         it dies, no blocker dies (or the attack relies on unmet 'modified'
         evasion, or trades at a loss on a false evasion claim) and nothing
         gets through, with flying/reach, menace, first strike, deathtouch,
-        trample and indestructible modelled by the combat solver;
+        trample and indestructible modelled by the combat solver; or one
+        blocker absorbs it with nothing dying while their open mana and hand
+        make a trick the kill, or it is a creature our spells grow trading
+        evenly with a blocker our burn in hand kills (``_wasted_attack``);
       - what it buys is less than its own damage: the rest of the attack
         gets fewer extra points through their best blocks while that group
         is busy, minus the group's lifelink gain (``_doomed``);
@@ -1077,6 +1200,9 @@ def losing_attackers(
         if entry.get("mustAttack")
     }
     payoffs = {card["instance_id"]: _attack_payoff(card) for card in attackers}
+    # What a blocker that survives can do with their tricks (#120), and what our burn kills (#113).
+    exposure = combat_solver.attacking_trick_exposure(state, opponent.get("seat_id"))
+    burn = _hand_burn(state)
     judged = [
         card
         for card in attackers
@@ -1101,6 +1227,8 @@ def losing_attackers(
                 removal_tricks=removal_tricks,
                 payoff=payoffs[attacker["instance_id"]] or 0,
                 pumps=pumps,
+                exposure=exposure,
+                burn=burn,
             )
             if verdict is not None and (worst is None or verdict.deficit > worst[1].deficit):
                 worst = (attacker, verdict)
@@ -1134,7 +1262,17 @@ def _losing_reason(
     )
     outcome = _resolve_attacker(attacker, group)
     unmet_mod = unmet_modified_flag(attacker, battlefield=battlefield)
-    if outcome.blockers_died and unmet_mod:
+    if verdict.kind == "bounce":
+        reason = (
+            f"{blocked_by} can block {name} {body} for free: neither dies and nothing gets through, "
+            f"while their {verdict.note} make a trick on that block a kill"
+        )
+    elif verdict.kind == "engine":
+        reason = (
+            f"{blocked_by} would trade with {name} {body}, which our spells grow, while {verdict.note} "
+            f"in hand kills {group[0].get('name') or 'that blocker'} on its own: keep the engine"
+        )
+    elif outcome.blockers_died and unmet_mod:
         reason = (
             f"{name} {body} is {unmet_mod}, so {blocked_by} can legally block and kill it "
             "with 0 damage through"
