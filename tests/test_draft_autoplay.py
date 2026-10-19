@@ -715,11 +715,18 @@ def test_driver_keeps_the_counted_build_when_the_model_deck_scores_much_worse(pr
 
 
 class _InMatchHarness:
-    def __init__(self, state):
+    def __init__(self, monkeypatch, match_id, turn, result=None):
+        from arenamcp import server
         from arenamcp.standalone_draft_event import _DraftEventMixin
 
         self._mixin = _DraftEventMixin
-        self._mcp = SimpleNamespace(get_game_state=lambda: state)
+        # Player.log's state only: the bridge-backed board read is never asked.
+        self._mcp = SimpleNamespace(get_game_state=lambda: pytest.fail("in-match gate read the bridge"))
+        monkeypatch.setattr(
+            server,
+            "game_state",
+            SimpleNamespace(match_id=match_id, turn_info=SimpleNamespace(turn_number=turn), last_game_result=result),
+        )
 
     def in_match(self, pack=None):
         self._draft_event_pack = pack
@@ -732,9 +739,8 @@ def test_in_match_gate_ignores_a_finished_match_and_an_open_draft(monkeypatch):
     # 2026-10-05: the sealed match ended, its result was consumed, and the
     # board (match_id, turn 16) stayed until the next match: the Premier
     # Draft joined right after was never picked.
-    state = {"match_id": "m-1", "turn": {"turn_number": 16}, "last_game_result": None}
     monkeypatch.setattr(server, "get_completed_match_for_navigation", lambda: {})
-    harness = _InMatchHarness(state)
+    harness = _InMatchHarness(monkeypatch, "m-1", 16)
     assert harness.in_match() is True
     assert harness.in_match({"is_active": True}) is False
     assert harness.in_match({"is_building": True}) is False

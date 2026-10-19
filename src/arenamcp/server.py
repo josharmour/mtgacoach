@@ -506,6 +506,14 @@ def get_course_tracker():
 _QUEUE_SELECTION_LINE = re.compile(r"==> (EventSetDeckV3|EventAiBotMatch) (\{.*\})\s*$")
 
 
+def _match_in_progress() -> bool:
+    """Player.log shows a game being played: a match with turns and no result yet."""
+    if not game_state.match_id or game_state.turn_info.turn_number <= 0 or game_state.last_game_result:
+        return False
+    completed = get_completed_match_for_navigation()
+    return not (completed.get("match_complete") and completed.get("match_id") == game_state.match_id)
+
+
 def get_completed_match_for_navigation() -> dict[str, Any]:
     """Latest authoritative match completion, distinct from a BO3 game ending."""
     return dict(_completed_match_for_navigation)
@@ -2048,13 +2056,17 @@ def get_draft_pack() -> dict[str, Any]:
     if watcher is None:
         start_watching()
 
+    bridge_draft = None
     try:
         from arenamcp.gre_bridge import get_bridge
 
         bridge = get_bridge()
-        bridge_draft = bridge.get_draft_state() if (bridge and getattr(bridge, "connected", False)) else None
-        editor = bridge.get_deck_editor() if (bridge and getattr(bridge, "connected", False)) else None
-        draft_state.update_editor(editor)
+        # No draft or deck editor is open mid-match. On BepInEx/Proton each of
+        # these reads is a reflection batch on Arena's main thread, and the
+        # coach loop asked twice per pass during play (2026-10-18 22:15 stalls).
+        if bridge and getattr(bridge, "connected", False) and not _match_in_progress():
+            bridge_draft = bridge.get_draft_state()
+            draft_state.update_editor(bridge.get_deck_editor())
     except Exception as e:
         logger.debug(f"Failed to get_draft_state from bridge: {e}")
         bridge_draft = None

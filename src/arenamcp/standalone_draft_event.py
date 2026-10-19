@@ -24,17 +24,11 @@ class _DraftEventMixin:
         pack = getattr(self, "_draft_event_pack", None) or {}
         if pack.get("is_active") or pack.get("is_building"):
             return False  # Player.log says a draft or deck build is open
-        state = self._mcp.get_game_state() if getattr(self, "_mcp", None) else {}
-        state = state or {}
-        turn = (state.get("turn") or {}).get("turn_number", 0) or 0
-        if not state.get("match_id") or turn <= 0 or state.get("last_game_result"):
-            return False
-        # A finished match whose end was consumed keeps its board until the
-        # next match starts; its completion record says it is over.
-        from arenamcp.server import get_completed_match_for_navigation
+        # Player.log alone: get_game_state() would also read the bridge's board
+        # every 3 s, a main-thread reflection call on BepInEx/Proton.
+        from arenamcp.server import _match_in_progress
 
-        completed = get_completed_match_for_navigation()
-        return not (completed.get("match_complete") and completed.get("match_id") == state.get("match_id"))
+        return _match_in_progress()
 
     def _set_primer_service(self) -> Any:
         """The set research service, shared by the pre-draft prefetch and the draft driver."""
