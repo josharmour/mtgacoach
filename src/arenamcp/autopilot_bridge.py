@@ -1252,8 +1252,19 @@ class _BridgeSubmitMixin:
         from arenamcp.combat_targets import recipient_key
 
         native = pending.get("bridge_runtime") in ("il2cpp-macos", "il2cpp-android")
+        # The BepInEx plugin sends one UpdateAttacker per call too, so it needs the
+        # same recipient groups (2026-10-18 22:30/22:31: Gallia -> Jace with Ghoul
+        # -> player in one update, rejected, then an empty finalize passed). From
+        # 0.7.2 it also honours each recipient and reports the selection, so the
+        # native acknowledgement check applies before any finalize.
+        from arenamcp.gre_bridge import _version_tuple
+
+        bepinex = pending.get("bridge_runtime") in (None, "", "bepinex")
+        verified = native or (
+            bepinex and _version_tuple(getattr(bridge, "plugin_version", None)) >= _version_tuple("0.7.2")
+        )
         steps = [attacker_entries]
-        if native:
+        if native or bepinex:
             groups: dict[tuple, list[dict]] = {}
             for entry in attacker_entries:
                 groups.setdefault(recipient_key(entry["damageRecipient"]), []).append(entry)
@@ -1274,7 +1285,7 @@ class _BridgeSubmitMixin:
             if not needs_finalize:
                 break
             outcome, request_key = self._await_attack_selection(
-                bridge, request_key, step_entries, native, require_submit=index == len(steps) - 1
+                bridge, request_key, step_entries, verified, require_submit=index == len(steps) - 1
             )
             if outcome == "advanced":
                 # Arena advanced; never send an empty declaration into a

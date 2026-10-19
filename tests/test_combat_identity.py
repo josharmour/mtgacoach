@@ -328,3 +328,64 @@ def test_attackers_that_differ_still_require_an_instance_id(difference):
         resolve_combatant(
             "Void Extrapolator", _void_extrapolators(**difference), [299, 286], local_side=False
         )
+
+
+@pytest.mark.parametrize(
+    ("plugin_version", "accepted", "finalized"),
+    [("0.7.2", True, True), ("0.7.2", False, False), ("0.6.5", False, True)],
+)
+def test_bepinex_attack_groups_recipients_and_verifies_from_0_7_2(monkeypatch, plugin_version, accepted, finalized):
+    """2026-10-18 22:31:30 (bug_20261018_223140, Linux/Proton BepInEx): Gallia -> Jace and
+    Blessed Ghoul -> player went out as one update, the server rejected it
+    (InvalidDamageRecipient), the empty finalize passed with no attackers and the
+    coach announced the attack. BepInEx now sends one update per recipient group;
+    from plugin 0.7.2 (which reports the selection) Arena must show it before the
+    finalize. An older plugin keeps the lenient acknowledgement."""
+    monkeypatch.setattr("arenamcp.autopilot_bridge.time.sleep", lambda _: None)
+    walker = {"type": "PlanesWalker", "planeswalkerInstanceId": 469}
+    state = board()
+    state["battlefield"] = [
+        {"instance_id": 388, "name": "Gallia, Tragic Host", "controller_seat_id": 1, "power": 3},
+        {"instance_id": 414, "name": "Blessed Ghoul", "controller_seat_id": 1, "power": 2},
+        {"instance_id": 469, "name": "Jace, the Mind Sculptor", "controller_seat_id": 2},
+    ]
+    pending = {
+        "has_pending": True,
+        "request_class": "DeclareAttackerRequest",
+        "game_state_id": 896,
+        "msg_id": 1200,
+        "can_submit": True,
+        "attackers": [
+            {"attackerInstanceId": iid, "legalDamageRecipients": [PLAYER, walker], "selectedDamageRecipient": None}
+            for iid in (388, 414)
+        ],
+    }
+    first = deepcopy(pending)
+    first.update(game_state_id=897, msg_id=1202)
+    first["attackers"][0]["selectedDamageRecipient"] = walker  # Gallia -> Jace, the first group
+    second = deepcopy(first)
+    second.update(game_state_id=898, msg_id=1204)
+    second["attackers"][1]["selectedDamageRecipient"] = PLAYER if accepted else None
+    replies = iter([pending, pending, first])
+    engine = pilot(state, pending)
+    engine._gre_bridge.plugin_version = plugin_version
+    engine._gre_bridge.get_pending_actions.side_effect = lambda: next(replies, second)
+    engine._gre_bridge.submit_attackers_raw.side_effect = [
+        {"ok": True, "needs_finalize": True},
+        {"ok": True, "needs_finalize": True},
+        {"ok": True},
+    ]
+    action = GameAction(
+        ActionType.DECLARE_ATTACKERS,
+        attacker_names=["Gallia, Tragic Host", "Blessed Ghoul"],
+        attacker_instance_ids=[388, 414],
+        attacker_targets={"Gallia, Tragic Host": "Jace, the Mind Sculptor [469]", "Blessed Ghoul": "Opponent"},
+    )
+    result = engine._try_bridge_declare_attackers(action)
+    calls = engine._gre_bridge.submit_attackers_raw.call_args_list
+    groups = [sorted(entry["attackerInstanceId"] for entry in call.args[0]) for call in calls[:2]]
+    assert groups[0] in ([388], [414]) and groups[1] == [388, 414]  # one recipient per update
+    assert (len(calls) == 3) is finalized
+    assert bool(result and result.success) is finalized
+    if finalized:
+        assert calls[2].args[0] == [] and not calls[2].kwargs

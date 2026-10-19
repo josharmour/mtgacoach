@@ -35,6 +35,12 @@ def state():
     }
 
 
+def declared(pilot):
+    """The last attacker declaration sent (the finalize after it is empty)."""
+    calls = [call.args[0] for call in pilot._gre_bridge.submit_attackers_raw.call_args_list if call.args[0]]
+    return calls[-1]
+
+
 def engine():
     result = _BridgeSubmitMixin()
     result._get_game_state = state
@@ -47,7 +53,9 @@ def engine():
         "request_class": "DeclareAttackerRequest",
         "attackers": state()["decision_context"]["raw_attackers"],
     }
-    result._gre_bridge.submit_attackers_raw.return_value = {"ok": True}
+    # The plugin answers an UpdateAttacker with needs_finalize; the empty
+    # finalize follows (one update per recipient group, 2026-10-18).
+    result._gre_bridge.submit_attackers_raw.return_value = {"ok": True, "needs_finalize": True}
     result._attack_override = Mock(return_value=None)
     result._log_execution_path = Mock()
     return result
@@ -108,7 +116,7 @@ def test_split_attack_preserves_each_recipient():
         attacker_targets={"Beast": "Jace [297]", "Pia": "Opponent"},
     )
     assert pilot._try_bridge_declare_attackers(action).success
-    entries = pilot._gre_bridge.submit_attackers_raw.call_args.args[0]
+    entries = declared(pilot)
     assert entries[0]["damageRecipient"]["planeswalkerInstanceId"] == 297
     assert entries[1]["damageRecipient"]["playerSystemSeatId"] == 1
     pilot._attack_override.assert_not_called()
@@ -132,7 +140,7 @@ def test_a_missing_target_defaults_to_the_opponent_player():
     action = GameAction(action_type=ActionType.DECLARE_ATTACKERS, attacker_names=["Beast"])
     result = pilot._try_bridge_declare_attackers(action)
     assert result is not None and result.success
-    submitted = pilot._gre_bridge.submit_attackers_raw.call_args[0][0]
+    submitted = declared(pilot)
     assert submitted == [
         {"attackerInstanceId": 288, "damageRecipient": {"type": "Player", "playerSystemSeatId": 1}}
     ]
@@ -159,10 +167,7 @@ def test_empty_done_uses_joint_solver_and_preserves_split_targets():
     pilot._get_game_state = lambda: snapshot
     result = pilot._try_bridge_declare_attackers(GameAction(action_type=ActionType.DECLARE_ATTACKERS))
     assert result.success
-    entries = {
-        entry["attackerInstanceId"]: entry["damageRecipient"]
-        for entry in pilot._gre_bridge.submit_attackers_raw.call_args.args[0]
-    }
+    entries = {entry["attackerInstanceId"]: entry["damageRecipient"] for entry in declared(pilot)}
     assert entries[288]["planeswalkerInstanceId"] == 297
     assert entries[238]["playerSystemSeatId"] == 1
     pilot._attack_override.assert_not_called()

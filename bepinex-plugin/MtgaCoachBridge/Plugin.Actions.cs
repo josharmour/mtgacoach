@@ -497,6 +497,7 @@ namespace MtgaCoachBridge
                         recipients.Add(drObj);
                     }
                     ao["legalDamageRecipients"] = recipients;
+                    ao["selectedDamageRecipient"] = SelectedDamageRecipientJson(attackerReq, a.AttackerInstanceId);
                     attackersArr.Add(ao);
                 }
                 resp["attackers"] = attackersArr;
@@ -1198,21 +1199,34 @@ namespace MtgaCoachBridge
                     // Step 1: Find attackers in request.Attackers (NOT QualifiedAttackers),
                     //         set SelectedDamageRecipient, call UpdateAttacker.
                     // Step 2: Python calls again with empty list â†’ SubmitAttackers() to finalize.
-                    var requestedIds = new HashSet<uint>();
+                    var requested = new Dictionary<uint, JObject>();
                     foreach (var a in attackerList)
-                        requestedIds.Add((uint)a.Value<int>("attackerInstanceId"));
+                        requested[(uint)a.Value<int>("attackerInstanceId")] = a as JObject;
 
                     var matched = new System.Collections.Generic.List<Attacker>();
+                    var recipients = new System.Collections.Generic.List<DamageRecipient>();
                     foreach (var a in attackerReq.Attackers)
                     {
-                        if (requestedIds.Contains(a.AttackerInstanceId)
+                        if (requested.TryGetValue(a.AttackerInstanceId, out var wanted)
                             && a.SelectedDamageRecipient == null
                             && a.LegalDamageRecipients.Count > 0)
                         {
-                            a.SelectedDamageRecipient = a.LegalDamageRecipients[0];
+                            var recipient = MatchDamageRecipient(a, wanted?["damageRecipient"] as JObject);
+                            if (recipient == null)
+                            {
+                                cmd.SetResponse(new JObject
+                                {
+                                    ["ok"] = false,
+                                    ["error"] = $"Attacker {a.AttackerInstanceId}: requested recipient is not legal"
+                                });
+                                return;
+                            }
                             matched.Add(a);
+                            recipients.Add(recipient);
                         }
                     }
+                    for (int i = 0; i < matched.Count; i++)
+                        matched[i].SelectedDamageRecipient = recipients[i];
 
                     if (matched.Count > 0)
                     {
