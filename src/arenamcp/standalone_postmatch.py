@@ -29,6 +29,93 @@ _WATCHED_MATCHES_KEPT = 4
 _RECORDED_GAMES_KEPT = 32
 
 
+# The bundle context of the game being played, on disk, so a coach restarted
+# mid-game bundles the whole game (ledger #72, 2026-10-19 match 115944ce: the
+# 11:14:23 restart's bundle sliced the coach log and Player.log from the
+# restart, without T1-T7 or the room event naming the opponent).
+_LIVE_BUNDLE_FILE = "live_context.json"
+# A saved context older than this is from another session, not a restart.
+_LIVE_BUNDLE_MAX_AGE_S = 6 * 3600
+
+
+def _live_bundle_path() -> Path:
+    from arenamcp import match_bundle
+
+    return Path(match_bundle.BUNDLE_DIR) / _LIVE_BUNDLE_FILE
+
+
+def _save_live_bundle_context(ctx) -> None:
+    """Persist where game *ctx* started in the logs (never raises)."""
+    if ctx is None:
+        return
+    try:
+        path = _live_bundle_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "bundle_id": ctx.bundle_id,
+            "match_id": ctx.match_id,
+            "game_number": ctx.game_number,
+            "started_at": ctx.started_at,
+            "coach_log_path": str(ctx.coach_log_path or ""),
+            "coach_log_start": int(ctx.coach_log_start or 0),
+            "player_log_path": str(ctx.player_log_path or ""),
+            "player_log_start": int(ctx.player_log_start or 0),
+        }
+        tmp = path.with_name(f".{path.name}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        tmp.replace(path)
+    except Exception as e:
+        logger.debug(f"[BUNDLE] could not persist the match context: {e}")
+
+
+def _clear_live_bundle_context(bundle_id: str) -> None:
+    path = _live_bundle_path()
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if isinstance(saved, dict) and saved.get("bundle_id") == bundle_id:
+        with contextlib.suppress(OSError):
+            path.unlink()
+
+
+def _resume_bundle_context(ctx):
+    """*ctx* with the log offsets and start time a coach before a restart saved for the same game.
+
+    Kept only when that context names this game, is recent, and both logs are
+    the same files and at least as long as its offsets (a rotated or new log
+    starts over from *ctx*).
+    """
+    try:
+        saved = json.loads(_live_bundle_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ctx
+    if not isinstance(saved, dict) or saved.get("bundle_id") != ctx.bundle_id:
+        return ctx
+    try:
+        started_at = float(saved.get("started_at") or 0)
+        coach_start = int(saved.get("coach_log_start") or 0)
+        player_start = int(saved.get("player_log_start") or 0)
+    except (TypeError, ValueError):
+        return ctx
+    if not 0 < started_at <= ctx.started_at or ctx.started_at - started_at > _LIVE_BUNDLE_MAX_AGE_S:
+        return ctx
+    same_coach = saved.get("coach_log_path") == str(ctx.coach_log_path or "")
+    same_player = saved.get("player_log_path") == str(ctx.player_log_path or "")
+    if not (same_coach and same_player):
+        return ctx
+    if coach_start > ctx.coach_log_start or player_start > ctx.player_log_start:
+        return ctx  # a log is shorter than the saved offset: it was rotated or replaced
+    ctx.started_at = started_at
+    ctx.coach_log_start = coach_start
+    ctx.player_log_start = player_start
+    logger.info(
+        f"[BUNDLE] resumed {ctx.bundle_id}'s context from before the restart (game began "
+        f"{datetime.fromtimestamp(started_at):%H:%M:%S}): its bundle covers the whole game"
+    )
+    return ctx
+
+
 def _background_priority() -> int:
     """The proxy's background vLLM priority (10 when the proxy can't be imported)."""
     try:
@@ -57,13 +144,15 @@ class _PostMatchMixin:
             if watcher is not None:
                 player_log_path = Path(str(getattr(watcher, "log_path", "") or "")) or None
                 player_log_offset = getattr(watcher, "file_position", None)
-            self._match_bundle_ctx = match_bundle.begin_match(
+            ctx = match_bundle.begin_match(
                 str(match_id),
                 coach_log_path=LOG_FILE,
                 player_log_path=player_log_path if player_log_path and str(player_log_path) != "." else None,
                 player_log_offset=player_log_offset,
                 game_number=self._bundle_game_number,
             )
+            self._match_bundle_ctx = _resume_bundle_context(ctx)
+            _save_live_bundle_context(self._match_bundle_ctx)
         except Exception as e:
             logger.debug(f"[BUNDLE] could not start match context: {e}")
 
@@ -343,6 +432,8 @@ class _PostMatchMixin:
         """
         ctx = getattr(self, "_match_bundle_ctx", None)
         self._match_bundle_ctx = None
+        if ctx is not None:
+            _clear_live_bundle_context(ctx.bundle_id)
         if ctx is None:
             # Normal after the event signal consumed it (the match boundary
             # follows every game end); anything else is a gap worth seeing.

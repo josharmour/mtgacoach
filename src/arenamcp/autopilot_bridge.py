@@ -714,8 +714,20 @@ class _BridgeSubmitMixin:
         An auto-confirm, AFK default or fallback is not a choice (issues #398-#402:
         an empty submit cleared attackers MTGA had selected), nor is a Done while
         this turn's plan still has an attack step to run.
+
+        A combat guard's hold is a choice (#75, 2026-10-19 T16 match abde2a07,
+        11:33:57): the crackback guard emptied the declaration ("PLAN: not
+        attacking"), but as a fallback it was no model choice, and the turn
+        plan's attack step was the very step being executed, so the solver put
+        Emberheart Challenger back 70 ms later. The authoritative overrides still
+        beat it, exactly as they beat the model's own hold (both guards stand
+        aside on a lethal board themselves).
         """
-        if not getattr(action, "model_choice", False) or action.attacker_names:
+        if action.attacker_names:
+            return False
+        if getattr(action, "guard_hold", False):
+            return True
+        if not getattr(action, "model_choice", False):
             return False
         planner = getattr(self, "_planner", None)
         pending = getattr(planner, "has_pending_attack_intent", None)

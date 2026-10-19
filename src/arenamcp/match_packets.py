@@ -25,6 +25,21 @@ MAX_PACKETS = 500  # Cap total history to avoid disk bloat
 # Game ids whose packet was saved, across coach restarts (newest last).
 FINALIZED_PATH = Path.home() / ".arenamcp" / "finalized_matches.json"
 MAX_FINALIZED = 200
+# The packet of a game in progress, one JSON record per line under
+# PACKETS_DIR/live (see MatchPacket.journal). Journals no game finished are
+# deleted after this long.
+LIVE_SUBDIR = "live"
+LIVE_MAX_AGE_S = 2 * 24 * 3600
+
+
+def _journal_path(match_id: str) -> Path:
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(match_id))
+    return PACKETS_DIR / LIVE_SUBDIR / f"{safe}.jsonl"
+
+
+def _as_fingerprint(value: Any) -> Any:
+    """A fingerprint read back from JSON (lists) as the tuple ``decision_fingerprint`` makes."""
+    return tuple(_as_fingerprint(v) for v in value) if isinstance(value, list) else value
 
 
 class MatchPacket:
@@ -39,6 +54,91 @@ class MatchPacket:
         self.opponent_name: str | None = None
         self.replay_path: str | None = None
         self.decisions: list[dict[str, Any]] = []
+        # The on-disk journal (None: not journaling, e.g. a packet built in a test).
+        self.journal: Path | None = None
+
+    # -- the live journal (ledger #72) ------------------------------------------
+    #
+    # 2026-10-19 match 115944ce: the coach restarted at 11:14:23 mid-game and
+    # the packet saved at 11:16:10 started there (11 decisions, T8-T10); the
+    # decisions of T1-T7 were lost with the old process, and so was the bundle's
+    # view of them. Every recorded entry is appended to a journal as it happens,
+    # and start_match_packet() resumes a game's journal after a restart.
+
+    def start_journal(self) -> None:
+        """Journal this packet under PACKETS_DIR/live, from scratch (never raises)."""
+        try:
+            path = _journal_path(self.match_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+            self.journal = path
+            self._append({"meta": {"match_id": self.match_id, "start_time": self.start_time}})
+        except Exception as e:
+            self.journal = None
+            logger.debug(f"MatchPacket journal unavailable for {self.match_id}: {e}")
+
+    def _append(self, record: dict[str, Any]) -> None:
+        path = self.journal
+        if path is None:
+            return
+        try:
+            line = json.dumps(record, ensure_ascii=False, default=str)
+            with open(path, "a", encoding="utf-8") as journal:
+                journal.write(line + "\n")
+        except Exception as e:
+            logger.debug(f"MatchPacket journal write failed for {self.match_id}: {e}")
+
+    def _record(self, entry: dict[str, Any]) -> None:
+        self.decisions.append(entry)
+        self._append({"entry": entry})
+
+    @classmethod
+    def from_journal(cls, match_id: str) -> MatchPacket | None:
+        """The packet a previous coach journaled for this game, or None (never raises)."""
+        path = _journal_path(match_id)
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
+        packet = cls(match_id)
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue  # a line torn by the old process dying mid-write
+            if not isinstance(record, dict):
+                continue
+            meta = record.get("meta")
+            if isinstance(meta, dict) and meta.get("start_time"):
+                packet.start_time = str(meta["start_time"])
+            entry = record.get("entry")
+            if isinstance(entry, dict):
+                if "fingerprint" in entry:
+                    entry["fingerprint"] = _as_fingerprint(entry["fingerprint"])
+                packet.decisions.append(entry)
+            outcome = record.get("outcome")
+            if isinstance(outcome, list) and len(outcome) == 2:
+                packet._settle(_as_fingerprint(outcome[0]), str(outcome[1]))
+        # Rewrite it clean: a torn last line would swallow the next record appended to it.
+        try:
+            records = [{"meta": {"match_id": match_id, "start_time": packet.start_time}}]
+            records += [{"entry": entry} for entry in packet.decisions]
+            tmp = path.with_name(f".{path.name}.tmp")
+            tmp.write_text(
+                "".join(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in records),
+                encoding="utf-8",
+            )
+            tmp.replace(path)
+        except Exception as e:
+            logger.debug(f"MatchPacket journal rewrite failed for {match_id}: {e}")
+        packet.journal = path
+        return packet
+
+    def discard_journal(self) -> None:
+        path, self.journal = self.journal, None
+        if path is not None:
+            with contextlib.suppress(OSError):
+                path.unlink()
 
     def add_decision(
         self,
@@ -67,7 +167,7 @@ class MatchPacket:
         turn = (game_state or {}).get("turn") if isinstance(game_state, dict) else None
         if isinstance(turn, dict):
             entry["turn"] = {k: turn.get(k) for k in ("turn_number", "phase", "step", "active_player")}
-        self.decisions.append(entry)
+        self._record(entry)
 
     def add_combat_decision(
         self,
@@ -102,7 +202,7 @@ class MatchPacket:
         turn = (game_state or {}).get("turn") if isinstance(game_state, dict) else None
         if isinstance(turn, dict):
             entry["turn"] = {k: turn.get(k) for k in ("turn_number", "phase", "step", "active_player")}
-        self.decisions.append(entry)
+        self._record(entry)
 
     def recent_decisions(self, count: int = 40) -> list[dict[str, Any]]:
         """The last decisions, compact enough for a bug report: labels, the pick, the trace."""
@@ -145,7 +245,7 @@ class MatchPacket:
         despite 8 successful bridge submissions, gutting the packet's value
         as telemetry (P0-9).
         """
-        self.decisions.append(
+        self._record(
             {
                 "executed_action": {
                     "action_type": action_type,
@@ -161,11 +261,16 @@ class MatchPacket:
 
     def update_outcome(self, fp: tuple, outcome: str) -> None:
         """Settle a pending decision with its final execution outcome."""
+        if self._settle(fp, outcome):
+            self._append({"outcome": [fp, outcome]})
+
+    def _settle(self, fp: Any, outcome: str) -> bool:
         for entry in reversed(self.decisions):
             if entry.get("fingerprint") == fp and entry.get("outcome") == "pending":
                 entry["outcome"] = outcome
                 logger.debug(f"MatchPacket: updated decision {fp[0]} to {outcome}")
-                break
+                return True
+        return False
 
     def save(self, packets_dir: Path | None = None) -> Path | None:
         """Save the packet to disk as a JSON fixture."""
@@ -197,6 +302,7 @@ class MatchPacket:
             path = target_dir / f"packet_{ts}_{self.match_id}.json"
             path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
             mark_match_finalized(self.match_id)
+            self.discard_journal()
             _rotate(target_dir)
             logger.info(
                 f"Match packet recorded: {path.name} (decisions={len(self.decisions)}, result={self.result})"
@@ -299,9 +405,33 @@ def start_match_packet(match_id: str) -> MatchPacket | None:
             f"Match packet for {prev.match_id} was never finalized — "
             f"salvaged as 'abandoned' ({len(prev.decisions)} decisions)"
         )
+    _prune_journals(keep=match_id)
+    resumed = MatchPacket.from_journal(match_id)
+    if resumed is not None:
+        _current_packet = resumed
+        logger.info(
+            f"Resumed match packet recording for match {match_id} after a restart "
+            f"({len(resumed.decisions)} decisions since {resumed.start_time})"
+        )
+        return _current_packet
     _current_packet = MatchPacket(match_id)
+    _current_packet.start_journal()
     logger.info(f"Started match packet recording for match {match_id}")
     return _current_packet
+
+
+def _prune_journals(*, keep: str) -> None:
+    """Delete live journals untouched for LIVE_MAX_AGE_S (games no coach finished)."""
+    live = PACKETS_DIR / LIVE_SUBDIR
+    keep_path = _journal_path(keep)
+    try:
+        cutoff = time.time() - LIVE_MAX_AGE_S
+        for path in live.glob("*.jsonl"):
+            if path != keep_path and path.stat().st_mtime < cutoff:
+                with contextlib.suppress(OSError):
+                    path.unlink()
+    except OSError:
+        pass
 
 
 def get_current_packet() -> MatchPacket | None:

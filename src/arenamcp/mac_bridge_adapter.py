@@ -2558,11 +2558,17 @@ class MacBridgeAdapter:
         color = str(command.get("color") or "")
         option = None
         if color:
+            # IL2CPP enum names are the CLR ones ("Red"); a protobuf-style
+            # "ManaColor_Red" means the same color.
+            wanted = color.removeprefix("ManaColor_")
             option = next(
                 (
                     candidate
                     for candidate in items(field(source, "ManaPaymentOptions"))
-                    if any(enum_name(field(mana, "Color")) == color for mana in items(field(candidate, "Mana")))
+                    if any(
+                        enum_name(field(mana, "Color")).removeprefix("ManaColor_") == wanted
+                        for mana in items(field(candidate, "Mana"))
+                    )
                 ),
                 None,
             )

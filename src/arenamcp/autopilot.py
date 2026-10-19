@@ -152,6 +152,10 @@ class AutopilotEngine(
         self._recent_takeovers: list[dict[str, Any]] = []
         # P1-4: manual-play detection state.
         self._last_seen_own_stack: set[str] = set()
+        # Turn of the first stack look and when this engine started: own
+        # spells already on the stack then are not manual plays (#62).
+        self._own_stack_first_turn: int | None = None
+        self._started_at: float = time.monotonic()
         self._manual_play_cooldown_until: float = 0.0
         self._recent_bot_submissions: list[tuple[float, str]] = []
         # Activated-ability submissions this turn, keyed (turn, "iid"|"name", key).
@@ -219,6 +223,7 @@ class AutopilotEngine(
         self._last_cast_submitted: tuple[int, str] | None = None
         self._last_cast_submitted_ts: float = 0.0
         self._max_seen_turn: int = 0
+        self._max_seen_turn_match: Any = None
         self._window_first_seen_at: float = 0.0
         self._given_up_window_sig: tuple[Any, ...] | None = None
         self._recent_submission_times: deque = deque(maxlen=32)
@@ -502,6 +507,10 @@ class AutopilotEngine(
     _MANUAL_PLAY_COOLDOWN_S = 20.0
     # Bot submissions within this window explain an own stack object.
     _MANUAL_PLAY_BOT_WINDOW_S = 15.0
+    # After a start in the middle of a game, own stack objects of that turn
+    # this soon are the previous coach process's casts (tools/ladder_report.py
+    # applies the same 30 s rule).
+    _RESTART_STACK_GRACE_S = 30.0
 
     def _detect_manual_play(self, game_state: dict[str, Any]) -> bool:
         """True when a NEW own-controlled stack object wasn't bot-submitted.
@@ -526,6 +535,10 @@ class AutopilotEngine(
             and str(e.get("object_kind") or "").upper() != "ABILITY"
             and not str(e.get("name")).lower().startswith("ability (id:")
         }
+        turn = self._turn_number(game_state)
+        first_look = getattr(self, "_own_stack_first_turn", None) is None
+        if first_look:
+            self._own_stack_first_turn = turn
         new_names = own_stack - self._last_seen_own_stack
         self._last_seen_own_stack = own_stack
         if not new_names:
@@ -536,6 +549,25 @@ class AutopilotEngine(
         }
         unexplained = {n for n in new_names if n not in recent_bot_names}
         if not unexplained:
+            return False
+        # 2026-10-19 11:14:30 (#62, match 115944ce): the coach restarted while
+        # the Iroh's Demonstration the previous process had cast was on the
+        # stack; the new process knew none of its submissions, read the spell
+        # as the user's and stood down for 20 s — the decision watchdog then
+        # had to attack with 20 s left on Arena's clock. What is already on
+        # our stack when this engine first looks, and (for a start in the
+        # middle of a game, while the log catches up) what appears in that
+        # same turn within the first 30 s, was cast before this engine ran.
+        inherited = first_look or (
+            turn > 0
+            and turn == getattr(self, "_own_stack_first_turn", None)
+            and now - getattr(self, "_started_at", float("-inf")) <= self._RESTART_STACK_GRACE_S
+        )
+        if inherited:
+            logger.info(
+                "Autopilot: %s on our stack since before this coach started — not a manual play",
+                sorted(unexplained),
+            )
             return False
         already_cooling = time.time() < self._manual_play_cooldown_until
         self._manual_play_cooldown_until = time.time() + self._MANUAL_PLAY_COOLDOWN_S
@@ -716,22 +748,85 @@ class AutopilotEngine(
             self._play_name(option.label)[1],
         )
 
+    @classmethod
+    def _cancelled_request_spell(cls, game_state: dict[str, Any]) -> str:
+        """Lowercased name of OUR spell on the stack that the pending request belongs to, else "".
+
+        The request's source instance is exact; abilities (triggers,
+        activations) and other players' spells give "".
+        """
+        source = 0
+        for container in (game_state.get("_bridge_request_payload"), game_state.get("decision_context")):
+            if isinstance(container, dict) and not source:
+                try:
+                    source = int(container.get("sourceId") or container.get("source_id") or 0)
+                except (TypeError, ValueError):
+                    source = 0
+        if not source:
+            return ""
+        local_seat = game_state.get("local_seat_id") or next(
+            (p.get("seat_id") for p in game_state.get("players") or [] if p.get("is_local")), None
+        )
+        for entry in game_state.get("stack") or []:
+            if not isinstance(entry, dict) or int(entry.get("instance_id") or 0) != source:
+                continue
+            name = str(entry.get("name") or "").strip()
+            if (
+                local_seat is None
+                or (entry.get("controller_seat_id") or entry.get("owner_seat_id")) != local_seat
+                or str(entry.get("object_kind") or "").upper() == "ABILITY"
+                or int(entry.get("parent_instance_id") or 0) > 0
+                or not name
+                or name.lower().startswith("ability (id:")
+            ):
+                return ""
+            return cls._plain_card_name(name).lower()
+        return ""
+
     def _withhold_after_self_cancel(self, game_state: dict[str, Any], why: str) -> None:
         note = getattr(self, "_last_typed_play", None)
         self._last_typed_play = None
+        # 2026-10-19 (#71, match 115944ce): every way out below used to be
+        # silent, and the guard said nothing through 11 cast/cancel loops of
+        # Iroh's Demonstration (its memory had been wiped, see process_trigger).
+        # Say why nothing is withheld, and when the memory is gone but the
+        # cancelled request belongs to our own spell on the stack (a cast the
+        # previous coach process submitted), withhold that spell instead.
+        missing = ""
         if not note:
-            return
+            missing = "no cast or activation of ours is on record"
+        else:
+            age = time.monotonic() - note[0]
+            if age > self._ACTIVATION_ROLLBACK_MAX_AGE_S:
+                missing = f"the last recorded play ({note[5] or note[3]!r}) is {age:.0f}s old"
+            elif note[1] != self._turn_number(game_state):
+                missing = f"the last recorded play ({note[5] or note[3]!r}) was on turn {note[1]}"
+        if missing:
+            spell = self._cancelled_request_spell(game_state)
+            if not spell:
+                logger.info("Self-cancel guard: nothing withheld for the cancelled %s (%s)", why, missing)
+                return
+            logger.info(
+                "Self-cancel guard: %s; the cancelled %s belongs to our spell %r on the stack",
+                missing,
+                why,
+                spell,
+            )
+            note = (time.monotonic(), self._turn_number(game_state), "ActionType_Cast", 0, 0, spell)
         noted_at, turn, kind, instance_id, ability_id, name = note
-        if time.monotonic() - noted_at > self._ACTIVATION_ROLLBACK_MAX_AGE_S:
-            return
-        if turn != self._turn_number(game_state):
-            return
         context = game_state.get("decision_context") or {}
         try:
             parent = int(context.get("source_parent_instance_id") or 0)
         except (TypeError, ValueError):
             parent = 0
         if kind == "ActionType_Activate" and parent and instance_id and parent != instance_id:
+            logger.info(
+                "Self-cancel guard: the cancelled %s belonged to another source (%s), "
+                "not to the activation of %r",
+                why,
+                parent,
+                name or instance_id,
+            )
             return
         if kind == "ActionType_Cast" and (parent or self._request_source_is_ability(game_state, context)):
             # The declined request belongs to an ability, not to the spell: a
@@ -2032,6 +2127,137 @@ class AutopilotEngine(
         except Exception:
             return False
 
+    # The watchdog declares a planner attack this fresh instead of its own default (#67).
+    _WATCHDOG_PLAN_MAX_AGE_S = 2.0
+    _EVASION = ("flying", "menace")
+
+    def note_advised_plan(self, plan: Any, game_state: dict[str, Any]) -> None:
+        """Remember the planner's latest attack (the advice shown while autoplay stands by)."""
+        try:
+            action = next(
+                (
+                    a
+                    for a in plan.actions or []
+                    if a.action_type == ActionType.DECLARE_ATTACKERS and a.attacker_names
+                ),
+                None,
+            )
+        except Exception:
+            return
+        if action is not None:
+            self._advised_attack = (
+                time.monotonic(),
+                game_state.get("match_id"),
+                self._turn_number(game_state),
+                action,
+            )
+
+    def _watchdog_attack(self, state: dict[str, Any], poll: dict[str, Any]) -> tuple[bool, str] | None:
+        """The watchdog's attack: the planner's if it is fresh, else the solver's plus free evasive attackers.
+
+        2026-10-19 11:14:39 (match 115944ce, #67): standing by after a
+        (misread) manual play, the planner advised "Attack with Slickshot
+        Show-Off, Slickshot Show-Off, and Emberheart Challenger" at .443; the
+        watchdog's safe default at .554 declared the solver's attack,
+        Emberheart alone, though the opponent had no untapped creature. A plan
+        younger than _WATCHDOG_PLAN_MAX_AGE_S is declared as it stands (the
+        bridge path checks it against the request); with no untapped potential
+        blocker on their side, no flier or menace creature is held back.
+        Returns None to fall back to the usual safe default.
+        """
+        from arenamcp.combat_targets import attack_candidates, recipient_key, recipient_label
+
+        candidates = attack_candidates(state, poll) or []
+        if any(
+            isinstance(entry, dict) and (entry.get("selectedDamageRecipient") or entry.get("mustAttack"))
+            for entry in candidates
+        ):
+            return None  # a selection in progress or a forced attacker: the usual default handles both
+        noted = getattr(self, "_advised_attack", None)
+        if noted is not None:
+            at, match_id, turn, action = noted
+            age = time.monotonic() - at
+            if (
+                age <= self._WATCHDOG_PLAN_MAX_AGE_S
+                and turn == self._turn_number(state)
+                and match_id == state.get("match_id")
+            ):
+                result = self._try_bridge_declare_attackers(dataclasses.replace(action))
+                if result is not None and result.success:
+                    names = list(
+                        getattr(result.submitted_action, "attacker_names", None) or action.attacker_names
+                    )
+                    self._record_autopilot_decision(
+                        state,
+                        "watchdog",
+                        action_type="safe_default",
+                        summary="planner attack: " + ", ".join(names),
+                    )
+                    return True, "declared the planner's attack with " + ", ".join(names)
+                # It may have reached Arena in part: the usual safe default
+                # checks the request before it declares anything.
+                logger.info("[WATCHDOG] the planner's attack (%.1fs old) could not be declared", age)
+                return None
+
+        from arenamcp.combat_keywords import has_combat_keyword
+        from arenamcp.combat_strategy import combat_choice
+
+        local = state.get("local_seat_id") or next(
+            (p.get("seat_id") for p in state.get("players") or [] if p.get("is_local")), None
+        )
+        battlefield = [card for card in state.get("battlefield") or [] if isinstance(card, dict)]
+        if local is None or any(
+            (card.get("controller_seat_id") or card.get("owner_seat_id")) not in (None, local)
+            and "creature" in str(card.get("type_line") or "").lower()
+            and not card.get("is_tapped")
+            for card in battlefield
+        ):
+            return None
+        cards = {int(card.get("instance_id") or 0): card for card in battlefield}
+        choice = combat_choice(state)
+        assignments = dict(choice.assignments) if choice is not None else {}
+        for entry in candidates:
+            identity = int(entry.get("attackerInstanceId") or 0) if isinstance(entry, dict) else 0
+            card = cards.get(identity)
+            if not card or identity in assignments:
+                continue
+            text = str(card.get("oracle_text") or "").lower()
+            if not (any(has_combat_keyword(card, kw) for kw in self._EVASION) or "can't be blocked" in text):
+                continue
+            legal = [r for r in entry.get("legalDamageRecipients") or [] if isinstance(r, dict)]
+            try:
+                player = next((r for r in legal if recipient_key(r)[0] == "player"), None)
+            except ValueError:
+                player = None
+            if player is not None:
+                assignments[identity] = player
+        if choice is not None and len(assignments) == len(choice.assignments):
+            return None  # the solver already sends every free evasive attacker
+        if not assignments:
+            return None
+        names, identities, targets = [], [], {}
+        for identity, recipient in assignments.items():
+            name = f"{(cards.get(identity) or {}).get('name') or 'Creature'} [id:{identity}]"
+            names.append(name)
+            identities.append(identity)
+            targets[name] = recipient_label(recipient, state)
+        action = GameAction(
+            action_type=ActionType.DECLARE_ATTACKERS,
+            attacker_names=names,
+            attacker_instance_ids=identities,
+            attacker_targets=targets,
+            reasoning="Safe default: the solver's attack; no evasive attacker held back from an empty board",
+        )
+        result = self._try_bridge_declare_attackers(action)
+        if result is None or not result.success:
+            return None
+        declared = list(getattr(result.submitted_action, "attacker_names", None) or names)
+        logger.info("Safe-default attacks (no untapped blockers): %s", ", ".join(declared))
+        self._record_autopilot_decision(
+            state, "watchdog", action_type="safe_default", summary="attack: " + ", ".join(declared)
+        )
+        return True, "attacked with " + ", ".join(declared)
+
     def watchdog_safe_default(self, game_state: dict[str, Any], reason: str = "") -> tuple[bool, str]:
         """Answer the live request with a safe legal default (decision watchdog).
 
@@ -2072,6 +2298,10 @@ class AutopilotEngine(
                     self._log_execution_path(ExecutionPath.GRE_AWARE, "watchdog: passed priority")
                     return True, "passed priority"
                 return False, "priority window cannot be passed"
+            if "DeclareAttack" in rtype + rclass:
+                declared = self._watchdog_attack(state, poll)
+                if declared is not None:
+                    return declared
             from arenamcp.decisions import build_pending_decision, search_safe_default, submit_option
             from arenamcp.request_tracker import decision_fingerprint, request_window
 
@@ -2619,9 +2849,26 @@ class AutopilotEngine(
                 return True
 
             turn_num = int((game_state.get("turn") or {}).get("turn_number", 0) or 0)
-            if turn_num and turn_num < self._max_seen_turn:
-                # Turn counter went backwards → new match. Drop per-match
-                # livelock memories.
+            # A later game of the same match restarts the turn count; another
+            # match is a new game whatever its turn (game_number can still be
+            # unset early in a game, so it is not compared).
+            match_id = game_state.get("match_id")
+            last_match = getattr(self, "_max_seen_turn_match", None)
+            new_game = bool(match_id and last_match and match_id != last_match)
+            if (turn_num and turn_num < self._max_seen_turn) or new_game:
+                # Turn counter went backwards (or the match changed) → new
+                # game. Drop per-game livelock memories, and start counting
+                # turns again from this one. 2026-10-19 (match 115944ce): the
+                # previous game ended on turn 9 and the high-water mark stayed
+                # 9, so every trigger of turns 1-8 of the next game wiped these
+                # memories again — the cast noted at 11:12:55 was gone by its
+                # SelectTargets cancel at 11:13:04 and the self-cancel guard
+                # stayed silent through 11 cast/cancel loops (#71).
+                logger.info(
+                    "Autopilot: new game (turn %s after %s); per-game livelock memories cleared",
+                    turn_num,
+                    self._max_seen_turn,
+                )
                 self._cast_rollback_counts.clear()
                 self._cast_rollback_totals.clear()
                 self._last_cast_submitted = None
@@ -2630,7 +2877,10 @@ class AutopilotEngine(
                 self._runaway_tripped_turn = None
                 self._request_tracker.reset()
                 self._progress_guard.reset()
+                self._max_seen_turn = 0
             self._max_seen_turn = max(self._max_seen_turn, turn_num)
+            if match_id:
+                self._max_seen_turn_match = match_id
 
             # P1-4: the user casting manually while autopilot runs. On
             # 2026-07-06 01:02 the bot fought the user's manual plays for
@@ -2994,8 +3244,21 @@ class AutopilotEngine(
                     # No Auto Pay (an X spell taking every source, 2026-10-18
                     # 21:40): pay one mana source per round as Arena's bot does;
                     # the server's next PayCostsReq asks for what is left.
-                    from arenamcp.mana_payment import choose_payment_source
+                    from arenamcp.mana_payment import choose_payment_source, payment_shortfall
 
+                    # Arena's own Auto Pay solution says the cost is payable.
+                    shortfall = "" if pay_context.get("has_autotap") else payment_shortfall(pay_context)
+                    if shortfall:
+                        logger.info(
+                            "Autopilot: %s's %s cannot be paid (%s); cancelling PayCostsRequest",
+                            pay_context.get("source_card") or "the pending cost",
+                            pay_context.get("mana_cost") or "cost",
+                            shortfall,
+                        )
+                        if self._cancel_unpayable_costs(
+                            game_state, trigger, f"PayCosts cancelled ({shortfall})"
+                        ):
+                            return True
                     step = choose_payment_source(pay_context)
                     if step and self._progress_bridge(game_state).submit_payment_action(
                         step["instance_id"], step["ability_grp_id"], step["color"]
@@ -4561,6 +4824,91 @@ class AutopilotEngine(
         logger.info("typed-decision: log still behind the bridge (gameStateId %s < %s); yielding", have, want)
         return None
 
+    def _clock_wrap_up(self, game_state: dict[str, Any]) -> str:
+        """Why this turn of ours must wrap up now (Arena's clock), or "" (decision_clock.wrap_up_reason)."""
+        from arenamcp.decision_clock import wrap_up_reason
+
+        turn = game_state.get("turn") or {}
+        seat = game_state.get("local_seat_id") or next(
+            (p.get("seat_id") for p in game_state.get("players") or [] if p.get("is_local")), None
+        )
+        try:
+            return wrap_up_reason(
+                game_state.get("timer_state"),
+                seat,
+                self._turn_number(game_state),
+                turn.get("active_player"),
+            )
+        except Exception as error:
+            logger.debug("clock wrap-up check failed: %s", error, exc_info=True)
+            return ""
+
+    def _wrap_up_with_pass(
+        self, decision: Any, fp: Any, game_state: dict[str, Any], poll: dict[str, Any], trigger: str
+    ) -> bool:
+        """Out of time on our turn: pass priority now instead of starting another play.
+
+        2026-10-19 (match 115944ce T8, #66): a cast/cancel loop spent the turn
+        clock; Arena's timeout came at 11:14:00 and its AI took our seat over
+        at 11:14:30, cancelling the pending cast and passing Main 1. The
+        autopilot kept recasting the spell till then (and once more in Main 2
+        after a restart). Once Arena has charged a timeout this turn or our
+        rope is down to decision_clock.WRAP_UP_REMAINING_S, a priority window
+        is answered with a pass, no model call: nothing optional is started or
+        recast, combat comes next (its attack is planned as usual) or the turn
+        ends. Returns True when the pass was submitted.
+        """
+        reason = self._clock_wrap_up(game_state)
+        if not reason or decision.find("pass") is None:
+            return False
+        from arenamcp.decisions import submit_option
+        from arenamcp.request_tracker import request_window
+
+        turn = self._turn_number(game_state)
+        if getattr(self, "_wrap_up_announced_turn", None) != (game_state.get("match_id"), turn):
+            self._wrap_up_announced_turn = (game_state.get("match_id"), turn)
+            logger.warning(
+                "[CLOCK] wrap-up on turn %d: %s — no more optional plays; passing priority", turn, reason
+            )
+            self._notify("AUTOPILOT", "Running out of time on this turn — passing on")
+        else:
+            logger.info("[CLOCK] wrap-up (%s): passing priority", reason)
+        if not submit_option(self._progress_bridge(game_state, poll=poll), decision, ["pass"]):
+            logger.info("[CLOCK] wrap-up: the pass was not accepted; planning the window as usual")
+            return False
+        self._request_tracker.note_submitted(fp, request_window(game_state))
+        self._last_typed_play = None
+        self._log_execution_path(ExecutionPath.GRE_AWARE, f"clock wrap-up: passed priority ({reason})")
+        self._record_autopilot_decision(
+            game_state, trigger, action_type="pass", summary=f"clock wrap-up: passed ({reason})"
+        )
+        self._state = AutopilotState.IDLE
+        return True
+
+    @staticmethod
+    def _untargeted_mode_for_no_kill(
+        decision: Any, game_state: dict[str, Any], option_ids: list[str]
+    ) -> list[str]:
+        """Swap a no-kill targeted damage mode for the spell's one-sided untargeted mode.
+
+        2026-10-19 (match 115944ce T8, #65): Iroh's Demonstration's "4 damage
+        to target creature" was chosen against a 7/7; its target was declined,
+        the cast cancelled and the spell hidden for the turn, prowess and
+        Slickshot pumps with it. "1 damage to each creature your opponents
+        control" keeps the cast (cast_triggers.untargeted_mode_instead).
+        """
+        from arenamcp.cast_triggers import untargeted_mode_instead
+
+        try:
+            swap = untargeted_mode_instead(decision, list(option_ids or []), game_state)
+        except Exception as error:
+            logger.debug("modal switch check failed: %s", error, exc_info=True)
+            return option_ids
+        if swap is None:
+            return option_ids
+        logger.warning("Modal switch: %s", swap[1])
+        return [swap[0]]
+
     def _try_typed_decision_path(self, game_state: dict[str, Any], trigger: str) -> bool | None:
         """Handle interactive requests via the typed PendingDecision pipeline.
 
@@ -4700,6 +5048,11 @@ class AutopilotEngine(
             self._state = AutopilotState.IDLE
             return True
 
+        if decision.request_type == "ActionsAvailable" and self._wrap_up_with_pass(
+            decision, fp, game_state, poll, trigger
+        ):
+            return True
+
         # Typed priority/target/search decisions must receive the same evolving
         # strategy as the legacy planner. Use the caught-up state and keep the
         # strategic model request off the tactical deadline.
@@ -4721,6 +5074,8 @@ class AutopilotEngine(
             self._state = AutopilotState.IDLE
             return True
         self._note_typed_fallback()
+        if decision.request_type == "CastingTimeOptions":
+            option_ids = self._untargeted_mode_for_no_kill(decision, game_state, option_ids)
         if decision.request_type == "Group" and (
             len(option_ids) != decision.min_select or not decision.selection_is_valid(option_ids)
         ):

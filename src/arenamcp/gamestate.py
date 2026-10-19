@@ -263,6 +263,10 @@ class GameState(_GameStateAnnotationsMixin):
         "_life_annotation_ids": set,
         # Timer state from GRE
         "timer_state": dict,
+        # Latest report of each GRE timer, timerId -> (timer, wall time, turn),
+        # and timerId -> seat (decision_clock.seat_entry builds timer_state).
+        "gre_timers": dict,
+        "gre_timer_seats": dict,
         # Temporary engine-busy signals from obscure GRE annotations
         "engine_busy_flags": dict,
         "engine_busy_until": 0.0,
@@ -694,6 +698,9 @@ class GameState(_GameStateAnnotationsMixin):
                 # event_id empty for the rest of the game).
                 "event_id": self.event_id,
                 "format_name": self.format_name,
+                # Named by the same room event (2026-10-19 match 115944ce: the
+                # 11:14:23 restart saved its packet with opponent_name None).
+                "opponent_name": self.opponent_name,
                 "local_seat_id": self.local_seat_id,
                 "seat_source": self._seat_source,
                 "turn_info": self.turn_info.to_dict(),
@@ -780,6 +787,7 @@ class GameState(_GameStateAnnotationsMixin):
                 self._result_game = (self.match_id, self.game_number) if self.last_game_result else None
                 self.event_id = str(checkpoint.get("event_id") or "")
                 self.format_name = str(checkpoint.get("format_name") or "")
+                self.opponent_name = str(checkpoint.get("opponent_name") or "")
                 self.local_seat_id = _coerce_optional_int(checkpoint.get("local_seat_id"))
                 self._seat_source = _coerce_int(checkpoint.get("seat_source", 0), 0)
 
@@ -902,6 +910,11 @@ class GameState(_GameStateAnnotationsMixin):
                             str(item) for item in obj_data.get("color_production", []) if item is not None
                         ],
                         keywords=[str(item) for item in obj_data.get("keywords", []) if item],
+                        ability_grp_ids=[
+                            _coerce_int(item, 0)
+                            for item in obj_data.get("ability_grp_ids", [])
+                            if _coerce_int(item, 0)
+                        ],
                     )
                     self.game_objects[instance_id] = game_object
 
@@ -1888,9 +1901,6 @@ class GameState(_GameStateAnnotationsMixin):
             for player_data in players:
                 self._update_player(player_data)
 
-            # Ensure lands_played is correct even when Arena omits player data
-            self._infer_lands_played()
-
             # ConnectResp often omits commanderGrpIds. Learn physical cards
             # from our command zone once, retaining their identity after they
             # move to the stack/battlefield. Emblems and abilities also live
@@ -1930,6 +1940,14 @@ class GameState(_GameStateAnnotationsMixin):
             self._track_attachments(message, persistent_annotations)
             if persistent_annotations:
                 self._process_annotations(persistent_annotations)
+
+            # Ensure lands_played is correct even when Arena omits player data.
+            # After the annotations: their PlayLand zone transfer is what marks a
+            # land entered_via_play_land, and the GSM that plays a land never
+            # carries player data. Run before them, the drop counted one GSM
+            # late (2026-10-19 T6, match abde2a07: the line search planned a
+            # second Mountain with the land already played).
+            self._infer_lands_played()
 
             # Clear untap step flag after processing all objects in this message
             self._in_untap_step = False
@@ -2116,6 +2134,7 @@ class GameState(_GameStateAnnotationsMixin):
             object_kind = existing_obj.object_kind
             counters = existing_obj.counters.copy()
             keywords = list(existing_obj.keywords)
+            ability_grp_ids = list(existing_obj.ability_grp_ids)
             damage = existing_obj.damage
         else:
             grp_id = 0
@@ -2138,6 +2157,7 @@ class GameState(_GameStateAnnotationsMixin):
             object_kind = GameObjectKind.UNKNOWN
             counters = {}
             keywords = []
+            ability_grp_ids = []
             damage = 0
 
         # 2. Overwrite with present data
@@ -2275,6 +2295,16 @@ class GameState(_GameStateAnnotationsMixin):
                 raw_id = entry.get("grpId") if isinstance(entry, dict) else entry
                 ability_ids.append(_coerce_int(raw_id, 0))
             keywords = ability_keywords(ability_ids)
+            # One entry per ability instance: ward counts each (ward.py). The
+            # uniqueAbilities list is the per-instance one when both are sent.
+            instances = _ensure_list(obj_data.get("uniqueAbilities")) or _ensure_list(
+                obj_data.get("abilities")
+            )
+            ability_grp_ids = [
+                grp
+                for entry in instances
+                if (grp := _coerce_int(entry.get("grpId") if isinstance(entry, dict) else entry, 0))
+            ]
 
         game_object = GameObject(
             instance_id=instance_id,
@@ -2298,6 +2328,7 @@ class GameState(_GameStateAnnotationsMixin):
             object_kind=object_kind,
             counters=counters,
             keywords=keywords,
+            ability_grp_ids=ability_grp_ids,
             damage=damage,
         )
 
@@ -3010,6 +3041,68 @@ class GameState(_GameStateAnnotationsMixin):
         )
 
 
+def _note_gre_timers(
+    game_state: GameState,
+    timers: Any,
+    received_at: float,
+    *,
+    seat: int | None = None,
+    players: Any = None,
+) -> None:
+    """Merge GRE timer reports into ``timer_state``, one entry per seat (decision_clock.seat_entry).
+
+    A GameStateMessage reports only the timers that changed (its ``players``
+    say whose they are); a TimerStateMessage (``seat``) reports all of one
+    seat's. Each timer keeps the time and turn of its last report. An Arena
+    timeout for the seat this turn (``timed_out_turn``) survives later
+    readings of the same turn.
+    """
+    from arenamcp.decision_clock import seat_entry
+
+    seats = game_state.gre_timer_seats
+    for player in players if isinstance(players, list) else []:
+        if not isinstance(player, dict):
+            continue
+        owner = _coerce_int(player.get("systemSeatNumber"), 0)
+        for timer_id in player.get("timerIds") or []:
+            if owner and _coerce_int(timer_id, 0):
+                seats[_coerce_int(timer_id, 0)] = owner
+    def owner_of(timer_id: int) -> int:
+        # Arena numbers seat 1's timers 1-6 and seat 2's 7-12 (every match in
+        # the 2026-10-19 logs); used only until a message names the seat.
+        return seats.get(timer_id) or ((timer_id - 1) // 6 + 1 if timer_id <= 12 else 0)
+
+    touched: set[int] = set()
+    turn = game_state.turn_info.turn_number
+    for timer in _ensure_dict_list(timers):
+        timer_id = _coerce_int(timer.get("timerId"), 0)
+        if not timer_id or "durationSec" not in timer:
+            continue
+        if seat:
+            seats[timer_id] = seat
+        owner = owner_of(timer_id)
+        if not owner:
+            continue
+        game_state.gre_timers[timer_id] = (dict(timer), float(received_at), turn)
+        touched.add(owner)
+    if not touched:
+        return
+    # Every seat's entry is re-read as of this message: a timer that stopped
+    # would have been reported stopped in it, so a running one still runs
+    # (11:13:04 the cancel's GameStateMessage carried only the opponent's
+    # timers while ours ran on through the loop).
+    for owner in {owner_of(timer_id) for timer_id in game_state.gre_timers} - {0}:
+        reports = [
+            report for timer_id, report in game_state.gre_timers.items() if owner_of(timer_id) == owner
+        ]
+        entry = seat_entry(reports, received_at)
+        entry["turn"] = turn
+        previous = (game_state.timer_state or {}).get(owner) or {}
+        if turn and previous.get("timed_out_turn") == turn:
+            entry["timed_out_turn"] = turn
+        game_state.timer_state = {**(game_state.timer_state or {}), owner: entry}
+
+
 def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
     """Create an event handler that updates a GameState from GreToClientEvent.
 
@@ -3089,6 +3182,13 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                     game_state_msg = msg.get("gameStateMessage")
                     if game_state_msg:
                         apply_game_state_update(game_state_msg)
+                        if game_state_msg.get("timers"):
+                            _note_gre_timers(
+                                game_state,
+                                game_state_msg.get("timers"),
+                                event_wall_time(payload),
+                                players=game_state_msg.get("players"),
+                            )
                         if _auto_clear_stale_decision(game_state):
                             snapshot_dirty = True
 
@@ -3101,6 +3201,13 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                     game_state_msg = msg.get("gameStateMessage")
                     if game_state_msg:
                         apply_game_state_update(game_state_msg)
+                        if game_state_msg.get("timers"):
+                            _note_gre_timers(
+                                game_state,
+                                game_state_msg.get("timers"),
+                                event_wall_time(payload),
+                                players=game_state_msg.get("players"),
+                            )
 
                 elif msg_type == "GREMessageType_UIMessage":
                     if game_state._record_ui_message_event(msg):
@@ -3110,12 +3217,23 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                     # A seat's rope ran out (Arena takes control; the
                     # inactivity timer then loses the game). The decision
                     # watchdog reads this as "no time left".
-                    parsed = timeout_entry(msg.get("timeoutMessage") or {}, event_wall_time(payload))
+                    timeout_msg = msg.get("timeoutMessage") or {}
+                    received = event_wall_time(payload)
+                    parsed = timeout_entry(timeout_msg, received)
                     if parsed:
                         seat, entry = parsed
+                        # The timer itself (Arena extends it by the banked
+                        # timeout) feeds later readings; the timeout marks
+                        # the turn (decision_clock.wrap_up_reason, #66).
+                        if isinstance(timeout_msg.get("timer"), dict):
+                            _note_gre_timers(game_state, [timeout_msg["timer"]], received, seat=seat)
+                        entry["turn"] = entry["timed_out_turn"] = game_state.turn_info.turn_number
                         game_state.timer_state = {**(game_state.timer_state or {}), seat: entry}
                         logger.warning(
-                            "Arena timeout: seat %s's %s ran out", seat, entry.get("timer_type") or "timer"
+                            "Arena timeout: seat %s's %s ran out (turn %s)",
+                            seat,
+                            entry.get("timer_type") or "timer",
+                            game_state.turn_info.turn_number,
                         )
 
                 elif msg_type == "GREMessageType_TimerStateMessage":
@@ -3125,8 +3243,9 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                     if real:
                         # Arena's actual shape: seat at message level, one
                         # message per seat; keep the other seat's reading.
-                        seat, entry = real
-                        game_state.timer_state = {**(game_state.timer_state or {}), seat: entry}
+                        _note_gre_timers(
+                            game_state, timer_msg.get("timers"), event_wall_time(payload), seat=real[0]
+                        )
                     elif isinstance(timer_msg, dict) and timer_msg:
                         timers = _ensure_dict_list(timer_msg.get("timers", []))
                         timer_data = {}

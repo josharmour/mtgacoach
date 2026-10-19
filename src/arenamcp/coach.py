@@ -1446,6 +1446,14 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 label = ba.get("label", f"Option {opt_idx}")
             modal_options.append((opt_idx, label))
 
+        if not modal_options:
+            # The log's CastingTimeOptionsReq names the modes too (#73).
+            from arenamcp.rules_engine import RulesEngine
+
+            for label in RulesEngine.casting_time_option_labels(decision_context):
+                mode = re.match(r"Mode (\d+): (.*)", label)
+                if mode:
+                    modal_options.append((int(mode.group(1)), mode.group(2)))
         if modal_options:
             modal_options.sort(key=lambda x: x[0])
             lines.append(f"!!! DECISION: CHOOSE MODE ({len(modal_options)} options) !!!")
@@ -1518,7 +1526,22 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 "search_from_groups": lambda ctx: ["!!! DECISION: SEARCH FROM GROUPS !!!"],
                 "gather": lambda ctx: ["!!! DECISION: GATHER !!!"],
             }
-            if dec_type in _simple and _simple[dec_type] is not None:
+            if decision_context.get("prompt_choices"):
+                # An effect's alternatives named by Arena's prompt text
+                # (Perforating Artist: sacrifice / discard / lose 3 life).
+                source = decision_context.get("source_card") or "an effect"
+                oracle = self._clean_oracle_for_prompt(
+                    self._remove_reminder_text(str(decision_context.get("source_oracle_text") or ""))
+                ).strip()
+                lines.append(f"!!! DECISION: CHOOSE ONE for {source} !!!")
+                if oracle:
+                    lines.append(f"Source text: {oracle}")
+                texts = [
+                    str(choice.get("text") or f"Choice #{choice.get('id')}")
+                    for choice in decision_context["prompt_choices"]
+                ]
+                lines.append(f"Options: {', '.join(texts)}")
+            elif dec_type in _simple and _simple[dec_type] is not None:
                 lines.extend(_simple[dec_type](decision_context))
             elif dec_type == "casting_time_options":
                 lines.extend(self._format_casting_time_options(game_state, decision_context))
@@ -1824,6 +1847,31 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         shown.add(key)
         return False
 
+    _PT_CHANGE = re.compile(r"\bgets? [+\-−]\d+/[+\-−]\d+")
+    STATIC_BUFF_NOTE = " (static P/T buff: already included in the P/T shown)"
+
+    @classmethod
+    def _static_pt_buff(cls, oracle: str) -> bool:
+        """True when the rules text holds a continuous P/T change (anthem, lord, aura, equipment).
+
+        Arena's P/T for each creature already counts it. 2026-10-19 11:11:35
+        (match 115944ce): "Iroh's 4 damage fails to kill the anthemed
+        6-toughness Trostani" — a 5/5 that already included Anthem of
+        Champions' +1/+1. Triggered, activated and until-end-of-turn changes
+        are not continuous and are left alone.
+        """
+        text = re.sub(r"<[^>]*>", "", oracle or "").lower()
+        for sentence in re.split(r"[\n.]", text):
+            sentence = sentence.strip()
+            if not cls._PT_CHANGE.search(sentence) or "end of turn" in sentence or "this turn" in sentence:
+                continue
+            if re.match(r"(?:when|whenever|at the beginning|at end)\b", sentence):
+                continue
+            if ":" in sentence.split(" get")[0]:  # "{2}{R}: ...", "-3: ..." — an activated ability
+                continue
+            return True
+        return False
+
     @staticmethod
     def _creature_state_note(card: dict, is_local: bool) -> str:
         """What a planner needs to read off a creature line: tapped meaning, marked damage, damage that kills it.
@@ -1983,7 +2031,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         flag_str = f" [{','.join(flags)}]" if flags else ""
         state_note = self._creature_state_note(card, is_local) if is_creature and for_planner else ""
-        lines.append(f"  {display_name}{pt}{counter_str}{flag_str}{state_note}")
+        buff_note = self.STATIC_BUFF_NOTE if self._static_pt_buff(card.get("oracle_text") or "") else ""
+        lines.append(f"  {display_name}{pt}{counter_str}{flag_str}{state_note}{buff_note}")
 
         raw_oracle = card.get("oracle_text", "")
         is_basic_land = is_land and not self._land_has_abilities(raw_oracle, type_line)
@@ -2006,7 +2055,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     att_owner = "OPP" if att.get("owner_seat_id") != local_seat else "YOUR"
                 else:
                     att_owner = "YOUR" if att.get("owner_seat_id") == local_seat else "OPP"
-                lines.append(f"    >> {att_owner} AURA: {att_name}")
+                buff_note = self.STATIC_BUFF_NOTE if self._static_pt_buff(att.get("oracle_text") or "") else ""
+                lines.append(f"    >> {att_owner} AURA: {att_name}{buff_note}")
                 if att_oracle:
                     lines.append(f"       {self._clean_oracle_for_prompt(att_oracle)}")
         return lines
@@ -2062,6 +2112,33 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 )
         return lines
 
+    @staticmethod
+    def _untapped_blocker_line(opp_creatures: list[dict]) -> list[str]:
+        """Which of their creatures can block this turn, stated once from the tapped flags.
+
+        2026-10-19 T13 (match 1e4ccb0c): "All opposing creatures are tapped so
+        Effigy attacks freely" while Perforating Artist stood untapped; the
+        model then declined the pump. The [T] tags were there, unread.
+        """
+        if not opp_creatures:
+            return []
+
+        def describe(card: dict) -> str:
+            power = card.get("modified_power")
+            power = card.get("power") if power is None else power
+            toughness = card.get("modified_toughness")
+            toughness = card.get("toughness") if toughness is None else toughness
+            pt = f" {power}/{toughness}" if power is not None and toughness is not None else ""
+            return f"{card.get('name', '?')}{pt}"
+
+        untapped = [describe(c) for c in opp_creatures if not c.get("is_tapped") and not c.get("is_phased_out")]
+        tapped = [str(c.get("name", "?")) for c in opp_creatures if c.get("is_tapped")]
+        if untapped:
+            line = f"Their untapped potential blockers: {', '.join(untapped)}"
+            return [line + (f" (tapped, can't block: {', '.join(tapped)})" if tapped else "")]
+        everything = " — all of their creatures are tapped" if len(tapped) == len(opp_creatures) else ""
+        return [f"Their untapped potential blockers: NONE{everything}"]
+
     def _format_attack_combat(
         self,
         your_cards: list[dict],
@@ -2077,6 +2154,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         lines.extend(self._attack_tax_lines(opp_cards, game_state))
         your_creatures = [c for c in your_cards if self._is_creature_now(c) and not self._is_impending(c)]
         opp_creatures = [c for c in opp_cards if self._is_creature_now(c) and not self._is_impending(c)]
+        lines.extend(self._untapped_blocker_line(opp_creatures))
         if any(
             not isinstance(c.get(stat), (int, float))
             for c in your_creatures + opp_creatures
@@ -2375,6 +2453,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         solver_plan = None
         try:
             from arenamcp.combat_solver import (
+                attacking_trick_exposure,
                 blocker_options,
                 combat_resource_roles,
                 mana_spending_restriction,
@@ -2401,15 +2480,31 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             from arenamcp.combat_recovery import CombatRecovery
 
             recovery = CombatRecovery(game_state or {})
+            # The attacker's open mana and hand price a trick after blocks (#74:
+            # 2026-10-19 T13 match abde2a07, a zero-slack triple block into two
+            # open mana met Scarblade's Malice and lost all three blockers).
+            exposure = attacking_trick_exposure(game_state)
             solver_plan = optimal_blocks(
                 attacking,
                 usable_blockers,
                 your_life,
                 blocker_allowed_attackers=allowed_map or None,
                 recovery_credit=recovery.credit if recovery.commanders else None,
+                trick_exposure=exposure,
             )
             if solver_plan is not None:
                 lines.append(f"Computed optimal blocks: {solver_plan.explanation}")
+                if solver_plan.trick_rejected:
+                    lines.append(
+                        f"Trick risk: rejected {solver_plan.trick_rejected}. An attack into more untapped "
+                        "blockers than it can survive, with mana open, usually has the trick; above lethal "
+                        "range take the hit or block with one creature rather than risk two or more."
+                    )
+                elif solver_plan.trick_risk:
+                    lines.append(
+                        f"Trick risk: {solver_plan.trick_risk}. Still the computed line: the alternatives "
+                        "cost more here."
+                    )
                 lines.append(
                     "This search prices immediate combat plus supported, affordable commander entry "
                     "recovery below. Future resources are discounted and the full recast cost is charged. "

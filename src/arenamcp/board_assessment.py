@@ -65,6 +65,7 @@ from arenamcp.combat_solver import _resolve_attacker, _search_blocks, combat_res
 from arenamcp.combat_strategy import _CANT_BLOCK, _rules_text, loyalty
 from arenamcp.limited_rules import rules_profile
 from arenamcp.mulligan_policy import _land_colors, _mana_value, _pip_matching, hand_card
+from arenamcp.ward import ward_of
 
 logger = logging.getLogger(__name__)
 
@@ -577,6 +578,7 @@ def _body(
         "_can_attack": can_attack,
         "_can_block": can_block,
         "_unblockable": bool(unblockable),
+        "_ward": _ward_mana(ward_of(card, card_attached), body_keywords),
         "_card": card,
     }
 
@@ -2243,11 +2245,24 @@ _NO_WARD_PAYMENT = 99  # ward paid with life, a discard or a sacrifice: not mode
 
 
 def ward_cost(body: dict) -> int:
-    """Generic mana a spell targeting this body must also pay (0: no ward)."""
-    match = re.search(r"(?m)^\s*ward\s*(?:\{o?(\d+)\}|[—–-]\s*(.*))?", _text(body.get("_card") or body))
-    if match:
-        return int(match.group(1)) if match.group(1) else _NO_WARD_PAYMENT
-    if any(k.startswith("ward") for k in _keyword_set(body)):
+    """Generic mana a spell targeting this body must also pay (0: no ward).
+
+    Every ward instance adds up (``ward.ward_of``): GRE's ability list, or the
+    printed ward plus an attached Aura's grant (``_body`` keeps that as
+    ``_ward``). Match a9cd5a2e T8 (2026-10-19): Skyward Spider's own Ward {2}
+    and Sheltered by Ghosts' ward {2} cost {4}; the line read {2} and aimed an
+    Impractical Joke there with two mana left.
+    """
+    if "_ward" in body:
+        return body["_ward"]
+    return _ward_mana(ward_of(body.get("_card") or body), body.get("keywords"))
+
+
+def _ward_mana(ward: Any, keywords: Any) -> int:
+    if ward is not None:
+        mana_only = ward.mana is not None and ward.life is None and ward.discard is None and ward.modelled
+        return ward.mana if mana_only else _NO_WARD_PAYMENT
+    if any(str(k).lower().startswith("ward") for k in keywords or ()):
         return _NO_WARD_PAYMENT  # a ward keyword without its cost in the text
     return 0
 

@@ -207,10 +207,14 @@ class _DiagnosticsMixin:
             pass
         return ""
 
-    def take_screenshot_analysis(self) -> None:
+    def take_screenshot_analysis(self, automatic: bool = False) -> None:
         """Capture screen and request visual analysis (e.g. Mulligan).
 
         Tries local VLM first (fast, free), then falls back to online.
+        ``automatic``: the coach started this read for an unresolved selection
+        (not the user's "Analyze screen"); if the autopilot is playing by the
+        time it returns, the read is logged but neither shown as advice nor
+        spoken, since it would talk over the pick the autopilot made (ledger #81).
         """
         if self._screenshot_analysis_in_progress:
             self.ui.log("[yellow]Screenshot analysis already in progress...[/]")
@@ -365,7 +369,13 @@ class _DiagnosticsMixin:
                 self.ui.log("[red]VLM returned garbled output — is the Ollama model a vision model?[/]")
                 advice = None
 
-            if advice and not is_backend_error_text(advice):
+            drives = getattr(self, "_autopilot_drives", None)
+            if automatic and advice and callable(drives) and drives() is True:
+                logger.info(
+                    "Screen analysis muted: the autopilot answers this decision (%d chars)", len(advice)
+                )
+                self.ui.log(f"[dim]Screen read (autopilot is playing, not spoken): {advice}[/]")
+            elif advice and not is_backend_error_text(advice):
                 self.ui.advice(advice, "Visual Analysis")
                 if self._auto_speak:
                     self.speak_advice(advice, blocking=False)

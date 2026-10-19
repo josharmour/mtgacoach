@@ -1144,10 +1144,25 @@ def claimed_kills(reasoning: str, creatures: list[dict]) -> list[dict]:
                 rf"(?:[\w'’/+-]+,\s+(?:the|their|that|its)\s+(?:[\w'’/+-]+\s+){{0,3}})?{re.escape(name)}"
                 rf"|{re.escape(name)}\b[^.;]{{0,40}}\b(?:dies|die)\b"
             )
-            if re.search(pattern, text):
+            if any(not _negated_claim(text, match.start()) for match in re.finditer(pattern, text)):
                 found.append(creature)
                 break
     return found
+
+
+# 2026-10-19 12:21:42 / 12:30:34 (ledger #86b): "Neither spell kills the 7/7
+# Gearhulk" and "Strike can't kill a 4/5 Elemental, so aim it at the face" were
+# read as kill claims, and correct face burn was thrown out three times in a game.
+_NEGATION = re.compile(
+    r"\b(?:neither|nor|not|no|never|cannot|can't|can’t|won't|won’t|doesn't|doesn’t|don't|don’t|"
+    r"isn't|isn’t|wouldn't|wouldn’t|couldn't|couldn’t|fails? to|unable to|too small to|short of)\b"
+)
+
+
+def _negated_claim(text: str, start: int) -> bool:
+    """The kill claim starting at ``start`` sits in a negated clause."""
+    clause = re.split(r"[.;:!?,—–]|\bso\b|\bbut\b|\bwhile\b|\binstead\b", text[:start])[-1]
+    return bool(_NEGATION.search(clause[-40:]))
 
 
 def shrink_note(state: dict, card: dict, *, activation: bool, metadata: dict | None = None) -> str:
@@ -1168,6 +1183,23 @@ def shrink_note(state: dict, card: dict, *, activation: bool, metadata: dict | N
         else "wears off at end of turn, before their attack"
     )
     return f"  [-X/-{reach[1]} until end of turn kills nothing now (toughness {survivors}); {when}]"
+
+
+def pump_before_blocks_wasted(card: dict, state: dict, metadata: dict | None = None) -> str:
+    """Withhold an attacking creature's self-pump before blocks while it is still eaten (#78).
+
+    ``combat_strategy.pump_before_blocks_wasted`` judges the offered ability's effect.
+    """
+    cost, effect = _offered_ability(card, metadata)
+    if not effect:
+        return ""
+    from arenamcp.combat_strategy import pump_before_blocks_wasted as wasted
+
+    try:
+        return wasted(state, card, effect, cost)
+    except Exception as error:  # a safety rule never blocks a play on its own failure
+        logger.debug("pump-before-blocks rule failed: %s", error)
+        return ""
 
 
 def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict | None = None) -> str:
@@ -1202,6 +1234,7 @@ def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict
             temporary_shrink_wasted(card, state, activation=True, metadata=metadata)
             or castable_discard_for_minor_effect(card, state, metadata)
             or pointless_self_animation(state, card, metadata)
+            or pump_before_blocks_wasted(card, state, metadata)
         )
     if action_type != "cast" or _tutor_requirement(card) is None:
         return ""

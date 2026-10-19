@@ -19,6 +19,7 @@ Option-id scheme (family-agnostic; the executor dispatches on prefix):
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import logging
 import re
@@ -82,6 +83,9 @@ class PendingDecision:
     slots: tuple[TargetSlot, ...] = ()
     min_weight: int | None = None
     max_weight: int | None = None
+    # Arena's own text for the request (its prompt id in the card DB's Prompts
+    # table, e.g. "Exile a card."); '' when unknown. SelectN/Search only.
+    prompt_text: str = ""
 
     def option_ids(self) -> set[str]:
         return {o.option_id for o in self.options}
@@ -417,6 +421,107 @@ def _prompt_card_ids(poll: dict[str, Any]) -> list[int]:
     return []
 
 
+# --- SelectN choices named by prompt ids ---------------------------------------
+# Perforating Artist's raid trigger asks "sacrifice a nonland permanent / discard
+# a card / lose 3 life" as a SelectN of IdType_PromptParameterIndex: its ids
+# (8, 9, 11) are not cards, and each one's meaning is the prompt id at the same
+# position of the request's own prompt parameters (unfilteredIds pair with
+# prompt.parameters; ids is the subset still legal). 2026-10-19 10:14:56
+# (match 1e4ccb0c T14) the model chose between "Option 9" and "Option 11" blind.
+
+
+def _param_prompt_id(param: Any) -> int:
+    """The PromptId value of one prompt parameter (log or reflected bridge shape), or 0."""
+    if not isinstance(param, dict):
+        return 0
+    kind = " ".join(
+        str(_enum_text(param.get(key)) or "") for key in ("type", "Type", "valueCase", "ValueCase")
+    ).lower()
+    value = param.get("promptId", param.get("PromptId"))
+    if value is None and "promptid" in kind:
+        value = param.get("value", param.get("Value"))
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def prompt_choice_ids(request: Any) -> dict[int, int]:
+    """{selection id: prompt id} for a SelectN whose ids index its prompt parameters, else {}.
+
+    ``request`` is the log's selectNReq or the bridge's reflected request
+    payload (UnfilteredIds / ReqPrompt).
+    """
+    if not isinstance(request, dict):
+        return {}
+    unfiltered = request.get("unfilteredIds") or request.get("UnfilteredIds") or []
+    for key in ("reqPrompt", "ReqPrompt", "prompt", "Prompt"):
+        prompt = request.get(key)
+        params = (prompt.get("parameters") or prompt.get("Parameters")) if isinstance(prompt, dict) else None
+        prompt_ids = [_param_prompt_id(param) for param in params or []]
+        if prompt_ids and all(prompt_ids) and len(prompt_ids) == len(unfiltered):
+            try:
+                return {int(oid): pid for oid, pid in zip(unfiltered, prompt_ids, strict=True)}
+            except (TypeError, ValueError):
+                return {}
+    return {}
+
+
+def prompt_text(prompt_id: int) -> str:
+    """Arena's English text for a prompt id ("Lose 3 life"), or ''.
+
+    The card DB's text can be an ICU template ("{1, plural, =1 {Discard a
+    card.} ...}"); it comes back rendered without parameters (the singular),
+    never as the raw template. ``arena_prompts.prompt_text`` renders a whole
+    request prompt with its parameters.
+    """
+    try:
+        from arenamcp.arena_prompts import render_prompt
+        from arenamcp.card_db import get_card_database
+
+        raw = get_card_database().get_raw_mtgadb()
+        template = str(raw.get_prompt_text(int(prompt_id)) or "") if raw is not None else ""
+        if not template or template.lstrip().startswith("#"):  # "#Deprecated ..." says nothing
+            return ""
+        return render_prompt(template, {})
+    except Exception:
+        return ""
+
+
+def _is_prompt_index_type(id_type: Any) -> bool:
+    return "promptparameterindex" in _enum_text(id_type).lower().replace("_", "")
+
+
+def _log_prompt_choices(ids: list[int]) -> dict[int, dict[str, Any]]:
+    """The log's prompt-choice context for these ids ({id: {prompt_id, text}}), or {}.
+
+    Player.log carries the full SelectNReq; gamestate_decisions keeps its
+    resolved choices on the live decision context.
+    """
+    state = _live_game_state()
+    context = getattr(state, "decision_context", None) or {}
+    choices = {
+        int(choice.get("id") or 0): choice
+        for choice in context.get("prompt_choices") or []
+        if isinstance(choice, dict)
+    }
+    return choices if ids and all(i in choices for i in ids) else {}
+
+
+def _player_label(seat: int) -> str:
+    """'You (seat 2, 13 life)' / 'Opponent Jurema (15 life)' for a player target, or ''."""
+    state = _live_game_state()
+    player = (getattr(state, "players", None) or {}).get(seat) if state is not None else None
+    if player is None:
+        return ""
+    life = getattr(player, "life_total", None)
+    life_text = f"{life} life" if isinstance(life, int) else "life unknown"
+    if seat == getattr(state, "local_seat_id", None):
+        return f"You (seat {seat}, {life_text})"
+    name = str(getattr(state, "opponent_name", "") or "").strip()
+    return f"Opponent {name} ({life_text})" if name else f"Opponent (seat {seat}, {life_text})"
+
+
 def build_pending_decision(
     poll: dict[str, Any] | None,
     *,
@@ -425,6 +530,8 @@ def build_pending_decision(
     resolve_zone: Callable[[int], str] | None = None,
     resolve_card: Callable[[int], dict[str, Any]] | None = None,
     activation_unaffordable: Callable[[dict[str, Any]], bool] | None = None,
+    resolve_prompt: Callable[[int], str] | None = None,
+    resolve_player: Callable[[int], str] | None = None,
 ) -> PendingDecision | None:
     """Build a PendingDecision from a raw get_pending_actions() response.
 
@@ -436,10 +543,15 @@ def build_pending_decision(
     and card identity for labels; both default to the log-fed GameState.
     ``activation_unaffordable`` answers whether an activation Arena gave no
     autotap solution failed the mana check (default: the log's verdict).
+    ``resolve_prompt`` maps a GRE prompt id to its text (default: the card
+    database); ``resolve_player`` labels a player target by seat (default:
+    the log-fed GameState).
     """
     resolve_zone = resolve_zone or _default_instance_zone
     resolve_card = resolve_card or _default_instance_card
     activation_unaffordable = activation_unaffordable or _default_activation_unaffordable
+    resolve_prompt = resolve_prompt or prompt_text
+    resolve_player = resolve_player or _player_label
     if not poll or not poll.get("has_pending"):
         return None
 
@@ -522,12 +634,37 @@ def build_pending_decision(
         if not source_label and resolve_instance and source_id:
             source_label = resolve_instance(source_id)
         return _build_select_targets(
-            poll, request_id, can_cancel, source_label, resolve_name, resolve_instance
+            poll, request_id, can_cancel, source_label, resolve_name, resolve_instance, resolve_player
         )
     if rtype in _SELECT_N_TYPES or request_class in _SELECT_N_TYPES:
-        return _build_select_n(
-            poll, request_id, rtype, can_cancel, source_label, resolve_name, resolve_instance
+        # Say what Arena asks (ledger #79, 2026-10-19 11:35:23: Unscrupulous
+        # Agent's "Exile a card." from our hand reached the model as a bare
+        # list, and it exiled Shock as if casting it). The card asking a hand
+        # choice is named in the prompt note (select_n_note), not in
+        # source_label: that label is part of the request fingerprint, which
+        # must not depend on a resolver.
+        decision = _build_select_n(
+            poll,
+            request_id,
+            rtype,
+            can_cancel,
+            source_label,
+            resolve_name,
+            resolve_instance,
+            resolve_prompt,
+            resolve_card,
         )
+        if decision is None:
+            return None
+        # The module's own prompt_text (one prompt id, no parameters) stays
+        # importable and patchable; this renders the request's prompt whole.
+        from arenamcp import arena_prompts
+
+        text = arena_prompts.prompt_text(
+            arena_prompts.request_prompt(poll, poll.get("request_payload"), poll.get("decision_context")),
+            resolve_instance,
+        )
+        return dataclasses.replace(decision, prompt_text=text) if text else decision
     if rtype in _GROUP_TYPES or request_class in _GROUP_TYPES:
         return _build_group(poll, request_id, can_cancel, source_label, resolve_instance, resolve_card)
     if rtype in _MULLIGAN_TYPES or request_class in _MULLIGAN_TYPES:
@@ -670,6 +807,7 @@ def _build_select_targets(
     source_label: str,
     resolve_name: Callable[[int], str],
     resolve_instance: Callable[[int], str] | None = None,
+    resolve_player: Callable[[int], str] | None = None,
 ) -> PendingDecision | None:
     options: list[DecisionOption] = []
     seen: set[int] = set()
@@ -683,13 +821,14 @@ def _build_select_targets(
         grp_id = int(cand.get("grpId") or 0)
         name = resolve_instance(iid) if resolve_instance else ""
         name = name or (resolve_name(grp_id) if grp_id else "")
-        options.append(
-            DecisionOption(
-                option_id=f"tgt:{iid}",
-                label=name or f"Target #{iid}",
-                meta={"instanceId": iid, "grpId": grp_id, "targetIdx": cand.get("targetIdx")},
-            )
-        )
+        meta = {"instanceId": iid, "grpId": grp_id, "targetIdx": cand.get("targetIdx")}
+        # A player target's id is its seat: "Target #1 / Target #2" left the
+        # model to guess which one was its own face (a9cd5a2e).
+        player = "" if name or grp_id or resolve_player is None else resolve_player(iid)
+        if player:
+            name = player
+            meta["player_seat"] = iid
+        options.append(DecisionOption(option_id=f"tgt:{iid}", label=name or f"Target #{iid}", meta=meta))
     if not options:
         return None
 
@@ -750,6 +889,8 @@ def _build_select_n(
     source_label: str,
     resolve_name: Callable[[int], str],
     resolve_instance: Callable[[int], str] | None = None,
+    resolve_prompt: Callable[[int], str] | None = None,
+    resolve_card: Callable[[int], dict[str, Any]] | None = None,
 ) -> PendingDecision | None:
     ids = poll.get("select_n_ids") or poll.get("search_candidates") or []
     is_search = "Search" in rtype or "Search" in str(poll.get("request_class") or "")
@@ -757,6 +898,11 @@ def _build_select_n(
         color_decision = _build_color_choice(poll, request_id, can_cancel, source_label, resolve_instance)
         if color_decision is not None:
             return color_decision
+        prompt_decision = _build_prompt_choice(
+            poll, request_id, can_cancel, source_label, resolve_instance, resolve_prompt, resolve_card
+        )
+        if prompt_decision is not None:
+            return prompt_decision
     weights = poll.get("select_n_weights") or []
     if weights and len(weights) != len(ids):
         return None
@@ -882,6 +1028,66 @@ def _build_color_choice(
         request_id=request_id,
         request_type="SelectN",
         options=options,
+        min_select=int(poll.get("select_n_min", 1)),
+        max_select=max(1, int(poll.get("select_n_max", 1))),
+        can_cancel=can_cancel,
+        source_label=source_label,
+    )
+
+
+def _build_prompt_choice(
+    poll: dict[str, Any],
+    request_id: tuple[int, int],
+    can_cancel: bool,
+    source_label: str,
+    resolve_instance: Callable[[int], str] | None,
+    resolve_prompt: Callable[[int], str] | None,
+    resolve_card: Callable[[int], dict[str, Any]] | None,
+) -> PendingDecision | None:
+    """A SelectN over an effect's alternatives, labeled by Arena's prompt text.
+
+    The ids are positions in the request's prompt parameters, not cards (see
+    prompt_choice_ids). Pairing comes from the bridge's reflected request,
+    else from the log's SelectNReq for the same ids.
+    """
+    payload = poll.get("request_payload") if isinstance(poll.get("request_payload"), dict) else {}
+    id_type = poll.get("select_n_id_type") or payload.get("idType")
+    try:
+        ids = [int(raw) for raw in poll.get("select_n_ids") or []]
+    except (TypeError, ValueError):
+        return None
+    log_choices = _log_prompt_choices(ids)
+    if not ids or not (_is_prompt_index_type(id_type) if id_type else log_choices):
+        return None
+    prompt_ids = prompt_choice_ids(payload) or prompt_choice_ids(poll)
+    if not prompt_ids:
+        prompt_ids = {oid: int(choice.get("prompt_id") or 0) for oid, choice in log_choices.items()}
+    log_context = (getattr(_live_game_state(), "decision_context", None) or {}) if log_choices else {}
+    source_id = int(
+        poll.get("source_instance_id")
+        or payload.get("sourceId")
+        or log_context.get("prompt_source_id")
+        or next(iter(_prompt_card_ids(poll)), 0)
+        or 0
+    )
+    if not source_label and source_id:
+        source_label = (resolve_instance(source_id) if resolve_instance else "") or str(
+            ((resolve_card or _default_instance_card)(source_id) or {}).get("name") or ""
+        )
+    source_label = source_label or str(log_context.get("source_card") or "")
+    options = []
+    for position, oid in enumerate(ids, 1):
+        pid = prompt_ids.get(oid, 0)
+        text = (resolve_prompt(pid) if resolve_prompt and pid else "") or str(
+            (log_choices.get(oid) or {}).get("text") or ""
+        )
+        label = text or (f"Unlabeled choice {position} of {len(ids)} (prompt {pid})" if pid else f"Option {oid}")
+        meta = {"choice": "prompt", "promptId": pid, "sourceId": source_id, "identity_known": bool(text)}
+        options.append(DecisionOption(option_id=f"sel:{oid}", label=label, meta=meta))
+    return PendingDecision(
+        request_id=request_id,
+        request_type="SelectN",
+        options=tuple(options),
         min_select=int(poll.get("select_n_min", 1)),
         max_select=max(1, int(poll.get("select_n_max", 1))),
         can_cancel=can_cancel,
@@ -1534,6 +1740,7 @@ def decision_to_dict(decision: PendingDecision) -> dict[str, Any]:
             }
             for s in decision.slots
         ],
+        **({"prompt_text": decision.prompt_text} if decision.prompt_text else {}),
     }
 
 
@@ -1567,6 +1774,7 @@ def decision_from_dict(data: dict[str, Any]) -> PendingDecision:
             )
             for s in (data.get("slots") or [])
         ),
+        prompt_text=str(data.get("prompt_text") or ""),
     )
 
 
@@ -1790,49 +1998,396 @@ _DISCARD_TEXT = re.compile(
 )
 
 
-def select_n_discard_note(decision: Any, state: dict[str, Any]) -> str:
-    """A prompt line saying that this SelectN picks what we DISCARD, or ''.
+# --- Hand-loss choices (ledger #79) -------------------------------------------
+#
+# A SelectN over our own hand cards whose card leaves the hand for good: a
+# discard, "exile a card from your hand", "put a card from your hand on the
+# bottom of your library". 2026-10-19 11:35:23 (match 772233af T3): Unscrupulous
+# Agent's "target opponent exiles a card from their hand" arrived as SelectN
+# ids [280 Hazard, 281 Strike, 283 Hazard, 285 Mountain, 344 Shock, 349 Effigy]
+# with prompt 1117 "Exile a card." and sourceId 353; the decision showed neither,
+# and the model exiled Shock with "Shock is the cheapest efficient answer".
+
+# Arena's request text (the prompt id's text) addressed to us.
+_LOSS_PROMPT: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("discard", re.compile(r"\bdiscard\b", re.IGNORECASE)),
+    ("exile", re.compile(r"^\s*exile\b", re.IGNORECASE)),
+    ("bottom", re.compile(r"\bon the bottom of (?:your|their|its owner's) library\b", re.IGNORECASE)),
+)
+# The asking card's (or the resolving object's) rules text.
+_LOSS_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("discard", _DISCARD_TEXT),
+    (
+        "exile",
+        re.compile(
+            r"\bexiles? (?:a|an|one|two|three|\d+) (?:[a-z-]+ )?cards? from (?:your|their|his or her) hand\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "bottom",
+        re.compile(
+            r"\bputs? (?:a|an|one|two|three|\d+) (?:[a-z-]+ )?cards? from (?:your|their|his or her) hand "
+            r"on the bottom\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+# Which card goes matters beyond its worth in hand: connive's counter, an
+# imprint, an effect that reads the lost card, madness. The model decides these
+# (with the loss framing); everything else is a land/curve count.
+_LOSS_PAYOFF = re.compile(
+    r"\bconniv\w*|\bimprint\b|\bmadness\b|\bexiled card\b|\bcards? exiled with\b"
+    r"|\byou may (?:play|cast) (?:it|that card|those cards|the exiled)\b"
+    r"|\b(?:its|that card's|the discarded card's|the exiled card's) (?:mana value|power|toughness|colou?rs?|name)\b"
+    r"|\bif (?:you discard(?:ed)?|a card discarded|the discarded card|that card|it) (?:is|was|a|an)\b",
+    re.IGNORECASE,
+)
+# Our cards that want cards in our graveyard: a discard may be the plan.
+_GRAVEYARD_PAYOFF = re.compile(
+    r"\b(?:flashback|unearth|escape|disturb|jump-start|retrace|embalm|eternalize|delirium|threshold"
+    r"|scavenge|encore|reanimate)\b"
+    r"|\bfrom (?:your|a) graveyard (?:to|onto) the battlefield\b"
+    r"|\breturn (?:up to \w+ )?target [\w -]*cards? from your graveyard\b|\bcards? in your graveyard\b",
+    re.IGNORECASE,
+)
+# kind -> (note title, where the card goes, verb for the reasoning)
+_LOSS_WORDS = {
+    "discard": ("DISCARD", "goes to your graveyard", "Discarding"),
+    "exile": ("LOSS, NOT A CAST", "is EXILED from your hand for good", "Exiling"),
+    "bottom": ("LOSS, NOT A CAST", "goes to the BOTTOM of your library", "Bottoming"),
+}
+
+
+@dataclass(frozen=True)
+class HandLoss:
+    """A SelectN that takes ``kind`` ("discard" / "exile" / "bottom") cards from our hand."""
+
+    kind: str
+    evidence: str  # the prompt or rules text that says so
+    source: str  # the card asking ('' unknown)
+    unusual: str  # why the pick needs judgement beyond worth in hand ('' = deterministic)
+
+
+def _select_ids(decision: Any) -> list[int] | None:
+    """Instance ids of a SelectN's ``sel:<id>`` options, None when an option is anything else."""
+    ids = []
+    for option in getattr(decision, "options", ()) or ():
+        option_id = str(getattr(option, "option_id", "") or "")
+        if not option_id.startswith("sel:"):
+            return None
+        try:
+            ids.append(int(option_id[4:]))
+        except ValueError:
+            return None
+    return ids
+
+
+def _hand_by_id(state: dict[str, Any]) -> dict[int, dict]:
+    out: dict[int, dict] = {}
+    for card in state.get("hand") or []:
+        if isinstance(card, dict):
+            try:
+                out[int(card.get("instance_id") or 0)] = card
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _ours(card: dict, state: dict[str, Any]) -> bool:
+    seat = state.get("local_seat_id")
+    if seat is None:
+        seat = next((p.get("seat_id") for p in state.get("players") or [] if p.get("is_local")), None)
+    return seat is not None and (card.get("controller_seat_id") or card.get("owner_seat_id")) == seat
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _context_source_id(context: dict[str, Any]) -> int:
+    """A decision context's source: the bridge's ``sourceId``, the log's ``source_id``, or a SelectN's
+    ``prompt_source_id`` (kept apart because ``source_id`` arms the stack-based auto-clear)."""
+    return _int_or_zero(context.get("sourceId") or context.get("source_id") or context.get("prompt_source_id"))
+
+
+def _request_source_id(state: dict[str, Any]) -> int:
+    """The pending request's ``sourceId`` (bridge payload, else the decision context)."""
+    for container in (state.get("_bridge_request_payload"), state.get("decision_context")):
+        if isinstance(container, dict):
+            value = _context_source_id(container)
+            if value > 0:
+                return value
+    return 0
+
+
+def asking_card(decision: Any, state: dict[str, Any]) -> tuple[str, str]:
+    """(name, rules text) of the card whose effect asks this question, ('', '') when unknown.
+
+    The request's source id found in the snapshot (a stack ability reads as its
+    source card plus the ability's text), else the log context's resolved
+    source for that id, else the decision's source label.
+    """
+    source_id = _request_source_id(state)
+    if source_id:
+        for zone in ("stack", "battlefield", "graveyard", "exile", "hand", "command"):
+            for card in state.get(zone) or []:
+                if not isinstance(card, dict) or _int_or_zero(card.get("instance_id")) != source_id:
+                    continue
+                parent = card.get("source_card") if isinstance(card.get("source_card"), dict) else {}
+                name = str(parent.get("name") or card.get("name") or "")
+                text = str(card.get("oracle_text") or "")
+                if parent.get("oracle_text") and str(parent["oracle_text"]) not in text:
+                    text = f"{text}\n{parent['oracle_text']}".strip()
+                if name and not is_unknown_card_name(name):
+                    return name, text
+    context = state.get("decision_context") or {}
+    context_id = _context_source_id(context)
+    if context.get("source_card") and (not source_id or context_id == source_id):
+        return str(context["source_card"]), str(
+            context.get("source_oracle_text") or context.get("source_card_oracle_text") or ""
+        )
+    return str(getattr(decision, "source_label", "") or ""), ""
+
+
+def decision_prompt_text(decision: Any, state: dict[str, Any]) -> str:
+    """Arena's text for the request: the decision's, else the log context's for this same request."""
+    text = str(getattr(decision, "prompt_text", "") or "")
+    if text:
+        return text
+    context = state.get("decision_context") or {}
+    request_id = tuple(getattr(decision, "request_id", (0, 0)) or (0, 0))
+    context_id = tuple(context.get("request_id") or (0, 0))
+    if context.get("prompt_text") and (
+        not any(request_id) or not any(context_id) or request_id == context_id
+    ):
+        return str(context["prompt_text"])
+    return ""
+
+
+def hand_loss(decision: Any, state: dict[str, Any]) -> HandLoss | None:
+    """The hand loss this SelectN is, or None: every option is one of our hand cards and Arena's
+    prompt, the asking card or a resolving stack object says discard / exile / put on the bottom."""
+    if getattr(decision, "request_type", "") != "SelectN":
+        return None
+    if any((option.meta or {}).get("choice") for option in decision.options):
+        return None  # colours or an effect's named alternatives (#40), not cards
+    ids = _select_ids(decision)
+    hand = _hand_by_id(state)
+    if not ids or not hand or any(i not in hand for i in ids):
+        return None
+    prompt = decision_prompt_text(decision, state)
+    name, rules = asking_card(decision, state)
+    found: tuple[str, str] | None = None
+    for kind, pattern in _LOSS_PROMPT:
+        if prompt and pattern.search(prompt):
+            found = (kind, prompt)
+            break
+    if found is None:
+        texts = [rules, str(getattr(decision, "source_label", "") or "")]
+        texts += [
+            f"{item.get('name') or ''}: {item.get('oracle_text') or ''}"
+            for item in reversed(state.get("stack") or [])
+            if isinstance(item, dict)
+        ]
+        for text in texts:
+            kind = next((kind for kind, pattern in _LOSS_RULES if text and pattern.search(text)), "")
+            if kind:
+                found = (kind, text)
+                break
+    if found is None:
+        return None
+    kind, evidence = found
+    unusual = ""
+    payoff = _LOSS_PAYOFF.search(" ".join((prompt, rules, evidence)))
+    if payoff:
+        unusual = f"the effect reads which card goes ({payoff.group(0)})"
+    elif kind == "discard":
+        rewards = next(
+            (
+                card
+                for zone in ("hand", "battlefield", "graveyard")
+                for card in state.get(zone) or []
+                if isinstance(card, dict)
+                and (zone == "hand" or _ours(card, state))
+                and _GRAVEYARD_PAYOFF.search(str(card.get("oracle_text") or ""))
+            ),
+            None,
+        )
+        if rewards is not None:
+            unusual = f"{rewards.get('name') or 'a card'} uses our graveyard"
+    if not unusual and any(is_unknown_card_name(str(hand[i].get("name") or "")) for i in ids):
+        unusual = "a hand card is not identified yet"
+    return HandLoss(kind, evidence.strip(), name, unusual)
+
+
+def prompt_choice_note(decision: Any, state: dict[str, Any]) -> str:
+    """The source card and rules text above a SelectN over an effect's alternatives, or ''.
+
+    The options are Arena's prompt texts ("Discard a card", "Lose 3 life");
+    the rules text says what they answer and whose effect it is.
+    """
+    options = list(getattr(decision, "options", ()) or ())
+    if getattr(decision, "request_type", "") != "SelectN" or not options:
+        return ""
+    if any((option.meta or {}).get("choice") != "prompt" for option in options):
+        return ""
+    source_id = int(options[0].meta.get("sourceId") or 0)
+    entry: dict[str, Any] = {}
+    for zone in ("battlefield", "stack", "graveyard", "exile", "command", "hand"):
+        entry = next(
+            (
+                card
+                for card in state.get(zone) or []
+                if isinstance(card, dict) and source_id and int(card.get("instance_id") or 0) == source_id
+            ),
+            {},
+        )
+        if entry:
+            break
+    name = str(getattr(decision, "source_label", "") or entry.get("name") or "an effect")
+    oracle = str(entry.get("oracle_text") or "")
+    context = state.get("decision_context") or {}
+    if not oracle and int(context.get("prompt_source_id") or context.get("source_id") or 0) == source_id:
+        oracle = str(context.get("source_oracle_text") or context.get("source_card_oracle_text") or "")
+    if not oracle and source_id:
+        grp_id = int(getattr(_live_object(source_id), "grp_id", 0) or 0)
+        oracle = str((_default_card_resolver(grp_id) if grp_id else {}).get("oracle_text") or "")
+    oracle = clean_rules_text(oracle, name)
+    if len(oracle) > 320:
+        oracle = oracle[:317].rstrip() + "…"
+    local_seat = state.get("local_seat_id") or next(
+        (p.get("seat_id") for p in state.get("players") or [] if isinstance(p, dict) and p.get("is_local")),
+        None,
+    )
+    controller = entry.get("controller_seat_id") or entry.get("owner_seat_id")
+    whose = ""
+    if controller is not None and local_seat is not None:
+        whose = (
+            " (YOUR card)"
+            if controller == local_seat
+            else " (OPPONENT's card: in its text \"you\" is them and \"each opponent\" is you)"
+        )
+    return (
+        f"CHOICE FROM {name}{whose}" + (f': "{oracle}"' if oracle else "") + ". Each option below is one of "
+        "the alternatives it offers, named by Arena; options not listed are not available to you now."
+    )
+
+
+def hand_loss_note(decision: Any, state: dict[str, Any]) -> str:
+    """A prompt line saying that this SelectN picks the hand card we LOSE, or ''.
 
     2026-10-08 game 1 (match 07c043d8): Arni's loot ("Draw a card, then
     discard a card") presents a SelectN over our hand with no source label.
     The model read it as "choose a card to keep" five times and discarded
     the Swamp it needed for Garruk (T7), Garruk itself (T11), Screeching
     Soulbreaker (T13) and Plan for All Outcomes (T15), each with a rationale
-    praising the card it was throwing away. The framing is deterministic:
-    every option is one of our hand cards and the resolving stack object
-    (or the decision's source) says "discard".
+    praising the card it was throwing away. Since 2026-10-19 (ledger #79) an
+    exile from hand or a put-on-the-bottom reads the same way. The framing is
+    deterministic: every option is one of our hand cards and Arena's prompt,
+    the asking card or the resolving stack object says so.
+    """
+    loss = hand_loss(decision, state)
+    if loss is None:
+        return ""
+    title, where, _verb = _LOSS_WORDS[loss.kind]
+    asked = loss.evidence
+    if loss.source and loss.source.lower() not in asked.lower():
+        asked = f"{loss.source}: {asked}"
+    return (
+        f"THIS IS A {title}: the card you pick {where} (resolving: {asked.strip()[:160]}). "
+        "Nothing is cast or targeted. Pick the card you need LEAST — keep removal, planeswalkers, bombs and "
+        "any land you still need for your colours; give up a duplicate, an extra land or the weakest spell. "
+        "The card's value is a reason NOT to pick it."
+    )
+
+
+def select_n_discard_note(decision: Any, state: dict[str, Any]) -> str:
+    """The framing line above a SelectN's options, or ''.
+
+    An effect's named alternatives get ``prompt_choice_note`` ("CHOICE FROM
+    <card>", ledger #40); a hand card we lose — discard, exile, bottom — gets
+    ``hand_loss_note`` (ledger #79). The two never apply together: a prompt
+    choice's options are prompt-parameter positions, not hand cards.
     """
     if getattr(decision, "request_type", "") != "SelectN":
         return ""
-    hand_ids = {
-        int(card.get("instance_id") or 0) for card in state.get("hand") or [] if isinstance(card, dict)
-    }
-    ids = []
-    for option in getattr(decision, "options", ()) or ():
-        option_id = str(getattr(option, "option_id", "") or "")
-        if not option_id.startswith("sel:"):
-            return ""
-        try:
-            ids.append(int(option_id[4:]))
-        except ValueError:
-            return ""
-    if not ids or not hand_ids or any(i not in hand_ids for i in ids):
+    return prompt_choice_note(decision, state) or hand_loss_note(decision, state)
+
+
+def select_n_note(decision: Any, state: dict[str, Any]) -> str:
+    """What a SelectN asks, for the model: Arena's prompt text, the card asking and its rules
+    text, and — when it takes a card from our hand — that the pick is a loss (``hand_loss_note``).
+
+    A choice among an effect's named alternatives gets ``prompt_choice_note``
+    alone: it already names the card asking and quotes its rules text.
+    """
+    if getattr(decision, "request_type", "") not in ("SelectN", "Search"):
         return ""
-    sources = [str(getattr(decision, "source_label", "") or "")]
-    sources += [
-        f"{item.get('name') or ''}: {item.get('oracle_text') or ''}"
-        for item in state.get("stack") or []
-        if isinstance(item, dict)
-    ]
-    source = next((text for text in sources if _DISCARD_TEXT.search(text)), "")
-    if not source:
-        return ""
-    return (
-        "THIS IS A DISCARD: the card you pick goes to your graveyard "
-        f"(resolving: {source.strip()[:120]}). Pick the card you need LEAST — keep removal, "
-        "planeswalkers, bombs and any land you still need for your colours; discard extra lands or the "
-        "weakest spell. The card's value is a reason NOT to pick it."
-    )
+    choice_note = prompt_choice_note(decision, state)
+    if choice_note:
+        return choice_note
+    lines = []
+    loss_note = hand_loss_note(decision, state)
+    if loss_note:
+        lines.append(loss_note)
+    prompt = decision_prompt_text(decision, state)
+    name, rules = asking_card(decision, state)
+    rules = clean_rules_text(rules, name)
+    asked = []
+    if prompt:
+        asked.append(f'Arena asks: "{prompt}"')
+    if name:
+        asked.append(f"asked by {name}" + (f" ({rules[:240]})" if rules else ""))
+    if asked:
+        lines.append("SELECTION: " + "; ".join(asked) + ".")
+    ids = _select_ids(decision)
+    hand = _hand_by_id(state)
+    if not loss_note and ids and hand and all(i in hand for i in ids):
+        lines.append(
+            "These options are cards in your hand: choosing one does NOT cast or play it; it only answers "
+            + (f"{name}'s" if name else "this effect's")
+            + " question."
+        )
+    return "\n".join(lines)
+
+
+def hand_loss_choice(decision: Any, state: dict[str, Any]) -> tuple[list[str], str]:
+    """The hand card(s) to give up for a discard / exile / bottom SelectN, without a model call.
+
+    ``mulligan_policy.hand_loss_choice``: the land/curve score of what we keep
+    with our lands in play, then a duplicate before a card's last copy, then the
+    weaker role. ([], '') when the loss needs judgement (``HandLoss.unusual``),
+    the count is variable or weighted, or this is not a hand loss.
+    """
+    loss = hand_loss(decision, state)
+    if loss is None or loss.unusual:
+        return [], ""
+    if decision.min_weight is not None or decision.min_select != decision.max_select or decision.min_select < 1:
+        return [], ""
+    from arenamcp import mulligan_policy
+
+    gone = mulligan_policy.hand_loss_choice(state, _select_ids(decision) or [], decision.min_select)
+    if len(gone) != decision.min_select:
+        return [], ""
+    hand = _hand_by_id(state)
+    kept_names = [str(card.get("name") or "") for iid, card in hand.items() if iid not in set(gone)]
+    reasons = []
+    for iid in gone:
+        card = hand[iid]
+        card_name = str(card.get("name") or "a card")
+        if mulligan_policy.hand_card(card).is_land:
+            reasons.append(f"{card_name}, a land we can spare")
+        elif card_name in kept_names:
+            reasons.append(f"{card_name}, a second copy (we keep the other)")
+        else:
+            reasons.append(f"{card_name}, the card we need least")
+    verb = _LOSS_WORDS[loss.kind][2]
+    why = f"{loss.source or 'The effect'} takes a card from our hand. {verb} {'; '.join(reasons)}."
+    return [f"sel:{iid}" for iid in gone], why
 
 
 # "When Dina dies, choose a creature card in your hand. It perpetually gains trample and gets

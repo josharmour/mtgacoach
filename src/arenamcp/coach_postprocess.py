@@ -1528,6 +1528,7 @@ class _AdvicePostprocessMixin:
             return ""
         try:
             from arenamcp.combat_solver import (
+                attacking_trick_exposure,
                 blocker_options,
                 optimal_blocks,
             )
@@ -1557,6 +1558,7 @@ class _AdvicePostprocessMixin:
             candidate_pools.append(mentioned)
         candidate_pools.append(blockers)
 
+        exposure = attacking_trick_exposure(game_state)
         assignments: dict[int, int] = {}
         for pool in candidate_pools:
             try:
@@ -1565,6 +1567,7 @@ class _AdvicePostprocessMixin:
                     pool,
                     your_life,
                     blocker_allowed_attackers=allowed_map or None,
+                    trick_exposure=exposure,
                 )
             except Exception as e:
                 logger.debug(f"combat solver (block repair) failed: {e}")
