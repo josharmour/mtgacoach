@@ -18,13 +18,24 @@ _HARMFUL = re.compile(
     r"|\btarget [^.]*?(?:you don['’]t control|an opponent controls)"
     r"|\btarget opponent\b"
     r"|\btarget player (?:sacrifices|discards|loses \d+ life)\b"
+    r"|\bcursed role token attached to\b"
 )
+# Role tokens carry no reminder text in Arena's rules text: Spellbook Vendor's
+# "create a Sorcerer Role token attached to target creature you control" read
+# as unclassified and the model's pick of our own creature was refused
+# (2026-10-18 15:06:27 and 20:49:09, MANUAL REQUIRED). Every Role but the
+# Cursed Role buffs the creature it enchants. The Grand Evolution's "distribute
+# seven +1/+1 counters among ... target creatures you control" (20:23:51) and
+# Badgermole Cub's "earthbend 1" (19:21:27) were refused the same way.
 _BENEFICIAL = re.compile(
     r"\b(?:target|enchanted|equipped) [^.]*?\bgets? \+(?:\d+|x)/\+(?:\d+|x)"
     r"|\b(?:target|enchanted|equipped) [^.]*?\b(?:gains?|has|have) "
     r"(?:hexproof|indestructible|flying|lifelink|vigilance|trample|haste|first strike|double strike|protection)\b"
-    r"|\bput [^.]*?\+1/\+1 counters? on [^.]*?\btarget\b"
+    r"|\b(?:put|distribute) [^.]*?\+1/\+1 counters? (?:on|among) [^.]*?\btarget\b"
     r"|\battach [^.]*?\bto target creature you control\b"
+    r"|\bcreate an? (?!cursed\b)[a-z'’ -]*?\brole token attached to\b"
+    r"|\bearthbend\b"
+    r"|\benchanted [^.]*?\bits controller adds\b"
 )
 # Tapping, stunning or locking a target down hurts it. 2026-10-06 17:48
 # (bug_20261006_174855): Seasoned Cryomancer's "tap up to that many target
@@ -35,8 +46,8 @@ _BENEFICIAL = re.compile(
 _HARMFUL_LOCK = re.compile(
     rf"\btap (?:{_QUANTITY})?target\b(?![^.;]*\byou control\b)"
     rf"|\bstun counters? on (?:{_QUANTITY})?target\b"
-    r"|\btarget [^.;]*?\b(?:doesn['’]t|don['’]t) untap\b"
-    r"|\btarget [^.;]*?\bcan['’]t (?:attack|block)\b"
+    r"|\b(?:target|enchanted) [^.;]*?\b(?:doesn['’]t|don['’]t) untap\b"
+    r"|\b(?:target|enchanted) [^.;]*?\bcan['’]t (?:attack|block)\b"
 )
 # Untapping a target helps it, so "Tap target creature. / Untap target
 # creature." modal text stays mixed (unclassified) as before.
@@ -80,6 +91,36 @@ def source_effect_text(oracle: str, parent_oracle: str = "") -> str:
     return oracle or ""
 
 
+_ENCHANT_KEYWORD = re.compile(r"^\s*enchant\b[^\n.]*$", re.IGNORECASE)
+
+
+def enchant_effect_text(ability_text: str, card_text: str) -> str:
+    """What an Aura does to the permanent its cast targets, or "" for other abilities.
+
+    An Aura spell's target comes from its Enchant keyword ("Enchant creature
+    you control"), which names no effect; the card's other lines may target
+    something else. Sheltered by Ghosts (2026-10-18 15:02:49) read as mixed
+    because its enter trigger exiles an opponent's permanent, so the cast
+    onto our own creature was refused and cancelled. Only the "enchanted"
+    lines describe what happens to the Aura's own target.
+    """
+    line = re.sub(r"<[^>]*>", "", ability_text or "").strip()
+    if not _ENCHANT_KEYWORD.match(line):
+        return ""
+    effect = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.\n])", re.sub(r"<[^>]*>", "", card_text or ""))
+        if re.search(r"\benchanted\b", sentence, re.IGNORECASE)
+    ]
+    return "\n".join([line, *effect])
+
+
+def names_a_target_you_control(oracle: str) -> bool:
+    """The text restricts a target to your own side ("target creature you control")."""
+    text = re.sub(r"<[^>]*>", "", (oracle or "").lower())
+    return bool(re.search(r"\b(?:target|enchant) [^.;\n]*?(?<!don['’]t )\byou control\b", text))
+
+
 def target_effect_is_harmful(oracle: str) -> bool | None:
     """True for harm, False for a known benefit, None for unknown/mixed effects."""
     harmful, beneficial = _polarity(oracle)
@@ -119,7 +160,7 @@ def _polarity(oracle: str) -> tuple[bool, bool]:
 _TARGET_HARM = re.compile(
     r"\b(?:damage|destroy|exile|sacrifice|return|fights?|stun)\b[^.]*?\b(?:any|targets?)\b"
     r"|\bcounter (?:up to |another )?target\b|\bshuffles? (?:it|them) into\b"
-    r"|\btarget\b[^.]*?(?:\bgets? [-−]|[-−](?:\d+|x)/|\bloses\b|\bcan['’]t (?:attack|block)\b"
+    r"|\b(?:target|enchanted)\b[^.]*?(?:\bgets? [-−]|[-−](?:\d+|x)/|\bloses\b|\bcan['’]t (?:attack|block)\b"
     r"|\b(?:doesn['’]t|don['’]t) untap\b|\bshuffles?\b)"
 )
 _ACTIVATION_COST = re.compile(r"^[^:\n]*:", re.MULTILINE)
@@ -134,3 +175,55 @@ def effect_mentions_harm(oracle: str) -> bool:
         if _TARGET_HARM.search(sentence):
             return True
     return False
+
+
+# Wording that can help what an effect targets: the mirror of _TARGET_HARM. It
+# never classifies; it only vetoes keeping a pick of an opponent's permanent
+# (or player) when the effect's polarity is unknown and the text could buff it.
+_TARGET_BENEFIT = re.compile(
+    r"\+(?:\d+|x)/\+(?:\d+|x)|\+1/\+1 counters?"
+    r"|\b(?:gains?|has|have)\b[^.]*?\b(?:hexproof|indestructible|shroud|flying|lifelink|vigilance|trample"
+    r"|haste|first strike|double strike|protection|ward|menace|reach|deathtouch)\b"
+    r"|\b(?:has|have|gains?) [\"“]"
+    r"|\buntap\b|\brole token\b|\bearthbend\b|\bphases? out\b"
+    r"|\bdraws?\b|\bgains? (?:\d+ |x )?life\b|\bits controller (?:adds|gains|draws|creates)\b"
+)
+
+
+def effect_mentions_benefit(oracle: str) -> bool:
+    """True when the text could help what it targets (costs aside)."""
+    text = re.sub(r"<[^>]*>", "", (oracle or "").lower())
+    for sentence in re.split(r"[.\n]", _ACTIVATION_COST.sub("", text)):
+        if _TARGET_BENEFIT.search(sentence):
+            return True
+    return False
+
+
+# Arena's own verdict on each target (SelectTargetsReq target.highlight, shown
+# in the client as green/red glows): Hot = a good target for the chooser, Cold
+# = a bad one (removal on our own creature, a buff on theirs), Tepid = no
+# opinion, ReplaceRole = the creature already wears our Role of that name and
+# the new one would replace it (no gain; the client draws it Cold). Live
+# 2026-10-18 (56 distinct target requests across both Player.logs): every
+# harmful effect read opp:Hot/own:Cold, every buff own:Hot/opp:Cold, and the
+# effects our text rules could not classify were Tepid.
+GOOD_TARGET, NEUTRAL_TARGET, BAD_TARGET = "Hot", "Tepid", "Cold"
+_BAD_HIGHLIGHTS = {"Cold", "ReplaceRole"}
+
+
+# Wotc.Mtgo.Gre.External.Messaging.HighlightType, for bridges that report the number.
+_HIGHLIGHT_NAMES = ("None", "Cold", "Tepid", "Hot", "Counterspell", "Random", "CopySpell", "ReplaceRole")
+
+
+def target_highlight(value: object) -> str:
+    """Normalized highlight ("Hot", "Cold", "Tepid", "ReplaceRole"), or "" when absent."""
+    name = str(value or "").strip()
+    if name.startswith("HighlightType_"):
+        name = name[len("HighlightType_") :]
+    if name.isdigit():
+        name = _HIGHLIGHT_NAMES[int(name)] if int(name) < len(_HIGHLIGHT_NAMES) else ""
+    return "" if name in ("", "None") else name
+
+
+def highlight_is_bad(value: object) -> bool:
+    return target_highlight(value) in _BAD_HIGHLIGHTS

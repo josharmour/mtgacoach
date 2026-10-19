@@ -244,9 +244,10 @@ def _charm_state(*, mode=70361, bridge=True):
     return state
 
 
-def _charm_decision():
+def _charm_decision(hot=(1, 358, 382, 389)):
+    """Live highlights by default; ``hot=()`` leaves Arena without an opinion (all Tepid)."""
     return build_pending_decision(
-        targets_poll(CHARM_IDS, game_state_id=387, msg_id=549, hot=(1, 358, 382, 389)),
+        targets_poll(CHARM_IDS, game_state_id=387, msg_id=549, hot=hot),
         resolve_instance=lambda iid: "",
     )
 
@@ -276,13 +277,19 @@ def test_charm_mode_is_read_from_the_log_request_without_the_bridge(monkeypatch)
 
 def test_charm_with_unknown_mode_never_moves_damage_onto_our_creature(monkeypatch):
     _no_ability_db(monkeypatch)
-    chosen = _planner(PROPAGATOR).plan_decision_options(_charm_decision(), _charm_state(mode=0))
-    assert chosen == [DECLINE_DECISION]  # mixed text, no stated intent: decline, never redirect
+    # Arena marked the opposing targets Hot (good) live: its verdict keeps the pick.
+    assert _planner(PROPAGATOR).plan_decision_options(_charm_decision(), _charm_state(mode=0)) == ["tgt:389"]
+    # Without Arena's verdict the mixed text (damage + a deathtouch grant) could
+    # help their creature: no stated intent declines, never redirects.
+    chosen = _planner(PROPAGATOR).plan_decision_options(_charm_decision(hot=()), _charm_state(mode=0))
+    assert chosen == [DECLINE_DECISION]
     intent = (
         '{"option_ids": ["tgt:389"], "target_controllers": {"tgt:389": "opponent"}, '
         '"reasoning": "kill the Propagator"}'
     )
-    assert _planner(intent).plan_decision_options(_charm_decision(), _charm_state(mode=0)) == ["tgt:389"]
+    assert _planner(intent).plan_decision_options(_charm_decision(hot=()), _charm_state(mode=0)) == [
+        "tgt:389"
+    ]
 
 
 def test_misread_beneficial_charm_keeps_the_models_enemy_target(monkeypatch):
@@ -295,8 +302,11 @@ def test_misread_beneficial_charm_keeps_the_models_enemy_target(monkeypatch):
 def test_blind_fallback_never_aims_a_damage_text_at_our_board(monkeypatch):
     _no_ability_db(monkeypatch)
     monkeypatch.setattr(action_planner, "target_effect_is_harmful", lambda text: False)
-    chosen = _planner("no json here").plan_decision_options(_charm_decision(), _charm_state(mode=0))
+    chosen = _planner("no json here").plan_decision_options(_charm_decision(hot=()), _charm_state(mode=0))
     assert chosen == [DECLINE_DECISION]
+    # Arena's Hot targets outrank the misread: the blind pick follows them.
+    chosen = _planner("no json here").plan_decision_options(_charm_decision(), _charm_state(mode=0))
+    assert chosen and not {int(oid[4:]) for oid in chosen} & OURS
     # With the mode known the fallback aims at an opposing target.
     monkeypatch.undo()
     _known_abilities(monkeypatch)

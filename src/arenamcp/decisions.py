@@ -28,6 +28,7 @@ from typing import Any
 
 from arenamcp.card_db import is_unknown_card_name
 from arenamcp.mana import has_autotap_solution
+from arenamcp.target_effects import target_highlight
 
 logger = logging.getLogger(__name__)
 
@@ -683,11 +684,16 @@ def _build_select_targets(
         grp_id = int(cand.get("grpId") or 0)
         name = resolve_instance(iid) if resolve_instance else ""
         name = name or (resolve_name(grp_id) if grp_id else "")
+        meta = {"instanceId": iid, "grpId": grp_id, "targetIdx": cand.get("targetIdx")}
+        # Arena's own good/bad verdict on this target (target_effects.target_highlight).
+        highlight = target_highlight(cand.get("highlight"))
+        if highlight:
+            meta["highlight"] = highlight
         options.append(
             DecisionOption(
                 option_id=f"tgt:{iid}",
                 label=name or f"Target #{iid}",
-                meta={"instanceId": iid, "grpId": grp_id, "targetIdx": cand.get("targetIdx")},
+                meta=meta,
             )
         )
     if not options:

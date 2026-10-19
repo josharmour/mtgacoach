@@ -127,10 +127,20 @@ def test_unknown_effect_keeps_model_enemy_choices_instead_of_inventing_a_buff():
     assert planner.plan_decision_options(counted_decision(), state) == ["tgt:20", "tgt:30"]
 
 
-def test_unknown_effect_without_explicit_per_target_controller_intent_declines():
+def test_unknown_effect_keeps_a_consistent_pick_without_controller_intent():
+    # Nothing in the text can help the opponent's lands: the model's legal
+    # pick stands (2026-10-18: correct picks were refused for want of
+    # target_controllers, and the window went to MANUAL REQUIRED).
     planner = planner_with_picks(["tgt:20", "tgt:30"])
     assert planner.plan_decision_options(
         counted_decision(), removal_state("Choose two target permanents.")
+    ) == ["tgt:20", "tgt:30"]
+
+
+def test_unknown_effect_that_could_help_the_opponent_still_needs_intent():
+    planner = planner_with_picks(["tgt:20", "tgt:30"])
+    assert planner.plan_decision_options(
+        counted_decision(), removal_state("Choose two target permanents. Untap them.")
     ) == [DECLINE_DECISION]
 
 
