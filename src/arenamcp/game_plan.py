@@ -299,6 +299,10 @@ class GamePlan:
     # Reasoning effort the plan was formed with ("low" for a quick first plan
     # that a high-effort reform then deepens at the next quiet moment).
     effort: str = ""
+    # The opposing board the plan was written from (board_basis): creatures with
+    # power/toughness and threat keywords, noncreature permanents, their life.
+    # Prompts flag the plan's lines once that board has changed.
+    basis: dict = field(default_factory=dict)
 
     def is_empty(self) -> bool:
         return not (self.win_conditions or self.path or self.develop_next or self.turn_plan)
@@ -512,6 +516,13 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
       mode. A value gap of ``PLAN_LINE_GAP`` in the same outcome is noted. A
       plan casting a card whose effect the search does not model, or noting a
       mode it does not model (:func:`unmodelled_effect`), is not judged.
+    * claims: "X has <keyword>", "X can't block" and "Y is unblockable" about
+      creatures on the battlefield (or in our hand) are checked against their
+      keywords and blocking rules; a false one is rewritten in place
+      (:func:`_check_keyword_claims`).
+    * mana holds: holding mana with nothing to spend it on at instant speed,
+      or "banking" it, is replaced by "spend spare mana this turn"
+      (:func:`_check_mana_holds`).
     """
     from arenamcp.board_assessment import ROLE_AGGRESSOR, ROLE_CONTROL, ROLE_DEFENDER, ROLES
 
@@ -589,8 +600,11 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
 
     # --- turn plan ------------------------------------------------------------
     plan.turn_plan = _validate_turns(plan.turn_plan, assessment, state, issues)
+    _check_keyword_claims(plan, assessment, state, issues)
+    _check_leaver_blocks(plan, state, issues)
     _strip_unmet_modified_plan_attacks(plan, state, issues)
     _check_plan_line(plan, assessment, state, issues)
+    _check_mana_holds(plan, assessment, state, issues)
     plan.issues = issues
     return plan
 
@@ -663,6 +677,8 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
     }
     creature_names = _our_creature_names(state)
     haste_for_all = _our_global_haste(state)
+    # Back in hand after each of our turns (Fleeting Effigy): cast again on a later turn.
+    leavers = _end_step_leavers(state)
     used: set[int] = set()
     rocks: list[SimpleNamespace] = []
     steps: list[dict] = []
@@ -682,6 +698,7 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
         holds = [str(raw.get("hold") or "").strip()] if str(raw.get("hold") or "").strip() else []
         # (as stored: the card's name plus any note, mana value, pips, card)
         chosen: list[tuple[str, int, tuple, dict]] = []
+        this_turn: set[int] = set()
         for name in casts_raw:
             # "Archive Arbiter (gain 4 life)" from CANDIDATE LINES, the line check's own
             # "X (choose: …)" / "X (on Y)" and "landcycle X" name the card in hand.
@@ -711,9 +728,11 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
                     issues.append(f"{label}: dropped {name} (not in hand or castable from the graveyard)")
                 continue
             identity = id(card)
-            if identity in used:
-                issues.append(f"{label}: dropped {card.get('name')} (already cast earlier in the plan)")
+            if identity in used or identity in this_turn:
+                when = "this turn" if identity in this_turn else "earlier in the plan"
+                issues.append(f"{label}: dropped {card.get('name')} (already cast {when})")
                 continue
+            this_turn.add(identity)
             info = hand_card(dict(card, mana_cost=cost_text or card.get("mana_cost") or ""))
             stored = str(card.get("name")) + (f" ({note})" if note else "")
             if cycle:
@@ -764,8 +783,13 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
                 issues.append(
                     f"{label}: filled with the board-math deployment: {', '.join(c[0] for c in fill)}"
                 )
+        attack = str(raw.get("attack") or "").strip()[:80]
+        ready = _ready_attacker_names(state, assessment, index)
+        if attack and leavers:
+            attack = _leaver_attacks(attack, chosen, sources, leavers, ready, creature_names, label, issues)
         for name, _mv, _pips, card in chosen:
-            used.add(id(card))
+            if str(card.get("name")) not in leavers:
+                used.add(id(card))
             text = str(card.get("oracle_text") or "").lower()
             type_line = str(card.get("type_line") or "").lower()
             if (
@@ -784,8 +808,6 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
             land = ""
         # A creature cast this turn can't attack this turn (unless it has haste), but
         # a copy of it already on our battlefield that can attack then still may.
-        attack = str(raw.get("attack") or "").strip()[:80]
-        ready = _ready_attacker_names(state, assessment, index)
         sick = [
             str(card.get("name"))
             for name, _mv, _pips, card in chosen
@@ -849,6 +871,46 @@ def _local_seat(state: dict) -> Any:
         (p.get("seat_id") for p in state.get("players") or [] if isinstance(p, dict) and p.get("is_local")),
         None,
     )
+
+
+# 2026-10-19 match 10a78106: Fleeting Effigy ("At the beginning of your end step,
+# return this creature to its owner's hand") was planned as a permanent. The
+# validator dropped its recasts six times as "already cast earlier in the plan",
+# the T3 step attacked with it without recasting it (3 mana of casts on 2
+# lands), and the T9-T13 holds kept {2}{R} "to pump-block Bristly Bill in their
+# combat" while it was back in our hand; the 10:32:09 and 10:33:28 decisions
+# repeated the premise. Such a creature is a hand card every turn: it may be
+# recast, it attacks only on a turn it is cast, and it never blocks.
+_LEAVES_AT_END = re.compile(
+    r"at the beginning of (?:your|the|the next) end step, (?:return|sacrifice|exile) (?:this|it|~)"
+)
+
+
+def _leaves_at_end(card: dict | None) -> bool:
+    """The permanent returns to hand (or is sacrificed/exiled) at the beginning of our end step."""
+    if not isinstance(card, dict):
+        return False
+    from arenamcp.combat_strategy import _rules_text
+
+    return bool(_LEAVES_AT_END.search(_rules_text(card)))
+
+
+def _end_step_leavers(state: dict) -> dict[str, dict]:
+    """Our creature cards (battlefield, hand) that leave at our end step, by name."""
+    local = _local_seat(state)
+    found: dict[str, dict] = {}
+    for zone in ("hand", "battlefield"):
+        for card in state.get(zone) or []:
+            if not isinstance(card, dict) or not card.get("name") or not _is_creature_card(card):
+                continue
+            if (
+                zone == "battlefield"
+                and (card.get("controller_seat_id") or card.get("owner_seat_id")) != local
+            ):
+                continue
+            if _leaves_at_end(card):
+                found.setdefault(str(card["name"]), card)
+    return found
 
 
 def _is_creature_card(card: dict) -> bool:
@@ -920,6 +982,58 @@ def _without_sick_attackers(
     return ", ".join(name for name in named if name not in sick)
 
 
+def _leaver_attacks(
+    attack: str,
+    chosen: list[tuple[str, int, tuple, dict]],
+    sources: list,
+    leavers: dict[str, dict],
+    ready: set[str],
+    creatures: list[str],
+    label: str,
+    issues: list[str],
+) -> str:
+    """``attack`` once each end-step leaver it names is cast this turn: added to ``chosen``
+    when the turn's mana pays for it (and it has haste), else taken out of the attack.
+
+    10a78106 T3: "cast Boltwave + Hired Claw; attack: Fleeting Effigy" on 2
+    lands. Effigy had gone back to hand at our previous end step, so the
+    attack needed a third mana. A leaver already on the battlefield now and
+    ready (cast earlier this turn) attacks as it is.
+    """
+    from arenamcp.combat_keywords import has_combat_keyword
+    from arenamcp.mulligan_policy import _pip_matching, hand_card
+
+    plain = _plain(attack)
+    if not plain or _NO_ATTACK.match(plain) or _ALL_ATTACK.search(plain):
+        return attack
+    named = _named_creatures(attack, creatures)
+    cast_here = {_plain(c[3].get("name")) for c in chosen if not c[0].startswith("landcycle ")}
+    out = []
+    for name in named:
+        card = leavers.get(name)
+        if card is None or _plain(name) in cast_here or name in ready:
+            continue
+        info = hand_card(card)
+        spent = sum(c[1] for c in chosen)
+        fits = spent + info.mana_value <= len(sources) and _pip_matching(
+            tuple(p for c in chosen for p in c[2]) + info.pips, sources
+        )
+        if fits and has_combat_keyword(card, "haste"):
+            chosen.append((str(card["name"]), info.mana_value, info.pips, card))
+            issues.append(f"{label}: casts {name} to attack with it (it returns to our hand at our end step)")
+            continue
+        out.append(name)
+        why = (
+            f"recasting it needs {info.mana_value} more mana ({spent} of {len(sources)} already planned)"
+            if not fits
+            else "it can't attack the turn it is recast"
+        )
+        issues.append(f"{label}: {name} can't attack: it returns to our hand at our end step and {why}")
+    if not out:
+        return attack
+    return ", ".join(name for name in named if name not in out)
+
+
 def _strip_unmet_modified_plan_attacks(plan: GamePlan, state: dict, issues: list[str]) -> None:
     """Strip planned attacks with unmodified creatures whose evasion condition is unmet and fatal."""
     from arenamcp.combat_keywords import unmet_modified_flag
@@ -966,6 +1080,491 @@ def _strip_unmet_modified_plan_attacks(plan: GamePlan, state: dict, issues: list
             issues.append(f"{step.get('label')}: held back {name} ({losing_by_name[name]})")
 
 
+# --- keyword and blocking claims ---------------------------------------------------
+#
+# 2026-10-19 match a74bbc90: the T8 plan said "attack: Slickshot Show-Off
+# (flying; their only blocker Moseo has shadow and cannot block", the T10 one
+# "Slickshot Show-Off (flying, unblockable - only flyer Moseo has shadow)".
+# Moseo, Vein's New Dean has flying and no shadow, and blocks Slickshot. Nothing
+# checked the claim: every decision prompt carried it and the next reform
+# repeated it. A claim about a creature on the battlefield (or in our hand) is
+# now checked against its keywords and blocking rules and, when false, rewritten
+# in place: "Moseo has no shadow [checked] and CAN block [checked]".
+
+_CLAIM_KEYWORDS = (
+    "flying", "reach", "menace", "trample", "deathtouch", "lifelink", "first strike", "double strike",
+    "vigilance", "haste", "hexproof", "indestructible", "defender", "shadow", "fear", "intimidate",
+    "skulk", "horsemanship",
+)  # fmt: skip
+_CLAIM_KW = "|".join(re.escape(k) for k in sorted(_CLAIM_KEYWORDS, key=len, reverse=True))
+# "Moseo has shadow", "Moseo (2/1) still has no flying": the verb right after the name.
+_HAS_CLAIM = re.compile(
+    r"^\s*(?:\([^()]*\)\s*)?,?\s*(?:still |now |also |already |only )?(?:has|have|gains?|gained)\s+"
+    rf"(?P<neg>no\s+)?(?P<kw>{_CLAIM_KW})\b"
+)
+# "Slickshot Show-Off (flying, unblockable": a keyword list right after the name.
+_PAREN_LIST = re.compile(r"^\s*\((?P<items>[^;()|]*)")
+_CANT_BLOCK_CLAIM = re.compile(r"\b(?:can't|cannot|can not|won't|unable to)\s+block\b")
+_UNBLOCKABLE_CLAIM = re.compile(r"\b(?:unblockable|can't be blocked|cannot be blocked|can not be blocked)\b")
+# A blocking claim under a condition ("once tapped", "if we kill it") or credited to an
+# effect ("unblockable under Tetsuko", "use Passage to make X unblockable") is not a
+# board fact this check can see. (Summoning sickness is not a condition: a creature that
+# just arrived still blocks.) In 2,611 logged plans, every other "unblockable" was such a
+# grant; only the flying claims are checked.
+_CLAIM_CONDITION = re.compile(
+    r"\b(?:if|unless|once|after|when|whenever|until|while|tapped|taps?|dies|dead|killed|kills?|removed?"
+    r"|bounced?|exiled?|verified|probably|likely|maybe|might|this turn|via|under|with|using|through"
+    r"|thanks|because|from|by|pumped?|equipped|enchanted)\b"
+)
+_CLAIM_CAUSE = re.compile(
+    r"\b(?:make|makes|making|made|render|renders|let|lets|give|gives|turn|turns)\b[^;.|]*$"
+)
+# "Moseo attacks and we cannot block": the claim is about someone else ("it" is Moseo).
+_OTHER_SUBJECT = re.compile(r"\b(?:we|you|i|our|they|their|he|she|us|them|which|that|who)\b")
+_CLAIM_WINDOW = 60
+_CLAIM_NAME_STOPWORDS = _NAME_STOPWORDS | {"show", "off", "new", "old", "big", "little", "lord", "lady"}
+
+
+def _claim_keys(cards: list[dict]) -> list[tuple[str, str]]:
+    """(lower-case text key, creature name): full names, the part before a comma, unique words."""
+    names = list(dict.fromkeys(str(c.get("name")) for c in cards if c.get("name")))
+    words = Counter(word for name in names for word in set(_plain(name).split()))
+    keys: list[tuple[str, str]] = []
+    for name in names:
+        lowered = name.lower().replace("’", "'")
+        keys.append((lowered, name))
+        short = lowered.split(",")[0].strip()
+        if len(short) >= 4 and short != lowered:
+            keys.append((short, name))
+        for word in _plain(name).split():
+            if len(word) >= 4 and words[word] == 1 and word not in _CLAIM_NAME_STOPWORDS:
+                keys.append((word, name))
+    return keys
+
+
+def _name_spans(text: str, keys: list[tuple[str, str]]) -> list[tuple[int, int, str]]:
+    """Non-overlapping (start, end, creature name) occurrences in ``text``, longest key first."""
+    found: list[tuple[int, int, str]] = []
+    for key, name in sorted(keys, key=lambda item: -len(item[0])):
+        for match in re.finditer(rf"(?<![a-z0-9]){re.escape(key)}(?![a-z0-9])", text):
+            if not any(match.start() < end and start < match.end() for start, end, _ in found):
+                found.append((match.start(), match.end(), name))
+    return sorted(found)
+
+
+def _keyword_truth(cards: list[dict], keyword: str, battlefield: list[dict]) -> bool | None:
+    """Whether a creature with this name has ``keyword`` (None: its rules are unknown, or a
+    permanent on the battlefield may grant it)."""
+    from arenamcp.combat_keywords import _KEYWORDS, has_combat_keyword
+    from arenamcp.combat_strategy import _rules_text
+
+    known = False
+    for card in cards:
+        listed = [str(k).lower() for k in card.get("keywords") or ()]
+        known = known or bool(card.get("oracle_text") or listed)
+        if keyword in _KEYWORDS and has_combat_keyword(card, keyword):
+            return True
+        if keyword in listed or re.search(rf"(?m)^\s*{re.escape(keyword)}\b", _rules_text(card)):
+            return True
+        if keyword in str(card.get("granted_abilities") or "").lower():
+            return True
+    if not known:
+        return None
+    grant = re.compile(rf"\b(?:have|has|gains?)\b[^.\n]*\b{re.escape(keyword)}\b")
+    if any(grant.search(_rules_text(source)) for source in battlefield):
+        return None  # "creatures you control have flying", an Aura: the snapshot may not show it
+    return False
+
+
+def _block_restricted(blocker: dict, battlefield: list[dict]) -> bool | None:
+    """True when ``blocker`` can't block (its own text or an attached Aura), None when another
+    permanent may stop it ("creatures can't block this turn"), else False."""
+    from arenamcp.combat_strategy import _CANT_BLOCK, _rules_text
+
+    if _CANT_BLOCK.search(_rules_text(blocker)):
+        return True
+    identity = blocker.get("instance_id")
+    for source in battlefield:
+        if source is blocker:
+            continue
+        text = _rules_text(source)
+        attached = source.get("attached_to_id") or source.get("parent_instance_id")
+        if identity is not None and attached == identity and _CANT_BLOCK.search(text):
+            return True
+        if re.search(r"\b(?:creatures|(?:target|each|that) creature)\b[^.\n]*\bcan't block\b", text):
+            return None  # not "this creature can't block": another creature's own text
+    return False
+
+
+def _claim_corrections(
+    text: str,
+    *,
+    ours: list[dict],
+    theirs: list[dict],
+    hand: list[dict],
+    battlefield: list[dict],
+    our_turn: bool,
+) -> tuple[str, list[str]]:
+    """``text`` with its false creature claims rewritten, and what was corrected."""
+    from arenamcp.combat_keywords import annotate_cant_be_blocked, has_combat_keyword
+    from arenamcp.combat_solver import _can_block
+
+    lowered = text.lower().replace("’", "'")
+    creatures = [*ours, *theirs, *hand]
+    spans = _name_spans(lowered, _claim_keys(creatures)) if len(lowered) == len(text) else []
+    if not spans:
+        return text, []
+    by_name: dict[str, list[dict]] = {}
+    for card in creatures:
+        by_name.setdefault(str(card.get("name")), []).append(card)
+    our_names = {str(c.get("name")) for c in [*ours, *hand]}
+    their_names = {str(c.get("name")) for c in theirs}
+    marked = [dict(card) for card in battlefield]
+    annotate_cant_be_blocked(marked)
+    unblockable = {str(c.get("name")) for c in marked if c.get("cant_be_blocked")}
+    attackers = [name for _start, _end, name in spans if name in our_names]
+    edits: list[tuple[int, int, str]] = []
+    notes: list[str] = []
+    for index, (start, end, name) in enumerate(spans):
+        stop = spans[index + 1][0] if index + 1 < len(spans) else len(lowered)
+        window = lowered[end : min(stop, end + _CLAIM_WINDOW)]
+        window = re.split(r"[;.|\n]", window)[0]
+        caused = bool(_CLAIM_CAUSE.search(lowered[max(0, start - 30) : start]))
+        cards = by_name.get(name, [])
+        # keywords: "has (no) X", or the first items of a "(flying, haste" list
+        claims: list[tuple[int, int, str, bool]] = []
+        has = _HAS_CLAIM.search(window)
+        if has:
+            claims.append((has.start("kw") - (len(has.group("neg")) if has.group("neg") else 0),
+                           has.end("kw"), has.group("kw"), not has.group("neg")))  # fmt: skip
+        listing = _PAREN_LIST.match(window)
+        if listing:
+            offset = listing.start("items")
+            for item in re.finditer(r"[^,]+", listing.group("items")):
+                word = item.group(0).strip()
+                if word not in _CLAIM_KEYWORDS:
+                    break
+                begin = offset + item.start() + item.group(0).index(word)
+                claims.append((begin, begin + len(word), word, True))
+        for begin, finish, keyword, positive in claims:
+            truth = _keyword_truth(cards, keyword, battlefield)
+            if truth is None or truth == positive:
+                continue
+            fact = f"has no {keyword}" if positive else f"HAS {keyword}"
+            have = [kw for kw in _CLAIM_KEYWORDS if _keyword_truth(cards, kw, []) and kw != keyword]
+            notes.append(f"{name} {fact}" + (f" (it has {', '.join(have)})" if have else ""))
+            edits.append((end + begin, end + finish, f"{'no ' if positive else ''}{keyword} [checked]"))
+        conditional = caused or bool(_CLAIM_CONDITION.search(window))
+        cant = _CANT_BLOCK_CLAIM.search(window)
+        if cant and _OTHER_SUBJECT.search(window[: cant.start()]):
+            cant = None
+        if cant and not conditional and name in their_names:
+            blockers = [c for c in theirs if str(c.get("name")) == name]
+            restricted = [_block_restricted(c, battlefield) for c in blockers]
+            hitters = [c for c in [*ours, *hand] if str(c.get("name")) in attackers and _is_creature_card(c)]
+            if (
+                blockers
+                and hitters
+                and not any(c.get("is_tapped") for c in blockers)
+                and all(flag is False for flag in restricted)
+                and not any(has_combat_keyword(c, "menace") for c in hitters)
+            ):
+                blocked = sorted({str(a.get("name")) for a in hitters for b in blockers if _can_block(a, b)})
+                if blocked:
+                    notes.append(f"{name} can block {', '.join(blocked)}")
+                    edits.append((end + cant.start(), end + cant.end(), "CAN block [checked]"))
+        free = _UNBLOCKABLE_CLAIM.search(window)
+        if free and _OTHER_SUBJECT.search(window[: free.start()]):
+            free = None
+        if free and not conditional and name in our_names and name not in unblockable:
+            attacker = next((c for c in [*ours, *hand] if str(c.get("name")) == name), None)
+            eligible = [
+                b
+                for b in theirs
+                if not (our_turn and b.get("is_tapped")) and _block_restricted(b, battlefield) is False
+            ]
+            known = all(_block_restricted(b, battlefield) is not None for b in theirs)
+            flying = attacker is not None and has_combat_keyword(attacker, "flying")
+            can = [b for b in eligible if flying and _can_block(attacker, b)]
+            needed = 2 if attacker is not None and has_combat_keyword(attacker, "menace") else 1
+            if known and flying and len(can) >= needed:
+                names = ", ".join(dict.fromkeys(str(b.get("name")) for b in can))
+                notes.append(f"{name} can be blocked by {names}")
+                edits.append((end + free.start(), end + free.end(), f"can be blocked by {names} [checked]"))
+    for begin, finish, replacement in sorted(edits, reverse=True):
+        text = text[:begin] + replacement + text[finish:]
+    return text, notes
+
+
+def _check_keyword_claims(plan: GamePlan, assessment: Any, state: dict, issues: list[str]) -> None:
+    """Rewrite false keyword / blocking claims in the plan's text (see the comment above)."""
+    try:
+        local = _local_seat(state)
+        battlefield = [c for c in state.get("battlefield") or [] if isinstance(c, dict)]
+        on_board = [c for c in battlefield if _is_creature_card(c) and c.get("name")]
+        ours = [c for c in on_board if (c.get("controller_seat_id") or c.get("owner_seat_id")) == local]
+        theirs = [c for c in on_board if (c.get("controller_seat_id") or c.get("owner_seat_id")) != local]
+        hand = [c for c in _castable_cards(state) if _is_creature_card(c) and c.get("name")]
+        context = {
+            "ours": ours,
+            "theirs": theirs,
+            "hand": hand,
+            "battlefield": battlefield,
+            "our_turn": bool(getattr(assessment, "our_turn", False)),
+        }
+
+        def fixed(value: str, where: str) -> str:
+            if not value:
+                return value
+            text, notes = _claim_corrections(value, **context)
+            issues.extend(f"{where}: plan claim corrected: {note}" for note in notes)
+            return text
+
+        for attr in ("path", "threat", "develop_next", "role_reason"):
+            setattr(plan, attr, fixed(getattr(plan, attr), attr))
+        for attr in (
+            "win_conditions",
+            "switch_if",
+            "assumptions",
+            "resource_priorities",
+            "active_mechanisms",
+        ):
+            setattr(plan, attr, [fixed(item, attr) for item in getattr(plan, attr)])
+        for step in plan.turn_plan:
+            for key in ("attack", "hold"):
+                step[key] = fixed(str(step.get(key) or ""), str(step.get("label") or "T"))
+    except Exception as error:  # a claim check must never cost the plan
+        logger.debug("plan claim check failed: %s", error, exc_info=True)
+
+
+# A plan clause about their turn: blocks, their combat (10a78106 T9: "{2}{R} reserved to
+# pump-block/trade Bristly Bill in their combat" with Fleeting Effigy).
+_THEIR_TURN_USE = re.compile(
+    r"\b(?:block(?:s|ed|ing|ers?)?|pump-block\w*|their (?:turn|combat|attacks?|end step)|through their"
+    r"|on defen[cs]e|opponent's turn)\b",
+    re.I,
+)
+
+
+def _check_leaver_blocks(plan: GamePlan, state: dict, issues: list[str]) -> None:
+    """Plan clauses that use an end-step leaver on their turn (it is back in our hand by then).
+
+    A hold clause doing so is dropped (the mana check then says what to spend
+    it on); elsewhere the clause is annotated. Our own attacks are judged in
+    :func:`_validate_turns`.
+    """
+    try:
+        leavers = list(_end_step_leavers(state))
+        if not leavers:
+            return
+
+        def check(value: str, where: str, *, drop: bool) -> str:
+            if not value:
+                return value
+            out, changed = [], False
+            for clause in value.split(";"):
+                named = _named_creatures(clause, leavers)  # "pumps Effigy" names Fleeting Effigy
+                if not named or not _THEIR_TURN_USE.search(clause) or "[checked:" in clause:
+                    out.append(clause)
+                    continue
+                changed = True
+                fact = f"{' and '.join(named)} return{'s' if len(named) == 1 else ''} to our hand at our end step"
+                issues.append(f"{where}: {'dropped' if drop else 'flagged'} '{clause.strip()}' ({fact})")
+                if drop:
+                    continue
+                out.append(f"{clause.rstrip()} [checked: {fact}; it can't block on their turn]")
+            if not changed:
+                return value
+            if drop:
+                note = f"{', '.join(leavers)} can't block on their turn [checked: back in our hand at our end step]"
+                out = [c for c in out if c.strip()] + [f" {note}"]
+            return ";".join(out).strip()
+
+        for attr in ("path", "threat", "develop_next", "role_reason"):
+            setattr(plan, attr, check(getattr(plan, attr), attr, drop=False))
+        for attr in (
+            "win_conditions",
+            "switch_if",
+            "assumptions",
+            "resource_priorities",
+            "active_mechanisms",
+        ):
+            setattr(plan, attr, [check(item, attr, drop=False) for item in getattr(plan, attr)])
+        for step in plan.turn_plan:
+            label = str(step.get("label") or "T")
+            step["attack"] = check(str(step.get("attack") or ""), label, drop=False)
+            step["hold"] = check(str(step.get("hold") or ""), label, drop=True)
+    except Exception as error:  # a plan check must never cost the plan
+        logger.debug("plan end-step check failed: %s", error, exc_info=True)
+
+
+# --- mana holds ------------------------------------------------------------------------
+#
+# 2026-10-19 match 92c09c7a: the T8 step said "hold: {R}{R} spare - no instants
+# in hand", T10 "{R}{R} spare - bank toward kicked Burst Lightning if drawn".
+# With that hold in its prompt the model twice passed on Hired Claw's {1}{R}
+# counter ("banking {1}{R} preserves flexibility for a drawn burn spell",
+# 09:33:24 and 09:33:27): 2 mana wasted. Mana empties at the end of each step
+# and phase, and nothing in hand could use it. A mana hold now needs an
+# instant-speed use (an instant or flash card in hand, cycling, an unrestricted
+# activated ability of a permanent that is still there on their turn) that the
+# spare mana pays for, or must name what it is for ("{1}{R} for Hired Claw's
+# counter"); a hold for a card "if drawn" counts only while that draw is still
+# ahead. "Banking" mana never does, unless it is stored (a Treasure).
+
+_MANA_SYMBOL = re.compile(r"\{[^}]*\}")
+_MANA_CONTEXT = re.compile(
+    r"\bmana\b|\b(?:white|blue|black|red|green|colorless)\s+(?:open|up|untapped)\b", re.I
+)
+_MANA_HOLD = re.compile(
+    r"\b(?:spare|leftover|unused|idle|open|untapped|up|bank|banks|banked|banking|reserved?|floating|float)\b",
+    re.I,
+)
+_MANA_BANK = re.compile(r"\bbank(?:s|ed|ing)?\b|\bsave (?:up )?mana\b|\bcarry (?:it )?over\b", re.I)
+# Mana that can be stored across turns (a Treasure, mana counters): "bank" may be real.
+_STORED_MANA = re.compile(r"\b(?:treasures?|tokens?|food|counters?|stor(?:e|ed|age))\b", re.I)
+_SACRIFICE_FOR_MANA = re.compile(r"\bsacrifice\b[^:\n]*:\s*add\b")
+# "no spare mana this turn", "nothing to hold": a statement, not a hold.
+_NO_HOLD = re.compile(r"^\s*(?:no|nothing|zero|0)\b", re.I)
+_DRAWN_CARD = re.compile(r"\bif drawn\b|\bdrawn\b|\btop-?deck|\bdraw(?:s)? into\b", re.I)
+_ABILITY_LINE = re.compile(r"^(?P<cost>[^:\n]*\{[^}]*\}[^:\n]*):\s*(?P<effect>.+)$")
+_RESTRICTED_ABILITY = re.compile(r"\bactivate only (?:as a sorcery|during your turn|if)\b")
+_SPEND_NOTE = "spend spare mana this turn{sinks}: unused mana empties at the end of each step and phase"
+
+
+def _mana_abilities(card: dict) -> list[tuple[int, bool]]:
+    """(mana cost, worth holding mana for) of each activated non-mana ability with a mana cost."""
+    from arenamcp.combat_strategy import _rules_text
+    from arenamcp.mulligan_policy import _mana_value
+
+    text = _rules_text(card)
+    stays = not _LEAVES_AT_END.search(text)
+    found = []
+    for line in text.splitlines():
+        match = _ABILITY_LINE.match(line.strip())
+        if not match:
+            continue
+        cost, effect = match.group("cost"), match.group("effect")
+        symbols = [s for s in _MANA_SYMBOL.findall(cost) if s.strip("{}").strip("o") not in ("t", "q")]
+        if (
+            not symbols
+            or re.search(r"\badd\b", effect)
+            or re.search(r"\bfrom your (?:graveyard|hand)\b", cost)
+        ):
+            continue
+        if re.search(r"\b(?:equip|loyalty)\b", cost):
+            continue
+        found.append((_mana_value(cost), stays and not _RESTRICTED_ABILITY.search(effect)))
+    return found
+
+
+def _check_mana_holds(plan: GamePlan, assessment: Any, state: dict, issues: list[str]) -> None:
+    """Replace a step's mana hold that nothing can spend at instant speed (see the comment above)."""
+    try:
+        from arenamcp.combat_strategy import _rules_text
+        from arenamcp.mulligan_policy import _mana_value, hand_card
+
+        local = _local_seat(state)
+        hand = [c for c in state.get("hand") or [] if isinstance(c, dict) and c.get("name")]
+        hand_names = _card_names(_castable_cards(state))
+        permanents = [
+            c
+            for c in state.get("battlefield") or []
+            if isinstance(c, dict) and (c.get("controller_seat_id") or c.get("owner_seat_id")) == local
+        ]
+        flashback = [
+            c
+            for c in state.get("graveyard") or []
+            if isinstance(c, dict)
+            and c.get("owner_seat_id", local) == local
+            and _flashback_cost(c)
+            and hand_card(c).instant_speed
+        ]
+        now_turn = _round(getattr(assessment, "turn", 0))
+        our_turn = bool(getattr(assessment, "our_turn", False))
+        stored = any(_SACRIFICE_FOR_MANA.search(_rules_text(c)) for c in permanents)
+        cast_so_far: Counter[str] = Counter()
+        for step in plan.turn_plan:
+            spent, entered = 0, []
+            for entry in step.get("cast") or []:
+                text = str(entry)
+                cycle = text.lower().startswith("landcycle ")
+                card = _named_card(_ANY_NOTE.sub("", text.removeprefix("landcycle ")), hand_names)
+                if card is None:
+                    continue
+                info = hand_card(card)
+                spent += (info.landcycling or 0) if cycle else info.mana_value
+                cast_so_far[_plain(card.get("name"))] += 1
+                if not cycle and not info.instant_speed:
+                    entered.append(card)
+            hold = str(step.get("hold") or "")
+            if not hold:
+                continue
+            spare = _round(step.get("mana"), 0) - spent
+            left = Counter(cast_so_far)
+            uses: list[str] = []
+            still_in_hand: list[dict] = []
+            for card in hand:
+                key = _plain(card.get("name"))
+                if left[key] > 0:
+                    left[key] -= 1
+                    continue
+                still_in_hand.append(card)
+                info = hand_card(card)
+                cycling = re.search(
+                    r"\b(?:\w*cycling|channel)\b\s*(?:[—\-—]\s*)?((?:\{[^}]*\})+)", _rules_text(card)
+                )
+                if (info.instant_speed and not info.is_land and info.mana_value <= spare) or (
+                    cycling and _mana_value(cycling.group(1)) <= spare
+                ):
+                    uses.append(str(card.get("name")))
+            uses += [str(c.get("name")) for c in flashback if _mana_value(_flashback_cost(c) or "") <= spare]
+            sinks: list[str] = []
+            for card in [*permanents, *entered]:
+                for cost, reactive in _mana_abilities(card):
+                    if cost <= spare and str(card.get("name")) not in sinks:
+                        sinks.append(str(card.get("name")))
+                    if reactive and cost <= spare:
+                        uses.append(str(card.get("name")))
+            # A clause naming what the mana is for ("reserve {6}{U}{B} for Recursive
+            # Recruitment flashback") plans to spend it: kept.
+            spendable = [
+                str(c.get("name")) for c in [*still_in_hand, *flashback] if not hand_card(c).is_land
+            ] + sinks
+            draw_ahead = not (our_turn and step.get("turn") == now_turn)
+            kept, dropped = [], []
+            for clause in [part.strip() for part in hold.split(";") if part.strip()]:
+                mana_hold = bool(
+                    (_MANA_SYMBOL.search(clause) or _MANA_CONTEXT.search(clause))
+                    and _MANA_HOLD.search(clause)
+                    and not _NO_HOLD.match(clause)
+                )
+                waits_for_draw = draw_ahead and bool(_DRAWN_CARD.search(clause))
+                names_use = any(_plan_mentions(name, clause.casefold()) for name in spendable)
+                banks = bool(_MANA_BANK.search(clause)) and not (stored or _STORED_MANA.search(clause))
+                if mana_hold and (banks or not (uses or waits_for_draw or names_use)):
+                    dropped.append(clause)
+                else:
+                    kept.append(clause)
+            if not dropped:
+                continue
+            listed = f" ({', '.join(sinks[:2])})" if sinks else ""
+            if spare > 0:
+                kept.append(_SPEND_NOTE.format(sinks=listed))
+            step["hold"] = "; ".join(kept)
+            why = (
+                "mana can't be banked"
+                if any(_MANA_BANK.search(c) and not (stored or _STORED_MANA.search(c)) for c in dropped)
+                else "nothing in hand or on the board uses it at instant speed"
+            )
+            issues.append(
+                f"{step.get('label')}: dropped the mana hold '{'; '.join(dropped)}' ({why}; "
+                "unused mana empties at the end of each step and phase)"
+            )
+    except Exception as error:  # a hold check must never cost the plan
+        logger.debug("plan mana-hold check failed: %s", error, exc_info=True)
+
+
 def _cast_entries(value: Any) -> list[str]:
     """A step's cast list as entries, notes kept ("X (gain 4 life)"), without landcycling."""
     if isinstance(value, str):
@@ -1010,7 +1609,8 @@ def _ready_attacker_names(state: dict, assessment: Any, index: int) -> set[str]:
 
     At T on our own turn: untapped and not summoning-sick (it entered before
     this turn, or has haste). On a later turn, or at T when T is our next turn,
-    every creature of ours that is on the battlefield now.
+    every creature of ours that is on the battlefield now, except one that
+    leaves at our end step (it is back in hand by then).
     """
     from arenamcp.combat_keywords import has_combat_keyword
 
@@ -1031,6 +1631,8 @@ def _ready_attacker_names(state: dict, assessment: Any, index: int) -> set[str]:
                 sick and not haste_for_all and not has_combat_keyword(card, "haste")
             ):
                 continue
+        elif _leaves_at_end(card):
+            continue
         names.add(str(card["name"]))
     return names
 
@@ -1277,13 +1879,15 @@ def _replace_t_step(
     step["hold"] = ", ".join(new.held)[:120]
     step["mana"] = new.mana
     # Each hand card (and commander) once across the plan: later turns lose what T now uses.
+    # A creature that returns at our end step is a hand card again (Fleeting Effigy).
     in_hand = Counter(_plain(c.get("name")) for c in _castable_cards(state))
     left = in_hand - Counter(_plain(name) for name in [*new.casts, *new.cycles, new.land] if name)
+    returning = {_plain(name) for name in _end_step_leavers(state)}
     for later in [s for s in plan.turn_plan if s.get("turn", 0) > step["turn"]]:
         kept = []
         for entry in later.get("cast") or []:
             name = _plain(_ANY_NOTE.sub("", str(entry)).removeprefix("landcycle "))
-            if not in_hand[name]:  # from the graveyard: not a hand card
+            if not in_hand[name] or name in returning:  # from the graveyard, or back in hand
                 kept.append(entry)
             elif left[name] > 0:
                 left[name] -= 1
@@ -1447,6 +2051,186 @@ def plan_card_losses(plan: GamePlan | None, state: dict | None) -> str:
     )
 
 
+# --- the board a plan was written from -----------------------------------------------
+#
+# 2026-10-19 match 41753907: the plan formed at 09:02:21 (from the 09:02:08
+# board) said "T7: Effigy+Strike face, swing 4 unblocked -> opponent at -1;
+# done". At 09:02:23 Unflinching Courage made Dawnwing Marshal a 4/4 flying,
+# trample, lifelink attacker; the reform started for it yielded to our first T7
+# decision 3 s later, and all of T7 ran on the old plan. Match f9e0ec3b: the T10
+# plan was requested at 09:18:55, Lyra Dawnbringer resolved at 09:19:08, and the
+# plan installed at 09:19:29 still said "attack: Emberheart Challenger, Hired Claw
+# ... kill the flying blocker pre-combat", which reached the attack prompt. A
+# plan now keeps the opposing board it was written from: prompts flag its lines
+# once that board has changed, and a new threat re-plans (GamePlanManager:
+# bounded, on the opponent's turn only).
+
+# Keywords that change what an opposing creature does to our attacks or the race.
+_THREAT_KEYWORDS = (
+    "flying", "reach", "menace", "trample", "first strike", "double strike", "deathtouch", "lifelink",
+    "hexproof", "indestructible",
+)  # fmt: skip
+# A small creature with one of these still stops, or kills, an attacker.
+_STOPPER_KEYWORDS = frozenset({"deathtouch", "first strike", "double strike"})
+# This much opposing life gained since the plan puts its damage counts off.
+_LIFE_GAIN_STALE = 3
+
+
+def _is_engine(card: dict) -> bool:
+    """A noncreature, nonland, nontoken artifact, enchantment, planeswalker or battle."""
+    if card.get("is_token") or "token" in str(card.get("object_kind") or "").lower():
+        return False
+    types = " ".join(
+        [str(t) for t in card.get("card_types") or []] + [str(card.get("type_line") or "")]
+    ).lower()
+    if "creature" in types or "land" in types:
+        return False
+    return any(kind in types for kind in ("artifact", "enchantment", "planeswalker", "battle"))
+
+
+def board_basis(state: dict | None) -> dict:
+    """The opposing board a plan is written from ({} when our seat is unknown).
+
+    ``creatures``: id, name, power/toughness, the threat keywords it has now
+    and whether it is modified (counters or an attached Aura/Equipment, so a
+    size change is lasting, not a combat trick); ``engines``: noncreature
+    permanents (as the cadence's "new opposing permanent"); ``opp_life``;
+    ``our_power``: the power of our biggest creature.
+    """
+    if not isinstance(state, dict):
+        return {}
+    local = _local_seat(state)
+    if local is None:
+        return {}
+    from arenamcp.combat_keywords import has_combat_keyword, is_creature_modified
+
+    battlefield = [c for c in state.get("battlefield") or [] if isinstance(c, dict)]
+    creatures, engines = [], []
+    our_power = 0
+    for card in battlefield:
+        controller = card.get("controller_seat_id") or card.get("owner_seat_id")
+        if controller == local and _is_creature_card(card):
+            our_power = max(our_power, _round(card.get("power")))
+        if controller is None or controller == local:
+            continue
+        identity = str(card.get("instance_id") or card.get("name") or "")
+        if _is_creature_card(card):
+            power, toughness = _round(card.get("power"), -99), _round(card.get("toughness"), -99)
+            if power == -99 or toughness == -99:
+                continue
+            creatures.append(
+                {
+                    "id": identity,
+                    "name": str(card.get("name") or "?"),
+                    "power": power,
+                    "toughness": toughness,
+                    "keywords": [kw for kw in _THREAT_KEYWORDS if has_combat_keyword(card, kw)],
+                    "modified": is_creature_modified(card, battlefield=battlefield),
+                }
+            )
+        elif _is_engine(card):
+            engines.append({"id": identity, "name": str(card.get("name") or "?")})
+    life = next(
+        (
+            _round(p.get("life_total"), -99)
+            for p in state.get("players") or []
+            if isinstance(p, dict) and not p.get("is_local") and p.get("seat_id") != local
+        ),
+        -99,
+    )
+    return {
+        "turn": _round((state.get("turn") or {}).get("turn_number")),
+        "opp_life": None if life == -99 else life,
+        "creatures": creatures,
+        "engines": engines,
+        "our_power": our_power,
+    }
+
+
+def _with_keywords(keywords: list) -> str:
+    return f" {', '.join(keywords)}" if keywords else ""
+
+
+def board_changes(old: dict | None, new: dict | None, *, threats_only: bool = False) -> list[str]:
+    """What changed on the opponent's side from board basis ``old`` to ``new``, most important first.
+
+    Threats (``threats_only``): a new creature with a threat keyword (power 2
+    or more, or deathtouch / first strike), or with power 4 or more, or at
+    least our biggest creature's (2 or more); a creature that gained a threat
+    keyword, or that grew by 2 and is modified; a new noncreature permanent.
+    Otherwise also any new creature, any growth, and the opponent gaining
+    ``_LIFE_GAIN_STALE`` life or more. Creatures that left or shrank are not
+    changes (our own removal, mostly). [] when either side is unknown.
+    """
+    if not old or not new or "creatures" not in old or "creatures" not in new:
+        return []
+    before = {str(c.get("id")): c for c in old.get("creatures") or [] if isinstance(c, dict)}
+    biggest = max(2, _round(new.get("our_power")))
+    threats: list[str] = []
+    minor: list[str] = []
+    for card in new.get("creatures") or []:
+        if not isinstance(card, dict):
+            continue
+        power, toughness = _round(card.get("power")), _round(card.get("toughness"))
+        keywords = list(card.get("keywords") or [])
+        was = before.get(str(card.get("id")))
+        if was is None:
+            threat = (
+                (bool(keywords) and (power >= 2 or bool(_STOPPER_KEYWORDS & set(keywords))))
+                or power >= 4
+                or power >= biggest
+            )
+            text = f"{card.get('name')} {power}/{toughness}{_with_keywords(keywords)} entered"
+            (threats if threat else minor).append(text)
+            continue
+        old_keywords = list(was.get("keywords") or [])
+        gained = [kw for kw in keywords if kw not in old_keywords]
+        grew = (power - _round(was.get("power")), toughness - _round(was.get("toughness")))
+        threat = bool(gained) or (bool(card.get("modified")) and max(grew) >= 2)
+        if threat or max(grew) > 0:
+            text = (
+                f"{card.get('name')} is now {power}/{toughness}{_with_keywords(keywords)} "
+                f"(was {was.get('power')}/{was.get('toughness')}{_with_keywords(old_keywords)})"
+            )
+            (threats if threat else minor).append(text)
+    old_engines = {str(e.get("id")) for e in old.get("engines") or [] if isinstance(e, dict)}
+    for engine in new.get("engines") or []:
+        if isinstance(engine, dict) and str(engine.get("id")) not in old_engines:
+            threats.append(f"{engine.get('name')} entered")
+    if threats_only:
+        return threats
+    before_life, after_life = old.get("opp_life"), new.get("opp_life")
+    if (
+        isinstance(before_life, int)
+        and isinstance(after_life, int)
+        and after_life - before_life >= _LIFE_GAIN_STALE
+    ):
+        minor.append(f"the opponent gained {after_life - before_life} life ({before_life} -> {after_life})")
+    return threats + minor
+
+
+def plan_board_changes(plan: GamePlan | None, state: dict | None, *, threats_only: bool = False) -> list[str]:
+    """:func:`board_changes` from the board ``plan`` was written from to ``state``'s ([] when unknown)."""
+    if plan is None or not plan.basis or not isinstance(state, dict):
+        return []
+    try:
+        return board_changes(plan.basis, board_basis(state), threats_only=threats_only)
+    except Exception as error:  # advisory: never break a prompt
+        logger.debug("plan board comparison failed: %s", error)
+        return []
+
+
+def plan_board_note(plan: GamePlan, changes: list[str]) -> str:
+    """The prompt line for a plan written before ``changes`` ('' without changes)."""
+    if not changes:
+        return ""
+    return (
+        f"  PLAN PREDATES THE OPPONENT'S BOARD (game plan turn {plan.turn_formed}): {'; '.join(changes)}. "
+        "Its attacks, blocks, removal targets and damage counts assumed the old board; the facts above "
+        "are current. Re-check the plan's lines against them before following it."
+    )
+
+
 def compose_strategy_block(
     assessment: Any,
     plan: GamePlan | None,
@@ -1465,6 +2249,8 @@ def compose_strategy_block(
     lines, e.g. OPP INTERACTION) go with the facts, before the priority line.
     ``with_lines=False`` leaves out the search's '  LINES ...' line, for a
     prompt that already shows it (a typed decision, above its options).
+    With ``state``, a plan written before the opponent's board changed says
+    so on its step and in a PLAN PREDATES line (:func:`plan_board_changes`).
     """
     extra = extra_facts.rstrip()
     if assessment is None:
@@ -1472,12 +2258,14 @@ def compose_strategy_block(
         return f"{block}\n{extra}" if block and extra else block or extra.strip()
     this_turn = next_turns = None
     role_note = ""
+    changes = plan_board_changes(plan, state) if plan is not None and not plan.is_empty() else []
     if plan is not None and not plan.is_empty():
         step = plan.step_for(assessment.plan_turn)
         if step is not None:
-            this_turn = (
-                f"{step_text(_with_progress(step, assessment, state))} [game plan T{plan.turn_formed}]"
-            )
+            tag = f"game plan T{plan.turn_formed}"
+            if changes:
+                tag += ", written before the opponent's board changed: re-check its attacks"
+            this_turn = f"{step_text(_with_progress(step, assessment, state))} [{tag}]"
         later = [s for s in plan.turn_plan if s.get("turn", 0) > assessment.plan_turn]
         if later:
             next_turns = " | ".join(f"T{s['turn']}: {step_text(s)}" for s in later)
@@ -1494,6 +2282,8 @@ def compose_strategy_block(
         block = f"{block[:at]}\n{extra}{block[at:]}" if at >= 0 else f"{block}\n{extra}"
     if plan is not None and not plan.is_empty():
         block += "\n" + plan.as_planner_block(with_role_and_turns=False)
+        if changes:
+            block += "\n" + plan_board_note(plan, changes)
         losses = plan_card_losses(plan, state)
         if losses:
             block += "\n" + losses
@@ -1647,9 +2437,10 @@ class GamePlanManager:
     because hand/graveyard/exile identities changed after nearly every action):
     plan our coming turn once during the opponent's turn, and re-form during a
     turn only when the board math flips the role or a lethal flag, the
-    commander zone changes, the plan stalls, or no plan exists for this turn.
-    Routine reforms wait for a moment with no decision pending. Background
-    requests are rate-limited, one at a time process-wide
+    commander zone changes, the opponent adds a threat the plan was not
+    written from (once per turn), the plan stalls, or no plan exists for this
+    turn. Routine reforms wait for a moment with no decision pending.
+    Background requests are rate-limited, one at a time process-wide
     (:data:`STRATEGIC_LANE`), and a request for a turn that has already passed
     is cancelled and its plan discarded.
     """
@@ -1673,6 +2464,7 @@ class GamePlanManager:
             "stale plan",
             "deck playbook changed",
             "new opposing permanent",
+            "new opposing threat",
             "resumed after a decision",
         }
     )
@@ -1706,6 +2498,9 @@ class GamePlanManager:
     # With no plan at all, a reform outlives its turn up to this long before it
     # is superseded (a normal first plan on a big Brawl prompt takes ~35 s).
     _FIRST_PLAN_PATIENCE_S = 45.0
+    # In-flight reforms cancelled for an opposing threat, per turn (see
+    # _supersede_for_threat_locked; the later ones only re-aim a fresh call).
+    _MAX_THREAT_SUPERSEDES = 3
 
     def set_recent_actions_source(self, source: Callable[[], str] | None) -> None:
         """Where the reform reads what we did since the last plan (ActionPlanner.recent_decisions_text)."""
@@ -1747,6 +2542,19 @@ class GamePlanManager:
             # aside.
             if self._plan is None:
                 logger.info("Game plan reform keeps running alongside a decision call: no plan exists yet")
+                return
+            # 2026-10-19 match 41753907: the reform started at 09:02:24 for
+            # Unflinching Courage (Dawnwing Marshal now 4/4 flying, trample,
+            # lifelink) yielded to our first T7 decision 3 s later; the resume
+            # waited for the opponent's turn, so T7 ran on a plan that said
+            # "swing 4 unblocked". A reform whose snapshot has a threat the
+            # current plan was not written from replaces a stale plan: it runs on.
+            newer = board_changes(self._plan.basis, getattr(self, "_inflight_basis", None), threats_only=True)
+            if newer:
+                logger.info(
+                    "Game plan reform keeps running alongside a decision call: the current plan predates %s",
+                    "; ".join(newer),
+                )
                 return
             started = getattr(self, "_inflight_started_at", None)
             running = time.monotonic() - float(started) if started else 0.0
@@ -1845,6 +2653,16 @@ class GamePlanManager:
         self._inflight_cancel: threading.Event | None = None
         self._inflight_lane: object | None = None
         self._inflight_plan_turn = 0
+        # The opposing board (board_basis) in the in-flight reform's snapshot and
+        # at the last observe. A threat the in-flight snapshot lacks supersedes
+        # it on the opponent's turn; one it has that the current plan lacks keeps
+        # it running alongside decisions. One threat-driven reform per turn (a
+        # fresh one may be re-aimed at a burst: (turn, supersedes that turn)).
+        self._inflight_basis: dict = {}
+        self._live_basis: dict = {}
+        self._threat_turn = 0
+        self._threat_superseded_turn = 0
+        self._threat_supersedes: tuple[int, int] = (0, 0)
         # The opponent-trick table service (None: TrickTableService.shared();
         # tests inject their own) and its telemetry: the last 'Trick risk'
         # line's (match, turn, step), that turn's predicted p_any, and the
@@ -1876,6 +2694,11 @@ class GamePlanManager:
             self._plan_cancels = 0
             self._no_plan_warned_turn = 0
             self._last_attempt_at = None
+            self._inflight_basis = {}
+            self._live_basis = {}
+            self._threat_turn = 0
+            self._threat_superseded_turn = 0
+            self._threat_supersedes = (0, 0)
             self._trick_logged = None
             self._trick_predicted = None
             self._trick_seen = None
@@ -1898,6 +2721,10 @@ class GamePlanManager:
             if turn > self._observed_turn:
                 self._ledger_turn_started(game_state, turn)
             self._observed_turn = max(turn, self._observed_turn)
+            try:
+                self._live_basis = board_basis(game_state)
+            except Exception as error:  # the board comparison is advisory
+                logger.debug("board basis unavailable: %s", error)
             self._observe_tricks(game_state, turn)
 
     def _tricks(self) -> Any:
@@ -2159,12 +2986,16 @@ class GamePlanManager:
         prior plan stays; the next call after it closes re-requests), while
         another background job holds :data:`STRATEGIC_LANE`, or, for routine
         reforms, while a decision is pending. A reform still in flight for a
-        turn that has passed is cancelled.
+        turn that has passed is cancelled, and so, on the opponent's turn, is
+        one whose snapshot misses a threat they have added since (re-requested
+        from the current board; one threat-driven reform per turn).
         """
         with self._lock:
             self.observe(game_state)
             if self._inflight:
                 self._supersede_stale_inflight_locked(game_state)
+                if self._inflight:
+                    self._supersede_for_threat_locked(game_state)
                 if self._inflight:
                     return False
             suspended = getattr(self, "background_suspended_fn", None)
@@ -2186,9 +3017,13 @@ class GamePlanManager:
             if self._stall_count >= self._STALL_REFORM_THRESHOLD:
                 reason = "plan stalled"
             else:
-                reason = self._should_reform(sig, our_turn=our_turn, key=self._strategic_key(game_state, sig))
+                reason = self._should_reform(
+                    sig, our_turn=our_turn, key=self._strategic_key(game_state, sig), board=self._live_basis
+                )
             if not reason:
                 return False
+            if reason == "new opposing threat" and self._threat_turn == sig[0]:
+                return False  # one threat-driven reform per turn
             if our_turn and reason not in self._OUR_TURN_REASONS:
                 # 2026-10-11 audit: 72 of 168 plan calls were cancelled or
                 # discarded, and decision calls overlapping one had ~2x TTFT
@@ -2217,8 +3052,12 @@ class GamePlanManager:
             self._inflight_lane = token
             self._inflight_plan_turn = self._plan_turn(snapshot)
             self._inflight_started_at = now
+            self._inflight_basis = dict(self._live_basis)
             self._last_attempt_at = now
             self._plan_attempts += 1
+            if reason == "new opposing threat" or self._threat_superseded_turn == sig[0]:
+                self._threat_turn = sig[0]
+                self._threat_superseded_turn = 0
             logger.info(
                 "Game plan reform (%s): turn %d, plan for turn %d", reason, sig[0], self._inflight_plan_turn
             )
@@ -2284,6 +3123,45 @@ class GamePlanManager:
         self._plan_outcome = "superseded by a newer turn"
         self._abandon_inflight_locked()
 
+    def _supersede_for_threat_locked(self, game_state: dict[str, Any]) -> None:
+        """On the opponent's turn, cancel an in-flight reform whose snapshot misses a threat they added since.
+
+        Match f9e0ec3b: the T10 plan requested at 09:18:55 was written before
+        Lyra Dawnbringer resolved (09:19:08) and installed at 09:19:29 anyway.
+        Its answer is known stale, so the call is cancelled and re-requested
+        from the current board (the cooldown does not apply). Once per turn,
+        except that a threat reform that has only just started is re-aimed at
+        a burst of plays (match a51dea64: Valkyrie at 10:22:39, Ajani 3 s
+        later), up to ``_MAX_THREAT_SUPERSEDES`` times. Never for the first
+        plan (a quick low-effort call), never on our turn (a reform then would
+        replan a turn that is mostly played; prompts flag the stale plan).
+        """
+        cancel = self._inflight_cancel
+        turn = _round((game_state.get("turn") or {}).get("turn_number"))
+        if cancel is None or cancel.is_set() or self._plan is None or self._our_turn(game_state):
+            return
+        count = self._threat_supersedes[1] if self._threat_supersedes[0] == turn else 0
+        if self._threat_turn == turn:
+            started = getattr(self, "_inflight_started_at", None)
+            running = time.monotonic() - float(started) if started else float("inf")
+            if running > self._YIELD_GRACE_S or count >= self._MAX_THREAT_SUPERSEDES:
+                return
+        added = board_changes(self._inflight_basis, self._live_basis, threats_only=True)
+        if not added:
+            return
+        self._threat_supersedes = (turn, count + 1)
+        logger.info(
+            "Superseding the in-flight game plan for turn %d: the opponent's board changed after its snapshot "
+            "(%s); re-requesting from the current board",
+            self._inflight_plan_turn,
+            "; ".join(added),
+        )
+        self._plan_cancels += 1
+        self._plan_outcome = "superseded by a board change"
+        self._abandon_inflight_locked()
+        self._threat_superseded_turn = turn
+        self._last_attempt_at = None
+
     def _abandon_inflight_locked(self) -> None:
         """Cancel the in-flight reform and free its slot and the strategic lane now.
 
@@ -2322,6 +3200,7 @@ class GamePlanManager:
         try:
             sig = self._signature(game_state)
             key = self._strategic_key(game_state, sig)
+            board = board_basis(game_state)
         except Exception as e:  # never let plan formation break the decision loop
             logger.debug("game-plan signature failed: %s", e)
             return self._plan
@@ -2338,7 +3217,9 @@ class GamePlanManager:
             generation = self._generation
             stalled = self._stall_count >= self._STALL_REFORM_THRESHOLD
             if not (
-                force or stalled or self._should_reform(sig, our_turn=self._our_turn(game_state), key=key)
+                force
+                or stalled
+                or self._should_reform(sig, our_turn=self._our_turn(game_state), key=key, board=board)
             ):
                 return self._plan
             seed = self._seed
@@ -2348,6 +3229,10 @@ class GamePlanManager:
         plan = self._reform(game_state, turn_num, cancel=_cancel)
         with self._lock:
             if generation != self._generation:
+                return self._plan
+            if _cancel is not None and _cancel.is_set():
+                # Yielded or superseded: its replacement owns the status and the
+                # stall count, and may already have landed.
                 return self._plan
             if plan is not None and self._observed_turn > plan_turn and self._plan is not None:
                 logger.info(
@@ -2369,6 +3254,16 @@ class GamePlanManager:
             if plan is None and not self._plan_outcome.startswith(("yielded", "superseded")):
                 self._plan_outcome = "no usable plan from the model"
             if plan is not None:
+                # Still the newest plan, but written before what changed since its
+                # snapshot: prompts flag its lines; a threat re-plans on their turn.
+                late = board_changes(plan.basis, self._live_basis)
+                if late:
+                    logger.info(
+                        "GamePlan for turn %d predates changes on the opponent's board (%s); "
+                        "prompts flag its stale lines",
+                        plan_turn,
+                        "; ".join(late),
+                    )
                 self._plan_outcome = "ok"
                 self._plan = plan
                 self._last_sig = sig
@@ -2380,13 +3275,20 @@ class GamePlanManager:
                 self._stall_hint = ""
             return self._plan
 
-    def _should_reform(self, sig: tuple, *, our_turn: bool = False, key: tuple | None = None) -> str:
+    def _should_reform(
+        self, sig: tuple, *, our_turn: bool = False, key: tuple | None = None, board: dict | None = None
+    ) -> str:
         """Why the plan should be re-formed now ("" = keep it).
 
         Card identities, creature counts and life deltas are deliberately not
         reasons any more: they changed after nearly every action. The fresh
         board facts reach every decision prompt anyway (strategy_block); the
-        plan itself only changes when the strategic picture flips.
+        plan itself only changes when the strategic picture flips, or when
+        ``board`` (the live :func:`board_basis`) has an opposing threat the
+        plan was not written from ("new opposing threat": a new evasive,
+        lifelink or big creature, a lasting buff or keyword; 2026-10-19
+        41753907 and f9e0ec3b, :func:`board_changes`). ``request_reform``
+        allows that one once per turn.
         """
         if self._plan is None or self._last_sig is None:
             return "first plan"
@@ -2405,7 +3307,11 @@ class GamePlanManager:
         if our_turn and turn_num > self._last_reform_turn + 1:
             return "no plan for this turn"
         if key is not None and self._last_key is not None:
-            return self._key_change_reason(self._last_key, key)
+            reason = self._key_change_reason(self._last_key, key)
+            if reason:
+                return reason
+        if board and board_changes(self._plan.basis, board, threats_only=True):
+            return "new opposing threat"
         return ""
 
     def _key_change_reason(self, old: tuple, new: tuple) -> str:
@@ -2501,14 +3407,7 @@ class GamePlanManager:
             controller = card.get("controller_seat_id") or card.get("owner_seat_id")
             if controller is None or controller == local:
                 continue
-            if card.get("is_token") or "token" in str(card.get("object_kind") or "").lower():
-                continue
-            types = " ".join(
-                [str(t) for t in card.get("card_types") or []] + [str(card.get("type_line") or "")]
-            ).lower()
-            if "creature" in types or "land" in types:
-                continue
-            if any(kind in types for kind in ("artifact", "enchantment", "planeswalker", "battle")):
+            if _is_engine(card):
                 engines.add(str(card.get("instance_id") or card.get("name") or ""))
         return frozenset(engines)
 
@@ -2670,6 +3569,9 @@ class GamePlanManager:
             )
         if self._plan:
             user_parts.append(self._plan.as_planner_block())
+            stale = plan_board_note(self._plan, plan_board_changes(self._plan, game_state))
+            if stale:
+                user_parts.append(stale)
             losses = plan_card_losses(self._plan, game_state)
             if losses:
                 user_parts.append(losses)
@@ -2730,6 +3632,10 @@ class GamePlanManager:
             logger.info("game-plan answer had no usable plan (keeping prior plan)")
             return None
         plan.effort = effort
+        try:
+            plan.basis = board_basis(game_state)
+        except Exception as error:  # the board comparison is advisory
+            logger.debug("board basis unavailable: %s", error)
         try:
             validate_plan(plan, assessment, game_state)
         except Exception as error:  # a validator bug must not discard the plan
