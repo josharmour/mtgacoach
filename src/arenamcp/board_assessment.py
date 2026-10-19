@@ -583,6 +583,17 @@ def _body(
     }
 
 
+def engine_role(body: dict) -> float:
+    """What a creature is worth beyond its body each turn of its controller's: the damage its
+    drain triggers deal the other side (``_drain``), counted twice (no block stops it: like an
+    unblockable attacker's power with its evasion), plus the +1/+1 counters it grows
+    (``_growth``) and the tokens its engine makes (``_token_value``: Squirrel Girl's X Squirrels
+    an activation, as many as their mana pays for), from ``board_model.annotate_engines`` (either
+    side's); 0 for a body without them (a bare snapshot). Ledger #132 / #143 / #172 (2026-10-19,
+    matches 16ed84d0, 970d9b41 and 2b77f14d)."""
+    return float(2 * (body.get("_drain") or 0) + (body.get("_growth") or 0) + (body.get("_token_value") or 0))
+
+
 def _flying(body: dict) -> bool:
     return has_combat_keyword(body, "flying")
 
@@ -767,6 +778,56 @@ def lifelink_drain(attackers: list[dict], blockers: list[dict], life: int) -> in
     return _attack_round_life(able, blockers, life)[3]
 
 
+@dataclass(frozen=True)
+class ClockEngines:
+    """The attacking side's engines for ``_simulate_attacks`` (its bodies' ``_growth``, ``_per_gain``
+    and ``_drain``, ``board_model.annotate_engines``): ``static_drain`` is what its noncreature
+    engines deal the defender a turn; ``grow_first`` / ``drain_first``: its first attack comes
+    after its growth / its drains of that turn (False when that turn is already under way)."""
+
+    static_drain: int = 0
+    grow_first: bool = True
+    drain_first: bool = True
+    outlet: int = 0  # its sacrifice outlets' damage a creature: its board's reach on any turn
+
+
+_MAX_TOKEN_BODIES = 8  # their tokens a projection adds to the board, at most (combat cost)
+_TOKEN_BODY_IDS = 650_000_000
+
+
+def made_tokens(source: dict, count: int, generation: int, rules: dict | None = None) -> list[dict]:
+    """``count`` creature token bodies ``source``'s token engine makes (``_token_pt``), with ids
+    fixed by the source and ``generation`` (a projection's turn), so repeated projections share
+    the bodies' identities (ledger #172)."""
+    power, toughness = source.get("_token_pt") or (1, 1)
+    card = source.get("_card") or source
+    origin = _int(card.get("instance_id")) or 0
+    out = []
+    for index in range(max(0, count)):
+        token = {
+            "instance_id": _TOKEN_BODY_IDS + (origin % 100_000) * 100 + (generation % 10) * 10 + index,
+            "name": f"{_name(card)} token", "power": power, "toughness": toughness, "oracle_text": "",
+            "type_line": "Token Creature", "card_types": ["CardType_Creature"], "object_kind": "TOKEN",
+            "controller_seat_id": _controller(card), "owner_seat_id": _controller(card),
+        }  # fmt: skip
+        body = _body(token, 0, rules or {})
+        if body is not None:
+            out.append(body)
+    return out
+
+
+def _grown(able: list[dict], turns: int, events: int) -> list[dict]:
+    """``able`` with ``turns`` turns of growth (``_growth``) and ``events`` life-gain events'
+    counters (``_per_gain``) each: copies, the same ids."""
+    out = []
+    for body in able:
+        n = (body.get("_growth") or 0) * turns + (body.get("_per_gain") or 0) * events
+        out.append(
+            {**body, "power": body["power"] + n, "toughness": body["toughness"] + n} if n > 0 else body
+        )
+    return out
+
+
 def _simulate_attacks(
     attackers: list[dict],
     defenders: list[dict],
@@ -777,6 +838,7 @@ def _simulate_attacks(
     horizon: int = _HORIZON,
     drain: int = 0,
     racing: frozenset = frozenset(),
+    engines: ClockEngines | None = None,
 ) -> tuple[int | None, list[int]]:
     """Attacks needed to kill the defender (None when the board stalls) and life after each
     of the first ``horizon`` attacks.
@@ -799,10 +861,18 @@ def _simulate_attacks(
     between two of these attacks, never before the first. An attack that only
     keeps pace with what the defender heals is no progress: a 2-power clock
     against a 4/4 lifelinker that drains 4 a turn is "no clock", not ten turns.
+
+    ``engines`` (ledger #128, #133, #143): the attacking side's creatures grow
+    before each of its attacks (``_growth`` a turn; ``_per_gain`` per lifelink
+    gain of an earlier attack) and its drain engines deal the defender their
+    damage each of its turns, combat or not. A growing board is simulated to
+    the end (no stall, no extrapolation: its damage keeps rising).
     """
     alive_att = list(attackers)
     alive_def = list(defenders)
     lives: list[int] = []
+    events = 0  # life-gain events of the attacking side's lifelink damage so far
+    made = 0  # token bodies its token engines added so far
     for index in range(_MAX_CLOCK):
         if index == 0 and first_attackers is not None:
             able = [a for a in first_attackers if a["_can_attack"]]
@@ -810,19 +880,48 @@ def _simulate_attacks(
         else:
             able = [a for a in alive_att if a["_can_attack"]]
             blockers = [d for d in alive_def if d["instance_id"] not in racing] if index else list(alive_def)
-        damage, dead_att, dead_def, _gain, healed = _attack_round_life(able, blockers, life)
-        life -= damage - healed
+        engine = growing = 0
+        if engines is not None:
+            able = _grown(able, index + (1 if engines.grow_first else 0), events)
+            if index or engines.drain_first:
+                engine = engines.static_drain + sum(a.get("_drain") or 0 for a in alive_att)
+            growing = any(a.get("_growth") or (events and a.get("_per_gain")) for a in alive_att)
+        # Their token engines' tokens of this turn, made in their main phase before the attack (#172;
+        # not for the turn already under way: its mana is spent or not read).
+        new_tokens: list[dict] = []
+        if engines is not None and made < _MAX_TOKEN_BODIES and (index or engines.grow_first):
+            for source in [a for a in alive_att if a.get("_tokens")]:
+                new_tokens += made_tokens(
+                    source, min(source["_tokens"], _MAX_TOKEN_BODIES - made - len(new_tokens)), index
+                )
+        damage, dead_att, dead_def, gain, healed = _attack_round_life(able, blockers, life)
+        life -= damage - healed + engine
         if index < horizon:
             lives.append(life)
+        if engines is not None and engines.outlet and life > 0:
+            # Their sacrifice outlet (Goblin Bombardment): every creature of theirs this turn, those
+            # that died in this combat and the tokens it made included, is that much reach (gb62).
+            reach = engines.outlet * (len(alive_att) + len(new_tokens))
+            if life - reach <= 0:
+                life -= reach
+                if index < horizon:
+                    lives[-1] = life
         alive_att = [a for a in alive_att if a["instance_id"] not in dead_att]
         alive_def = [d for d in alive_def if d["instance_id"] not in dead_def]
         if life <= 0:
             return index + 1, lives
-        net = damage - healed - drain
+        if engines is not None and gain > 0 and any(a.get("_per_gain") for a in alive_att):
+            events += 1
+            growing = True
+        if new_tokens:  # (made before this attack: they attack from the next one on)
+            alive_att += new_tokens
+            made += len(new_tokens)
+            growing = True
+        net = damage - healed - drain + engine
         settled = not dead_att and not dead_def
-        if net <= 0 and settled and index > 0:
+        if net <= 0 and settled and index > 0 and not growing:
             return None, lives  # a stalled board repeats; no progress
-        if net > 0 and settled and index + 1 >= horizon:
+        if net > 0 and settled and index + 1 >= horizon and not growing:
             return min(_MAX_CLOCK, index + 1 + math.ceil(life / net)), lives
         life += drain
     return None, lives
@@ -977,6 +1076,9 @@ class BoardAssessment:
     their_clock_racing: int | None = None
     their_next_attack: tuple[int, int] | None = None
     clock_unmodelled: list[str] = field(default_factory=list)
+    # What their clock counts beyond combat: drains and growth each turn of theirs
+    # ("Biotech Specialist drains 2 a turn"; ``their_clock_engines``, ledger #128-#133, #143).
+    clock_engines: list[str] = field(default_factory=list)
 
     @property
     def survival_mode(self) -> bool:
@@ -1045,6 +1147,8 @@ class BoardAssessment:
             f"{self._clock_text(self.our_clock)} | race {self.race.upper()} ({self.race_detail}) "
             f"| life {self.our_life} vs {self.opp_life}"
         )
+        if self.clock_engines:
+            line += " | their clock counts: " + ", ".join(self.clock_engines[:4])
         if self.clock_unmodelled:
             line += " | clock leaves out: " + ", ".join(self.clock_unmodelled[:4])
         if self.flags:
@@ -1409,6 +1513,68 @@ def _stalled_text(who: str, lives: list[int], start: int) -> str:
     return f"{who} get {start - low} through before the blocks stall it ({low} life left)"
 
 
+def _side_engines(
+    engines: Any, bodies, *, active: bool, attack_pending: bool, attacking: bool
+) -> ClockEngines | None:
+    """``ClockEngines`` for one side's attacks (None when nothing of that side grows or drains):
+    its next turn's growth and drains come before that turn's attack, unless the turn is under way
+    (``active`` with its attack still ``attack_pending``: the land drop and spell rule, growth only
+    on later turns) or its attackers are already declared (``attacking``: no drain first either)."""
+    if engines is None or not (
+        engines.static_drain
+        or engines.outlet
+        or any(b.get("_drain") or b.get("_growth") or b.get("_per_gain") or b.get("_tokens") for b in bodies)
+    ):
+        return None
+    if not active or not attack_pending:
+        return ClockEngines(engines.static_drain, outlet=engines.outlet)
+    return ClockEngines(
+        engines.static_drain, grow_first=False, drain_first=not attacking, outlet=engines.outlet
+    )
+
+
+def their_clock_engines(model: Any) -> ClockEngines | None:
+    """``ClockEngines`` for their attacks on this board (``_side_engines``)."""
+    return _side_engines(
+        getattr(model, "engines", None), model.theirs, active=not model.our_turn,
+        attack_pending=model.their_attack_pending, attacking=model.any_theirs_attacking,
+    )  # fmt: skip
+
+
+def our_clock_engines(model: Any) -> ClockEngines | None:
+    """``ClockEngines`` for our attacks: ours are read as theirs are (the clocks are symmetric),
+    except that this turn's drains of ours are not in the attack still to come: they are ours to
+    make happen (a land drop, a sacrifice), never "lethal on board"."""
+    pending = model.our_turn and (
+        model.pre_combat or (model.in_combat_before_damage and model.any_ours_attacking)
+    )
+    return _side_engines(
+        getattr(model, "our_engines", None), model.ours, active=model.our_turn, attack_pending=pending,
+        attacking=pending,
+    )  # fmt: skip
+
+
+def _engine_notes(model: Any) -> list[str]:
+    """'Biotech Specialist drains 2 a turn', 'Ravenhill Flock grows +1/+1 a turn': what their clock
+    counts beyond combat (``their_clock_engines``)."""
+    notes = [f"{b['name']} drains {b['_drain']} a turn" for b in model.theirs if b.get("_drain")]
+    notes += [
+        f"{b['name']} grows +{b['_growth']}/+{b['_growth']} a turn" for b in model.theirs if b.get("_growth")
+    ]
+    notes += [f"{b['name']} makes ~{b['_tokens']} tokens a turn" for b in model.theirs if b.get("_tokens")]
+    engines = getattr(model, "engines", None)
+    creatures = {b["name"] for b in model.theirs}
+    notes += [
+        name
+        for name in (engines.names if engines is not None else ())
+        if name.split(" (")[0] not in creatures
+    ]
+    if engines is not None and engines.outlet:
+        reach = engines.reach(len(model.theirs))
+        notes.append(f"a sacrifice outlet ({engines.outlet} a creature: ~{reach} reach)")
+    return notes
+
+
 def _clock_facts(model: Any) -> SimpleNamespace:
     """Board-only clocks, race and the survival hint the deployment values (and the search) use."""
     ours, theirs = list(model.ours), list(model.theirs)
@@ -1420,6 +1586,9 @@ def _clock_facts(model: Any) -> SimpleNamespace:
     # (match 41753907 T7: a 4/4 lifelink flier made a 2-power race "lethal on T9").
     their_drain = lifelink_drain(theirs, ours, model.our_life)
     our_drain = lifelink_drain(ours, theirs, model.opp_life)
+    # Their creatures' growth and their drain engines each turn of theirs (ledger #128-#133, #143);
+    # ours alike in our clock.
+    engines = their_clock_engines(model)
     our_clock, our_lives = _simulate_attacks(
         ours,
         theirs,
@@ -1427,6 +1596,7 @@ def _clock_facts(model: Any) -> SimpleNamespace:
         first_attackers=first_our_attackers,
         first_blockers=list(model.untapped_theirs) if our_attack_pending else None,
         drain=their_drain,
+        engines=our_clock_engines(model),
     )
     their_clock, their_lives = _simulate_attacks(
         theirs,
@@ -1436,6 +1606,7 @@ def _clock_facts(model: Any) -> SimpleNamespace:
         # On our turn, creatures that attacked stay tapped through theirs.
         first_blockers=list(model.our_first_blockers),
         drain=our_drain,
+        engines=engines,
     )
     # Their clock while our clock's attackers keep attacking: those (no vigilance) can't block
     # their later attacks (ledger #98, match 18b1601a T10: "they kill us in 5" counted chump
@@ -1452,13 +1623,14 @@ def _clock_facts(model: Any) -> SimpleNamespace:
             first_blockers=list(model.our_first_blockers),
             drain=our_drain,
             racing=our_racers,
+            engines=engines,
         )
     # Their first attack with no blocks at all: when our best blocks stop none
     # of it, their clock is evasive and "hold blockers" is an empty lane
     # (2026-10-08 game 1 T8-T12: Tetsuko made every 1-power attacker
     # unblockable and the role said "defender — block, trade, deploy bodies").
     _unblocked_clock, unblocked_lives = _simulate_attacks(
-        theirs, [], model.our_life, first_attackers=first_their_attackers, first_blockers=[]
+        theirs, [], model.our_life, first_attackers=first_their_attackers, first_blockers=[], engines=engines
     )
     # Only with creatures of our own to block with: an empty board is "deploy
     # bodies" (defender), not an evasion problem.
@@ -1531,6 +1703,7 @@ def _clock_facts(model: Any) -> SimpleNamespace:
         their_clock_racing=racing_clock,
         their_next=their_next,
         unmodelled=clock_unmodelled(list(model.battlefield)),
+        engines=_engine_notes(model) if engines is not None else [],
         lethal_now=lethal_now,
         lethal_next_turn=lethal_next_turn,
         opp_lethal_on_board=opp_lethal_on_board,
@@ -1590,7 +1763,7 @@ def _assess(state: dict) -> BoardAssessment | None:
 
     # --- threats -------------------------------------------------------------
     our_air = any(_reach_or_flying(b) for b in ours)
-    threats = _threats(battlefield, opponent, theirs, our_air, len(ours))
+    threats = _threats(battlefield, opponent, theirs, our_air, len(ours), engines=model.engines)
     if any("adds attackers" in t.why or "token" in t.why for t in threats):
         unknowns.append("token/copy engines add attackers each turn (clocks may be faster)")
     unknowns.append("opponent's hand, draws and combat tricks")
@@ -1885,6 +2058,7 @@ def _assess(state: dict) -> BoardAssessment | None:
         their_clock_racing=getattr(clocks, "their_clock_racing", their_clock),
         their_next_attack=getattr(clocks, "their_next", None),
         clock_unmodelled=list(getattr(clocks, "unmodelled", ()) or ()),
+        clock_engines=list(getattr(clocks, "engines", ()) or ()),
     )
     result.elapsed_ms = (time.perf_counter() - started) * 1000
     return result
@@ -2149,12 +2323,31 @@ def _threats(
     our_count: int,
     *,
     limit: int | None = 5,
+    engines: Any = None,
 ) -> list[Threat]:
-    """The opponent's most dangerous permanents, best first (the top ``limit``; None: all)."""
+    """The opponent's most dangerous permanents, best first (the top ``limit``; None: all).
+
+    A drain engine (``engine_role``: Biotech Specialist's 2 damage a sacrificed artifact) and a
+    creature that grows every turn of theirs (Ravenhill Flock on their draws) rank by what they do
+    each turn, not only their body (ledger #132, #143); ``engines`` (``BoardModel.engines``) reads
+    their noncreature drains.
+    """
     threats: list[Threat] = []
     for body in theirs:
         score = float(body["power"]) + 0.3 * body["toughness"]
         why = [f"{body['power']}/{body['toughness']}"]
+        drain, growth = body.get("_drain") or 0, body.get("_growth") or 0
+        if drain:
+            score += 1.5 * drain
+            why.append(f"drain engine: ~{drain} damage to us each turn of theirs")
+        if growth:
+            score += growth
+            why.append(f"grows +{growth}/+{growth} each turn of theirs")
+        tokens = body.get("_tokens") or 0
+        if tokens:
+            power, toughness = body.get("_token_pt") or (1, 1)
+            score += body.get("_token_value") or 0
+            why.append(f"token engine: ~{tokens} {power}/{toughness} tokens each turn of theirs (must-kill)")
         if body["_unblockable"]:
             score += body["power"] * 1.0
             why.append("can't be blocked")
@@ -2200,7 +2393,27 @@ def _threats(
         if re.search(r"creatures you control (?:get|have)\b", text):
             score += 3
             why.append("anthem/keyword grant")
-        if re.search(r"deals? \d+ damage to each opponent|each opponent loses \d+ life", text):
+        drain = engines.body_drain(card) if engines is not None else 0
+        if drain:
+            score += 2 + 1.5 * drain
+            why.append(f"drain engine: ~{drain} damage to us each turn of theirs")
+        tokens, power, toughness = engines.body_tokens(card) if engines is not None else (0, 0, 0)
+        if tokens:
+            from arenamcp.board_model import token_value
+
+            score += token_value(tokens, power, toughness)
+            why.append(f"~{tokens} {power}/{toughness} tokens each turn of theirs")
+        if engines is not None and engines.outlet:
+            from arenamcp.line_search_moves import sac_outlet
+
+            outlet = sac_outlet(card)
+            if outlet:
+                reach = outlet * len(theirs)
+                score += 2 + reach
+                why.append(
+                    f"sacrifice outlet: {outlet} damage a creature they sacrifice (~{reach} reach now)"
+                )
+        elif re.search(r"deals? \d+ damage to each opponent|each opponent loses \d+ life", text):
             score += 2
             why.append("direct damage")
         if score:
@@ -2283,8 +2496,10 @@ def _spell_value(
         killable = [b for b in theirs if _kills(spell.card, b, ours=ours)]
         if not killable:
             return 0.0  # no target yet: hold it rather than schedule it
-        best = max(killable, key=lambda b: b["power"])
-        return (3 if spell.role == "removal" else 1) + best["power"] * (1.5 if survival else 1.0)
+        # The most dangerous target: its power plus its engine role (ledger #132: Biotech
+        # Specialist's 2 damage a sacrificed artifact outranks a 2/2's extra power).
+        threat = max(b["power"] + engine_role(b) for b in killable)
+        return (3 if spell.role == "removal" else 1) + threat * (1.5 if survival else 1.0)
     if spell.role == "planeswalker":
         return 4.0
     if spell.role == "lifegain":
@@ -2294,6 +2509,15 @@ def _spell_value(
         return 0.0  # reactive: hold mana for it, don't schedule it
     if spell.role == "ramp":
         return 1.5
+    if spell.role == "other" and not survival and not _is_creature(card):
+        # Damage to each creature they control with none of theirs to kill yet (Tectonic Hazard
+        # into an empty board): hold it like removal with no target, unless under a clock
+        # (ledger #147, match 1b4af0f9 T6; ``line_search_moves.held_removal_floor``).
+        from arenamcp.line_search_moves import _sweep
+
+        sweep = _sweep(_cast_text(card))
+        if sweep and not any(b["toughness"] <= sweep for b in theirs):
+            return 0.0
     return 1.0
 
 
@@ -2882,6 +3106,11 @@ def _life_loss(
         for c in battlefield
         if _is_creature(c) and _controller(c) == opponent and (b := _body(c, turn, their_rules))
     ]
+    # Their drain engines and growing creatures count (removing Biotech Specialist saves its drain).
+    from arenamcp.board_model import annotate_engines, engines_of
+
+    engines = engines_of(battlefield, local, opponent)
+    annotate_engines(theirs, engines)
     if remove_id is not None:
         theirs = [b for b in theirs if b["instance_id"] != remove_id]
     blockers = [b for b in ours if not b["_tapped"]]
@@ -2890,8 +3119,9 @@ def _life_loss(
         blockers.append(add_body)
     life = _life(assessment_state, local)
     _clock, lives = _simulate_attacks(
-        theirs, ours, life, first_attackers=None, first_blockers=blockers, horizon=attacks
-    )
+        theirs, ours, life, first_attackers=None, first_blockers=blockers, horizon=attacks,
+        engines=ClockEngines(engines.static_drain, outlet=engines.outlet) if engines is not None else None,
+    )  # fmt: skip
     final = lives[-1] if lives else life
     return life - final
 

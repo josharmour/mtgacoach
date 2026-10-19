@@ -1043,6 +1043,27 @@ def _estimate(state: Any) -> LossEstimate:
     multi = next((b for b in our_blockers if _MULTI_BLOCK.search(_text(b["_card"]))), None)
     if multi is not None and len(their_able) > 1:
         caps.append((_MAYBE, f"{multi['name']} can block more than one attacker"))
+    # Their engines on that turn (ledger #133, #143): drains hit us whatever we block and their
+    # creatures grow before the attack, as the assessment's projection counts them. They are a
+    # projection, not a certainty: a kill that needs them is a maybe.
+    drain, growth, engine_notes = _their_turn_engines(
+        view,
+        local,
+        opponent,
+        battlefield,
+        theirs,
+        our_turn=our_turn,
+        declared=any(b["_attacking"] for b in theirs),
+    )
+    grown = sum(growth.get(b["instance_id"], 0) for b in their_able)
+    their_able = [
+        {**b, "power": b["power"] + n, "toughness": b["toughness"] + n}
+        if (n := growth.get(b["instance_id"], 0))
+        else b
+        for b in their_able
+    ]
+    if (drain or grown) and life_after + drain + grown > 0:
+        caps.append((_MAYBE, f"their engines decide it ({', '.join(engine_notes)})"))
     air_cover = any(_reach_or_flying(b) for b in our_blockers)
     evasive = [b for b in their_able if b["_unblockable"] or (_flying(b) and not air_cover)]
     evasive_power = sum(b["power"] for b in evasive)
@@ -1062,11 +1083,11 @@ def _estimate(state: Any) -> LossEstimate:
     margin_life = life_after
     if timing_known:
         defensive = _most_life_after(assessment, our_turn=our_turn)
-        chumped = _most_chumped_life(their_able, our_blockers, our_life)
+        chumped = _most_chumped_life(their_able, our_blockers, our_life) - drain
         margin_life = max(life_after, chumped, life_after if defensive is None else defensive)
         if margin_life > life_after:
             facts["defensive_life_after"] = margin_life
-    clear_margin = margin_life <= -2 or evasive_power >= our_life
+    clear_margin = margin_life <= -2 or evasive_power + drain >= our_life
     if not clear_margin:
         caps.append((_MAYBE, f"thin margin: {our_life - margin_life} through vs {our_life} life"))
 
@@ -1106,6 +1127,50 @@ def _estimate(state: Any) -> LossEstimate:
         numbers = f" ({through} through vs {our_life} life)" if timing_known else ""
         reason = f"Dead next attack{numbers}, but " + blockers[0]
     return LossEstimate(confidence, reason, facts, blockers)
+
+
+def _their_turn_engines(
+    view: dict,
+    local: int,
+    opponent: int,
+    battlefield: list[dict],
+    theirs: list[dict],
+    *,
+    our_turn: bool,
+    declared: bool,
+) -> tuple[int, dict[int, int], list[str]]:
+    """(their drains on the turn of their next attack, +1/+1 counters by creature id before it,
+    names) as the assessment counts them (``board_assessment.their_clock_engines``): on our turn
+    their whole turn is ahead; on theirs, the drains still to come before their attack is
+    declared and no growth (that turn's is in the snapshot)."""
+    from arenamcp.board_model import annotate_engines, engines_of, their_draws
+
+    engines = engines_of(battlefield, local, opponent, draws=their_draws(view))
+    if engines is None:
+        return 0, {}, []
+    annotate_engines(theirs, engines)
+    drain = engines.static_drain + sum(b.get("_drain") or 0 for b in theirs)
+    growth: dict[int, int] = {}
+    if not our_turn:
+        drain = 0 if declared else drain
+        # (this turn's tokens: what their activations can still pay for)
+        tokens = sum(
+            engines.body_tokens(b.get("_card") or b, mana=engines.mana_now, activated=True)[0] for b in theirs
+        )
+    else:
+        growth = {b["instance_id"]: b["_growth"] for b in theirs if b.get("_growth")}
+        tokens = sum(b.get("_tokens") or 0 for b in theirs)
+    creatures = {b["name"] for b in theirs}
+    notes = [f"{b['name']} drains {b['_drain']}" for b in theirs if b.get("_drain") and drain]
+    notes += [f"{b['name']} +{n}/+{n}" for b in theirs if (n := growth.get(b["instance_id"]))]
+    notes += [name for name in engines.names if drain and name.split(" (")[0] not in creatures]
+    # Their reach this turn (match b62b73fc): a sacrifice outlet turns each creature of theirs,
+    # the tokens they make included, into damage at instant speed (Goblin Bombardment).
+    reach = engines.reach(len(theirs) + tokens)
+    if reach:
+        drain += reach
+        notes.append(f"sacrifice outlet: {engines.outlet} a creature, {reach} with {len(theirs) + tokens}")
+    return drain, growth, notes
 
 
 def _most_chumped_life(attackers: list[dict], blockers: list[dict], life: int) -> int:

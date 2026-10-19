@@ -86,8 +86,22 @@ def _card(iid: int, name: str, seat: int, **extra) -> dict:
     }  # fmt: skip
 
 
-def _t11(*, their_life: int = 17, life: int = 10) -> dict:
-    """633f56bd T11 at the DeclareAttackers request (gsid 300; local seat 1)."""
+def _t11(*, their_life: int = 17, life: int = 10, channeler_grows: bool = False) -> dict:
+    """633f56bd T11 at the DeclareAttackers request (gsid 300; local seat 1).
+
+    Essence Channeler's "Whenever you gain life, put a +1/+1 counter on this creature." is left
+    out unless ``channeler_grows``: the recorded verdict (hold: survives (life 10, 6, 2)) came
+    from a line search that did not grow it. Since ledger #128 it grows on Leonin Vanguard's
+    lifelink, holding dies on T16 as well, and the guard stands aside by design (its best line
+    must survive): tests/test_lifegain_growth_20261019.py. These tests pin the verdict they
+    exercise.
+    """
+    channeler = {}
+    if not channeler_grows:
+        text = CARDS["Essence Channeler"]["oracle_text"]
+        channeler["oracle_text"] = text.replace(
+            "\nWhenever you gain life, put a +1/+1 counter on this creature.", ""
+        )
     state = rb.board(
         turn=11, life=life, their_life=their_life, lands_played=0, opponent_hand=1,
         ours=[(281, "Mountain", True, 1), (290, "Mountain", True, 3), (302, "Mountain", False, 5),
@@ -100,7 +114,7 @@ def _t11(*, their_life: int = 17, life: int = 10) -> dict:
     state["battlefield"] += [
         _card(336, "Slickshot Show-Off", rb.LOCAL, is_tapped=False, turn_entered_battlefield=9),
         _card(349, "Slickshot Show-Off", rb.LOCAL, is_tapped=False, turn_entered_battlefield=11),
-        _card(331, "Essence Channeler", rb.OPPONENT, is_tapped=True, turn_entered_battlefield=8),
+        _card(331, "Essence Channeler", rb.OPPONENT, is_tapped=True, turn_entered_battlefield=8, **channeler),
         _card(296, "Leonin Vanguard", rb.OPPONENT, is_tapped=True, turn_entered_battlefield=4),
         _card(314, "Sheltered by Ghosts", rb.OPPONENT, is_tapped=False, turn_entered_battlefield=6,
               attached_to_id=296),

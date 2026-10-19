@@ -441,9 +441,22 @@ def test_a_line_best_tag_won_only_by_the_spells_own_face_damage_keeps_the_face_b
     result = assess(state).line_search
     menu = _e917434f_menu(state)
     hazard = _option(menu, 222)
-    assert option_note(result, menu.find(hazard), state).startswith("[LINE best")
-    # The best line ends with them at 9, holding everything at 10: Hazard's own 1 face damage.
+    # Since the held-removal floor (ledger #147) the best line holds Hazard (was "[LINE best": it
+    # ended with them at 9, holding everything at 10): casting it ties within the tolerance.
+    assert option_note(result, menu.find(hazard), state).startswith("[LINE: ~best")
+    assert result.best is result.first_action[("nocast",)]
     assert line_gain_is_face_only(result, 1)
+    # A best line that casts it and beats holding only by its 1 face damage (the T1 line before #147).
+    from types import SimpleNamespace
+
+    def line(opp_after):
+        return SimpleNamespace(
+            cls=1, timing=0, lives=lambda: [20, 20, 20], steps=[SimpleNamespace(opp_life_after=opp_after)]
+        )
+
+    held = line(10)
+    assert line_gain_is_face_only(SimpleNamespace(best=line(9), first_action={("nocast",): held}), 1)
+    assert not line_gain_is_face_only(SimpleNamespace(best=line(7), first_action={("nocast",): held}), 1)
     planner = _planner(_Model("{}"))
     from arenamcp import action_planner as planner_module
 
