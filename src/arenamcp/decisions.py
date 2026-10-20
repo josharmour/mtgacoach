@@ -387,7 +387,7 @@ _SELECT_TARGETS_TYPES = {"SelectTargets", "SelectTargetsRequest"}
 _SELECT_N_TYPES = {"SelectN", "SelectNRequest", "Search", "SearchRequest"}
 _MULLIGAN_TYPES = {"Mulligan", "MulliganReq", "MulliganRequest"}
 _GROUP_TYPES = {"Group", "GroupReq", "GroupRequest"}
-_CASTING_TYPES = {"CastingTimeOptions", "CastingTimeOptionsReq", "CastingTimeOptionRequest"}
+_CASTING_TYPES = {"CastingTimeOptions", "CastingTimeOptionsReq", "CastingTimeOptionRequest", "CastingTimeOptionsRequest"}
 _OPTIONAL_TYPES = {
     "OptionalAction",
     "OptionalActionReq",

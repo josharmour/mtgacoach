@@ -253,6 +253,7 @@ _NON_PASSABLE_REQUEST_CLASSES = {
     "GroupRequest",
     "DistributionRequest",
     "CastingTimeOptionRequest",
+    "CastingTimeOptionsRequest",
     "CastingTimeOption_ModalRequest",
     "CastingTimeOption_ChooseOrCostRequest",
     "CastingTimeOption_NumericInputRequest",

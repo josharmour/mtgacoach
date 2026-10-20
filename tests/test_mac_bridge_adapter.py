@@ -849,6 +849,30 @@ def test_casting_time_entries_mirror_plugin_payloads():
     assert submitted_uint_values(submit) == [1002]
 
 
+def test_arena_2026_64_50_names_the_casting_time_parent_in_the_plural():
+    """2026-10-20 10:01 (bug_20261020_100152, Iroh's Demonstration): Arena 2026.64.50 renamed the
+    parent to CastingTimeOptionsRequest (CastingTimeOptionRequest is now the children's base);
+    no shaper matched, the bridge offered no modes and the window went to MANUAL REQUIRED."""
+    modal = {
+        "$c": "GreClient.Rules.CastingTimeOption_ModalRequest",
+        "$h": 60,
+        "ModalOptions": listing(87912, 21773),
+        "AbilityGrpId": 192719,
+        "Min": 1,
+        "Max": 1,
+    }
+    request = {"$c": "GreClient.Rules.CastingTimeOptionsRequest", "$h": 5, "ChildRequests": listing(modal)}
+    game = FakeGame(request, {"CanCancel": True})
+    pending = adapter_for(game).handle({"action": "get_pending_actions"})
+    assert [a["optionIndex"] for a in pending["actions"]] == [0, 1]
+    assert pending["decision_context"]["type"] == "casting_time_options"
+    response = adapter_for(game).handle({"action": "submit_action", "action_index": 0})
+    assert response["submitted_choice_kind"] == "modal" and response["submitted_option_index"] == 0
+    submit = game.submits()[-1]
+    assert submit[-1]["method"] == "SubmitModal"
+    assert submitted_uint_values(submit) == [87912]
+
+
 def test_casting_time_identity_mismatch_never_submits():
     modal = {
         "$c": "GreClient.Rules.CastingTimeOption_ModalRequest",

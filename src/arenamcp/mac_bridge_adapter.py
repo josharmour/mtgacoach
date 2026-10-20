@@ -262,6 +262,12 @@ def H(handle_id: int) -> dict:
     return {"h": int(handle_id)}
 
 
+# The casting-time parent request (the one with ChildRequests): Arena 2026.64.50 renamed it from
+# CastingTimeOptionRequest, now the children's base class, to CastingTimeOptionsRequest
+# (2026-10-20 10:01: no shaper matched, Iroh's Demonstration's modes went to MANUAL REQUIRED).
+CASTING_TIME_PARENTS = ("CastingTimeOptionsRequest", "CastingTimeOptionRequest")
+
+
 def REF(index: int) -> dict:
     return {"ref": index}
 
@@ -1644,6 +1650,9 @@ class MacBridgeAdapter:
                 response["grp_id"] = num(field(child, "GrpId"))
             break
 
+
+    _shape_CastingTimeOptionsRequest = _shape_CastingTimeOptionRequest  # Arena 2026.64.50's name
+
     def _shape_SelectTargetsRequest(self, request: dict, getters: dict, response: dict) -> None:
         selections, flat = [], []
         for selection in items(field(request, "TargetSelections")):
@@ -1831,9 +1840,9 @@ class MacBridgeAdapter:
     # -- submissions -----------------------------------------------------------
 
     def _cmd_submit_action(self, command: dict, timeout: float | None) -> dict:
-        snapshot = self._require(timeout, "ActionsAvailableRequest", "CastingTimeOptionRequest")
+        snapshot = self._require(timeout, "ActionsAvailableRequest", *CASTING_TIME_PARENTS)
         index = int(command.get("action_index") or 0)
-        if snapshot.request_class == "CastingTimeOptionRequest":
+        if snapshot.request_class in CASTING_TIME_PARENTS:
             return self._submit_casting_time_option(snapshot, index, command, timeout)
         actions = items(field(snapshot.request, "Actions"))
         if not 0 <= index < len(actions):
@@ -1911,7 +1920,7 @@ class MacBridgeAdapter:
         return response
 
     def _cmd_submit_casting_options(self, command: dict, timeout: float | None) -> dict:
-        snapshot = self._require(timeout, "CastingTimeOptionRequest")
+        snapshot = self._require(timeout, *CASTING_TIME_PARENTS)
         self._check_request_identity(snapshot, command)
         entries = casting_time_entries(snapshot.request)
         indices = command.get("action_indices") or []
@@ -1999,7 +2008,7 @@ class MacBridgeAdapter:
         return {"ok": True, "submitted_type": "NumericInput", "value": value}
 
     def _cmd_submit_x(self, command: dict, timeout: float | None) -> dict:
-        snapshot = self._require(timeout, "CastingTimeOptionRequest", "NumericInputRequest")
+        snapshot = self._require(timeout, *CASTING_TIME_PARENTS, "NumericInputRequest")
         requested = int(command.get("value") or 0)
         if snapshot.request_class == "NumericInputRequest":
             target, method, kind = snapshot.request, "SubmitValue", "NumericInput"
@@ -2726,7 +2735,7 @@ class MacBridgeAdapter:
         return {"ok": True, "submitted_type": "SearchFromGroups", "group_count": len(specs)}
 
     def _cmd_submit_casting_mana_type(self, command: dict, timeout: float | None) -> dict:
-        snapshot = self._require(timeout, "CastingTimeOption_ManaTypeRequest", "CastingTimeOptionRequest")
+        snapshot = self._require(timeout, "CastingTimeOption_ManaTypeRequest", *CASTING_TIME_PARENTS)
         request = snapshot.request
         mana = (
             request
