@@ -2040,6 +2040,9 @@ def submit_option(
         if not decision.selection_is_valid([]):
             return False
         return bool(bridge.submit_targets([]))
+    if decision.request_type == "SelectN" and not option_ids and decision.max_select == 0:
+        # A look selection ("Click OK to continue"): OK is the empty selection.
+        return bool(bridge.submit_selection([]))
     valid = decision.option_ids()
     chosen = [oid for oid in option_ids if oid in valid]
     if decision.request_type == "ActionsAvailable" and any(

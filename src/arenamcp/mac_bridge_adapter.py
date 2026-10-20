@@ -2120,6 +2120,18 @@ class MacBridgeAdapter:
                 )
                 return {"ok": True, "submitted_type": "SelectN"}
         if snapshot.request_class == "SelectNRequest" and not ids:
+            max_sel = field(snapshot.request, "MaxSel")
+            if max_sel is not None and num(max_sel) == 0:
+                # A look selection (SelectNRequest.IsLookSelection: MinSel = MaxSel
+                # = 0, cards shown, "Click OK to continue"): SelectNWorkflow_Look's
+                # OK submits an empty selection. SubmitArbitrary sends ids [0] with
+                # OrderArbitraryOnce, which Arena refused 17 times on Herald's Horn
+                # revealing a Plains (2026-10-20 13:52:05-13:52:46, LimitViolation).
+                empty = UINTS([])
+                self._submit(
+                    snapshot, lambda ops, request: ops.call(request, "SubmitSelection", empty), timeout
+                )
+                return {"ok": True, "submitted_type": "SelectN"}
             self._submit(snapshot, lambda ops, request: ops.call(request, "SubmitArbitrary"), timeout)
             return {"ok": True, "submitted_type": "SelectN"}
         selection = UINTS(ids)

@@ -709,9 +709,17 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
 
     req = msg.get("selectNReq", {})
     context_data = req.get("context", {})
-    num_to_select = _coerce_int(req.get("count", 1), 1)
-    min_select = _coerce_int(req.get("minCount", num_to_select), num_to_select)
-    max_select = _coerce_int(req.get("maxCount", num_to_select), num_to_select)
+    if any(key in req for key in ("count", "minCount", "maxCount")):
+        num_to_select = _coerce_int(req.get("count", 1), 1)
+        min_select = _coerce_int(req.get("minCount", num_to_select), num_to_select)
+        max_select = _coerce_int(req.get("maxCount", num_to_select), num_to_select)
+    else:
+        # Arena's SelectNReq names them minSel/maxSel and omits zeros (protobuf
+        # JSON): Herald's Horn's look at a Plains (2026-10-20 13:52:02) had
+        # neither and read as "pick 1 of 1", so the model picked the Plains.
+        min_select = _coerce_int(req.get("minSel", 0), 0)
+        max_select = _coerce_int(req.get("maxSel", 0), 0)
+        num_to_select = max_select
     option_ids = _ensure_int_list(req.get("ids", []))
 
     context_str = str(context_data).lower()

@@ -5149,7 +5149,13 @@ class AutopilotEngine(
         if callable(set_cancel):
             set_cancel(cancel)
         try:
-            option_ids = self._planner.plan_decision_options(decision, game_state)
+            if decision.request_type == "SelectN" and decision.max_select == 0:
+                # A look selection ("Click OK to continue") has one legal answer:
+                # select nothing. 2026-10-20 13:52:03 the model, told to pick one,
+                # chose the revealed Plains and every answer was refused.
+                option_ids = []
+            else:
+                option_ids = self._planner.plan_decision_options(decision, game_state)
         finally:
             if callable(set_cancel):
                 set_cancel(None)
@@ -5217,7 +5223,10 @@ class AutopilotEngine(
         # candidates would hurt us or have a ward we cannot pay.
         empty_selection = (
             not option_ids
-            and decision.request_type in {"Search", "SelectTargets"}
+            and (
+                decision.request_type in {"Search", "SelectTargets"}
+                or (decision.request_type == "SelectN" and decision.max_select == 0)
+            )
             and decision.selection_is_valid([])
         )
         if (not option_ids and not empty_selection) or any(
