@@ -111,10 +111,19 @@ cuBLAS, NCCL) then had nothing left. `serve.sh` now passes:
   allocations. Explicit container env overrides the profile (`/opt/lil/runtime/launcher.py`).
 - `--log-driver journald --log-opt tag=glm53-vllm`.
 
-The 1M context is unchanged (KV still 1,061,441 tokens, 1.01x). After the restart each GPU had 921 MiB
-free (316 MiB before). Healthy = `DCGM_FI_DEV_FB_FREE` levels off at >= ~150 MiB instead of decaying to
-2 MiB. If PyTorch hits the cap (`exceed per_process_memory_fraction` / `OutOfMemoryError` in the log),
-lower `MAX_NUM_BATCHED_TOKENS` 2048 -> 1536. Rollback: `cp ~/glm53-spark/serve.sh.bak-pre-memfix-20261020
+Then, same day (user decision, from usage data): **context 1M -> 819,200 tokens and request slots 4 -> 8.**
+Since 2026-07-10 no real client sent more than 762K tokens (Hermes); only the synthetic 1M test
+(`observability-check`) went past 800K. `MAX_MODEL_LEN=819200`, `KV_CACHE_MEMORY_BYTES=3853000000`
+(846,506 tokens, 1.03x; vLLM needs 3.47 GiB of KV for 819,200, so 3.6e9 B failed startup), `MAX_NUM_SEQS=8`
+(+60-80 MiB of CUDA graphs). Hermes' `~/.hermes/config.yaml` `context_length` -> 819200 in both places, so
+it compresses at 85% (~696K) and never sends a prompt vLLM rejects; `hermes-gateway`/`hermes-serve` read it
+at start. `wait-ready.py` (ExecStartPost) used to assert 1048576 and now reads `MAX_MODEL_LEN` from
+`serve.sh`. Backups: `serve.sh.bak-pre-800k-8seq-20261020`, `wait-ready.py.bak-pre-800k-20261020`,
+`~/.hermes/config.yaml.bak-pre-800k-20261020`.
+
+Free memory per GPU after startup: 316 MiB (before) -> 921 MiB (bf16 head + cap) -> 1,533 MiB (800K +
+8 slots). Healthy = `DCGM_FI_DEV_FB_FREE` levels off well above ~150 MiB instead of decaying to 2 MiB. If PyTorch hits the cap (`exceed per_process_memory_fraction` / `OutOfMemoryError` in the log),
+lower `MAX_NUM_BATCHED_TOKENS` 2048 -> 1024. Rollback: `cp ~/glm53-spark/serve.sh.bak-pre-memfix-20261020
 ~/glm53-spark/serve.sh && systemctl --user restart glm53-2x-rtxpro6000.service`.
 
 Keep evals and `prompt_logprobs` runs off this vLLM: on 2026-10-17 a host-side script with the backend
