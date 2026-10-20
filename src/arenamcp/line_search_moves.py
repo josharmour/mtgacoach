@@ -64,6 +64,7 @@ from itertools import combinations, product
 from types import SimpleNamespace
 from typing import Any, Protocol
 
+from arenamcp.attack_potential import annotated, attack_round
 from arenamcp.board_assessment import (
     _LIFEGAIN,
     _MANA_ABILITY,
@@ -3923,9 +3924,19 @@ class Moves:
         back: dict = {}
         if landfall:  # "gets +2/+2 until end of turn" per land (``landfall`` entries): this attack only
             fighting, back = self._pumped(fighting, landfall)
-        damage, dead_att, dead_blk, gained, healed = self.combat_life(
-            fighting, defenders, life, first=index == 1, tag=tag + ("proxy" if boost else "")
-        )
+        round_tag = tag + ("proxy" if boost else "")
+        if annotated(fighting):
+            # Their pumps, attack-trigger grants and extra combat (ledger #191, #193, #194): the
+            # bodies change, so their own memo tag.
+            damage, dead_att, dead_blk, gained, healed = attack_round(
+                fighting, defenders, life,
+                lambda a, b, left: self.combat_life(a, b, left, first=index == 1, tag=round_tag + "+atk"),
+                declared=name == "declared",
+            )  # fmt: skip
+        else:
+            damage, dead_att, dead_blk, gained, healed = self.combat_life(
+                fighting, defenders, life, first=index == 1, tag=round_tag
+            )
         dead_att = {abs(back.get(i, i)) for i in dead_att}
         # Lifelink lands with the damage: our lifelink blockers heal us, their lifelink
         # attackers heal them (match 41753907 T7: Dawnwing Marshal's 4 a turn). Their attack

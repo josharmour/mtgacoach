@@ -632,6 +632,19 @@ def build_board_model(state: dict) -> BoardModel | None:
 
     any_ours_attacking = any(b["_attacking"] for b in ours)
     any_theirs_attacking = any(b["_attacking"] for b in theirs)
+    # What their attack adds beyond the printed board (ledger #191, #193, #194): Treasure-fed and
+    # mana pumps, attack-trigger team grants, an extra combat. Their bodies only: the attack
+    # projections play it for annotated attackers (``attack_potential.attack_round``).
+    try:
+        from arenamcp.attack_potential import annotate as annotate_attack
+
+        annotate_attack(
+            theirs, battlefield, opponent, untapped_only=not our_turn, declared=any_theirs_attacking
+        )
+    except Exception:  # a reading aid: the board facts never fail on it
+        import logging
+
+        logging.getLogger(__name__).debug("attack potential annotation failed", exc_info=True)
     pre_combat = phase in ("Phase_Beginning", "Phase_Main1") or (
         phase == "Phase_Combat" and step in ("", "Step_BeginCombat", "Step_DeclareAttack")
     )

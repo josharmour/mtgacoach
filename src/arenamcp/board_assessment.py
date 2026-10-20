@@ -56,6 +56,7 @@ from itertools import combinations
 from types import SimpleNamespace
 from typing import Any
 
+from arenamcp.attack_potential import annotated, attack_round, modelled_attack_trigger
 from arenamcp.combat_keywords import (
     has_combat_keyword,
     is_creature_modified,
@@ -683,6 +684,17 @@ def _attack_round(attackers: list[dict], blockers: list[dict], life: int) -> tup
 
 
 def _attack_round_life(
+    attackers: list[dict], blockers: list[dict], life: int, *, declared: bool = False
+) -> tuple[int, set[int], set[int], int, int]:
+    """``_attack_once`` with what their attackers add (``attack_potential``, annotated bodies of
+    theirs only): their Treasure-fed and mana pumps, attack-trigger grants (not for an attack
+    ``declared`` already: those are in the snapshot) and an extra combat (ledger #191, #193, #194)."""
+    if annotated(attackers):
+        return attack_round(attackers, blockers, life, _attack_once, declared=declared)
+    return _attack_once(attackers, blockers, life)
+
+
+def _attack_once(
     attackers: list[dict], blockers: list[dict], life: int
 ) -> tuple[int, set[int], set[int], int, int]:
     """The attacker's better of 'everyone attacks' and 'hold back what just dies'.
@@ -751,15 +763,21 @@ _ATTACK_TRIGGER = re.compile(r"\bwhenever\b[^.,:]*?\battacks?\b|\bwhenever you a
 _TRIGGER = re.compile(r"\b(?:whenever|at the beginning of)\b")
 
 
-def clock_unmodelled(battlefield: list[dict]) -> list[str]:
+def clock_unmodelled(battlefield: list[dict], modelled_seat: int | None = None) -> list[str]:
     """'Ordeal of Nylea (attack trigger)' for each permanent on the battlefield with an attack
-    trigger or an Aura with a triggered ability: what the clocks leave out."""
+    trigger or an Aura with a triggered ability: what the clocks leave out. An attack trigger the
+    projections play for their side (``modelled_seat``: a team grant, an extra combat,
+    ``attack_potential``) is not left out."""
     found: dict[str, str] = {}
     for card in battlefield:
         if not isinstance(card, dict) or _is_land(card):
             continue
         text = _QUOTED.sub("", _text(card))
-        if _ATTACK_TRIGGER.search(text):
+        if any(
+            _ATTACK_TRIGGER.search(line)
+            and not (modelled_seat is not None and _controller(card) == modelled_seat and modelled_attack_trigger(card, line))
+            for line in text.splitlines()
+        ):
             found.setdefault(_name(card), "attack trigger")
         elif "aura" in _types(card) and _TRIGGER.search(text):
             found.setdefault(_name(card), "aura trigger")
@@ -839,9 +857,13 @@ def _simulate_attacks(
     drain: int = 0,
     racing: frozenset = frozenset(),
     engines: ClockEngines | None = None,
+    first_declared: bool = False,
 ) -> tuple[int | None, list[int]]:
     """Attacks needed to kill the defender (None when the board stalls) and life after each
     of the first ``horizon`` attacks.
+
+    ``first_declared``: the immediate attack is the one under way (its attack-trigger grants
+    are in the snapshot; ``_attack_round_life``).
 
     ``racing``: the defender's creatures that attack on its own turns (``_attack_plan``,
     no vigilance): from the second attack on they are tapped and don't block.
@@ -894,7 +916,9 @@ def _simulate_attacks(
                 new_tokens += made_tokens(
                     source, min(source["_tokens"], _MAX_TOKEN_BODIES - made - len(new_tokens)), index
                 )
-        damage, dead_att, dead_def, gain, healed = _attack_round_life(able, blockers, life)
+        damage, dead_att, dead_def, gain, healed = _attack_round_life(
+            able, blockers, life, declared=first_declared and index == 0 and first_attackers is not None
+        )
         life -= damage - healed + engine
         if index < horizon:
             lives.append(life)
@@ -1607,6 +1631,7 @@ def _clock_facts(model: Any) -> SimpleNamespace:
         first_blockers=list(model.our_first_blockers),
         drain=our_drain,
         engines=engines,
+        first_declared=model.any_theirs_attacking,
     )
     # Their clock while our clock's attackers keep attacking: those (no vigilance) can't block
     # their later attacks (ledger #98, match 18b1601a T10: "they kill us in 5" counted chump
@@ -1624,14 +1649,16 @@ def _clock_facts(model: Any) -> SimpleNamespace:
             drain=our_drain,
             racing=our_racers,
             engines=engines,
+            first_declared=model.any_theirs_attacking,
         )
     # Their first attack with no blocks at all: when our best blocks stop none
     # of it, their clock is evasive and "hold blockers" is an empty lane
     # (2026-10-08 game 1 T8-T12: Tetsuko made every 1-power attacker
     # unblockable and the role said "defender — block, trade, deploy bodies").
     _unblocked_clock, unblocked_lives = _simulate_attacks(
-        theirs, [], model.our_life, first_attackers=first_their_attackers, first_blockers=[], engines=engines
-    )
+        theirs, [], model.our_life, first_attackers=first_their_attackers, first_blockers=[], engines=engines,
+        first_declared=model.any_theirs_attacking,
+    )  # fmt: skip
     # Only with creatures of our own to block with: an empty board is "deploy
     # bodies" (defender), not an evasion problem.
     evasive_clock = bool(
@@ -1702,7 +1729,7 @@ def _clock_facts(model: Any) -> SimpleNamespace:
         their_lives=their_lives,
         their_clock_racing=racing_clock,
         their_next=their_next,
-        unmodelled=clock_unmodelled(list(model.battlefield)),
+        unmodelled=clock_unmodelled(list(model.battlefield), model.opponent),
         engines=_engine_notes(model) if engines is not None else [],
         lethal_now=lethal_now,
         lethal_next_turn=lethal_next_turn,
@@ -1799,6 +1826,7 @@ def _assess(state: dict) -> BoardAssessment | None:
         their_attack_pending=their_attack_pending,
         first_their_attackers=first_their_attackers,
         untapped_ours=our_first_blockers,
+        their_declared=model.any_theirs_attacking,
     )
     dead_in_greedy = dead_in
 
@@ -2815,8 +2843,10 @@ def _project(
     their_attack_pending: bool,
     first_their_attackers: list[dict] | None,
     untapped_ours: list[dict],
+    their_declared: bool = False,
 ) -> tuple[list[TurnProjection], int | None, int | None]:
-    """Our life if we deploy the schedule and they attack after each of our turns."""
+    """Our life if we deploy the schedule and they attack after each of our turns
+    (``their_declared``: the attack pending now is under way, ``_attack_round_life``)."""
     life = our_life
     board = list(ours)
     blockers_first = list(untapped_ours)
@@ -2826,7 +2856,9 @@ def _project(
     now_life: int | None = None
     if their_attack_pending:
         able = [a for a in (first_their_attackers or []) if a["_can_attack"]]
-        damage, dead_att, dead_def, _gain, healed = _attack_round_life(able, blockers_first, life)
+        damage, dead_att, dead_def, _gain, healed = _attack_round_life(
+            able, blockers_first, life, declared=their_declared
+        )
         life -= damage - healed  # our lifelink blockers heal us
         attacks += 1
         now_life = life

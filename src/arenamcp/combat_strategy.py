@@ -1952,8 +1952,13 @@ def _local_player(state: dict) -> dict | None:
     return next((player for player in state.get("players") or [] if player.get("is_local")), None)
 
 
-def _next_attack_damage(threats: list[dict], blockers: list[dict], factors: dict | None = None) -> int:
+def _next_attack_damage(
+    threats: list[dict], blockers: list[dict], factors: dict | None = None, used: set | None = None
+) -> int:
     """Their next attack's damage through our ``blockers``, each chumping one of their biggest attackers (#171).
+
+    ``used``: filled with the ``id()`` of each blocker that chumps (an extra
+    combat has those dead, ``_attacks_damage``).
 
     2026-10-19 match 2b77f14d T9: the chump guard compared our life with their
     whole board's power (47 against our 19), so every chump looked worthless
@@ -1978,12 +1983,104 @@ def _next_attack_damage(threats: list[dict], blockers: list[dict], factors: dict
         if len(able) < need:
             total += hits(threat)
             continue
-        used = {id(blocker) for blocker in able}
-        free = [blocker for blocker in free if id(blocker) not in used]
+        chumps = {id(blocker) for blocker in able}
+        free = [blocker for blocker in free if id(blocker) not in chumps]
+        if used is not None:
+            used |= chumps
         if _has(threat, "trample"):
             excess = max(0, int(threat["power"]) - sum(max(0, int(blocker["toughness"])) for blocker in able))
             total += excess * factors.get(_controller(threat), 1)
     return total
+
+
+def _attacks_damage(threats: list[dict], blockers: list[dict], factors: dict | None, combats: int) -> int:
+    """``_next_attack_damage`` over ``combats`` combats of the same threats (an extra combat phase,
+    #191): each combat's chump blockers are gone for the next one."""
+    total, free = 0, list(blockers)
+    for _combat in range(max(1, combats)):
+        used: set = set()
+        total += _next_attack_damage(threats, free, factors, used)
+        free = [blocker for blocker in free if id(blocker) not in used]
+    return total
+
+
+def _their_next_attack(state: dict, theirs: list[dict], local_seat) -> tuple[list[dict], int]:
+    """(their creatures as their next attack sends them, its combats) for the chump guard's forecast.
+
+    Each creature that can attack then carries its instant-speed pumps with
+    their mana and Treasures of that turn, and the side's attack-trigger
+    grants when those attackers meet them (Harbin's five Soldiers; ledger
+    #193, #194); an attacker with an extra-combat trigger (Aurelia) makes it
+    two combats (#191).
+    """
+    from arenamcp.attack_potential import apply_grants, extra_combat_of, grants_of, pumped_attackers
+
+    able = [card for card in theirs if can_attack_next_turn(card)]
+    able = pumped_attackers(able, state, next_turn=True)
+    grants = [
+        grant
+        for card in state.get("battlefield") or []
+        if isinstance(card, dict) and _controller(card) not in (None, local_seat)
+        for grant in grants_of(card)
+    ]
+    if grants:
+        able = apply_grants(able, grants)[0]
+    combats = 2 if any(extra_combat_of(card) for card in able) else 1
+    return able, combats
+
+
+def _extra_combat_threats(state: dict, attackers: list[dict], local_seat) -> list[dict]:
+    """Their creatures in the extra combat that follows this one (none when none follows, #191).
+
+    The attackers again (their pumps kept), and their other untapped creatures
+    that are not summoning sick.
+    """
+    from arenamcp.attack_potential import extra_combats_now
+
+    if extra_combats_now(state, attackers) is None:
+        return []
+    attacking = {card.get("instance_id") for card in attackers}
+    others = [
+        card
+        for card in state.get("battlefield") or []
+        if isinstance(card, dict)
+        and _controller(card) not in (None, local_seat)
+        and card.get("instance_id") not in attacking
+        and is_creature_now(card)
+        and _known_body(card)
+        and not card.get("is_tapped")
+        and not card.get("summoning_sickness")
+        and can_attack_next_turn(card)
+    ]
+    return [*attackers, *others]
+
+
+def extra_combat_damage(state: dict, attackers: list[dict], assignments: dict[int, int]) -> int:
+    """Damage the extra combat after this one deals us under these blocks (0 when none follows, #191).
+
+    The attackers that survive this combat, and their other able creatures,
+    into our untapped creatures the blocks leave alive, each of ours chumping
+    one of their biggest (``_next_attack_damage``).
+    """
+    local = _local_player(state)
+    if local is None:
+        return 0
+    local_seat = local.get("seat_id")
+    threats = _extra_combat_threats(state, attackers, local_seat)
+    if not threats:
+        return 0
+    cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
+    ours = [
+        card
+        for card in cards.values()
+        if _controller(card) == local_seat
+        and is_creature_now(card)
+        and _known_body(card)
+        and not card.get("is_tapped")
+        and not _CANT_BLOCK.search(_rules_text(card))
+    ]
+    left, coming = _after_combat(attackers, assignments, cards, ours, threats)
+    return _next_attack_damage(coming, left, _damage_factors(state, threats, local_seat))
 
 
 def _after_combat(
@@ -2274,8 +2371,13 @@ def _incoming_attackers(
     """Opposing attackers this combat; None when one is named but not on the board.
 
     Attackers whose combat-damage trigger adds damage this combat carry
-    ``combat_hit_bonus`` (``with_hit_bonus``).
+    ``combat_hit_bonus`` (``with_hit_bonus``), and each carries the
+    instant-speed pumps their open mana and Treasures pay for after blocks
+    (``attack_potential.pumped_attackers``, ledger #193: three Captain Lannery
+    Storms +4 each from four Treasures turned "9 incoming" into 21).
     """
+    from arenamcp.attack_potential import pumped_attackers
+
     cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
     ids: set[int] = set()
     for identity in (state.get("decision_context") or {}).get("attacker_ids") or []:
@@ -2289,7 +2391,7 @@ def _incoming_attackers(
     if any(identity not in cards for identity in ids):
         return None
     ids -= phantom_attackers(state, ids)
-    return with_hit_bonus([cards[identity] for identity in sorted(ids)], state, local_seat)
+    return with_hit_bonus(pumped_attackers([cards[identity] for identity in sorted(ids)], state), state, local_seat)
 
 
 def phantom_attackers(state: dict, attacker_ids, raw_blockers: list | None = None) -> set[int]:
@@ -2531,7 +2633,16 @@ def wasteful_chump_blocks(
       - no instant-speed pump or protection trick in hand is affordable.
     Gang blocks, trades, blocks that kill the attacker (deathtouch, first
     strike) and anything with unknown power/toughness are always kept.
+
+    Their attackers carry the pumps their Treasures and open mana pay for
+    after blocks (``_incoming_attackers``; ledger #193), and a pump we can't
+    price keeps every block. Their next attack is the extra combat that
+    follows this one when an attacker's trigger grants it (#191), else their
+    next turn's, with its pumps, attack-trigger grants and extra combat
+    (``_their_next_attack``, #194).
     """
+    from arenamcp.attack_potential import unpriced_pumps
+
     local = _local_player(state)
     if local is None or not assignments:
         return {}
@@ -2545,6 +2656,11 @@ def wasteful_chump_blocks(
         return {}
     if _affordable_block_trick(state, local):
         return {}
+    unpriced = unpriced_pumps(attackers, state)
+    if unpriced:
+        logger.info("Chump-block guard: keeping every block: their pump %s has no price", unpriced[0])
+        return {}
+    by_id = {card.get("instance_id"): card for card in attackers}
     groups: dict[int, list[int]] = {}
     for blocker, attacker in assignments.items():
         groups.setdefault(attacker, []).append(blocker)
@@ -2557,7 +2673,6 @@ def wasteful_chump_blocks(
         and "creature" in _types(card)
         and _is_int(card.get("power"))
     ]
-    threats = [card for card in theirs if can_attack_next_turn(card)]
     ours = [
         card
         for card in cards.values()
@@ -2567,6 +2682,12 @@ def wasteful_chump_blocks(
         and not _CANT_BLOCK.search(_rules_text(card))
         and not leaves_at_our_end_step(card)
     ]
+    threats = _extra_combat_threats(state, attackers, local_seat)
+    if threats:  # their next attack is the extra combat this turn: our untapped creatures block it
+        combats = 1
+        ours = [card for card in ours if not card.get("is_tapped")]
+    else:
+        threats, combats = _their_next_attack(state, theirs, local_seat)
     wider = len(theirs) > sum(
         1 for card in cards.values() if _controller(card) == local_seat and "creature" in _types(card)
     )
@@ -2581,7 +2702,7 @@ def wasteful_chump_blocks(
 
     def next_attack(plan: dict[int, int]) -> int:
         left, coming = _after_combat(attackers, plan, cards, ours, threats)
-        return _next_attack_damage(coming, left, factors)
+        return _attacks_damage(coming, left, factors, combats)
 
     # Candidates first, judged one at a time against the full plan; then dropped
     # cumulatively (smallest saving first) against what is still kept. 2026-10-19
@@ -2589,7 +2710,7 @@ def wasteful_chump_blocks(
     # (stay at 8 / stay at 6) and together exactly lethal at 14; both were dropped.
     candidates: list[tuple[int, int, list[int], dict, list[dict]]] = []
     for attacker_id, blockers in groups.items():
-        attacker = cards.get(attacker_id)
+        attacker = by_id.get(attacker_id) or cards.get(attacker_id)
         bodies = [cards.get(blocker) for blocker in blockers]
         unit = 2 if attacker is not None and _has(attacker, "menace") and len(blockers) == 2 else 1
         if len(blockers) != unit or not _known_body(attacker) or not all(_known_body(b) for b in bodies):

@@ -1547,8 +1547,9 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         if plan.actions[0].action_type != ActionType.DECLARE_BLOCKERS and not declined:
             return
+        from arenamcp.attack_potential import pumped_attackers
         from arenamcp.combat_solver import _resolve_attacker, blocker_options, optimal_blocks
-        from arenamcp.combat_strategy import phantom_attackers, with_hit_bonus
+        from arenamcp.combat_strategy import extra_combat_damage, phantom_attackers, with_hit_bonus
 
         local = next((p for p in state.get("players", []) if p.get("is_local")), None)
         life = (local or {}).get("life_total")
@@ -1564,8 +1565,11 @@ class ActionPlanner(_ActionLegalityMixin):
         phantoms = phantom_attackers(
             state, [c.get("instance_id") for c in attackers], context.get("raw_blockers")
         )
+        # Their pumps after blocks (Treasure-fed Captain Lannery Storms, ledger #193) count too.
         attackers = with_hit_bonus(
-            [c for c in attackers if c.get("instance_id") not in phantoms], state, local_seat
+            pumped_attackers([c for c in attackers if c.get("instance_id") not in phantoms], state),
+            state,
+            local_seat,
         )
         legal_ids = {int(i) for i in context.get("legal_blocker_ids") or [] if str(i).isdigit()}
         blockers = [cards[i] for i in legal_ids if i in cards]
@@ -1581,14 +1585,20 @@ class ActionPlanner(_ActionLegalityMixin):
             ).damage_through
             for atk in attackers
         )
+        # An extra combat follows this one (Aurelia, ledger #191): its damage through the blockers
+        # these blocks leave counts as this turn's.
+        through += extra_combat_damage(state, attackers, planned)
         lethal = through >= life
         if not lethal and life - through > BLOCK_DANGER_LIFE:
             return
         allowed = blocker_options(context.get("raw_blockers") or [], context.get("blocker_options"))
         survival = optimal_blocks(attackers, blockers, life, blocker_allowed_attackers=allowed or None)
-        if survival is None or survival.damage_through >= life or not survival.assignments:
+        if survival is None or not survival.assignments:
             return
-        if not lethal and survival.damage_through > through - BLOCK_DANGER_MARGIN:
+        survival_through = survival.damage_through + extra_combat_damage(state, attackers, survival.assignments)
+        if survival_through >= life:
+            return
+        if not lethal and survival_through > through - BLOCK_DANGER_MARGIN:
             return  # the solver's blocks do not keep meaningfully more life
 
         def label(iid):

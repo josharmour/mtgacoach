@@ -46,6 +46,8 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
+from arenamcp.attack_potential import annotate as annotate_attack
+from arenamcp.attack_potential import attack_bodies, extra_combats
 from arenamcp.board_assessment import (
     _body,
     _controller,
@@ -979,6 +981,8 @@ def _estimate(state: Any) -> LossEstimate:
                 caps.append((_MAYBE, f"{_name(card)} has unknown power/toughness"))
             continue
         (ours if mine else theirs).append(body)
+    declared = not our_turn and any(b["_attacking"] for b in theirs)
+    annotate_attack(theirs, battlefield, opponent, untapped_only=not our_turn, declared=declared)
 
     # --- when does their next attack come, and can we win first? ---------------
     combat_done = phase in ("Phase_Main2", "Phase_Ending") or (
@@ -1064,9 +1068,15 @@ def _estimate(state: Any) -> LossEstimate:
     ]
     if (drain or grown) and life_after + drain + grown > 0:
         caps.append((_MAYBE, f"their engines decide it ({', '.join(engine_notes)})"))
+    # What their attack adds (ledger #191, #193, #194), as the assessment's projection plays it:
+    # Treasure-fed and mana pumps, attack-trigger grants (Harbin's +1/+1 and flying; for an attack
+    # under way they are in the snapshot) and an extra combat (Aurelia).
+    their_able = attack_bodies(their_able, declared=declared)
+    extra = extra_combats(their_able, declared=declared)
+    again = [b for b in their_able if extra is not None and (extra.untap_all or has_combat_keyword(b, "vigilance"))]
     air_cover = any(_reach_or_flying(b) for b in our_blockers)
     evasive = [b for b in their_able if b["_unblockable"] or (_flying(b) and not air_cover)]
-    evasive_power = sum(b["power"] for b in evasive)
+    evasive_power = sum(b["power"] for b in evasive) + sum(b["power"] for b in evasive if b in again)
     facts.update(
         through=through,
         life_after=life_after,
@@ -1083,7 +1093,10 @@ def _estimate(state: Any) -> LossEstimate:
     margin_life = life_after
     if timing_known:
         defensive = _most_life_after(assessment, our_turn=our_turn)
-        chumped = _most_chumped_life(their_able, our_blockers, our_life) - drain
+        chumped = _most_chumped_life(their_able, our_blockers, our_life)
+        if again:  # the extra combat: every blocker again (an upper bound: chump blockers die)
+            chumped = _most_chumped_life(again, our_blockers, chumped)
+        chumped -= drain
         margin_life = max(life_after, chumped, life_after if defensive is None else defensive)
         if margin_life > life_after:
             facts["defensive_life_after"] = margin_life
