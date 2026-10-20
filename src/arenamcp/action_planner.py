@@ -4531,6 +4531,34 @@ class ActionPlanner(_ActionLegalityMixin):
                 "error": str(error)[:120],
             }
             raise SecondLookError(f"second look failed ({error}); {concerns[0][1][:160]}") from error
+        if new_chosen == chosen:
+            from arenamcp.game_plan import decision_claim_notes
+
+            cast_ids = []
+            for oid in new_chosen:
+                opt = decision.find(oid)
+                meta = (opt.meta if opt is not None else None) or {}
+                if meta.get("actionType") == "ActionType_Cast":
+                    cid = _as_int(find_source(game_state, meta).get("instance_id"))
+                    if cid:
+                        cast_ids.append(cid)
+            refuted = decision_claim_notes(
+                str(new_data.get("reasoning") or ""), game_state, cast_ids=cast_ids
+            )
+            if refuted:
+                trace["second_look"] = {
+                    "concerns": [text for _kind, text in concerns],
+                    "first": chosen,
+                    "final": "fallback",
+                    "refuted_claims": list(refuted),
+                }
+                logger.warning(
+                    "typed-decision: setting aside second-look re-pick %s (refuted: %s) [model: %s]",
+                    new_chosen,
+                    "; ".join(refuted)[:200],
+                    str(new_data.get("reasoning") or "")[:160],
+                )
+                raise SecondLookError(f"second-look re-pick {new_chosen} refuted: {refuted[0][:160]}")
         trace["second_look"] = {
             "concerns": [text for _kind, text in concerns],
             "first": chosen,
