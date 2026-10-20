@@ -1328,6 +1328,25 @@ def _most_life_after(assessment: Any, *, our_turn: bool) -> int | None:
     return best
 
 
+_AIMS_AT_US = re.compile(
+    r"\bany target\b|\btarget (?:player|opponent|planeswalker)\b|\bdefending player\b"
+    r"|\ban opponent controls\b|\byou don't control\b"
+)
+
+
+def _aims_at_us(text: str, view: dict, local: int) -> bool:
+    """Their targeted text can be aimed at us or our permanents: "any target", "target player",
+    "... an opponent controls", or "target creature" while we control a creature."""
+    if _AIMS_AT_US.search(text):
+        return True
+    if re.search(r"\btarget (?:attacking |blocking |tapped |untapped )?creature\b", text):
+        return any(
+            isinstance(card, dict) and _controller(card) == local and _is_creature(card)
+            for card in view.get("battlefield") or []
+        )
+    return False
+
+
 def _stack_caps(view: dict, *, local: int, opponent: int) -> list[tuple[float, str]]:
     """A cap for each stack object that could still change their attack or our outs.
 
@@ -1367,7 +1386,10 @@ def _stack_caps(view: dict, *, local: int, opponent: int) -> list[tuple[float, s
             if targets:
                 if any(t not in ours for t in targets):
                     hazard = _THEIR_STACK_TARGETED.search(text)
-            elif not is_trigger:
+            elif not (is_trigger and _aims_at_us(text, view, local)):
+                # #107: a trigger whose targets are not chosen yet is no out when it can aim at
+                # us or ours ("any target"); one that may have to hit their own creature still is
+                # (review 2026-10-20: a concede is irreversible).
                 hazard = _THEIR_STACK_TARGETED.search(text)
         if hazard is not None:
             caps.append((0.7, f"their {name} on the stack could change the combat ('{hazard.group(0)}')"))

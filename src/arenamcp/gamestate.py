@@ -2727,7 +2727,9 @@ class GameState(_GameStateAnnotationsMixin):
                         for i in range(1, len(self.recent_events) - 1)
                         if self.recent_events[i].get("type") != "life_changed"
                     ),
-                    1,
+                    # Only life changes after the marker: drop the marker itself, so "lost life
+                    # this turn" reads as unknown rather than losing a life change (review 2026-10-20).
+                    0,
                 )
             self.recent_events.pop(drop_idx)
 

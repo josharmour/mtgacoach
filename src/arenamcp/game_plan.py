@@ -4013,6 +4013,14 @@ class GamePlanManager:
             or self._sparse_late_hand(game_state, turn_num)
         )
 
+    def _keep_late_plan(self, game_state: dict[str, Any], turn: int) -> bool:
+        """#141: after two supersedes in a row, or one in the late game with a sparse hand, the
+        in-flight reform runs on and its late answer is kept (the supersede and discard paths use
+        this one rule; review 2026-10-20: they disagreed, so the late plan was still discarded)."""
+        return self._consecutive_supersedes >= 2 or (
+            self._consecutive_supersedes >= 1 and self._sparse_late_hand(game_state, turn)
+        )
+
     def _supersede_stale_inflight_locked(self, game_state: dict[str, Any]) -> None:
         """Cancel the in-flight reform once the turn it plans for has passed."""
         cancel = self._inflight_cancel
@@ -4021,11 +4029,7 @@ class GamePlanManager:
             return
         started = getattr(self, "_inflight_started_at", None)
         running = time.monotonic() - float(started) if started else 0.0
-        if (
-            self._plan is None
-            or self._consecutive_supersedes >= 2
-            or (self._consecutive_supersedes >= 1 and self._sparse_late_hand(game_state, turn))
-        ) and running <= self._FIRST_PLAN_PATIENCE_S:
+        if (self._plan is None or self._keep_late_plan(game_state, turn)) and running <= self._FIRST_PLAN_PATIENCE_S:
             # 2026-10-10 Brawl, turn 20 after a restart: the first plan's call
             # (73k-character prompt) outlived the turn and was superseded, then
             # the next one too. With no plan at all (or after repeated late-game
@@ -4068,9 +4072,7 @@ class GamePlanManager:
         turn = _round((game_state.get("turn") or {}).get("turn_number"))
         if cancel is None or cancel.is_set() or self._plan is None or self._our_turn(game_state):
             return
-        if self._consecutive_supersedes >= 2 or (
-            self._consecutive_supersedes >= 1 and self._sparse_late_hand(game_state, turn)
-        ):
+        if self._keep_late_plan(game_state, turn):
             return
         count = self._threat_supersedes[1] if self._threat_supersedes[0] == turn else 0
         if self._threat_turn == turn:
@@ -4171,7 +4173,7 @@ class GamePlanManager:
                 plan is not None
                 and self._observed_turn > plan_turn
                 and self._plan is not None
-                and self._consecutive_supersedes < 2
+                and not self._keep_late_plan(game_state, self._observed_turn)
             ):
                 logger.info(
                     "Discarded the game plan for turn %d: it arrived on turn %d",

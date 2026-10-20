@@ -601,6 +601,26 @@ def test_late_game_sparse_hand_and_consecutive_supersedes_use_low_effort():
     assert not cancel3.is_set()
 
 
+def test_one_supersede_with_a_sparse_late_hand_keeps_the_late_plan():
+    """Review 2026-10-20: the keep-running and discard paths share one rule, so the late answer that
+    was allowed to run on is not thrown away when it lands."""
+    from arenamcp.game_plan import GamePlan, GamePlanManager
+
+    mgr = GamePlanManager(backend=None)
+    mgr._plan = GamePlan(win_conditions=["Burn"], path="old", turn_formed=8)
+    sparse_t10 = state(
+        [card(911, "Grizzly Bears", ME, power=2, toughness=2)], match="d9a33232", local=ME, life=10,
+        opp_life=10, turn=10, active=OPP, phase="Phase_Main1", step="", their_hand=1,
+        hand=[card(912, "Shock", ME, text="Shock deals 2 damage to any target.")],
+    )  # fmt: skip
+    assert not mgr._keep_late_plan(sparse_t10, 10)
+    mgr._consecutive_supersedes = 1
+    assert mgr._keep_late_plan(sparse_t10, 10)
+    assert not mgr._keep_late_plan({"turn": {"turn_number": 5}, "hand": []}, 5)  # early game: one is not enough
+    mgr._consecutive_supersedes = 2
+    assert mgr._keep_late_plan({"turn": {"turn_number": 5}, "hand": []}, 5)
+
+
 # --- #146: named_burn_damage counts a second copy of the played card when reasoning names both -----
 
 
@@ -774,6 +794,36 @@ def test_their_attacker_damage_trigger_without_target_does_not_abort_concede():
     ]
     estimate = estimate_loss(st)
     assert estimate.confidence >= 0.95, estimate.blockers
+
+
+def test_their_untargeted_trigger_that_may_hit_their_own_creature_still_holds_the_concede():
+    """Review 2026-10-20: a 'target creature' trigger with no creature of ours to aim at must hit
+    one of theirs (maybe the attacker that kills us), so it still caps the confidence."""
+    from arenamcp.concede import _stack_caps
+
+    view = {
+        "battlefield": [
+            {"instance_id": 50, "name": "Their Attacker", "controller_seat_id": 2,
+             "card_types": ["CardType_Creature"], "power": 6, "toughness": 6},
+        ],
+        "stack": [
+            {"instance_id": 996, "name": "Their Attacker ability", "controller_seat_id": 2,
+             "oracle_text": "Whenever this creature attacks, it deals 3 damage to target creature.",
+             "object_kind": "ABILITY"},
+        ],
+    }  # fmt: skip
+    caps = _stack_caps(view, local=1, opponent=2)
+    assert caps and caps[0][0] == 0.7
+    # With a creature of ours on the battlefield it can (and will) aim at ours: no cap.
+    view["battlefield"].append(
+        {"instance_id": 60, "name": "Our Bear", "controller_seat_id": 1, "card_types": ["CardType_Creature"],
+         "power": 2, "toughness": 2}
+    )
+    assert _stack_caps(view, local=1, opponent=2) == []
+    # "any target" can always aim at us.
+    view["battlefield"].pop()
+    view["stack"][0]["oracle_text"] = "Whenever this creature attacks, it deals 4 damage to any target."
+    assert _stack_caps(view, local=1, opponent=2) == []
 
 
 # --- #148: opponent_lost_life_this_turn on busy turns + Step_CombatDamage not finished ------------
@@ -1066,6 +1116,12 @@ def test_brawl_deck_analysis_waits_for_command_zone_commander(monkeypatch):
     }
     assert runtime._maybe_analyze_deck(with_commander)
     assert len(workers) == 1
+
+    # Review 2026-10-20: once the game is under way (the command zone was filled before turn 1) a
+    # 99-card deck with no commander seen is analysed anyway rather than waited on forever.
+    mid_game = {**pre_gsm, "match_id": "brawl-match-2", "turn": {"turn_number": 4}}
+    assert runtime._maybe_analyze_deck(mid_game)
+    assert len(workers) == 2
 
 
 def test_brawl_free_mulligan_keeps_seven_in_verdict_and_prompt():

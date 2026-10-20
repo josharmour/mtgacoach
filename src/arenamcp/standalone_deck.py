@@ -78,14 +78,12 @@ class _DeckAnalysisMixin:
         # ConnectResp in Brawl often sends the 99-card maindeck before the
         # first GameStateMessage populates the command zone (#163). Wait for
         # the commander so we do not start and immediately cancel a
-        # commanderless analysis.
-        profile = state.get("format_profile") or {}
-        brawl_deck = (
-            profile.get("is_commander_format")
-            or profile.get("family") == "brawl"
-            or len(state.get("deck_cards") or []) in range(98, 101)
-        )
-        if brawl_deck and not commander_ids(state):
+        # commanderless analysis, but only before turn 1 (the command zone
+        # is filled by then; review 2026-10-20: a 98-100 card deck with no
+        # commander, or a coach started mid-game, must not wait forever).
+        turn = int(((state.get("turn") or {}).get("turn_number")) or 0)
+        brawl_deck = len(state.get("deck_cards") or []) in range(98, 101)
+        if brawl_deck and turn < 1 and not commander_ids(state):
             return False
         identity = deck_identity(state)
         key = (state.get("match_id"), identity)
