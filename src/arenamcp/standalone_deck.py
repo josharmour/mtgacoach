@@ -65,7 +65,7 @@ class _DeckAnalysisMixin:
 
     def _maybe_analyze_deck(self, state: dict) -> bool:
         """Start one versioned analysis per deck; never publish a stale worker."""
-        from arenamcp.deck_strategy import deck_identity
+        from arenamcp.deck_strategy import commander_ids, deck_identity
 
         coach = self._coach
         if (
@@ -74,6 +74,18 @@ class _DeckAnalysisMixin:
             or not state.get("match_id")
             or state.get("game_over")
         ):
+            return False
+        # ConnectResp in Brawl often sends the 99-card maindeck before the
+        # first GameStateMessage populates the command zone (#163). Wait for
+        # the commander so we do not start and immediately cancel a
+        # commanderless analysis.
+        profile = state.get("format_profile") or {}
+        brawl_deck = (
+            profile.get("is_commander_format")
+            or profile.get("family") == "brawl"
+            or len(state.get("deck_cards") or []) in range(98, 101)
+        )
+        if brawl_deck and not commander_ids(state):
             return False
         identity = deck_identity(state)
         key = (state.get("match_id"), identity)

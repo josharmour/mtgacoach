@@ -975,5 +975,37 @@ def test_attack_hold_records_combat_decision_in_packet(monkeypatch):
     assert rec["explanation"] == "Keep Hare Apparent back as a blocker."
 
 
+# --- #163: Brawl deck analysis waits for the command-zone commander --------------------------------
 
 
+def test_brawl_deck_analysis_waits_for_command_zone_commander(monkeypatch):
+    from types import SimpleNamespace
+
+    from arenamcp.coach import CoachEngine
+    from arenamcp.standalone_deck import _DeckAnalysisMixin
+
+    workers = []
+    monkeypatch.setattr(
+        "arenamcp.standalone_deck.threading.Thread",
+        lambda **kw: SimpleNamespace(start=lambda: workers.append(kw["target"])),
+    )
+    runtime = _DeckAnalysisMixin()
+    runtime._coach = CoachEngine(Mock())
+    runtime._auto_deck_strategy = True
+
+    pre_gsm = {
+        "match_id": "brawl-match-1",
+        "deck_cards": [1002] * 99,
+        "commander_grp_ids": [],
+        "format_profile": {"family": "brawl", "is_commander_format": True},
+        "players": [],
+    }
+    assert not runtime._maybe_analyze_deck(pre_gsm)
+    assert workers == []
+
+    with_commander = {
+        **pre_gsm,
+        "commander_grp_ids": [1001],
+    }
+    assert runtime._maybe_analyze_deck(with_commander)
+    assert len(workers) == 1
