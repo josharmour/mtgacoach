@@ -33,6 +33,8 @@ from arenamcp.action_planner import ActionPlanner
 from arenamcp.board_assessment import ROLE_AGGRESSOR, ROLE_CONTROL, ROLE_DEFENDER, assess
 from arenamcp.game_plan import GamePlan, GamePlanManager, compose_strategy_block, validate_plan
 
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
+
 
 @pytest.fixture(autouse=True)
 def _offline_deck_lookup(monkeypatch):

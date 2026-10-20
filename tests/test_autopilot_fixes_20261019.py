@@ -405,3 +405,82 @@ def test_second_look_raises_when_repicked_choice_reasoning_still_makes_refuted_c
             message="Choose an option.",
             answered_high=False,
         )
+
+
+# --- #134: engine-role creatures count as threats and re-plan when removal target predates -------
+
+
+def test_engine_creature_counts_as_threat_and_replans_when_removal_target_predates_it():
+    from arenamcp.game_plan import (
+        GamePlan,
+        board_basis,
+        board_changes,
+        plan_removal_target_predates_threat,
+    )
+
+    frodo = card(801, "Frodo, Determined Hero", OPP, power=2, toughness=2)
+    biotech = card(
+        802,
+        "Biotech Specialist",
+        OPP,
+        power=1,
+        toughness=3,
+        text="Whenever you sacrifice an artifact, this creature deals 2 damage to target opponent.",
+    )
+    clue = {
+        "instance_id": 803,
+        "name": "Clue",
+        "owner_seat_id": OPP,
+        "controller_seat_id": OPP,
+        "card_types": ["CardType_Artifact"],
+        "subtypes": ["SubType_Clue"],
+        "type_line": "Token Artifact — Clue",
+        "oracle_text": "{2}, Sacrifice this artifact: Draw a card.",
+    }
+    before = state(
+        [frodo, clue],
+        match="16ed84d0",
+        local=ME,
+        life=18,
+        opp_life=20,
+        turn=6,
+        active=OPP,
+        phase="Phase_Main1",
+        step="",
+        their_hand=3,
+    )
+    after = state(
+        [frodo, biotech, clue],
+        match="16ed84d0",
+        local=ME,
+        life=18,
+        opp_life=20,
+        turn=7,
+        active=ME,
+        phase="Phase_Main1",
+        step="",
+        their_hand=2,
+    )
+    old_basis = board_basis(before)
+    new_basis = board_basis(after)
+    assert board_changes(old_basis, new_basis, threats_only=True) == [
+        "Biotech Specialist 1/3 entered"
+    ]
+    plan = GamePlan(
+        win_conditions=["Burn"],
+        path="Kill Frodo, Determined Hero with Iroh's Demonstration",
+        turn_formed=6,
+        turn_plan=[
+            {
+                "turn": 7,
+                "label": "T",
+                "land": "",
+                "cast": ["Iroh's Demonstration (on Frodo, Determined Hero)"],
+                "attack": "none",
+                "hold": "",
+            }
+        ],
+        basis=old_basis,
+    )
+    assert plan_removal_target_predates_threat(plan, new_basis, 7) is True
+

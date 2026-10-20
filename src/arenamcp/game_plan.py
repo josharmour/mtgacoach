@@ -2628,9 +2628,11 @@ def board_basis(state: dict | None) -> dict:
     local = _local_seat(state)
     if local is None:
         return {}
+    from arenamcp.board_model import engine_facts
     from arenamcp.combat_keywords import has_combat_keyword, is_creature_modified
 
     battlefield = [c for c in state.get("battlefield") or [] if isinstance(c, dict)]
+    efacts = engine_facts(state)
     creatures, engines, ours = [], [], []
     our_power = 0
     for card in battlefield:
@@ -2645,16 +2647,17 @@ def board_basis(state: dict | None) -> dict:
             power, toughness = _round(card.get("power"), -99), _round(card.get("toughness"), -99)
             if power == -99 or toughness == -99:
                 continue
-            creatures.append(
-                {
-                    "id": identity,
-                    "name": str(card.get("name") or "?"),
-                    "power": power,
-                    "toughness": toughness,
-                    "keywords": [kw for kw in _THREAT_KEYWORDS if has_combat_keyword(card, kw)],
-                    "modified": is_creature_modified(card, battlefield=battlefield),
-                }
-            )
+            entry: dict[str, Any] = {
+                "id": identity,
+                "name": str(card.get("name") or "?"),
+                "power": power,
+                "toughness": toughness,
+                "keywords": [kw for kw in _THREAT_KEYWORDS if has_combat_keyword(card, kw)],
+                "modified": is_creature_modified(card, battlefield=battlefield),
+            }
+            if _round(card.get("instance_id"), -1) in efacts:
+                entry["engine"] = True
+            creatures.append(entry)
         elif _is_engine(card):
             engines.append({"id": identity, "name": str(card.get("name") or "?")})
     life = next(
@@ -2690,9 +2693,10 @@ def board_changes(old: dict | None, new: dict | None, *, threats_only: bool = Fa
     """What changed on the opponent's side from board basis ``old`` to ``new``, most important first.
 
     Threats (``threats_only``): a new creature with a threat keyword (power 2
-    or more, or deathtouch / first strike), or with power 4 or more, or at
-    least our biggest creature's (2 or more); a creature that gained a threat
-    keyword, or that grew by 2 and is modified; a new noncreature permanent.
+    or more, or deathtouch / first strike), an engine-role creature, or with
+    power 4 or more, or at least our biggest creature's (2 or more); a creature
+    that gained a threat keyword, or that grew by 2 and is modified; a new
+    noncreature permanent.
     Otherwise also any new creature, any growth, and the opponent gaining
     ``_LIFE_GAIN_STALE`` life or more. Creatures that left or shrank are not
     changes (our own removal, mostly). [] when either side is unknown.
@@ -2711,7 +2715,8 @@ def board_changes(old: dict | None, new: dict | None, *, threats_only: bool = Fa
         was = before.get(str(card.get("id")))
         if was is None:
             threat = (
-                (bool(keywords) and (power >= 2 or bool(_STOPPER_KEYWORDS & set(keywords))))
+                bool(card.get("engine"))
+                or (bool(keywords) and (power >= 2 or bool(_STOPPER_KEYWORDS & set(keywords))))
                 or power >= 4
                 or power >= biggest
             )
@@ -2775,6 +2780,31 @@ def plan_attackers_gone(
             if name not in present and name not in gone:
                 gone.append(name)
     return gone
+
+
+def plan_removal_target_predates_threat(
+    plan: GamePlan | None, board: dict | None, turn: int
+) -> bool:
+    """True when ``plan``'s step for ``turn`` names an opposing creature from ``plan.basis`` as a
+    removal target and a new opposing threat has entered since (#134, match 16ed84d0 T7)."""
+    if plan is None or plan.is_empty() or not isinstance(plan.basis, dict) or not board:
+        return False
+    step = plan.step_for(turn)
+    if step is None:
+        return False
+    old_creatures = [
+        str(c.get("name") or "")
+        for c in plan.basis.get("creatures") or []
+        if isinstance(c, dict) and c.get("name")
+    ]
+    if not old_creatures:
+        return False
+    text = " ".join(
+        [*(str(c) for c in step.get("cast") or []), str(step.get("hold") or ""), str(plan.path or "")]
+    ).casefold()
+    if not any(_plan_mentions(name, text) for name in old_creatures):
+        return False
+    return bool(board_changes(plan.basis, board, threats_only=True))
 
 
 def plan_board_changes(plan: GamePlan | None, state: dict | None, *, threats_only: bool = False) -> list[str]:
@@ -3838,7 +3868,14 @@ class GamePlanManager:
                 return False
             if reason == "new opposing threat" and self._threat_turn == sig[0]:
                 return False  # one threat-driven reform per turn
-            if our_turn and reason not in self._OUR_TURN_REASONS:
+            if (
+                our_turn
+                and reason not in self._OUR_TURN_REASONS
+                and not (
+                    reason == "new opposing threat"
+                    and plan_removal_target_predates_threat(self._plan, self._live_basis, sig[0])
+                )
+            ):
                 # 2026-10-11 audit: 72 of 168 plan calls were cancelled or
                 # discarded, and decision calls overlapping one had ~2x TTFT
                 # (1.1 s -> 1.9 s). A mid-turn reform replans a turn that is
