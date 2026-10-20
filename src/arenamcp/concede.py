@@ -698,6 +698,7 @@ def _scan_outs(
             instant = hand_card(card).instant_speed or flash_granted
             if (instant or sorcery_window) and not _harmless_card(card, text):
                 outs.append(f"{name} (from exile)")
+    outs[:] = list(dict.fromkeys(outs))
     return found
 
 
@@ -1136,10 +1137,15 @@ def _estimate(state: Any) -> LossEstimate:
 
     confidence = min([DEAD_CONFIDENCE] + [cap for cap, _ in caps])
     blockers = [why for cap, why in sorted(caps, key=lambda item: item[0])]
+    spoken_through = (
+        our_life - margin_life
+        if timing_known and margin_life > life_after and evasive_power + drain < our_life
+        else through
+    )
     if confidence >= DEFAULT_THRESHOLD:
-        reason = _concede_reason(evasive, through, our_life, when)
+        reason = _concede_reason(evasive, spoken_through, our_life, when)
     else:
-        numbers = f" ({through} through vs {our_life} life)" if timing_known else ""
+        numbers = f" ({spoken_through} through vs {our_life} life)" if timing_known else ""
         reason = f"Dead next attack{numbers}, but " + blockers[0]
     return LossEstimate(confidence, reason, facts, blockers)
 

@@ -709,3 +709,34 @@ def test_opponent_lost_life_readable_on_busy_turns_and_combat_damage_step():
     assert est.confidence < 0.95
     assert "combat damage is being dealt" in est.reason
     assert "our turn (untap and draw) comes before their next attack" not in est.blockers
+
+
+# --- #167: spoken concede reason uses chump margin figure; outs list deduplicates -----------------
+
+
+def test_spoken_concede_reason_uses_chump_margin_and_deduplicates_outs():
+    from arenamcp.concede import estimate_loss
+    from tests.test_concede import basic, board, creature, spell
+
+    theirs = [
+        creature(10, "Sun Titan", 2, 6, 6),
+        creature(11, "Golem", 2, 8, 8),
+        creature(12, "Beast", 2, 8, 8),
+    ]
+    ours = [creature(20, "Hare Apparent", 1, 2, 2)]
+    # 22 total power vs 14 life; our 2/2 chumps an 8/8 so 14 damage gets through (thin margin),
+    # or at 12 life 14 damage gets through our best blocks (not 22) and concedes.
+    est = estimate_loss(board(theirs + ours, life=12))
+    assert est.confidence >= 0.95
+    assert "14 damage gets through your best blocks" in est.reason
+
+    # Duplicate copies of Hare Apparent in hand produce one "Hare Apparent (castable now)" entry.
+    hares = [
+        spell(30 + i, "Hare Apparent", "Creature — Rabbit Noble", "{1}{W}", "Create tokens.", power=2, toughness=2)
+        for i in range(4)
+    ]
+    plains = [basic(40 + i, 1, "Plains") for i in range(3)]
+    est_outs = estimate_loss(
+        board(theirs + ours + plains, life=4, active=1, phase="Phase_Main1", hand=hares)
+    )
+    assert est_outs.facts["outs"] == ["Hare Apparent (castable now)"]
