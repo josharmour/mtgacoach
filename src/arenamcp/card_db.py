@@ -69,6 +69,7 @@ class CardInfo:
     power: str = ""
     toughness: str = ""
     related_faces: list[dict[str, Any]] = field(default_factory=list)
+    is_token: bool = False
 
 
 @runtime_checkable
@@ -269,6 +270,7 @@ class MTGADatabaseAdapter:
             power=getattr(card, "power", ""),
             toughness=getattr(card, "toughness", ""),
             related_faces=related_faces,
+            is_token=bool(getattr(card, "is_token", False)),
         )
 
     def get_card_by_name(self, name: str) -> CardInfo | None:
@@ -346,6 +348,12 @@ class FallbackCardDatabase:
         return list(self._sources)
 
     @staticmethod
+    def _is_token(card: CardInfo) -> bool:
+        if getattr(card, "is_token", False):
+            return True
+        return "token" in (card.type_line or "").lower()
+
+    @staticmethod
     def _needs_enrichment(card: CardInfo) -> bool:
         """Check whether a card result is missing critical fields.
 
@@ -353,10 +361,10 @@ class FallbackCardDatabase:
         can be filled from MTGJSON/Scryfall by name.
         """
         if not card.mana_cost:
-            # Lands legitimately have no mana cost, but non-lands should
+            # Lands and tokens legitimately have no mana cost, but non-land cards should
             card_types = getattr(card, "card_types", []) or []
-            is_land = any("land" in ct.lower() for ct in card_types)
-            if not is_land and card.type_line not in ("Land",):
+            is_land = any("land" in ct.lower() for ct in card_types) or "land" in (card.type_line or "").lower()
+            if not is_land and not FallbackCardDatabase._is_token(card):
                 return True
         # A numeric type code is not a type line (defence in depth — the MTGA
         # adapter already refuses to emit one).
@@ -371,7 +379,11 @@ class FallbackCardDatabase:
         name_result = self.get_card_by_name(card.name)
         if name_result is None:
             return
-        if not card.oracle_text and name_result.oracle_text:
+        # Tokens share names across cards with different abilities (e.g. a
+        # vanilla 2/2 Wolf token from Ranger Class vs a Deathtouch Wolf token),
+        # and mtgadb already resolved this token's exact AbilityIds.
+        is_mtga_token = self._is_token(card) and card.source == "mtgadb"
+        if not card.oracle_text and name_result.oracle_text and not is_mtga_token:
             card.oracle_text = name_result.oracle_text
         if self._needs_enrichment(card):
             # Only accept a type line that IS one. Enrichment previously took
@@ -438,8 +450,14 @@ class FallbackCardDatabase:
         if best and self._needs_enrichment(best):
             self._enrich_from_name(best)
 
-        # Last resort: if we have a name but no oracle_text at all
-        if best and not best.oracle_text and not is_unknown_card_name(best.name):
+        # Last resort: if we have a name but no oracle_text at all (skip tokens
+        # resolved by mtgadb, whose empty oracle_text means a vanilla token).
+        if (
+            best
+            and not best.oracle_text
+            and not is_unknown_card_name(best.name)
+            and not (self._is_token(best) and best.source == "mtgadb")
+        ):
             self._enrich_from_name(best)
 
         return best

@@ -1069,3 +1069,55 @@ def test_brawl_free_mulligan_keeps_seven_in_verdict_and_prompt():
     assert "mulligans taken this game: 0 (1 free)" in lines
     assert "MULLIGAN → you will see a new 7, keep 7 (free mulligan, bottom 0)." in lines
 
+
+def test_vanilla_token_from_mtgadb_does_not_get_phantom_keyword_by_name():
+    """#173: Ranger Class's vanilla 2/2 Wolf token (grp 77380) must not inherit Deathtouch by name."""
+    from types import SimpleNamespace
+
+    from arenamcp.card_db import CardInfo, FallbackCardDatabase, MTGADatabaseAdapter
+
+    class _FakeMtgaDb:
+        available = True
+
+        def get_card(self, arena_id: int):
+            if arena_id == 77380:
+                return SimpleNamespace(
+                    grp_id=77380,
+                    name="Wolf",
+                    oracle_text="",
+                    type_line="Token Creature — Wolf",
+                    mana_cost="",
+                    colors="5",
+                    rarity="token",
+                    power="2",
+                    toughness="2",
+                    linked_face_ids=[],
+                    is_token=True,
+                )
+            return None
+
+    class _FakeScryfallByName:
+        def get_card_by_arena_id(self, arena_id: int):
+            return None
+
+        def get_card_by_name(self, name: str):
+            if name == "Wolf":
+                return CardInfo(
+                    name="Wolf",
+                    oracle_text="Deathtouch",
+                    type_line="Token Creature — Wolf",
+                    mana_cost="",
+                    source="scryfall",
+                    power="1",
+                    toughness="1",
+                )
+            return None
+
+    db = FallbackCardDatabase(sources=[MTGADatabaseAdapter(_FakeMtgaDb()), _FakeScryfallByName()])
+    wolf = db.get_card_by_arena_id(77380)
+    assert wolf is not None
+    assert wolf.name == "Wolf"
+    assert wolf.is_token is True
+    assert wolf.oracle_text == ""
+
+
