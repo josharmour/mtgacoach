@@ -608,7 +608,9 @@ def test_timeout_after_the_first_token_is_slow_not_down(fake_time):
         be.complete("s", "u", request_timeout_s=12, raise_on_error=True)
     assert exc.value.first_token_seen is True
     assert be.circuit_snapshot()["consecutive_failures"] == 0
-    assert BackendHealth.instance().snapshot()["total_failures"] == 1
+    # Not a health failure either (2026-10-20 12:24:03: one such hedge put
+    # "Startup needs attention" on the desktop mid-match).
+    assert BackendHealth.instance().snapshot()["total_failures"] == 0
 
 
 def test_one_first_token_timeout_during_probation_does_not_reopen(fake_time):

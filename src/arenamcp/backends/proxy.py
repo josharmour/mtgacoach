@@ -363,6 +363,18 @@ def _counts_for_circuit(err: BackendError) -> bool:
     return err.kind == "connection"
 
 
+def _slow_but_alive(err: BackendError) -> bool:
+    """The model was streaming when our own deadline cut it off: not a backend failure.
+
+    2026-10-20 12:24:03: a high-effort decision hedge had its first token at
+    4.2 s and was cut at its 15 s budget while the low-effort answer (6.6 s)
+    stood; BackendHealth went "degraded" and the desktop showed "Startup needs
+    attention: LLM streaming time budget exhausted" mid-match (9 such today,
+    31 on 2026-10-19). The circuit breaker already ignores these.
+    """
+    return err.kind == "timeout" and bool(getattr(err, "first_token_seen", False))
+
+
 def _litellm_already_retried(err: BackendError) -> bool:
     """LiteLLM (num_retries 1) already retried this 500: a client retry doubles the cost."""
     return "litellm retried" in str(err).lower()
@@ -1337,7 +1349,8 @@ class ProxyBackend:
                     # A hung or saturated server: free the slots background
                     # work holds (09:34 a game plan held one for 57 s).
                     _BACKGROUND_LANE.cancel_all("degraded", keep=call.handle)
-            BackendHealth.instance().record_failure(error=str(last_err), status_code=last_err.status_code)
+            if not _slow_but_alive(last_err):
+                BackendHealth.instance().record_failure(error=str(last_err), status_code=last_err.status_code)
             if raise_on_error:
                 raise last_err
             return f"{BACKEND_ERROR_PREFIX} {last_err}"

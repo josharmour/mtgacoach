@@ -183,3 +183,34 @@ def test_nonstream_fallback_has_usage_but_no_fabricated_ttft(monkeypatch):
     assert metrics["cached_input_tokens"] == 90
     assert metrics["ttft_ms"] is None
     assert metrics["finish_reason"] == "length"
+
+
+def test_a_streaming_answer_cut_by_our_budget_is_not_a_backend_failure(monkeypatch):
+    # 2026-10-20 12:24:03: a high-effort hedge streamed from 4.2 s and was cut
+    # at its 15 s budget; health went "degraded" and the desktop showed
+    # "Startup needs attention" mid-match while the low-effort answer stood.
+    from arenamcp.backend_health import BackendHealth, HealthState
+
+    clock = FakeClock()
+    stream = FakeStream(clock, [(4, chunk(reasoning="thinking")) for _ in range(4)])
+    be, _, _ = backend(monkeypatch, clock, [stream])
+    with pytest.raises(proxy.BackendError, match="time budget exhausted"):
+        be.complete("s", "u", request_timeout_s=12, raise_on_error=True)
+    snapshot = BackendHealth.instance().snapshot()
+    assert BackendHealth.instance().state is HealthState.OK
+    assert snapshot["total_failures"] == 0
+
+
+def test_a_request_that_never_answers_still_degrades_health(monkeypatch):
+    from arenamcp.backend_health import BackendHealth, HealthState
+
+    clock = FakeClock()
+
+    def silent():
+        clock.now += 12
+        raise TimeoutError("read stalled")
+
+    be, _, _ = backend(monkeypatch, clock, [silent])
+    with pytest.raises(proxy.BackendError):
+        be.complete("s", "u", request_timeout_s=12, raise_on_error=True)
+    assert BackendHealth.instance().state is HealthState.DEGRADED
