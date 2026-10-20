@@ -814,6 +814,7 @@ class ActionPlanner(_ActionLegalityMixin):
             if strategy:
                 parts.append(f"DECK STRATEGY:\n{strategy}")
         grounded = self._grounded_plan_block(state, with_lines=with_lines)
+        self._last_plan_block = grounded or ""
         if grounded:
             parts.append(grounded)
         if playbook is not None and state is not None:
@@ -7862,6 +7863,9 @@ class ActionPlanner(_ActionLegalityMixin):
             self._last_decision_trace["lines"] = {"summary": lines_text, "tags": line_tags}
             if unmodelled:
                 self._last_decision_trace["lines"]["unmodelled"] = dict(unmodelled)
+        plan_block = getattr(self, "_last_plan_block", "")
+        if plan_block:
+            self._last_decision_trace["plan_block"] = plan_block
         if getattr(self, "_held_instants", None):
             self._last_decision_trace["held_instants"] = list(self._held_instants)
 

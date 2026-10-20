@@ -900,3 +900,31 @@ def test_locked_room_door_token_flagged_as_incoming_threat():
     assert threats[0].score > 10.0
 
 
+# --- #135: keep the plan/staleness block per decision in the packet trace ------------------------
+
+
+def test_decision_trace_stores_plan_and_staleness_block():
+    backend = Mock()
+    backend.complete.return_value = '{"selected_ids": ["pass"], "reasoning": "Hold mana."}'
+    planner = ActionPlanner(backend=backend)
+    planner.set_game_plan_source(
+        lambda state, with_lines=True: "GAME PLAN (formed turn 6):\n  PLAN PREDATES: Biotech Specialist entered."
+    )
+    decision = PendingDecision((1, 1), "ActionsAvailable", (DecisionOption("pass", "Pass"),))
+    state = {
+        "match_id": "16ed84d0",
+        "turn": {"turn_number": 7, "active_player": 1, "phase": "Phase_Main1"},
+        "local_seat_id": 1,
+        "players": [{"seat_id": 1, "life": 20, "is_local": True}, {"seat_id": 2, "life": 20}],
+        "battlefield": [],
+        "hand": [],
+        "graveyard": [],
+        "stack": [],
+    }
+    chosen = planner.plan_decision_options(decision, state)
+    assert chosen == ["pass"]
+    trace = planner.get_last_decision_trace()
+    assert "PLAN PREDATES: Biotech Specialist entered." in trace.get("plan_block", "")
+
+
+
