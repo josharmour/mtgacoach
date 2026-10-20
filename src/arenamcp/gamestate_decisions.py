@@ -247,8 +247,12 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
             # the first look (0). The log is the only source after a restart
             # without the macOS bridge's player MulliganCount, and the
             # deterministic mulligan policy needs it to know the keep size.
-            count = _coerce_int((msg.get("mulliganReq") or {}).get("mulliganCount", 0), 0)
+            mulligan_req = msg.get("mulliganReq") or {}
+            count = _coerce_int(mulligan_req.get("mulliganCount", 0), 0)
             game_state.decision_context["mulligan_count"] = max(0, count)
+            free_count = _coerce_int(mulligan_req.get("freeMulliganCount", 0), 0)
+            if free_count > 0:
+                game_state.decision_context["free_mulligan_count"] = free_count
         return False
 
     elif msg_type == "GREMessageType_IntermissionReq":

@@ -1009,3 +1009,63 @@ def test_brawl_deck_analysis_waits_for_command_zone_commander(monkeypatch):
     }
     assert runtime._maybe_analyze_deck(with_commander)
     assert len(workers) == 1
+
+
+def test_brawl_free_mulligan_keeps_seven_in_verdict_and_prompt():
+    """#166: Brawl's freeMulliganCount=1 means the first mulligan leads to a 7-card hand."""
+    from arenamcp import mulligan_policy
+    from arenamcp.gamestate import GameState
+    from arenamcp.gamestate_decisions import _handle_decision_message
+
+    gs = GameState()
+    gs.local_seat_id = 1
+    _handle_decision_message(
+        gs,
+        "GREMessageType_MulliganReq",
+        {
+            "type": "GREMessageType_MulliganReq",
+            "mulliganReq": {
+                "mulliganType": "MulliganType_London",
+                "mulliganCount": 0,
+                "freeMulliganCount": 1,
+            },
+        },
+    )
+    assert gs.decision_context["mulligan_count"] == 0
+    assert gs.decision_context["free_mulligan_count"] == 1
+
+    hand = [
+        {
+            "instance_id": 10,
+            "grp_id": 1,
+            "name": "Mountain",
+            "type_line": "Basic Land — Mountain",
+            "mana_cost": "",
+            "oracle_text": "({T}: Add {R}.)",
+        }
+    ] + [
+        {
+            "instance_id": 11 + i,
+            "grp_id": 2 + i,
+            "name": f"Dragon {i}",
+            "type_line": "Creature — Dragon",
+            "mana_cost": "{4}{R}",
+            "oracle_text": "Flying",
+        }
+        for i in range(6)
+    ]
+    state = {
+        "local_seat_id": 1,
+        "decision_context": dict(gs.decision_context),
+        "turn": {"turn_number": 0, "active_player": 1},
+        "hand": hand,
+    }
+    found = mulligan_policy.situation(state)
+    assert found.free_mulligans == 1
+    assert found.keep_size == 7
+    verdict = mulligan_policy.mulligan_verdict(found)
+    assert verdict == ("mulligan", "1 land(s) in 7 cards; a 7-card hand is better")
+    lines = "\n".join(mulligan_policy.describe(state))
+    assert "mulligans taken this game: 0 (1 free)" in lines
+    assert "MULLIGAN → you will see a new 7, keep 7 (free mulligan, bottom 0)." in lines
+

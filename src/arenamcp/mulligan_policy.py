@@ -350,10 +350,17 @@ class MulliganSituation:
     cards: list[HandCard]
     mulligans: int | None
     on_play: bool | None
+    free_mulligans: int = 0
+
+    @property
+    def bottom_count(self) -> int | None:
+        if self.mulligans is None:
+            return None
+        return max(0, self.mulligans - max(0, self.free_mulligans))
 
     @property
     def keep_size(self) -> int | None:
-        return None if self.mulligans is None else max(0, len(self.cards) - self.mulligans)
+        return None if self.bottom_count is None else max(0, len(self.cards) - self.bottom_count)
 
 
 def local_seat(state: dict) -> int | None:
@@ -371,14 +378,41 @@ def mulligans_from_state(state: dict) -> int | None:
         player = next((p for p in state.get("players") or [] if p.get("seat_id") == seat), {})
         value = player.get("mulligan_count")
     if value is None:
-        # Log-only path: the MulliganReq's mulliganCount (gamestate_decisions).
-        value = (state.get("decision_context") or {}).get("mulligan_count")
+        # Log-only or bridge request path: MulliganReq's mulliganCount.
+        ctx = state.get("decision_context") or {}
+        value = ctx.get("mulligan_count")
+        if value is None:
+            value = ctx.get("mulliganCount")
+    if value is None:
+        value = (state.get("_bridge_request_payload") or {}).get("mulliganCount")
     if isinstance(value, bool):
         return None
     try:
         return max(0, int(value)) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def free_mulligans_from_state(state: dict) -> int:
+    """Free mulligans granted this game (e.g. Brawl's first free mulligan)."""
+    value = state.get("_free_mulligans")
+    if value is None:
+        ctx = state.get("decision_context") or {}
+        value = ctx.get("free_mulligan_count")
+        if value is None:
+            value = ctx.get("freeMulliganCount")
+    if value is None:
+        value = (state.get("_bridge_request_payload") or {}).get("freeMulliganCount")
+    if value is None:
+        seat = local_seat(state)
+        player = next((p for p in state.get("players") or [] if p.get("seat_id") == seat), {})
+        value = player.get("free_mulligan_count")
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value)) if value is not None else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 def on_the_play(state: dict) -> bool | None:
@@ -396,6 +430,7 @@ def situation(state: dict, mulligans: int | None = None) -> MulliganSituation:
         cards=[hand_card(card) for card in hand],
         mulligans=mulligans if mulligans is not None else mulligans_from_state(state),
         on_play=on_the_play(state),
+        free_mulligans=free_mulligans_from_state(state),
     )
 
 
@@ -442,10 +477,12 @@ def mulligan_verdict(found: MulliganSituation) -> tuple[str, str] | None:
             return "keep", f"2 lands on the draw with cheap plays ({_names(cheap)})"
         if keep_size is None:
             return None
+        next_bottom = max(0, (found.mulligans or 0) + 1 - max(0, found.free_mulligans))
+        next_keep = max(0, len(cards) - next_bottom)
         if lands <= 1:
-            return "mulligan", f"{lands} land(s) in 7 cards; a 6-card hand is better"
+            return "mulligan", f"{lands} land(s) in 7 cards; a {next_keep}-card hand is better"
         if lands >= 6:
-            return "mulligan", f"{lands} lands in 7 cards; a 6-card hand is better"
+            return "mulligan", f"{lands} lands in 7 cards; a {next_keep}-card hand is better"
         return None
     if keep_size == 6:
         if lands in (0, 7):
@@ -493,12 +530,17 @@ def describe(state: dict, mulligans: int | None = None) -> list[str]:
             "look, KEEP keeps all 7). Each mulligan bottoms one more card."
         )
     else:
-        keep_size = max(0, len(found.cards) - n)
+        bottom = found.bottom_count or 0
+        keep_size = max(0, len(found.cards) - bottom)
+        next_bottom = max(0, n + 1 - max(0, found.free_mulligans))
+        next_keep = max(0, len(found.cards) - next_bottom)
+        free_note = f" ({found.free_mulligans} free)" if found.free_mulligans > 0 else ""
         lines.append(
-            f"MULLIGAN STATUS: London mulligan; mulligans taken this game: {n}. "
+            f"MULLIGAN STATUS: London mulligan; mulligans taken this game: {n}{free_note}. "
             f"KEEP → you keep {keep_size} of these {len(found.cards)}"
-            + (f" and bottom {n}" if n else "")
-            + f". MULLIGAN → you will see a new 7, keep {max(0, keep_size - 1)} and bottom {n + 1}."
+            + (f" and bottom {bottom}" if bottom else "")
+            + f". MULLIGAN → you will see a new 7, keep {next_keep}"
+            + (f" and bottom {next_bottom}." if next_bottom else " (free mulligan, bottom 0).")
         )
     lines.append(
         "You are "
@@ -539,8 +581,8 @@ def describe(state: dict, mulligans: int | None = None) -> list[str]:
             f"mana value {card.mana_value}, {_turn_note(card, lands)}"
             + (f" [{'; '.join(tags)}]" if tags else "")
         )
-    if n:
-        kept, bottom = best_keep(found.cards, max(0, len(found.cards) - n))
+    if found.bottom_count:
+        kept, bottom = best_keep(found.cards, max(0, len(found.cards) - found.bottom_count))
         lines.append(
             f"If you keep: best {len(kept)} by lands and curve keeps {_names(kept)}; bottom {_names(bottom)}."
         )

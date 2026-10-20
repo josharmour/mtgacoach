@@ -3125,6 +3125,8 @@ def build_decision_context(
         "qualifiedBlockers",
         "groups",
         "counterTypes",
+        "mulliganCount",
+        "freeMulliganCount",
     ):
         if payload.get(name) is not None:
             context[name] = payload[name]
