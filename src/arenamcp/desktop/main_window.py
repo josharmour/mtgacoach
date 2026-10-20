@@ -201,6 +201,7 @@ class MainWindow(QMainWindow):
             "this install's id is kept."
         )
         share_logs_act.toggled.connect(self._set_share_match_logs)
+        self._build_guard_menu(tools_menu)
         tts_server_act = tools_menu.addAction("Remote TTS Server…")
         tts_server_act.triggered.connect(self._configure_remote_tts)
         tools_menu.addSeparator()
@@ -269,6 +270,60 @@ class MainWindow(QMainWindow):
         except RuntimeError as exc:
             message = str(exc)
         QMessageBox.information(self, "Autoplay Permissions", message)
+
+    def _build_guard_menu(self, tools_menu) -> None:
+        """Tools > Autopilot Guards: each guard On / Shadow (log only) / Off, saved and applied live."""
+        from arenamcp.guard_settings import GUARD_DEFAULTS, GUARD_LABELS, MODE_LABELS, setting_mode
+
+        guards_menu = tools_menu.addMenu("Autopilot Guards")
+        guards_menu.setToolTipsVisible(True)
+        self._guard_actions: dict[str, dict[str, QAction]] = {}
+        for kind, (title, tip) in GUARD_LABELS.items():
+            submenu = guards_menu.addMenu(title)
+            submenu.setToolTipsVisible(True)
+            submenu.menuAction().setToolTip(tip)
+            group = QActionGroup(self)
+            group.setExclusive(True)
+            current = setting_mode(kind, self._settings)
+            actions: dict[str, QAction] = {}
+            for mode, label in MODE_LABELS.items():
+                action = QAction(f"{label} (recommended)" if mode == GUARD_DEFAULTS[kind] else label, self)
+                action.setCheckable(True)
+                action.setChecked(mode == current)
+                action.setToolTip(tip)
+                action.setData(f"{kind}|{mode}")
+                group.addAction(action)
+                submenu.addAction(action)
+                actions[mode] = action
+            group.triggered.connect(self._handle_guard_action)
+            self._guard_actions[kind] = actions
+        guards_menu.addSeparator()
+        restore_act = guards_menu.addAction("Restore Recommended Settings")
+        restore_act.setToolTip("Clears your choices so every guard follows its recommended mode.")
+        restore_act.triggered.connect(self._restore_recommended_guards)
+
+    def _handle_guard_action(self, action: QAction) -> None:
+        kind, _, mode = str(action.data() or "").partition("|")
+        self._set_guard_mode(kind, mode)
+
+    def _set_guard_mode(self, kind: str, mode: str) -> None:
+        """Save a guard's mode ('default' clears it) and apply it to the running engine."""
+        from arenamcp.guard_settings import GUARD_SETTINGS
+
+        if kind not in GUARD_SETTINGS:
+            return
+        self._settings.set(GUARD_SETTINGS[kind], None if mode == "default" else mode)
+        self._session.set_guard_mode(kind, mode)
+
+    def _restore_recommended_guards(self) -> None:
+        """Every guard back to its recommended mode (the setting cleared, so later defaults apply)."""
+        from arenamcp.guard_settings import GUARD_DEFAULTS
+
+        for kind, mode in GUARD_DEFAULTS.items():
+            action = self._guard_actions.get(kind, {}).get(mode)
+            if action is not None:
+                action.setChecked(True)  # no triggered signal: the save below is the only one
+            self._set_guard_mode(kind, "default")
 
     def _set_draft_commentary(self, enabled: bool) -> None:
         """Explain each draft pick aloud, or just name it; applies to the running engine."""

@@ -667,6 +667,30 @@ class PipeAdapter:
                 enabled = cmd.get("enabled") is True
                 coach.settings.set("draft_research_online", enabled)
                 self.log(f"Online draft research {'on' if enabled else 'off'} (applies to the next set strategy built)")
+            elif action == "set_guard_mode":
+                from arenamcp.guard_settings import (
+                    GUARD_ENV,
+                    GUARD_MODES,
+                    GUARD_SETTINGS,
+                    describe_guard_modes,
+                    guard_mode,
+                    guard_source,
+                )
+
+                kind = str(cmd.get("guard") or "")
+                mode = str(cmd.get("mode") or "").strip().lower()
+                if kind in GUARD_SETTINGS and (mode in GUARD_MODES or mode == "default"):
+                    # 'default' clears the setting: the guard follows GUARD_DEFAULTS.
+                    coach.settings.set(GUARD_SETTINGS[kind], None if mode == "default" else mode)
+                    note = ""
+                    if guard_source(kind) == "env":
+                        note = f" (but {GUARD_ENV[kind]}={guard_mode(kind)} overrides it)"
+                    elif mode == "default":
+                        note = f" ({guard_mode(kind)})"
+                    self.log(f"Autopilot guard {kind}: {mode}{note}")
+                    logger.info("Autopilot guards: %s", describe_guard_modes())
+                else:
+                    logger.warning("set_guard_mode: unknown guard %r or mode %r", kind, mode)
             elif action == "speech_status":
                 self.speech_completion.update(str(cmd.get("speech_id") or ""), str(cmd.get("state") or ""))
             elif action == "stop_speech":

@@ -20,14 +20,15 @@ four narrow, deterministic uses at decision time:
   attack-vs-hold verdict for the declare-attackers prompt.
 - ``attack_push`` (ledger #178): the best line's attackers instead of a
   declaration (an empty one included) that dies sooner or, with an 'attack'
-  posture, ranks below it (``ARENAMCP_ATTACK_PUSH``, shadow by default).
+  posture, ranks below it (``ARENAMCP_ATTACK_PUSH``, on by default).
 
-Both guards are shadow-only by default: they return a verdict whose
-``applies`` is False, and the caller logs what it would have done. The env vars
-``ARENAMCP_LINE_GUARD`` / ``ARENAMCP_MODE_GUARD`` ('off', 'shadow', 'on') switch
-them; settings.py is not used. A contingent verdict (a modal card's other mode
-does something the search can't model, e.g. answers a token/copy engine) never
-applies, even in 'on' mode.
+Every guard has a mode, 'off', 'shadow' or 'on' (``guard_mode``): its
+environment variable (``GUARD_ENV``) wins, then its ``guard_<kind>`` setting
+(Tools > Autopilot Guards in the desktop app), then ``GUARD_DEFAULTS`` (line,
+line gap and attack push on; mode and attack line in shadow). In 'shadow' a
+verdict's ``applies`` is False and the caller logs what it would have done. A
+contingent verdict (a modal card's other mode does something the search can't
+model, e.g. answers a token/copy engine) never applies, even in 'on' mode.
 
 Conservative rules: no guard fires with lethal on board for us, when the best
 line wins this turn (posture 'lethal'), on a choice inside a winning line, on
@@ -46,7 +47,6 @@ no I/O, no LLM; any error returns None or '' so today's choice stands.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
@@ -61,6 +61,15 @@ from arenamcp.board_assessment import (
     _seats,
     _signature,
     _source_card,
+)
+from arenamcp.guard_settings import (  # noqa: F401 (re-exported)
+    GUARD_DEFAULTS,
+    GUARD_ENV,
+    GUARD_MODES,
+    GUARD_SETTINGS,
+    describe_guard_modes,
+    guard_mode,
+    guard_source,
 )
 from arenamcp.line_search import (
     ALIVE,
@@ -82,30 +91,18 @@ logger = logging.getLogger(__name__)
 
 # Survival mode, both lines alive: a value gap this large is an improvement too.
 LINE_GUARD_MARGIN = 5.0
-GUARD_MODES = ("off", "shadow", "on")
-_ENV = {"line": "ARENAMCP_LINE_GUARD", "mode": "ARENAMCP_MODE_GUARD"}
 _NOTE_MAX = 60
 _SUMMARY_MAX = 200
 
 
-def guard_mode(kind: str) -> str:
-    """'off', 'shadow' or 'on' for the 'line' or 'mode' guard; anything else is 'shadow'."""
-    value = str(os.environ.get(_ENV.get(kind, ""), "") or "").strip().lower()
-    return value if value in GUARD_MODES else "shadow"
-
-
 def line_gap_mode() -> str:
-    """'off', 'shadow' or 'on' for the planner's line-gap second look (ledger #116); default 'shadow'.
+    """'off', 'shadow' or 'on' for the planner's line-gap second look (ledger #116); default 'on'.
 
-    Shadow by default like ARENAMCP_LINE_GUARD: guards that replace the
-    model's pick stay in shadow until the user reviews their logs.
-
-    ``ARENAMCP_LINE_GAP``: 'on' doubts a cast tagged ``LINE_GUARD_MARGIN`` or
-    more below the best line (the low answer waits for high effort, else the
-    line's pick decides); 'shadow' only logs what it would replace.
+    ``ARENAMCP_LINE_GAP`` / setting ``guard_line_gap``: 'on' doubts a cast tagged
+    ``LINE_GUARD_MARGIN`` or more below the best line (the low answer waits for high effort,
+    else the line's pick decides); 'shadow' only logs what it would replace.
     """
-    value = str(os.environ.get("ARENAMCP_LINE_GAP", "") or "").strip().lower()
-    return value if value in GUARD_MODES else "shadow"
+    return guard_mode("line_gap")
 
 
 @dataclass
@@ -565,13 +562,9 @@ ATTACK_LINE_MARGIN = 1
 
 
 def attack_line_mode() -> str:
-    """'off', 'shadow' or 'on' for the attack line guard (``ARENAMCP_ATTACK_LINE_GUARD``); default 'shadow'.
-
-    Shadow by default like ARENAMCP_LINE_GUARD: guards that replace the model's
-    pick stay in shadow until the user reviews their logs.
-    """
-    value = str(os.environ.get("ARENAMCP_ATTACK_LINE_GUARD", "") or "").strip().lower()
-    return value if value in GUARD_MODES else "shadow"
+    """'off', 'shadow' or 'on' for the attack line guard (``ARENAMCP_ATTACK_LINE_GUARD`` / setting
+    ``guard_attack_line``); default 'shadow' (``GUARD_DEFAULTS``)."""
+    return guard_mode("attack_line")
 
 
 @dataclass
@@ -732,13 +725,9 @@ ATTACK_PUSH_MARGIN = 2 * POSTURE_MARGIN
 
 
 def attack_push_mode() -> str:
-    """'off', 'shadow' or 'on' for the attack push (``ARENAMCP_ATTACK_PUSH``); default 'shadow'.
-
-    The sibling of ``ARENAMCP_ATTACK_LINE_GUARD``: a guard that replaces the model's declaration
-    stays in shadow until the user reviews its logs.
-    """
-    value = str(os.environ.get("ARENAMCP_ATTACK_PUSH", "") or "").strip().lower()
-    return value if value in GUARD_MODES else "shadow"
+    """'off', 'shadow' or 'on' for the attack push (``ARENAMCP_ATTACK_PUSH`` / setting
+    ``guard_attack_push``); default 'on' (``GUARD_DEFAULTS``)."""
+    return guard_mode("attack_push")
 
 
 @dataclass

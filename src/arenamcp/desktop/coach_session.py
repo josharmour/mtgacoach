@@ -215,6 +215,10 @@ class CoachSession(QObject):
         """Let the set strategy research read published draft guides too."""
         self._process.send_payload({"cmd": "set_draft_research_online", "enabled": bool(enabled)})
 
+    def set_guard_mode(self, guard: str, mode: str) -> None:
+        """Set an autopilot guard ('line', 'attack_push', ...) to 'off', 'shadow' or 'on'."""
+        self._process.send_payload({"cmd": "set_guard_mode", "guard": str(guard), "mode": str(mode)})
+
     def set_auto_concede(self, enabled: bool) -> None:
         """Choose whether autoplay concedes a game the board math says is lost."""
         self._process.send_payload({"cmd": "set_auto_concede", "enabled": bool(enabled)})

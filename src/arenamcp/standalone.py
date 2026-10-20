@@ -3275,6 +3275,10 @@ class StandaloneCoach(
         self._startup_status("starting", "Starting coaching engine…")
         # Fingerprint the code this engine runs, for reloads between matches.
         self._init_auto_reload()
+        with contextlib.suppress(Exception):
+            from arenamcp.guard_settings import describe_guard_modes
+
+            logger.info("Autopilot guards: %s", describe_guard_modes())
 
         # Initialize components — emit progress to pipe so GUI shows what's happening
         # Android: MTGA runs on an adb-tethered phone. Mirror its log before the

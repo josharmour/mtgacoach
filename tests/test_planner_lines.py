@@ -85,9 +85,12 @@ pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    """Default guard modes, the line search on, empty caches, no card DB."""
-    for name in ("ARENAMCP_LINE_GUARD", "ARENAMCP_MODE_GUARD", "ARENAMCP_LINE_SEARCH"):
+    """The line guard in shadow, the mode guard at its default, the line search on, empty caches, no card DB."""
+    for name in ("ARENAMCP_MODE_GUARD", "ARENAMCP_LINE_SEARCH"):
         monkeypatch.delenv(name, raising=False)
+    # The line guard is on by default since 2026-10-20 (guard_settings.GUARD_DEFAULTS); these tests
+    # read its verdicts in shadow unless they set a mode.
+    monkeypatch.setenv("ARENAMCP_LINE_GUARD", "shadow")
     monkeypatch.setattr(
         "arenamcp.match_context._local_card",
         lambda grp_id, epoch: dict(DECK_CATALOG.get(grp_id) or {"name": f"Unknown({grp_id})"}),

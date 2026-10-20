@@ -567,6 +567,12 @@ class _DiagnosticsMixin:
                 info["oops"] = oops_snapshot()
             except Exception as e:
                 info["oops_error"] = str(e)
+        try:
+            from arenamcp.guard_settings import GUARD_ENV, guard_mode, guard_source
+
+            info["guards"] = {kind: {"mode": guard_mode(kind), "source": guard_source(kind)} for kind in GUARD_ENV}
+        except Exception as e:
+            info["guards_error"] = str(e)
         return info
 
     def _collect_bridge_state(self) -> dict:
