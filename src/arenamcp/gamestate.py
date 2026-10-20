@@ -1623,7 +1623,7 @@ class GameState(_GameStateAnnotationsMixin):
             "legal_actions": list(self.legal_actions),
             "legal_actions_raw": copy.deepcopy(self.legal_actions_raw),
             "pending_combat_steps": self._pending_combat_steps.copy(),
-            "recent_events": self.recent_events[-10:],
+            "recent_events": list(self.recent_events),
             "raw_gre_events": copy.deepcopy(self.raw_gre_events[-self._max_snapshot_raw_gre_events :]),
             "raw_gre_event_count": len(self.raw_gre_events),
             "damage_taken": dict(self.damage_taken),
@@ -2713,8 +2713,23 @@ class GameState(_GameStateAnnotationsMixin):
         event["turn"] = self.turn_info.turn_number
         event["phase"] = self.turn_info.phase
         self.recent_events.append(event)
-        if len(self.recent_events) > self._max_recent_events:
-            self.recent_events.pop(0)
+        while len(self.recent_events) > self._max_recent_events:
+            cur_turn = self.turn_info.turn_number
+            drop_idx = 0
+            if (
+                len(self.recent_events) >= 2
+                and self.recent_events[0].get("turn") != cur_turn
+                and self.recent_events[1].get("turn") == cur_turn
+            ):
+                drop_idx = next(
+                    (
+                        i
+                        for i in range(1, len(self.recent_events) - 1)
+                        if self.recent_events[i].get("type") != "life_changed"
+                    ),
+                    1,
+                )
+            self.recent_events.pop(drop_idx)
 
     def _record_raw_gre_message(
         self,

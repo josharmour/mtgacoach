@@ -680,4 +680,32 @@ def test_their_attacker_damage_trigger_without_target_does_not_abort_concede():
     assert estimate.confidence >= 0.95, estimate.blockers
 
 
+# --- #148: opponent_lost_life_this_turn on busy turns + Step_CombatDamage not finished ------------
 
+
+def test_opponent_lost_life_readable_on_busy_turns_and_combat_damage_step():
+    from arenamcp.concede import _opponent_lost_life_this_turn, estimate_loss
+    from arenamcp.gamestate import GameState
+    from tests.test_concede import board, creature
+
+    gs = GameState()
+    gs.turn_info.turn_number = 12
+    gs.turn_info.phase = "Phase_Ending"
+    gs._add_event({"type": "phase_change"})
+    gs.turn_info.turn_number = 13
+    gs.turn_info.phase = "Phase_Main1"
+    for i in range(55):
+        gs._add_event({"type": "layered_effect", "affected_ids": [i]})
+    snap = gs._build_raw_snapshot_locked()
+    # Even after >50 events on turn 13, the prior-turn boundary is kept and snapshot has all recent_events.
+    assert len(snap["recent_events"]) > 10
+    assert _opponent_lost_life_this_turn(snap, 2, 13) is False
+
+    # And Step_CombatDamage is not treated as "our turn (untap and draw) comes before their next attack".
+    knight = creature(
+        10, "Knight", 2, 5, 5, keywords=("flying",), is_attacking=True, tapped=True, attack_target_id=1
+    )
+    est = estimate_loss(board([knight], phase="Phase_Combat", step="Step_CombatDamage"))
+    assert est.confidence < 0.95
+    assert "combat damage is being dealt" in est.reason
+    assert "our turn (untap and draw) comes before their next attack" not in est.blockers

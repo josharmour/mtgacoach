@@ -100,7 +100,7 @@ _MAYBE = 0.85
 _LIKELY_OUT = 0.6
 
 # Steps after which a combat's damage has been dealt.
-_COMBAT_DONE_STEPS = ("Step_CombatDamage", "Step_EndCombat")
+_COMBAT_DONE_STEPS = ("Step_EndCombat",)
 # Decisions that leave the board as it is (priority, combat declarations).
 _BENIGN_DECISIONS = {"", "action required", "priority", "declare blockers", "declare attackers"}
 
@@ -428,8 +428,6 @@ def _opponent_lost_life_this_turn(state: dict, opponent: int | None, turn: int) 
     if not isinstance(events, list) or opponent is None or not turn:
         return None
     dicts = [e for e in events if isinstance(e, dict)]
-    if dicts and _int(dicts[0].get("turn")) == turn:
-        return None  # the bounded buffer may have dropped this turn's earlier events
     for event in dicts:
         if event.get("type") != "life_changed" or _int(event.get("turn")) != turn:
             continue
@@ -438,6 +436,8 @@ def _opponent_lost_life_this_turn(state: dict, opponent: int | None, turn: int) 
         changes = changes if isinstance(changes, list) else [changes]
         if opponent in affected and any((_int(change) or 0) < 0 for change in changes):
             return True
+    if dicts and _int(dicts[0].get("turn")) == turn:
+        return None  # the bounded buffer may have dropped this turn's earlier events
     return False
 
 
@@ -1020,6 +1020,8 @@ def _estimate(state: Any) -> LossEstimate:
             caps.append((0.5, "our turn (untap and draw) comes before their next attack"))
         if step == "Step_FirstStrikeDamage":
             caps.append((0.5, "first-strike damage was just dealt; the rest of this combat is unclear"))
+        elif step == "Step_CombatDamage":
+            caps.append((0.5, "combat damage is being dealt; the rest of this combat is unclear"))
         when = "this attack"
         life_after = assessment.our_life_now_attack
 
