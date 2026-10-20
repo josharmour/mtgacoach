@@ -1932,6 +1932,14 @@ def _assess(state: dict) -> BoardAssessment | None:
     # unambiguous, since an all-in attack throws away blockers.
     through = our_life - their_lives[0] if their_lives else 0
     evasive = 0 if our_air else sum(b["power"] for b in theirs if _flying(b))
+    # Their drain engines before that attack hit us whatever we block, like evasion (ledger #197,
+    # match 45de8f40 T19: The Scarab God's 7 at their upkeep against our 6; we held 36 power home).
+    drain_engines = their_clock_engines(model)
+    drained = (
+        drain_engines.static_drain + sum(b.get("_drain") or 0 for b in theirs)
+        if drain_engines is not None and drain_engines.drain_first
+        else 0
+    )
     # Dead to their next attack whatever we do: every T step of an exact search
     # dies there (exact_first_attack needs a complete root, and all_dead_at_first
     # reads only root nodes, so a T+1 cut short by the soft budget doesn't
@@ -1942,6 +1950,8 @@ def _assess(state: dict) -> BoardAssessment | None:
         dead_first = False
     elif found is not None and found.exact_first_attack:
         dead_first = found.all_dead_at_first
+    elif found is not None and drained >= our_life:
+        dead_first = True  # their drain alone kills us before that attack: no block changes it (#197)
     else:
         dead_first = dead_in_greedy == 1
     # Our own pending choice (a 'gain 4 life' mode on the stack) resolves before their attack,
@@ -1952,7 +1962,7 @@ def _assess(state: dict) -> BoardAssessment | None:
         and dead_first
         and not lethal_now
         and our_power > 0
-        and (through >= our_life + 2 or evasive >= our_life)
+        and (through >= our_life + 2 or evasive + drained >= our_life)
         and not pending
         and not unmodelled_first
     )

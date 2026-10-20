@@ -570,10 +570,17 @@ _ENTER_TAPPED = re.compile(
 # An ability word may lead ("Landfall — ...").
 _DRAIN = re.compile(
     r"^(?:[a-z' ]+\s*[—–-]\s*)?(?P<head>(?:whenever|at the beginning of) [^,]+),\s*"
-    r"(?:(?:~|cardname|this [a-z]+|it|they) deals? (?P<n>\d+) damage to (?:target opponent|each opponent"
+    r"(?:(?:~|cardname|this [a-z]+|it|they) deals? (?P<n>\d+|x) damage to (?:target opponent|each opponent"
     r"|any target|target player|each player|target player or planeswalker|target opponent or planeswalker)"
-    r"|(?:target opponent|each opponent|target player|each player) loses (?P<m>\d+) life)"
+    r"|(?:target opponent|each opponent|target player|each player) loses (?P<m>\d+|x) life)"
     r"(?P<rest>[^\n]*)$"
+)
+# A drain counted by their permanents (ledger #197, match 45de8f40: The Scarab God, "At the beginning
+# of your upkeep, each opponent loses X life and you scry X, where X is the number of Zombies you
+# control." drained 3, 4, 5 and 7 and the clocks saw none of it): "where X is the number of <kind>s
+# you control", "... for each <kind> you control".
+_DRAIN_COUNT = re.compile(
+    r",?\s*where x is the number of (?P<x>[a-z' -]+?) you control\b|\s+for each (?P<each>[a-z' -]+?) you control\b"
 )
 _DRAIN_SACRIFICE = re.compile(
     r"^whenever you sacrifice (?P<count>an?|one or more|another) (?P<what>[a-z ]+?)s?$"
@@ -741,27 +748,51 @@ def _gain_triggers(name: str, oracle: str) -> tuple[int, int, int]:
 
 def drain_engine(card: dict) -> tuple[tuple[int, str], ...]:
     """((damage or life loss to us, the trigger's event), ...) of the card's own recurring
-    "whenever ..."/"at the beginning of ..." triggers; () without one (``_DRAIN``).
+    "whenever ..."/"at the beginning of ..." triggers with a printed amount; () without one
+    (``_DRAIN``; a drain counted by their permanents: ``counted_drain_engine``).
 
     Ledger #132/#133 (match 16ed84d0, 2026-10-19): Biotech Specialist ("Whenever you
     sacrifice an artifact, this creature deals 2 damage to target opponent.") dealt
     13 of our 20; the threat model and the clocks never saw it.
     """
+    return tuple((amount, event) for amount, event, kind in _drain_engine(*_key(card)) if not kind)
+
+
+def counted_drain_engine(card: dict) -> tuple[tuple[int, str, str], ...]:
+    """``drain_engine`` with the drains counted by their permanents: ((amount, event, kind), ...),
+    the amount per permanent of that kind they control ("where X is the number of Zombies you
+    control": 1 per Zombie, ``TheirEngines.kind_count``); kind "" for a printed amount. An X we
+    can't read stays out (ledger #197)."""
     return _drain_engine(*_key(card))
 
 
+def _drain_kind(words: str) -> str:
+    words = words.strip()
+    return "creature" if words in ("creature", "creatures") else re.sub(r"s$", "", words)
+
+
 @functools.lru_cache(maxsize=4096)
-def _drain_engine(name: str, oracle: str) -> tuple[tuple[int, str], ...]:
+def _drain_engine(name: str, oracle: str) -> tuple[tuple[int, str, str], ...]:
     text = _engine_text(name, oracle)
     if "damage" not in text and "loses" not in text:
         return ()
     found = []
     for line in _own_lines(text):
         match = _DRAIN.match(line)
-        if match is None or _EFFECT_CONDITION.search(match.group("rest")):
+        if match is None:
             continue
-        amount = int(match.group("n") or match.group("m"))
-        found.append((amount, match.group("head").strip()))
+        rest, amount, kind = match.group("rest"), match.group("n") or match.group("m"), ""
+        counted = _DRAIN_COUNT.search(rest)
+        if counted is not None:
+            if (amount == "x") != bool(counted.group("x")):
+                continue  # "x damage ... for each", "1 life ... where x": not read
+            kind = _drain_kind(counted.group("x") or counted.group("each"))
+            rest = rest[: counted.start()] + rest[counted.end() :]
+        elif amount == "x":
+            continue  # an X we don't read
+        if _EFFECT_CONDITION.search(rest):
+            continue
+        found.append((1 if amount == "x" else int(amount), match.group("head").strip(), kind))
     return tuple(found)
 
 
@@ -987,14 +1018,23 @@ class TheirEngines:
         alive = self.gain_walkers if walkers is None else self.gain_walkers & frozenset(walkers)
         return self.gains + len(alive) + self.per_our_creature * our_entries
 
+    def kind_count(self, kind: str) -> int:
+        """Their permanents of ``kind`` for a drain that counts them: their creatures by type
+        ('creature': all of them), else their artifacts, tokens and artifact kinds (``counts``)."""
+        if kind in (self.kinds or {}):
+            return int(self.kinds[kind])
+        return int((self.counts or {}).get(kind, 0))
+
     def body_drain(self, card: dict, *, gains: int | None = None) -> int:
-        """Damage one permanent's drain triggers deal us on a turn of theirs (``drain_engine``)."""
-        found = drain_engine(card)
+        """Damage one permanent's drain triggers deal us on a turn of theirs (``drain_engine``; one
+        counted by their permanents as many times as they control them, ``counted_drain_engine``)."""
+        found = counted_drain_engine(card)
         if not found:
             return 0
         events = self.gain_events() if gains is None else gains
         return sum(
             amount
+            * (self.kind_count(kind) if kind else 1)
             * drain_triggers(
                 event,
                 self.counts or {},
@@ -1003,7 +1043,7 @@ class TheirEngines:
                 drops=self.drops,
                 entering=self.entering,
             )
-            for amount, event in found
+            for amount, event, kind in found
         )
 
     def per_gain(self, card: dict, *, team: tuple | None = None) -> int:

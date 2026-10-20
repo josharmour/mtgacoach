@@ -776,14 +776,19 @@ def engine_fact(card: dict) -> str:
     they gain life"); "" without one. Ledger #132 (match 16ed84d0 T7: Iroh's Demonstration's
     4 damage went to The Sackville-Bagginses; Biotech Specialist's drain dealt 13 of our 20)."""
     try:
-        from arenamcp.line_search_moves import drain_engine, draw_growth, lifegain_growth
+        from arenamcp.line_search_moves import counted_drain_engine, draw_growth, lifegain_growth
     except Exception:  # a reading aid: never break a decision on it
         return ""
 
     def theirs(event: str) -> str:
         return re.sub(r"\byour\b", "their", re.sub(r"\byou\b", "they", event))
 
-    parts = [f"{amount} damage to you {theirs(event)}" for amount, event in drain_engine(card)]
+    parts = [
+        f"{amount} damage to you {theirs(event)}"
+        if not kind
+        else f"{amount if amount > 1 else ''}X damage to you {theirs(event)} (X = the {kind}s they control)"
+        for amount, event, kind in counted_drain_engine(card)
+    ]
     own, _loyal, team, first = lifegain_growth(card)
     when = "whenever they gain life" + (" (once a turn)" if first else "")
     if own:

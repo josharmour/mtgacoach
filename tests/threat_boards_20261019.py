@@ -16,6 +16,10 @@ database (``server.enrich_with_oracle_text``):
 - ``harbin_t11``: match 3ac9d511 T11 Main 1 (gsid 295, we are seat 1 at 8):
   Harbin 6/5 flying, Shackle Slinger 3/2, Siege Veteran 2/2 and a 1/1 Soldier
   token: four Soldiers that can attack, one short of Harbin's trigger.
+- ``scarab_god``: match 45de8f40 (we are seat 1): their T18 Main 1 (gsid 425,
+  13 vs 18 after The Scarab God's upkeep drain of 5) or our T19 declare
+  attackers (gsid 473, 6 vs 18, seven Zombies: their T20 upkeep drained 7,
+  6 -> -1).
 """
 
 from __future__ import annotations
@@ -581,4 +585,154 @@ def harbin_t11(*, fifth_soldier=False):
     return state(
         [*theirs, *ours], match="3ac9d511", local=ME, life=8, opp_life=12, turn=11, active=OPP,
         phase="Phase_Main1", step="", their_hand=5,
+    )  # fmt: skip
+
+
+# --- match 45de8f40: The Scarab God ------------------------------------------------------------
+
+SCARAB_GOD = (
+    "At the beginning of your upkeep, each opponent loses X life and you scry X, where X is the number of "
+    "Zombies you control.\n{o2oUoB}: Exile target creature card from a graveyard. Create a token that's a copy "
+    "of it, except it's a 4/4 black Zombie.\nWhen The Scarab God dies, return it to its owner's hand at the "
+    "beginning of the next end step."
+)
+LEONARDO = "Sneak {oW}\nLeonardo gets +1/+0 for each other creature you control."
+
+
+def scarab_god(*, our_attack=False):
+    """Their T18 Main 1 (gsid 425), or ``our_attack``: our T19 declare attackers (gsid 473)."""
+
+    def zombie(iid, name, power, toughness, subtypes, text="", **kw):
+        return card(iid, name, OPP, power=power, toughness=toughness, subtypes=("Zombie", *subtypes),
+                    type_line=f"Creature — {' '.join(('Zombie', *subtypes))}", text=text, **kw)  # fmt: skip
+
+    theirs = [
+        card(
+            531,
+            "The Scarab God",
+            OPP,
+            power=5,
+            toughness=5,
+            subtypes=("God",),
+            type_line="Legendary Creature — God",
+            text=SCARAB_GOD,
+        ),  # fmt: skip
+        zombie(
+            567,
+            "Zul Ashur, Lich Lord",
+            3,
+            3,
+            ("Warlock",),
+            "Ward—Pay 2 life.\n{oT}: You may cast target Zombie creature card from your graveyard this turn.",
+        ),  # fmt: skip
+        zombie(
+            548,
+            "Bone Miser",
+            5,
+            5,
+            ("Wizard",),
+            "Whenever you discard a creature card, create a 2/2 black Zombie creature token.\nWhenever you "
+            "discard a land card, add {oBoB}.\nWhenever you discard a noncreature, nonland card, draw a card.",
+        ),  # fmt: skip
+        zombie(
+            491,
+            "Karfell Harbinger",
+            2,
+            4,
+            ("Wizard",),
+            "{oT}: Add {oU}. Spend this mana only to foretell a card from your hand or cast an instant or "
+            "sorcery spell.",
+        ),  # fmt: skip
+        zombie(
+            464,
+            "Lord of the Undead",
+            2,
+            2,
+            (),
+            "Other Zombie creatures get +1/+1.\n{o1oB}, {oT}: Return target Zombie card from your graveyard "
+            "to your hand.",
+        ),  # fmt: skip
+        zombie(452, "Foulmire Knight", 2, 2, ("Knight",), "Deathtouch"),
+        card(
+            564,
+            "Ornithopter of Paradise",
+            OPP,
+            power=0,
+            toughness=2,
+            subtypes=("Thopter",),
+            types=("CardType_Artifact", "CardType_Creature"),
+            type_line="Artifact Creature — Thopter",
+            text="Flying\n{oT}: Add one mana of any color.",
+            tapped=our_attack,
+        ),  # fmt: skip
+        land(547, "Land", OPP, text="{oT}: Add {oU} or {oB}."),
+        *(land(iid, "Island", OPP, text="({T}: Add {U}.)", subtypes=("Island",)) for iid in (530, 463)),
+        *(
+            land(iid, "Swamp", OPP, tapped=our_attack, text="({T}: Add {B}.)", subtypes=("Swamp",))
+            for iid in (484, 451, 441)
+        ),
+    ]
+    if our_attack:  # cast on T18: Grim Physician and Bone Miser's Zombie token
+        theirs += [
+            zombie(
+                586,
+                "Grim Physician",
+                2,
+                2,
+                (),
+                "When this creature dies, target creature an opponent controls gets -1/-1 until end of turn.",
+                sick=True,
+                entered=18,
+            ),  # fmt: skip
+            card(
+                594,
+                "Zombie",
+                OPP,
+                power=3,
+                toughness=3,
+                subtypes=("Zombie",),
+                token=True,
+                type_line="Token Creature — Zombie",
+                text="Deathtouch",
+                sick=True,
+                entered=18,
+            ),  # fmt: skip
+        ]
+    hare = dict(subtypes=("Rabbit", "Noble"), type_line="Creature — Rabbit Noble", text=HARE)
+    rabbit = dict(subtypes=("Rabbit",), token=True, type_line="Token Creature — Rabbit")
+    hares = (601, 555, 539, 476, 470) if our_attack else (576, 555, 539, 476, 470)
+    rabbits = (543, 544, 559, 560, 561, 580, 581, 582, 583) + ((605, 606, 607, 608) if our_attack else ())
+    ours = [
+        card(
+            516,
+            "Leonardo, Big Brother",
+            ME,
+            power=19 if our_attack else 15,
+            toughness=3,
+            subtypes=("Mutant", "Ninja", "Turtle"),
+            type_line="Legendary Creature — Mutant Ninja Turtle",
+            text=LEONARDO,
+        ),  # fmt: skip
+        *(card(iid, "Hare Apparent", ME, power=2, toughness=2, **hare) for iid in hares),
+        *(card(iid, "Rabbit", ME, power=1, toughness=1, **rabbit) for iid in rabbits),
+        *(
+            land(iid, "Plains", ME, text="({T}: Add {W}.)", subtypes=("Plains",))
+            for iid in (538, 522, 495, 469, 456)
+        ),
+        *(
+            land(iid, "Plains", ME, tapped=True, text="({T}: Add {W}.)", subtypes=("Plains",))
+            for iid in (445, 438)
+        ),
+    ]
+    if our_attack:
+        for permanent in ours:
+            if permanent["instance_id"] in (601, 605, 606, 607, 608):
+                permanent.update(summoning_sickness=True, turn_entered_battlefield=19)
+        return state(
+            [*theirs, *ours], match="45de8f40", local=ME, life=6, opp_life=18, turn=19, active=ME,
+            phase="Phase_Combat", step="Step_DeclareAttack", their_hand=0,
+        )  # fmt: skip
+    return state(
+        [*theirs, *ours], match="45de8f40", local=ME, life=13, opp_life=18, turn=18, active=OPP,
+        phase="Phase_Main1", step="", their_hand=2,
     )  # fmt: skip
