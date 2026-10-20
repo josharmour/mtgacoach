@@ -166,6 +166,7 @@ _COUNTER_ON_TARGET = re.compile(
 _ATTACK_RELEVANT = re.compile(
     r"\bflash\b|\bhaste\b|\bcreatures? you control (?:get|gets|have|has|gain)\b|\battacks?\b"
     r"|\bcan't block\b|\btarget creature\b|\bcombat\b|\btap target\b"
+    r"|\b(?:number of|for each) (?:other )?[a-z' -]*?\bcreatures? you control\b"
 )
 # Ids of countered bodies (a fresh id per body and count, below the token ids).
 _COUNTER_IDS = 800_000_000
@@ -3719,7 +3720,7 @@ class Moves:
         attack first, then Enlightened Confidant and Valgavoth after combat."""
         if var.kind != "cast" or var.body is None or self.haste:
             return False
-        if var.reach is not None or var.face or var.counter or var.life_tokens:
+        if var.reach is not None or var.face or var.counter or var.life_tokens or var.named_tokens:
             return False
         found = self._neutral_memo.get(id(var))
         if found is None:

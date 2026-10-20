@@ -591,3 +591,71 @@ def test_named_burn_damage_counts_second_copy_when_reasoning_names_both_bursts()
         == 0
     )
 
+
+# --- #181: Hare Apparent not marked "cast after combat" when Hares attack -------------------------
+
+
+def test_hare_apparent_not_marked_post_combat():
+    from arenamcp.board_model import build_board_model
+    from arenamcp.line_search import _Search
+
+    hare_text = (
+        "When this creature enters, create a number of 1/1 white Rabbit creature tokens equal to "
+        "the number of other creatures you control named Hare Apparent.\n"
+        "A deck can have any number of cards named Hare Apparent."
+    )
+    board = state(
+        [
+            card(1101, "Hare Apparent", ME, power=2, toughness=2, text=hare_text),
+            card(1102, "Hare Apparent", ME, power=2, toughness=2, text=hare_text),
+            {
+                **card(1103, "Plains", ME, types=["CardType_Land"]),
+                "type_line": "Basic Land — Plains",
+                "subtypes": ["SubType_Plains"],
+            },
+            {
+                **card(1104, "Plains", ME, types=["CardType_Land"]),
+                "type_line": "Basic Land — Plains",
+                "subtypes": ["SubType_Plains"],
+            },
+        ],
+        match="5736ffca",
+        local=ME,
+        life=20,
+        opp_life=20,
+        turn=12,
+        active=ME,
+        phase="Phase_Main1",
+        step="",
+        their_hand=2,
+        hand=[
+            {
+                "instance_id": 1105,
+                "name": "Hare Apparent",
+                "owner_seat_id": ME,
+                "controller_seat_id": ME,
+                "card_types": ["CardType_Creature"],
+                "type_line": "Creature — Rabbit Noble",
+                "power": 2,
+                "toughness": 2,
+                "mana_cost": "{1}{W}",
+                "oracle_text": hare_text,
+            }
+        ],
+    )
+    model = build_board_model(board)
+    search = _Search(
+        model, survival=False, lethal_now=False, hard_ms=1e9, opponent=None, groups=8, width=8, k_next=4
+    )
+    search.free = True
+    node = next(iter(dict(search.roots()).values()))
+    _base, sources = search.sources(node, None)
+    casts = next(c for c in search.cast_sets(node, sources, instant_only=False) if c)
+    mid = search.begin(node, None, casts)
+    ids = tuple(b["instance_id"] for b in node.ours)
+    step = search.finish(mid, ("all", ids)).history[-1]
+    assert step.casts == ("Hare Apparent",)
+    assert step.post_combat == ()
+    assert "after combat" not in step.text()
+
+
