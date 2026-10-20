@@ -74,7 +74,9 @@ FIXTURES = {
 
 @pytest.fixture(autouse=True)
 def _clean_guard_env(monkeypatch):
-    monkeypatch.delenv("ARENAMCP_LINE_GUARD", raising=False)
+    # Shadow unless a test sets a mode: the line guard is on by default since 2026-10-20
+    # (guard_settings.GUARD_DEFAULTS), and these tests read its verdicts in shadow.
+    monkeypatch.setenv("ARENAMCP_LINE_GUARD", "shadow")
     monkeypatch.delenv("ARENAMCP_MODE_GUARD", raising=False)
     lg._MODE_CACHE.clear()
     yield
@@ -151,16 +153,18 @@ def _mode_decision(**meta):
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(None, "shadow"), ("off", "off"), ("shadow", "shadow"), (" ON ", "on"), ("Shadow", "shadow"),
-     ("1", "shadow"), ("true", "shadow"), ("", "shadow")],
+    [(None, None), ("off", "off"), ("shadow", "shadow"), (" ON ", "on"), ("Shadow", "shadow"),
+     ("1", None), ("true", None), ("", None)],
 )  # fmt: skip
-def test_guard_modes_default_to_shadow(monkeypatch, value, expected):
+def test_guard_modes_read_the_env_else_the_default(monkeypatch, value, expected):
+    # None: not a mode, so the default applies (the line guard on, the mode guard in shadow).
     for name in ("ARENAMCP_LINE_GUARD", "ARENAMCP_MODE_GUARD"):
         if value is None:
             monkeypatch.delenv(name, raising=False)
         else:
             monkeypatch.setenv(name, value)
-    assert lg.guard_mode("line") == expected and lg.guard_mode("mode") == expected
+    assert lg.guard_mode("line") == (expected or "on")
+    assert lg.guard_mode("mode") == (expected or "shadow")
     assert lg.guard_mode("unknown") == "shadow"
 
 

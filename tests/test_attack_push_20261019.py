@@ -16,8 +16,9 @@ Master's search, with Righteous Valkyrie's +2/+2 switching off below 32 life
 survives at 20, 15, 13; holding only wins on T16, a distant win the posture
 ranks as alive at a lower value. At 15 life holding is dead on T15 outright.
 
-The push is shadow by default (``ARENAMCP_ATTACK_PUSH``): it logs
-"attack_push [shadow]: would attack with ...".
+The push shipped in shadow (logging "attack_push [shadow]: would attack with ...") and has been
+on by default since 2026-10-20 (``guard_settings.GUARD_DEFAULTS``, the user's decision). These
+tests set the mode they exercise explicitly; ``test_the_push_is_on_by_default`` covers the default.
 """
 
 from __future__ import annotations
@@ -53,8 +54,9 @@ MODEL_STRATEGY = "Stabilize behind the token wall and close with later swarm swi
 
 
 @pytest.fixture(autouse=True)
-def _default_mode(monkeypatch):
-    monkeypatch.delenv("ARENAMCP_ATTACK_PUSH", raising=False)
+def _shadow_mode(monkeypatch):
+    """Shadow unless a test says otherwise (each test sets 'on' or the default explicitly)."""
+    monkeypatch.setenv("ARENAMCP_ATTACK_PUSH", "shadow")
     monkeypatch.delenv("ARENAMCP_ATTACK_LINE_GUARD", raising=False)
 
 
@@ -156,7 +158,15 @@ def test_holding_dead_sooner_is_pushed_too():
 # --- the model's declaration ----------------------------------------------------------------
 
 
-def test_shadow_by_default_logs_the_push_and_keeps_the_empty_declaration(caplog):
+def test_the_push_is_on_by_default(monkeypatch):
+    monkeypatch.delenv("ARENAMCP_ATTACK_PUSH")
+    assert attack_push_mode() == "on"
+    (action,) = _run_guards(_no_attack(), vb.t12_declare_attackers()).actions
+    assert action.action_type == ActionType.DECLARE_ATTACKERS and action.line_push
+    assert action.attacker_instance_ids == TOKENS
+
+
+def test_shadow_logs_the_push_and_keeps_the_empty_declaration(caplog):
     assert attack_push_mode() == "shadow"
     with caplog.at_level(logging.INFO, logger="arenamcp.action_planner"):
         plan = _run_guards(_no_attack(), vb.t12_declare_attackers())

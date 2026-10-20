@@ -129,7 +129,10 @@ def board(turn: int, active: int, battlefield: list[dict], hand: list[dict], *, 
 
 
 @pytest.fixture(autouse=True)
-def _fresh_assessments():
+def _fresh_assessments(monkeypatch):
+    # The line guard is on by default since 2026-10-20 (guard_settings.GUARD_DEFAULTS); these tests
+    # read its verdicts in shadow unless they set a mode.
+    monkeypatch.setenv("ARENAMCP_LINE_GUARD", "shadow")
     ba._CACHE.clear()
     yield
     ba._CACHE.clear()

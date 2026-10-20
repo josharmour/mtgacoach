@@ -58,6 +58,9 @@ def _offline(monkeypatch):
     )
     monkeypatch.setattr(ot.TrickTableService, "_shared", _offline_service())
     monkeypatch.delenv("ARENAMCP_LINE_SEARCH", raising=False)
+    # The line guard is on by default since 2026-10-20 (guard_settings.GUARD_DEFAULTS); these tests
+    # read its verdicts in shadow unless they set a mode.
+    monkeypatch.setenv("ARENAMCP_LINE_GUARD", "shadow")
     ba._CACHE.clear()
     gp._TRICK_CACHE.clear()
 
@@ -276,14 +279,13 @@ def _this_turn(state: dict, plan: GamePlan) -> str:
     return next(line.strip() for line in block.splitlines() if "THIS TURN" in line)
 
 
-@pytest.mark.parametrize("setting", [None, "shadow", "off"])
+@pytest.mark.parametrize("setting", ["shadow", "off"])
 def test_the_t_step_override_is_shadow_unless_the_line_guard_is_on(synthetic_cards, monkeypatch, setting):
     # Review 2026-10-07: the line check rewrote the plan's T step (and so every
-    # prompt's THIS TURN line) under the default settings, before the user's
-    # review of the shadow logs. Card draw at 3 life dies to the Giant on T11;
-    # the Bears block it.
-    if setting:
-        monkeypatch.setenv("ARENAMCP_LINE_GUARD", setting)
+    # prompt's THIS TURN line) before the user's review of the shadow logs; it
+    # has been on by default since that review (2026-10-20). Card draw at 3 life
+    # dies to the Giant on T11; the Bears block it.
+    monkeypatch.setenv("ARENAMCP_LINE_GUARD", setting)
     state = _bears_board("Reckless Study")
     plan = _validated(state, deepcopy(_STUDY_TURNS), 10)
     assert [step["cast"] for step in plan.turn_plan] == [["Reckless Study"], ["Grizzly Bears"]]
@@ -297,8 +299,12 @@ def test_the_t_step_override_is_shadow_unless_the_line_guard_is_on(synthetic_car
     assert _this_turn(state, plan).startswith("THIS TURN (T10, now): cast Reckless Study")
 
 
-def test_with_the_line_guard_on_the_t_step_takes_the_best_line(synthetic_cards, monkeypatch):
-    monkeypatch.setenv("ARENAMCP_LINE_GUARD", "on")
+@pytest.mark.parametrize("setting", [None, "on"])  # None: unset, the default ('on' since 2026-10-20)
+def test_with_the_line_guard_on_the_t_step_takes_the_best_line(synthetic_cards, monkeypatch, setting):
+    if setting is None:
+        monkeypatch.delenv("ARENAMCP_LINE_GUARD")
+    else:
+        monkeypatch.setenv("ARENAMCP_LINE_GUARD", setting)
     state = _bears_board("Reckless Study")
     plan = _validated(state, deepcopy(_STUDY_TURNS), 10)
     t, t1 = plan.turn_plan
