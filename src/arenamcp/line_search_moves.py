@@ -713,6 +713,42 @@ def walker_gain(card: dict) -> int:
 
 
 _TRIGGER_WORDS_RE = re.compile(r"^(?:when|whenever|at the beginning|as long as|if)\b")
+# Beginning-of-combat +1/+1 counters (ledger #198: Siege Veteran, Luminarch Aspirant):
+# "At the beginning of combat on your turn, put a +1/+1 counter on target creature you control."
+_COMBAT_COUNTER = re.compile(
+    r"^at the beginning of combat on your turn,\s*(?:you may )?put (?P<n>a|an|one|two|three|\d+) "
+    r"\+1/\+1 counters? on (?:up to one )?(?P<other>another )?"
+    r"(?:target (?P<kind>[a-z'-]+?)(?: you control)?|(?P<self>~|this creature|it|cardname))\b"
+)
+
+
+def combat_counter_growth(card: dict) -> tuple[tuple[int, str, bool], ...]:
+    """((+1/+1 counters, target kind or 'self', other_only), ...) from the card's own
+    'At the beginning of combat on your turn, put N +1/+1 counters on ...' triggers (ledger #198)."""
+    return _combat_counter_growth(*_key(card))
+
+
+@functools.lru_cache(maxsize=4096)
+def _combat_counter_growth(name: str, oracle: str) -> tuple[tuple[int, str, bool], ...]:
+    text = _engine_text(name, oracle)
+    if "beginning of combat" not in text or "counter" not in text:
+        return ()
+    found = []
+    for line in _own_lines(text):
+        match = _COMBAT_COUNTER.match(line)
+        if match is None:
+            continue
+        first_sentence = line.split(".")[0]
+        if _EFFECT_CONDITION.search(first_sentence[match.end() :]):
+            continue
+        n = _count_word(match.group("n"))
+        if match.group("self"):
+            found.append((n, "self", False))
+        else:
+            raw = (match.group("kind") or "creature").strip()
+            kind = "creature" if raw in ("creature", "creatures") else re.sub(r"s$", "", raw)
+            found.append((n, kind, bool(match.group("other"))))
+    return tuple(found)
 
 
 def gain_triggers(card: dict) -> tuple[int, int, int]:
@@ -870,6 +906,7 @@ def drain_triggers(
     gains: int = 0,
     drops: int = 1,
     entering: int = 1,
+    after_upkeep: bool = False,
 ) -> int:
     """How many times a drain trigger's event (``drain_engine``) happens on a turn of theirs: one
     a turn for their own phase, two for each player's; a sacrifice trigger once per permanent of
@@ -882,6 +919,8 @@ def drain_triggers(
         return 1 if enters.group("count") == "one or more" or enters.group("nontoken") else entering
     phase = _DRAIN_PHASE.match(event)
     if phase is not None:
+        if after_upkeep and "upkeep" in event:
+            return 0  # their upkeep this turn has already happened (ledger #198)
         return 2 if phase.group("whose") in ("each", "each player's") else 1
     sacrifice = _DRAIN_SACRIFICE.match(event)
     if sacrifice is not None:
@@ -955,7 +994,9 @@ class TheirEngines:
     no_gain: bool = False  # "players can't gain life" (Giant Cindermaw): no gain, no growth from it
     enter_tapped: bool = False  # creatures we cast enter tapped (Authority of the Consuls)
     static_drain: int = 0  # damage their noncreature engines deal us each turn of theirs
+    static_drain_after_upkeep: int = 0  # static_drain excluding upkeep triggers already past this turn
     team: tuple = ()  # (source id, creature type or 'creature', counters per gain event)
+    combat_counters: tuple = ()  # (source id, is_creature, counters, target kind or 'self', other_only)
     counts: Any = None  # ``fodder_counts`` of their permanents
     drops: int = 1  # their land drops a turn (landfall drains)
     names: tuple = ()  # 'Biotech Specialist (2 a turn)', ...: the engines the clocks count
@@ -974,6 +1015,48 @@ class TheirEngines:
     def reach(self, creatures: int) -> int:
         """Damage their sacrifice outlets deal us with ``creatures`` creatures to sacrifice."""
         return self.outlet * max(0, creatures)
+
+    def combat_source_counters(self, card: dict) -> int:
+        """+1/+1 counters ``card``'s beginning-of-combat triggers place each combat (ledger #198)."""
+        return sum(n for n, _kind, _other in combat_counter_growth(card))
+
+    def combat_targets(self, bodies: list[dict], *, alive_origins: set[int] | None = None) -> dict[int, int]:
+        """{body instance_id: +1/+1 counters} placed by ``combat_counters`` at the beginning of combat."""
+        if not self.combat_counters or not bodies:
+            return {}
+        out: dict[int, int] = {}
+        for source_id, is_creature, n, kind, other in self.combat_counters:
+            if is_creature and alive_origins is not None and source_id not in alive_origins:
+                continue
+            eligible = []
+            for b in bodies:
+                if not isinstance(b.get("power"), int):
+                    continue
+                origin = b.get("_origin") or _int((b.get("_card") or b).get("instance_id")) or b.get("instance_id")
+                if kind == "self":
+                    if origin == source_id:
+                        eligible.append(b)
+                elif (not other or origin != source_id) and (kind == "creature" or has_kind(b, kind)):
+                    eligible.append(b)
+            if not eligible:
+                continue
+            target = max(
+                eligible,
+                key=lambda b: (
+                    bool(b.get("_can_attack", True)),
+                    not bool(b.get("_sick", False)),
+                    bool(b.get("_unblockable") or b.get("cant_be_blocked") or has_combat_keyword(b, "flying")),
+                    has_combat_keyword(b, "double strike"),
+                    has_combat_keyword(b, "trample") or has_combat_keyword(b, "menace"),
+                    b.get("power") or 0,
+                    b.get("toughness") or 0,
+                    -(_int(b.get("instance_id")) or 0),
+                ),
+            )
+            tid = _int(target.get("instance_id"))
+            if tid is not None:
+                out[tid] = out.get(tid, 0) + n
+        return out
 
     def body_tokens(
         self, card: dict, *, mana: int | None = None, activated: bool = False
@@ -1025,7 +1108,7 @@ class TheirEngines:
             return int(self.kinds[kind])
         return int((self.counts or {}).get(kind, 0))
 
-    def body_drain(self, card: dict, *, gains: int | None = None) -> int:
+    def body_drain(self, card: dict, *, gains: int | None = None, after_upkeep: bool = False) -> int:
         """Damage one permanent's drain triggers deal us on a turn of theirs (``drain_engine``; one
         counted by their permanents as many times as they control them, ``counted_drain_engine``)."""
         found = counted_drain_engine(card)
@@ -1042,6 +1125,7 @@ class TheirEngines:
                 gains=events,
                 drops=self.drops,
                 entering=self.entering,
+                after_upkeep=after_upkeep,
             )
             for amount, event, kind in found
         )
@@ -1116,6 +1200,7 @@ def their_engines(
     gains = per_ours = life_ours = 0
     walkers: set[int] = set()
     team: list[tuple[int, str, int]] = []
+    combat_counters: list[tuple[int, bool, int, str, bool]] = []
     spells = [c for c in theirs if not _is_land(c)]  # (a land's own triggers are not engines here)
     for card in spells:
         turn, ours, life = gain_triggers(card)
@@ -1124,6 +1209,10 @@ def their_engines(
             walkers.add(_int(card.get("instance_id")) or 0)
         for kind, n in lifegain_growth(card)[2]:
             team.append((_int(card.get("instance_id")) or 0, kind, n))
+        cid = _int(card.get("instance_id")) or 0
+        is_creat = _is_creature(card)
+        for n, kind, other in combat_counter_growth(card):
+            combat_counters.append((cid, is_creat, n, kind, other))
     # Their mana (#172): each land (twice under a land-mana doubler, Caged Sun), each mana ability.
     doubled = any(_LAND_MANA_DOUBLER.search(_engine_text(*_key(c))) for c in spells)
     lands = [c for c in theirs if _is_land(c)]
@@ -1155,13 +1244,14 @@ def their_engines(
         gains=gains, gain_walkers=frozenset(walkers), per_our_creature=per_ours, life_per_our_creature=life_ours,
         draws=max(1, draws), no_gain=no_gain, outlet=outlet,
         enter_tapped=any(_ENTER_TAPPED.search(_engine_text(*_key(c))) for c in spells),
-        team=tuple(team), counts=fodder_counts(theirs, opponent), drops=max(0, drops),
+        team=tuple(team), combat_counters=tuple(combat_counters),
+        counts=fodder_counts(theirs, opponent), drops=max(0, drops),
         mana=mana, mana_now=mana_now, kinds=kinds, token_pt=token_pt,
     )  # fmt: skip
     # Their creatures entering a turn (their enters pings, Impact Tremors): their token makers'.
     entering = sum(engines.body_tokens(c)[0] for c in spells)
     engines = dataclasses.replace(engines, entering=max(1, entering))
-    static = 0
+    static = static_after = 0
     names: list[str] = []
     for card in spells:
         amount = engines.body_drain(card)
@@ -1169,7 +1259,13 @@ def their_engines(
             names.append(f"{_name(card)} ({amount} a turn)")
             if not _is_creature(card):
                 static += amount
-    return dataclasses.replace(engines, static_drain=static, names=tuple(names))
+                static_after += engines.body_drain(card, after_upkeep=True)
+        combat_n = engines.combat_source_counters(card)
+        if combat_n and not _is_creature(card):
+            names.append(f"{_name(card)} (+{combat_n}/+{combat_n} a combat)")
+    return dataclasses.replace(
+        engines, static_drain=static, static_drain_after_upkeep=static_after, names=tuple(names)
+    )
 
 
 def attack_pings(card: dict) -> tuple[tuple[int, str], ...]:
@@ -2016,9 +2112,12 @@ class Moves:
         # turn of theirs (life gain, draws), their drains, Authority of the Consuls on our casts.
         self.engines = getattr(model, "engines", None)
         engines = self.engines
-        self.growers = engines is not None and any(
-            engines.per_gain(b.get("_card") or b) or any(draw_growth(b.get("_card") or b))
-            for b in model.theirs
+        self.growers = engines is not None and (
+            bool(engines.combat_counters)
+            or any(
+                engines.per_gain(b.get("_card") or b) or any(draw_growth(b.get("_card") or b))
+                for b in model.theirs
+            )
         )
         self.drains = engines is not None and bool(
             engines.static_drain or any(b.get("_drain") for b in model.theirs)
@@ -2908,23 +3007,32 @@ class Moves:
         Consuls and our creature cast: +2)."""
         return max(1, self.walker_gains.get(iid, 0) * gains)
 
-    def turn_growth(self, theirs, gains: int) -> dict[int, int]:
+    def turn_growth(self, theirs, gains: int, *, combat_only: bool = False) -> dict[int, int]:
         """+1/+1 counters each of their creatures gets on one turn of theirs before their attack
-        (``TheirEngines.growth``: ``gains`` life-gain events, their draws), by instance id; a team
-        trigger (Lyra: '... on each Angel you control') counts while its source is alive."""
+        (``TheirEngines.growth``: ``gains`` life-gain events, their draws, and beginning-of-combat
+        counters ``combat_targets``), by instance id; a team trigger (Lyra: '... on each Angel you
+        control') counts while its source is alive."""
         engines = self.engines
         if engines is None or not self.growers:
             return {}
         origins = {_int((b.get("_card") or b).get("instance_id")) for b in theirs}
         team = tuple(t for t in engines.team if t[0] in origins or t[0] not in self._their_creature_ids)
-        key = (ids_of(theirs), gains, team)
+        key = (ids_of(theirs), gains, team, combat_only)
         found = self._turn_growth_memo.get(key)
         if found is None:
-            found = self._turn_growth_memo[key] = {
-                b["instance_id"]: n
-                for b in theirs
-                if (n := engines.growth(b.get("_card") or b, gains=gains, team=team))
-            }
+            combat_grow = engines.combat_targets(theirs, alive_origins=origins)
+            if combat_only:
+                found = combat_grow
+            else:
+                found = {
+                    b["instance_id"]: n
+                    for b in theirs
+                    if (
+                        n := engines.growth(b.get("_card") or b, gains=gains, team=team)
+                        + combat_grow.get(b["instance_id"], 0)
+                    )
+                }
+            self._turn_growth_memo[key] = found
         return found
 
     def their_tokens(self, theirs, generation: int, *, now: bool = False) -> list[dict]:
@@ -2945,11 +3053,16 @@ class Moves:
                 out += made_tokens(body, min(count, room), generation, dict(self.model.their_rules))
         return out
 
-    def their_drain(self, theirs) -> int:
+    def their_drain(self, theirs, *, after_upkeep: bool = False) -> int:
         """Damage their drain engines deal us on one turn of theirs: their noncreature engines and
-        each creature of theirs still alive (``_drain``). Ledger #133 (match 16ed84d0)."""
+        each creature of theirs still alive (``_drain``; ``after_upkeep`` skips upkeep-only drains
+        that already resolved this turn, ledger #198). Ledger #133 (match 16ed84d0)."""
         if not self.drains:
             return 0
+        if after_upkeep:
+            return self.engines.static_drain_after_upkeep + sum(
+                b.get("_drain_after_upkeep", b.get("_drain") or 0) for b in theirs
+            )
         return self.engines.static_drain + sum(b.get("_drain") or 0 for b in theirs)
 
     def _lifelink_growth(self, theirs_after: list, their_tapped: frozenset, gained: int, present) -> tuple:
@@ -3855,6 +3968,7 @@ class Moves:
         self, *, life, opp_life, ours, theirs, able, blockers, hand, entered, keep_tapped, spare, returning,
         index, turn, next_k, next_abs, fixed=None, variant="best", crack_exclude=frozenset(), tag="",
         blocks_locked=False, landfall=False, drops=None, crack_sources=None, spells=True, gains=0, drain_now=True,
+        after_upkeep=False,
     ) -> dict:  # fmt: skip
         """Their attack: any lethal policy kills us; else the non-suicidal one worst for us, and
         their most damaging one when every policy leaves them dead to our next turn anyway.
@@ -3884,13 +3998,13 @@ class Moves:
                 self.their_drops if drops is None else drops,
                 index == self.fetch_index and fixed is None,
             )
-            grow = self.turn_growth(theirs, gains) if spells else None
+            grow = self.turn_growth(theirs, gains, combat_only=not spells)
             theirs = self._landfall(theirs, entries, extra, spells=spells, grow=grow)
             able = self._landfall(able, entries, extra, spells=spells, grow=grow)
         if self.their_anthems:  # ledger #177: their life after our attack switches them
             theirs = self.anthem_bodies(theirs, opp_life)
             able = self.anthem_bodies(able, opp_life, alive=theirs)
-        drain = self.their_drain(theirs) if drain_now else 0
+        drain = self.their_drain(theirs, after_upkeep=after_upkeep) if drain_now else 0
         removal, flash, left = self._held(hand, spare, life)
         flash_bodies = [b for v in flash for b in _bodies(v)]
         hand_left = tuple(i for i in hand if i not in {v.spell for v in flash})
@@ -4144,8 +4258,10 @@ class Moves:
         variants, crack = ["best"], frozenset()
         # Their attack still to come (ledger #97, match 18b1601a T10 main 1): their land drop, if they
         # have not played it and are still in a main phase, and their fetches come before it.
+        before_combat = model.phase in ("Phase_Beginning", "Phase_Main1")
+        after_upkeep = model.phase not in ("", "Phase_Beginning") or model.step == "Step_Draw"
         drops = 0
-        if fixed is None and model.phase in ("Phase_Beginning", "Phase_Main1"):
+        if fixed is None and before_combat:
             drops = max(0, self.their_drops - model.their_lands_played)
         if fixed is not None:
             # Their attackers are declared: our block variants (advisory).
@@ -4179,12 +4295,13 @@ class Moves:
                 crack_exclude=crack,
                 tag="root",  # at a first-strike step the attackers are regular-damage copies
                 blocks_locked=locked,
-                landfall=fixed is None,  # land entries only: their spell this turn stays the snapshot's
+                landfall=fixed is None and before_combat,  # land entries + beginning-of-combat counters
                 spells=False,
                 drops=drops,
                 crack_sources=model.sources_all,
                 # Their drains this turn: still to come before their attack is declared (#133).
                 drain_now=fixed is None,
+                after_upkeep=fixed is None and after_upkeep,
             )
             block = variant if fixed is not None else ""
             if hit["dead"]:

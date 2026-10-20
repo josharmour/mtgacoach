@@ -544,10 +544,23 @@ def annotate_engines(bodies: list[dict], engines: Any) -> None:
     if engines is None:
         return
     gains = engines.gain_events()
+    combat = engines.combat_targets(bodies) if engines.combat_counters else {}
     for body in bodies:
         card = body.get("_card") or body
-        body["_drain"] = engines.body_drain(card)
+        drain = engines.body_drain(card)
+        body["_drain"] = drain
+        if drain:
+            after_upkeep = engines.body_drain(card, after_upkeep=True)
+            if after_upkeep != drain:
+                body["_drain_after_upkeep"] = after_upkeep
         body["_growth"] = engines.growth(card, gains=gains)
+        if engines.combat_counters:
+            combat_growth = combat.get(body.get("instance_id"), 0)
+            if combat_growth:
+                body["_combat_growth"] = combat_growth
+            source_growth = engines.combat_source_counters(card)
+            if source_growth:
+                body["_combat_source_growth"] = source_growth
         body["_per_gain"] = engines.per_gain(card)
         # Token engines (#172): tokens a turn, their power/toughness, and what they are worth.
         tokens, power, toughness = engines.body_tokens(card)

@@ -1162,19 +1162,39 @@ def _their_turn_engines(
     if engines is None:
         return 0, {}, []
     annotate_engines(theirs, engines)
-    drain = engines.static_drain + sum(b.get("_drain") or 0 for b in theirs)
+    turn_info = view.get("turn") if isinstance(view.get("turn"), dict) else {}
+    phase = str(turn_info.get("phase") or "")
+    step = str(turn_info.get("step") or "")
+    after_upkeep = not our_turn and (phase not in ("", "Phase_Beginning") or step == "Step_Draw")
+    before_combat = phase in ("Phase_Beginning", "Phase_Main1")
+    if after_upkeep:
+        drain = engines.static_drain_after_upkeep + sum(
+            b.get("_drain_after_upkeep", b.get("_drain") or 0) for b in theirs
+        )
+    else:
+        drain = engines.static_drain + sum(b.get("_drain") or 0 for b in theirs)
     growth: dict[int, int] = {}
     if not our_turn:
         drain = 0 if declared else drain
+        if before_combat and not declared:
+            growth = {b["instance_id"]: b["_combat_growth"] for b in theirs if b.get("_combat_growth")}
         # (this turn's tokens: what their activations can still pay for)
         tokens = sum(
             engines.body_tokens(b.get("_card") or b, mana=engines.mana_now, activated=True)[0] for b in theirs
         )
     else:
-        growth = {b["instance_id"]: b["_growth"] for b in theirs if b.get("_growth")}
+        growth = {
+            b["instance_id"]: n
+            for b in theirs
+            if (n := (b.get("_growth") or 0) + (b.get("_combat_growth") or 0))
+        }
         tokens = sum(b.get("_tokens") or 0 for b in theirs)
     creatures = {b["name"] for b in theirs}
-    notes = [f"{b['name']} drains {b['_drain']}" for b in theirs if b.get("_drain") and drain]
+    notes = [
+        f"{b['name']} drains {d}"
+        for b in theirs
+        if drain and (d := b.get("_drain_after_upkeep" if after_upkeep else "_drain", b.get("_drain") or 0))
+    ]
     notes += [f"{b['name']} +{n}/+{n}" for b in theirs if (n := growth.get(b["instance_id"]))]
     notes += [name for name in engines.names if drain and name.split(" (")[0] not in creatures]
     # Their reach this turn (match b62b73fc): a sacrifice outlet turns each creature of theirs,

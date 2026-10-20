@@ -29,6 +29,8 @@ from typing import Any
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
+
 import arenamcp.autopilot as autopilot_module
 from arenamcp.action_planner import (
     DECLINE_DECISION,

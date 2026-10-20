@@ -55,6 +55,8 @@ from arenamcp import line_guard as lg
 from arenamcp.board_model import build_board_model
 from arenamcp.line_search import ALIVE, DEAD, WIN, ModeComparison, compare_modes, search_lines
 
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
+
 ROCK, LANDCYCLE, ISLAND = "idx:1", "idx:4", "idx:5"
 FIXTURES = {
     "G1_T8": G1_T8,

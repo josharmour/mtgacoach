@@ -2014,9 +2014,22 @@ def _their_next_attack(state: dict, theirs: list[dict], local_seat) -> tuple[lis
     two combats (#191).
     """
     from arenamcp.attack_potential import apply_grants, extra_combat_of, grants_of, pumped_attackers
+    from arenamcp.board_model import _int, engines_of
 
     able = [card for card in theirs if can_attack_next_turn(card)]
     able = pumped_attackers(able, state, next_turn=True)
+    opp_seats = {_controller(c) for c in theirs if _controller(c) not in (None, local_seat)}
+    if opp_seats and local_seat is not None:
+        engines = engines_of(state.get("battlefield") or [], local_seat, next(iter(opp_seats)))
+        if engines is not None and engines.combat_counters:
+            combat_grow = engines.combat_targets(able)
+            if combat_grow:
+                able = [
+                    {**c, "power": (_int(c.get("power")) or 0) + n, "toughness": (_int(c.get("toughness")) or 0) + n}
+                    if (n := combat_grow.get(_int(c.get("instance_id")) or 0, 0))
+                    else c
+                    for c in able
+                ]
     grants = [
         grant
         for card in state.get("battlefield") or []

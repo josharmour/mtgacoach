@@ -592,7 +592,12 @@ def engine_role(body: dict) -> float:
     an activation, as many as their mana pays for), from ``board_model.annotate_engines`` (either
     side's); 0 for a body without them (a bare snapshot). Ledger #132 / #143 / #172 (2026-10-19,
     matches 16ed84d0, 970d9b41 and 2b77f14d)."""
-    return float(2 * (body.get("_drain") or 0) + (body.get("_growth") or 0) + (body.get("_token_value") or 0))
+    return float(
+        2 * (body.get("_drain") or 0)
+        + (body.get("_growth") or 0)
+        + (body.get("_combat_source_growth") or 0)
+        + (body.get("_token_value") or 0)
+    )
 
 
 def _flying(body: dict) -> bool:
@@ -808,8 +813,12 @@ class ClockEngines:
     after its growth / its drains of that turn (False when that turn is already under way)."""
 
     static_drain: int = 0
+    static_drain_after_upkeep: int = 0
     grow_first: bool = True
+    combat_grow_first: bool = True
     drain_first: bool = True
+    after_upkeep: bool = False
+    combat_noncreature: bool = False
     outlet: int = 0  # its sacrifice outlets' damage a creature: its board's reach on any turn
 
 
@@ -838,12 +847,19 @@ def made_tokens(source: dict, count: int, generation: int, rules: dict | None = 
     return out
 
 
-def _grown(able: list[dict], turns: int, events: int) -> list[dict]:
-    """``able`` with ``turns`` turns of growth (``_growth``) and ``events`` life-gain events'
-    counters (``_per_gain``) each: copies, the same ids."""
+def _grown(able: list[dict], turns: int, events: int, combat_turns: int | None = None) -> list[dict]:
+    """``able`` with ``turns`` turns of growth (``_growth``), ``combat_turns`` beginning-of-combat
+    counters (``_combat_growth``) and ``events`` life-gain events' counters (``_per_gain``) each:
+    copies, the same ids."""
+    if combat_turns is None:
+        combat_turns = turns
     out = []
     for body in able:
-        n = (body.get("_growth") or 0) * turns + (body.get("_per_gain") or 0) * events
+        n = (
+            (body.get("_growth") or 0) * turns
+            + (body.get("_combat_growth") or 0) * combat_turns
+            + (body.get("_per_gain") or 0) * events
+        )
         out.append(
             {**body, "power": body["power"] + n, "toughness": body["toughness"] + n} if n > 0 else body
         )
@@ -899,6 +915,7 @@ def _simulate_attacks(
     lives: list[int] = []
     events = 0  # life-gain events of the attacking side's lifelink damage so far
     made = 0  # token bodies its token engines added so far
+    combat_turns = 0  # beginning-of-combat counter steps resolved while a source lives
     for index in range(_MAX_CLOCK):
         if index == 0 and first_attackers is not None:
             able = [a for a in first_attackers if a["_can_attack"]]
@@ -908,10 +925,32 @@ def _simulate_attacks(
             blockers = [d for d in alive_def if d["instance_id"] not in racing] if index else list(alive_def)
         engine = growing = 0
         if engines is not None:
-            able = _grown(able, index + (1 if engines.grow_first else 0), events)
-            if index or engines.drain_first:
+            combat_alive = engines.combat_noncreature or any(
+                a.get("_combat_source_growth") for a in alive_att
+            )
+            if combat_alive and (index > 0 or engines.combat_grow_first):
+                combat_turns += 1
+            able = _grown(
+                able,
+                index + (1 if engines.grow_first else 0),
+                events,
+                combat_turns,
+            )
+            if index:
                 engine = engines.static_drain + sum(a.get("_drain") or 0 for a in alive_att)
-            growing = any(a.get("_growth") or (events and a.get("_per_gain")) for a in alive_att)
+            elif engines.drain_first:
+                if engines.after_upkeep:
+                    engine = engines.static_drain_after_upkeep + sum(
+                        a.get("_drain_after_upkeep", a.get("_drain") or 0) for a in alive_att
+                    )
+                else:
+                    engine = engines.static_drain + sum(a.get("_drain") or 0 for a in alive_att)
+            growing = any(
+                a.get("_growth")
+                or (combat_alive and a.get("_combat_growth"))
+                or (events and a.get("_per_gain"))
+                for a in alive_att
+            )
         # Their token engines' tokens of this turn, made in their main phase before the attack (#172;
         # not for the turn already under way: its mana is spent or not read).
         new_tokens: list[dict] = []
@@ -1542,7 +1581,14 @@ def _stalled_text(who: str, lives: list[int], start: int) -> str:
 
 
 def _side_engines(
-    engines: Any, bodies, *, active: bool, attack_pending: bool, attacking: bool
+    engines: Any,
+    bodies,
+    *,
+    active: bool,
+    attack_pending: bool,
+    attacking: bool,
+    before_combat: bool = False,
+    after_upkeep: bool = False,
 ) -> ClockEngines | None:
     """``ClockEngines`` for one side's attacks (None when nothing of that side grows or drains):
     its next turn's growth and drains come before that turn's attack, unless the turn is under way
@@ -1551,21 +1597,49 @@ def _side_engines(
     if engines is None or not (
         engines.static_drain
         or engines.outlet
-        or any(b.get("_drain") or b.get("_growth") or b.get("_per_gain") or b.get("_tokens") for b in bodies)
+        or any(
+            b.get("_drain")
+            or b.get("_growth")
+            or b.get("_combat_growth")
+            or b.get("_per_gain")
+            or b.get("_tokens")
+            for b in bodies
+        )
     ):
         return None
+    static_after = getattr(engines, "static_drain_after_upkeep", engines.static_drain)
+    combat_noncreature = any(
+        not is_c for _sid, is_c, _n, _k, _o in getattr(engines, "combat_counters", ())
+    )
     if not active or not attack_pending:
-        return ClockEngines(engines.static_drain, outlet=engines.outlet)
+        return ClockEngines(
+            engines.static_drain,
+            static_after,
+            combat_noncreature=combat_noncreature,
+            outlet=engines.outlet,
+        )
     return ClockEngines(
-        engines.static_drain, grow_first=False, drain_first=not attacking, outlet=engines.outlet
+        engines.static_drain,
+        static_after,
+        grow_first=False,
+        combat_grow_first=before_combat and not attacking,
+        drain_first=not attacking,
+        after_upkeep=after_upkeep,
+        combat_noncreature=combat_noncreature,
+        outlet=engines.outlet,
     )
 
 
 def their_clock_engines(model: Any) -> ClockEngines | None:
     """``ClockEngines`` for their attacks on this board (``_side_engines``)."""
+    before_combat = model.phase in ("Phase_Beginning", "Phase_Main1")
+    after_upkeep = not model.our_turn and (
+        model.phase not in ("", "Phase_Beginning") or model.step == "Step_Draw"
+    )
     return _side_engines(
         getattr(model, "engines", None), model.theirs, active=not model.our_turn,
         attack_pending=model.their_attack_pending, attacking=model.any_theirs_attacking,
+        before_combat=before_combat, after_upkeep=after_upkeep,
     )  # fmt: skip
 
 
@@ -1587,7 +1661,9 @@ def _engine_notes(model: Any) -> list[str]:
     counts beyond combat (``their_clock_engines``)."""
     notes = [f"{b['name']} drains {b['_drain']} a turn" for b in model.theirs if b.get("_drain")]
     notes += [
-        f"{b['name']} grows +{b['_growth']}/+{b['_growth']} a turn" for b in model.theirs if b.get("_growth")
+        f"{b['name']} grows +{n}/+{n} a turn"
+        for b in model.theirs
+        if (n := (b.get("_growth") or 0) + (b.get("_combat_source_growth") or 0))
     ]
     notes += [f"{b['name']} makes ~{b['_tokens']} tokens a turn" for b in model.theirs if b.get("_tokens")]
     engines = getattr(model, "engines", None)

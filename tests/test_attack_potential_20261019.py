@@ -224,27 +224,28 @@ def test_harbins_trigger_is_read():
 
 
 def test_four_soldiers_do_not_meet_it():
-    # The real T11: Harbin, Shackle Slinger, Siege Veteran and the Soldier token. Their next attack
-    # stays Harbin's 6 in the air (as the facts said), and Harbin is no longer "left out".
+    # The real T11: Harbin, Shackle Slinger, Siege Veteran and the Soldier token. Four Soldiers do
+    # not meet Harbin's 5-Soldier trigger, while Siege Veteran's beginning-of-combat trigger puts
+    # a +1/+1 counter on Harbin (6/5 -> 7/6 in the air, ledger #198).
     facts = assess(harbin_t11())
-    assert facts.their_next_attack == (6, 2)
+    assert facts.their_next_attack == (7, 1)
     assert facts.clock_unmodelled == []
     board = harbin_t11()
     threats, _combats = cs._their_next_attack(board, their_creatures(board, OPP), ME)
-    assert [t["power"] for t in threats] == [6, 3, 2, 1]
+    assert [t["power"] for t in threats] == [7, 3, 2, 1]
     assert not any("flying" in t["keywords"] for t in threats)
 
 
 def test_a_fifth_soldier_gives_the_whole_attack_plus_one_and_flying():
     # Rescue Retriever (cast that turn) able to attack: five Soldiers, all +1/+1 and flying over our
-    # ground blockers: 7+4+3+2+4 = 20 against our 8.
+    # ground blockers, plus Siege Veteran's +1/+1 counter on Harbin: 8+4+3+2+4 = 21 against our 8.
     board = harbin_t11(fifth_soldier=True)
     threats, _combats = cs._their_next_attack(board, their_creatures(board, OPP), ME)
-    assert [t["power"] for t in threats] == [7, 4, 3, 2, 4]
+    assert [t["power"] for t in threats] == [8, 4, 3, 2, 4]
     assert all("flying" in t["keywords"] for t in threats)
     facts = assess(board)
-    assert facts.their_next_attack == (20, -12)
+    assert facts.their_next_attack == (21, -13)
     assert facts.opp_lethal_on_board
     loss = estimate_loss(board)
-    assert loss.facts["evasive_power"] == 20
+    assert loss.facts["evasive_power"] == 21
     assert estimate_loss(harbin_t11()).reason == "not dead next attack"

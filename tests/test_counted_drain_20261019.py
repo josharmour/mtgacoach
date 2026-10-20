@@ -61,12 +61,23 @@ def test_their_engines_count_their_zombies():
 
 
 def test_the_t18_clock_counts_the_drain():
-    # Before: "they kill us in 7 attack(s)", "hold: survives (life 11, 11, 11, 11)".
+    # Before #197: "they kill us in 7 attack(s)", "hold: survives (life 11, 11, 11, 11)".
+    # With #198: on T18 Main 1 (after T18's upkeep already drained 18 -> 13), T18's upkeep drain is
+    # not counted a second time before T18's attack (our_life_now_attack == 11 after 2 combat damage,
+    # 4-attack clock), while at Step_Upkeep it is still to come this turn (our_life_now_attack == 6,
+    # 3-attack clock).
     ba._CACHE.clear()
     facts = ba.assess(scarab_god())
-    assert facts.their_clock == 3
+    assert facts.our_life_now_attack == 11
+    assert facts.their_clock == 4
     assert "The Scarab God drains 5 a turn" in facts.clock_engines
-    assert facts.dead_in == 3
+    assert facts.dead_in == 4
+    upkeep_board = scarab_god()
+    upkeep_board["turn"] = {**upkeep_board["turn"], "phase": "Phase_Beginning", "step": "Step_Upkeep"}
+    upkeep_facts = ba.assess(upkeep_board)
+    assert upkeep_facts.our_life_now_attack == 6
+    assert upkeep_facts.their_clock == 3
+    assert upkeep_facts.dead_in == 3
 
 
 def test_t19_dead_to_the_upkeep_drain_whatever_we_block_is_all_in():

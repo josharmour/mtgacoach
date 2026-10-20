@@ -1,0 +1,407 @@
+"""Regression tests for autopilot bugs #131, #150, #175, #195, #196, and #198."""
+
+from __future__ import annotations
+
+from unittest.mock import Mock
+
+import pytest
+
+from arenamcp import board_assessment as ba
+from arenamcp.action_planner import (
+    ActionPlan,
+    ActionPlanner,
+    ActionType,
+    GameAction,
+    SecondLookError,
+)
+from arenamcp.board_model import build_board_model
+from arenamcp.concede import estimate_loss
+from arenamcp.decision_memory import lethal_reach
+from arenamcp.decisions import DecisionOption, PendingDecision
+from arenamcp.line_search_moves import combat_counter_growth
+from threat_boards_20261019 import ME, OPP, card, harbin_t11, scarab_god, state
+
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
+
+
+# --- #198: beginning-of-combat counters (Siege Veteran) and after-upkeep drain timing -------------
+
+
+def test_siege_veteran_combat_counter_growth_and_harbin_t11_lethal_after_retriever_etb():
+    board = harbin_t11()
+    veteran = next(c for c in board["battlefield"] if c["instance_id"] == 455)
+    assert combat_counter_growth(veteran) == ((1, "creature", False),)
+
+    # On match 3ac9d511 T11 Main 1 after Rescue Retriever's ETB put a +1/+1 counter on Harbin
+    # (6/5 -> 7/6), Siege Veteran's beginning-of-combat counter grows Harbin to 8/7 flying
+    # before attackers are declared — lethal against our 8 life.
+    harbin = next(c for c in board["battlefield"] if c["instance_id"] == 444)
+    harbin["power"], harbin["toughness"] = 7, 6
+    ba._CACHE.clear()
+    facts = ba.assess(board)
+    assert facts.their_next_attack == (8, 0)
+    assert facts.opp_lethal_on_board
+    assert "Siege Veteran grows +1/+1 a turn" in facts.clock_engines
+    loss = estimate_loss(board)
+    assert loss.facts["life_after"] == 0
+    assert loss.facts["evasive_power"] == 8
+    assert loss.facts["evasive"] == ["Harbin, Vanguard Aviator 8/7"]
+    assert any("Harbin, Vanguard Aviator +1/+1" in b for b in loss.blockers)
+
+
+def test_upkeep_drain_not_double_counted_after_upkeep_in_main1():
+    # Match 45de8f40 T18 Main 1: The Scarab God's upkeep trigger already drained us 18 -> 13.
+    # During T18 Main 1, this turn's remaining drain before combat is 0, while future turns drain 5.
+    from arenamcp.concede import _their_turn_engines
+
+    ba._CACHE.clear()
+    board = scarab_god()
+    model = build_board_model(board)
+    god = next(b for b in model.theirs if b["instance_id"] == 531)
+    assert god["_drain"] == 5
+    assert god["_drain_after_upkeep"] == 0
+    facts = ba.assess(board)
+    assert facts.our_life_now_attack == 11  # 13 - 2 combat damage (no second upkeep drain of 5)
+    drain, _growth, _notes = _their_turn_engines(
+        board, ME, OPP, board["battlefield"], list(model.theirs), our_turn=False, declared=False
+    )
+    assert drain == 0
+
+
+# --- #195: death-trigger drain in _check_block_survival and _combat_life --------------------------
+
+
+def test_check_block_survival_and_combat_life_count_death_trigger_drain():
+    # Match 98170e12 T10: Wriggling Grub (dies: opponent loses 2 life) and Serrated Scorpion
+    # (dies: each opponent loses 2 life, you gain 2 life) attack into our 3/3 blockers at 4 life.
+    # Blocking both deals 0 combat damage + 4 death drain = 4 (lethal, 4 -> 0), whereas blocking
+    # only the 2/1 Grub deals 1 combat damage (Scorpion unblocked) + 2 death drain = 3 (survives at 1!).
+    grub = card(
+        101,
+        "Wriggling Grub",
+        OPP,
+        power=2,
+        toughness=1,
+        text="When this creature dies, target opponent loses 2 life.",
+        tapped=True,
+        attacking=True,
+    )
+    scorpion = card(
+        102,
+        "Serrated Scorpion",
+        OPP,
+        power=1,
+        toughness=2,
+        text="When this creature dies, each opponent loses 2 life and you gain 2 life.",
+        tapped=True,
+        attacking=True,
+    )
+    b1 = card(201, "Grizzly Bears", ME, power=3, toughness=3)
+    b2 = card(202, "Centaur Courser", ME, power=3, toughness=3)
+    raw_blockers = [
+        {"blockerInstanceId": 201, "attackerInstanceIds": [101, 102]},
+        {"blockerInstanceId": 202, "attackerInstanceIds": [101, 102]},
+    ]
+    board = state(
+        [grub, scorpion, b1, b2],
+        match="98170e12",
+        local=ME,
+        life=4,
+        opp_life=10,
+        turn=10,
+        active=OPP,
+        phase="Phase_Combat",
+        step="Step_DeclareBlock",
+        their_hand=1,
+        raw_blockers=raw_blockers,
+    )
+    context = {
+        "type": "declare_blockers",
+        "legal_blocker_ids": [201, 202],
+        "raw_blockers": raw_blockers,
+    }
+    plan = ActionPlan(
+        actions=[
+            GameAction(
+                action_type=ActionType.DECLARE_BLOCKERS,
+                blocker_instance_assignments={201: 101, 202: 102},
+                reasoning="Block both attackers to take 0 combat damage.",
+            )
+        ]
+    )
+    ActionPlanner(Mock())._check_block_survival(plan, board, context)
+    action = plan.actions[0]
+    assert action.blocker_instance_assignments != {201: 101, 202: 102}
+    assert len(action.blocker_instance_assignments) == 1
+    assert plan.fallback_reason == "planner_lethal_block"
+
+    ba._CACHE.clear()
+    facts = ba.assess(board)
+    assert facts.our_life_now_attack == 1
+
+
+# --- #175: lethal_reach gated on playable Cast/Activate and blocker-aware combat ------------------
+
+
+def test_lethal_reach_requires_cast_or_activate_option_and_caps_pure_board_by_blockers():
+    attacker = card(301, "Goblin Piker", ME, power=2, toughness=1)
+    blocker = card(401, "Wall of Runes", OPP, power=0, toughness=4)
+    shock = {
+        "instance_id": 302,
+        "name": "Shock",
+        "owner_seat_id": ME,
+        "controller_seat_id": ME,
+        "card_types": ["CardType_Instant"],
+        "mana_cost": "{R}",
+        "oracle_text": "Shock deals 2 damage to any target.",
+    }
+    mountain = {
+        "instance_id": 303,
+        "name": "Mountain",
+        "owner_seat_id": ME,
+        "controller_seat_id": ME,
+        "card_types": ["CardType_Land"],
+        "subtypes": ["SubType_Mountain"],
+        "is_tapped": False,
+        "oracle_text": "({T}: Add {R}.)",
+    }
+    board = state(
+        [attacker, blocker, mountain],
+        match="175-test",
+        local=ME,
+        life=10,
+        opp_life=2,
+        turn=5,
+        active=ME,
+        phase="Phase_Main1",
+        step="",
+        their_hand=0,
+        hand=[shock],
+    )
+    # 1. Menu with only PlayLand + Pass (no Cast or Activate): lethal_reach returns None.
+    land_only_decision = PendingDecision(
+        request_id=(1, 1),
+        request_type="ActionsAvailable",
+        options=(
+            DecisionOption("idx:0", "Play Plains", payable=True, meta={"actionType": "ActionType_Play"}),
+            DecisionOption("pass", "Pass", payable=True, meta={"actionType": "ActionType_Pass"}),
+        ),
+    )
+    assert lethal_reach(land_only_decision, board) is None
+
+    # 2. Pure board combat (no burn in hand, only casting a non-haste creature) blocked by 0/4 Wall: None.
+    board_no_burn = state(
+        [attacker, blocker, mountain],
+        match="175-noburn",
+        local=ME,
+        life=10,
+        opp_life=2,
+        turn=5,
+        active=ME,
+        phase="Phase_Main1",
+        step="",
+        their_hand=0,
+        hand=[card(304, "Grizzly Bears", ME, power=2, toughness=2)],
+    )
+    bear_decision = PendingDecision(
+        request_id=(1, 2),
+        request_type="ActionsAvailable",
+        options=(
+            DecisionOption(
+                "idx:0",
+                "Cast Grizzly Bears",
+                payable=True,
+                meta={"actionType": "ActionType_Cast", "instanceId": 304},
+            ),
+            DecisionOption("pass", "Pass", payable=True, meta={"actionType": "ActionType_Pass"}),
+        ),
+    )
+    assert lethal_reach(bear_decision, board_no_burn) is None
+
+    # 3. With Shock in hand and Cast option available, Shock's 2 burn reaches their 2 life.
+    shock_decision = PendingDecision(
+        request_id=(1, 3),
+        request_type="ActionsAvailable",
+        options=(
+            DecisionOption(
+                "idx:0",
+                "Cast Shock",
+                payable=True,
+                meta={"actionType": "ActionType_Cast", "instanceId": 302},
+            ),
+            DecisionOption("pass", "Pass", payable=True, meta={"actionType": "ActionType_Pass"}),
+        ),
+    )
+    reach = lethal_reach(shock_decision, board)
+    assert reach is not None and reach.damage >= 2 and reach.burn == 2
+
+
+# --- #196: declare_blockers with empty assignments at DeclareAttackers translates to pass ----------
+
+
+def test_parse_response_translates_empty_declare_blockers_at_declare_attackers():
+    planner = ActionPlanner(Mock())
+    board = state(
+        [card(501, "Grizzly Bears", ME, power=2, toughness=2)],
+        match="196-test",
+        local=ME,
+        life=20,
+        opp_life=20,
+        turn=3,
+        active=ME,
+        phase="Phase_Combat",
+        step="Step_DeclareAttack",
+        their_hand=3,
+    )
+    context = {
+        "type": "declare_attackers",
+        "legal_attacker_ids": [501],
+    }
+    raw = (
+        '{"actions": [{"action_type": "declare_blockers", "blocker_assignments": {}, '
+        '"reasoning": "Hold back Grizzly Bears on defense."}]}'
+    )
+    plan = planner._parse_response(
+        raw,
+        ["Attack with: Grizzly Bears (id=501)", "Pass"],
+        decision_context=context,
+        bridge_request="DeclareAttackers",
+        game_state=board,
+    )
+    assert len(plan.actions) == 1
+    assert plan.actions[0].action_type == ActionType.DECLARE_ATTACKERS
+    assert plan.actions[0].attacker_names == []
+
+
+# --- #131: _board_math_fallback skips attack-only creature set aside by _SecondLook ---------------
+
+
+def test_board_math_fallback_skips_attack_only_cast_set_aside_when_no_attack_follows():
+    # Match 6175f002 / de85f2c2: Fleeting Effigy (2/2 haste, returns to hand at end step) cast into
+    # a 5/5 blocker that would kill it for free; the losing-attack guard holds the attack.
+    their_wall = card(601, "Appa, Loyal Sky Bison", OPP, power=5, toughness=5)
+    effigy = {
+        "instance_id": 602,
+        "name": "Fleeting Effigy",
+        "owner_seat_id": ME,
+        "controller_seat_id": ME,
+        "card_types": ["CardType_Creature"],
+        "type_line": "Creature — Elemental",
+        "power": 2,
+        "toughness": 2,
+        "mana_cost": "{R}",
+        "keywords": ["Haste"],
+        "oracle_text": "Haste\nAt the beginning of your end step, return this creature to its owner's hand.",
+    }
+    board = state(
+        [their_wall],
+        match="de85f2c2",
+        local=ME,
+        life=20,
+        opp_life=20,
+        turn=4,
+        active=ME,
+        phase="Phase_Main1",
+        step="",
+        their_hand=3,
+        hand=[effigy],
+    )
+    decision = PendingDecision(
+        request_id=(1, 10),
+        request_type="ActionsAvailable",
+        options=(
+            DecisionOption(
+                "idx:0",
+                "Cast Fleeting Effigy",
+                payable=True,
+                meta={"actionType": "ActionType_Cast", "instanceId": 602},
+            ),
+            DecisionOption("pass", "Pass", payable=True, meta={"actionType": "ActionType_Pass"}),
+        ),
+    )
+    planner = ActionPlanner(Mock())
+    planner._last_decision_trace = {}
+    concern = planner._attack_only_cast_concern(
+        decision, board, "idx:0", "Cast Fleeting Effigy to attack.", None, {}
+    )
+    assert concern != ""
+    assert planner._last_decision_trace.get("attack_only", {}).get("chosen") == "idx:0"
+
+    # When _second_look sets aside idx:0 (last_llm_failure == "set_aside"), _board_math_fallback
+    # must filter out idx:0 and pick "pass" instead of re-casting Fleeting Effigy.
+    planner.last_llm_failure = "set_aside"
+    picked = planner._board_math_fallback(decision, board)
+    assert picked == ["pass"]
+
+
+# --- #150: _second_look rejects re-picked choice whose new reasoning repeats a refuted claim ------
+
+
+def test_second_look_raises_when_repicked_choice_reasoning_still_makes_refuted_claim():
+    # Match bd34f972 T8: Fleeting Effigy (a creature) is cast on second look with the false claim
+    # that casting it "triggers Slickshot Show-Off's prowess" — decision_claim_notes refutes that
+    # a creature spell triggers noncreature-spell prowess, so _second_look must raise SecondLookError.
+    slickshot = card(
+        701,
+        "Slickshot Show-Off",
+        ME,
+        power=1,
+        toughness=2,
+        text="Flying, haste\nWhenever you cast a noncreature spell, Slickshot Show-Off gets +2/+0 until end of turn.",
+    )
+    effigy = {
+        "instance_id": 702,
+        "name": "Fleeting Effigy",
+        "owner_seat_id": ME,
+        "controller_seat_id": ME,
+        "card_types": ["CardType_Creature"],
+        "type_line": "Creature — Elemental",
+        "power": 2,
+        "toughness": 2,
+        "mana_cost": "{R}",
+        "keywords": ["Haste"],
+        "oracle_text": "Haste\nAt the beginning of your end step, return this creature to its owner's hand.",
+    }
+    board = state(
+        [slickshot],
+        match="bd34f972",
+        local=ME,
+        life=20,
+        opp_life=20,
+        turn=8,
+        active=ME,
+        phase="Phase_Main1",
+        step="",
+        their_hand=2,
+        hand=[effigy],
+    )
+    decision = PendingDecision(
+        request_id=(1, 20),
+        request_type="ActionsAvailable",
+        options=(
+            DecisionOption(
+                "idx:0",
+                "Cast Fleeting Effigy",
+                payable=True,
+                meta={"actionType": "ActionType_Cast", "instanceId": 702},
+            ),
+            DecisionOption("pass", "Pass", payable=True, meta={"actionType": "ActionType_Pass"}),
+        ),
+    )
+    planner = ActionPlanner(Mock())
+    planner._last_decision_trace = {}
+    with pytest.raises(SecondLookError, match="second-look re-pick \\['idx:0'\\] refuted"):
+        planner._second_look(
+            decision,
+            board,
+            {"reasoning": "Cast Fleeting Effigy."},
+            ["idx:0"],
+            concerns_for=lambda _c, _d: [("attack_only", "Fleeting Effigy would not attack.")],
+            ask=lambda *_a, **_kw: '{"reasoning": "Casting Fleeting Effigy triggers Slickshot Show-Off prowess."}',
+            parse=lambda _raw: (
+                {"reasoning": "Casting Fleeting Effigy triggers Slickshot Show-Off prowess."},
+                ["idx:0"],
+            ),
+            message="Choose an option.",
+            answered_high=False,
+        )
