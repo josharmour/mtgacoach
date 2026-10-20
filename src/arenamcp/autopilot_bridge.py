@@ -1442,8 +1442,7 @@ class _BridgeSubmitMixin:
                 or str(getattr(action, "reasoning", "") or "")
                 or str(getattr(submitted, "model_reasoning", "") or "")
                 or str(getattr(action, "model_reasoning", "") or "")
-                or str(getattr(plan, "overall_strategy", "") or "")
-            )
+            )  # not the plan's overall strategy: a reasonless hold would show a stale plan's line
             trace = {
                 "reasoning": reasoning,
                 "fallback_reason": str(getattr(plan, "fallback_reason", "") or ""),

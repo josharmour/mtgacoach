@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 from unittest.mock import Mock
 
 import pytest
@@ -464,6 +466,27 @@ def test_second_look_raises_when_repicked_choice_reasoning_still_makes_refuted_c
             answered_high=False,
         )
 
+    # Review 2026-10-20: a refuted claim about another card (here Slickshot's keywords) is annotated,
+    # not a reason to set the re-pick aside.
+    from arenamcp.game_plan import decision_claim_notes
+
+    other = "Cast Fleeting Effigy; Slickshot Show-Off has deathtouch, so they will not block it."
+    notes = decision_claim_notes(other, board, cast_ids=[702])
+    assert notes and not any("fleeting effigy" in n.casefold() for n in notes)
+    planner._last_decision_trace = {}
+    result = planner._second_look(
+        decision,
+        board,
+        {"reasoning": "Cast Fleeting Effigy."},
+        ["idx:0"],
+        concerns_for=lambda _c, _d: [("attack_only", "Fleeting Effigy would not attack.")],
+        ask=lambda *_a, **_kw: '{"reasoning": "' + other + '"}',
+        parse=lambda _raw: ({"reasoning": other}, ["idx:0"]),
+        message="Choose an option.",
+        answered_high=False,
+    )
+    assert result is not None
+
 
 # --- #134: engine-role creatures count as threats and re-plan when removal target predates -------
 
@@ -541,6 +564,12 @@ def test_engine_creature_counts_as_threat_and_replans_when_removal_target_predat
         basis=old_basis,
     )
     assert plan_removal_target_predates_threat(plan, new_basis, 7) is True
+    # Review 2026-10-20: a creature named only in the path (or a hold), with no cast aimed at it, is
+    # no removal target, so no mid-turn reform.
+    untargeted = dataclasses.replace(
+        plan, turn_plan=[{**plan.turn_plan[0], "cast": ["Grizzly Bears"], "hold": "R for Frodo"}]
+    )
+    assert plan_removal_target_predates_threat(untargeted, new_basis, 7) is False
 
 
 # --- #141: late-game plan starvation with <=1 castable card or after 2 consecutive supersedes -----

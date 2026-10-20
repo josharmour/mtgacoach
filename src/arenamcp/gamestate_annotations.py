@@ -91,14 +91,15 @@ class _GameStateAnnotationsMixin:
                     # source_id to affected_ids[0], which is the damaged target — ledger #105).
                     source_obj = self.game_objects.get(source_id)
                     if source_obj:
-                        source_name = self._resolve_card_name(source_obj.grp_id)
+                        # An ability source is named after its permanent, never 'Card#<ability id>'.
+                        source_name = self._resolve_object_display_name(source_obj)
                     elif source_id in self.players:
                         source_name = "You" if source_id == self.local_seat_id else "Opponent"
                     else:
                         source_name = f"#{source_id}" if source_id else "unknown"
                     target_obj = self.game_objects.get(target_id)
                     if target_obj:
-                        target_name = self._resolve_card_name(target_obj.grp_id)
+                        target_name = self._resolve_object_display_name(target_obj)
                     elif target_id in self.players:
                         target_name = "You" if target_id == self.local_seat_id else "Opponent"
                     else:

@@ -2799,10 +2799,13 @@ def plan_removal_target_predates_threat(
     ]
     if not old_creatures:
         return False
+    # Only the step's casts aimed at a creature ("Lightning Strike (on Spinner of Souls)"): the plan's
+    # path and holds name opposing creatures in passing, and a reform on our turn costs latency
+    # (review 2026-10-20).
     text = " ".join(
-        [*(str(c) for c in step.get("cast") or []), str(step.get("hold") or ""), str(plan.path or "")]
+        target for cast in step.get("cast") or [] for target in re.findall(r"\(on ([^)]*)\)", str(cast))
     ).casefold()
-    if not any(_plan_mentions(name, text) for name in old_creatures):
+    if not text or not any(_plan_mentions(name, text) for name in old_creatures):
         return False
     return bool(board_changes(plan.basis, board, threats_only=True))
 

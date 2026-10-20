@@ -4543,16 +4543,26 @@ class ActionPlanner(_ActionLegalityMixin):
             from arenamcp.game_plan import decision_claim_notes
 
             cast_ids = []
+            cast_names = []
             for oid in new_chosen:
                 opt = decision.find(oid)
                 meta = (opt.meta if opt is not None else None) or {}
                 if meta.get("actionType") == "ActionType_Cast":
-                    cid = _as_int(find_source(game_state, meta).get("instance_id"))
+                    source = find_source(game_state, meta)
+                    cid = _as_int(source.get("instance_id"))
                     if cid:
                         cast_ids.append(cid)
-            refuted = decision_claim_notes(
-                str(new_data.get("reasoning") or ""), game_state, cast_ids=cast_ids
-            )
+                    if source.get("name"):
+                        cast_names.append(str(source["name"]).casefold())
+            # Only a refuted claim about the card the re-pick casts sets it aside; a wrong word about
+            # another card is annotated as before (#84; review 2026-10-20).
+            refuted = [
+                note
+                for note in decision_claim_notes(
+                    str(new_data.get("reasoning") or ""), game_state, cast_ids=cast_ids
+                )
+                if any(name in note.casefold() for name in cast_names)
+            ]
             if refuted:
                 trace["second_look"] = {
                     "concerns": [text for _kind, text in concerns],
@@ -7858,7 +7868,11 @@ class ActionPlanner(_ActionLegalityMixin):
                 self._last_decision_trace["lines"]["unmodelled"] = dict(unmodelled)
         plan_block = getattr(self, "_last_plan_block", "")
         if plan_block:
-            self._last_decision_trace["plan_block"] = plan_block
+            # Capped: every decision of a match carries it into packets and bug reports (review 2026-10-20).
+            limit = 2000
+            self._last_decision_trace["plan_block"] = (
+                plan_block if len(plan_block) <= limit else plan_block[:limit] + " …[truncated]"
+            )
         if getattr(self, "_held_instants", None):
             self._last_decision_trace["held_instants"] = list(self._held_instants)
 
