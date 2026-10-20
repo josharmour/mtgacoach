@@ -3437,6 +3437,25 @@ class ActionPlanner(_ActionLegalityMixin):
                         + "; trying structured fields"
                     )
             if action is None:
+                if (
+                    isinstance(action_data, dict)
+                    and str(action_data.get("action_type") or "").strip().lower() == "declare_blockers"
+                    and not (action_data.get("blocker_assignments") or {})
+                    and (
+                        str((decision_context or {}).get("type") or "").lower() == "declare_attackers"
+                        or str(bridge_request or "") == "DeclareAttackers"
+                        or any(
+                            str(a or "").lower().strip().startswith(("attack with:", "declare attackers:"))
+                            for a in legal_actions
+                        )
+                    )
+                ):
+                    action_data = {
+                        **action_data,
+                        "action_type": "declare_attackers",
+                        "attacker_names": [],
+                        "attacker_targets": {},
+                    }
                 action = self._parse_action(action_data)
             if action is not None and action.action_type == ActionType.DECLARE_ATTACKERS:
                 from arenamcp.action_legality import normalize_attack_declaration
