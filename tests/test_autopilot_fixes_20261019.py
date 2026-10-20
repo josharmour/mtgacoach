@@ -1013,32 +1013,6 @@ def test_mid_turn_reload_is_not_the_turn_start_in_plan_ledger():
     assert not any("T7" in lesson for lesson in lessons)
 
 
-# --- #112: Unholy Annex's locked Ritual Chamber flagged as an incoming 6/6 flying Demon threat ----
-
-
-def test_locked_room_door_token_flagged_as_incoming_threat():
-    from arenamcp.board_assessment import _threats
-
-    annex = {
-        "instance_id": 310,
-        "name": "Unholy Annex // Ritual Chamber",
-        "controller_seat_id": 2,
-        "card_types": ["CardType_Enchantment"],
-        "type_line": "Enchantment — Room // Enchantment — Room",
-        "oracle_text": (
-            "At the beginning of your end step, draw a card. If you control a Demon, each opponent loses 2 life "
-            "and you gain 2 life. Otherwise, you lose 2 life.\n"
-            "---\n"
-            "When you unlock this door, create a 6/6 black Demon creature token with flying."
-        ),
-    }
-    threats = _threats([annex], opponent=2, theirs=[], our_air=False, our_count=0)
-    assert len(threats) == 1
-    assert threats[0].name == "Unholy Annex // Ritual Chamber"
-    assert "locked Ritual Chamber: creates 6/6 flying Demon token when unlocked" in threats[0].why
-    assert threats[0].score > 10.0
-
-
 # --- #135: keep the plan/staleness block per decision in the packet trace ------------------------
 
 

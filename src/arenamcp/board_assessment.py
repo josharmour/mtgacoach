@@ -2545,39 +2545,6 @@ def _threats(
         elif re.search(r"deals? \d+ damage to each opponent|each opponent loses \d+ life", text):
             score += 2
             why.append("direct damage")
-        if "when you unlock this door" in text:
-            from arenamcp.line_search_moves import token_specs
-
-            for door_idx, part in enumerate(str(card.get("oracle_text") or "").split("---")):
-                for raw_line in part.splitlines():
-                    low_line = raw_line.strip().lower()
-                    if not low_line.startswith("when you unlock this door"):
-                        continue
-                    specs = token_specs(low_line) or []
-                    for count, power, toughness, kw, tok_name in specs:
-                        already_unlocked = any(
-                            b.get("power") == power
-                            and b.get("toughness") == toughness
-                            and (not tok_name or tok_name.lower() in str(b.get("name") or "").lower())
-                            for b in theirs
-                        )
-                        if already_unlocked:
-                            continue
-                        door_names = [p.strip() for p in _name(card).split("//")]
-                        door_label = (
-                            f"locked {door_names[door_idx]}"
-                            if door_idx < len(door_names) and len(door_names) > 1
-                            else "locked door"
-                        )
-                        kw_text = f" {' '.join(kw)}" if kw else ""
-                        tok_label = f" {tok_name}" if tok_name else " token"
-                        qty = f"{count}x " if count > 1 else ""
-                        score += count * (
-                            float(power)
-                            + 0.3 * toughness
-                            + (power * 0.8 + 1 if "flying" in kw and not our_air else 0)
-                        )
-                        why.append(f"{door_label}: creates {qty}{power}/{toughness}{kw_text}{tok_label} when unlocked")
         if score:
             threats.append(Threat(_name(card), _int(card.get("instance_id")), score, ", ".join(why)))
     threats.sort(key=lambda t: (-t.score, t.name))

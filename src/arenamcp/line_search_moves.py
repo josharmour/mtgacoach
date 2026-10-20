@@ -920,9 +920,12 @@ def drain_triggers(
         return 1 if enters.group("count") == "one or more" or enters.group("nontoken") else entering
     phase = _DRAIN_PHASE.match(event)
     if phase is not None:
+        whose = phase.group("whose")
         if after_upkeep and "upkeep" in event:
-            return 0  # their upkeep this turn has already happened (ledger #198)
-        return 2 if phase.group("whose") in ("each", "each player's") else 1
+            # Their upkeep this turn has already happened (ledger #198); ours is still to come
+            # (review 2026-10-20: "each upkeep" and "each opponent's upkeep" drains were dropped too).
+            return 0 if whose in ("your", "the") else 1
+        return 2 if whose in ("each", "each player's") else 1
     sacrifice = _DRAIN_SACRIFICE.match(event)
     if sacrifice is not None:
         if sacrifice.group("count") == "one or more":
@@ -3969,6 +3972,7 @@ class Moves:
         self, *, life, opp_life, ours, theirs, able, blockers, hand, entered, keep_tapped, spare, returning,
         index, turn, next_k, next_abs, fixed=None, variant="best", crack_exclude=frozenset(), tag="",
         blocks_locked=False, landfall=False, drops=None, crack_sources=None, spells=True, gains=0, drain_now=True,
+        combat_counters=True,
         after_upkeep=False,
     ) -> dict:  # fmt: skip
         """Their attack: any lethal policy kills us; else the non-suicidal one worst for us, and
@@ -3989,6 +3993,8 @@ class Moves:
         ``crack_sources``: our mana on our next turn (default ``spare``'s sources).
         ``drain_now``: their drain engines hit us this turn (``their_drain``; not on the
         attack already declared at the root).
+        ``combat_counters``: their beginning-of-combat counters are still to come (#198; False
+        at the root once their combat has begun, when the counters are on the snapshot).
         """
         self.opponent.chance(self, life)  # v1: always NOTHING
         entries = 0
@@ -3999,7 +4005,12 @@ class Moves:
                 self.their_drops if drops is None else drops,
                 index == self.fetch_index and fixed is None,
             )
-            grow = self.turn_growth(theirs, gains, combat_only=not spells)
+            if spells:
+                grow = self.turn_growth(theirs, gains)
+            elif combat_counters:
+                grow = self.turn_growth(theirs, gains, combat_only=True)
+            else:
+                grow = None
             theirs = self._landfall(theirs, entries, extra, spells=spells, grow=grow)
             able = self._landfall(able, entries, extra, spells=spells, grow=grow)
         if self.their_anthems:  # ledger #177: their life after our attack switches them
@@ -4296,7 +4307,11 @@ class Moves:
                 crack_exclude=crack,
                 tag="root",  # at a first-strike step the attackers are regular-damage copies
                 blocks_locked=locked,
-                landfall=fixed is None and before_combat,  # land entries + beginning-of-combat counters
+                # Land entries always (their Ordeal counter and fetched lands, #96/#97); their
+                # beginning-of-combat counters only before combat (review 2026-10-20: gating the
+                # whole landfall step on it lost a lethal Ordeal attack at Step_BeginCombat).
+                landfall=fixed is None,
+                combat_counters=before_combat,
                 spells=False,
                 drops=drops,
                 crack_sources=model.sources_all,
