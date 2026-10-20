@@ -1164,7 +1164,9 @@ def named_burn_damage(reasoning: str, state: dict, played: dict) -> int:
     damage alone. Names count in full or by a word the played card's own name
     lacks ("Burst" for Burst Lightning beside Lightning Strike); another copy
     of the played card counts only when the reasoning explicitly names a
-    second copy ("needs both Bursts", "two Bursts", "second Burst", #146).
+    second copy ("needs both Bursts", "two Bursts", "second Burst", #146) and
+    our mana pays for both (review 2026-10-20: "double strike" beside Lightning
+    Strike, or the card's name written twice, is no second copy).
     """
 
     def words(value: Any) -> list[str]:
@@ -1175,19 +1177,15 @@ def named_burn_damage(reasoning: str, state: dict, played: dict) -> int:
         return 0
     own_list = words(played.get("name"))
     own_words = set(own_list)
-    full_name = " ".join(own_list)
     own_stems = "|".join(
         re.escape(w) + "s?" for w in sorted(own_words, key=len, reverse=True) if len(w) >= 4
     )
     same_card_multi = bool(
         own_stems
-        and (
-            re.search(
-                rf"\b(?:both|two|2x?|second|2nd|another|other|double|pair of)"
-                rf"(?:\s+(?:of|our|the|my|hand))*?\s+(?:cop(?:y|ies)|{own_stems})\b",
-                text,
-            )
-            or (full_name and text.count(f" {full_name} ") >= 2)
+        and re.search(
+            rf"\b(?:both|two|2x?|second|2nd|another|other|pair of)(?:\s+(?:of|our|the|my))*?\s+"
+            rf"(?:cop(?:y|ies)\s+of\s+(?:(?:our|the|my)\s+)?)?(?:{own_stems})\b",
+            text,
         )
     )
     hand = [c for c in state.get("hand") or [] if isinstance(c, dict)]
@@ -1212,7 +1210,7 @@ def named_burn_damage(reasoning: str, state: dict, played: dict) -> int:
             if skip_unidentified_own:
                 skip_unidentified_own = False
                 continue
-            if not same_card_multi:
+            if not same_card_multi or not _copies_payable(card, state, 1 if on_stack else 2):
                 continue
         else:
             distinct = [word for word in name if len(word) >= 4 and word not in own_words]
@@ -1222,6 +1220,19 @@ def named_burn_damage(reasoning: str, state: dict, played: dict) -> int:
         if parsed and parsed[1] != "each":
             total += parsed[0]
     return total
+
+
+def _copies_payable(card: dict, state: dict, copies: int) -> bool:
+    """Our mana pays for ``copies`` casts of ``card`` (its printed cost); False when unknown."""
+    cost = str(card.get("mana_cost") or "")
+    if not cost:
+        return False
+    try:
+        from arenamcp.ward import available_mana
+
+        return available_mana(state) >= copies * mana_cost_to_cmc(cost)
+    except Exception:
+        return False
 
 
 def _combat_in_progress(state: dict) -> bool:

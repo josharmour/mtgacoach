@@ -236,6 +236,50 @@ def test_lethal_reach_requires_cast_or_activate_option_and_caps_pure_board_by_bl
     assert reach is not None and reach.damage >= 2 and reach.burn == 2
 
 
+def test_lethal_reach_gate_and_cap_in_isolation():
+    """Review 2026-10-20: the land-only gate holds without a blocker, and a castable spell that can
+    change the combat (here a tap effect, no face damage) keeps the blocker-free bound."""
+    attacker = card(311, "Goblin Piker", ME, power=2, toughness=1)
+    blocker = card(411, "Wall of Runes", OPP, power=0, toughness=4)
+    mountain = {
+        "instance_id": 313, "name": "Mountain", "owner_seat_id": ME, "controller_seat_id": ME,
+        "card_types": ["CardType_Land"], "is_tapped": False, "oracle_text": "({T}: Add {R}.)",
+    }  # fmt: skip
+    land_only = PendingDecision(
+        request_id=(2, 1),
+        request_type="ActionsAvailable",
+        options=(
+            DecisionOption("idx:0", "Play Plains", payable=True, meta={"actionType": "ActionType_Play"}),
+            DecisionOption("pass", "Pass", payable=True, meta={"actionType": "ActionType_Pass"}),
+        ),
+    )
+    open_board = state(
+        [attacker, mountain], match="175-gate", local=ME, life=10, opp_life=2, turn=5, active=ME,
+        phase="Phase_Main1", step="", their_hand=0, hand=[],
+    )  # fmt: skip
+    assert lethal_reach(land_only, open_board) is None  # the gate alone: no blocker to cap anything
+    tap_spell = {
+        "instance_id": 314, "name": "Frost Breath", "owner_seat_id": ME, "controller_seat_id": ME,
+        "card_types": ["CardType_Instant"], "type_line": "Instant", "mana_cost": "{R}",
+        "oracle_text": "Tap target creature. It doesn't untap during its controller's next untap step.",
+    }  # fmt: skip
+    walled = state(
+        [attacker, blocker, mountain], match="175-tap", local=ME, life=10, opp_life=2, turn=5, active=ME,
+        phase="Phase_Main1", step="", their_hand=0, hand=[tap_spell],
+    )  # fmt: skip
+    tap_decision = PendingDecision(
+        request_id=(2, 2),
+        request_type="ActionsAvailable",
+        options=(
+            DecisionOption("idx:0", "Cast Frost Breath", payable=True,
+                           meta={"actionType": "ActionType_Cast", "instanceId": 314}),
+            DecisionOption("pass", "Pass", payable=True, meta={"actionType": "ActionType_Pass"}),
+        ),
+    )  # fmt: skip
+    reach = lethal_reach(tap_decision, walled)
+    assert reach is not None and reach.damage >= 2  # tapping the Wall lets the Piker's 2 through
+
+
 # --- #196: declare_blockers with empty assignments at DeclareAttackers translates to pass ----------
 
 
@@ -271,6 +315,20 @@ def test_parse_response_translates_empty_declare_blockers_at_declare_attackers()
     assert len(plan.actions) == 1
     assert plan.actions[0].action_type == ActionType.DECLARE_ATTACKERS
     assert plan.actions[0].attacker_names == []
+    # Review 2026-10-20: a mislabelled answer that names attackers keeps them.
+    raw = (
+        '{"actions": [{"action_type": "declare_blockers", "blocker_assignments": {}, '
+        '"attacker_names": ["Grizzly Bears"], "reasoning": "Swing with the Bears."}]}'
+    )
+    plan = planner._parse_response(
+        raw,
+        ["Attack with: Grizzly Bears (id=501)", "Pass"],
+        decision_context=context,
+        bridge_request="DeclareAttackers",
+        game_state=board,
+    )
+    (action,) = plan.actions
+    assert action.action_type == ActionType.DECLARE_ATTACKERS and action.attacker_names == ["Grizzly Bears"]
 
 
 # --- #131: _board_math_fallback skips attack-only creature set aside by _SecondLook ---------------
@@ -576,6 +634,15 @@ def test_named_burn_damage_counts_second_copy_when_reasoning_names_both_bursts()
         their_hand=2,
         hand=[burst1, burst2],
     )
+
+    def mountain(iid):
+        return {
+            "instance_id": iid, "name": "Mountain", "owner_seat_id": ME, "controller_seat_id": ME,
+            "card_types": ["CardType_Land"], "type_line": "Basic Land — Mountain", "is_tapped": False,
+            "oracle_text": "({T}: Add {R}.)",
+        }  # fmt: skip
+
+    board["battlefield"] += [mountain(1101), mountain(1102)]  # {R}{R}: both Bursts are payable
     # Naming "both Bursts" / "two Bursts" / "second Burst" counts the second copy in hand (2 damage).
     assert (
         named_burn_damage("Cast Burst Lightning; kills Dazzling Angel (2/3) — needs both Bursts.", board, burst1)
@@ -590,6 +657,35 @@ def test_named_burn_damage_counts_second_copy_when_reasoning_names_both_bursts()
         named_burn_damage("Cast Burst Lightning to kill Dazzling Angel (2/3) and trigger both prowess creatures.", board, burst1)
         == 0
     )
+    # Review 2026-10-20: the card's name written twice is no second copy, and neither is a copy
+    # the mana can't pay for.
+    assert named_burn_damage("Burst Lightning on the Angel; Burst Lightning is our best play.", board, burst1) == 0
+    board["battlefield"] = [c for c in board["battlefield"] if c["instance_id"] != 1102]
+    assert named_burn_damage("Needs both Bursts for Dazzling Angel (2/3).", board, burst1) == 0
+
+
+def test_double_strike_is_no_second_lightning_strike():
+    from arenamcp.play_safety import named_burn_damage
+
+    strike = {
+        "name": "Lightning Strike", "type_line": "Instant", "mana_cost": "{1}{R}",
+        "oracle_text": "Lightning Strike deals 3 damage to any target.",
+    }  # fmt: skip
+    played, other = {**strike, "instance_id": 2001}, {**strike, "instance_id": 2002}
+    board = state(
+        [card(2003, "Ironclad Krovod", OPP, power=2, toughness=4)],
+        match="review-146", local=ME, life=20, opp_life=20, turn=6, active=ME,
+        phase="Phase_Main1", step="", their_hand=2, hand=[played, other],
+    )  # fmt: skip
+    board["battlefield"] += [
+        {"instance_id": 2100 + i, "name": "Mountain", "owner_seat_id": ME, "controller_seat_id": ME,
+         "card_types": ["CardType_Land"], "type_line": "Basic Land — Mountain", "is_tapped": False,
+         "oracle_text": "({T}: Add {R}.)"}
+        for i in range(4)
+    ]  # fmt: skip
+    reasoning = "Lightning Strike kills their 2/4 so our double strike attacker connects."
+    assert named_burn_damage(reasoning, board, played) == 0
+    assert named_burn_damage("Two Lightning Strikes kill their 2/4.", board, played) == 3
 
 
 # --- #181: Hare Apparent not marked "cast after combat" when Hares attack -------------------------

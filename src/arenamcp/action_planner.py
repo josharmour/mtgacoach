@@ -3457,11 +3457,12 @@ class ActionPlanner(_ActionLegalityMixin):
                         )
                     )
                 ):
+                    # #196: a mislabelled hold; attackers the answer does name still attack.
                     action_data = {
                         **action_data,
                         "action_type": "declare_attackers",
-                        "attacker_names": [],
-                        "attacker_targets": {},
+                        "attacker_names": list(action_data.get("attacker_names") or []),
+                        "attacker_targets": dict(action_data.get("attacker_targets") or {}),
                     }
                 action = self._parse_action(action_data)
             if action is not None and action.action_type == ActionType.DECLARE_ATTACKERS:

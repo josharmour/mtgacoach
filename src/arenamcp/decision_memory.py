@@ -1110,6 +1110,34 @@ def _sneak_reach(
     return best, name, None
 
 
+def _menu_can_change_combat(decision: Any, state: dict) -> bool:
+    """A payable activation, or a payable cast of a card that is not a creature (or unknown)."""
+    hand = {
+        int(card.get("instance_id") or 0): card
+        for card in state.get("hand") or []
+        if isinstance(card, dict)
+    }
+    for option in getattr(decision, "options", ()) or ():
+        if getattr(option, "payable", None) is False:
+            continue
+        meta = getattr(option, "meta", {}) or {}
+        kind = meta.get("actionType")
+        if kind == "ActionType_Activate":
+            return True
+        if kind != "ActionType_Cast":
+            continue
+        try:
+            card = hand.get(int(meta.get("instanceId") or 0))
+        except (TypeError, ValueError):
+            card = None
+        if card is None:
+            return True
+        kinds = " ".join(str(k) for k in card.get("card_types") or []) + " " + str(card.get("type_line") or "")
+        if "creature" not in kinds.lower():
+            return True
+    return False
+
+
 def lethal_reach(decision: Any, state: dict | None) -> LethalReach | None:
     """Their life is within our most damage this turn, or None (ActionsAvailable only).
 
@@ -1121,8 +1149,14 @@ def lethal_reach(decision: Any, state: dict | None) -> LethalReach | None:
     attack before combat on our turn (their power), plus the most the payable
     noncreature casts on the menu deal to their face within our mana, plus
     per such cast +N for each attacker with "whenever you cast a noncreature
-    spell, ... gets +N/+0" and +1 for each with prowess. Blockers, tapped
-    lands of theirs and ordering are ignored: it only gates effort.
+    spell, ... gets +N/+0" and +1 for each with prowess. Tapped lands of
+    theirs and ordering are ignored: it only gates effort.
+
+    Ledger #175: a menu with no payable cast or activation (land and pass
+    only) is never within reach, and when nothing on the menu can change the
+    combat (no activation, no noncreature cast) their best blocks cap the
+    attack. A noncreature cast or an activation (a tap effect, a pump, removal)
+    keeps the blocker-free bound (review 2026-10-20).
     """
     if not isinstance(state, dict) or str(getattr(decision, "request_type", "")) != "ActionsAvailable":
         return None
@@ -1202,7 +1236,7 @@ def lethal_reach(decision: Any, state: dict | None) -> LethalReach | None:
             attack = unblocked  # blocks are known: the unblocked attackers' damage
         elif not sneak:
             sneak_name = ""
-    if extra == 0 and not sneak and attackers:
+    if extra == 0 and not sneak and attackers and not _menu_can_change_combat(decision, state):
         from arenamcp.combat_solver import optimal_blocks
         from arenamcp.combat_strategy import _eligible_blockers
 
