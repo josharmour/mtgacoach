@@ -1121,3 +1121,54 @@ def test_vanilla_token_from_mtgadb_does_not_get_phantom_keyword_by_name():
     assert wolf.oracle_text == ""
 
 
+def test_auto_queue_treats_blocked_after_queue_started_as_bounded_matchmaking_wait():
+    """#85: Once _queue_started/_queue_confirmed is set, screen=blocked/action=stop waits for the match."""
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from tests.mac_fakes import make_frame
+
+    from arenamcp.auto_queue import AutoQueueNavigator
+
+    state = {"match_id": "ended"}
+    controller = Mock()
+    controller.capture.side_effect = make_frame
+    controller.execute.return_value = True
+    backend = SimpleNamespace(
+        complete_with_image=Mock(
+            return_value=json.dumps(
+                {
+                    "screen": "blocked",
+                    "action": "stop",
+                    "label": "Waiting for Opponent",
+                    "point": None,
+                    "confidence": 0.96,
+                    "reason": "Matchmaking transition screen",
+                }
+            )
+        )
+    )
+    statuses = []
+    nav = AutoQueueNavigator(
+        backend=backend,
+        controller=controller,
+        get_game_state=lambda: state,
+        status_fn=statuses.append,
+        refine_target=lambda frame, data, action: action,
+    )
+    nav.set_enabled(True)
+    assert nav.note_match_end(
+        {"match_id": "ended", "event_id": "Ladder", "deck_name": "Current deck"},
+        confirmed_match_end=True,
+    )
+    nav._queue_started = True
+    nav._queue_confirmed = True
+
+    nav._step(nav._generation, nav._abort)
+    assert nav._queue_started is True
+    assert nav.paused_reason == ""
+    assert statuses[-1] == "Waiting for the next match"
+
+
+

@@ -1221,7 +1221,12 @@ class AutoQueueNavigator:
                 return
             if action is None:
                 self._last_rejection = None
-                if data.get("action") == "stop" or self._stage in {"blocked", "sideboard"}:
+                if (
+                    data.get("action") == "stop" or self._stage in {"blocked", "sideboard"}
+                ) and not (
+                    (self._queue_started or self._queue_confirmed)
+                    and self._stage != "sideboard"
+                ):
                     expected = self._expected_queue
                     if not expected and self._stage in {"recent", "play", "deck"}:
                         self._pause(
@@ -1270,7 +1275,7 @@ class AutoQueueNavigator:
                     self._next_poll = time.monotonic() + (30 if matchmaking else 3)
                     self._status(
                         "Waiting for the next match"
-                        if matchmaking
+                        if matchmaking or self._queue_started or self._queue_confirmed
                         else "Waiting for Arena to finish loading"
                         if self._stage == "queue"
                         else "Waiting for Arena"
