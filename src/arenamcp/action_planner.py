@@ -3910,9 +3910,17 @@ class ActionPlanner(_ActionLegalityMixin):
         """Our latest typed decisions, one per line, for the game-plan reform prompt."""
         return self._memory().recent_actions_text()
 
-    def decisions_for_turn(self, turn: int) -> list[str]:
+    def decisions_for_turn(self, turn: int, state: dict[str, Any] | None = None) -> list[str]:
         """Our typed decisions during ``turn``, for the game-plan match ledger."""
-        return self._memory().lines_for_turn(int(turn))
+        return self._memory().lines_for_turn(int(turn), state=state)
+
+    def mark_cast_cancelled(
+        self, state: dict[str, Any] | None, source: str, outcome: str | None = None
+    ) -> None:
+        """Mark the latest cast of ``source`` on this turn as cancelled or countered in DecisionMemory."""
+        from arenamcp.decision_memory import CANCELLED
+
+        self._memory().mark_cancelled(state, source, outcome=outcome or CANCELLED)
 
     def _memory(self) -> DecisionMemory:
         """The decision memory, created on first use (tests build planners without __init__)."""

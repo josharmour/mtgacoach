@@ -65,9 +65,21 @@ class TurnEntry:
 
     def executed(self) -> tuple[list[str], list[str]]:
         """(planned casts we made, planned casts we did not) by name match in the decision lines."""
-        done = " ".join(self.did).casefold()
-        made = [name for name in self.planned_casts if name.casefold() in done]
-        missed = [name for name in self.planned_casts if name.casefold() not in done]
+        abort_markers = ("cancelled — no effect", "countered — no effect", "[cancelled", "[countered")
+        active = [line for line in self.did if not any(m in line.casefold() for m in abort_markers)]
+        aborted = [line.casefold() for line in self.did if any(m in line.casefold() for m in abort_markers)]
+        done = " ".join(active).casefold()
+        made: list[str] = []
+        missed: list[str] = []
+        for name in self.planned_casts:
+            needle = name.casefold()
+            if needle in done and not (
+                any(f"({needle})" in line or f"cast {needle}" in line for line in aborted)
+                and sum(1 for line in active if f"cast {needle}" in line.casefold()) == 0
+            ):
+                made.append(name)
+            else:
+                missed.append(name)
         return made, missed
 
     def swing(self) -> str:
@@ -128,6 +140,7 @@ class PlanLedger:
         role: str = "",
         plan: Any = None,
         decisions_for_turn: Callable[[int], list[str]] | None = None,
+        mid_turn: bool = False,
     ) -> None:
         """Close the previous turn with ``snapshot`` and open ``turn``; repeated calls for a turn are no-ops."""
         if turn <= 0 or turn == self._turn:
@@ -142,7 +155,8 @@ class PlanLedger:
                     last.did = list(decisions_for_turn(last.turn) or [])
                 except Exception:  # the feed never blocks the ledger
                     pass
-        entry = TurnEntry(turn=turn, ours=ours, role=role, start=dict(snapshot))
+        start_snapshot = {} if (mid_turn and not self._entries) else dict(snapshot)
+        entry = TurnEntry(turn=turn, ours=ours, role=role, start=start_snapshot)
         step = plan.step_for(turn) if plan is not None and hasattr(plan, "step_for") else None
         if isinstance(step, dict) and ours:
             from arenamcp.game_plan import step_text
@@ -156,7 +170,8 @@ class PlanLedger:
 
     def lessons(self) -> list[str]:
         """Deterministic lessons from the closed turns: stalls, missed casts, big life swings."""
-        closed = [e for e in self._entries if e.end]
+        all_closed = [e for e in self._entries if e.end]
+        closed = [e for e in all_closed if e.start]
         ours = [e for e in closed if e.ours]
         out: list[str] = []
         no_damage = [e.turn for e in ours if e.start.get("opp_life", 0) <= e.end.get("opp_life", 0)]
@@ -164,7 +179,7 @@ class PlanLedger:
             out.append(
                 f"No damage dealt on our turns {', '.join(f'T{t}' for t in no_damage[-3:])}: the pressure line is not working"
             )
-        missed_turns = [e for e in ours if e.planned_casts and e.executed()[1]]
+        missed_turns = [e for e in all_closed if e.ours and e.planned_casts and e.executed()[1]]
         if len(missed_turns) >= 2:
             names = sorted({name for e in missed_turns for name in e.executed()[1]})
             out.append(

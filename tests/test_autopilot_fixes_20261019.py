@@ -785,3 +785,91 @@ def test_damage_dealt_uses_affector_id_and_formats_target():
         opp_seat=2,
     )
     assert any("Burst Lightning dealt 4 to Pyrewood Gearhulk" in line for line in lines)
+
+
+# --- #106: mid-turn reload snapshot is not turn start + countered casts are not logged as done ----
+
+
+def test_mid_turn_reload_and_countered_casts_in_plan_ledger():
+    from arenamcp.decision_memory import COUNTERED, DecisionMemory
+    from arenamcp.game_plan import GamePlan, GamePlanManager
+
+    mgr = GamePlanManager(backend=None)
+    memory = DecisionMemory()
+    mgr.set_turn_decisions_source(memory.lines_for_turn)
+
+    def _state(turn: int, active: int, phase: str, opp_life: int, actions=None):
+        return {
+            "match_id": "5d5d32f8",
+            "turn": {"turn_number": turn, "active_player": active, "phase": phase},
+            "local_seat_id": 2,
+            "players": [
+                {"seat_id": 1, "life": opp_life},
+                {"seat_id": 2, "life": 20, "is_local": True},
+            ],
+            "battlefield": [
+                {
+                    "instance_id": 295,
+                    "name": "Giant Cindermaw",
+                    "controller_seat_id": 2,
+                    "card_types": ["CardType_Creature"],
+                    "power": 4,
+                    "toughness": 3,
+                    "is_tapped": True,
+                }
+            ],
+            "hand": [],
+            "graveyard": [],
+            "stack": [],
+            "action_history": list(actions or []),
+        }
+
+    # Mid-turn reload on T7 (Main2 after Cindermaw already dealt 4 damage): start must not be taken as 11->11.
+    mgr.observe(_state(7, active=2, phase="Phase_Main2", opp_life=11))
+    mgr.observe(_state(8, active=1, phase="Phase_Main1", opp_life=11))
+    mgr.observe(_state(9, active=2, phase="Phase_Main1", opp_life=11))
+    mgr.observe(_state(10, active=1, phase="Phase_Main1", opp_life=7))
+    mgr._plan = GamePlan(
+        win_conditions=["Burn"],
+        turn_formed=10,
+        turn_plan=[{"turn": 11, "land": "", "cast": ["Burst Lightning"], "attack": "Giant Cindermaw", "hold": ""}],
+    )
+    t11 = _state(11, active=2, phase="Phase_Main1", opp_life=7)
+    mgr.observe(t11)
+    memory.record(
+        t11,
+        PendingDecision((1, 1), "ActionsAvailable", (DecisionOption("idx:1", "Cast Burst Lightning [OK]"),)),
+        ["idx:1"],
+        "Burst Lightning to the face drops them to 5.",
+    )
+    memory.record(
+        t11,
+        PendingDecision((1, 2), "CastingTimeOptions", (DecisionOption("idx:0", "Done"),)),
+        ["idx:0"],
+        "Resolve unpumped.",
+    )
+    memory.record(
+        t11,
+        PendingDecision((1, 3), "SelectTargets", (DecisionOption("tgt:1", "Target #1"),), source_label="Burst Lightning"),
+        ["tgt:1"],
+        "2 to the face.",
+    )
+    # Opponent counters Burst Lightning with Spell Pierce on T11.
+    t12 = _state(
+        12,
+        active=1,
+        phase="Phase_Main1",
+        opp_life=7,
+        actions=[
+            {"turn": 11, "phase": "Phase_Main1", "seat": 2, "action": "Cast", "card": "Burst Lightning", "instance_ids": [333]},
+            {"turn": 11, "phase": "Phase_Main1", "seat": 1, "action": "Cast", "card": "Spell Pierce", "instance_ids": [335]},
+        ],
+    )
+    mgr.observe(t12)
+    block = mgr.ledger_payload()["block"]
+    lessons = mgr.ledger_payload()["lessons"]
+    assert "them 11->11" not in block.splitlines()[1]
+    assert not any("T7" in lesson for lesson in lessons)
+    assert f"[{COUNTERED}]" in block
+    assert "NOT executed (missing Burst Lightning)" in block
+

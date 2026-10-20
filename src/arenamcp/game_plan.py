@@ -3423,6 +3423,54 @@ class GamePlanManager:
             ],
         }
 
+    @staticmethod
+    def _is_mid_turn_start(game_state: dict[str, Any], turn: int) -> bool:
+        """True when ``turn`` is first observed after a mid-turn reload (combat/post-combat or turn plays already made)."""
+        if turn <= 1 or not isinstance(game_state, dict):
+            return False
+        turn_info = game_state.get("turn") or {}
+        phase = str(turn_info.get("phase") or "")
+        step = str(turn_info.get("step") or "")
+        if phase in ("Phase_Combat", "Combat", "Phase_Main2", "Main2", "Phase_Ending", "Ending"):
+            return True
+        if step in (
+            "Step_BeginCombat",
+            "Step_DeclareAttack",
+            "Step_DeclareBlock",
+            "Step_CombatDamage",
+            "Step_EndCombat",
+            "Step_End",
+            "Step_Cleanup",
+            "BeginCombat",
+            "DeclareAttack",
+            "DeclareBlock",
+            "CombatDamage",
+            "EndCombat",
+            "End",
+        ):
+            return True
+        if int(turn_info.get("lands_played_this_turn") or turn_info.get("land_played_this_turn") or 0) > 0:
+            return True
+        if any(
+            isinstance(a, dict) and int(a.get("turn") or 0) == turn
+            for a in (game_state.get("action_history") or [])
+        ):
+            return True
+        if any(
+            isinstance(d, dict) and int(d.get("turn") or 0) == turn
+            for d in (game_state.get("damage_events") or [])
+        ):
+            return True
+        active = turn_info.get("active_player")
+        if active is not None and any(
+            isinstance(c, dict)
+            and c.get("controller_seat_id") == active
+            and (c.get("is_attacking") or c.get("is_tapped"))
+            for c in (game_state.get("battlefield") or [])
+        ):
+            return True
+        return False
+
     def _ledger_turn_started(self, game_state: dict[str, Any], turn: int) -> None:
         """Close the previous turn and open ``turn`` in the ledger (caller holds the lock; never raises)."""
         try:
@@ -3430,13 +3478,24 @@ class GamePlanManager:
             from arenamcp.plan_ledger import snapshot_from_assessment
 
             assessment = assess(game_state)
+            mid_turn = not self._ledger.entries and self._is_mid_turn_start(game_state, turn)
+
+            def _decisions_for_turn(t: int) -> list[str]:
+                if self._turn_decisions_source is None:
+                    return []
+                try:
+                    return list(self._turn_decisions_source(t, game_state) or [])  # type: ignore[call-arg]
+                except TypeError:
+                    return list(self._turn_decisions_source(t) or [])
+
             self._ledger.turn_started(
                 turn,
                 ours=bool(getattr(assessment, "our_turn", self._our_turn(game_state))),
                 snapshot=snapshot_from_assessment(assessment),
                 role=str(getattr(assessment, "role", "") or ""),
                 plan=self._plan,
-                decisions_for_turn=self._turn_decisions_source,
+                decisions_for_turn=_decisions_for_turn if self._turn_decisions_source is not None else None,
+                mid_turn=mid_turn,
             )
         except Exception as error:
             logger.debug("match ledger skipped for turn %s: %s", turn, error)
