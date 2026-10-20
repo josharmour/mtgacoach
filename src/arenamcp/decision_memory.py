@@ -984,6 +984,12 @@ def lethal_reach(decision: Any, state: dict | None) -> LethalReach | None:
     """
     if not isinstance(state, dict) or str(getattr(decision, "request_type", "")) != "ActionsAvailable":
         return None
+    if not any(
+        getattr(o, "payable", None) is not False
+        and (getattr(o, "meta", {}) or {}).get("actionType") in ("ActionType_Cast", "ActionType_Activate")
+        for o in getattr(decision, "options", ()) or ()
+    ):
+        return None
     life = next(
         (
             p.get("life_total")
@@ -1054,6 +1060,16 @@ def lethal_reach(decision: Any, state: dict | None) -> LethalReach | None:
             attack = unblocked  # blocks are known: the unblocked attackers' damage
         elif not sneak:
             sneak_name = ""
+    if extra == 0 and not sneak and attackers:
+        from arenamcp.combat_solver import optimal_blocks
+        from arenamcp.combat_strategy import _eligible_blockers
+
+        opponent = next((p.get("seat_id") for p in state.get("players") or [] if not p.get("is_local")), None)
+        blockers = _eligible_blockers(state, opponent)
+        if blockers:
+            plan = optimal_blocks(attackers, blockers, life)
+            if plan is not None:
+                attack = plan.damage_through
     if attack + extra + sneak < life:
         return None
     return LethalReach(
