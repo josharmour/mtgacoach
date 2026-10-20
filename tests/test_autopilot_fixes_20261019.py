@@ -659,3 +659,25 @@ def test_hare_apparent_not_marked_post_combat():
     assert "after combat" not in step.text()
 
 
+# --- #107: opponent attacker's "deals 4 damage to any target" trigger with no known target --------
+
+
+def test_their_attacker_damage_trigger_without_target_does_not_abort_concede():
+    from arenamcp.concede import estimate_loss
+    from tests.bug_180436_states import bug_state
+
+    st = bug_state()
+    st["stack"] = [
+        {
+            "instance_id": 995,
+            "name": "Overlord of the Boilerbilges ability",
+            "oracle_text": "Whenever this creature enters or attacks, it deals 4 damage to any target.",
+            "controller_seat_id": 2,
+            "object_kind": "ABILITY",
+        }
+    ]
+    estimate = estimate_loss(st)
+    assert estimate.confidence >= 0.95, estimate.blockers
+
+
+

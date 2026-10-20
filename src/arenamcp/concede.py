@@ -1353,7 +1353,13 @@ def _stack_caps(view: dict, *, local: int, opponent: int) -> list[tuple[float, s
         hazard = _THEIR_STACK_BOARDWIDE.search(text)
         if hazard is None and "target" in text and _THEIR_STACK_TARGETED.search(text):
             targets = [_int(t) for t in item.get("targeting") or []]
-            if not targets or any(t not in ours for t in targets):
+            is_trigger = name.lower().endswith(" ability") or bool(
+                re.search(r"\b(?:when|whenever|at the beginning of)\b", text)
+            )
+            if targets:
+                if any(t not in ours for t in targets):
+                    hazard = _THEIR_STACK_TARGETED.search(text)
+            elif not is_trigger:
                 hazard = _THEIR_STACK_TARGETED.search(text)
         if hazard is not None:
             caps.append((0.7, f"their {name} on the stack could change the combat ('{hazard.group(0)}')"))
