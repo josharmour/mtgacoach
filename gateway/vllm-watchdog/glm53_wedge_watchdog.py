@@ -12,10 +12,15 @@ restart policy cannot see it; every customer was down until a manual restart.
 
 This is the docker-managed sibling of dsv4-build/scripts/wedge_watchdog.py:
 a wedge is a request in flight (num_requests_running >= 1) with ZERO engine
-progress — no new engine iteration (vllm:iteration_tokens_total_count, which
-advances on every prefill chunk too, so a 1M-token prefill is progress), no
-prompt and no generation tokens — for WD_STUCK_SEC. Then save the container's
-log under WD_LOG_DIR and `docker stop` it.
+progress — no new engine iteration (vllm:iteration_tokens_total_count), no
+prompt and no generation tokens, and no change in KV-cache usage — for
+WD_STUCK_SEC. Then save the container's log under WD_LOG_DIR and `docker stop` it.
+
+The three counters only move once a prefill completes, so a long uncached
+prompt looks frozen for minutes. 2026-10-19 19:51 the watchdog killed a healthy
+~720K-token Hermes prefill that way at ~90% done (its replay took 146 s). KV
+usage climbs every 20 s through such a prefill (0.26 -> 0.63) and stays flat in
+a real hang (09:34: 0.8024 for 5 minutes), so any change in it is progress.
 
 2026-10-20: one supervisor. The container is the foreground `docker run --rm`
 of the user unit glm53-2x-rtxpro6000.service (Restart=always), so a stop
@@ -56,6 +61,7 @@ PROGRESS = (
     "vllm:iteration_tokens_total_count{",
     "vllm:prompt_tokens_total{",
     "vllm:generation_tokens_total{",
+    "vllm:kv_cache_usage_perc{",  # gauge: any change is progress
 )
 
 
@@ -161,7 +167,7 @@ def main():
             stuck_since = last = None
             continue
         in_flight, counters = sample
-        progressed = last is not None and any(new > old for new, old in zip(counters, last))
+        progressed = last is not None and any(new != old for new, old in zip(counters, last))
         last = counters
         if in_flight >= 1 and not progressed:
             if stuck_since is None:

@@ -80,8 +80,10 @@ to give back without shrinking the 1M context.
 - `vllm-watchdog/glm53_wedge_watchdog.py` + `glm53-wedge-watchdog.service` — installed on blackwell as
   `/usr/local/lib/glm53-watchdog/` + `/etc/systemd/system/glm53-wedge-watchdog.service` (enabled).
   A wedge = `num_requests_running >= 1` with no movement in `iteration_tokens_total_count`,
-  `prompt_tokens_total` or `generation_tokens_total` for 120 s (a 1M-token prefill advances the iteration
-  count every 2048-token chunk) -> save `docker logs` to `/var/log/glm53-watchdog/wedge-*.log`, then
+  `prompt_tokens_total`, `generation_tokens_total` or `kv_cache_usage_perc` for 120 s. The counters only
+  move once a prefill completes, so until 2026-10-20 a long uncached Hermes prompt (>~440K new tokens)
+  looked wedged: 10-19 19:51 the watchdog killed a healthy ~720K-token prefill at ~90%. KV usage climbs
+  through a prefill and is flat in a real hang -> save `docker logs` to `/var/log/glm53-watchdog/wedge-*.log`, then
   `docker stop`; 420 s cooldown (load takes ~2m); max 3/hour.
 - One supervisor (2026-10-20): the container is the foreground `docker run --rm` of the user unit
   `glm53-2x-rtxpro6000.service` (`Restart=always`, `~/glm53-spark/serve.sh`), so a stop removes it and
