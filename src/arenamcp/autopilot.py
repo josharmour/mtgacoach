@@ -892,10 +892,6 @@ class AutopilotEngine(
         self._note_cast_rollback(why)
         self._undo_activation_after_cancel(game_state, why)
         self._withhold_after_self_cancel(game_state, why)
-        source_card = str((game_state.get("decision_context") or {}).get("source_card") or "")
-        mark_fn = getattr(self._planner, "mark_cast_cancelled", None)
-        if callable(mark_fn) and source_card:
-            mark_fn(game_state, source_card)
         self._record_autopilot_decision(game_state, trigger, action_type="pay_costs", summary=why)
         return True
 
@@ -3143,12 +3139,6 @@ class AutopilotEngine(
                         game_state
                     ).cancel_action():
                         self._log_execution_path(ExecutionPath.GRE_AWARE, "decline optional PayCosts")
-                        source_card = str((game_state.get("decision_context") or {}).get("source_card") or "")
-                        mark_fn = getattr(self._planner, "mark_cast_cancelled", None)
-                        if callable(mark_fn) and source_card:
-                            from arenamcp.decision_memory import COUNTERED
-
-                            mark_fn(game_state, source_card, outcome=COUNTERED)
                         self._record_autopilot_decision(
                             game_state,
                             trigger,

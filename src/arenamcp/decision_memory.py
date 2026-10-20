@@ -120,57 +120,6 @@ class DecisionRecord:
 # the autopilot cancels the request, which for a cast's sub-decision cancels the cast.
 _DECLINE = "__decline__"
 CANCELLED = "cancelled — no effect"
-COUNTERED = "countered — no effect"
-
-_KNOWN_COUNTERSPELLS = frozenset(
-    {
-        "an offer you can't refuse",
-        "cancel",
-        "counterspell",
-        "disdainful stroke",
-        "disallow",
-        "drown in the loch",
-        "ertai's scorn",
-        "essence scatter",
-        "geistlight snare",
-        "long river's pull",
-        "make disappear",
-        "mana drain",
-        "mana tithe",
-        "mystical dispute",
-        "negate",
-        "no more lies",
-        "phantom interference",
-        "quench",
-        "refute",
-        "saruman's trickery",
-        "saw it coming",
-        "spell pierce",
-        "stern scolding",
-        "swan song",
-        "syncopate",
-        "three steps ahead",
-        "tishana's tidebinder",
-        "wash away",
-    }
-)
-
-
-def _is_counterspell_card(name: str, state: dict) -> bool:
-    low = str(name or "").strip().casefold()
-    if not low:
-        return False
-    if low in _KNOWN_COUNTERSPELLS:
-        return True
-    for zone in ("stack", "graveyard", "exile"):
-        for card in state.get(zone) or []:
-            if not isinstance(card, dict):
-                continue
-            if str(card.get("name") or "").strip().casefold() == low:
-                oracle = str(card.get("oracle_text") or "").casefold()
-                if "counter target" in oracle:
-                    return True
-    return False
 
 
 def _is_land(card: dict) -> bool:
@@ -216,24 +165,20 @@ class DecisionMemory:
         self._limit = limit
         self._match_id: Any = None
         self._records: list[DecisionRecord] = []
-        self._countered_action_keys: set[tuple[int, str, tuple[int, ...]]] = set()
 
     def reset(self) -> None:
         self._records = []
-        self._countered_action_keys = set()
 
     def _sync_match(self, state: dict) -> None:
         match_id = state.get("match_id")
         if match_id != self._match_id:
             self._match_id = match_id
             self._records = []
-            self._countered_action_keys = set()
 
     def record(self, state: dict, decision: Any, chosen: list[str], reasoning: str) -> DecisionRecord | None:
         if not isinstance(state, dict) or decision is None:
             return None
         self._sync_match(state)
-        self.observe_countered(state)
         labels = {option.option_id: option.label for option in getattr(decision, "options", ()) or ()}
         chosen = [str(c) for c in (chosen or [])]
         declined = chosen == [_DECLINE]
@@ -290,116 +235,32 @@ class DecisionMemory:
         del self._records[: -self._limit]
         return record
 
-    def _mark_turn_chain(self, turn: int, source: str, outcome: str = CANCELLED) -> list[DecisionRecord]:
-        name = str(source or "").strip().casefold()
-        if not name or turn <= 0:
-            return []
-        turn_records = [r for r in self._records if r.turn == turn]
-        cast_idx: int | None = None
-        for idx in range(len(turn_records) - 1, -1, -1):
-            record = turn_records[idx]
-            if record.request_type != "ActionsAvailable":
-                continue
-            label = (record.chosen_labels or [""])[0].split(" [", 1)[0].strip().casefold()
-            if label == f"cast {name}" or label.startswith(f"cast {name} "):
-                if not record.outcome:
-                    cast_idx = idx
-                break
-        marked: list[DecisionRecord] = []
-        if cast_idx is not None:
-            cast_record = turn_records[cast_idx]
-            cast_record.outcome = outcome
-            marked.append(cast_record)
-            for record in turn_records[cast_idx + 1 :]:
-                if record.request_type == "ActionsAvailable":
-                    break
-                if record.chosen_labels == [CANCELLED]:
-                    continue
-                if not record.outcome and (
-                    not record.source or record.source.strip().casefold() == name
-                ):
-                    record.outcome = outcome
-                    marked.append(record)
-            return marked
-        for record in reversed(turn_records):
-            if record.chosen_labels == [CANCELLED]:
-                continue  # the decline itself already says so
-            if record.outcome:
-                break  # an earlier cast, already accounted for
-            if record.request_type == "ActionsAvailable":
-                break
-            if record.source.strip().casefold() == name:
-                record.outcome = record.outcome or outcome
-                marked.append(record)
-        return marked
-
-    def mark_cancelled(
-        self, state: dict | None, source: str, outcome: str = CANCELLED
-    ) -> list[DecisionRecord]:
-        """Mark this turn's latest cast of ``source`` (and its steps since) as cancelled/countered — no effect.
+    def mark_cancelled(self, state: dict | None, source: str) -> list[DecisionRecord]:
+        """Mark this turn's latest cast of ``source`` (and its steps since) as cancelled — no effect.
 
         2026-10-19 11:13 (match 115944ce T8, ledger #68): Iroh's Demonstration was
         cast, its target declined (the cast cancelled) and cast again, six
         times; the memory listed six casts and targets, and the model went on
         "two prior 4-damage hits already landed". Returns the records marked.
         """
-        if not isinstance(state, dict) or state.get("match_id") != self._match_id:
+        name = str(source or "").strip().casefold()
+        if not name:
             return []
-        turn = int(((state.get("turn") or {}).get("turn_number")) or 0)
-        return self._mark_turn_chain(turn, source, outcome=outcome)
-
-    def observe_countered(self, state: dict | None) -> list[DecisionRecord]:
-        """Mark casts in ``self._records`` that were countered according to ``action_history`` (#106)."""
-        if not isinstance(state, dict) or state.get("match_id") != self._match_id:
-            return []
-        local = _local_seat(state)
-        if local is None:
-            return []
-        non_mana = [
-            a
-            for a in (state.get("action_history") or [])
-            if isinstance(a, dict) and str(a.get("action") or "") != "ActivateMana"
-        ]
-        if len(non_mana) < 2:
-            return []
-        bf_ids = {
-            int(c.get("instance_id") or 0)
-            for c in (state.get("battlefield") or [])
-            if isinstance(c, dict) and c.get("instance_id")
-        }
-        stack_names = {
-            str(c.get("name") or "").strip().casefold()
-            for c in (state.get("stack") or [])
-            if isinstance(c, dict) and c.get("name")
-        }
         marked: list[DecisionRecord] = []
-        for idx in range(len(non_mana) - 1):
-            ours = non_mana[idx]
-            theirs = non_mana[idx + 1]
-            if (
-                ours.get("seat") != local
-                or str(ours.get("action") or "") != "Cast"
-                or theirs.get("seat") == local
-                or str(theirs.get("action") or "") != "Cast"
-            ):
-                continue
-            turn = int(ours.get("turn") or 0)
-            if turn <= 0 or int(theirs.get("turn") or 0) != turn:
-                continue
-            card_name = str(ours.get("card") or "").strip()
-            opp_card = str(theirs.get("card") or "").strip()
-            if not card_name or not _is_counterspell_card(opp_card, state):
-                continue
-            if card_name.casefold() in stack_names:
-                continue
-            inst_ids = tuple(int(i) for i in (ours.get("instance_ids") or []) if i)
-            if any(i in bf_ids for i in inst_ids):
-                continue
-            key = (turn, card_name.casefold(), inst_ids)
-            if key in self._countered_action_keys:
-                continue
-            self._countered_action_keys.add(key)
-            marked.extend(self._mark_turn_chain(turn, card_name, outcome=COUNTERED))
+        for record in reversed(self.this_turn(state)):
+            if record.chosen_labels == [CANCELLED]:
+                continue  # the decline itself already says so
+            if record.outcome:
+                break  # an earlier cast, already accounted for
+            if record.request_type == "ActionsAvailable":
+                label = (record.chosen_labels or [""])[0].split(" [", 1)[0].strip().casefold()
+                if label == f"cast {name}" or label.startswith(f"cast {name} "):
+                    record.outcome = CANCELLED
+                    marked.append(record)
+                break  # the cast that opened this chain, or another priority choice
+            if record.source.strip().casefold() == name:
+                record.outcome = record.outcome or CANCELLED
+                marked.append(record)
         return marked
 
     def this_turn(self, state: dict | None) -> list[DecisionRecord]:
@@ -407,7 +268,6 @@ class DecisionMemory:
             return []
         if state.get("match_id") != self._match_id:
             return []
-        self.observe_countered(state)
         turn = int(((state.get("turn") or {}).get("turn_number")) or 0)
         return [r for r in self._records if r.turn == turn]
 
@@ -485,10 +345,8 @@ class DecisionMemory:
         match = _LATER_IN_TURN_RE.search(record.reasoning)
         return match.group(0) if match else ""
 
-    def lines_for_turn(self, turn: int, state: dict | None = None) -> list[str]:
+    def lines_for_turn(self, turn: int) -> list[str]:
         """The decisions recorded for one turn of the current match, oldest first."""
-        if isinstance(state, dict):
-            self.observe_countered(state)
         return [r.line() for r in self._records if r.turn == turn]
 
     def recent_actions_text(self, limit: int = REFORM_ACTIONS) -> str:

@@ -3479,22 +3479,13 @@ class GamePlanManager:
 
             assessment = assess(game_state)
             mid_turn = not self._ledger.entries and self._is_mid_turn_start(game_state, turn)
-
-            def _decisions_for_turn(t: int) -> list[str]:
-                if self._turn_decisions_source is None:
-                    return []
-                try:
-                    return list(self._turn_decisions_source(t, game_state) or [])  # type: ignore[call-arg]
-                except TypeError:
-                    return list(self._turn_decisions_source(t) or [])
-
             self._ledger.turn_started(
                 turn,
                 ours=bool(getattr(assessment, "our_turn", self._our_turn(game_state))),
                 snapshot=snapshot_from_assessment(assessment),
                 role=str(getattr(assessment, "role", "") or ""),
                 plan=self._plan,
-                decisions_for_turn=_decisions_for_turn if self._turn_decisions_source is not None else None,
+                decisions_for_turn=self._turn_decisions_source,
                 mid_turn=mid_turn,
             )
         except Exception as error:
