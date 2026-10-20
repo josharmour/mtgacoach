@@ -400,6 +400,10 @@ def unlimited_search_deadline(monkeypatch):
     monkeypatch.setattr(line_search, "search_lines", unlimited_search)
     monkeypatch.setattr(line_search, "compare_modes", unlimited_compare)
     monkeypatch.setattr(line_guard, "compare_modes", unlimited_compare)
+    # The block search's wall-clock deadline (ledger #192) likewise; a test may still set its own.
+    from arenamcp import combat_solver
+
+    monkeypatch.setattr(combat_solver, "BLOCK_DEADLINE_S", 1e9)
 
 
 @pytest.fixture

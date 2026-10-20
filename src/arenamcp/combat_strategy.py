@@ -2751,6 +2751,7 @@ def safe_default_blocks(state: dict, pending: dict | None = None) -> tuple[dict[
         math.ceil(life / factor),
         blocker_allowed_attackers=legal,
         max_options=SAFE_DEFAULT_BLOCK_OPTIONS,
+        caller="safe_default_blocks",
         trick_exposure=combat_solver.attacking_trick_exposure(state),
     )
     assignments = dict(plan.assignments) if plan is not None else {}

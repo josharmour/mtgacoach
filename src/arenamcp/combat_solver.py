@@ -594,6 +594,14 @@ def _can_block_this_attacker(attacker: dict, blocker: dict, allowed_ids: set[int
     return _can_block(attacker, blocker)
 
 
+# Block searches with more assignments than this enumerate one per permutation of
+# interchangeable blockers when that is fewer (ledger #192).
+BIG_BLOCK_SEARCH = 4096
+# A block search stops here with its best plan so far (ledger #192, 2026-10-19 15:52:14: 19 s
+# in safe_default_blocks on a 51-creature board).
+BLOCK_DEADLINE_S = 1.0
+
+
 def optimal_blocks(
     attackers: list[dict],
     blockers: list[dict],
@@ -603,6 +611,8 @@ def optimal_blocks(
     max_options: int = 50_000,
     recovery_credit: Callable[[frozenset[int]], float] | None = None,
     trick_exposure: TrickExposure | None = None,
+    deadline_s: float | None = None,
+    caller: str = "",
 ) -> BlockPlan | None:
     """Best block assignment (memoized; see `_search_blocks`)."""
     if recovery_credit is not None:
@@ -616,6 +626,8 @@ def optimal_blocks(
             max_options=max_options,
             recovery_credit=recovery_credit,
             trick_exposure=trick_exposure,
+            deadline_s=deadline_s,
+            caller=caller,
         )
     allowed = (
         None
@@ -630,6 +642,8 @@ def optimal_blocks(
         allowed,
         max_options,
         trick_exposure,
+        # A search cut by a short deadline must not answer a caller that allows a longer one.
+        deadline_s,
     )
     return _memoized(
         key,
@@ -640,6 +654,8 @@ def optimal_blocks(
             blocker_allowed_attackers=blocker_allowed_attackers,
             max_options=max_options,
             trick_exposure=trick_exposure,
+            deadline_s=deadline_s,
+            caller=caller,
         ),
     )
 
@@ -654,6 +670,8 @@ def _search_blocks(
     recovery_credit: Callable[[frozenset[int]], float] | None = None,
     trick_exposure: TrickExposure | None = None,
     symmetric: bool = False,
+    deadline_s: float | None = None,
+    caller: str = "",
 ) -> BlockPlan | None:
     """Enumerate legal block assignments and pick the best.
 
@@ -661,6 +679,12 @@ def _search_blocks(
     per permutation of interchangeable blockers (``_canonical_choices``)
     before falling back to the greedy plan (the attack search on big boards,
     ledger #162). Off by default: the other callers keep their greedy facts.
+    Under the cap, past ``BIG_BLOCK_SEARCH`` assignments, every caller gets
+    that enumeration when it is smaller (the same plans, scored once each).
+
+    ``deadline_s`` (default ``BLOCK_DEADLINE_S``): past it the search stops
+    with its best plan so far, or the greedy plan when that scores better, and
+    logs it once (``caller`` names the asker; ledger #192).
 
     `blocker_allowed_attackers` maps a blocker's instance_id to the set
     of attacker instance_ids it is allowed to block (from the GRE
@@ -676,6 +700,8 @@ def _search_blocks(
     """
     if not attackers:
         return None
+    if deadline_s is None:
+        deadline_s = BLOCK_DEADLINE_S
 
     # Cap search space — 4 attackers x 6 blockers = 5^6 = 15625 which is
     # cheap; but 8 attackers × 8 blockers = 9^8 ≈ 43M which is not. Fall
@@ -701,6 +727,13 @@ def _search_blocks(
     choices: Iterable[tuple] = ()
     if n_options <= max_options:
         choices = product(*blocker_options)
+        if n_options > BIG_BLOCK_SEARCH:
+            # A big board under the cap (ledger #192, 2026-10-19 15:52:14: Myrel alone into 17
+            # blockers, 2^17 fights of up to 17 blockers each, 19 s on the coaching thread): one
+            # assignment per permutation of interchangeable blockers scores the same plans.
+            groups = _symmetric_groups(blockers, blocker_options)
+            if any(len(g) > 1 for g in groups) and _canonical_count(groups, blocker_options) < n_options:
+                choices = _canonical_choices(groups, blocker_options)
     else:
         # Big boards (Brawl token swarms, ledger #162): interchangeable blockers (thirteen 2/2
         # Squirrels) make most assignments permutations of each other. Enumerate one per
@@ -731,7 +764,16 @@ def _search_blocks(
     raw_best: float | None = None  # the same search with no trick priced
     raw_choice: tuple = ()
     evaluated = 0
+    started = time.monotonic()
+    seen = 0
+    cut = False
     for choice in choices:
+        # Wall-clock backstop (ledger #192): the canonical enumeration keeps big boards fast;
+        # distinct bodies by the dozen still could not be searched to the end in time.
+        seen += 1
+        if seen % 256 == 0 and best_score is not None and time.monotonic() - started > deadline_s:
+            cut = True
+            break
         # choice[b] is either None or an attacker index
         assigned_to_atk: dict[int, list[int]] = {}
         for b_idx, atk_idx in enumerate(choice):
@@ -796,6 +838,30 @@ def _search_blocks(
         attackers, blockers, best_choice, your_life, recovery_credit=recovery_credit, trick_p=trick_p
     )
     plan.evaluated = evaluated
+    if cut:
+        # Best so far, or the greedy plan when it scores better (the search may have seen only
+        # assignments of a few blockers).
+        greedy = _greedy_block_plan(
+            attackers,
+            blockers,
+            your_life,
+            blocker_allowed_attackers=blocker_allowed_attackers,
+            trick_exposure=trick_exposure,
+        )
+        if greedy.score > plan.score:
+            plan, best_choice, raw_choice = greedy, (), ()
+            plan.evaluated = evaluated
+        logger.warning(
+            "block search%s hit its %gs deadline with %d attackers x %d blockers after %d assignments; "
+            "best so far: %s",
+            f" ({caller})" if caller else "",
+            deadline_s,
+            n_attackers,
+            n_blockers,
+            evaluated,
+            plan.explanation,
+        )
+        return plan
     if plan.trick_cost > 0:
         plan.trick_risk = _trick_risk_note(attackers, blockers, best_choice, trick_exposure)
     if raw_choice != best_choice:
@@ -807,15 +873,24 @@ def _search_blocks(
     return plan
 
 
-def symmetry_key(card: dict) -> tuple:
+# Fields that only say which body it is and where it came from, never how it fights: the
+# snapshot's Rabbit tokens differ in the ability that made them (parent_instance_id) and, since
+# #185, in their creator's instance id.
+_IDENTITY_FIELDS = frozenset(
+    {"instance_id", "_card", "parent_instance_id", "token_creator_id", "token_creator_ability_grp_id",
+     "token_source_grp_id", "visibility"}
+)  # fmt: skip
+# A blocker also blocks whenever it entered: summoning sickness never stops a block.
+_BLOCKER_IDENTITY_FIELDS = _IDENTITY_FIELDS | {"turn_entered_battlefield", "summoning_sickness"}
+
+
+def symmetry_key(card: dict, ignore: frozenset[str] = _IDENTITY_FIELDS) -> tuple:
     """A creature as the solver sees it, without its identity: interchangeable bodies (a
-    swarm of identical Rabbit tokens) share it. Conservative: any field that differs keeps two
-    bodies apart."""
+    swarm of identical Rabbit tokens) share it. Conservative: any other field that differs keeps
+    two bodies apart."""
 
     def plain(node: dict) -> tuple:
-        return tuple(
-            sorted((key, repr(value)) for key, value in node.items() if key not in ("instance_id", "_card"))
-        )
+        return tuple(sorted((key, repr(value)) for key, value in node.items() if key not in ignore))
 
     inner = card.get("_card")
     return plain(card), plain(inner) if isinstance(inner, dict) else ()
@@ -825,7 +900,8 @@ def _symmetric_groups(blockers: list[dict], options: list[list]) -> list[list[in
     """Blocker indices in classes of interchangeable bodies with the same options, in order."""
     groups: dict[tuple, list[int]] = {}
     for index, blocker in enumerate(blockers):
-        groups.setdefault((symmetry_key(blocker), tuple(options[index])), []).append(index)
+        key = (symmetry_key(blocker, _BLOCKER_IDENTITY_FIELDS), tuple(options[index]))
+        groups.setdefault(key, []).append(index)
     return list(groups.values())
 
 
