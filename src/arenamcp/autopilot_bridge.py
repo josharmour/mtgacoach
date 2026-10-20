@@ -343,7 +343,7 @@ class _BridgeSubmitMixin:
                             ExecutionPath.GRE_AWARE,
                             "click_button(done): empty attacker declaration via GRE bridge",
                         )
-                        return ClickResult(
+                        result = ClickResult(
                             True,
                             0,
                             0,
@@ -355,6 +355,8 @@ class _BridgeSubmitMixin:
                                 model_choice=action.model_choice,
                             ),
                         )
+                        self._record_combat_decision("DeclareAttackers", action, result)
+                        return result
                     self._gre_bridge_failed_methods.add(method)
                     return None
                 if "DeclareBlocker" in request_type:
@@ -363,14 +365,20 @@ class _BridgeSubmitMixin:
                             ExecutionPath.GRE_AWARE,
                             "click_button(done): empty blocker declaration via GRE bridge",
                         )
-                        return ClickResult(
+                        result = ClickResult(
                             True,
                             0,
                             0,
                             "no blocks",
                             "GRE bridge",
-                            submitted_action=GameAction(action_type=ActionType.DECLARE_BLOCKERS),
+                            submitted_action=GameAction(
+                                action_type=ActionType.DECLARE_BLOCKERS,
+                                reasoning=action.reasoning,
+                                model_choice=action.model_choice,
+                            ),
                         )
+                        self._record_combat_decision("DeclareBlockers", action, result)
+                        return result
                     self._gre_bridge_failed_methods.add(method)
                     return None
             if bridge.submit_pass():
@@ -1429,8 +1437,15 @@ class _BridgeSubmitMixin:
                 if str(item).lower().startswith(prefix)
             ]
             plan = getattr(self, "_current_plan", None)
+            reasoning = (
+                str(getattr(submitted, "reasoning", "") or "")
+                or str(getattr(action, "reasoning", "") or "")
+                or str(getattr(submitted, "model_reasoning", "") or "")
+                or str(getattr(action, "model_reasoning", "") or "")
+                or str(getattr(plan, "overall_strategy", "") or "")
+            )
             trace = {
-                "reasoning": str(getattr(action, "reasoning", "") or ""),
+                "reasoning": reasoning,
                 "fallback_reason": str(getattr(plan, "fallback_reason", "") or ""),
                 "strategy": str(getattr(plan, "overall_strategy", "") or ""),
                 "via": str(getattr(result, "method", "") or "GRE bridge"),

@@ -927,4 +927,53 @@ def test_decision_trace_stores_plan_and_staleness_block():
     assert "PLAN PREDATES: Biotech Specialist entered." in trace.get("plan_block", "")
 
 
+# --- #165: attack holds record reasoning in the match packet --------------------------------------
+
+
+def test_attack_hold_records_combat_decision_in_packet(monkeypatch):
+    import threading
+
+    from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
+    from arenamcp.match_packets import MatchPacket
+
+    packet = MatchPacket("b7337658")
+    monkeypatch.setattr("arenamcp.match_packets.get_current_packet", lambda: packet)
+    monkeypatch.setattr("arenamcp.autopilot_bridge._progress_bridge_for", lambda self, gs: self._gre_bridge)
+
+    engine = AutopilotEngine.__new__(AutopilotEngine)
+    engine._config = AutopilotConfig(dry_run=False)
+    engine._abort_event = threading.Event()
+    engine._gre_bridge_failed_methods = set()
+    engine._log_execution_path = lambda *args, **kwargs: None
+    engine._current_plan = ActionPlan(
+        actions=[], overall_strategy="Hold back: all attackers get eaten by their 4/4 blocker."
+    )
+    engine._get_game_state = lambda: {
+        "match_id": "b7337658",
+        "turn": {"turn_number": 7, "phase": "Phase_Combat", "step": "Step_DeclareAttack", "active_player": 1},
+        "legal_actions": ["Attack with: Hare Apparent"],
+        "_bridge_request_class": "DeclareAttackersRequest",
+    }
+    bridge = Mock()
+    bridge.connect.return_value = True
+    bridge.get_pending_actions.return_value = {"has_pending": True, "request_class": "DeclareAttackersRequest"}
+    bridge.submit_attackers.return_value = True
+    engine._gre_bridge = bridge
+
+    action = GameAction(
+        action_type=ActionType.CLICK_BUTTON,
+        card_name="done",
+        reasoning="Keep Hare Apparent back as a blocker.",
+        model_choice=True,
+    )
+    res = engine._try_gre_bridge(action, engine._get_game_state())
+    assert res is not None and res.success
+    assert len(packet.decisions) == 1
+    rec = packet.decisions[0]
+    assert rec["pending_decision"]["request_type"] == "DeclareAttackers"
+    assert rec["chosen_options"] == ["No attacks"]
+    assert rec["explanation"] == "Keep Hare Apparent back as a blocker."
+
+
+
 
