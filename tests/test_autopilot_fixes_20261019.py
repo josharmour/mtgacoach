@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-
 from unittest.mock import Mock
 
 import pytest
@@ -577,6 +576,7 @@ def test_engine_creature_counts_as_threat_and_replans_when_removal_target_predat
 
 def test_late_game_sparse_hand_and_consecutive_supersedes_use_low_effort():
     import threading
+
     from arenamcp.game_plan import GamePlan, GamePlanManager
 
     efforts: list[str] = []
@@ -808,8 +808,9 @@ def test_hare_apparent_not_marked_post_combat():
 
 
 def test_their_attacker_damage_trigger_without_target_does_not_abort_concede():
-    from arenamcp.concede import estimate_loss
     from tests.bug_180436_states import bug_state
+
+    from arenamcp.concede import estimate_loss
 
     st = bug_state()
     st["stack"] = [
@@ -859,9 +860,10 @@ def test_their_untargeted_trigger_that_may_hit_their_own_creature_still_holds_th
 
 
 def test_opponent_lost_life_readable_on_busy_turns_and_combat_damage_step():
+    from tests.test_concede import board, creature
+
     from arenamcp.concede import _opponent_lost_life_this_turn, estimate_loss
     from arenamcp.gamestate import GameState
-    from tests.test_concede import board, creature
 
     gs = GameState()
     gs.turn_info.turn_number = 12
@@ -890,8 +892,9 @@ def test_opponent_lost_life_readable_on_busy_turns_and_combat_damage_step():
 
 
 def test_spoken_concede_reason_uses_chump_margin_and_deduplicates_outs():
-    from arenamcp.concede import estimate_loss
     from tests.test_concede import basic, board, creature, spell
+
+    from arenamcp.concede import estimate_loss
 
     theirs = [
         creature(10, "Sun Titan", 2, 6, 6),
