@@ -61,6 +61,7 @@ SETTINGS_WHITELIST = (
     "autopilot_enabled",
     "auto_queue_enabled",
     "auto_concede",
+    "good_game_emote",
     "oops_emote",
     "draft_commentary",
     "draft_research_online",

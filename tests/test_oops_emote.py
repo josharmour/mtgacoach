@@ -830,7 +830,7 @@ def test_bridge_send_emote_never_raises(monkeypatch):
     bridge._connected = True
     bridge.plugin_version = "0.6.5"
     calls: list[dict] = []
-    assert bridge.send_emote("good game")["ok"] is False  # only Oops
+    assert bridge.send_emote("good game")["ok"] is False  # not a kind ("good_game" is)
 
     def boom(cmd, timeout=None):
         calls.append(cmd)
@@ -1005,6 +1005,36 @@ def test_mac_emote_clicks_oops_on_the_wheel():
         "turn": 14,
     }
     assert clicks(world) == [(WHEEL, [{"str": "Phrase_Basic_Oops"}])]
+
+
+def test_mac_emote_clicks_good_game_on_the_wheel():
+    # 2026-10-20: auto-concede only said "Good game." in the coach's own feed.
+    world = emote_world()
+    result = MacBridgeAdapter(world.send).handle(
+        {"action": "send_emote", "emote": "good_game", "expected_match_id": MATCH, "expected_turn": 14}
+    )
+    assert result["ok"] is True
+    assert result["emote"] == "good_game" and result["emote_id"] == "Phrase_Basic_GoodGame"
+    assert clicks(world) == [(WHEEL, [{"str": "Phrase_Basic_GoodGame"}])]
+
+
+def test_mac_good_game_emote_needs_good_game_on_the_wheel():
+    world = emote_world(on_wheel=("Phrase_Basic_Hello", "Phrase_Basic_Oops"))
+    result = MacBridgeAdapter(world.send, **FakeTime().kwargs()).handle(
+        {"action": "send_emote", "emote": "good_game"}
+    )
+    assert result["ok"] is False and "Phrase_Basic_GoodGame is not on" in result["error"]
+    assert clicks(world) == []
+
+
+def test_bridge_sends_the_good_game_kind(monkeypatch):
+    bridge = GREBridge()
+    bridge._connected = True
+    bridge.plugin_version = "0.6.5"
+    sent: list[dict] = []
+    monkeypatch.setattr(bridge, "_send_command", lambda cmd, timeout=None: sent.append(cmd) or {"ok": True})
+    assert bridge.send_emote("good_game", expected_match_id=MATCH, expected_turn=14)["ok"] is True
+    assert sent[0]["emote"] == "good_game"
 
 
 @pytest.mark.parametrize(

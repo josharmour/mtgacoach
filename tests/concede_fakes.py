@@ -18,6 +18,7 @@ class Harness:
         bridge: bool = True,
         result: Any = None,
         ends_on_concede: bool = True,
+        farewell: Any = None,
     ):
         self.state = state
         self.autopilot = autopilot
@@ -32,6 +33,10 @@ class Harness:
         self.concedes: list[dict] = []
         self.threads: list = []
         self.waits: list[float] = []
+        # (state, concedes sent before it) per Good Game emote; ``farewell`` is
+        # its result, or a callable raising/returning one. None: no emote hook.
+        self.farewell = farewell
+        self.emotes: list[tuple[dict, int]] = []
         self.on_concede = None
         self.on_announce = None
         self.now = 0.0
@@ -45,6 +50,7 @@ class Harness:
             bridge_ready=lambda: self.bridge,
             game_over=lambda: self.game_over,
             announce=self._announce,
+            farewell_emote=self._farewell if farewell is not None else None,
             start_thread=lambda target, armed: self.threads.append((target, armed)),
             wait=self._wait,
             clock=lambda: self.now,
@@ -67,6 +73,10 @@ class Harness:
     def _wait(self, event: Any, seconds: float) -> bool:
         self.waits.append(seconds)
         return event.is_set()
+
+    def _farewell(self, state: dict) -> Any:
+        self.emotes.append((state, len(self.concedes)))
+        return self.farewell() if callable(self.farewell) else self.farewell
 
     def _concede(self, state: dict) -> Any:
         self.concedes.append(state)

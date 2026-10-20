@@ -47,8 +47,9 @@ CONCEDE_EXPIRES_MS = 4000
 EMOTE_PLUGIN_VERSION = "0.6.5"
 # A queued emote older than this is refused on MTGA's main thread.
 EMOTE_EXPIRES_MS = 3000
-# Emotes the bridge can send (arenamcp.oops sends Arena's "Oops").
-EMOTE_KINDS = ("oops",)
+# Emotes the bridge can send (arenamcp.oops sends Arena's "Oops"; an
+# auto-concede sends "Good Game" first). The BepInEx plugin sends only "oops".
+EMOTE_KINDS = ("oops", "good_game")
 
 
 def _version_tuple(version: str | None) -> tuple[int, ...]:

@@ -731,6 +731,52 @@ def test_autopilot_on_concedes_after_announcing_the_offer_and_the_countdown():
     assert harness.states == ["offering", "armed", "conceding", "sent", "conceded"]
 
 
+def test_auto_concede_sends_arenas_good_game_emote_first():
+    # 2026-10-20 10:53:43: "Good game." was only spoken and shown in the coach.
+    harness = Harness(bug_state(), farewell={"ok": True})
+    harness.observe()
+    harness.run_countdown()
+    assert [concedes_before for _state, concedes_before in harness.emotes] == [0]
+    assert harness.emotes[0][0]["match_id"] == harness.concedes[0]["match_id"]
+    # The bubble gets a moment on the opponent's screen before the game ends.
+    assert harness.waits == [3, 1.0] and len(harness.concedes) == 1
+    assert harness.states[-2:] == ["sent", "conceded"]
+
+
+@pytest.mark.parametrize(
+    "farewell",
+    [
+        {"ok": False, "error": "Phrase_Basic_GoodGame is not on this deck's emote wheel"},
+        {"ok": False, "outcome_unknown": True, "error": "pipe closed"},
+        lambda: (_ for _ in ()).throw(RuntimeError("bridge bug")),
+        "unexpected",
+    ],
+)
+def test_a_good_game_emote_that_fails_never_stops_the_concede(farewell):
+    harness = Harness(bug_state(), farewell=farewell)
+    harness.observe()
+    harness.run_countdown()
+    assert len(harness.emotes) == 1 and len(harness.concedes) == 1
+    assert harness.waits == [3]  # no pause for an emote that was not sent
+    assert harness.states[-2:] == ["sent", "conceded"]
+
+
+def test_the_good_game_emote_can_be_turned_off():
+    harness = Harness(bug_state(), farewell={"ok": True})
+    harness.settings["good_game_emote"] = False
+    harness.observe()
+    harness.run_countdown()
+    assert harness.emotes == [] and len(harness.concedes) == 1
+
+
+def test_no_good_game_emote_without_a_concede():
+    harness = Harness(bug_state(), farewell={"ok": True})
+    harness.on_announce = lambda: harness.controller.cancel("stop_speech")
+    harness.observe()
+    harness.run_countdown()
+    assert harness.emotes == [] and harness.concedes == []
+
+
 def test_cancel_while_the_offer_is_spoken_stops_everything():
     harness = Harness(bug_state())
     harness.on_announce = lambda: harness.controller.cancel("stop_speech")

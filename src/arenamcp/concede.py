@@ -86,6 +86,10 @@ COUNTDOWN_RANGE = (2, 60)
 ABORT_HYSTERESIS = 0.15
 # Spoken right before the concede is sent.
 FAREWELL = "Good game."
+# After Arena's "Good Game" emote goes to the opponent, the concede waits this
+# long so the bubble shows before the game ends on their screen. Until
+# 2026-10-20 the farewell was only spoken and shown in the coach's own feed.
+FAREWELL_EMOTE_GAP_S = 1.0
 # Countdowns per game: a flickering estimate must not re-announce forever.
 MAX_ARMS_PER_GAME = 3
 # How long to watch for the game end after a concede before warning.
@@ -1530,6 +1534,7 @@ class ConcedeController:
         game_over: Callable[[], bool] = lambda: False,
         draft_active: Callable[[], bool] = lambda: False,
         announce: Callable[[str, dict | None, Callable[[], bool]], bool] | None = None,
+        farewell_emote: Callable[[dict], Any] | None = None,
         start_thread: Callable[[Callable[[_Armed], None], _Armed], None] = _default_start,
         wait: Callable[[threading.Event, float], bool] = _default_wait,
         confirm_s: float = CONFIRM_S,
@@ -1547,6 +1552,7 @@ class ConcedeController:
         self._game_over = game_over
         self._draft_active = draft_active
         self._announce_fn = announce
+        self._farewell_emote = farewell_emote
         self._start_thread = start_thread
         self._wait = wait
         self._confirm_s = confirm_s
@@ -1949,6 +1955,7 @@ class ConcedeController:
                 self._advise(FAREWELL, None)
             except Exception as error:  # the farewell never blocks the concede
                 logger.debug("[CONCEDE] farewell not spoken: %s", error)
+            self._send_farewell_emote(fresh)
             try:
                 result = self._concede_fn(fresh)
             except Exception as error:  # the bridge raised: report, never retry
@@ -1985,6 +1992,21 @@ class ConcedeController:
         except Exception as error:
             logger.warning("[CONCEDE] countdown %d failed: %s", armed.token, error, exc_info=True)
             self._abort(armed, f"internal error: {error}")
+
+    def _send_farewell_emote(self, state: dict) -> None:
+        """Arena's "Good Game" emote to the opponent just before the concede; never stops it."""
+        if self._farewell_emote is None or self._settings_get("good_game_emote", True) is False:
+            return
+        try:
+            result = self._farewell_emote(state)
+        except Exception as error:
+            result = {"ok": False, "error": str(error)}
+        if isinstance(result, dict) and result.get("ok"):
+            logger.info("[CONCEDE] good game emote sent")
+            self._wait(threading.Event(), FAREWELL_EMOTE_GAP_S)
+            return
+        error = result.get("error") if isinstance(result, dict) else result
+        logger.info("[CONCEDE] good game emote not sent (conceding anyway): %s", error or "no answer")
 
     def _verify(self, armed: _Armed) -> tuple[str, dict]:
         """Re-check everything right before conceding; a non-empty reason aborts."""

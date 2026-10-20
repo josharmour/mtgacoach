@@ -35,6 +35,7 @@ class _ConcedeMixin:
             game_over=self._concede_game_over,
             draft_active=lambda: bool(getattr(self, "draft_mode", False)),
             announce=self._concede_announce,
+            farewell_emote=self._good_game_emote_via_bridge,
         )
 
     # -- public controls (pipe commands, hotkeys, autoplay switch) -----------
@@ -203,6 +204,16 @@ class _ConcedeMixin:
 
         turn = (state.get("turn") or {}).get("turn_number")
         return get_bridge().concede(expected_match_id=state.get("match_id"), expected_turn=turn)
+
+    @staticmethod
+    def _good_game_emote_via_bridge(state: dict) -> dict:
+        from arenamcp.gre_bridge import get_bridge
+
+        turn = (state.get("turn") or {}).get("turn_number")
+        # Short timeout: the concede waits on it.
+        return get_bridge().send_emote(
+            "good_game", expected_match_id=state.get("match_id"), expected_turn=turn, timeout=2.0
+        )
 
     def _concede_record(self, text: str, state: dict | None) -> None:
         record = getattr(self, "_record_advice", None)

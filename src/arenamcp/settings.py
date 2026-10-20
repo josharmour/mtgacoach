@@ -64,6 +64,8 @@ DEFAULTS = {
     "auto_concede": True,
     "concede_countdown_s": 3,  # clamped to 2-60
     "concede_threshold": 0.95,  # loss confidence needed; clamped to 0.90-0.99
+    # An auto-concede first sends Arena's "Good Game" emote to the opponent.
+    "good_game_emote": True,
     # With autoplay on, send Arena's "Oops" emote when the autopilot gets stuck
     # or makes a clear blunder (arenamcp.oops; Tools > Send 'Oops' Emote).
     "oops_emote": True,

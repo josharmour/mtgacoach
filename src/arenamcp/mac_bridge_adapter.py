@@ -44,7 +44,9 @@ SEALED_OPEN = "SealedBoosterOpenAnimation"
 SURVEY = "GameEndSurvey"
 # Emote ids a click on the emote wheel puts on the wire (onChat.text); members of
 # the emote path verified in live IL2CPP metadata 2026-10-06 (see _cmd_send_emote).
-EMOTE_IDS = {"oops": "Phrase_Basic_Oops"}
+# "Phrase_Basic_GoodGame" is what opponents' Good Game emotes put on the wire
+# (Player.log onChat, 5 seen by 2026-10-20) and the starter wheel's GoodGame entry.
+EMOTE_IDS = {"oops": "Phrase_Basic_Oops", "good_game": "Phrase_Basic_GoodGame"}
 # Request fields never needed for the protocol and bulky or recursive to dump.
 SNAPSHOT_SKIP = ["OriginalMessage", "ParentRequest", "_outboundMessage", "OnSubmit", "OnRequestSubmit"]
 SNAPSHOT_DEPTH = 7
@@ -1244,7 +1246,7 @@ class MacBridgeAdapter:
         }
 
     def _cmd_send_emote(self, command: dict, timeout: float | None) -> dict:
-        """Send Arena's "Oops" emote exactly the way a click on the emote wheel does.
+        """Send one of Arena's emotes (EMOTE_IDS) exactly the way a click on the emote wheel does.
 
         A wheel click runs ``EmoteOptionsController.EmoteClicked(id)``: it looks
         the id up in the wheel (``_temporaryEmotes``, then ``_emotesByIdMap``)
@@ -1260,10 +1262,10 @@ class MacBridgeAdapter:
         the UIMessageHandler's send delegate targets this game's GreInterface;
         exactly one LocalPlayerDialogController among the handlers of its
         EmoteRecievedCallback. Batch 2 (read-only): that controller uses this
-        UIMessageHandler, its wheel is live, and the Oops id is on it
+        UIMessageHandler, its wheel is live, and the emote's id is on it
         (``_equippedEmoteOptions``, which the wheel keeps in step with
         ``_emotesByIdMap``); otherwise nothing is sent. Batch 3: the guards
-        again, the same wheel entry still holding the Oops id, then
+        again, the same wheel entry still holding the emote's id, then
         ``EmoteClicked`` in the same frame. Never retried: a failure at or
         after the click is ``outcome_unknown``.
         """
