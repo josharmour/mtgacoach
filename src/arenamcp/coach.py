@@ -3197,8 +3197,22 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             for evt in window:
                 etype = evt.get("type", "")
                 if etype == "damage_dealt":
+                    target_label = evt.get("target")
+                    if not target_label:
+                        tid = evt.get("target_id")
+                        if tid == local_seat:
+                            target_label = "You"
+                        elif opp_seat is not None and tid == opp_seat:
+                            target_label = "Opponent"
+                        elif tid:
+                            target_label = next(
+                                (str(c.get("name")) for c in (game_state.get("battlefield") or []) if isinstance(c, dict) and c.get("instance_id") == tid and c.get("name")),
+                                f"#{tid}",
+                            )
+                        else:
+                            target_label = "?"
                     event_strs.append(
-                        f"{evt.get('source', '?')} dealt {evt.get('amount', 0)} to {evt.get('target', '?')}"
+                        f"{evt.get('source', '?')} dealt {evt.get('amount', 0)} to {target_label}"
                     )
                 elif etype == "zone_transfer":
                     event_strs.append(f"{evt.get('card', '?')} moved zones")

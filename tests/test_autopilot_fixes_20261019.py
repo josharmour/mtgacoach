@@ -740,3 +740,48 @@ def test_spoken_concede_reason_uses_chump_margin_and_deduplicates_outs():
         board(theirs + ours + plains, life=4, active=1, phase="Phase_Main1", hand=hares)
     )
     assert est_outs.facts["outs"] == ["Hare Apparent (castable now)"]
+
+
+# --- #105: damage_dealt uses affectorId as source and coach formats target_id ---------------------
+
+
+def test_damage_dealt_uses_affector_id_and_formats_target():
+    from arenamcp.coach import CoachEngine
+    from arenamcp.gamestate import GameObject, GameState
+
+    gs = GameState()
+    gs.local_seat_id = 1
+    gs.game_objects[101] = GameObject(instance_id=101, grp_id=1001, zone_id=28, owner_seat_id=1, controller_seat_id=1)
+    gs.game_objects[202] = GameObject(instance_id=202, grp_id=2002, zone_id=28, owner_seat_id=2, controller_seat_id=2)
+    gs._resolve_card_name = lambda grp_id: {1001: "Burst Lightning", 2002: "Pyrewood Gearhulk"}.get(grp_id, "?")
+
+    gs._process_annotations(
+        [
+            {
+                "id": 1,
+                "affectorId": 101,
+                "affectedIds": [202],
+                "type": ["AnnotationType_DamageDealt"],
+                "details": [{"key": "damage", "valueInt32": [4]}],
+            }
+        ]
+    )
+    evt = gs.recent_events[-1]
+    assert evt["type"] == "damage_dealt"
+    assert evt["source_id"] == 101
+    assert evt["source"] == "Burst Lightning"
+    assert evt["target_id"] == 202
+    assert evt["target"] == "Pyrewood Gearhulk"
+
+    engine = CoachEngine.__new__(CoachEngine)
+    lines = engine._format_zones_and_events(
+        {
+            "recent_events": [
+                {"type": "damage_dealt", "source": "Burst Lightning", "amount": 4, "target_id": 202}
+            ],
+            "battlefield": [{"instance_id": 202, "name": "Pyrewood Gearhulk"}],
+        },
+        local_seat=1,
+        opp_seat=2,
+    )
+    assert any("Burst Lightning dealt 4 to Pyrewood Gearhulk" in line for line in lines)

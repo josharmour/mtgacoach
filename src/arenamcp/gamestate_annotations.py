@@ -76,7 +76,9 @@ class _GameStateAnnotationsMixin:
                 if ann_type == "AnnotationType_DamageDealt":
                     # Track damage: who dealt how much to whom
                     damage_amount = _coerce_int(detail_map.get("damage", 0), 0)
-                    source_id = _coerce_int(detail_map.get("sourceId", 0), 0)
+                    source_id = _coerce_int(detail_map.get("sourceId", 0), 0) or _coerce_int(
+                        ann.get("affectorId", 0), 0
+                    )
                     target_id = _coerce_int(
                         detail_map.get("targetId", affected_ids[0] if affected_ids else 0),
                         affected_ids[0] if affected_ids else 0,
@@ -85,23 +87,29 @@ class _GameStateAnnotationsMixin:
                     for seat_id in self.players:
                         if target_id == seat_id:
                             self.damage_taken[seat_id] = self.damage_taken.get(seat_id, 0) + damage_amount
-                    # Resolve source card name for event log
-                    # sourceId=0 means the detail didn't include the source —
-                    # fall back to affected_ids (the objects involved in the damage)
-                    if not source_id and affected_ids:
-                        source_id = affected_ids[0]
+                    # Resolve source and target names for event log (do not fall back
+                    # source_id to affected_ids[0], which is the damaged target — ledger #105).
                     source_obj = self.game_objects.get(source_id)
-                    source_name = (
-                        self._resolve_card_name(source_obj.grp_id)
-                        if source_obj
-                        else (f"#{source_id}" if source_id else "unknown")
-                    )
+                    if source_obj:
+                        source_name = self._resolve_card_name(source_obj.grp_id)
+                    elif source_id in self.players:
+                        source_name = "You" if source_id == self.local_seat_id else "Opponent"
+                    else:
+                        source_name = f"#{source_id}" if source_id else "unknown"
+                    target_obj = self.game_objects.get(target_id)
+                    if target_obj:
+                        target_name = self._resolve_card_name(target_obj.grp_id)
+                    elif target_id in self.players:
+                        target_name = "You" if target_id == self.local_seat_id else "Opponent"
+                    else:
+                        target_name = f"#{target_id}" if target_id else "unknown"
                     self._add_event(
                         {
                             "type": "damage_dealt",
                             "source": source_name,
                             "source_id": source_id,
                             "amount": damage_amount,
+                            "target": target_name,
                             "target_id": target_id,
                         }
                     )
@@ -630,7 +638,9 @@ class _GameStateAnnotationsMixin:
 
                 elif ann_type in ("AnnotationType_LinkedDamage", "AnnotationType_DamageSource"):
                     # Damage attribution — which source dealt what
-                    source_id = _coerce_int(detail_map.get("sourceId", 0), 0)
+                    source_id = _coerce_int(detail_map.get("sourceId", 0), 0) or _coerce_int(
+                        ann.get("affectorId", 0), 0
+                    )
                     source_obj = self.game_objects.get(source_id)
                     self._add_event(
                         {
