@@ -690,6 +690,109 @@ def test_target_shape_preserves_action_and_filters_selected_targets():
     assert response["target_selections"][0]["targets"][1]["legalAction"] == "Unselect"
 
 
+# --- the player answers first: Silkguard, 2026-10-18 21:15:24-21:15:33 -------------------
+#
+# Player.log: SelectTargetsReq gsid 150 / msg 209 (source 668, X=1: one slot,
+# maxTargets 1, no minTargets) offering Michelangelo (544) and Evolution Sage
+# (563). The player's SelectTargetsResp for 563 left at 21:15:30.263; the
+# model's identical pick was submitted at 21:15:30.493 and failed "ref does
+# not name an object result" (Submit() had nulled OnSubmit). The GRE's reply
+# (gsid 151, 563 Unselect) came 1.72 s later, at 21:15:31.981, so the re-read
+# still saw msg 209 and MANUAL REQUIRED was announced; the player committed
+# (SubmitTargetsReq) at 21:15:32.238.
+
+
+def silkguard_request(handle: int, selected: tuple[int, ...] = ()) -> dict:
+    def target(instance_id: int) -> dict:
+        return {
+            "$c": MSG + "Target",
+            "$h": 2000 + instance_id,
+            "targetInstanceId_": instance_id,
+            "legalAction_": enum("Unselect", 2) if instance_id in selected else enum("Select", 1),
+            "highlight_": enum("Tepid", 2),
+        }
+
+    selection = {
+        "$c": MSG + "TargetSelection",
+        "$h": 60,
+        "targetIdx_": 1,
+        "minTargets_": 0,
+        "maxTargets_": 1,
+        "selectedTargets_": len(selected),
+        "targets_": listing(*(target(i) for i in (544, 563) if not selected or i in selected)),
+    }
+    return {
+        "$c": "GreClient.Rules.SelectTargetsRequest",
+        "$h": handle,
+        "SourceId": 668,
+        "TargetSelections": listing(selection),
+    }
+
+
+def test_the_players_identical_selection_is_committed_not_reported_manual(monkeypatch):
+    monkeypatch.setattr("arenamcp.mac_bridge_adapter.TARGET_ANSWERED_WAIT_S", 1.0)
+    clicked = silkguard_request(5)
+    acknowledged = silkguard_request(9, (563,))
+    game = FakeGame(clicked)
+    game.answered = {5}
+    # The reply is slow: the deferred loop sees the answered request a few times first.
+    game.requests = [clicked, clicked, clicked, clicked, acknowledged, acknowledged]
+    response = adapter_for(game).handle({"action": "submit_targets", "target_instance_ids": [563]})
+    assert response["ok"] is True and response["finalized"] is True
+    refused, commit = game.submits()
+    assert sent_target_ids(refused) == [563]  # the batch that found OnSubmit spent
+    assert commit[1] == {"op": "expect_pending", "target": {"h": 9}}
+    assert [op["value"]["enum"] for op in commit if op.get("member") == "Type"] == ["SubmitTargetsReq"]
+
+
+def test_the_players_own_commit_winning_the_race_counts_as_done():
+    clicked = silkguard_request(5)
+    acknowledged = silkguard_request(9, (563,))
+    game = FakeGame(clicked)
+    game.answered = {5, 9}  # the player also pressed Submit before our commit
+    game.requests = [clicked, clicked, acknowledged, acknowledged]
+    response = adapter_for(game).handle({"action": "submit_targets", "target_instance_ids": [563]})
+    assert response["ok"] is True and response["advanced_without_commit"] is True
+
+
+def test_a_different_player_selection_is_left_to_the_player():
+    clicked = silkguard_request(5)
+    theirs = silkguard_request(9, (544,))
+    game = FakeGame(clicked)
+    game.answered = {5}
+    game.requests = [clicked, clicked, theirs, theirs]
+    response = adapter_for(game).handle({"action": "submit_targets", "target_instance_ids": [563]})
+    assert response["ok"] is False and response["already_answered"] is True
+    assert len(game.submits()) == 1  # never committed the player's choice
+
+
+def test_the_bridge_tells_the_autopilot_the_player_answered():
+    clicked = silkguard_request(5)
+    theirs = silkguard_request(9, (544,))
+    game = FakeGame(clicked)
+    game.answered = {5}
+    game.requests = [clicked, clicked, theirs, theirs]
+    bridge = GREBridge()
+    bridge._send_safe = adapter_for(game).handle
+    assert bridge.submit_targets([563]) is False
+    assert bridge.last_targets_answered_by_player is True
+
+
+def test_never_add_our_slots_to_a_selection_the_player_started():
+    game = FakeGame(two_slot_request(5))
+    game.answered = {5}
+    response = adapter_for(game).handle({"action": "submit_targets", "target_instance_ids": [309, 289]})
+    assert response["ok"] is False and response["already_answered"] is True
+    assert len(game.submits()) == 1
+
+
+def test_any_other_failed_batch_is_not_mistaken_for_an_answered_request():
+    game = FakeGame(targets_request(5, 0))
+    game.fail_on = "Invoke"
+    response = adapter_for(game).handle({"action": "submit_targets", "target_instance_id": 700})
+    assert response["ok"] is False and "already_answered" not in response
+
+
 def test_casting_time_entries_mirror_plugin_payloads():
     modal = {
         "$c": "GreClient.Rules.CastingTimeOption_ModalRequest",

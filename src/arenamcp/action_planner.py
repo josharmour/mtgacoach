@@ -31,10 +31,16 @@ from arenamcp.situational_rules import SUBJECTS as SITUATIONAL_SUBJECTS
 from arenamcp.situational_rules import compose as compose_rules
 from arenamcp.situational_rules import subjects_in_play
 from arenamcp.target_effects import (
+    GOOD_TARGET,
+    effect_mentions_benefit,
     effect_mentions_harm,
+    enchant_effect_text,
+    highlight_is_bad,
+    names_a_target_you_control,
     source_effect_text,
     target_effect_has_polarity,
     target_effect_is_harmful,
+    target_highlight,
 )
 from arenamcp.ward import (
     pay_decision_facts,
@@ -79,6 +85,13 @@ def _ability_rules_text(ability_grp_id: int) -> str:
     except Exception:
         return ""
 
+
+# Arena's target highlight, as the typed-decision prompt states it per target.
+_ARENA_TARGET_MARKS = {
+    "Hot": "good target",
+    "Cold": "bad target for you",
+    "ReplaceRole": "already wears this Role from you: the new Role only replaces it (no gain)",
+}
 
 # Sentinel returned by plan_decision_options when the safe move is to
 # DECLINE the pending window (cancel / pause for manual) rather than pick
@@ -6012,6 +6025,9 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         if modes and target_effect_has_polarity(source_effect_text(modes, parent_oracle)):
             return source_effect_text(modes, parent_oracle).lower()
+        aura = enchant_effect_text(modes, oracle or parent_oracle) if modes else ""
+        if aura and target_effect_has_polarity(aura):
+            return aura.lower()
         return source_effect_text(oracle, parent_oracle).lower()
 
     @staticmethod
@@ -6067,6 +6083,67 @@ class ActionPlanner(_ActionLegalityMixin):
             if seat:
                 controllers[seat] = seat
         return local_seat, controllers
+
+    def _target_highlights(self, decision: Any, game_state: dict[str, Any]) -> dict[int, str]:
+        """Arena's good/bad verdict per candidate ({instance_id: "Hot"|"Cold"|...}).
+
+        From the bridge's candidates when it reports them, else (log-first)
+        from Player.log's SelectTargetsReq for this same request: the same
+        source and the same selectable candidates. Empty when neither is known.
+        """
+        candidates = {
+            int(o.option_id[4:])
+            for o in decision.options
+            if str(o.option_id).startswith("tgt:") and str(o.option_id)[4:].isdigit()
+        }
+        hints = {
+            int(o.option_id[4:]): target_highlight(o.meta.get("highlight"))
+            for o in decision.options
+            if str(o.option_id).startswith("tgt:") and str(o.option_id)[4:].isdigit()
+        }
+        hints = {iid: hint for iid, hint in hints.items() if hint}
+        if hints:
+            return hints
+        context = game_state.get("decision_context") or {}
+        if context.get("type") not in (None, "target_selection"):
+            return {}
+        payload = game_state.get("_bridge_request_payload") or {}
+        bridge_source = _as_int(payload.get("sourceId") or payload.get("source_id"))
+        log_source = _as_int(context.get("source_id"))
+        if bridge_source and log_source and bridge_source != log_source:
+            return {}
+        selections = context.get("targets") or (context.get("raw") or {}).get("targets") or []
+        selectable: set[int] = set()
+        for selection in selections if isinstance(selections, list) else []:
+            for target in (selection or {}).get("targets") or []:
+                if not isinstance(target, dict):
+                    continue
+                if target.get("legalAction", "SelectAction_Select") not in (
+                    "SelectAction_Select",
+                    "Select",
+                    1,
+                ):
+                    continue
+                iid = _as_int(target.get("targetInstanceId"))
+                if not iid:
+                    continue
+                selectable.add(iid)
+                hint = target_highlight(target.get("highlight"))
+                if hint:
+                    hints[iid] = hint
+        return hints if selectable == candidates else {}
+
+    @staticmethod
+    def _slot_candidates(decision: Any, instance_id: int) -> list[int]:
+        """The candidates of the target slot offering ``instance_id`` (all targets without slots)."""
+        for slot in getattr(decision, "slots", ()) or ():
+            if instance_id in slot.candidate_ids:
+                return list(slot.candidate_ids)
+        return [
+            int(o.option_id[4:])
+            for o in decision.options
+            if str(o.option_id).startswith("tgt:") and str(o.option_id)[4:].isdigit()
+        ]
 
     @staticmethod
     def _target_objects(game_state: dict[str, Any]) -> dict[int, dict]:
@@ -7120,9 +7197,25 @@ class ActionPlanner(_ActionLegalityMixin):
         game_state: dict[str, Any],
         chosen: list[str],
     ) -> list[str]:
-        """Override mis-targeted LLM picks (harmful spells on own board or beneficial on enemy)."""
+        """Override mis-targeted LLM picks (harmful spells on own board or beneficial on enemy).
+
+        Arena's own highlight settles a pick first: a target it marks good
+        (Hot) stands, one it marks bad (Cold, or a Role that would replace
+        our existing Role) moves to a better candidate unless the model
+        justified it. When neither Arena nor the rules text says whether the
+        effect helps or hurts, the model's pick stands if the text is
+        consistent with it (see _unclassified_pick_reason): 2026-10-18 the
+        model's correct Spellbook Vendor, Grand Evolution and Badgermole Cub
+        picks were refused only because the answer omitted target_controllers.
+        """
         is_harmful = self._decision_source_is_harmful(decision, game_state)
-        if not self._decision_source_oracle(decision, game_state):
+        oracle = self._decision_source_oracle(decision, game_state)
+        hints = self._target_highlights(decision, game_state)
+        picked_ids = [
+            int(str(oid)[4:]) for oid in chosen if str(oid).startswith("tgt:") and str(oid)[4:].isdigit()
+        ]
+        arena_approves = bool(picked_ids) and all(hints.get(iid) == GOOD_TARGET for iid in picked_ids)
+        if not oracle and not arena_approves:
             logger.warning("Declining targets: effect source is unresolved")
             return [DECLINE_DECISION]
         local_seat, controllers = self._battlefield_controllers(game_state)
@@ -7134,6 +7227,7 @@ class ActionPlanner(_ActionLegalityMixin):
         intent = getattr(self, "_last_decision_target_controllers", {})
         exceptions = getattr(self, "_last_decision_unusual_targets", {})
         intentional_own = intentional_opp = True
+        arena_bad: list[str] = []
         for oid in chosen:
             if not str(oid).startswith("tgt:"):
                 continue
@@ -7155,19 +7249,41 @@ class ActionPlanner(_ActionLegalityMixin):
                     ctrl,
                 )
                 return [DECLINE_DECISION]
-            if is_harmful is None and acknowledged != expected:
-                logger.warning("Declining unclassified target %s without explicit controller intent", oid)
-                return [DECLINE_DECISION]
             justification = exceptions.get(oid)
             justified = (
                 acknowledged == expected and isinstance(justification, str) and bool(justification.strip())
             )
+            hint = hints.get(iid, "")
+            if highlight_is_bad(hint) and not justified:
+                arena_bad.append(oid)
+                continue
+            if hint == GOOD_TARGET:
+                continue  # Arena's verdict outranks our reading of the text.
+            if is_harmful is None and acknowledged != expected:
+                why = self._unclassified_pick_reason(decision, iid, ctrl == local_seat, controllers, oracle)
+                if not why:
+                    logger.warning(
+                        "Declining unclassified target %s: the effect's polarity is unknown and its text "
+                        "could %s %s permanent",
+                        oid,
+                        "hurt" if ctrl == local_seat else "help",
+                        "our own" if ctrl == local_seat else "the opponent's",
+                    )
+                    trace = getattr(self, "_last_decision_trace", None)
+                    if isinstance(trace, dict):
+                        trace["ambiguous_target_pick"] = list(chosen)
+                    return [DECLINE_DECISION]
+                logger.info("Keeping unclassified target %s: %s", oid, why)
+                continue
             if ctrl == local_seat:
                 picked_own = True
                 intentional_own = intentional_own and justified
             elif ctrl is not None:
                 picked_opp = True
                 intentional_opp = intentional_opp and justified
+
+        if arena_bad:
+            return self._move_off_bad_targets(decision, game_state, chosen, arena_bad, hints)
 
         if is_harmful and picked_own and not intentional_own:
             override = self._targeting_fallback_pick(decision, game_state)
@@ -7193,6 +7309,116 @@ class ActionPlanner(_ActionLegalityMixin):
                 return override
 
         return chosen
+
+    @staticmethod
+    def _unclassified_pick_reason(
+        decision: Any,
+        instance_id: int,
+        own: bool,
+        controllers: dict[int, int | None],
+        oracle: str,
+    ) -> str:
+        """Why the model's pick is consistent with an effect of unknown polarity ("" when it is not).
+
+        Our own permanent is fine when nothing in the text can hurt it, or
+        when the card itself aims at a permanent we control and the slot
+        offers nothing else (Smell Fear: "target creature you control fights
+        ..."). An opponent's permanent is fine when nothing in the text can
+        help it. Text that could do either stays a decline.
+        """
+        slot = ActionPlanner._slot_candidates(decision, instance_id)
+        sides = [controllers.get(candidate) for candidate in slot]
+        own_side = controllers.get(instance_id)
+        forced = bool(slot) and all(side is not None and side == own_side for side in sides)
+        if own:
+            if not effect_mentions_harm(oracle):
+                return "nothing in the effect can hurt our own permanent"
+            if forced and names_a_target_you_control(oracle):
+                return "the card aims this target at a permanent we control"
+            return ""
+        if not effect_mentions_benefit(oracle):
+            return "nothing in the effect can help the opponent's permanent"
+        return ""
+
+    def _move_off_bad_targets(
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        chosen: list[str],
+        bad: list[str],
+        hints: dict[int, str],
+    ) -> list[str]:
+        """Replace picks Arena marks bad with the best candidate it does not, in the same slot.
+
+        2026-10-18 20:48:38 and 20:49:09: Spellbook Vendor's Sorcerer Role went
+        to Spellbook Vendor itself twice, though Arena marked it ReplaceRole
+        (it already wore our Sorcerer Role, so the new one only replaced it);
+        the user put the Role on Veteran Survivor instead.
+        """
+        local_seat, controllers = self._battlefield_controllers(game_state)
+        is_harmful = self._decision_source_is_harmful(decision, game_state)
+        oracle = self._decision_source_oracle(decision, game_state)
+        powers = {
+            _as_int(card.get("instance_id")): _as_int(card.get("power"))
+            for card in game_state.get("battlefield", []) or []
+            if isinstance(card, dict)
+        }
+        kept = [oid for oid in chosen if oid not in bad]
+        for oid in bad:
+            iid = int(str(oid)[4:])
+            own = controllers.get(iid) == local_seat
+            alternatives = []
+            for candidate in self._slot_candidates(decision, iid):
+                cid = f"tgt:{candidate}"
+                if cid in chosen or cid in kept or highlight_is_bad(hints.get(candidate)):
+                    continue
+                ctrl = controllers.get(candidate)
+                if ctrl is None:
+                    continue
+                if is_harmful is True and ctrl == local_seat and hints.get(candidate) != GOOD_TARGET:
+                    continue
+                if is_harmful is False and ctrl != local_seat and hints.get(candidate) != GOOD_TARGET:
+                    continue
+                if (
+                    is_harmful is None
+                    and hints.get(candidate) != GOOD_TARGET
+                    and not self._unclassified_pick_reason(
+                        decision, candidate, ctrl == local_seat, controllers, oracle
+                    )
+                ):
+                    continue
+                alternatives.append(
+                    (
+                        hints.get(candidate) == GOOD_TARGET,
+                        (ctrl == local_seat) == own,
+                        powers.get(candidate, 0),
+                        cid,
+                    )
+                )
+            if alternatives:
+                kept.append(max(alternatives)[3])
+            elif hints.get(iid) == "ReplaceRole":
+                # A fresh Role on the same creature gains nothing but loses
+                # nothing either; with no other candidate it beats stalling.
+                kept.append(oid)
+        names = {
+            f"tgt:{iid}": card.get("name") or iid for iid, card in self._target_objects(game_state).items()
+        }
+        moved = ", ".join(f"{names.get(oid, oid)} ({hints.get(int(str(oid)[4:]))})" for oid in bad)
+        if kept and expand_target_selection(decision, kept):
+            logger.warning("Retargeting: Arena marks %s a bad target; choosing %s instead", moved, kept)
+            self._note_target_choice(
+                kept,
+                f"Arena marks {moved} a poor target, so "
+                + ", ".join(str(names.get(oid, oid)) for oid in kept)
+                + " gets it instead.",
+            )
+            return kept
+        choice = self._no_targets_or_decline(decision) if not kept else [DECLINE_DECISION]
+        logger.warning("Arena marks %s a bad target and no better candidate exists: %s", moved, choice)
+        if choice == [NO_TARGETS_DECISION]:
+            self._note_target_choice([], f"Arena marks {moved} a poor target; choosing none.")
+        return choice
 
     def _targeting_fallback_pick(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         """Controller-aware fallback for SelectTargets when the LLM failed.
@@ -7224,21 +7450,35 @@ class ActionPlanner(_ActionLegalityMixin):
             if iid:
                 battlefield[iid] = card
 
-        harmful_opt = self._decision_source_is_harmful(decision, game_state)
-        if harmful_opt is None:
-            return []
-        harmful = harmful_opt
-
         def _power(iid: int) -> int:
             try:
                 return int(battlefield.get(iid, {}).get("power") or 0)
             except (TypeError, ValueError):
                 return 0
 
+        # Arena's verdict first: the targets it marks good (Hot) are the good
+        # ones for this effect, whichever side they are on; never one it
+        # marks bad (Cold / ReplaceRole) while another candidate is not.
+        hints = self._target_highlights(decision, game_state)
+        good = [
+            iid for iid in candidates if hints.get(iid) == GOOD_TARGET and controllers.get(iid) is not None
+        ]
+        harmful_opt = self._decision_source_is_harmful(decision, game_state)
+        if not good and harmful_opt is None:
+            return self._unclassified_fallback_pick(
+                decision, game_state, candidates, controllers, hints, _power
+            )
+        harmful = harmful_opt
+        if any(not highlight_is_bad(hints.get(iid)) for iid in candidates):
+            candidates = [iid for iid in candidates if not highlight_is_bad(hints.get(iid))]
+
         own = [iid for iid in candidates if controllers.get(iid) == local_seat]
         theirs = [iid for iid in candidates if controllers.get(iid) not in (None, local_seat)]
 
-        if harmful:
+        if good:
+            doomed = self._unpayable_ward_targets(decision, game_state)
+            pool = sorted(good, key=lambda iid: (f"tgt:{iid}" in doomed, -_power(iid)))
+        elif harmful:
             if not theirs and own:
                 choice = self._no_targets_or_decline(decision)
                 logger.warning(
@@ -7271,6 +7511,57 @@ class ActionPlanner(_ActionLegalityMixin):
         n = max(1, int(decision.min_select or 1))
         picked = [f"tgt:{iid}" for iid in pool[:n]]
         return picked if expand_target_selection(decision, picked) else [DECLINE_DECISION]
+
+    def _unclassified_fallback_pick(
+        self,
+        decision: Any,
+        game_state: dict[str, Any],
+        candidates: list[int],
+        controllers: dict[int, int | None],
+        hints: dict[int, str],
+        power: Any,
+    ) -> list[str]:
+        """Blind pick for an effect neither Arena nor its text classifies ([] when unsafe).
+
+        Each required slot takes its biggest candidate when the slot offers
+        one side only and the text is consistent with that side
+        (_unclassified_pick_reason); optional slots stay empty. Anything
+        else is left to the player.
+        """
+        oracle = self._decision_source_oracle(decision, game_state)
+        if not oracle:
+            return []
+        local_seat = self._battlefield_controllers(game_state)[0]
+        slots = list(getattr(decision, "slots", ()) or ())
+        if not slots:
+            slots = [None]
+        picked: list[str] = []
+        for slot in slots:
+            needs = max(1, int(decision.min_select or 1)) if slot is None else slot.needs
+            if needs <= 0:
+                continue
+            ids = list(slot.candidate_ids) if slot is not None else list(candidates)
+            usable = [
+                iid
+                for iid in ids
+                if not highlight_is_bad(hints.get(iid)) and controllers.get(iid) is not None
+            ]
+            sides = {controllers.get(iid) == local_seat for iid in usable}
+            if len(sides) != 1 or any(controllers.get(iid) is None for iid in ids):
+                return []
+            pool = sorted(usable, key=power, reverse=True)[:needs]
+            if len(pool) < needs or any(
+                not self._unclassified_pick_reason(
+                    decision, iid, controllers.get(iid) == local_seat, controllers, oracle
+                )
+                for iid in pool
+            ):
+                return []
+            picked.extend(f"tgt:{iid}" for iid in pool)
+        if not picked:
+            return []
+        logger.info("Targeting fallback: unclassified effect, one-sided candidates — picking %s", picked)
+        return picked if expand_target_selection(decision, picked) else []
 
     @staticmethod
     def _no_targets_or_decline(decision: Any) -> list[str]:
@@ -7557,6 +7848,9 @@ class ActionPlanner(_ActionLegalityMixin):
         # Tags and LINES read the snapshot the guards assess (one search, cached).
         line_source, lines_text, unmodelled = self._line_prompt_context(decision, game_state)
         tag_state = game_state
+        target_hints = (
+            self._target_highlights(decision, game_state) if decision.request_type == "SelectTargets" else {}
+        )
         line_tags: dict[str, str] = {}
         # A search/tutor offers library cards: their rules are quoted for this
         # call, and the remaining inventory is listed with them.
@@ -7715,6 +8009,9 @@ class ActionPlanner(_ActionLegalityMixin):
                     from arenamcp.play_safety import planeswalker_state_facts
 
                     facts.update(planeswalker_state_facts(card))
+                arena_mark = _ARENA_TARGET_MARKS.get(target_hints.get(_as_int(o.option_id[4:]), ""))
+                if arena_mark:
+                    facts["arena_marks"] = arena_mark
                 ward = ward_of(card) if _as_int(o.option_id[4:]) in battlefield_ids else None
                 if ward is not None and ctrl not in (None, local_seat) and ward_mana is not None:
                     warded_targets = True

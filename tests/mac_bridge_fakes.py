@@ -60,6 +60,9 @@ class FakeGame:
         self.gsid, self.msg = gsid, msg
         self.batches: list[list[dict]] = []
         self.fail_on: str | None = None
+        # Requests (by handle) the player already answered: Submit() nulls OnSubmit,
+        # so the probe's Invoke on it fails "ref does not name an object result".
+        self.answered: set[int] = set()
 
     @property
     def request(self) -> dict | None:
@@ -92,6 +95,8 @@ class FakeGame:
                 results.append(self.getters.get(op["member"]) if current else None)
             elif op["op"] == "expect_pending" and current and op["target"]["h"] != current["$h"]:
                 return {"ok": False, "error": "stale: the pending request changed", "failed_op": len(results)}
+            elif op.get("method") == "Invoke" and current and current["$h"] in self.answered:
+                return {"ok": False, "error": "ref does not name an object result", "failed_op": len(results)}
             elif self.fail_on and op.get("method") == self.fail_on:
                 return {"ok": False, "error": f"{self.fail_on} threw", "failed_op": len(results)}
             else:

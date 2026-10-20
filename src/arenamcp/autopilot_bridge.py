@@ -2476,11 +2476,26 @@ class _BridgeSubmitMixin:
             if selected == [DECLINE_DECISION]:
                 if decision.can_cancel and bridge.cancel_action():
                     return _ok("cancelled unsafe targeting")
-                return False
-            if selected and submit_option(bridge, decision, selected):
+                if trigger != "watchdog":
+                    return False
+            elif selected and submit_option(bridge, decision, selected):
                 return _ok("controller-aware target selection")
-            if not selected and decision.selection_is_valid([]) and submit_option(bridge, decision, []):
+            elif not selected and decision.selection_is_valid([]) and submit_option(bridge, decision, []):
                 return _ok("up to N targets: none chosen")
+            if trigger != "watchdog":
+                return False
+            # Arena's clock is nearly out and nothing above is confirmed safe.
+            # A timeout can lose the game (2026-10-18 18:38, ResultReason_Timeout),
+            # so: back out when Arena allows it, else the model's own pick for
+            # this request (refused only as ambiguous), else Arena's default.
+            if decision.can_cancel and bridge.cancel_action():
+                return _ok("cancelled: no confirmed-safe target")
+            handed_off = getattr(self, "_handed_off_model_pick", None)
+            model_pick = handed_off(decision, game_state) if callable(handed_off) else []
+            if model_pick and submit_option(bridge, decision, model_pick):
+                return _ok(f"the model's own pick {model_pick}")
+            if bridge.auto_respond():
+                return _ok("auto_respond (Arena's default target)")
             return False
 
         # AssignDamage: lethal damage to each blocker, the rest tramples over (#102).

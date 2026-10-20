@@ -92,6 +92,25 @@ def test_failed_target_submission_on_a_moved_on_request_is_not_manual(monkeypatc
     assert pauses == []
 
 
+def test_failed_target_submission_the_player_already_answered_is_not_manual(monkeypatch):
+    # Silkguard, 2026-10-18 21:15:30: the player's SelectTargetsResp left at
+    # .263, ours failed at .515 against the same request (gsid 150 / msg 209),
+    # and the GRE's reply took until 21:15:31.981, so the re-read could not
+    # see the move. The bridge reports the spent OnSubmit instead.
+    bridge = TypedBridge({**TARGET_POLL, "game_state_id": 150, "msg_id": 209})
+
+    def player_answered_first(ids):
+        bridge.last_targets_answered_by_player = True
+        return False
+
+    bridge.submit_targets = player_answered_first
+    engine = make_engine(bridge, planner_with('{"option_ids": ["tgt:2"]}'))
+    pauses = []
+    monkeypatch.setattr(engine, "_pause_for_manual", lambda reason, state: pauses.append(reason))
+    assert engine._try_typed_decision_path(target_state(known_source=True), "decision_required") is True
+    assert pauses == []
+
+
 @pytest.mark.parametrize(
     ("answer", "submitted"),
     [

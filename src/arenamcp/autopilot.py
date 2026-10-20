@@ -2259,6 +2259,68 @@ class AutopilotEngine(
         )
         return True, "attacked with " + ", ".join(declared)
 
+    def _typed_request_key(self, decision: Any, fp: Any, game_state: dict[str, Any]) -> tuple:
+        """The live request's identity: its content plus Arena's (gameStateId, msgId) when known."""
+        request_id = tuple(getattr(decision, "request_id", (0, 0)) or (0, 0))
+        return (fp, request_id) if any(request_id) else (fp, self._turn_number(game_state))
+
+    def _hand_typed_request_to_user(
+        self, decision: Any, fp: Any, game_state: dict[str, Any], poll: dict[str, Any] | None = None
+    ) -> None:
+        """Remember the request MANUAL REQUIRED is about to be declared for, and the model's pick.
+
+        The pick is kept only when the target gate refused it as ambiguous
+        (unknown polarity, not unsafe): with Arena's clock nearly out it beats
+        a timeout (watchdog_safe_default).
+        """
+        from arenamcp.decision_watchdog import request_key
+
+        pick: list[str] = []
+        trace_fn = getattr(getattr(self, "_planner", None), "get_last_decision_trace", None)
+        if decision.request_type == "SelectTargets" and callable(trace_fn):
+            try:
+                pick = [str(oid) for oid in (trace_fn() or {}).get("ambiguous_target_pick") or []]
+            except Exception:
+                pick = []
+        self._typed_handoff = (self._typed_request_key(decision, fp, game_state), pick)
+        identified = bool(poll) and bool(poll.get("game_state_id") or poll.get("msg_id"))
+        self._typed_handoff_live_key = request_key(poll) if identified else None
+
+    def _typed_request_handed_to_user(self, decision: Any, fp: Any, game_state: dict[str, Any]) -> bool:
+        handoff = getattr(self, "_typed_handoff", None)
+        if handoff is None:
+            return False
+        if handoff[0] == self._typed_request_key(decision, fp, game_state):
+            return True
+        self._typed_handoff = None
+        self._typed_handoff_live_key = None
+        return False
+
+    def request_handed_to_user(self, resp: dict[str, Any] | None) -> bool:
+        """True while the bridge's live request is one MANUAL REQUIRED was declared for.
+
+        Keyed by Arena's request identity, not the board: the coaching loop's
+        board-based is_window_given_up missed the 2026-10-18 20:49:09 stand-down
+        and re-forced the window 0.2 s later.
+        """
+        from arenamcp.decision_watchdog import request_key
+
+        live_key = getattr(self, "_typed_handoff_live_key", None)
+        return live_key is not None and request_key(resp) == live_key
+
+    def _handed_off_model_pick(self, decision: Any, state: dict[str, Any]) -> list[str]:
+        """The model's refused-as-ambiguous pick for this exact live request, if any."""
+        from arenamcp.decisions import expand_target_selection
+        from arenamcp.request_tracker import decision_fingerprint
+
+        handoff = getattr(self, "_typed_handoff", None)
+        if not handoff or not handoff[1]:
+            return []
+        if handoff[0] != self._typed_request_key(decision, decision_fingerprint(decision), state):
+            return []
+        pick = list(handoff[1])
+        return pick if expand_target_selection(decision, pick) else []
+
     def watchdog_safe_default(self, game_state: dict[str, Any], reason: str = "") -> tuple[bool, str]:
         """Answer the live request with a safe legal default (decision watchdog).
 
@@ -4991,6 +5053,16 @@ class AutopilotEngine(
         if decision is None or decision.request_type not in self._TYPED_DECISION_FAMILIES:
             return None
         assert fp is not None
+        if self._typed_request_handed_to_user(decision, fp, game_state):
+            # MANUAL REQUIRED was already declared for this very request.
+            # 2026-10-18 20:49:09/20:49:11: the backstop re-forced the window
+            # 0.2 s after the stand-down, the board-based given-up check did
+            # not match, and the same choice was re-planned (a second LLM
+            # call), refused and announced again with a second Oops incident.
+            # The decision watchdog still answers it before Arena's clock ends.
+            logger.debug("typed-decision: %s already handed to the user; standing by", decision.request_type)
+            self._state = AutopilotState.PAUSED
+            return True
         if self._wait_for_search_identities(decision, game_state):
             return True
         if decision.request_type == "ActionsAvailable":
@@ -5134,6 +5206,7 @@ class AutopilotEngine(
                 )
                 self._state = AutopilotState.IDLE
                 return True
+            self._hand_typed_request_to_user(decision, fp, game_state, fresh_poll)
             self._pause_for_manual(
                 f"{decision.request_type}: no safe automatic choice — pick manually",
                 game_state,
@@ -5264,10 +5337,17 @@ class AutopilotEngine(
             # 2026-10-18 18:26:12 — the player clicked the only target 40 ms
             # before our submit, and MANUAL REQUIRED was announced for a
             # resolved spell.
+            # The bridge can also tell that the player answered first while the
+            # request is still pending (its OnSubmit spent, the GRE's reply not
+            # in yet): Silkguard 21:15:30, the reply took 1.7 s.
+            answered = getattr(self._gre_bridge, "last_targets_answered_by_player", False) is True
             latest = self._gre_bridge.get_pending_actions() or {}
             current = build_pending_decision(latest, resolve_instance=_resolve_instance)
-            if current is None or current.request_id != decision.request_id:
-                logger.info("typed-decision: SelectTargets moved on after a failed submit; yielding")
+            if current is None or current.request_id != decision.request_id or answered:
+                logger.info(
+                    "typed-decision: SelectTargets %s after a failed submit; yielding",
+                    "was answered by the player" if answered else "moved on",
+                )
                 self._request_tracker.observe(decision_fingerprint(current) if current else None)
                 self._state = AutopilotState.IDLE
                 return True

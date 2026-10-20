@@ -29,6 +29,7 @@ from typing import Any
 
 from arenamcp.card_db import is_unknown_card_name
 from arenamcp.mana import has_autotap_solution
+from arenamcp.target_effects import target_highlight
 
 logger = logging.getLogger(__name__)
 
@@ -882,6 +883,10 @@ def _build_select_targets(
         if player:
             name = player
             meta["player_seat"] = iid
+        # Arena's own good/bad verdict on this target (target_effects.target_highlight).
+        highlight = target_highlight(cand.get("highlight"))
+        if highlight:
+            meta["highlight"] = highlight
         options.append(DecisionOption(option_id=f"tgt:{iid}", label=name or f"Target #{iid}", meta=meta))
     if not options:
         return None

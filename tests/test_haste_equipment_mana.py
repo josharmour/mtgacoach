@@ -111,11 +111,22 @@ def test_equip_on_own_creature_is_submitted_without_controller_intent():
     assert planner.plan_decision_options(_target_decision(583, 591), _target_state()) == ["tgt:583"]
 
 
-def test_unclassified_non_equip_source_still_needs_intent():
-    # "Tap target creature." is classified harmful since 2026-10-06; phasing is not.
+def test_unclassified_non_equip_source_keeps_a_consistent_pick():
+    # "Tap target creature." is classified harmful since 2026-10-06; phasing is
+    # not. Nothing in "phases out" can hurt our own Hobbit: the pick stands.
     planner = _planner('{"option_ids": ["tgt:583"], "reasoning": "phase it out"}')
     state = _target_state(source_oracle="Target creature phases out.", parent_oracle="")
-    assert planner.plan_decision_options(_target_decision(583, 591), state) == [DECLINE_DECISION]
+    assert planner.plan_decision_options(_target_decision(583, 591), state) == ["tgt:583"]
+
+
+def test_unclassified_source_aimed_at_their_creature_still_needs_intent():
+    # Phasing out could also protect their creature: without stated intent, decline.
+    planner = _planner('{"option_ids": ["tgt:700"], "reasoning": "phase out their blocker"}')
+    state = _target_state(source_oracle="Target creature phases out.", parent_oracle="")
+    state["battlefield"].append(
+        {"instance_id": 700, "name": "Grizzly Bears", "type_line": "Creature — Bear", "controller_seat_id": 2}
+    )
+    assert planner.plan_decision_options(_target_decision(583, 700), state) == [DECLINE_DECISION]
 
 
 class _DummyBridge:
