@@ -7,6 +7,46 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-10-20 — Auto-queue leaves the result screen through the Mac bridge
+
+- **Report:** "auto-queue doesn't seem to progress the matches … stuck at the
+  reward page" (Arena 2026.64.50, native Mac, Brawl_Ladder).
+- **Evidence (`~/.arenamcp/standalone.log`, Player.log):** 10:05:48, 10:05:53,
+  10:05:59 and 10:13:37, 10:13:43, 10:13:48: three delivered centre clicks on
+  VICTORY, each "had no visible effect", then "Arena navigation stopped making
+  progress" (a pause that waited for a toggle). Arena's `OnExitMatchScene`
+  came only at 10:09:26 and 10:14:16, both clicked by hand, and the second
+  left Arena on the Reward screen until a manual queue at 10:21:24. The 10:03
+  DEFEAT click worked at once. Separately, 10:03:33-10:03:56: four Recently
+  Played Play clicks never reached `HomePageContentController.JoinMatchMaking`.
+  That call came only at 10:04:14, after the pause, so its cause is still open.
+- **Why the clicks did nothing:** `MatchSceneManager.AnimateMatchEnd` (re-output)
+  fetches the results (≤8 s), plays the rank animation (≤10 s) and shows any
+  survey (≤60 s). Only then does it subscribe `MatchEndScene.ExitMatchCompleted`
+  and call `EnableEndOfMatchControls`, which activates
+  `_exitMatchBackgroundButton`, the click-anywhere surface. Until then a click
+  and `LeaveMatch` both do nothing, and three screenshot clicks cannot tell
+  "not ready yet" from a miss. Members were verified in live IL2CPP metadata
+  (`probe_client.py class - MatchEndScene`) on 2026.64.50.
+- **Decision:** the bridge is the hands. A new read-only `get_match_end`
+  (`is_open`, `exit_ready` = something listens to ExitMatchCompleted,
+  `click_ready`) gates `leave_match` / `return_to_home`, which answer
+  `{"waiting": true}` instead of a no-op `LeaveMatch`. On the Mac, auto-queue
+  checks the result screen through the bridge before any screenshot. It waits
+  up to 120 s for `exit_ready`, then calls `LeaveMatch`, the handler a click
+  runs: no screenshot, model call or foreground is needed. It sends at most 3
+  leaves, 8 s apart. Without a bridge, or once those bounds run out, the
+  screenshot path runs as before. Its stall on an ignored `dismiss_result`
+  now retries by itself (30 s, ≤3, within the 20-click limit) rather than
+  waiting for a toggle. A click with no visible effect now saves its
+  before/after screens in `~/.arenamcp/debug/auto_queue/` (newest 10 pairs),
+  for the open Play-click case.
+- **Re-verify:** after a ranked match ends with auto-queue on, the log shows
+  "Arena's result screen accepts input N s after the match ended" and then
+  `mac bridge leave_match: {'ok': True}`, followed by Player.log
+  `OnExitMatchScene` within a second or two and no `dismiss_result` click.
+  N measures how long the screen really ignores input.
+
 ## 2026-10-18 — Chat/voice conversation modes removed
 
 - **User decision (test-suite cleanup):** remove the chat/voice conversation

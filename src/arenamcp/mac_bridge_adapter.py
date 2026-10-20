@@ -93,9 +93,9 @@ PASSTHROUGH = {"ping", "reflect_batch"}
 BEPINEX_RUNTIME = "bepinex"
 BEPINEX_REFLECT_COMMANDS = frozenset(
     {"confirm_draft_pick", "dismiss_survey", "event_play", "finish_sealed_open", "get_deck_editor",
-     "get_decks", "get_draft_state", "get_event_page", "get_limited_pool", "get_screen", "get_survey",
-     "go_to_event", "leave_match", "preview_draft_pick", "set_limited_deck", "submit_draft_pick",
-     "submit_limited_deck"}
+     "get_decks", "get_draft_state", "get_event_page", "get_limited_pool", "get_match_end", "get_screen",
+     "get_survey", "go_to_event", "leave_match", "preview_draft_pick", "set_limited_deck",
+     "submit_draft_pick", "submit_limited_deck"}
 )  # fmt: skip
 
 DECISION_TYPES = {
@@ -459,11 +459,11 @@ class MacBridgeAdapter:
     _READ_ONLY_COMMANDS = frozenset(
         {"ping", "get_pending_actions", "get_game_state", "get_timer_state", "get_match_info",
          "get_screen", "get_draft_state", "get_event_page", "get_deck_editor", "get_survey",
-         "get_limited_pool", "preview_draft_pick", "get_replay_status", "list_replays"}
+         "get_match_end", "get_limited_pool", "preview_draft_pick", "get_replay_status", "list_replays"}
     )  # fmt: skip
     _LOGGED_RESULT_KEYS = frozenset(
-        {"ok", "submitted_type", "survey_skipped", "already_home", "step", "event_name", "module",
-         "scope", "game_number", "turn", "gems_added", "deck_id", "error"}
+        {"ok", "submitted_type", "survey_skipped", "waiting", "already_home", "step", "event_name",
+         "module", "scope", "game_number", "turn", "gems_added", "deck_id", "error"}
     )  # fmt: skip
 
     def _require(self, timeout: float | None, *classes: str) -> Snapshot:
@@ -935,10 +935,42 @@ class MacBridgeAdapter:
         if self._skip_open_survey(timeout):
             # LeaveMatch is a no-op until the survey closes; the caller retries.
             return {"ok": True, "survey_skipped": True}
+        if not self._match_end_state(timeout)["exit_ready"]:
+            return {"ok": True, "waiting": True}
         ops = _Ops()
         ops.call(H(found), "LeaveMatch")
         self._run(ops, timeout)
         return {"ok": True}
+
+    # -- match result screen -------------------------------------------------
+    # MatchSceneManager.AnimateMatchEnd (re-output/Core/MatchSceneManager.cs)
+    # fetches the match results (up to 8 s), plays the rank animation (up to
+    # 10 s), shows the survey if drawn (up to 60 s), and only then subscribes
+    # ExitMatchCompleted and calls EnableEndOfMatchControls, which activates
+    # _exitMatchBackgroundButton, the click-anywhere surface. Until then a click
+    # on the result screen and LeaveMatch (ExitMatchCompleted?.Invoke()) do
+    # nothing: 2026-10-20 10:05:48-10:05:59 and 10:13:37-10:13:48 auto-queue's
+    # three centre clicks on VICTORY each had no effect and navigation paused.
+    # Members verified in live IL2CPP metadata 2026-10-20 (Arena 2026.64.50).
+
+    def _match_end_state(self, timeout: float | None) -> dict:
+        """Read-only: is the result screen open, and does leaving it work yet?"""
+        ops = _Ops()
+        scene = ops.add("find", **{"class": "MatchEndScene"}, depth=0, optional=True)
+        listener = ops.get(scene, "ExitMatchCompleted", optional=True)
+        background = ops.get(scene, "_exitMatchBackgroundButton", optional=True)
+        shown = ops.get(ops.get(background, "gameObject", optional=True), "activeInHierarchy", optional=True)
+        values = self._run(ops, timeout)
+        found = bool(handle(values[scene["ref"]]))
+        return {
+            "ok": True,
+            "is_open": found,
+            "exit_ready": found and bool(handle(values[listener["ref"]])),
+            "click_ready": found and values[shown["ref"]] is True,
+        }
+
+    def _cmd_get_match_end(self, command: dict, timeout: float | None) -> dict:
+        return self._match_end_state(timeout)
 
     # -- post-match survey ---------------------------------------------------
     # "Did you have fun in the match?" (loc DuelScene/EndMatch/PostMatchSurvey_Ask,
@@ -1378,6 +1410,8 @@ class MacBridgeAdapter:
         if self._skip_open_survey(timeout):
             # LeaveMatch is a no-op until the survey closes; the caller retries.
             return {"ok": True, "survey_skipped": True}
+        if not self._match_end_state(timeout)["exit_ready"]:
+            return {"ok": True, "waiting": True}
 
         ops = _Ops()
         ops.call(H(found_end), "LeaveMatch")

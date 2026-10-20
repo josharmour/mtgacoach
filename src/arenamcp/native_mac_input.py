@@ -350,6 +350,35 @@ class NativeMacInput:
         self._check_focus(window)
         return DesktopFrame(window, screenshot, time.monotonic())
 
+    def capture_on_screen(self, frame: DesktopFrame) -> Image.Image:
+        """The game window's screen area as the user sees it, overlays included.
+
+        ``capture`` records only Arena's own window. An Untapped.gg Companion
+        overlay window sits above it (2026-10-20, layer 3 over the whole game
+        area), so a miss's own screenshots cannot show what covered the click.
+        """
+        left, top, width, height = frame.window.bounds
+        with tempfile.TemporaryDirectory(prefix="mtgacoach-screen-") as directory:
+            path = Path(directory) / "screen.png"
+            result = subprocess.run(
+                [
+                    "/usr/sbin/screencapture",
+                    "-x",
+                    "-R",
+                    f"{left:.0f},{top:.0f},{width:.0f},{height:.0f}",
+                    str(path),
+                ],
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+            if result.returncode or not path.is_file():
+                raise DesktopUnavailable("Screen capture failed")
+            with Image.open(path) as original:
+                screen = original.convert("RGB")
+        screen.thumbnail((1600, 1000))
+        return screen
+
     def _check_point(self, window: GameWindow, point: tuple[float, float]) -> None:
         """Hit-test input ownership, including transparent click-through overlays."""
         self._check_focus(window)

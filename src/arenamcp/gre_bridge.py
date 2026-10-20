@@ -1058,6 +1058,9 @@ class GREBridge:
         """
         try:
             resp = self._send_safe({"action": "return_to_home"}, timeout=10.0)
+            if resp.get("ok") and resp.get("waiting"):
+                logger.debug("GRE bridge return_to_home: the result screen is not accepting input yet")
+                return False
             if resp.get("ok"):
                 logger.info("GRE bridge returned to Home (LeaveMatch)")
                 return True
@@ -1066,6 +1069,33 @@ class GREBridge:
         except GREBridgeError as e:
             logger.warning(f"GRE bridge return_to_home error: {e}")
             return False
+
+    def get_match_end(self) -> dict[str, Any] | None:
+        """Read-only: the match result screen, and whether leaving it works yet.
+
+        {"is_open": bool, "exit_ready": bool, "click_ready": bool} from the Mac
+        bridge (mac_bridge_adapter); None when the runtime does not answer it.
+        """
+        try:
+            resp = self._send_safe({"action": "get_match_end"}, timeout=8.0)
+        except GREBridgeError as e:
+            logger.debug(f"get_match_end error: {e}")
+            return None
+        if not resp.get("ok"):
+            logger.debug(f"get_match_end: {resp.get('error')}")
+            return None
+        return resp
+
+    def leave_match(self) -> dict[str, Any]:
+        """Leave the result screen through MatchEndScene.LeaveMatch, the handler a click runs; never raises.
+
+        {"ok": True, "waiting": True} means Arena is not accepting it yet;
+        {"ok": True, "survey_skipped": True} means the survey was skipped first.
+        """
+        try:
+            return self._send_safe({"action": "leave_match"}, timeout=8.0)
+        except GREBridgeError as e:
+            return {"ok": False, "error": str(e)}
 
     def get_survey(self) -> dict[str, Any] | None:
         """Read-only: Arena's post-match "Did you have fun?" survey, if it is open.

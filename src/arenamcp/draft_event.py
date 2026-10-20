@@ -1199,7 +1199,10 @@ class DraftEventDriver:
         self._wait(4.0)
 
     def _step_leave_match(self) -> None:
-        if self._command("leave_match", timeout=8.0).get("ok"):
+        result = self._command("leave_match", timeout=8.0)
+        if result.get("waiting"):
+            self._status("Match over; waiting for the result screen to accept input")
+        elif result.get("ok"):
             self.run.queued_at = 0.0
             self._status("Match over; back to the event page")
         self._wait(4.0)

@@ -81,6 +81,7 @@ _HOME_PATHS = (
     ("arenamcp.ability_synthesizer", "AbilitySynthesizer._CACHE_DIR", "cache/abilities"),
     ("arenamcp.opponent_tricks", "TRICK_DIR", "cache/trick_tables"),
     ("arenamcp.game_plan", "UNUSABLE_PLAN_DIR", "debug"),
+    ("arenamcp.auto_queue", "MISSED_CLICK_DIR", "debug/auto_queue"),
 )
 # Copies of LOG_DIR made at import time. These modules are heavy, so they are
 # not imported here: they inherit the session redirect when something imports

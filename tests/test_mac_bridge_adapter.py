@@ -1184,24 +1184,10 @@ def test_old_plugin_rejects_multi_modes_without_single_mode_fallback():
 
 
 def test_mac_bridge_return_to_home_calls_leave_match():
-    calls = []
-
-    def fake_send(command, timeout):
-        ops = command["ops"]
-        calls.append(ops)
-        if any(op.get("op") == "find" and op.get("class") == "GameEndSurvey" for op in ops):
-            # No post-match survey is open.
-            return {"ok": True, "results": [None] * len(ops)}
-        if any(op.get("op") == "find" and op.get("class") == "MatchEndScene" for op in ops):
-            return {"ok": True, "results": [{"$h": 42, "$c": "MatchEndScene"}, None]}
-        if any(op.get("op") == "call" and op.get("method") == "LeaveMatch" for op in ops):
-            return {"ok": True, "results": [None]}
-        return {"ok": False, "error": "unexpected op"}
-
-    adapter = MacBridgeAdapter(fake_send)
-    resp = adapter.handle({"action": "return_to_home"})
-    assert resp["ok"] is True
-    assert any(op.get("method") == "LeaveMatch" for batch in calls for op in batch)
+    world = result_world()
+    resp = MacBridgeAdapter(world.send).handle({"action": "return_to_home"})
+    assert resp == {"ok": True}
+    assert clicks(world) == [(10, "LeaveMatch")]
 
 
 def test_mac_bridge_return_to_home_already_home():
@@ -1233,6 +1219,33 @@ def test_mac_bridge_return_to_home_fails_when_neither_scene():
 # ---------------------------------------------------------------------------
 
 
+def result_world(*, ready=True):
+    """MatchEndScene as MatchSceneManager.AnimateMatchEnd leaves it.
+
+    Until the results, rank animation and survey are done, nothing listens to
+    ExitMatchCompleted and the click-anywhere background is inactive; then the
+    scene manager subscribes and EnableEndOfMatchControls activates it.
+    """
+    from tests.mac_world import Obj, World
+
+    world = World()
+    background_object = world.add(12, "UnityEngine.GameObject", activeInHierarchy=False)
+    background = world.add(11, "UnityEngine.EventSystems.EventTrigger", gameObject=Obj(background_object))
+    world.finds["MatchEndScene"] = world.add(
+        10, "MatchEndScene", ExitMatchCompleted=None, _exitMatchBackgroundButton=Obj(background)
+    )
+    if ready:
+        make_ready(world)
+    return world
+
+
+def make_ready(world):
+    from tests.mac_world import Obj
+
+    world.objects[10]["ExitMatchCompleted"] = Obj(world.add(13, "System.Action"))
+    world.objects[12]["activeInHierarchy"] = True
+
+
 def survey_world(*, shown=True, awaiting=True, interactable=True):
     """MatchEndScene with the GameEndSurvey popup, scripted like the client.
 
@@ -1240,10 +1253,10 @@ def survey_world(*, shown=True, awaiting=True, interactable=True):
     and clears the callbacks; the scene manager drops its handler on any
     answer, so a pressed Skip reads back as FeedbackSubmitted == null.
     """
-    from tests.mac_world import Obj, World
+    from tests.mac_world import Obj
 
-    world = World()
-    world.finds["MatchEndScene"] = world.add(10, "MatchEndScene")
+    # The scene manager subscribes ExitMatchCompleted once the survey is answered.
+    world = result_world(ready=not (shown and awaiting))
     skip_object = world.add(21, "UnityEngine.GameObject", activeInHierarchy=True)
     skip = world.add(20, "CustomButton", Interactable=interactable, gameObject=Obj(skip_object))
     good = world.add(22, "CustomButton", Interactable=True)
@@ -1265,6 +1278,7 @@ def survey_world(*, shown=True, awaiting=True, interactable=True):
     def pressed(_args):
         world.objects[survey]["FeedbackSubmitted"] = None
         world.finds.pop("GameEndSurvey", None)
+        make_ready(world)
         return None
 
     world.results[(skip, "Click")] = pressed
@@ -1332,6 +1346,43 @@ def test_leaving_the_result_screen_skips_an_open_survey_first(action):
     second = adapter.handle({"action": action})
     assert second == {"ok": True}
     assert clicks(world) == [(20, "Click"), (10, "LeaveMatch")]
+
+
+def test_result_screen_reports_when_leaving_it_works():
+    adapter = MacBridgeAdapter(result_world(ready=False).send)
+    assert adapter.handle({"action": "get_match_end"}) == {
+        "ok": True,
+        "is_open": True,
+        "exit_ready": False,
+        "click_ready": False,
+    }
+    ready = MacBridgeAdapter(result_world().send).handle({"action": "get_match_end"})
+    assert ready["is_open"] and ready["exit_ready"] and ready["click_ready"]
+    from tests.mac_world import World
+
+    closed = MacBridgeAdapter(World().send).handle({"action": "get_match_end"})
+    assert closed == {"ok": True, "is_open": False, "exit_ready": False, "click_ready": False}
+
+
+@pytest.mark.parametrize("action", ["leave_match", "return_to_home"])
+def test_leaving_waits_while_the_result_screen_is_still_animating(action):
+    # 2026-10-20 10:05:48-10:05:59: clicks on VICTORY before Arena enabled the
+    # end-of-match controls did nothing. LeaveMatch then is a no-op too.
+    world = result_world(ready=False)
+    adapter = MacBridgeAdapter(world.send)
+    assert adapter.handle({"action": action}) == {"ok": True, "waiting": True}
+    assert clicks(world) == []
+    make_ready(world)
+    assert adapter.handle({"action": action}) == {"ok": True}
+    assert clicks(world) == [(10, "LeaveMatch")]
+
+
+def test_bridge_return_to_home_is_not_reported_while_the_screen_waits():
+    bridge = GREBridge()
+    bridge._send_safe = lambda command, timeout=None: {"ok": True, "waiting": True}
+    assert bridge.return_to_home() is False
+    bridge._send_safe = lambda command, timeout=None: {"ok": True}
+    assert bridge.return_to_home() is True
 
 
 def test_leaving_the_result_screen_reports_a_survey_it_cannot_skip():

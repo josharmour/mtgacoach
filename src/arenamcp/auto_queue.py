@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 from collections import Counter, deque
+from pathlib import Path
 from typing import Any
 
 from arenamcp.backend_health import is_backend_error_text
@@ -172,6 +173,20 @@ _QUEUE_ACTIONS = {"select_recent", "start_queue"}
 _SURVEY_BRIDGE_ATTEMPTS = 3
 # Screenshot observations of the survey without a usable Skip control, 3 s apart.
 _SURVEY_WAIT_LIMIT = 25
+# The result screen ignores clicks and LeaveMatch until Arena has fetched the
+# results (up to 8 s), played the rank animation (up to 10 s) and closed any
+# survey (up to 60 s); see mac_bridge_adapter._match_end_state. The bridge
+# waits this long for it, then leaves the screen to the screenshot path.
+_RESULT_READY_WAIT_S = 120.0
+# LeaveMatch calls per finished match, each given this long to close the
+# screen, before the screenshot path takes over.
+_BRIDGE_LEAVE_ATTEMPTS = 3
+_BRIDGE_LEAVE_SETTLE_S = 8.0
+# Screens before and after the newest clicks that changed nothing: the log of
+# 2026-10-20 10:03:33-10:03:56 (four Recently Played Play clicks Arena never
+# received) could not say what was on screen.
+MISSED_CLICK_DIR = Path.home() / ".arenamcp" / "debug" / "auto_queue"
+MISSED_CLICK_KEEP = 10
 # Recently Played labels for log event IDs (confirmed from tiles + EventJoin, 2026-10-04).
 _QUEUE_DISPLAY_NAMES = {
     "Brawl_Ladder": "competitive brawl",
@@ -454,6 +469,14 @@ class AutoQueueNavigator:
         self._last_click: tuple[Any, DesktopAction, dict, str] | None = None
         self._survey_skips = 0
         self._survey_waits = 0
+        # The bridge's view of the result screen: when it was first seen open
+        # (monotonic), LeaveMatch calls sent and when, and whether it gave the
+        # screen to the screenshot path.
+        self._result_seen_at = 0.0
+        self._result_ready_logged = False
+        self._bridge_leaves = 0
+        self._bridge_left_at = 0.0
+        self._bridge_result_done = False
         # Stall evidence: how long the current status has held, when navigation
         # last progressed, and what the running step is doing.
         self._status_since = 0.0
@@ -580,6 +603,7 @@ class AutoQueueNavigator:
                 self._resume_pending = False
                 self._failures = self._result_waits = self._pause_retries = 0
                 self._survey_skips = self._survey_waits = 0
+                self._reset_bridge_result()
                 self._attempts.clear()
                 self._clicks = 0
                 self._next_poll = 0
@@ -626,6 +650,7 @@ class AutoQueueNavigator:
             self._retry_at = 0.0
             self._pause_retries = 0
             self._survey_skips = self._survey_waits = 0
+            self._reset_bridge_result()
             self._queue_started = False
             self._queue_observed = False
             self._last_rejection = None
@@ -762,6 +787,7 @@ class AutoQueueNavigator:
             self._pause_retries = count("pause_retries")
             self._survey_skips = count("survey_skips")
             self._survey_waits = count("survey_waits")
+            self._reset_bridge_result()
             rejection = record.get("last_rejection")
             self._last_rejection = rejection if isinstance(rejection, dict) else None
             self._last_click = None
@@ -872,6 +898,8 @@ class AutoQueueNavigator:
         self.paused_reason = ""
         self._retry_at = 0.0
         self._failures = self._result_waits = 0
+        # A result overlay whose clicks did nothing gets fresh clicks (bounded by _CLICK_LIMIT).
+        self._attempts.clear()
         self._next_poll = 0.0
         self._stage = "resuming"
         self._screen_wait_since = self._last_watchdog = self._model_wait_since = 0.0
@@ -1068,6 +1096,13 @@ class AutoQueueNavigator:
                 self._step_bridge(generation, aborted, bridge)
                 return
 
+            # The result screen ignores input until its end animations finish;
+            # the bridge waits for that and leaves through the click's own
+            # handler, with no screenshot, model call or foreground needed.
+            self._step_phase = "bridge result screen"
+            if self._leave_result_via_bridge(bridge, generation, aborted):
+                return
+
             if self._controller is None:
                 if sys.platform != "darwin":
                     self._pause(
@@ -1113,9 +1148,10 @@ class AutoQueueNavigator:
                 else:
                     missed_click = clicked
                     logger.info(
-                        "Auto queue: previous %s click on %r had no visible effect",
+                        "Auto queue: previous %s click on %r had no visible effect%s",
                         clicked["action"],
                         clicked["label"],
+                        self._save_missed_click(clicked_frame, frame, clicked),
                     )
             user = json.dumps(
                 {
@@ -1285,7 +1321,12 @@ class AutoQueueNavigator:
                 raise ValueError("Navigation screenshot expired")
             key = json.dumps([data["action"], data["label"], action.point])
             if self._attempts[key] >= 3 or self._clicks >= _CLICK_LIMIT:
-                self._pause("Arena navigation stopped making progress")
+                # A result overlay ignores clicks until its end animations finish
+                # (2026-10-20 10:05:59, 10:13:48: paused for good, then clicked by hand).
+                self._pause(
+                    "Arena navigation stopped making progress",
+                    retry=data["action"] == "dismiss_result" and self._clicks < _CLICK_LIMIT,
+                )
                 return
             estimate = action.point
             self._step_phase = "click refinement"
@@ -1416,6 +1457,111 @@ class AutoQueueNavigator:
         self._next_poll = time.monotonic() + 1.5
         return True
 
+    def _reset_bridge_result(self) -> None:
+        self._result_seen_at = self._bridge_left_at = 0.0
+        self._result_ready_logged = self._bridge_result_done = False
+        self._bridge_leaves = 0
+
+    def _leave_result_via_bridge(self, bridge: Any, generation: int, aborted: threading.Event) -> bool:
+        """Leave Arena's result screen through the bridge once it accepts input.
+
+        Clicking it before EnableEndOfMatchControls does nothing, which three
+        screenshot clicks could not tell from a miss. True means this step was
+        spent on the result screen; False leaves the step to the screenshot path
+        (no bridge, no result screen, or not left within _RESULT_READY_WAIT_S
+        and _BRIDGE_LEAVE_ATTEMPTS).
+        """
+        get_state = getattr(bridge, "get_match_end", None)
+        leave = getattr(bridge, "leave_match", None)
+        if self._bridge_result_done or not (
+            bridge and getattr(bridge, "connected", False) and callable(get_state) and callable(leave)
+        ):
+            return False
+        state = get_state()
+        if not isinstance(state, dict) or not state.get("is_open"):
+            return False
+        now = time.monotonic()
+        self._result_seen_at = self._result_seen_at or now
+        settling = self._bridge_left_at and now - self._bridge_left_at < _BRIDGE_LEAVE_SETTLE_S
+        if not state.get("exit_ready") or settling:
+            if not settling and now - self._result_seen_at >= _RESULT_READY_WAIT_S:
+                self._bridge_result_done = True
+                logger.info(
+                    "Auto queue: Arena's result screen did not accept input for %.0fs; using screenshots",
+                    now - self._result_seen_at,
+                )
+                return False
+            self._next_poll = now + 1.0
+            self._status(
+                "Leaving the result screen"
+                if self._bridge_left_at
+                else "Waiting for Arena's result screen to accept input"
+            )
+            return True
+        if not self._result_ready_logged:
+            self._result_ready_logged = True
+            logger.info(
+                "Auto queue: Arena's result screen accepts input %.1fs after the match ended "
+                "(%.1fs after the bridge saw it)",
+                now - self._armed_at if self._armed_at else -1.0,
+                now - self._result_seen_at,
+            )
+        if self._bridge_leaves >= _BRIDGE_LEAVE_ATTEMPTS:
+            self._bridge_result_done = True
+            logger.info(
+                "Auto queue: %d bridge leaves did not close the result screen; using screenshots",
+                self._bridge_leaves,
+            )
+            return False
+        if not self._current(generation, aborted):
+            return True
+        if self._new_match(self._get_game_state() or {}):
+            self._handoff(generation, aborted)
+            return True
+        result = leave()
+        result = result if isinstance(result, dict) else {}
+        self._next_poll = time.monotonic() + 1.0
+        if result.get("ok") and (result.get("waiting") or result.get("survey_skipped")):
+            self._status("Waiting for Arena's result screen to accept input")
+            return True
+        self._bridge_leaves += 1
+        if result.get("ok"):
+            self._bridge_left_at = time.monotonic()
+            self._awaiting_result_dismissal = True
+            self._history.append({"action": "leave_match", "label": "result screen (bridge)"})
+            self._progress("the bridge left the result screen")
+            self._status("Leaving the result screen")
+        else:
+            logger.info(
+                "Auto queue: bridge leave %d/%d failed: %s",
+                self._bridge_leaves,
+                _BRIDGE_LEAVE_ATTEMPTS,
+                result.get("error") or "no answer",
+            )
+        return True
+
+    def _save_missed_click(self, before: Any, after: Any, clicked: dict) -> str:
+        """Keep the screens around a click that changed nothing; returns a note for the log line."""
+        try:
+            MISSED_CLICK_DIR.mkdir(parents=True, exist_ok=True)
+            label = re.sub(r"[^A-Za-z0-9]+", "_", str(clicked.get("label") or ""))[:24]
+            stem = f"{time.strftime('%Y%m%d_%H%M%S')}_{clicked.get('action')}_{label}"
+            for name, frame in (("before", before), ("after", after)):
+                (MISSED_CLICK_DIR / f"{stem}_{name}.png").write_bytes(frame.png())
+            names = "before/after"
+            # What the user sees there now, other apps' overlay windows included.
+            on_screen = getattr(self._controller, "capture_on_screen", None)
+            if callable(on_screen):
+                with contextlib.suppress(Exception):
+                    on_screen(after).save(MISSED_CLICK_DIR / f"{stem}_screen.png")
+                    names += "/screen"
+            for stale in sorted(MISSED_CLICK_DIR.glob("*.png"))[: -3 * MISSED_CLICK_KEEP]:
+                stale.unlink(missing_ok=True)
+            return f" (screens: {MISSED_CLICK_DIR / stem}_{names}.png)"
+        except Exception as error:
+            logger.debug("Auto queue: could not save the missed click's screens: %s", error)
+            return ""
+
     def _step_bridge(self, generation: int, aborted: threading.Event, bridge: Any) -> None:
         """Handle post-match screen dismissal and requeueing directly via GRE bridge."""
         try:
@@ -1505,6 +1651,8 @@ class AutoQueueNavigator:
                 "result_waits": self._result_waits,
                 "survey_skips": self._survey_skips,
                 "survey_waits": self._survey_waits,
+                "bridge_leaves": self._bridge_leaves,
+                "bridge_result_done": self._bridge_result_done,
                 "worker_running": bool(self._worker and self._worker.is_alive()),
                 "status": self._last_status,
                 "status_for_s": round(now - self._status_since, 1) if self._status_since else None,
