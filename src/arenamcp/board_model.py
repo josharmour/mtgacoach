@@ -49,6 +49,7 @@ from arenamcp.board_assessment import (
     extra_mana_cost,
 )
 from arenamcp.combat_keywords import has_combat_keyword, printed_combat_keywords
+from arenamcp.death_triggers import annotate_death_swings
 from arenamcp.mulligan_policy import _land_colors, _mana_value, _symbols, hand_card
 
 _PHASES = {name.lower(): name for name in ("Beginning", "Main1", "Combat", "Main2", "Ending")}
@@ -612,6 +613,7 @@ def build_board_model(state: dict) -> BoardModel | None:
         if target:
             attached.setdefault(target, []).append(card)
 
+    annotate_death_swings(battlefield)
     our_rules, their_rules = _side_rules(battlefield, local), _side_rules(battlefield, opponent)
     ours: list[dict] = []
     theirs: list[dict] = []

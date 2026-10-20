@@ -62,7 +62,7 @@ from arenamcp.combat_keywords import (
     is_creature_modified,
     modified_conditional_keywords,
 )
-from arenamcp.combat_solver import _resolve_attacker, _search_blocks, combat_resource_roles
+from arenamcp.combat_solver import _death_life, _resolve_attacker, _search_blocks, combat_resource_roles
 from arenamcp.combat_strategy import _CANT_BLOCK, _rules_text, loyalty
 from arenamcp.limited_rules import rules_profile
 from arenamcp.mulligan_policy import _land_colors, _mana_value, _pip_matching, hand_card
@@ -661,6 +661,10 @@ def _combat_life(attackers: list[dict], blockers: list[dict], life: int, *, deta
         damage += outcome.damage_through
         through[attacker["instance_id"]] = outcome.damage_through
         attacker_gain += outcome.life_gained
+        if outcome.attacker_died or outcome.blockers_died:
+            blocking_death, attacking_death = _death_life(attacker, outcome)
+            defender_gain += blocking_death
+            attacker_gain += attacking_death
         if group and outcome.attacker_died:
             dead_attackers.add(attacker["instance_id"])
         dead_blockers.update(dead["instance_id"] for dead in outcome.blockers_died)

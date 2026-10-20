@@ -1548,14 +1548,16 @@ class ActionPlanner(_ActionLegalityMixin):
         if plan.actions[0].action_type != ActionType.DECLARE_BLOCKERS and not declined:
             return
         from arenamcp.attack_potential import pumped_attackers
-        from arenamcp.combat_solver import _resolve_attacker, blocker_options, optimal_blocks
+        from arenamcp.combat_solver import _death_life, _resolve_attacker, blocker_options, optimal_blocks
         from arenamcp.combat_strategy import extra_combat_damage, phantom_attackers, with_hit_bonus
+        from arenamcp.death_triggers import annotate_death_swings
 
         local = next((p for p in state.get("players", []) if p.get("is_local")), None)
         life = (local or {}).get("life_total")
         if type(life) is not int or life <= 0:
             return
         local_seat = local.get("seat_id")
+        annotate_death_swings(state.get("battlefield") or [])
         cards = {c.get("instance_id"): c for c in state.get("battlefield", [])}
         attackers = [
             c
@@ -1579,12 +1581,12 @@ class ActionPlanner(_ActionLegalityMixin):
             return
         action = plan.actions[0]
         planned = {} if declined else action.blocker_instance_assignments or {}
-        through = sum(
-            _resolve_attacker(
+        through = 0
+        for atk in attackers:
+            outcome = _resolve_attacker(
                 atk, [cards[b] for b, a in planned.items() if a == atk["instance_id"] and b in cards]
-            ).damage_through
-            for atk in attackers
-        )
+            )
+            through += outcome.damage_through - _death_life(atk, outcome)[0]
         # An extra combat follows this one (Aurelia, ledger #191): its damage through the blockers
         # these blocks leave counts as this turn's.
         through += extra_combat_damage(state, attackers, planned)
@@ -1595,7 +1597,11 @@ class ActionPlanner(_ActionLegalityMixin):
         survival = optimal_blocks(attackers, blockers, life, blocker_allowed_attackers=allowed or None)
         if survival is None or not survival.assignments:
             return
-        survival_through = survival.damage_through + extra_combat_damage(state, attackers, survival.assignments)
+        survival_through = (
+            survival.damage_through
+            + survival.death_drain
+            + extra_combat_damage(state, attackers, survival.assignments)
+        )
         if survival_through >= life:
             return
         if not lethal and survival_through > through - BLOCK_DANGER_MARGIN:
