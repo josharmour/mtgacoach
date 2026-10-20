@@ -6327,7 +6327,11 @@ class ActionPlanner(_ActionLegalityMixin):
             return chosen  # the searched line aims it there (a two-spell kill, say)
         name = card.get("name") or picked
         if not fallback:
-            bonus = named_burn_damage(self._last_decision_reasoning, game_state, {"name": source})
+            bonus = named_burn_damage(
+                self._last_decision_reasoning,
+                game_state,
+                {"name": source, "instance_id": self._decision_source_instance(game_state)},
+            )
             if bonus and damage_would_kill(card, damage + bonus) is not False:
                 return chosen
         if line_option:

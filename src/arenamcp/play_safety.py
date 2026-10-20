@@ -1163,7 +1163,8 @@ def named_burn_damage(reasoning: str, state: dict, played: dict) -> int:
     together; the claim is checked against their sum, not the first spell's
     damage alone. Names count in full or by a word the played card's own name
     lacks ("Burst" for Burst Lightning beside Lightning Strike); another copy
-    of the played card never counts, since its name is the played card's.
+    of the played card counts only when the reasoning explicitly names a
+    second copy ("needs both Bursts", "two Bursts", "second Burst", #146).
     """
 
     def words(value: Any) -> list[str]:
@@ -1172,19 +1173,51 @@ def named_burn_damage(reasoning: str, state: dict, played: dict) -> int:
     text = f" {' '.join(words(reasoning))} "
     if not text.strip():
         return 0
-    own_words = set(words(played.get("name")))
+    own_list = words(played.get("name"))
+    own_words = set(own_list)
+    full_name = " ".join(own_list)
+    own_stems = "|".join(
+        re.escape(w) + "s?" for w in sorted(own_words, key=len, reverse=True) if len(w) >= 4
+    )
+    same_card_multi = bool(
+        own_stems
+        and (
+            re.search(
+                rf"\b(?:both|two|2x?|second|2nd|another|other|double|pair of)"
+                rf"(?:\s+(?:of|our|the|my|hand))*?\s+(?:cop(?:y|ies)|{own_stems})\b",
+                text,
+            )
+            or (full_name and text.count(f" {full_name} ") >= 2)
+        )
+    )
+    hand = [c for c in state.get("hand") or [] if isinstance(c, dict)]
+    on_stack = any(
+        isinstance(s, dict) and set(words(s.get("name"))) == own_words for s in state.get("stack") or []
+    )
+    skip_unidentified_own = (
+        played.get("instance_id") is None
+        and not any(c is played for c in hand)
+        and not on_stack
+    )
     total = 0
-    for card in state.get("hand") or []:
-        if not isinstance(card, dict) or card is played:
+    for card in hand:
+        if card is played:
             continue
         if card.get("instance_id") is not None and card.get("instance_id") == played.get("instance_id"):
             continue
         name = words(card.get("name"))
-        distinct = [word for word in name if len(word) >= 4 and word not in own_words]
-        if not name or set(name) == own_words or not (
-            f" {' '.join(name)} " in text or any(f" {word} " in text for word in distinct)
-        ):
+        if not name:
             continue
+        if set(name) == own_words:
+            if skip_unidentified_own:
+                skip_unidentified_own = False
+                continue
+            if not same_card_multi:
+                continue
+        else:
+            distinct = [word for word in name if len(word) >= 4 and word not in own_words]
+            if not (f" {' '.join(name)} " in text or any(f" {word} " in text for word in distinct)):
+                continue
         parsed = damage_effect(card, state)
         if parsed and parsed[1] != "each":
             total += parsed[0]

@@ -542,3 +542,52 @@ def test_late_game_sparse_hand_and_consecutive_supersedes_use_low_effort():
     mgr._supersede_stale_inflight_locked({"turn": {"turn_number": 13}})
     assert not cancel3.is_set()
 
+
+# --- #146: named_burn_damage counts a second copy of the played card when reasoning names both -----
+
+
+def test_named_burn_damage_counts_second_copy_when_reasoning_names_both_bursts():
+    from arenamcp.play_safety import named_burn_damage
+
+    burst1 = {
+        "instance_id": 1001,
+        "name": "Burst Lightning",
+        "type_line": "Instant",
+        "mana_cost": "{R}",
+        "oracle_text": "Kicker {4}\nBurst Lightning deals 2 damage to any target. If this spell was kicked, it deals 4 damage instead.",
+    }
+    burst2 = {
+        "instance_id": 1002,
+        "name": "Burst Lightning",
+        "type_line": "Instant",
+        "mana_cost": "{R}",
+        "oracle_text": "Kicker {4}\nBurst Lightning deals 2 damage to any target. If this spell was kicked, it deals 4 damage instead.",
+    }
+    board = state(
+        [card(1003, "Dazzling Angel", OPP, power=2, toughness=3)],
+        match="6a8fc725",
+        local=ME,
+        life=20,
+        opp_life=20,
+        turn=4,
+        active=ME,
+        phase="Phase_Main1",
+        step="",
+        their_hand=2,
+        hand=[burst1, burst2],
+    )
+    # Naming "both Bursts" / "two Bursts" / "second Burst" counts the second copy in hand (2 damage).
+    assert (
+        named_burn_damage("Cast Burst Lightning; kills Dazzling Angel (2/3) — needs both Bursts.", board, burst1)
+        == 2
+    )
+    assert (
+        named_burn_damage("Two Bursts kill Dazzling Angel (2/3).", board, burst1)
+        == 2
+    )
+    # Ordinary single-copy reasoning does not count the second copy in hand.
+    assert (
+        named_burn_damage("Cast Burst Lightning to kill Dazzling Angel (2/3) and trigger both prowess creatures.", board, burst1)
+        == 0
+    )
+
