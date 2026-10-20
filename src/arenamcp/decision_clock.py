@@ -37,8 +37,10 @@ from typing import Any
 
 # Behaviors whose expiry costs us: the rope (Arena acts for us) or the game.
 _DEADLINE_BEHAVIORS = frozenset({"TimerBehavior_TakeControl", "TimerBehavior_Timeout"})
-# An event timestamp further than this from now is not trusted as a wall clock.
-_MAX_TIMESTAMP_SKEW_S = 24 * 3600.0
+# Real GreToClientEvent timestamps are Unix epoch milliseconds (2020-01-01..);
+# synthetic test numbers ("0", "1000") or future clock skew fall back to now.
+_MIN_EPOCH_S = 1_577_836_800.0
+_MAX_FUTURE_SKEW_S = 24 * 3600.0
 
 
 def event_wall_time(payload: dict[str, Any] | None, now: float | None = None) -> float:
@@ -49,7 +51,7 @@ def event_wall_time(payload: dict[str, Any] | None, now: float | None = None) ->
         stamp = float(raw) / 1000.0
     except (TypeError, ValueError):
         return now
-    return stamp if abs(stamp - now) <= _MAX_TIMESTAMP_SKEW_S else now
+    return stamp if _MIN_EPOCH_S <= stamp <= now + _MAX_FUTURE_SKEW_S else now
 
 
 def _seconds(timer: dict[str, Any], key_ms: str, key_s: str) -> float:
