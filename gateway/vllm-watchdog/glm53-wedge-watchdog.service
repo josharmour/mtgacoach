@@ -1,5 +1,5 @@
 [Unit]
-Description=GLM-5.3 vLLM wedge watchdog (docker restart on a stuck TP engine, 2026-10-19 CUDA OOM hang)
+Description=GLM-5.3 vLLM wedge watchdog (stops a stuck TP engine so its systemd unit restarts it)
 After=docker.service
 Requires=docker.service
 

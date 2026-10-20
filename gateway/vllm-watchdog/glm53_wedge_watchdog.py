@@ -14,17 +14,23 @@ This is the docker-managed sibling of dsv4-build/scripts/wedge_watchdog.py:
 a wedge is a request in flight (num_requests_running >= 1) with ZERO engine
 progress — no new engine iteration (vllm:iteration_tokens_total_count, which
 advances on every prefill chunk too, so a 1M-token prefill is progress), no
-prompt and no generation tokens — for WD_STUCK_SEC. Then `docker restart`.
+prompt and no generation tokens — for WD_STUCK_SEC. Then save the container's
+log under WD_LOG_DIR and `docker stop` it.
 
-The container was started with --rm (AutoRemove), so a crash that EXITS the
-process deletes it and Docker cannot restart it. When the container is gone
-for two polls, WD_RECREATE (a `docker run` generated from its inspect output)
-recreates it with --restart unless-stopped. A container that exists but is
-stopped was stopped on purpose and is left alone.
+2026-10-20: one supervisor. The container is the foreground `docker run --rm`
+of the user unit glm53-2x-rtxpro6000.service (Restart=always), so a stop
+removes it and systemd starts a fresh one through serve.sh with its readiness
+checks. The old `docker restart` detached the container's output from the unit
+journal and --rm then deleted its log at the next crash: the 2026-10-20 12:41
+OOM left no stack trace. When the container is gone for two polls (the unit
+failed to start it), WD_RECREATE restarts the unit — never a frozen
+`docker run` copy of an old config. A container that exists but is stopped was
+stopped on purpose and is left alone.
 
 Tuning via env:
   WD_CONTAINER     (default glm53-flash-2x-rtxpro6000)
   WD_RECREATE      (default /usr/local/lib/glm53-watchdog/recreate-glm53-flash.sh)
+  WD_LOG_DIR       (default /var/log/glm53-watchdog)  wedged container logs
   WD_METRICS_PORT  (default 8001)  scraped inside the container (no published port)
   WD_POLL_SEC      (default 20)    seconds between polls
   WD_STUCK_SEC     (default 120)   zero-progress duration that confirms a wedge
@@ -38,6 +44,7 @@ import time
 
 CONTAINER    = os.environ.get("WD_CONTAINER", "glm53-flash-2x-rtxpro6000")
 RECREATE     = os.environ.get("WD_RECREATE", "/usr/local/lib/glm53-watchdog/recreate-glm53-flash.sh")
+LOG_DIR      = os.environ.get("WD_LOG_DIR", "/var/log/glm53-watchdog")
 PORT        = int(os.environ.get("WD_METRICS_PORT", "8001"))
 POLL_SEC     = int(os.environ.get("WD_POLL_SEC", "20"))
 STUCK_SEC    = int(os.environ.get("WD_STUCK_SEC", "120"))
@@ -104,11 +111,20 @@ def scrape():
 
 
 def restart():
-    log(f"RESTARTING container {CONTAINER} (confirmed wedge)")
+    log(f"STOPPING container {CONTAINER} (confirmed wedge); its systemd unit restarts it")
     if DRY_RUN:
         log("DRY_RUN=1 -> not actually restarting")
         return
-    subprocess.run(["docker", "restart", "-t", "20", CONTAINER], check=False, timeout=180)
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        path = os.path.join(LOG_DIR, time.strftime("wedge-%Y%m%d-%H%M%S.log"))
+        with open(path, "w") as fh:
+            subprocess.run(["docker", "logs", "--timestamps", "--since", "20m", CONTAINER],
+                           stdout=fh, stderr=subprocess.STDOUT, timeout=60)
+        log(f"saved container log to {path}")
+    except Exception as error:
+        log(f"log capture failed: {error}")
+    subprocess.run(["docker", "stop", "-t", "20", CONTAINER], check=False, timeout=180)
 
 
 def main():

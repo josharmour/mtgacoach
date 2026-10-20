@@ -81,13 +81,43 @@ to give back without shrinking the 1M context.
   `/usr/local/lib/glm53-watchdog/` + `/etc/systemd/system/glm53-wedge-watchdog.service` (enabled).
   A wedge = `num_requests_running >= 1` with no movement in `iteration_tokens_total_count`,
   `prompt_tokens_total` or `generation_tokens_total` for 120 s (a 1M-token prefill advances the iteration
-  count every 2048-token chunk) -> `docker restart`; 420 s cooldown (load takes ~2m45s); max 3/hour.
-- The container runs with `--rm`, so a crash that EXITS deletes it and no restart policy can be set
-  (`docker update` refuses). When the container is gone for two polls the watchdog runs
-  `/usr/local/lib/glm53-watchdog/recreate-glm53-flash.sh` (root-only, 0700: it carries `VLLM_API_KEY`),
-  generated from `docker inspect` of the running container (same image digest, env, mounts, GPUs,
-  ulimits) but with `--restart unless-stopped`. A stopped-but-present container is left alone.
-- Logs: `journalctl -u glm53-wedge-watchdog -f`.
+  count every 2048-token chunk) -> save `docker logs` to `/var/log/glm53-watchdog/wedge-*.log`, then
+  `docker stop`; 420 s cooldown (load takes ~2m); max 3/hour.
+- One supervisor (2026-10-20): the container is the foreground `docker run --rm` of the user unit
+  `glm53-2x-rtxpro6000.service` (`Restart=always`, `~/glm53-spark/serve.sh`), so a stop removes it and
+  systemd starts a fresh one with its readiness checks. The old `docker restart` detached the container's
+  output from the unit journal, and `--rm` deleted its log at the next crash: the 2026-10-20 12:41 OOM
+  left no stack trace. When the container is gone for two polls, `recreate-glm53-flash.sh` restarts the
+  unit (`systemctl --user -M joshu@`). It used to `docker run` a frozen copy of the Oct 19 config outside
+  systemd; that copy is kept root-only in `/root/glm53-watchdog-backup-20261020/` (it carries
+  `VLLM_API_KEY`). A stopped-but-present container is left alone.
+- Logs: `journalctl -u glm53-wedge-watchdog -f`. vLLM output also goes to the system journal through
+  Docker's journald driver and survives any restart: `sudo journalctl -t glm53-vllm`.
+
+### GPU memory headroom (2026-10-20)
+
+The four unplanned failures between Oct 17 and Oct 20 (12:41 PDT: 2 min down) were CUDA OOMs or hangs
+with the failing GPU at <= 20 MiB free under ordinary load. Fixed allocations used 95,929 of 97,250 MiB
+per GPU, PyTorch's cache kept its peak, and the non-PyTorch allocations (Triton/CuTe kernel loads,
+cuBLAS, NCCL) then had nothing left. `serve.sh` now passes:
+
+- `VLLM_GLM53_MTP_DRAFT_HEAD=bf16` — vLLM's default. The glm53-flash profile's `nvfp4` kept a separate
+  170 MiB-per-GPU draft vocabulary head; bf16 shares the target head (verifier unchanged, ~3-5% decode
+  cost estimated).
+- `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,large_segment_size_mb:12,per_process_memory_fraction:0.985`
+  — caps PyTorch's pool at 95,791 MiB per GPU, leaving ~150-300 MiB at the driver for non-PyTorch
+  allocations. Explicit container env overrides the profile (`/opt/lil/runtime/launcher.py`).
+- `--log-driver journald --log-opt tag=glm53-vllm`.
+
+The 1M context is unchanged (KV still 1,061,441 tokens, 1.01x). After the restart each GPU had 921 MiB
+free (316 MiB before). Healthy = `DCGM_FI_DEV_FB_FREE` levels off at >= ~150 MiB instead of decaying to
+2 MiB. If PyTorch hits the cap (`exceed per_process_memory_fraction` / `OutOfMemoryError` in the log),
+lower `MAX_NUM_BATCHED_TOKENS` 2048 -> 1536. Rollback: `cp ~/glm53-spark/serve.sh.bak-pre-memfix-20261020
+~/glm53-spark/serve.sh && systemctl --user restart glm53-2x-rtxpro6000.service`.
+
+Keep evals and `prompt_logprobs` runs off this vLLM: on 2026-10-17 a host-side script with the backend
+key sent ~1,400 requests straight to the container, bypassing LiteLLM, and a `prompt_logprobs` request
+crashed it.
 
 Trial keys: `website/abuse_protection.py` TRIAL_LIMITS `max_parallel_requests` 3 -> 2 (2026-10-19; the coach's
 own hedge runs 2 calls at once, so 1 would 429 legitimate trials). The 50 live trial keys were updated via
