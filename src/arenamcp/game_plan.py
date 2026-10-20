@@ -3498,6 +3498,7 @@ class GamePlanManager:
         self._threat_turn = 0
         self._threat_superseded_turn = 0
         self._threat_supersedes: tuple[int, int] = (0, 0)
+        self._consecutive_supersedes = 0
         # The opponent-trick table service (None: TrickTableService.shared();
         # tests inject their own) and its telemetry: the last 'Trick risk'
         # line's (match, turn, step), that turn's predicted p_any, and the
@@ -3535,6 +3536,7 @@ class GamePlanManager:
             self._threat_turn = 0
             self._threat_superseded_turn = 0
             self._threat_supersedes = (0, 0)
+            self._consecutive_supersedes = 0
             self._trick_logged = None
             self._trick_predicted = None
             self._trick_seen = None
@@ -3943,6 +3945,24 @@ class GamePlanManager:
             raise
         return True
 
+    def _sparse_late_hand(self, game_state: dict[str, Any], turn: int) -> bool:
+        """True on turn 9+ when our hand has <=1 castable (non-land) card (#141, match d9a33232)."""
+        if turn < 9 or not isinstance(game_state.get("hand"), list):
+            return False
+        if not (game_state.get("battlefield") or game_state.get("hand") or game_state.get("graveyard")):
+            return False
+        castable = sum(1 for c in _castable_cards(game_state) if not _is_hand_land(c))
+        return castable <= 1
+
+    def _low_effort_reform(self, game_state: dict[str, Any], turn_num: int) -> bool:
+        """True when this reform should run at low effort (#141: first plan, after 2 supersedes in a row,
+        or in the late game with <=1 castable card in hand)."""
+        return (
+            self._plan is None
+            or self._consecutive_supersedes >= 2
+            or self._sparse_late_hand(game_state, turn_num)
+        )
+
     def _supersede_stale_inflight_locked(self, game_state: dict[str, Any]) -> None:
         """Cancel the in-flight reform once the turn it plans for has passed."""
         cancel = self._inflight_cancel
@@ -3951,18 +3971,24 @@ class GamePlanManager:
             return
         started = getattr(self, "_inflight_started_at", None)
         running = time.monotonic() - float(started) if started else 0.0
-        if self._plan is None and running <= self._FIRST_PLAN_PATIENCE_S:
+        if (
+            self._plan is None
+            or self._consecutive_supersedes >= 2
+            or (self._consecutive_supersedes >= 1 and self._sparse_late_hand(game_state, turn))
+        ) and running <= self._FIRST_PLAN_PATIENCE_S:
             # 2026-10-10 Brawl, turn 20 after a restart: the first plan's call
             # (73k-character prompt) outlived the turn and was superseded, then
-            # the next one too. With no plan at all, a late plan is kept (see
-            # the apply path), so the call runs on; only a request stuck past
-            # the patience bound is cancelled (2026-10-07: a stuck request held
-            # the lane for its whole 75 s budget).
+            # the next one too. With no plan at all (or after repeated late-game
+            # supersedes, #141), a late plan is kept (see the apply path), so the
+            # call runs on; only a request stuck past the patience bound is cancelled.
             logger.info(
-                "Game plan reform for turn %d keeps running on turn %d (%.0fs in): no plan exists yet",
+                "Game plan reform for turn %d keeps running on turn %d (%.0fs in): %s",
                 self._inflight_plan_turn,
                 turn,
                 running,
+                "no plan exists yet"
+                if self._plan is None
+                else f"after {self._consecutive_supersedes} consecutive supersedes",
             )
             return
         logger.info(
@@ -3971,6 +3997,7 @@ class GamePlanManager:
             turn,
         )
         self._plan_cancels += 1
+        self._consecutive_supersedes += 1
         self._plan_outcome = "superseded by a newer turn"
         self._abandon_inflight_locked()
 
@@ -3991,6 +4018,10 @@ class GamePlanManager:
         turn = _round((game_state.get("turn") or {}).get("turn_number"))
         if cancel is None or cancel.is_set() or self._plan is None or self._our_turn(game_state):
             return
+        if self._consecutive_supersedes >= 2 or (
+            self._consecutive_supersedes >= 1 and self._sparse_late_hand(game_state, turn)
+        ):
+            return
         count = self._threat_supersedes[1] if self._threat_supersedes[0] == turn else 0
         if self._threat_turn == turn:
             started = getattr(self, "_inflight_started_at", None)
@@ -4008,6 +4039,7 @@ class GamePlanManager:
             "; ".join(added),
         )
         self._plan_cancels += 1
+        self._consecutive_supersedes += 1
         self._plan_outcome = "superseded by a board change"
         self._abandon_inflight_locked()
         self._threat_superseded_turn = turn
@@ -4085,7 +4117,12 @@ class GamePlanManager:
                 # Yielded or superseded: its replacement owns the status and the
                 # stall count, and may already have landed.
                 return self._plan
-            if plan is not None and self._observed_turn > plan_turn and self._plan is not None:
+            if (
+                plan is not None
+                and self._observed_turn > plan_turn
+                and self._plan is not None
+                and self._consecutive_supersedes < 2
+            ):
                 logger.info(
                     "Discarded the game plan for turn %d: it arrived on turn %d",
                     plan_turn,
@@ -4094,13 +4131,17 @@ class GamePlanManager:
                 self._plan_outcome = "arrived late"
                 return self._plan
             if plan is not None and self._observed_turn > plan_turn:
-                # 2026-10-10 Brawl: with no plan at all, a late one still carries
-                # the win condition, path and lessons; the validator's turn steps
-                # are re-grounded on the next reform.
+                # 2026-10-10 Brawl: with no plan at all (or after 2+ consecutive
+                # supersedes, #141), a late one still carries the win condition,
+                # path and lessons; the validator's turn steps are re-grounded on
+                # the next reform.
                 logger.info(
-                    "Keeping the late game plan for turn %d (arrived on turn %d): there was no plan",
+                    "Keeping the late game plan for turn %d (arrived on turn %d): %s",
                     plan_turn,
                     self._observed_turn,
+                    "there was no plan"
+                    if self._plan is None
+                    else f"after {self._consecutive_supersedes} consecutive supersedes",
                 )
             if plan is None and not self._plan_outcome.startswith(("yielded", "superseded")):
                 failure = getattr(self, "_reform_failure", "") or "no usable plan from the model"
@@ -4123,6 +4164,7 @@ class GamePlanManager:
                 self._plan_outcome = "ok"
                 self._plan = plan
                 self._refresh_failed = None
+                self._consecutive_supersedes = 0
                 self._last_sig = sig
                 self._last_key = key
                 self._last_seed = seed
@@ -4465,9 +4507,11 @@ class GamePlanManager:
             # at high effort on a 21k-token prompt. With no plan at all, a quick
             # low-effort plan comes first; the next reform (their turn, a role
             # flip, staleness) runs at high effort as usual.
-            effort = "low" if self._plan is None else self._PLAN_REASONING_EFFORT
+            effort = (
+                "low" if self._low_effort_reform(game_state, turn_num) else self._PLAN_REASONING_EFFORT
+            )
             if effort == "low":
-                logger.info("Game plan: first plan at low effort for speed; a high-effort reform follows")
+                logger.info("Game plan: reform at low effort for speed")
             response = self._complete(GAME_PLAN_PROMPT, user_message, cancel=cancel, effort=effort)
         except Exception as e:
             logger.warning("game-plan LLM call failed (keeping prior plan): %s", e)

@@ -484,3 +484,61 @@ def test_engine_creature_counts_as_threat_and_replans_when_removal_target_predat
     )
     assert plan_removal_target_predates_threat(plan, new_basis, 7) is True
 
+
+# --- #141: late-game plan starvation with <=1 castable card or after 2 consecutive supersedes -----
+
+
+def test_late_game_sparse_hand_and_consecutive_supersedes_use_low_effort():
+    import threading
+    from arenamcp.game_plan import GamePlan, GamePlanManager
+
+    efforts: list[str] = []
+
+    class Backend:
+        def complete(self, system, user, max_tokens, **kwargs):
+            efforts.append(str(kwargs.get("reasoning_effort")))
+            return '{"win_conditions": ["Burn"], "path": "topdeck", "role": "aggressor", "turns": []}'
+
+    mgr = GamePlanManager(Backend())
+    mgr._plan = GamePlan(win_conditions=["Burn"], path="old", turn_formed=8, effort="high")
+
+    # Late game (turn 10) with 1 castable spell in hand -> low effort.
+    board_t10 = state(
+        [card(901, "Grizzly Bears", ME, power=2, toughness=2)],
+        match="d9a33232",
+        local=ME,
+        life=10,
+        opp_life=10,
+        turn=10,
+        active=OPP,
+        phase="Phase_Main1",
+        step="",
+        their_hand=1,
+        hand=[card(902, "Shock", ME, text="Shock deals 2 damage to any target.")],
+    )
+    plan = mgr._reform(board_t10, 10)
+    assert plan is not None and plan.effort == "low"
+    assert efforts == ["low"]
+
+    # After 2 supersedes in a row, the next reform runs at low effort and is not superseded again.
+    cancel1 = threading.Event()
+    mgr._inflight = True
+    mgr._inflight_cancel = cancel1
+    mgr._inflight_plan_turn = 10
+    mgr._supersede_stale_inflight_locked({"turn": {"turn_number": 11}})
+    assert cancel1.is_set() and mgr._consecutive_supersedes == 1
+
+    cancel2 = threading.Event()
+    mgr._inflight = True
+    mgr._inflight_cancel = cancel2
+    mgr._inflight_plan_turn = 11
+    mgr._supersede_stale_inflight_locked({"turn": {"turn_number": 12}})
+    assert cancel2.is_set() and mgr._consecutive_supersedes == 2
+
+    cancel3 = threading.Event()
+    mgr._inflight = True
+    mgr._inflight_cancel = cancel3
+    mgr._inflight_plan_turn = 12
+    mgr._supersede_stale_inflight_locked({"turn": {"turn_number": 13}})
+    assert not cancel3.is_set()
+
