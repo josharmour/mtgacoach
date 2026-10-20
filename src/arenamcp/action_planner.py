@@ -4347,9 +4347,22 @@ class ActionPlanner(_ActionLegalityMixin):
             trace.update(fallback="sneak_gap", validated_ids=["pass"], fallback_reason=why)
             logger.warning("typed-decision fallback: %s -> ['pass']", why)
             return ["pass"]
-        picked, why = board_math_option_pick(decision, game_state)
+        from dataclasses import replace
+
+        attack_only = trace.get("attack_only") if isinstance(trace, dict) else None
+        effective = decision
+        if (
+            getattr(self, "last_llm_failure", "") == "set_aside"
+            and isinstance(attack_only, dict)
+            and attack_only.get("chosen")
+            and hasattr(decision, "options")
+        ):
+            filtered = tuple(o for o in decision.options if o.option_id != attack_only.get("chosen"))
+            if filtered:
+                effective = replace(decision, options=filtered)
+        picked, why = board_math_option_pick(effective, game_state)
         source, board_pick = "board_math", picked
-        line = line_fallback_option_pick(decision, game_state, picked)
+        line = line_fallback_option_pick(effective, game_state, picked)
         if line is not None:
             (picked, why), source = line, "line"
         lead = self._fallback_lead()
@@ -4360,6 +4373,13 @@ class ActionPlanner(_ActionLegalityMixin):
             trace.update(fallback=source, validated_ids=picked, fallback_reason=why)
             if source == "line":
                 trace["board_math_pick"] = board_pick
+            if (
+                getattr(self, "last_llm_failure", "") == "set_aside"
+                and isinstance(attack_only, dict)
+                and picked
+                and picked != [attack_only.get("chosen")]
+            ):
+                attack_only["applied"] = list(picked)
         logger.warning(
             "typed-decision fallback (%s): %s -> %s%s",
             lead.lower(),
@@ -5420,6 +5440,9 @@ class ActionPlanner(_ActionLegalityMixin):
         if iid not in losing:
             return ""
         name = str(card.get("name") or option.label)
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict):
+            trace["attack_only"] = {"chosen": option_id, "card": name, "why": losing[iid]}
         return (
             f"{name} only matters if it attacks this turn (it leaves at end step), but it would not attack: "
             f"{losing[iid]}. The losing-attack guard holds that attack, so casting it now buys nothing."
