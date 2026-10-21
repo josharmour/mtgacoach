@@ -89,7 +89,11 @@ pool evicted whichever request arrived last, usually a short live coach or sobri
   `body.priority` both for a direct call and through a key alias, so the field arrives. A client that
   sends a literal `extra_body` object in its JSON replaces the model's and loses the priority; the
   OpenAI SDK's `extra_body` arrives as top-level fields and keeps it. Hermes sends neither.
-- `hermes-blackwell` has `max_parallel_requests: 5` (3 during the 10-20 incident).
+- `hermes-blackwell` has `max_parallel_requests: 2`. Tiers do not help **admission**: this build never
+  preempts a running request to admit a waiting one, so with agents holding 80-97% of the KV a new
+  coach request queued 4-10 s and hit its 12 s first-token timeout (10-20 21:12-21:13; cap was 5).
+  The proper fix is a scheduler patch that preempts the lowest-priority running request when a
+  higher-priority waiting request cannot be allocated (not done; it needs a vLLM restart).
 - Spend logs record agent traffic under model_group `glm-5.3-flash-agent`.
 - Undo one key: `/key/update` with `aliases: {}` and the old `models` list.
 - Undo all: also delete the model with `/model/delete {"id": "glm-5.3-flash-agent"}`.
