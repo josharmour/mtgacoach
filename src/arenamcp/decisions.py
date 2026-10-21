@@ -97,6 +97,14 @@ class PendingDecision:
                 return o
         return None
 
+    def _select_from_groups_items(self) -> dict[int, list[DecisionOption]]:
+        """Options keyed by their SelectFromGroups group index (bug #203)."""
+        groups: dict[int, list[DecisionOption]] = {}
+        for o in self.options:
+            if "group" in o.meta:
+                groups.setdefault(int(o.meta["group"]), []).append(o)
+        return groups
+
     def selection_is_valid(self, chosen: list[str]) -> bool:
         """Validate distinct selection ids and the engine's count/weight bounds."""
         if len(set(chosen)) != len(chosen) or not set(chosen).issubset(self.option_ids()):
@@ -118,6 +126,23 @@ class PendingDecision:
                 return False
         if self.request_type == "Group" and any("spec_index" in o.meta for o in self.options):
             return destination_groups(self, chosen) is not None
+        if self.request_type == "SelectFromGroups":
+            # Each group has its own min/max (bug #203): one keep per type in
+            # the Liliana edict, so a single pick from one group is invalid
+            # even when the overall total bounds are satisfied.
+            counts: dict[int, int] = {}
+            for option_id in chosen:
+                option = self.find(option_id)
+                if option is None:
+                    return False
+                group = int(option.meta.get("group", 0))
+                counts[group] = counts.get(group, 0) + 1
+            for group, options in self._select_from_groups_items().items():
+                first = options[0]
+                lo = int(first.meta.get("group_min", 0))
+                hi = int(first.meta.get("group_max", len(options)))
+                if not lo <= counts.get(group, 0) <= hi:
+                    return False
         weight = sum(int(self.find(option_id).meta.get("weight", 1)) for option_id in chosen)
         return (self.min_weight is None or weight >= self.min_weight) and (
             self.max_weight is None or weight <= self.max_weight
@@ -387,6 +412,12 @@ _SELECT_TARGETS_TYPES = {"SelectTargets", "SelectTargetsRequest"}
 _SELECT_N_TYPES = {"SelectN", "SelectNRequest", "Search", "SearchRequest"}
 _MULLIGAN_TYPES = {"Mulligan", "MulliganReq", "MulliganRequest"}
 _GROUP_TYPES = {"Group", "GroupReq", "GroupRequest"}
+_SELECT_FROM_GROUPS_TYPES = {
+    "SelectFromGroups",
+    "SelectFromGroupsReq",
+    "SelectFromGroupsRequest",
+    "select_from_groups",
+}
 _CASTING_TYPES = {"CastingTimeOptions", "CastingTimeOptionsReq", "CastingTimeOptionRequest", "CastingTimeOptionsRequest"}
 _OPTIONAL_TYPES = {
     "OptionalAction",
@@ -666,6 +697,15 @@ def build_pending_decision(
             resolve_instance,
         )
         return dataclasses.replace(decision, prompt_text=text) if text else decision
+    if rtype in _SELECT_FROM_GROUPS_TYPES or request_class in _SELECT_FROM_GROUPS_TYPES:
+        source_id = int(
+            poll.get("source_instance_id") or (poll.get("request_payload") or {}).get("sourceId") or 0
+        )
+        if not source_label and resolve_instance and source_id:
+            source_label = resolve_instance(source_id)
+        return _build_select_from_groups(
+            poll, request_id, can_cancel, source_label, resolve_name, resolve_instance
+        )
     if rtype in _GROUP_TYPES or request_class in _GROUP_TYPES:
         return _build_group(poll, request_id, can_cancel, source_label, resolve_instance, resolve_card)
     if rtype in _MULLIGAN_TYPES or request_class in _MULLIGAN_TYPES:
@@ -1029,6 +1069,212 @@ def _build_select_n(
         min_weight=min_weight,
         max_weight=max_weight,
     )
+
+
+def _select_from_group_specs(poll: dict[str, Any]) -> list[dict[str, Any]]:
+    """The per-group constraints of a SelectFromGroups request, or [].
+
+    Reads the Mac adapter's shaped ``select_from_groups`` field first, then
+    falls back to the raw payload's ``groups`` (tolerant to the several
+    spellings the GRE message and its client wrapper have used).
+    """
+    shaped = poll.get("select_from_groups")
+    if isinstance(shaped, list) and shaped:
+        return [spec for spec in shaped if isinstance(spec, dict)]
+    payload = poll.get("request_payload") or {}
+    raw_groups = payload.get("groups")
+    if not isinstance(raw_groups, list):
+        return []
+
+    def _int(value: Any) -> int:
+        if isinstance(value, dict):  # enum/boxed dump form {"v": n}
+            value = value.get("v")
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    specs: list[dict[str, Any]] = []
+    for raw in raw_groups:
+        if not isinstance(raw, dict):
+            continue
+        ids = raw.get("ids")
+        if not isinstance(ids, list):
+            ids = raw.get("Ids") or []
+        ids = [_int(i) for i in ids if _int(i)]
+        spec = {
+            "group_id": _int(raw.get("groupId") or raw.get("groupIdx") or raw.get("group_id")),
+            "ids": ids,
+            "min": _int(raw.get("minSelections") or raw.get("minSelect") or raw.get("min") or 0),
+            "max": _int(
+                raw.get("maxSelections") or raw.get("maxSelect") or raw.get("max")
+                or len(ids) or 0
+            ),
+        }
+        specs.append(spec)
+    return specs
+
+
+def _build_select_from_groups(
+    poll: dict[str, Any],
+    request_id: tuple[int, int],
+    can_cancel: bool,
+    source_label: str,
+    resolve_name: Callable[[int], str],
+    resolve_instance: Callable[[int], str] | None = None,
+) -> PendingDecision | None:
+    """Build the typed decision for a SelectFromGroupsRequest (bug #203).
+
+    Edict-style prompts ("choose a permanent of each type and sacrifice the
+    rest") carry one group per type, each with its own min/max selection
+    bounds plus overall totals. The option id encodes both: one labelled
+    option PER GROUP, ``sfg:<group>:<instance_id>``, so the model sees the
+    actual choices and the answer parses back per group mechanically.
+    """
+    specs = _select_from_group_specs(poll)
+    if not specs:
+        return None
+    options: list[DecisionOption] = []
+    for index, spec in enumerate(specs):
+        for instance_id in spec["ids"]:
+            name = ""
+            if resolve_instance is not None:
+                name = str(resolve_instance(instance_id) or "")
+            if not name:
+                name = f"Permanent {instance_id}"
+            options.append(
+                DecisionOption(
+                    option_id=f"sfg:{index}:{instance_id}",
+                    label=name,
+                    meta={
+                        "group": index,
+                        "group_id": spec["group_id"],
+                        "instance_id": instance_id,
+                        "group_min": spec["min"],
+                        "group_max": spec["max"],
+                        "identity_known": bool(name) and not is_unknown_card_name(name),
+                    },
+                )
+            )
+    if not options:
+        return None
+    total_min = sum(spec["min"] for spec in specs)
+    total_max = sum(spec["max"] for spec in specs if spec["max"] > 0) or len(options)
+    payload = poll.get("request_payload") or {}
+    min_total = int(
+        poll.get("select_from_groups_min_total")
+        or payload.get("minTotalSelections")
+        or payload.get("minTotalSel")
+        or total_min
+    )
+    max_total = int(
+        poll.get("select_from_groups_max_total")
+        or payload.get("maxTotalSelections")
+        or payload.get("maxTotalSel")
+        or total_max
+    )
+    return PendingDecision(
+        request_id=request_id,
+        request_type="SelectFromGroups",
+        options=tuple(options),
+        min_select=min_total,
+        max_select=max(max_total, min_total),
+        can_cancel=can_cancel,
+        source_label=source_label,
+    )
+
+
+def select_from_groups_note(decision: PendingDecision) -> str:
+    """The per-group requirement line for the planner prompt (bug #203).
+
+    The generic "choose between min and max" line alone let the model pick a
+    single permanent from one group of an edict and leave the other group
+    unanswered (match 5834a68d T13).
+    """
+    groups: dict[int, list[DecisionOption]] = {}
+    for option in decision.options:
+        groups.setdefault(int(option.meta.get("group", 0)), []).append(option)
+    if not groups:
+        return ""
+    parts = []
+    for index in sorted(groups):
+        first = groups[index][0]
+        lo = int(first.meta.get("group_min", 0))
+        hi = int(first.meta.get("group_max", len(groups[index])))
+        parts.append(f"group {index + 1} needs {lo}-{hi} of sfg:{index}:*")
+    return (
+        "SEPARATE GROUPS — answer EVERY group: "
+        + "; ".join(parts)
+        + ". Pick the permanent(s) to KEEP in each group; the rest are sacrificed."
+    )
+
+
+def _permanent_keep_rank(card: dict[str, Any]) -> tuple[int, int]:
+    """Higher keeps rank first: commander > power > everything else."""
+    power = 0
+    try:
+        power = int(float(str(card.get("power") or 0)))
+    except (TypeError, ValueError):
+        power = 0
+    commander = 1 if card.get("is_commander") or card.get("commander") else 0
+    return commander, power
+
+
+def select_from_groups_safe_default(
+    decision: PendingDecision | None, game_state: dict[str, Any] | None
+) -> list[str] | None:
+    """Deterministic legal answer for a SelectFromGroups request (bug #203).
+
+    Keeps the most valuable permanent per group — creature: commander then
+    highest power; land: untapped then most colours; anything else: the first
+    named option. Returns [] only when EVERY group's minimum is 0 (an empty
+    submit is otherwise illegal — match 5834a68d sent {} four times and Arena
+    answered IllegalRequest each time). Returns None when no legal selection
+    can be determined.
+    """
+    if decision is None or decision.request_type != "SelectFromGroups" or not game_state:
+        return None
+    groups: dict[int, list[DecisionOption]] = {}
+    for option in decision.options:
+        groups.setdefault(int(option.meta.get("group", 0)), []).append(option)
+    if not groups:
+        return None
+
+    board: dict[int, dict[str, Any]] = {}
+    for zone in ("battlefield", "command"):
+        for card in game_state.get(zone) or []:
+            if isinstance(card, dict) and card.get("instance_id"):
+                board[int(card["instance_id"])] = card
+
+    chosen: list[str] = []
+    for index in sorted(groups):
+        options = groups[index]
+        lo = int(options[0].meta.get("group_min", 0))
+        if lo <= 0:
+            continue  # nothing required from this group
+        keep_n = max(lo, 1)
+
+        def rank(option: DecisionOption) -> tuple[int, int, int]:
+            card = board.get(int(option.meta.get("instance_id") or 0)) or {}
+            type_line = str(card.get("type_line") or "").lower()
+            if "land" in type_line or "land" in option.label.lower():
+                # Untapped first (smaller key), then the wider colour spread.
+                tapped = 1 if card.get("tapped") else 0
+                return (tapped, -len(_land_card_colors(card)), 0)
+            cmd, power = _permanent_keep_rank(card)
+            return (1, -cmd, -power)
+
+        ranked = sorted(options, key=rank)
+        picked = [option.option_id for option in ranked[:keep_n]]
+        chosen.extend(picked)
+
+    if not chosen:
+        # Nothing is required anywhere: an empty answer is legal only when the
+        # overall minimum is 0 too.
+        return [] if decision.min_select <= 0 else None
+    if not decision.selection_is_valid(chosen):
+        return None
+    return chosen
 
 
 def _prompt_card_instance(poll: dict[str, Any]) -> int:
@@ -2095,6 +2341,29 @@ def submit_option(
             return False
         ids = [int(o.split(":", 1)[1]) for o in chosen if o.startswith("sel:")]
         return bool(bridge.submit_selection(ids))
+    if first.startswith("sfg:"):
+        # SelectFromGroups (bug #203): one Group per request group, carrying
+        # that group's kept instance ids and its GRE group id.
+        if not decision.selection_is_valid(chosen):
+            logger.warning(
+                "submit_option: refusing SelectFromGroups answer that skips a required group: %s",
+                chosen,
+            )
+            return False
+        by_group: dict[int, dict[str, Any]] = {}
+        for oid in chosen:
+            option = decision.find(oid)
+            if option is None:
+                return False
+            meta = option.meta
+            group = int(meta.get("group", 0))
+            spec = by_group.setdefault(group, {"ids": [], "groupId": int(meta.get("group_id") or 0)})
+            spec["ids"].append(int(meta.get("instance_id") or oid.rsplit(":", 1)[1]))
+        groups = [
+            {"ids": spec["ids"], **({"groupId": spec["groupId"]} if spec["groupId"] else {})}
+            for _, spec in sorted(by_group.items())
+        ]
+        return bool(bridge.submit_select_from_groups(groups))
     if first.startswith("grp:") and "spec_index" in decision.find(first).meta:
         groups = destination_groups(decision, chosen)
         if groups is None:
