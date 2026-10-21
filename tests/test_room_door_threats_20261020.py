@@ -257,3 +257,27 @@ def test_the_snapshots_room_flags_reach_the_serialized_board(monkeypatch):
     assert serialized["door_token_seen"] is True
     # And the threat pass agrees: the spent door flags nothing.
     assert _room_door_threats(serialized) == []
+
+
+def test_unspent_room_serialized_via_snapshot_and_bridge_surfaces_locked_door_threat(monkeypatch):
+    # Unspent Room serialized via _serialize_snapshot_obj and _serialize_bridge_card preserves related_faces.
+    from arenamcp import server
+
+    state = _room_state(monkeypatch)
+    raw = next(
+        o for o in state.get_published_snapshot()["zones"]["battlefield"] if o["instance_id"] == 310
+    )
+    snap_ser = server._serialize_snapshot_obj(raw)
+    assert snap_ser["related_faces"] == RELATED_FACES
+    snap_threats = _threats([snap_ser], opponent=THEM, theirs=[], our_air=False, our_count=0)
+    assert any("locked Ritual Chamber: creates 6/6 flying Demon token when unlocked" in t.why for t in snap_threats)
+
+    bridge_ser = server._serialize_bridge_card(
+        {"instance_id": 310, "grp_id": ROOM_GRP, "controller_id": THEM, "card_types": ["CardType_Enchantment"]},
+        {310: raw},
+    )
+    assert bridge_ser["is_room"] is True
+    assert not bridge_ser.get("door_token_seen")
+    assert bridge_ser["related_faces"] == RELATED_FACES
+    bridge_threats = _threats([bridge_ser], opponent=THEM, theirs=[], our_air=False, our_count=0)
+    assert any("locked Ritual Chamber: creates 6/6 flying Demon token when unlocked" in t.why for t in bridge_threats)

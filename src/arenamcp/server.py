@@ -1568,6 +1568,10 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
     # An attacker's blocked / unblocked fate (False matters: Sneak returns an unblocked one).
     if obj.get("is_blocked") is not None:
         result["is_blocked"] = bool(obj["is_blocked"])
+    # #112: multi-face cards (Rooms) keep face 2's text in related_faces — without it
+    # consumers only see face 1's oracle_text and miss the door's promised token.
+    if enriched.get("related_faces"):
+        result["related_faces"] = copy.deepcopy(enriched["related_faces"])
     result.update(_token_creator_facts(obj))
     return result
 
@@ -1672,6 +1676,9 @@ def _serialize_bridge_card(
         "class_level",
         "copied_from_grp_id",
         "color_production",
+        # #112: a Room's door state lives on the GameState snapshot fallback.
+        "is_room",
+        "door_token_seen",
     ):
         fallback_value = fallback.get(key)
         if fallback_value:
@@ -1719,6 +1726,10 @@ def _serialize_bridge_card(
             result[key] = card[key]
     # The token's creator is a log fact (ledger #185).
     result.update(_token_creator_facts(fallback))
+    # #112: multi-face cards (Rooms) keep face 2's text in related_faces — without it
+    # consumers only see face 1's oracle_text and miss the door's promised token.
+    if enriched.get("related_faces"):
+        result["related_faces"] = copy.deepcopy(enriched["related_faces"])
 
     return result
 
