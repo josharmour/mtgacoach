@@ -1197,14 +1197,22 @@ class GREBridge:
         *,
         expected_request_id: tuple[int, int] | None = None,
         finalize_only: bool = False,
+        withdraw: bool = False,
     ) -> dict[str, Any] | None:
         """Submit attacker declarations and return full response dict.
 
         Unlike submit_attackers(), returns the full response so callers can
         check needs_finalize for the two-step UpdateAttacker/SubmitAttackers flow.
+
+        ``withdraw=True`` clears every selected damage recipient and re-sends
+        the now-empty declaration via UpdateAttacker before finalizing — an
+        empty list alone would only call SubmitAttackers, which submits the
+        selections Arena still holds (#210).
         """
         try:
             command = {"action": "submit_attackers", "attackers": attackers}
+            if withdraw:
+                command["withdraw"] = True
             if expected_request_id is not None:
                 command.update(
                     expected_game_state_id=expected_request_id[0], expected_msg_id=expected_request_id[1]

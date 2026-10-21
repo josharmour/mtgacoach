@@ -2230,6 +2230,8 @@ class MacBridgeAdapter:
             raise AdapterError(
                 f"Requested attackers are not in this combat window: {sorted(wanted - legal_ids)}"
             )
+        if command.get("withdraw"):
+            return self._withdraw_attack_declaration(snapshot, available, timeout)
         matched = []
         targets = {
             int(entry.get("attackerInstanceId") or 0): entry.get("damageRecipient")
@@ -2292,6 +2294,44 @@ class MacBridgeAdapter:
             "submitted_type": "DeclareAttackersUpdate",
             "needs_finalize": True,
             "declared_count": len(matched),
+        }
+
+    def _withdraw_attack_declaration(self, snapshot: Snapshot, available: list, timeout: float | None) -> dict:
+        """Clear every held attacker selection and confirm a no-attack (#210).
+
+        An empty attacker list alone only calls SubmitAttackers, which submits
+        whatever selections Arena still holds — exactly how the attack-tax
+        loop re-declared the same cancelled attackers every pass. Here each
+        selected recipient is cleared to null and the emptied declaration is
+        re-sent with UpdateAttacker (which publishes
+        DeclareAttackersResp.SelectedAttackers) before SubmitAttackers
+        finalizes.
+
+        LIVE VERIFICATION STILL PENDING: Arena runs on the Mac, so this
+        UpdateAttacker-based deselect has not been confirmed against a real
+        client. If Arena rejects the batch, the caller falls back to the
+        plain empty-list submit.
+        """
+        selected = [
+            attacker
+            for attacker in available
+            if field(attacker, "SelectedDamageRecipient") is not None
+        ]
+        if not selected:
+            # Nothing held: the plain finalize is already a no-attack.
+            self._submit(snapshot, lambda ops, request: ops.call(request, "SubmitAttackers"), timeout)
+            return {"ok": True, "submitted_type": "DeclareAttackersSubmit"}
+
+        def build(ops: _Ops, request: dict) -> None:
+            for attacker in selected:
+                ops.set(H(handle(attacker)), "SelectedDamageRecipient", {"null": True})
+            ops.call(request, "UpdateAttacker", LIST([H(handle(a)) for a in selected]))
+            ops.call(request, "SubmitAttackers")
+        self._submit(snapshot, build, timeout)
+        return {
+            "ok": True,
+            "submitted_type": "DeclareAttackersWithdraw",
+            "withdrawn_count": len(selected),
         }
 
     def _cmd_submit_targets(self, command: dict, timeout: float | None) -> dict:
