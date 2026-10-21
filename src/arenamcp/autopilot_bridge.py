@@ -1258,19 +1258,11 @@ class _BridgeSubmitMixin:
         # withdrawn no-attack instead.
         tax_pending = getattr(self, "_attack_tax_pending", None)
         if callable(tax_pending) and tax_pending(game_state):
-            must_attack = [
-                entry
-                for entry in pending.get("attackers") or []
-                if isinstance(entry, dict) and entry.get("mustAttack")
-            ]
-            if must_attack:
-                logger.info(
-                    "Bridge declare_attackers: attack tax is unpaid but %d creature(s) must attack; "
-                    "declaring the required attackers",
-                    len(must_attack),
-                )
-            else:
-                return self._withdraw_taxed_attack(bridge, game_state)
+            # Withdraw regardless of mustAttack: re-declaring a mustAttack
+            # creature into an unpayable tax still hits the PayCosts prompt
+            # and loops, and CR 508.1d never requires paying an optional or
+            # unpayable attack cost to satisfy mustAttack.
+            return self._withdraw_taxed_attack(bridge, game_state)
         attacker_names = list(action.attacker_names)
         try:
             all_in = self._all_in_attack_action(game_state, attacker_names)
@@ -1422,15 +1414,27 @@ class _BridgeSubmitMixin:
         """Answer a taxed attack request with a withdrawn no-attack (#210).
 
         Arena keeps the cancelled selections, so an empty attacker list alone
-        would only call SubmitAttackers and re-submit them. The withdraw
-        command clears every held recipient and re-sends the emptied
-        declaration via UpdateAttacker before finalizing.
+        would only call SubmitAttackers and re-submit them. Like Arena's own
+        cancel button, the withdraw command clears every held recipient and
+        re-sends the emptied declaration via UpdateAttacker — and just like
+        Arena's own flow, that is only half the story: the GRE round-trips a
+        FRESH DeclareAttackerRequest (new msg_id) with 0 selected attackers,
+        and SubmitAttackers must be called on THAT refreshed request.
+        Submitting twice on the original instance is a no-op
+        (BaseUserRequest.Submit nulls OnSubmit after the first call).
 
-        LIVE VERIFICATION STILL PENDING (Arena runs on the Mac): if the
-        adapter's UpdateAttacker-based deselect is rejected, this falls back
-        to the plain empty-list submit — the pre-#210 behaviour — rather
-        than refusing.
+        The tax flag stays set until withdraw AND finalize complete, so the
+        planner cannot re-propose a taxed attack while the refreshed request
+        round-trips (~24 ms later).
+
+        If the adapter's UpdateAttacker-based deselect is rejected, this
+        falls back to the plain empty-list submit — the pre-#210 behaviour —
+        rather than refusing.
         """
+        try:
+            pending = bridge.get_pending_actions() or {}
+        except Exception:
+            pending = {}
         resp = bridge.submit_attackers_raw([], withdraw=True)
         if not resp or not resp.get("ok"):
             logger.warning("Bridge declare_attackers: tax withdraw failed (%s); plain no-attack", resp)
@@ -1438,6 +1442,35 @@ class _BridgeSubmitMixin:
             if not resp or not resp.get("ok"):
                 logger.warning("Bridge declare_attackers: no-attack confirm failed: %s", resp)
                 return None
+        elif resp.get("needs_finalize"):
+            # Second step: finalize on the refreshed no-attack request.
+            native = pending.get("bridge_runtime") in ("il2cpp-macos", "il2cpp-android")
+            bepinex = pending.get("bridge_runtime") in (None, "", "bepinex")
+            from arenamcp.gre_bridge import _version_tuple
+
+            verified = native or (
+                bepinex
+                and _version_tuple(getattr(bridge, "plugin_version", None)) >= _version_tuple("0.7.2")
+            )
+            request_key = (pending.get("game_state_id"), pending.get("msg_id"))
+            outcome, request_key = self._await_attack_selection(
+                bridge, request_key, [], verified, require_submit=True
+            )
+            if outcome != "acknowledged":
+                logger.warning(
+                    "Bridge declare_attackers: refreshed no-attack request was not "
+                    "acknowledged (%s); refusing finalize",
+                    outcome,
+                )
+                return None
+            resp2 = bridge.submit_attackers_raw(
+                [], expected_request_id=request_key, finalize_only=True
+            )
+            if not resp2 or not resp2.get("ok"):
+                logger.warning("Bridge declare_attackers: no-attack finalize failed: %s", resp2)
+                return None
+            logger.info("Bridge declare_attackers: no-attack finalized on the refreshed request")
+        # Withdraw + finalize are done: the taxed turn's request is answered.
         clear = getattr(self, "_clear_attack_tax", None)
         if callable(clear):
             clear()
