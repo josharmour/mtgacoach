@@ -34,6 +34,8 @@ from arenamcp.mcts_evaluator import MCTSEvaluator
 FIXTURES = ["G1_T8", "G1_T12", "G1_T14", "G1_T15_FROM_OPPONENT", "G3_T10_BLOCKS"]
 NEW_LABELS = ("Line", "Alt", "Opp")
 
+pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
+
 
 def _offline_service(cache_dir: Any) -> ot.TrickTableService:
     """A trick table service that never reads the disk cache, the card database or 17Lands."""
@@ -55,6 +57,7 @@ def _offline(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(ot.TrickTableService, "_shared", _offline_service(tmp_path / "tricks"))
     monkeypatch.delenv("ARENAMCP_LINE_SEARCH", raising=False)
+    MCTSEvaluator.reset_cache()
     ba._CACHE.clear()
     gp._TRICK_CACHE.clear()
 

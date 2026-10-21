@@ -882,7 +882,7 @@ def test_the_kill_switch_also_stops_mode_comparisons(monkeypatch):
 
 
 @pytest.mark.parametrize("name", ["SLOW_212608", "SLOW_202111"])
-def test_the_slowest_real_boards_stay_within_the_latency_target(name):
+def test_the_slowest_real_boards_stay_within_the_latency_target(name, unlimited_search_deadline):
     from tests import strategic_states
 
     source = getattr(strategic_states, name)

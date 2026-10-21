@@ -69,10 +69,12 @@ def latency_bound(target_ms: float) -> float:
     cores moved test runs onto efficiency cores at a load of 3.6 (an 82 ms run against
     an 80 ms target, 2026-10-18), well under a quarter of its 18 cores.
     """
+    if os.environ.get("CI"):
+        return 6 * target_ms
     try:
-        busy = bool(os.environ.get("CI")) or os.getloadavg()[0] > 0.25 * _fast_cores()
+        busy = os.getloadavg()[0] > 0.25 * _fast_cores()
     except OSError:
-        busy = bool(os.environ.get("CI"))
+        busy = False
     return 3 * target_ms if busy else target_ms
 
 
