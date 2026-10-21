@@ -1558,6 +1558,9 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
         "attached_to_id",
         "face_down",
         "face_down_reason",
+        # #112: a Room's door state (is_room always set with it by gamestate).
+        "is_room",
+        "door_token_seen",
     ):
         val = obj.get(key)
         if val:  # Only include truthy values

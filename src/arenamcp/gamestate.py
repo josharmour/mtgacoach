@@ -13,6 +13,7 @@ re-exported here so the public API is unchanged:
 
 import copy
 import logging
+import re
 import threading
 import time
 from collections import deque
@@ -167,11 +168,59 @@ def result_rows_for_game(results: list, game_number: int | None) -> list[dict]:
     return [game_rows[game_number - 1], *match_rows]
 
 
+def _door_token_specs(
+    text: str, face_name: str | None
+) -> list[tuple[str | None, int, int, int, tuple[str, ...], str]]:
+    """The creature tokens a Room face's locked door promises (#112).
+
+    Reads only "When you unlock this door, create ..." clauses in ``text``
+    (lower-cased; each face's own text — mtgadb has no '---' separator to
+    split on). Entries: (face name or None, count, power, toughness,
+    keywords, token name).
+    """
+    from arenamcp.line_search_moves import token_specs
+
+    out: list[tuple[str | None, int, int, int, tuple[str, ...], str]] = []
+    for raw_line in (text or "").splitlines():
+        low = raw_line.lower()
+        idx = low.find("when you unlock this door")
+        if idx < 0:
+            continue
+        for count, power, toughness, keywords, tok_name in token_specs(low[idx:]) or []:
+            out.append((face_name, count, power, toughness, keywords, tok_name))
+    return out
+
+
+def _token_matches_door_spec(token: "GameObject", specs: list[tuple]) -> bool:
+    """True if a battlefield token's body and type match a door's promised token.
+
+    Used only when Arena sent no ``objectSourceGrpId`` for the token, so the
+    creating card can't be read directly.
+    """
+    subtypes = {str(s).lower() for s in token.subtypes}
+    for _face, _count, power, toughness, _keywords, tok_name in specs:
+        try:
+            if token.power is not None and int(token.power) != power:
+                continue
+            if token.toughness is not None and int(token.toughness) != toughness:
+                continue
+        except (TypeError, ValueError):
+            continue
+        words = {w for w in re.split(r"[\s,]+", (tok_name or "").lower()) if w and w != "token"}
+        if words and words & subtypes:
+            return True
+    return False
+
+
 class GameState(_GameStateAnnotationsMixin):
     """Maintains complete game state from parsed MTGA log events.
 
     This class tracks zones, game objects, players, and turn information
     as they are updated via GameStateMessage events from the log parser.
+
+    #112: Room doors whose promised token has already appeared
+    (``room_door_token_seen``) and the per-grp_id door-facts cache
+    (``_room_door_facts``) are set by ``_apply_field_defaults``.
 
     Snapshot architecture
     ---------------------
@@ -196,6 +245,10 @@ class GameState(_GameStateAnnotationsMixin):
     # ``__init__`` and ``reset()`` stay in sync automatically.
     # Entries whose value is a *type* (``dict``, ``list``, ``set``) get a
     # fresh instance; everything else is used as a literal default.
+    # Set by _apply_field_defaults from _RESETTABLE_DEFAULTS below.
+    room_door_token_seen: set[int]
+    _room_door_facts: dict[int, tuple[bool, list[tuple]]]
+
     _RESETTABLE_DEFAULTS: dict[str, Any] = {
         # Core game data
         "zones": dict,
@@ -276,6 +329,12 @@ class GameState(_GameStateAnnotationsMixin):
         "sideboard_cards": list,
         # Pre-warmed card name cache (grp_id -> name)
         "_card_name_cache": dict,
+        # Room doors (#112): battlefield Room instance ids whose promised door
+        # token ("When you unlock this door, create ...") has already appeared.
+        # Sticky for the game: the Demon that later dies must not read as an
+        # incoming threat again. Paired with the per-grp_id door-facts cache.
+        "room_door_token_seen": set,
+        "_room_door_facts": dict,
         # Commander & Format tracking
         "commander_grp_ids": list,
         "commander_casts": dict,
@@ -1975,6 +2034,9 @@ class GameState(_GameStateAnnotationsMixin):
             # After the annotations, which may still name a deleted object (ResolutionComplete).
             self._apply_deleted_instance_ids(message)
 
+            # #112: a Room door's promised token may have arrived with this message.
+            self._refresh_room_door_facts()
+
             self._published_snapshot = self._build_raw_snapshot_locked()
 
     def _apply_deleted_instance_ids(self, message: dict) -> None:
@@ -2077,6 +2139,68 @@ class GameState(_GameStateAnnotationsMixin):
             if annotation_id and source and targets:
                 self._attachments[annotation_id] = (source, targets[0])
 
+    def _room_door_facts_for(self, grp_id: int) -> tuple[bool, list[tuple]]:
+        """Whether ``grp_id`` is a Room and the tokens its locked doors promise (#112).
+
+        Cached per grp_id (one card-database read per distinct card). The faces'
+        own texts decide — mtgadb has no '---' separator, so the card's text is
+        never split on one and an unlocked half is never named locked. Each
+        spec: (face name or None, count, power, toughness, keywords, token name).
+        """
+        cached = self._room_door_facts.get(grp_id)
+        if cached is not None:
+            return cached
+        info: dict[str, Any] = {}
+        try:
+            from arenamcp import server
+
+            info = server.enrich_with_oracle_text(grp_id) or {}
+        except Exception as e:  # no database: the type line decides nothing
+            logger.debug(f"Room door facts lookup failed for grp_id={grp_id}: {e}")
+        specs: list[tuple] = []
+        for face in info.get("related_faces") or []:
+            specs.extend(_door_token_specs(str(face.get("oracle_text") or ""), str(face.get("name") or "") or None))
+        if not specs:
+            specs.extend(_door_token_specs(str(info.get("oracle_text") or ""), None))
+        facts = ("room" in str(info.get("type_line") or "").lower(), specs)
+        self._room_door_facts[grp_id] = facts
+        return facts
+
+    def _refresh_room_door_facts(self) -> None:
+        """Record which battlefield Rooms have already made their door token (#112).
+
+        A locked Room door hides the creature it promises. Once that token has
+        appeared — attributed by the token's ``objectSourceGrpId`` (the creating
+        card, ledger #185), or by body and type when Arena omits it — the promise
+        is spent for good: the record is sticky, so a Demon that later dies does
+        not read as an incoming threat again.
+        """
+        on_battlefield = self.battlefield
+        if not on_battlefield:
+            return
+        tokens = [obj for obj in on_battlefield if obj.object_kind == GameObjectKind.TOKEN]
+        for room in on_battlefield:
+            # Creatures and lands can't be Rooms; spare them the card-database read.
+            if "CardType_Creature" in room.card_types or "CardType_Land" in room.card_types:
+                continue
+            is_room, specs = self._room_door_facts_for(room.grp_id)
+            if not is_room and not any("room" in str(s).lower() for s in room.subtypes):
+                continue
+            if room.instance_id in self.room_door_token_seen or not specs:
+                continue
+            for token in tokens:
+                if token.controller_seat_id != room.controller_seat_id:
+                    continue
+                if token.token_source_grp_id == room.grp_id or (
+                    token.token_source_grp_id is None and _token_matches_door_spec(token, specs)
+                ):
+                    self.room_door_token_seen.add(room.instance_id)
+                    logger.debug(
+                        f"Room {room.instance_id} (grpId={room.grp_id}): door token seen "
+                        f"(token {token.instance_id})"
+                    )
+                    break
+
     def _battlefield_dicts_locked(self) -> list[dict]:
         """Battlefield objects; an attached aura/equipment also carries ``attached_to_id``."""
         objects = self.battlefield
@@ -2092,6 +2216,12 @@ class GameState(_GameStateAnnotationsMixin):
             target = attached_to.get(obj.instance_id)
             if target is not None:
                 data["attached_to_id"] = target
+            # #112: a Room carries its door state so the threat pass can tell a
+            # locked door's promised token from one already on the board or dead.
+            facts = self._room_door_facts.get(obj.grp_id)
+            if (facts and facts[0]) or any("room" in str(s).lower() for s in obj.subtypes):
+                data["is_room"] = True
+                data["door_token_seen"] = obj.instance_id in self.room_door_token_seen
             result.append(data)
         return result
 

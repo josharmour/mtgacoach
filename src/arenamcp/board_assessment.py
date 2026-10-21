@@ -2444,6 +2444,40 @@ def _deck_curve(state: dict) -> float | None:
     return sum(values) / len(values) if values else None
 
 
+def _room_door_threats(card: dict) -> list[tuple[str, int, int, int, tuple[str, ...], str]]:
+    """The tokens a Room's locked doors promise (#112): [(door label, count, P/T, keywords, name)].
+
+    "When you unlock this door, create ..." hides a creature behind an enchantment
+    the board shows as inert. Each face's own text decides (``related_faces``;
+    mtgadb has no '---' separator to split on), so an unlocked half is never named
+    locked; without faces the card's own text is scanned but only ever labelled a
+    generic "door". Empty once the promised token has been seen — gamestate marks
+    the Room ``door_token_seen`` from game events when the token appears (sticky,
+    so a Demon that later dies stays spent).
+    """
+    if card.get("door_token_seen"):
+        return []
+    from arenamcp.line_search_moves import token_specs
+
+    def scan(text: str, label: str | None) -> list[tuple[str, int, int, int, tuple[str, ...], str]]:
+        out: list[tuple[str, int, int, int, tuple[str, ...], str]] = []
+        for raw_line in (text or "").splitlines():
+            low = raw_line.lower()
+            idx = low.find("when you unlock this door")
+            if idx < 0:
+                continue
+            for count, power, toughness, keywords, tok_name in token_specs(low[idx:]) or []:
+                out.append((label or "door", count, power, toughness, keywords, tok_name))
+        return out
+
+    found: list[tuple[str, int, int, int, tuple[str, ...], str]] = []
+    for face in card.get("related_faces") or []:
+        found.extend(scan(str(face.get("oracle_text") or ""), str(face.get("name") or "") or None))
+    if not found:
+        found.extend(scan(str(card.get("oracle_text") or ""), None))
+    return found
+
+
 def _threats(
     battlefield: list[dict],
     opponent: int | None,
@@ -2545,6 +2579,14 @@ def _threats(
         elif re.search(r"deals? \d+ damage to each opponent|each opponent loses \d+ life", text):
             score += 2
             why.append("direct damage")
+        # #112: a locked Room door hides the creature it promises until gamestate
+        # marks the token seen (on the board or dead — the record is sticky).
+        for door_label, count, tok_power, tok_toughness, kw, tok_name in _room_door_threats(card):
+            flying_bonus = tok_power * 0.8 + 1 if "flying" in kw and not our_air else 0
+            score += count * (float(tok_power) + 0.3 * tok_toughness + flying_bonus)
+            kw_text = f" {' '.join(kw)}" if kw else ""
+            qty = f"{count}x " if count > 1 else ""
+            why.append(f"locked {door_label}: creates {qty}{tok_power}/{tok_toughness}{kw_text} {tok_name} when unlocked")
         if score:
             threats.append(Threat(_name(card), _int(card.get("instance_id")), score, ", ".join(why)))
     threats.sort(key=lambda t: (-t.score, t.name))
