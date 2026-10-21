@@ -3100,21 +3100,36 @@ def _repair_at(text: str, error: json.JSONDecodeError) -> str | None:
         if rest.startswith("}"):
             return text[:pos] + text[rest_at:]
         return None
+    list_item_start = None
     if msg.startswith("Expecting value") and text[:pos].rstrip().endswith(("[", ",")):
+        list_item_start = pos
+    elif msg.startswith("Expecting ',' delimiter"):
+        num_prefix = re.search(r"(?<=[\[,])\s*(-?\d+(?:\.\d+)?)\s*$", text[:pos])
+        if num_prefix is not None:
+            list_item_start = num_prefix.start(1)
+    if list_item_start is not None:
+        pos = list_item_start
         # An unquoted list item (2026-10-19 16:21:40: '"assumptions": [ "...",
         # no instant trick or fog disrupts the committed T13 swing, Thalia blocks
-        # at most one attacker ]'): quote the rest of its line, keeping its comma.
-        if _KEY_NAME.match(text, pos) is None:
+        # at most one attacker ]'): quote up to the closing bracket or end of line.
+        if pos >= len(text) or text.startswith(("{", "[", "]", "}", '"', ":"), pos):
             return None
         eol = text.find("\n", pos)
         eol = len(text) if eol == -1 else eol
+        close_bracket = text.find("]", pos)
+        # If the unquoted list item wraps across a newline before the closing ']',
+        # scan up to the closing ']' (unless another quote or brace intervenes).
+        if close_bracket != -1 and close_bracket > eol:
+            between = text[pos:close_bracket]
+            if '"' not in between and "{" not in between and "}" not in between:
+                eol = close_bracket
         line = text[pos:eol]
         cut = len(line)
         for stop in ("]", "}"):
             at = line.find(stop)
             if at != -1:
                 cut = min(cut, at)
-        body = line[:cut].rstrip()
+        body = " ".join(line[:cut].split()).rstrip()
         comma = body.endswith(",")
         body = body[:-1].rstrip() if comma else body
         if not body:
@@ -3130,20 +3145,68 @@ def _repair_at(text: str, error: json.JSONDecodeError) -> str | None:
     return None
 
 
+def _salvage_truncated_plan(text: str) -> tuple[dict, str] | None:
+    """Salvage a truncated JSON plan object that already contains usable core fields (#214)."""
+    if not text.lstrip().startswith("{"):
+        return None
+    if '"turns"' not in text and not ('"win_conditions"' in text and '"path"' in text):
+        return None
+    in_string = False
+    escape = False
+    stack: list[str] = []
+    safe_points: list[tuple[int, tuple[str, ...]]] = []
+    for idx, ch in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            stack.append("}")
+        elif ch == "[":
+            stack.append("]")
+        elif ch in ("}", "]"):
+            if not stack or stack[-1] != ch:
+                return None
+            stack.pop()
+            if not stack:
+                break
+            safe_points.append((idx + 1, tuple(stack)))
+        elif ch == "," and stack:
+            safe_points.append((idx, tuple(stack)))
+    if not stack:
+        return None
+    for cut, closers in reversed(safe_points):
+        candidate = text[:cut].rstrip().rstrip(",") + "".join(reversed(closers))
+        try:
+            data = json.loads(_TRAILING_COMMA.sub(r"\1", candidate))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and _PLAN_KEYS.intersection(data) and _has_plan_content(data):
+            return data, candidate
+    return None
+
+
 def _repaired_object(text: str) -> tuple[dict, str] | None:
     """The object at the start of ``text`` after up to ``_MAX_JSON_REPAIRS`` syntax repairs."""
     decoder = json.JSONDecoder()
+    current = text
     for _ in range(_MAX_JSON_REPAIRS + 1):
         try:
-            data, size = decoder.raw_decode(text)
+            data, size = decoder.raw_decode(current)
         except json.JSONDecodeError as error:
-            repaired = _repair_at(text, error)
-            if repaired is None or repaired == text:
-                return None
-            text = repaired
+            repaired = _repair_at(current, error)
+            if repaired is None or repaired == current:
+                break
+            current = repaired
             continue
-        return (data, text[:size]) if isinstance(data, dict) else None
-    return None
+        return (data, current[:size]) if isinstance(data, dict) else None
+    return _salvage_truncated_plan(current) or _salvage_truncated_plan(text)
 
 
 def _plan_object(text: str) -> tuple[dict, str] | None:
@@ -3159,17 +3222,18 @@ def _plan_object(text: str) -> tuple[dict, str] | None:
     decodes is a plan-shaped object repaired (``_repair_at``).
     """
     start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end <= start:
+    if start == -1:
         return None
-    blob = text[start : end + 1]
-    for candidate in (blob, _TRAILING_COMMA.sub(r"\1", blob)):
-        try:
-            data = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(data, dict):
-            return data, blob
-        break
+    if end > start:
+        blob = text[start : end + 1]
+        for candidate in (blob, _TRAILING_COMMA.sub(r"\1", blob)):
+            try:
+                data = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                return data, blob
+            break
     decoder = json.JSONDecoder()
     starts = [match.start() for match in _OBJECT_START.finditer(text, start)][:_MAX_JSON_STARTS]
     # A draft with a plan key but no plan in it ({"role": "race"}) is the
@@ -3206,7 +3270,9 @@ UNUSABLE_PLAN_KEEP = 20
 _UNUSABLE_PLAN_PREFIX = "game_plan_unusable_"
 
 
-def save_unusable_answer(text: str, *, turn_num: int, effort: str) -> Path | None:
+def save_unusable_answer(
+    text: str, *, turn_num: int, effort: str, match_id: str = ""
+) -> Path | None:
     """Write an unusable plan answer in full under ``UNUSABLE_PLAN_DIR``, keeping the newest 20.
 
     Returns the file, or None when it could not be written (never raises).
@@ -3216,8 +3282,9 @@ def save_unusable_answer(text: str, *, turn_num: int, effort: str) -> Path | Non
     try:
         UNUSABLE_PLAN_DIR.mkdir(parents=True, exist_ok=True)
         path = UNUSABLE_PLAN_DIR / f"{_UNUSABLE_PLAN_PREFIX}{stamp}.txt"
+        match_part = f"match {match_id}, " if match_id else ""
         header = (
-            f"# game-plan answer with no usable plan: turn {turn_num}, {effort} effort, "
+            f"# game-plan answer with no usable plan: {match_part}turn {turn_num}, {effort} effort, "
             f"{len(text)} chars, {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}\n"
         )
         path.write_text(header + text, encoding="utf-8")
@@ -4651,7 +4718,12 @@ class GamePlanManager:
                 len(text),
                 text[: self._UNUSABLE_LOG_CHARS],
             )
-            saved = save_unusable_answer(text, turn_num=turn_num, effort=effort)
+            saved = save_unusable_answer(
+                text,
+                turn_num=turn_num,
+                effort=effort,
+                match_id=str(getattr(self, "_match_id", "") or ""),
+            )
             if saved is not None:
                 logger.info("game-plan: the full unusable answer is in %s", saved)
             self._reform_failure = "no usable plan from the model"
