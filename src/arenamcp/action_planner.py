@@ -4286,6 +4286,28 @@ class ActionPlanner(_ActionLegalityMixin):
                 if len(chosen) == decision.min_select and decision.selection_is_valid(chosen):
                     return chosen
                 chosen = []
+            if decision.request_type == "SelectFromGroups":
+                # Bug #203: an answer that skips a required group (one keep per
+                # type) is illegal even when the total count fits — fall back
+                # to the deterministic keep rather than submitting it.
+                chosen = [c for c in chosen if c in valid]
+                if chosen and decision.selection_is_valid(chosen):
+                    return chosen
+                from arenamcp.decisions import select_from_groups_safe_default
+
+                fallback = select_from_groups_safe_default(decision, game_state)
+                if fallback is not None and decision.selection_is_valid(fallback):
+                    self._last_decision_option_ids = fallback
+                    self._last_decision_trace["policy"] = "select_from_groups_safe_default"
+                    self._last_decision_trace["validated_ids"] = fallback
+                    logger.warning(
+                        "typed-decision: model answer %s not a legal per-group keep; "
+                        "safe default %s instead",
+                        chosen,
+                        fallback,
+                    )
+                    return fallback
+                return []
             if chosen:
                 limit = max(decision.min_select or 1, 1)
                 limit = max(limit, min(len(chosen), decision.max_select or 1))
@@ -4348,6 +4370,17 @@ class ActionPlanner(_ActionLegalityMixin):
             return default_group_choice(decision, game_state)
         if decision.request_type == "CastingTimeOptions":
             return self._casting_options_fallback(decision, game_state)
+        if decision.request_type == "SelectFromGroups":
+            # Bug #203: never an empty answer when a group's minSelect > 0.
+            from arenamcp.decisions import select_from_groups_safe_default
+
+            picked = select_from_groups_safe_default(decision, game_state)
+            if picked is not None:
+                self._last_decision_option_ids = picked
+                self._last_decision_trace["policy"] = "select_from_groups_safe_default"
+                self._last_decision_trace["validated_ids"] = picked
+                return picked
+            return []
         return self.deterministic_option_pick(decision)
 
     def _board_math_fallback(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
@@ -7873,6 +7906,15 @@ class ActionPlanner(_ActionLegalityMixin):
                 "For crew, tap creatures totaling the required power; preserve useful attackers/blockers. "
                 "Summoning-sick creatures may crew. Crewing does not let a newly entered Vehicle attack.",
             )
+        if decision.request_type == "SelectFromGroups":
+            # Bug #203: the generic min/max line alone had the model keep one
+            # permanent from a single group of an edict and leave the other
+            # group (its own minSelect 1) unanswered.
+            from arenamcp.decisions import select_from_groups_note
+
+            group_note = select_from_groups_note(decision)
+            if group_note:
+                lines.insert(1, group_note)
         for slot in decision.slots:
             lines.insert(
                 -1,

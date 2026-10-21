@@ -1863,6 +1863,47 @@ class MacBridgeAdapter:
         response["group_context"] = enum_name(field(inner, "Context"))
         response["can_pass"] = False
 
+    def _shape_SelectFromGroupsRequest(self, request: dict, getters: dict, response: dict) -> None:
+        # Edict-style "choose a permanent of each type" (bug #203): expose the
+        # per-group id lists and selection bounds so decisions.py can build one
+        # labelled option list per group instead of a bare "Select from options".
+        inner = field(request, "SelectFromGroupsRequest") or request
+        groups = []
+        for raw in items(field(inner, "Groups")):
+            ids = [num(i) for i in items(field(raw, "Ids"))]
+            groups.append(
+                {
+                    "group_id": num(field(raw, "GroupIdx") or field(raw, "GroupId")),
+                    "ids": ids,
+                    "min": num(field(raw, "MinSelections") or field(raw, "MinSelect")),
+                    "max": num(field(raw, "MaxSelections") or field(raw, "MaxSelect")) or len(ids),
+                }
+            )
+        if groups:
+            response["select_from_groups"] = groups
+            response["can_pass"] = False
+            source_id = num(field(inner, "SourceId"))
+            if source_id:
+                response["source_instance_id"] = source_id
+            # The C# SelectFromGroupsRequest stores _minSelections/_maxSelections
+            # (properties MinSelections/MaxSelections); MinTotalSel/MaxTotalSel
+            # exist only on the transient SelectFromGroupsReq protobuf ctor
+            # param, never on the instance — so try the stored names first.
+            min_total = num(
+                field(inner, "MinSelections")
+                or field(inner, "MinTotalSelections")
+                or field(inner, "MinTotalSel")
+            )
+            max_total = num(
+                field(inner, "MaxSelections")
+                or field(inner, "MaxTotalSelections")
+                or field(inner, "MaxTotalSel")
+            )
+            if min_total:
+                response["select_from_groups_min_total"] = min_total
+            if max_total:
+                response["select_from_groups_max_total"] = max_total
+
     def _shape_NumericInputRequest(self, request: dict, getters: dict, response: dict) -> None:
         response["numeric_min"] = num(field(request, "Min"))
         response["numeric_max"] = num(field(request, "Max"))

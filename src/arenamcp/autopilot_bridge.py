@@ -1958,11 +1958,34 @@ class _BridgeSubmitMixin:
             self._gre_bridge_failed_methods.add("order")
             return None
 
-        # SelectFromGroupsRequest: submit a single empty group to accept
-        # the bridge's current default. The vast majority of in-game
-        # SelectFromGroups prompts (e.g. assignment of triggers to stack
-        # spots) are "confirm the default" interactions.
+        # SelectFromGroupsRequest (bug #203): an empty submit is only legal
+        # when EVERY group's minSelect is 0. Otherwise keep the most valuable
+        # permanent per group through the typed path. Match 5834a68d T13 sent
+        # {} for a minSelect-1 edict and Arena answered IllegalRequest x4.
         if "SelectFromGroups" in req_class_str:
+            from arenamcp.decisions import (
+                build_pending_decision,
+                select_from_groups_safe_default,
+                submit_option,
+            )
+
+            decision = build_pending_decision(
+                pending,
+                resolve_instance=lambda iid: self._card_name_by_instance_id(game_state, iid),
+            )
+            if decision is not None and decision.request_type == "SelectFromGroups":
+                choice = select_from_groups_safe_default(decision, game_state)
+                if choice is not None and decision.selection_is_valid(choice):
+                    if submit_option(bridge, decision, choice):
+                        self._log_execution_path(
+                            ExecutionPath.GRE_AWARE,
+                            "order: select_from_groups safe default via GRE bridge",
+                        )
+                        return ClickResult(True, 0, 0, "order", "GRE bridge")
+                self._gre_bridge_failed_methods.add("order")
+                return None
+            # No typed structure (older bridge): the legacy empty submit stands,
+            # but only as the "confirm the default" gamble it always was.
             if bridge.submit_select_from_groups([]):
                 self._log_execution_path(
                     ExecutionPath.GRE_AWARE, "order: select_from_groups default via GRE bridge"
@@ -2422,8 +2445,21 @@ class _BridgeSubmitMixin:
         if dec_type == "declare_attackers" or "DeclareAttack" in btype + bclass:
             return self._safe_default_attacks(game_state, pending, _ok)
 
+        # SelectFromGroups (bug #203): edict-style "keep one of each type".
+        # Must be checked BEFORE the generic Group branch — "SelectFromGroups"
+        # contains "Group", which routed it to submit_group/submit_order (both
+        # wrong request classes) and then to an illegal empty submit.
+        if (
+            dec_type == "select_from_groups"
+            or "SelectFromGroups" in btype
+            or "SelectFromGroups" in bclass
+        ):
+            return self._safe_default_select_from_groups(game_state, pending, _ok)
+
         # Group: London-mulligan bottoming / scry-surveil / ordering default.
-        if "Group" in btype or "Group" in bclass or dec_type == "group_selection":
+        if (
+            "Group" in btype or "Group" in bclass or dec_type == "group_selection"
+        ) and "SelectFromGroups" not in btype + bclass:
             res = self._try_gre_bridge_group_default(game_state, pending)
             if res is not None and res.success:
                 return _ok("group default")
@@ -2507,17 +2543,58 @@ class _BridgeSubmitMixin:
             if bridge.submit_select_replacement(index=0):
                 return _ok("replacement index 0")
 
-        # Ordering / SelectFromGroups: accept the given default order.
-        if dec_type in ("order_triggers", "order_combat_damage", "select_from_groups"):
+        # Ordering: accept the given default order. (SelectFromGroups is
+        # handled above — an empty submit there is illegal unless every
+        # group's minSelect is 0, bug #203.)
+        if dec_type in ("order_triggers", "order_combat_damage"):
             if bridge.submit_order():
                 return _ok("default order")
-            if bridge.submit_select_from_groups([]):
-                return _ok("select_from_groups default")
 
         # Universal fallback: MTGA's own "do the default" for this request.
         if bridge.auto_respond():
             return _ok("auto_respond")
         return False
+
+    def _safe_default_select_from_groups(
+        self, game_state: dict[str, Any], pending: dict[str, Any], ok: Any
+    ) -> bool:
+        """Answer a SelectFromGroups edict with a deterministic legal keep (bug #203).
+
+        Match 5834a68d T13: the watchdog answered Liliana's "choose a permanent
+        of each type" with submit_group/submit_order (wrong request classes)
+        and finally an empty select_from_groups submit, which Arena rejected
+        with IllegalRequest — yet the caller logged "safe default sent". This
+        handler submits one kept permanent per group through the typed path
+        and reports False when nothing legal could be submitted.
+        """
+        from arenamcp.decisions import (
+            build_pending_decision,
+            select_from_groups_safe_default,
+            submit_option,
+        )
+
+        bridge = _progress_bridge_for(self, game_state)
+        decision = build_pending_decision(
+            pending,
+            resolve_instance=lambda iid: self._card_name_by_instance_id(game_state, iid),
+        )
+        if decision is None or decision.request_type != "SelectFromGroups":
+            return False
+        choice = select_from_groups_safe_default(decision, game_state)
+        if choice is None or not decision.selection_is_valid(choice):
+            logger.info(
+                "Safe-default select_from_groups: no legal keep determinable for %s; reporting failure",
+                decision.source_label or "the edict",
+            )
+            return False
+        if not submit_option(bridge, decision, choice):
+            return False
+        names = []
+        for option_id in choice:
+            option = decision.find(option_id)
+            if option is not None:
+                names.append(option.label)
+        return ok("select_from_groups keep: " + (", ".join(names) or "nothing required"))
 
     def _safe_default_blocks(self, game_state: dict[str, Any], pending: dict[str, Any], ok: Any) -> bool:
         """Declare solver-checked blocks (or none) when the planner produced no declaration.
@@ -2845,6 +2922,25 @@ class _BridgeSubmitMixin:
         # Worst first: extra lands, then most expensive spells, then the cheap
         # spells + the lands we'd rather keep (least likely to be bottomed).
         return excess_lands + nonlands_sorted + kept_lands
+
+    def _card_name_by_instance_id(self, game_state: dict[str, Any], instance_id: int) -> str:
+        """Best-effort instance_id -> card name from the visible zones.
+
+        Feeds build_pending_decision's resolve_instance so SelectFromGroups
+        options (bug #203) carry real card names in labels, logs and the
+        identity_known flag instead of synthesized "Permanent <id>" strings.
+        """
+        for zone_key in ("battlefield", "command", "hand", "library_top_revealed", "stack"):
+            for c in game_state.get(zone_key) or []:
+                if not isinstance(c, dict):
+                    continue
+                try:
+                    iid = int(c.get("instance_id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if iid == instance_id:
+                    return str(c.get("name") or "")
+        return ""
 
     def _lookup_card_for_bottoming(
         self, instance_id: int, game_state: dict[str, Any]
