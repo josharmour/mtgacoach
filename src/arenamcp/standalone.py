@@ -1163,6 +1163,20 @@ class StandaloneCoach(
         except Exception as e:
             logger.debug(f"watchdog: bridge read failed: {e}")
             return None
+        if not resp:
+            # Bug #206: the bridge can miss Arena's follow-up priority request
+            # entirely (after our own shouldStop cast it reported the old
+            # decision cleared and never surfaced the new one). Player.log
+            # still knows whose decision it is: let the engine synthesize a
+            # request from decisionPlayer + TimerState so the watchdog can
+            # act when the bridge reports nothing.
+            synth = getattr(engine, "log_priority_request", None)
+            if callable(synth):
+                synthesized: Any = None
+                with contextlib.suppress(Exception):
+                    synthesized = synth(curr_state)
+                if isinstance(synthesized, dict) and synthesized:
+                    resp = synthesized
         bridge = getattr(poller, "_bridge", None)
         last_answer = float(getattr(bridge, "last_submission_at", 0.0) or 0.0)
         from arenamcp.decision_clock import seconds_remaining
@@ -1195,10 +1209,15 @@ class StandaloneCoach(
             submitted, detail = engine.watchdog_safe_default(judged, reason=step.describe())
             if not submitted and detail in ("autopilot busy", "no request pending"):
                 # A plan holds the engine, or the request was just answered:
-                # look again next iteration instead of crying wolf.
-                logger.info(f"[WATCHDOG] safe default deferred for {step.label}: {detail}")
-                watchdog.retry_safe_default()
-                return None
+                # look again next iteration instead of crying wolf. Exception
+                # (#206): a log-derived request the bridge cannot see has no
+                # safe default that could ever submit — fall through to the
+                # loud alert instead of deferring until Arena's rope expires.
+                log_derived = isinstance(resp, dict) and bool(resp.get("_log_derived"))
+                if detail == "autopilot busy" or not log_derived:
+                    logger.info(f"[WATCHDOG] safe default deferred for {step.label}: {detail}")
+                    watchdog.retry_safe_default()
+                    return None
             watchdog.note_safe_default(submitted)
             if submitted:
                 logger.warning(f"[WATCHDOG] safe default sent for {step.label}: {detail}")

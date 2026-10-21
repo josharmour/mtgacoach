@@ -4679,6 +4679,16 @@ class AutopilotEngine(
         }
     )
 
+    # Bug #206: after our own cast with shouldStop, Arena holds priority for
+    # us and sends a fresh request addressed to our seat. The bridge reported
+    # the old decision cleared and never surfaced the new one, nothing
+    # re-triggered the autopilot, and Arena's NonActivePlayer rope ended the
+    # game 45 s later. Poll the bridge directly after such a cast instead of
+    # trusting the trigger plumbing; bound everything.
+    _POST_CAST_PRIORITY_POLL_S = 6.0
+    _POST_CAST_PRIORITY_POLL_INTERVAL_S = 0.25
+    _MAX_POST_CAST_PRIORITY_HOPS = 3
+
     # Set by the coaching runtime to BridgeDecisionPoller.watch_requests:
     # listener(response) runs on the bridge prefetch thread whenever the
     # pending request changes. None (tests, no bridge) = no early cancel.
@@ -4984,12 +4994,17 @@ class AutopilotEngine(
         logger.warning("Modal switch: %s", swap[1])
         return [swap[0]]
 
-    def _try_typed_decision_path(self, game_state: dict[str, Any], trigger: str) -> bool | None:
+    def _try_typed_decision_path(
+        self, game_state: dict[str, Any], trigger: str, depth: int = 0
+    ) -> bool | None:
         """Handle interactive requests via the typed PendingDecision pipeline.
 
         Returns True/False when the path owned the decision (submitted /
         definitively failed), or None to fall through to the legacy path
-        (no bridge, unmapped family, no options).
+        (no bridge, unmapped family, no options). ``depth`` bounds the
+        post-cast priority chain (bug #206): each shouldStop play can hand
+        priority straight back to us with a fresh request, which this path
+        then answers itself.
         """
         if self._config.dry_run:
             return None
@@ -5332,6 +5347,17 @@ class AutopilotEngine(
                     logger.debug("Typed-decision speech failed: %s", error)
             self._actions_executed += 1
             self._last_exec_success_ts = time.time()
+            if (
+                decision.request_type == "ActionsAvailable"
+                and self._submitted_should_stop(fresh_poll, option_ids)
+            ):
+                # Arena holds priority for us after this action (shouldStop):
+                # a fresh request addressed to our seat follows. #206: the
+                # bridge reported the old decision cleared and never surfaced
+                # it — poll for it here instead of going silent for 45 s.
+                self._surface_post_cast_priority(
+                    decision, option_ids, fresh_poll, game_state, trigger, depth
+                )
             self._state = AutopilotState.IDLE
             return True
         if self._abort_event.is_set():
@@ -5385,6 +5411,167 @@ class AutopilotEngine(
             option_ids,
         )
         return None
+
+    @staticmethod
+    def _submitted_should_stop(poll: dict[str, Any], option_ids: list[str]) -> bool:
+        """Whether a submitted ActionsAvailable option carries Arena's ``shouldStop``.
+
+        ``shouldStop`` on the raw action means Arena keeps priority with us
+        once the action resolves: a fresh request addressed to our seat
+        follows (bug #206). The typed options' meta does not carry it, so
+        read it straight off the poll that was submitted against.
+        """
+        actions = poll.get("actions") or []
+        for option_id in option_ids:
+            if not str(option_id).startswith("idx:"):
+                continue
+            try:
+                index = int(str(option_id).split(":", 1)[1])
+            except ValueError:
+                continue
+            if 0 <= index < len(actions) and actions[index].get("shouldStop"):
+                return True
+        return False
+
+    def _surface_post_cast_priority(
+        self,
+        decision: Any,
+        option_ids: list[str],
+        poll: dict[str, Any],
+        game_state: dict[str, Any],
+        trigger: str,
+        depth: int = 0,
+    ) -> None:
+        """After our own shouldStop play, watch for the priority Arena hands back.
+
+        Bug #206 (2026-10-20 17:30): the cast was accepted, the bridge
+        reported ``decision cleared`` — and never surfaced the follow-up
+        priority request. Nothing re-triggered the autopilot, no coach line
+        appeared for 45 s and Arena's NonActivePlayer rope auto-passed the
+        window. Poll the bridge directly until a new request appears (then
+        decide on it immediately) or the window closes; every loop is bounded.
+        """
+        from arenamcp.decisions import build_pending_decision
+        from arenamcp.request_tracker import decision_fingerprint
+
+        answered_fp = decision_fingerprint(decision)
+        deadline = time.monotonic() + self._POST_CAST_PRIORITY_POLL_S
+        while time.monotonic() < deadline and not self._abort_event.is_set():
+            time.sleep(self._POST_CAST_PRIORITY_POLL_INTERVAL_S)
+            try:
+                latest = self._gre_bridge.get_pending_actions() or {}
+            except Exception as error:
+                logger.debug("post-cast priority poll failed: %s", error)
+                continue
+            if latest.get("ok") is False:
+                continue
+            if not latest.get("has_pending"):
+                # Priority moved on (the stack resolved past us, or the
+                # opponent is responding): nothing to surface.
+                logger.info("post-cast priority: window closed with no follow-up request")
+                return
+            try:
+                live = build_pending_decision(latest, resolve_instance=lambda _iid: "")
+            except Exception as error:
+                logger.debug("post-cast priority decision build failed: %s", error)
+                continue
+            if live is None:
+                continue
+            if live.request_id == decision.request_id and decision_fingerprint(live) == answered_fp:
+                # The request we just answered, still winding down.
+                continue
+            logger.info(
+                "post-cast priority: new %s request surfaced after our shouldStop play",
+                live.request_type,
+            )
+            if depth + 1 > self._MAX_POST_CAST_PRIORITY_HOPS:
+                logger.warning(
+                    "post-cast priority: hop limit (%s) reached; leaving %s to the watchdog",
+                    self._MAX_POST_CAST_PRIORITY_HOPS,
+                    live.request_type,
+                )
+                return
+            self._notify("AUTOPILOT", "Holding priority — deciding on the next play.")
+            # Decide on a fresh snapshot: the request tracker settles the
+            # previous submission against the game window (turn/phase/stack),
+            # and a stale pre-cast board would read the follow-up request as
+            # "the same request still in flight" and wait instead of acting.
+            try:
+                state = self._get_game_state()
+            except Exception as error:
+                logger.debug("post-cast priority fresh snapshot failed: %s", error)
+                state = None
+            if not isinstance(state, dict) or not state:
+                state = dict(game_state)
+            enrich_snapshot_from_pending_response(
+                state, latest, bridge_connected=getattr(self._gre_bridge, "connected", False)
+            )
+            self._progress_game_state = state
+            try:
+                self._try_typed_decision_path(state, trigger, depth=depth + 1)
+            except Exception as error:
+                logger.warning("post-cast priority re-decide failed: %s", error, exc_info=True)
+            return
+        logger.warning(
+            "post-cast priority: no follow-up request within %.1fs of our shouldStop play "
+            "(the decision watchdog backs this up)",
+            self._POST_CAST_PRIORITY_POLL_S,
+        )
+
+    def log_priority_request(self, game_state: dict[str, Any] | None) -> dict[str, Any] | None:
+        """A stand-in pending request read from Player.log while the bridge is quiet.
+
+        Bug #206 (2026-10-20 17:30): after our own shouldStop cast the bridge
+        reported the old decision cleared and never surfaced Arena's follow-up
+        priority request; the decision watchdog — fed only bridge requests —
+        stood down and Arena's NonActivePlayer rope ended the game 45 s later.
+        When Player.log says the decision is ours (``turn.decision_player``
+        == our seat) and our timer is ticking, Arena is waiting on us whether
+        or not the bridge sees a request: hand the watchdog a minimal
+        synthetic request so it can escalate (re-plan, then a loud MANUAL
+        REQUIRED) instead of going silent. Requires some sign of a live
+        window (a pending decision in the log, or anything on the stack);
+        returns None when any signal is missing.
+        """
+        if not isinstance(game_state, dict):
+            return None
+        if not getattr(self._gre_bridge, "connected", False):
+            return None
+        turn = game_state.get("turn") or {}
+        seat = game_state.get("local_seat_id") or next(
+            (p.get("seat_id") for p in game_state.get("players") or [] if p.get("is_local")), None
+        )
+        if not seat:
+            return None
+        decision_player = int(turn.get("decision_player") or 0)
+        priority_player = int(turn.get("priority_player") or 0)
+        if decision_player:
+            if decision_player != seat:
+                return None
+        elif priority_player != seat:
+            return None
+        pending = game_state.get("pending_decision")
+        stack = game_state.get("stack") or []
+        if not pending and not stack:
+            # Quiet priority with nothing to answer: no window to lose.
+            return None
+        from arenamcp.decision_clock import seconds_remaining
+
+        if seconds_remaining(game_state.get("timer_state"), seat) is None:
+            return None
+        gsid = int(game_state.get("_bridge_game_state_id") or 0)
+        # Stable while the window lasts (the watchdog accumulates age on this
+        # key); a new turn/phase starts a fresh window at age 0.
+        msg_id = f"{turn.get('turn_number')}:{turn.get('phase')}:{turn.get('step')}"
+        return {
+            "has_pending": True,
+            "request_type": "ActionsAvailable",
+            "request_class": "",
+            "game_state_id": gsid,
+            "msg_id": msg_id,
+            "actions": [],
+            "_log_derived": True,
+        }
 
     def _wait_for_bridge_reconnect(self) -> bool:
         """Briefly wait for the GRE bridge plugin to reconnect.
