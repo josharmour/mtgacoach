@@ -50,6 +50,7 @@ import time
 CONTAINER    = os.environ.get("WD_CONTAINER", "glm53-flash-2x-rtxpro6000")
 RECREATE     = os.environ.get("WD_RECREATE", "/usr/local/lib/glm53-watchdog/recreate-glm53-flash.sh")
 LOG_DIR      = os.environ.get("WD_LOG_DIR", "/var/log/glm53-watchdog")
+PY_SPY       = os.environ.get("WD_PY_SPY", "/usr/local/bin/py-spy")
 PORT        = int(os.environ.get("WD_METRICS_PORT", "8001"))
 POLL_SEC     = int(os.environ.get("WD_POLL_SEC", "20"))
 STUCK_SEC    = int(os.environ.get("WD_STUCK_SEC", "120"))
@@ -116,14 +117,42 @@ def scrape():
     return in_flight, tuple(progress[name] for name in PROGRESS)
 
 
+def dump_stacks(fh):
+    """Python (and native) stacks of every vLLM process plus GPU state: a silent wedge leaves no
+    error in the container log, so this is the only record of where the engine stopped."""
+    top = subprocess.run(["docker", "top", CONTAINER, "-o", "pid,args"],
+                         capture_output=True, text=True, timeout=30)
+    for line in top.stdout.splitlines()[1:]:
+        pid, _, args = line.strip().partition(" ")
+        if "python" not in args and "VLLM::" not in args:
+            continue
+        modes = (["--native"], []) if "VLLM::" in args else ([],)
+        for extra in modes:
+            fh.write(f"===== py-spy dump {' '.join(extra)} pid={pid} {args.strip()[:120]}\n")
+            fh.flush()
+            subprocess.run([PY_SPY, "dump", "--pid", pid, *extra],
+                           stdout=fh, stderr=subprocess.STDOUT, timeout=60)
+    fh.write("===== nvidia-smi\n")
+    fh.flush()
+    subprocess.run(["nvidia-smi"], stdout=fh, stderr=subprocess.STDOUT, timeout=30)
+
+
 def restart():
     log(f"STOPPING container {CONTAINER} (confirmed wedge); its systemd unit restarts it")
     if DRY_RUN:
         log("DRY_RUN=1 -> not actually restarting")
         return
+    os.makedirs(LOG_DIR, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
     try:
-        os.makedirs(LOG_DIR, exist_ok=True)
-        path = os.path.join(LOG_DIR, time.strftime("wedge-%Y%m%d-%H%M%S.log"))
+        path = os.path.join(LOG_DIR, f"wedge-{stamp}-stacks.txt")
+        with open(path, "w") as fh:
+            dump_stacks(fh)
+        log(f"saved stacks to {path}")
+    except Exception as error:
+        log(f"stack capture failed: {error}")
+    try:
+        path = os.path.join(LOG_DIR, f"wedge-{stamp}.log")
         with open(path, "w") as fh:
             subprocess.run(["docker", "logs", "--timestamps", "--since", "20m", CONTAINER],
                            stdout=fh, stderr=subprocess.STDOUT, timeout=60)

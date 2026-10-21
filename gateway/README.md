@@ -83,8 +83,16 @@ to give back without shrinking the 1M context.
   `prompt_tokens_total`, `generation_tokens_total` or `kv_cache_usage_perc` for 120 s. The counters only
   move once a prefill completes, so until 2026-10-20 a long uncached Hermes prompt (>~440K new tokens)
   looked wedged: 10-19 19:51 the watchdog killed a healthy ~720K-token prefill at ~90%. KV usage climbs
-  through a prefill and is flat in a real hang -> save `docker logs` to `/var/log/glm53-watchdog/wedge-*.log`, then
-  `docker stop`; 420 s cooldown (load takes ~2m); max 3/hour.
+  through a prefill and is flat in a real hang -> save py-spy stacks (Python + `--native`) of every vLLM
+  process and `nvidia-smi` to `/var/log/glm53-watchdog/wedge-*-stacks.txt`, `docker logs` to
+  `wedge-*.log`, then `docker stop`; 420 s cooldown (load takes ~2m); max 3/hour. py-spy is a static
+  binary at `/usr/local/bin/py-spy` (from `uv tool install py-spy`); it reads the container's processes
+  from the host.
+- First real wedge, 2026-10-20 20:29 PDT: 4 running / 6 waiting, KV 97.8%, under a burst of 9 parallel
+  long-context Hermes subagents (84 preemptions in 20 min). Both GPUs dropped to 0% utilisation and idle
+  power while requests were "running" (a NCCL hang spins at 100% instead) and the log has no error, so the
+  engine's host side stopped issuing work. Brief 10-s zero-output windows recurred every ~1.5 min before
+  it. Stacks were not captured yet; the next one will show the stuck code path.
 - One supervisor (2026-10-20): the container is the foreground `docker run --rm` of the user unit
   `glm53-2x-rtxpro6000.service` (`Restart=always`, `~/glm53-spark/serve.sh`), so a stop removes it and
   systemd starts a fresh one with its readiness checks. The old `docker restart` detached the container's
