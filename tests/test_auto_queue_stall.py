@@ -214,6 +214,7 @@ def test_fourteen_minute_foreground_wait_is_logged_and_navigation_resumes(clock,
 def test_watchdog_abandons_a_step_stuck_past_its_bounds(clock, log):
     state = {"match_id": None}
     arena = FakeArena(clock)
+    entered = threading.Event()
     release = threading.Event()
     calls: list[int] = []
 
@@ -221,6 +222,7 @@ def test_watchdog_abandons_a_step_stuck_past_its_bounds(clock, log):
         def complete_with_image(self, *args, **kwargs):
             calls.append(len(calls))
             if len(calls) == 1:
+                entered.set()
                 assert release.wait(10)  # a request that ignored its timeout
                 return RECENT  # a stale answer: must never become a click
             return LOADING
@@ -228,6 +230,7 @@ def test_watchdog_abandons_a_step_stuck_past_its_bounds(clock, log):
     nav = navigator(arena, StuckOnce(), state)
     nav.process_tick(state)
     stuck = nav._worker
+    assert entered.wait(5)
     try:
         for _ in range(200):  # 100 s of coach-loop ticks while the step hangs
             clock.sleep(0.5)

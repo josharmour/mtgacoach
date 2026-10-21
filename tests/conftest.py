@@ -137,21 +137,21 @@ _PYTEST_EXIT_STATUS: int | None = None
 
 
 def _bypass_qt_finalize_segfault() -> None:
-    """Exit after all atexit hooks finish when PySide6 was loaded.
+    """Exit after pytest finishes when PySide6 was loaded.
 
     During Py_FinalizeEx on Linux (offscreen QPA), destroying C++ QObjects and
     QApplication across module teardown triggers a segfault in libQt6Core.
-    Registered before _SESSION_HOME cleanup so it runs last in atexit (LIFO),
-    after every pytest hook, terminal summary, and temp-dir cleanup.
+    Registered in pytest_unconfigure so it runs first in atexit (LIFO), before
+    PySide6/shiboken6's own atexit handler tears down C++ singletons.
     """
     if _PYTEST_EXIT_STATUS is not None and "PySide6" in sys.modules:
         with contextlib.suppress(Exception):
+            shutil.rmtree(_SESSION_HOME, ignore_errors=True)
             sys.stdout.flush()
             sys.stderr.flush()
         os._exit(_PYTEST_EXIT_STATUS)
 
 
-atexit.register(_bypass_qt_finalize_segfault)
 _SESSION_HOME = Path(tempfile.mkdtemp(prefix="arenamcp-pytest-home-"))
 atexit.register(shutil.rmtree, _SESSION_HOME, ignore_errors=True)
 # Deliberately never undone: daemon threads can outlive the session too.
@@ -323,6 +323,11 @@ def pytest_sessionfinish(session, exitstatus):
     """Record pytest's final exit status for _bypass_qt_finalize_segfault."""
     global _PYTEST_EXIT_STATUS
     _PYTEST_EXIT_STATUS = int(exitstatus)
+
+
+def pytest_unconfigure(config):
+    """Register the Qt exit bypass after all tests and PySide6 imports have completed."""
+    atexit.register(_bypass_qt_finalize_segfault)
 
 
 @pytest.fixture(autouse=True)

@@ -32,6 +32,7 @@ def _kokoro_with_fake_model():
 
     model.sess = SimpleNamespace(get_inputs=lambda: [SimpleNamespace(name="tokens")], run=run)
     model._tokens_input = "tokens"
+    model._input_dtypes = {"tokens": np.int64, "style": np.float32, "speed": np.float32}
     return model
 
 

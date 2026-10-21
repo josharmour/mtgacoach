@@ -3116,8 +3116,8 @@ def _repair_at(text: str, error: json.JSONDecodeError) -> str | None:
         eol = len(text) if eol == -1 else eol
         close_bracket = text.find("]", pos)
         # If the unquoted list item wraps across a newline before the closing ']',
-        # scan up to the closing ']' (unless another quote or brace intervenes).
-        if close_bracket != -1 and close_bracket > eol:
+        # scan up to the closing ']' (unless the first line already ends with a comma).
+        if close_bracket != -1 and close_bracket > eol and not text[pos:eol].rstrip().endswith(","):
             between = text[pos:close_bracket]
             if '"' not in between and "{" not in between and "}" not in between:
                 eol = close_bracket
@@ -3204,7 +3204,7 @@ def _repaired_object(text: str) -> tuple[dict, str] | None:
             current = repaired
             continue
         return (data, current[:size]) if isinstance(data, dict) else None
-    return _salvage_truncated_plan(current) or _salvage_truncated_plan(text)
+    return _salvage_truncated_plan(text) if current == text else None
 
 
 def _plan_object(text: str) -> tuple[dict, str] | None:
