@@ -3129,36 +3129,32 @@ namespace MtgaCoachBridge
             }
         }
 
-        // Arena 2026.64.50 renamed the casting-time parent request (#201): the
-        // pending parent is now CastingTimeOptionsRequest (ChildRequests,
-        // OnChildSubmit, SubmitOption) and CastingTimeOptionRequest became the
-        // children's base class. Every place that pattern-matches the parent
-        // accepts both names — mirroring the Mac bridge's CASTING_TIME_PARENTS
-        // (mac_bridge_adapter.py, commit 1741d60) — so pre-2026.64.50 clients
-        // keep working.
-        private static bool IsCastingTimeParentRequest(BaseUserRequest request) =>
-            request is CastingTimeOptionsRequest || request is CastingTimeOptionRequest;
+        // Matched by exact runtime type NAME, not `is` patterns: on
+        // 2026.64.50 CastingTimeOptionRequest is the children's BASE class, so
+        // `request is CastingTimeOptionRequest` would be true for every child
+        // subclass (false-positive parents), while `request is
+        // CastingTimeOptionsRequest` wouldn't compile against pre-2026.64.50
+        // SharedClientCore.dll where that type doesn't exist (CS0246). Exact
+        // name comparison does neither — mirroring the Mac bridge's
+        // CASTING_TIME_PARENTS (mac_bridge_adapter.py, commit 1741d60) — so
+        // pre-2026.64.50 clients keep working.
+        private static bool IsCastingTimeParentRequest(BaseUserRequest request)
+        {
+            if (request == null) return false;
+            string typeName = request.GetType().Name;
+            return typeName == "CastingTimeOptionsRequest" || typeName == "CastingTimeOptionRequest";
+        }
 
         // The children of whichever casting-time parent is pending. Typed as
-        // object so one implementation serves both parent classes regardless
-        // of how each assembly declares ChildRequests' element type.
+        // object and read reflectively so one implementation serves both
+        // parent classes regardless of how each assembly declares
+        // ChildRequests' element type (and so this compiles against either
+        // assembly generation).
         private static List<object> CastingTimeParentChildren(BaseUserRequest request)
         {
             var children = new List<object>();
-            if (request is CastingTimeOptionsRequest optionsParent)
-            {
-                // 2026.64.50's parent carries the children (probe-verified on
-                // the live client: ChildRequests / OnChildSubmit / SubmitOption).
-                children.AddRange(optionsParent.ChildRequests);
-            }
-            else if (request is CastingTimeOptionRequest legacyParent)
-            {
-                // Pre-2026.64.50 assemblies hung ChildRequests off
-                // CastingTimeOptionRequest itself; 2026.64.50 turned it into
-                // the children's base class (CtoId, OptionType, ...). Read
-                // reflectively so this compiles against either generation.
-                AppendChildRequests(children, legacyParent);
-            }
+            if (IsCastingTimeParentRequest(request))
+                AppendChildRequests(children, request);
             return children;
         }
 
