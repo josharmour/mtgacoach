@@ -122,6 +122,14 @@ _OUT_HINT = re.compile(
 )
 # "Counter target spell": stops nothing already on the battlefield.
 _PURE_COUNTER = re.compile(r"counter target (?:[a-z-]+ )*?spell\b(?![^.\n]*abilit)[^.\n]*\.?")
+# Protection from a colour on OUR creatures (ledger #211, match cd673437): it
+# stops neither their attackers nor the damage they deal to us — it only keeps
+# our blockers alive through blocks and makes our creatures hard to block on
+# offence. A spell or ability that only grants it defends us against nothing.
+_PROTECTION_GRANT = re.compile(
+    r"(?:\bchoose a color\.?\s*)?"
+    r"[^.\n]*\bcreatures? you control\b[^.\n]*?\b(?:gains?|gets?|has|have)\b[^.\n]*?\bprotection\b[^.\n]*"
+)
 # "cost: effect" lines; costs mention mana, a loyalty change or a cost verb.
 _ABILITY = re.compile(r"^\s*(?P<cost>[^:\n\"“”]{1,90}?)\s*:\s*(?P<effect>.+)$")
 _COSTISH = re.compile(
@@ -449,6 +457,9 @@ def _harmless_card(card: dict, text: str) -> bool:
     """A card that cannot stop the attack: pure card draw, selection, ramp or a spell counter."""
     if not text.strip():
         return False  # unknown text is never harmless
+    stripped = _PROTECTION_GRANT.sub(" ", text)
+    if stripped != text and _harmless_text(stripped):
+        return True  # only grants our creatures protection from a colour (#211)
     role = card_role(card)
     if role in _HARMLESS_ROLES:
         return _harmless_text(text)
@@ -608,7 +619,7 @@ def _scan_outs(
         for cost, effect in _hand_abilities(card, text):
             if not _affordable(cost, sources, our_life):
                 continue
-            if _harmless_text(effect):
+            if _harmless_text(_PROTECTION_GRANT.sub(" ", effect)):
                 if "draw" in effect:
                     found.digs.append((name, len(sources) - _mana_needed(cost, our_life)))
                 continue
@@ -652,7 +663,7 @@ def _scan_outs(
                 continue
             if "activate only during your turn" in effect and not our_turn:
                 continue
-            if _harmless_text(effect) or not _affordable(cost, sources, our_life):
+            if _harmless_text(_PROTECTION_GRANT.sub(" ", effect)) or not _affordable(cost, sources, our_life):
                 continue
             if (
                 _IF_OPPONENT_LOST_LIFE.search(effect)
@@ -1112,6 +1123,18 @@ def _estimate(state: Any) -> LossEstimate:
         caps.append((_MAYBE, f"thin margin: {our_life - margin_life} through vs {our_life} life"))
 
     # --- outs and unknowns ------------------------------------------------------
+    # Ledger #213 (match a96ed16a): while our own attack is planned or already
+    # declared but unresolved, a post-block Sneak could still win this very
+    # combat; conceding before it resolves would throw a won game away. The
+    # hold is bounded by the combat itself: once it is over (Main2 /
+    # Step_EndCombat) the estimate above stands unchanged and the concede
+    # proceeds if we are still dead.
+    if our_turn and phase == "Phase_Combat" and step in ("Step_DeclareAttack", "Step_DeclareBlockers"):
+        hold = _sneak_hold_text(
+            view, ours=ours, theirs=theirs, opp_life=opp_life, battlefield=battlefield, local=local
+        )
+        if hold:
+            caps.append((_LIKELY_OUT, hold))
     scan = _scan_outs(
         view,
         local=local,
@@ -1152,6 +1175,67 @@ def _estimate(state: Any) -> LossEstimate:
         numbers = f" ({spoken_through} through vs {our_life} life)" if timing_known else ""
         reason = f"Dead next attack{numbers}, but " + blockers[0]
     return LossEstimate(confidence, reason, facts, blockers)
+
+
+def _sneak_hold_text(
+    view: dict,
+    *,
+    ours: list[dict],
+    theirs: list[dict],
+    opp_life: int,
+    battlefield: list[dict],
+    local: int | None,
+) -> str | None:
+    """The post-block Sneak line still ahead this combat when it kills them (#213), as text.
+
+    Two shapes: the attack is only planned (our declare-attackers step,
+    ``sneak_main_hold``'s own line) or already declared with blocks not in yet
+    (their best blocks against our attackers are what the Sneak follows). Mana
+    is checked by count, not colour: an unpayable hold would only delay the
+    concede until the combat ends, while a missed one concedes a won game.
+    """
+    try:
+        from arenamcp.sneak import entry_power, sneak_attack, sneak_casts, sneak_main_hold
+
+        mana = sum(
+            1
+            for card in battlefield
+            if isinstance(card, dict)
+            and _controller(card) == local
+            and _is_land(card)
+            and not card.get("is_tapped")
+        )
+        casts = [cast for cast in sneak_casts(view) if cast.mana_value <= mana]
+        if not casts:
+            return None
+        attacking = [b for b in ours if b["_attacking"]]
+        if attacking:
+            # The attack is under way: the Sneak follows their best blocks
+            # against it (their untapped creatures; blocks are not declared yet).
+            blockers = [b for b in theirs if not b["_tapped"]]
+            creatures = len(ours)
+            best: tuple[int, int] | None = None
+            for cast in casts:
+                power = entry_power(cast.card, creatures)
+                without, with_sneak = sneak_attack(attacking, blockers, opp_life, power)
+                if with_sneak <= without or with_sneak < opp_life:
+                    continue
+                if best is None or with_sneak > best[1]:
+                    best = (without, with_sneak)
+            if best is None:
+                return None
+            names = ", ".join(cast.name for cast in casts)
+            return (
+                f"Sneak {names} after blocks could win this combat "
+                f"({best[0]} through now, {best[1]} with it vs their {opp_life} life)"
+            )
+        hold = sneak_main_hold(view, declare_step=True)
+        if hold is None or not hold.lethal:
+            return None
+        return f"Sneak {hold.cast.name} after blocks could win this combat ({hold.text()})"
+    except Exception:
+        logger.debug("sneak hold check failed", exc_info=True)
+        return None
 
 
 def _their_turn_engines(
