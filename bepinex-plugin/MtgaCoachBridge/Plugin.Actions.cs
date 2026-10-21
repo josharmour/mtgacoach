@@ -504,9 +504,9 @@ namespace MtgaCoachBridge
                 resp["can_submit"] = attackerReq.CanSubmit;
                 resp["can_pass"] = false;
             }
-            else if (request is CastingTimeOptionRequest castingReq)
+            else if (IsCastingTimeParentRequest(request))
             {
-                var entries = BuildCastingTimeOptionEntries(castingReq);
+                var entries = BuildCastingTimeOptionEntries(request);
                 var actionsArr = new JArray();
                 foreach (var entry in entries)
                 {
@@ -514,12 +514,12 @@ namespace MtgaCoachBridge
                 }
                 resp["actions"] = actionsArr;
                 resp["decision_context"] = BuildCastingTimeOptionDecisionContext(entries);
-                resp["can_pass"] = castingReq.CanCancel;
+                resp["can_pass"] = request.CanCancel;
 
                 // Surface numeric-input child fields for X-cost spells so
                 // Python can reason about the value range directly instead
                 // of relying solely on the enumerated entries.
-                foreach (var child in castingReq.ChildRequests)
+                foreach (var child in CastingTimeParentChildren(request))
                 {
                     if (child is CastingTimeOption_NumericInputRequest numericChild)
                     {
@@ -828,22 +828,22 @@ namespace MtgaCoachBridge
         private void HandleSubmitCastingOptions(PipeCommand cmd)
         {
             var request = FindPendingInteraction();
-            if (!(request is CastingTimeOptionRequest castingReq))
+            if (!IsCastingTimeParentRequest(request))
             {
                 cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "No pending casting request" });
                 return;
             }
             long expectedGameState = cmd.Json.Value<long?>("expected_game_state_id") ?? 0;
             long expectedMessage = cmd.Json.Value<long?>("expected_msg_id") ?? 0;
-            if ((expectedGameState > 0 && (long)castingReq.OriginalMessage.GameStateId != expectedGameState)
-                || (expectedMessage > 0 && (long)castingReq.OriginalMessage.MsgId != expectedMessage))
+            if ((expectedGameState > 0 && (long)request.OriginalMessage.GameStateId != expectedGameState)
+                || (expectedMessage > 0 && (long)request.OriginalMessage.MsgId != expectedMessage))
             {
                 cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "Stale casting request" });
                 return;
             }
             var indices = cmd.Json["action_indices"] as JArray;
             var expected = cmd.Json["expected_options"] as JArray;
-            var entries = BuildCastingTimeOptionEntries(castingReq);
+            var entries = BuildCastingTimeOptionEntries(request);
             if (indices == null || indices.Count == 0 || expected == null || expected.Count != indices.Count)
             {
                 cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "Missing casting option identities" });
@@ -878,8 +878,9 @@ namespace MtgaCoachBridge
                 childIndex = selectedChild;
                 groups.Add(payload.Value<uint>("grpId"));
             }
-            if (childIndex < 0 || childIndex >= castingReq.ChildRequests.Count
-                || !(castingReq.ChildRequests[childIndex] is CastingTimeOption_ModalRequest modal))
+            var children = CastingTimeParentChildren(request);
+            if (childIndex < 0 || childIndex >= children.Count
+                || !(children[childIndex] is CastingTimeOption_ModalRequest modal))
             {
                 cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "Missing modal child request" });
                 return;
@@ -958,9 +959,9 @@ namespace MtgaCoachBridge
                     ["submitted_instance_id"] = (int)action.InstanceId
                 });
             }
-            else if (request is CastingTimeOptionRequest castingReq)
+            else if (IsCastingTimeParentRequest(request))
             {
-                var entries = BuildCastingTimeOptionEntries(castingReq);
+                var entries = BuildCastingTimeOptionEntries(request);
                 if (actionIndex < 0 || actionIndex >= entries.Count)
                 {
                     cmd.SetResponse(new JObject
@@ -1438,10 +1439,10 @@ namespace MtgaCoachBridge
         private void HandleSubmitX(PipeCommand cmd)
         {
             var request = FindPendingInteraction();
-            if (request is CastingTimeOptionRequest castingReq)
+            if (IsCastingTimeParentRequest(request))
             {
                 CastingTimeOption_NumericInputRequest numericChild = null;
-                foreach (var child in castingReq.ChildRequests)
+                foreach (var child in CastingTimeParentChildren(request))
                 {
                     if (child is CastingTimeOption_NumericInputRequest n)
                     {
@@ -1452,7 +1453,7 @@ namespace MtgaCoachBridge
 
                 if (numericChild == null)
                 {
-                    cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "CastingTimeOptionRequest has no CastingTimeOption_NumericInputRequest child" });
+                    cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "Pending casting-time request has no CastingTimeOption_NumericInputRequest child" });
                     return;
                 }
 
@@ -1498,7 +1499,7 @@ namespace MtgaCoachBridge
             }
             else
             {
-                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = $"Pending is {request?.GetType().Name ?? "null"}, not CastingTimeOptionRequest" });
+                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = $"Pending is {request?.GetType().Name ?? "null"}, not a casting-time parent request" });
             }
         }
 
@@ -2369,18 +2370,20 @@ namespace MtgaCoachBridge
 
         private void HandleSubmitCastingManaType(PipeCommand cmd)
         {
-            // CastingTimeOption_ManaTypeRequest may appear as a child of
-            // CastingTimeOptionRequest. Walk children to find the mana-type
-            // child request and submit the user-supplied list of colors.
+            // CastingTimeOption_ManaTypeRequest may appear as a child of the
+            // casting-time parent request (CastingTimeOptionsRequest since
+            // Arena 2026.64.50; see IsCastingTimeParentRequest). Walk children
+            // to find the mana-type child request and submit the user-supplied
+            // list of colors.
             var request = FindPendingInteraction();
             CastingTimeOption_ManaTypeRequest manaReq = null;
             if (request is CastingTimeOption_ManaTypeRequest direct)
             {
                 manaReq = direct;
             }
-            else if (request is CastingTimeOptionRequest parent)
+            else if (IsCastingTimeParentRequest(request))
             {
-                foreach (var child in parent.ChildRequests)
+                foreach (var child in CastingTimeParentChildren(request))
                 {
                     if (child is CastingTimeOption_ManaTypeRequest m) { manaReq = m; break; }
                 }
@@ -3126,13 +3129,59 @@ namespace MtgaCoachBridge
             }
         }
 
-        private List<CastingTimeOptionEntry> BuildCastingTimeOptionEntries(CastingTimeOptionRequest request)
+        // Matched by exact runtime type NAME, not `is` patterns: on
+        // 2026.64.50 CastingTimeOptionRequest is the children's BASE class, so
+        // `request is CastingTimeOptionRequest` would be true for every child
+        // subclass (false-positive parents), while `request is
+        // CastingTimeOptionsRequest` wouldn't compile against pre-2026.64.50
+        // SharedClientCore.dll where that type doesn't exist (CS0246). Exact
+        // name comparison does neither — mirroring the Mac bridge's
+        // CASTING_TIME_PARENTS (mac_bridge_adapter.py, commit 1741d60) — so
+        // pre-2026.64.50 clients keep working.
+        private static bool IsCastingTimeParentRequest(BaseUserRequest request)
+        {
+            if (request == null) return false;
+            string typeName = request.GetType().Name;
+            return typeName == "CastingTimeOptionsRequest" || typeName == "CastingTimeOptionRequest";
+        }
+
+        // The children of whichever casting-time parent is pending. Typed as
+        // object and read reflectively so one implementation serves both
+        // parent classes regardless of how each assembly declares
+        // ChildRequests' element type (and so this compiles against either
+        // assembly generation).
+        private static List<object> CastingTimeParentChildren(BaseUserRequest request)
+        {
+            var children = new List<object>();
+            if (IsCastingTimeParentRequest(request))
+                AppendChildRequests(children, request);
+            return children;
+        }
+
+        private static void AppendChildRequests(List<object> children, object parent)
+        {
+            const BindingFlags flags = BindingFlags.Public | BindingFlags.Instance;
+            var property = parent.GetType().GetProperty("ChildRequests", flags);
+            if (property != null)
+            {
+                if (property.GetValue(parent) is IEnumerable sequence)
+                    foreach (var child in sequence) children.Add(child);
+                return;
+            }
+            if (parent.GetType().GetField("ChildRequests", flags)?.GetValue(parent) is IEnumerable fieldSequence)
+                foreach (var child in fieldSequence) children.Add(child);
+        }
+
+        private List<CastingTimeOptionEntry> BuildCastingTimeOptionEntries(BaseUserRequest request) =>
+            BuildCastingTimeOptionEntries(CastingTimeParentChildren(request));
+
+        private List<CastingTimeOptionEntry> BuildCastingTimeOptionEntries(List<object> childRequests)
         {
             var entries = new List<CastingTimeOptionEntry>();
 
-            for (int childIndex = 0; childIndex < request.ChildRequests.Count; childIndex++)
+            for (int childIndex = 0; childIndex < childRequests.Count; childIndex++)
             {
-                var child = request.ChildRequests[childIndex];
+                var child = childRequests[childIndex];
                 switch (child)
                 {
                     case CastingTimeOption_ModalRequest modalReq:
