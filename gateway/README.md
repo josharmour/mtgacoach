@@ -69,6 +69,31 @@ SQLite database and forwards bounded requests to LiteLLM. Gateway admin credenti
 stay server-side; the desktop only receives its own trial access. Coach's existing
 seven-day trial is unchanged. See `website/ARENAONAIR.md` for limits and deployment.
 
+## Priority tiers (2026-10-20)
+
+vLLM runs `--scheduling-policy priority`: a lower number is admitted sooner and, when a running request
+needs a KV block the pool cannot give, the request with the **highest** number (latest arrival on ties) is
+preempted. One 600-700K-token agent prompt fills most of the ~846K-token pool, so without tiers a full
+pool evicted whichever request arrived last, usually a short live coach or sobriety-copilot call.
+
+| Tier | Priority | Who | How |
+|---|---|---|---|
+| Interactive | 0 (vLLM default) | mtgacoach decisions, sobriety-copilot, trials, everything unlisted | nothing sent |
+| Background | 10 | mtgacoach post-match / playbook / game-plan calls | the app sends `priority` itself (`backends/proxy.py`) |
+| Agents | 20 | `hermes`, `hermes-blackwell`, `hermes-windows`, `m5 pro`, `omarchy-macbook`, `omarchy-macbook-r2`, `foley` | key `aliases` route `glm-5.3-flash` / `dsv4` / `dsv4-1m` / `deepseek-v4-flash` to `glm-5.3-flash-agent` |
+
+- `glm-5.3-flash-agent` is stored in LiteLLM's DB (`store_model_in_db`; it is not in the live
+  `config.yaml`): the same params as `glm-5.3-flash` plus `extra_body: {priority: 20}`, and model_info
+  max 819,200. Each agent key's `models` grant also lists it. A new agent key needs both: the alias and the grant.
+- Verified with a throwaway model whose `extra_body.priority` was a string: vLLM answered 400
+  `body.priority` both for a direct call and through a key alias, so the field arrives. A client that
+  sends a literal `extra_body` object in its JSON replaces the model's and loses the priority; the
+  OpenAI SDK's `extra_body` arrives as top-level fields and keeps it. Hermes sends neither.
+- `hermes-blackwell` has `max_parallel_requests: 5` (3 during the 10-20 incident).
+- Spend logs record agent traffic under model_group `glm-5.3-flash-agent`.
+- Undo one key: `/key/update` with `aliases: {}` and the old `models` list.
+- Undo all: also delete the model with `/model/delete {"id": "glm-5.3-flash-agent"}`.
+
 ## vLLM wedge watchdog (GLM-5.3-Flash container)
 
 2026-10-19 09:33:58: the TP1 worker of `glm53-flash-2x-rtxpro6000` hit `Triton Error [CUDA]: out of memory`
