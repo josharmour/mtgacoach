@@ -1885,8 +1885,20 @@ class MacBridgeAdapter:
             source_id = num(field(inner, "SourceId"))
             if source_id:
                 response["source_instance_id"] = source_id
-            min_total = num(field(inner, "MinTotalSelections") or field(inner, "MinTotalSel"))
-            max_total = num(field(inner, "MaxTotalSelections") or field(inner, "MaxTotalSel"))
+            # The C# SelectFromGroupsRequest stores _minSelections/_maxSelections
+            # (properties MinSelections/MaxSelections); MinTotalSel/MaxTotalSel
+            # exist only on the transient SelectFromGroupsReq protobuf ctor
+            # param, never on the instance — so try the stored names first.
+            min_total = num(
+                field(inner, "MinSelections")
+                or field(inner, "MinTotalSelections")
+                or field(inner, "MinTotalSel")
+            )
+            max_total = num(
+                field(inner, "MaxSelections")
+                or field(inner, "MaxTotalSelections")
+                or field(inner, "MaxTotalSel")
+            )
             if min_total:
                 response["select_from_groups_min_total"] = min_total
             if max_total:

@@ -1137,11 +1137,13 @@ def _build_select_from_groups(
     options: list[DecisionOption] = []
     for index, spec in enumerate(specs):
         for instance_id in spec["ids"]:
-            name = ""
-            if resolve_instance is not None:
-                name = str(resolve_instance(instance_id) or "")
-            if not name:
-                name = f"Permanent {instance_id}"
+            # Resolve BEFORE any display fallback: identity_known must reflect
+            # what the resolver actually returned, not the synthesized
+            # "Permanent <id>" label (which is_unknown_card_name never flags).
+            resolved_name = (
+                str(resolve_instance(instance_id) or "") if resolve_instance is not None else ""
+            )
+            name = resolved_name or f"Permanent {instance_id}"
             options.append(
                 DecisionOption(
                     option_id=f"sfg:{index}:{instance_id}",
@@ -1152,7 +1154,8 @@ def _build_select_from_groups(
                         "instance_id": instance_id,
                         "group_min": spec["min"],
                         "group_max": spec["max"],
-                        "identity_known": bool(name) and not is_unknown_card_name(name),
+                        "identity_known": bool(resolved_name)
+                        and not is_unknown_card_name(resolved_name),
                     },
                 )
             )
@@ -2289,6 +2292,13 @@ def submit_option(
     if decision.request_type == "SelectN" and not option_ids and decision.max_select == 0:
         # A look selection ("Click OK to continue"): OK is the empty selection.
         return bool(bridge.submit_selection([]))
+    if decision.request_type == "SelectFromGroups" and not option_ids:
+        # An edict whose every group has minSelect 0 may legally be answered
+        # with no keeps at all (bug #203): submit the empty selection instead
+        # of falling through to the generic "no valid ids" rejection.
+        if not decision.selection_is_valid([]):
+            return False
+        return bool(bridge.submit_select_from_groups([]))
     valid = decision.option_ids()
     chosen = [oid for oid in option_ids if oid in valid]
     if decision.request_type == "ActionsAvailable" and any(

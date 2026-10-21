@@ -1969,7 +1969,10 @@ class _BridgeSubmitMixin:
                 submit_option,
             )
 
-            decision = build_pending_decision(pending)
+            decision = build_pending_decision(
+                pending,
+                resolve_instance=lambda iid: self._card_name_by_instance_id(game_state, iid),
+            )
             if decision is not None and decision.request_type == "SelectFromGroups":
                 choice = select_from_groups_safe_default(decision, game_state)
                 if choice is not None and decision.selection_is_valid(choice):
@@ -2571,7 +2574,10 @@ class _BridgeSubmitMixin:
         )
 
         bridge = _progress_bridge_for(self, game_state)
-        decision = build_pending_decision(pending)
+        decision = build_pending_decision(
+            pending,
+            resolve_instance=lambda iid: self._card_name_by_instance_id(game_state, iid),
+        )
         if decision is None or decision.request_type != "SelectFromGroups":
             return False
         choice = select_from_groups_safe_default(decision, game_state)
@@ -2916,6 +2922,25 @@ class _BridgeSubmitMixin:
         # Worst first: extra lands, then most expensive spells, then the cheap
         # spells + the lands we'd rather keep (least likely to be bottomed).
         return excess_lands + nonlands_sorted + kept_lands
+
+    def _card_name_by_instance_id(self, game_state: dict[str, Any], instance_id: int) -> str:
+        """Best-effort instance_id -> card name from the visible zones.
+
+        Feeds build_pending_decision's resolve_instance so SelectFromGroups
+        options (bug #203) carry real card names in labels, logs and the
+        identity_known flag instead of synthesized "Permanent <id>" strings.
+        """
+        for zone_key in ("battlefield", "command", "hand", "library_top_revealed", "stack"):
+            for c in game_state.get(zone_key) or []:
+                if not isinstance(c, dict):
+                    continue
+                try:
+                    iid = int(c.get("instance_id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if iid == instance_id:
+                    return str(c.get("name") or "")
+        return ""
 
     def _lookup_card_for_bottoming(
         self, instance_id: int, game_state: dict[str, Any]
