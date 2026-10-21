@@ -4673,6 +4673,7 @@ class AutopilotEngine(
             "Search",
             "Mulligan",
             "Group",
+            "SelectFromGroups",
             "ActionsAvailable",
             "CastingTimeOptions",
             "OptionalAction",
