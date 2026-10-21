@@ -1,0 +1,17 @@
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -1879,9 +1879,13 @@
+         # requests admitted above are excluded by running_req_ids_at_step_start,
+         # so no request can be scheduled twice in one step.
+         if adaptive_prefill_turn and token_budget > 0:
++            # local-inference-lab/vllm#733: at full KV a prefill turn can admit nothing, and a
++            # decode fallback that may not preempt then schedules nothing either; the empty
++            # step leaves the fairness accounting unchanged, so the same turn repeats forever.
++            # Preempting is safe when nothing was scheduled this step (no work to evict).
+             schedule_running_requests(
+                 "decode",
+-                allow_preemption=False,
++                allow_preemption=not num_scheduled_tokens,
+                 enforce_lora_limit=True,
+             )
+ 

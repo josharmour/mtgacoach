@@ -130,10 +130,23 @@ request can be admitted, and the decode fallback on that turn runs with `allow_p
 anything. The empty batch does not advance the fairness accounting, so the same prefill turn is picked
 forever. The 800K/8-slot KV makes "full" easier to reach but is not the bug.
 
-Fix: `-e FAIRNESS_ENGINE=none` in `~/glm53-spark/serve.sh` (backup `serve.sh.bak-pre-fairness-none-20261020`):
-the launcher drops `--prefill-compute-share`, the scheduler never builds the controller, and a full pool
-preempts normally (slow, not stuck). The runtime setter `POST /prefill_fairness` exists only with
-`VLLM_SERVER_DEV_MODE=1`, so changing it needs a restart. Re-enable fairness only on an image that fixes #733.
+First fix (20:42): `-e FAIRNESS_ENGINE=none`. It stopped the livelock but removed what kept decodes fast
+during long prefills: with no fairness every step carries a 2,048-token prefill slice (~0.4 s at 150K
+context), so a running coach decision got ~6 tok/s and 4 s gaps while one uncached ~154K-token Hermes
+prompt prefilled. 21:00 that cost the coach a stream stall, two blown decision budgets and board-math
+fallbacks (half its decisions that hour).
+
+Current fix (21:07): fairness back on (`--prefill-compute-share 0.4` from the profile) with the #733 patch
+`vllm-patches/scheduler-733.patch`: the decode fallback on a prefill turn may preempt when nothing has been
+scheduled that step (`allow_preemption=not num_scheduled_tokens`), so a full pool preempts (the
+highest priority number first) instead of repeating the empty step. `serve.sh` mounts the patched file
+`~/glm53-spark/patches/scheduler-733.py` read-only over the image's `vllm/v1/core/sched/scheduler.py`
+(the image has no `__pycache__`, so the source is what runs). The patch is tied to the pinned image
+digest: re-derive it before changing `IMAGE`, or drop it on an image that fixes #733.
+Rollback: `serve.sh.bak-pre-733-patch-20261020` (fairness off) and restart the unit.
+
+If the coach still stalls during agent prefills, the next lever is `MAX_NUM_BATCHED_TOKENS` 2048 -> 512:
+~0.1 s prefill steps, but every prefill (the coach's 4-10K prompts too) takes ~4x the steps.
 
 The `hermes-blackwell` LiteLLM key was capped at `max_parallel_requests: 3` during the incident to stop
 it re-wedging each restart.
