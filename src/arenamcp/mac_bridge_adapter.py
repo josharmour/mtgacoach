@@ -2271,6 +2271,8 @@ class MacBridgeAdapter:
             raise AdapterError(
                 f"Requested attackers are not in this combat window: {sorted(wanted - legal_ids)}"
             )
+        if command.get("withdraw"):
+            return self._withdraw_attack_declaration(snapshot, available, timeout)
         matched = []
         targets = {
             int(entry.get("attackerInstanceId") or 0): entry.get("damageRecipient")
@@ -2333,6 +2335,48 @@ class MacBridgeAdapter:
             "submitted_type": "DeclareAttackersUpdate",
             "needs_finalize": True,
             "declared_count": len(matched),
+        }
+
+    def _withdraw_attack_declaration(self, snapshot: Snapshot, available: list, timeout: float | None) -> dict:
+        """Clear every held attacker selection; the caller finalizes afterwards (#210).
+
+        An empty attacker list alone only calls SubmitAttackers, which submits
+        whatever selections Arena still holds — exactly how the attack-tax
+        loop re-declared the same cancelled attackers every pass. Arena's own
+        cancel (DeclareAttackersWorkflow.OnCancelAttacksButtonPressed) only
+        clears each SelectedDamageRecipient and re-sends the emptied
+        declaration with UpdateAttacker (which publishes
+        DeclareAttackersResp.SelectedAttackers); the GRE then round-trips a
+        FRESH DeclareAttackerRequest (new msg_id) with 0 selected attackers,
+        and SubmitAttackers must be called on THAT refreshed request.
+
+        Submitting on the same request instance is broken twice over:
+        BaseUserRequest.Submit() invokes OnSubmit(_outboundMessage) and then
+        nulls it, so a second Submit() on the request is a no-op, and
+        mutating the shared _outboundMessage.Type in place mid-frame is a
+        known hazard (Plugin.Actions.cs). So this returns needs_finalize for
+        the caller's second step instead of calling SubmitAttackers here.
+        """
+        selected = [
+            attacker
+            for attacker in available
+            if field(attacker, "SelectedDamageRecipient") is not None
+        ]
+        if not selected:
+            # Nothing held: the plain finalize is already a no-attack.
+            self._submit(snapshot, lambda ops, request: ops.call(request, "SubmitAttackers"), timeout)
+            return {"ok": True, "submitted_type": "DeclareAttackersSubmit", "needs_finalize": False}
+
+        def build(ops: _Ops, request: dict) -> None:
+            for attacker in selected:
+                ops.set(H(handle(attacker)), "SelectedDamageRecipient", {"null": True})
+            ops.call(request, "UpdateAttacker", LIST([H(handle(a)) for a in selected]))
+        self._submit(snapshot, build, timeout)
+        return {
+            "ok": True,
+            "submitted_type": "DeclareAttackersWithdraw",
+            "withdrawn_count": len(selected),
+            "needs_finalize": True,
         }
 
     def _cmd_submit_targets(self, command: dict, timeout: float | None) -> dict:

@@ -167,6 +167,12 @@ class AutopilotEngine(
         # this turn, keyed (turn, actionType, instanceId, abilityGrpId, name).
         self._self_cancelled_plays: set[tuple] = set()
         self._last_typed_play: tuple | None = None
+        # (monotonic, turn) of our last attack declaration, and the turn whose
+        # attack tax we cancelled (#210): Archangel of Tithes / Ghostly Prison
+        # make every attacker cost {1}, the unpayable PayCosts cancel fires,
+        # and Arena re-offers DeclareAttackers with the selections still set.
+        self._last_attack_declared: tuple | None = None
+        self._attack_tax_unpaid_turn: int = 0
         self._max_fallback_bugs_per_match: int = 5
 
         # State
@@ -683,6 +689,9 @@ class AutopilotEngine(
     # A cancel this soon after an activation is that activation's own
     # targets/costs step being backed out, not a later request's.
     _ACTIVATION_ROLLBACK_MAX_AGE_S = 10.0
+    # An unpayable cost within this window after our attack declaration is an
+    # attack tax (#210), not the cast's own cost.
+    _ATTACK_TAX_RECENT_S = 5.0
 
     def _undo_activation_after_cancel(self, game_state: dict[str, Any], why: str) -> None:
         """A cancelled follow-up rolls the activation back; it used nothing.
@@ -885,15 +894,64 @@ class AutopilotEngine(
         activation, and withhold it so the planner stops re-picking it
         (2026-10-07 18:03:51: the same unpayable channel was picked again
         five seconds after the first cancel).
+
+        When the cost followed our own attack declaration within seconds
+        (#210), it is an attack tax (Archangel of Tithes, Ghostly Prison):
+        there is no cast to blame, so the self-cancel guard must not
+        withhold the last typed play — match cd673437 T13 had it eat
+        Herald's Horn instead — and the turn is marked so the attack
+        submission withdraws to a deliberate no-attack instead of looping.
         """
         if not self._progress_bridge(game_state).cancel_action():
             return False
         self._log_execution_path(ExecutionPath.GRE_AWARE, "cancel PayCosts")
         self._note_cast_rollback(why)
         self._undo_activation_after_cancel(game_state, why)
-        self._withhold_after_self_cancel(game_state, why)
+        if self._attack_tax_follows_declaration(game_state):
+            turn = self._turn_number(game_state)
+            self._attack_tax_unpaid_turn = turn
+            logger.info(
+                "Autopilot: the cancelled cost follows our attack declaration "
+                "(%ss ago) — an attack tax on turn %s; no cast is withheld and "
+                "the next attack request withdraws to no attackers",
+                f"{time.monotonic() - (self._last_attack_declared or (0.0, 0))[0]:.1f}",
+                turn,
+            )
+        else:
+            self._withhold_after_self_cancel(game_state, why)
         self._record_autopilot_decision(game_state, trigger, action_type="pay_costs", summary=why)
         return True
+
+    def _attack_tax_follows_declaration(self, game_state: dict[str, Any]) -> bool:
+        """Our attack declaration just preceded this unpayable cost (#210).
+
+        True only when the declaration is fresher than every cast/activation
+        we submitted — otherwise the cost belongs to that play and the
+        ordinary self-cancel attribution stands.
+        """
+        note = getattr(self, "_last_attack_declared", None)
+        if not note:
+            return False
+        declared_at, declared_turn = note[0], int(note[1] or 0)
+        if time.monotonic() - declared_at > self._ATTACK_TAX_RECENT_S:
+            return False
+        if declared_turn != self._turn_number(game_state):
+            return False
+        last_play = getattr(self, "_last_typed_play", None)
+        if last_play and last_play[0] > declared_at:
+            return False
+        if getattr(self, "_last_cast_submitted_ts", 0.0) > declared_at:
+            return False
+        return True
+
+    def _attack_tax_pending(self, game_state: dict[str, Any]) -> bool:
+        """This turn's attack tax was cancelled unpaid: withdraw, don't re-declare."""
+        turn = self._turn_number(game_state)
+        return turn > 0 and int(getattr(self, "_attack_tax_unpaid_turn", 0) or 0) == turn
+
+    def _clear_attack_tax(self) -> None:
+        """The taxed turn's attack request has been answered; resume normal attacks."""
+        self._attack_tax_unpaid_turn = 0
 
     @staticmethod
     def _request_source_is_ability(game_state: dict[str, Any], context: dict[str, Any]) -> bool:
@@ -966,6 +1024,9 @@ class AutopilotEngine(
         try:
             attackers = [int(a) for a in attacker_ids or [] if int(a or 0) > 0]
             if attackers and isinstance(game_state, dict):
+                # (monotonic, turn) of the declaration: an unpayable cost right
+                # after this is an attack tax, not a cast's own cost (#210).
+                self._last_attack_declared = (time.monotonic(), self._turn_number(game_state))
                 self._note_oops_evidence(
                     self._oops_attacks,
                     {
