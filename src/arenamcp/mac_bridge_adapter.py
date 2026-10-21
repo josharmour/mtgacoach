@@ -1560,6 +1560,9 @@ class MacBridgeAdapter:
         response["source_instance_id"] = num(field(request, "SourceId"))
         response["optional_mechanics"] = [enum_name(value) for value in items(field(request, "Mechanics"))]
         response["optional_recipients"] = [num(value) for value in items(field(request, "RecipientIds"))]
+        prompt = _request_prompt(request)
+        if prompt:
+            response["prompt"] = prompt
 
     def _shape_DeclareBlockersRequest(self, request: dict, getters: dict, response: dict) -> None:
         response["blockers"] = [

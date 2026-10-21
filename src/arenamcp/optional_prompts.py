@@ -49,18 +49,51 @@ def _same_request(decision: Any, context: dict) -> bool:
     return (_int(raw.get("gameStateId")), _int(raw.get("msgId"))) == request_id
 
 
-def _find_card(state: dict, instance_id: int) -> dict:
+def _raw_find_card(state: dict, instance_id: int) -> dict:
     for zone in _ZONES:
         for card in state.get(zone) or []:
-            if isinstance(card, dict) and _int(card.get("instance_id")) == instance_id:
+            if not isinstance(card, dict):
+                continue
+            if _int(card.get("instance_id")) == instance_id:
                 return card
+            src = card.get("source_card")
+            if isinstance(src, dict) and _int(src.get("instance_id")) == instance_id:
+                merged = dict(src)
+                own_oracle = str(card.get("oracle_text") or "").strip()
+                src_oracle = str(src.get("oracle_text") or "").strip()
+                if own_oracle and own_oracle not in src_oracle:
+                    merged["oracle_text"] = f"{own_oracle} ({src_oracle})".strip() if src_oracle else own_oracle
+                return merged
     return {}
+
+
+def _find_card(state: dict, instance_id: int) -> dict:
+    card = _raw_find_card(state, instance_id)
+    if not card:
+        return {}
+    parent = card.get("source_card") if isinstance(card.get("source_card"), dict) else {}
+    if not parent and _int(card.get("parent_instance_id")):
+        parent = _raw_find_card(state, _int(card.get("parent_instance_id")) or 0)
+    if not parent:
+        return card
+    merged = dict(card)
+    raw_name = str(merged.get("name") or "").strip()
+    if (not raw_name or raw_name.startswith(("Ability", "Card #"))) and parent.get("name"):
+        merged["name"] = parent.get("name")
+    own_oracle = str(merged.get("oracle_text") or "").strip()
+    parent_oracle = str(parent.get("oracle_text") or "").strip()
+    if parent_oracle and parent_oracle not in own_oracle:
+        merged["oracle_text"] = f"{own_oracle} ({parent_oracle})".strip() if own_oracle else parent_oracle
+    if not merged.get("controller_seat_id"):
+        merged["controller_seat_id"] = parent.get("controller_seat_id") or parent.get("owner_seat_id")
+    return merged
 
 
 def prompt_cards(decision: Any, state: dict) -> list[dict[str, Any]]:
     """Cards the optional prompt names: instance_id, name, oracle_text, controller_seat_id."""
     context = state.get("decision_context") or {}
-    if context.get("type") == "optional_action" and _same_request(decision, context):
+    same_ctx = context.get("type") == "optional_action" and _same_request(decision, context)
+    if same_ctx:
         cards = [dict(card) for card in context.get("prompt_cards") or [] if isinstance(card, dict)]
         if cards:
             return cards
@@ -78,15 +111,59 @@ def prompt_cards(decision: Any, state: dict) -> list[dict[str, Any]]:
                 "controller_seat_id": card.get("controller_seat_id") or card.get("owner_seat_id"),
             }
         )
-    return [card for card in cards if card.get("name") or card.get("oracle_text")]
+    resolved = [card for card in cards if card.get("name") or card.get("oracle_text")]
+    if resolved:
+        return resolved
+    source_id = _int(meta.get("sourceId")) or (
+        _int(context.get("prompt_source_id") or context.get("source_id")) if same_ctx else None
+    )
+    found = _find_card(state, source_id) if source_id else {}
+    ctx_name = str(context.get("source_card") or "") if same_ctx else ""
+    ctx_oracle = (
+        str(context.get("source_oracle_text") or context.get("source_card_oracle_text") or "")
+        if same_ctx
+        else ""
+    )
+    name = found.get("name") or ctx_name or str(getattr(decision, "source_label", "") or "")
+    oracle = found.get("oracle_text") or ctx_oracle
+    if name or oracle:
+        return [
+            {
+                "instance_id": source_id or 0,
+                "name": name,
+                "oracle_text": oracle,
+                "controller_seat_id": found.get("controller_seat_id") or found.get("owner_seat_id"),
+            }
+        ]
+    return []
 
 
 def prompt_note(decision: Any, state: dict) -> str:
     """The OPTIONAL PROMPT lines for the typed-decision prompt."""
     context = state.get("decision_context") or {}
+    same_ctx = context.get("type") == "optional_action" and _same_request(decision, context)
+    accept = decision.find("optional:accept") if hasattr(decision, "find") else None
+    meta = getattr(accept, "meta", None) or {}
     question = ""
-    if context.get("type") == "optional_action" and _same_request(decision, context):
+    if same_ctx:
         question = str(context.get("prompt") or "")
+    if not question:
+        question = str(getattr(decision, "prompt_text", "") or meta.get("promptText") or "")
+    if not question:
+        mechanics = list(meta.get("mechanics") or (context.get("optional_action_types") if same_ctx else []) or [])
+        if any("ZoneTransfer" in str(m) for m in mechanics):
+            recipient_names = list(
+                meta.get("recipientCards")
+                or (context.get("recipient_names") if same_ctx else [])
+                or []
+            )
+            if not recipient_names:
+                for rid in meta.get("recipients") or []:
+                    rname = _find_card(state, _int(rid) or 0).get("name")
+                    if rname:
+                        recipient_names.append(rname)
+            if recipient_names:
+                question = f"Move {', '.join(recipient_names)} (zone transfer)?"
     local = _local_seat(state)
     cards = prompt_cards(decision, state)
     lines = [f"OPTIONAL PROMPT: {question or 'accept or decline the effect described below'}"]

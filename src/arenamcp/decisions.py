@@ -412,7 +412,11 @@ def _prompt_card_ids(poll: dict[str, Any]) -> list[int]:
             if str(param.get("parameterName") or param.get("ParameterName") or "") != "CardId":
                 continue
             try:
-                value = int(param.get("numberValue", param.get("NumberValue")) or 0)
+                raw_val = param.get(
+                    "numberValue",
+                    param.get("NumberValue", param.get("value", param.get("Value"))),
+                )
+                value = int(raw_val or 0)
             except (TypeError, ValueError):
                 continue
             if value > 0 and value not in ids:
@@ -589,6 +593,8 @@ def build_pending_decision(
             else None
         )
     if rtype in _OPTIONAL_TYPES or request_class in _OPTIONAL_TYPES:
+        from arenamcp import arena_prompts
+
         source_id = int(poll.get("source_instance_id") or 0)
         if not source_label and resolve_instance and source_id:
             source_label = resolve_instance(source_id)
@@ -599,6 +605,21 @@ def build_pending_decision(
         prompt_names = [name for name in (resolve_instance(i) for i in prompt_ids) if name] if resolve_instance else []
         if not source_label and prompt_names:
             source_label = prompt_names[0]
+        recipient_ids = [int(i) for i in (poll.get("optional_recipients") or []) if int(i or 0) > 0]
+        recipient_names = (
+            [name for name in (resolve_instance(i) for i in recipient_ids) if name] if resolve_instance else []
+        )
+        prompt_obj = arena_prompts.request_prompt(
+            poll, poll.get("request_payload"), poll.get("decision_context")
+        )
+        text = arena_prompts.prompt_text(prompt_obj, resolve_instance)
+        if (
+            not text
+            and int((prompt_obj or {}).get("promptId") or 0) == 144
+            and recipient_names
+            and any("ZoneTransfer" in str(m) for m in (poll.get("optional_mechanics") or []))
+        ):
+            text = f"Return {', '.join(recipient_names)} to the command zone?"
         details = {
             "sourceId": source_id,
             "mechanics": poll.get("optional_mechanics") or [],
@@ -607,6 +628,10 @@ def build_pending_decision(
         if prompt_ids:
             details["promptCardIds"] = prompt_ids
             details["promptCards"] = prompt_names
+        if recipient_names:
+            details["recipientCards"] = recipient_names
+        if text:
+            details["promptText"] = text
         return PendingDecision(
             request_id,
             "OptionalAction",
@@ -615,6 +640,7 @@ def build_pending_decision(
                 DecisionOption("optional:decline", "Decline the optional effect", meta=details),
             ),
             source_label=source_label,
+            prompt_text=text,
         )
 
     if rtype in _ACTIONS_AVAILABLE_TYPES or (not rtype and poll.get("actions")):

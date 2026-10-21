@@ -2115,11 +2115,12 @@ class AutopilotEngine(
         semantic = getattr(self, "_given_up_semantics", None)
         if semantic is not None:
             current = decision_semantics(self._progress_poll_from_state(game_state), game_state)
-            if semantic == current:
-                return True
-            self._given_up_semantics = None
-            self._given_up_window_sig = None
-            return False
+            if current is not None:
+                if semantic == current:
+                    return True
+                self._given_up_semantics = None
+                self._given_up_window_sig = None
+                return False
         sig = getattr(self, "_given_up_window_sig", None)
         if sig is None:
             return False
@@ -4261,6 +4262,11 @@ class AutopilotEngine(
                         self._given_up_semantics = decision_semantics(
                             self._progress_poll_from_state(game_state), game_state
                         )
+                        if getattr(self, "_given_up_window_sig", None) is None:
+                            try:
+                                self._given_up_window_sig = self._priority_window_signature(game_state)
+                            except Exception:
+                                pass
                     # A failed declaration/selection leaves the current dialog
                     # unresolved. Never continue to Done or another plan step.
                     if self._state != AutopilotState.PAUSED:

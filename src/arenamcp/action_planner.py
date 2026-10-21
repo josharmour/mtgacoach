@@ -207,6 +207,8 @@ class GameAction:
         if self.blocker_assignments:
             assigns = [f"{b}->{a}" for b, a in self.blocker_assignments.items()]
             parts.append(f"blocks: {', '.join(assigns)}")
+        if self.modal_index and f"mode {self.modal_index}" not in (self.card_name or "").lower():
+            parts.append(f"mode {self.modal_index}")
         if self.scry_position:
             parts.append(f"scry {self.scry_position}")
         return " | ".join(parts)
