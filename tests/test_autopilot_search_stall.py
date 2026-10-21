@@ -268,4 +268,5 @@ def test_a_summarized_search_is_a_pending_decision_in_the_log_state():
 def test_a_summary_of_state_messages_alone_sets_no_decision():
     state, events = parse_log(SUMMARIZED_SEARCH.replace("::: SearchReq\n", ""))
     assert state.pending_decision is None
-    assert events == [["GREMessageType_TimerStateMessage"]]
+    # Ledger #207: the summary still emits a marker so the catch-up gate stops waiting.
+    assert events == [["GREMessageType_Summarized"], ["GREMessageType_TimerStateMessage"]]

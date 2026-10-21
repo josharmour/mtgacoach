@@ -190,7 +190,11 @@ class LogParser:
         (7 of 7 on 2026-10-18), so the log never saw the SearchReq and the
         coach's state showed no pending decision while Arena's clock ran.
         Known requests are re-emitted as a GreToClientEvent with an empty
-        payload marked ``_summarized``.
+        payload marked ``_summarized``. Every other summary still emits one
+        ``GREMessageType_Summarized`` marker: the autopilot's log catch-up gate
+        only learns from it that the log will never reach the bridge's state
+        id (ledger #207: an OptionalActionMessage summary on 2026-10-20 left
+        it yielding for 29 s until the decision watchdog answered).
         """
         text = line.strip()
         if text.startswith("[Message summarized"):
@@ -210,15 +214,10 @@ class LogParser:
             "Player.log summarized a GreToClientEvent (%s); its details are missing from the log",
             ", ".join(types) or "no message types",
         )
-        if requests:
-            payload = {
-                "greToClientEvent": {
-                    "greToClientMessages": [
-                        {"type": f"GREMessageType_{name}", "_summarized": True} for name in requests
-                    ]
-                }
-            }
-            self._emit_event("GreToClientEvent", payload)
+        messages = [{"type": f"GREMessageType_{name}", "_summarized": True} for name in requests]
+        if not messages:
+            messages = [{"type": "GREMessageType_Summarized", "_summarized": True, "summarized_types": types}]
+        self._emit_event("GreToClientEvent", {"greToClientEvent": {"greToClientMessages": messages}})
         return False
 
     def _detect_event_type(self, text: str) -> str:
