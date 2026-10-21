@@ -800,19 +800,15 @@ class _BridgeSubmitMixin:
                 return None
         ctx = game_state.get("decision_context") or {}
         legal = {int(i) for i in ctx.get("legal_attacker_ids") or [] if i}
-        battlefield = game_state.get("battlefield") or []
-        names = []
-        for card in battlefield:
-            identity = card.get("instance_id")
-            if identity not in legal:
-                continue
-            name = str(card.get("name") or "")
-            twins = sorted(
-                entry["instance_id"]
-                for entry in battlefield
-                if entry.get("name") == name and entry.get("owner_seat_id") == card.get("owner_seat_id")
-            )
-            names.append(f"{name} #{twins.index(identity) + 1}" if len(twins) > 1 else name)
+        # Ledger #208 (2026-10-20 18:14:25, Brawl Leonardo): '#N' labels numbered copies by
+        # sorted instance ID while combat_identity numbers them in board order, so "Hare
+        # Apparent #1" named a copy the menu did not offer, the whole 21-creature declaration
+        # was rejected and the safe default attacked with nothing. Name each attacker by ID.
+        names = [
+            f"{card.get('name') or 'Creature'} [id:{card.get('instance_id')}]"
+            for card in game_state.get("battlefield") or []
+            if card.get("instance_id") in legal
+        ]
         if len(names) <= len(planned):
             return None
         if sneak is not None:
