@@ -37,6 +37,9 @@ def _kokoro_with_fake_model():
         "style": np.dtype(np.float32),
         "speed": np.dtype(np.float32),
     }
+    model.has_timings = False
+    model._stops = frozenset()
+    model._spaces = frozenset()
     return model
 
 
