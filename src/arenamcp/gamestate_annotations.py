@@ -56,7 +56,28 @@ class _GameStateAnnotationsMixin:
         Args:
             annotations: List of annotation dicts from GameStateMessage.
         """
-        for ann in _ensure_dict_list(annotations):
+        ann_list = _ensure_dict_list(annotations)
+        renamed_from: dict[int, int] = {}
+        for ann in ann_list:
+            ann_types = [str(t) for t in _ensure_list(ann.get("type", [])) if t is not None]
+            if "AnnotationType_ObjectIdChanged" not in ann_types:
+                continue
+            detail_map = {}
+            for d in _ensure_dict_list(ann.get("details", [])):
+                key = d.get("key", "")
+                if key:
+                    raw = d.get("valueInt32")
+                    if raw in (None, [], ""):
+                        raw = d.get("valueString")
+                    if raw in (None, [], ""):
+                        raw = d.get("valueInt64")
+                    detail_map[key] = _collapse_gre_value(raw)
+            orig_id = _coerce_int(detail_map.get("orig_id", 0), 0)
+            new_id = _coerce_int(detail_map.get("new_id", 0), 0)
+            if orig_id and new_id:
+                renamed_from[new_id] = orig_id
+
+        for ann in ann_list:
             ann_types = [str(t) for t in _ensure_list(ann.get("type", [])) if t is not None]
             details = _ensure_dict_list(ann.get("details", []))
             affected_ids = _ensure_int_list(ann.get("affectedIds", []))
@@ -121,20 +142,26 @@ class _GameStateAnnotationsMixin:
                     zone_dest = detail_map.get("zone_dest", "")
                     category = detail_map.get("category", "")
                     for obj_id in affected_ids:
-                        obj = self.game_objects.get(obj_id)
+                        orig_id = renamed_from.get(obj_id, 0)
+                        obj = self.game_objects.get(obj_id) or (
+                            self.game_objects.get(orig_id) if orig_id else None
+                        )
                         if obj:
                             if category == "PlayLand":
                                 obj.entered_via_play_land = True
-                            self._add_event(
-                                {
-                                    "type": "zone_transfer",
-                                    "card": self._resolve_card_name(obj.grp_id),
-                                    "instance_id": obj_id,
-                                    "from_zone": zone_src,
-                                    "to_zone": zone_dest,
-                                    "category": category,
-                                }
-                            )
+                            event_payload = {
+                                "type": "zone_transfer",
+                                "card": self._resolve_card_name(obj.grp_id),
+                                "instance_id": obj_id,
+                                "from_zone": zone_src,
+                                "to_zone": zone_dest,
+                                "category": category,
+                                "owner_seat_id": obj.owner_seat_id,
+                                "controller_seat_id": obj.controller_seat_id,
+                            }
+                            if orig_id:
+                                event_payload["orig_instance_id"] = orig_id
+                            self._add_event(event_payload)
 
                 elif ann_type in ("AnnotationType_CounterAdded", "AnnotationType_CounterRemoved"):
                     counter_type = _counter_type_name(detail_map)
