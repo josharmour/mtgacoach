@@ -83,16 +83,35 @@ to give back without shrinking the 1M context.
   `prompt_tokens_total`, `generation_tokens_total` or `kv_cache_usage_perc` for 120 s. The counters only
   move once a prefill completes, so until 2026-10-20 a long uncached Hermes prompt (>~440K new tokens)
   looked wedged: 10-19 19:51 the watchdog killed a healthy ~720K-token prefill at ~90%. KV usage climbs
-  through a prefill and is flat in a real hang -> save py-spy stacks (Python + `--native`) of every vLLM
+  through a prefill and is flat in a real hang -> save py-spy stacks (with locals) of every vLLM
   process and `nvidia-smi` to `/var/log/glm53-watchdog/wedge-*-stacks.txt`, `docker logs` to
   `wedge-*.log`, then `docker stop`; 420 s cooldown (load takes ~2m); max 3/hour. py-spy is a static
   binary at `/usr/local/bin/py-spy` (from `uv tool install py-spy`); it reads the container's processes
   from the host.
-- First real wedge, 2026-10-20 20:29 PDT: 4 running / 6 waiting, KV 97.8%, under a burst of 9 parallel
-  long-context Hermes subagents (84 preemptions in 20 min). Both GPUs dropped to 0% utilisation and idle
-  power while requests were "running" (a NCCL hang spins at 100% instead) and the log has no error, so the
-  engine's host side stopped issuing work. Brief 10-s zero-output windows recurred every ~1.5 min before
-  it. Stacks were not captured yet; the next one will show the stuck code path.
+
+### Full-KV livelock: compute-share fairness disabled (2026-10-20)
+
+The first real wedges (20:29 and 20:34 PDT, the second a minute after the restart) came under a burst of
+9 parallel long-context Hermes subagents: 4 running / 6 waiting, KV 97.8-98.6%. Both GPUs went to 0% and
+idle power, every counter froze, no error was logged. Stacks: EngineCore looping in
+`_process_engine_step` (`if not model_executed and scheduler.has_requests(): sleep(0.001)`) and
+broadcasting empty steps, both workers idle in `shm_broadcast.dequeue`.
+
+Cause: fork issue [local-inference-lab/vllm#733](https://github.com/local-inference-lab/vllm/issues/733)
+(same stack: GLM-5.3, RTX PRO 6000, DCP, MTP-3). The launcher's default `FAIRNESS_ENGINE=compute_share`
+(`--prefill-compute-share 0.4` from the glm53-flash profile) picks a prefill turn; at full KV no waiting
+request can be admitted, and the decode fallback on that turn runs with `allow_preemption=False`
+(`scheduler.py` 1879-1885 in this image), so running decodes that need one more block cannot evict
+anything. The empty batch does not advance the fairness accounting, so the same prefill turn is picked
+forever. The 800K/8-slot KV makes "full" easier to reach but is not the bug.
+
+Fix: `-e FAIRNESS_ENGINE=none` in `~/glm53-spark/serve.sh` (backup `serve.sh.bak-pre-fairness-none-20261020`):
+the launcher drops `--prefill-compute-share`, the scheduler never builds the controller, and a full pool
+preempts normally (slow, not stuck). The runtime setter `POST /prefill_fairness` exists only with
+`VLLM_SERVER_DEV_MODE=1`, so changing it needs a restart. Re-enable fairness only on an image that fixes #733.
+
+The `hermes-blackwell` LiteLLM key was capped at `max_parallel_requests: 3` during the incident to stop
+it re-wedging each restart.
 - One supervisor (2026-10-20): the container is the foreground `docker run --rm` of the user unit
   `glm53-2x-rtxpro6000.service` (`Restart=always`, `~/glm53-spark/serve.sh`), so a stop removes it and
   systemd starts a fresh one with its readiness checks. The old `docker restart` detached the container's

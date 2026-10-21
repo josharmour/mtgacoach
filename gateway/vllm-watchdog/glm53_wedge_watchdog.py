@@ -118,20 +118,19 @@ def scrape():
 
 
 def dump_stacks(fh):
-    """Python (and native) stacks of every vLLM process plus GPU state: a silent wedge leaves no
-    error in the container log, so this is the only record of where the engine stopped."""
+    """Python stacks of every vLLM process plus GPU state: a silent wedge leaves no error in the
+    container log, so this is the only record of where the engine stopped. (`--native` fails
+    with UNW_EBADREG on this image.)"""
     top = subprocess.run(["docker", "top", CONTAINER, "-o", "pid,args"],
                          capture_output=True, text=True, timeout=30)
     for line in top.stdout.splitlines()[1:]:
         pid, _, args = line.strip().partition(" ")
         if "python" not in args and "VLLM::" not in args:
             continue
-        modes = (["--native"], []) if "VLLM::" in args else ([],)
-        for extra in modes:
-            fh.write(f"===== py-spy dump {' '.join(extra)} pid={pid} {args.strip()[:120]}\n")
-            fh.flush()
-            subprocess.run([PY_SPY, "dump", "--pid", pid, *extra],
-                           stdout=fh, stderr=subprocess.STDOUT, timeout=60)
+        fh.write(f"===== py-spy dump pid={pid} {args.strip()[:120]}\n")
+        fh.flush()
+        subprocess.run([PY_SPY, "dump", "--locals", "--pid", pid],
+                       stdout=fh, stderr=subprocess.STDOUT, timeout=60)
     fh.write("===== nvidia-smi\n")
     fh.flush()
     subprocess.run(["nvidia-smi"], stdout=fh, stderr=subprocess.STDOUT, timeout=30)
