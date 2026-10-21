@@ -230,8 +230,7 @@ class RoundTripBridge:
                 **self._pending,
                 "msg_id": 8,
                 "attackers": [
-                    {**attacker, "selectedDamageRecipient": None}
-                    for attacker in self._pending["attackers"]
+                    {**attacker, "selectedDamageRecipient": None} for attacker in self._pending["attackers"]
                 ],
             }
             return {"ok": True, "submitted_type": "DeclareAttackersWithdraw", "needs_finalize": True}
@@ -363,9 +362,7 @@ def test_the_adapter_withdraw_clears_selections_then_finalizes():
         "legalDamageRecipients_": listing(recipient),
         "selectedDamageRecipient_": recipient,
     }
-    game = FakeGame(
-        {"$c": "GreClient.Rules.DeclareAttackerRequest", "$h": 5, "Attackers": listing(attacker)}
-    )
+    game = FakeGame({"$c": "GreClient.Rules.DeclareAttackerRequest", "$h": 5, "Attackers": listing(attacker)})
     adapter = MacBridgeAdapter(game.send)
     response = adapter.handle({"action": "submit_attackers", "attackers": [], "withdraw": True})
     assert response["ok"] is True
@@ -422,9 +419,7 @@ def test_the_adapter_withdraw_with_nothing_held_just_finalizes():
         "legalDamageRecipients_": listing(recipient),
         "selectedDamageRecipient_": None,
     }
-    game = FakeGame(
-        {"$c": "GreClient.Rules.DeclareAttackerRequest", "$h": 5, "Attackers": listing(attacker)}
-    )
+    game = FakeGame({"$c": "GreClient.Rules.DeclareAttackerRequest", "$h": 5, "Attackers": listing(attacker)})
     response = MacBridgeAdapter(game.send).handle(
         {"action": "submit_attackers", "attackers": [], "withdraw": True}
     )

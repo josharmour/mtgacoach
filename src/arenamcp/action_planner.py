@@ -1133,7 +1133,10 @@ class ActionPlanner(_ActionLegalityMixin):
             logger.warning("Big board (%s): the combat solver declares; the model is not asked", big)
             diag["preflight"] = "big_board_solver"
             plan = ActionPlan(
-                trigger=trigger, turn_number=current_turn, fallback_reason=FALLBACK_BIG_BOARD, fallback_detail=big
+                trigger=trigger,
+                turn_number=current_turn,
+                fallback_reason=FALLBACK_BIG_BOARD,
+                fallback_detail=big,
             )
             # Ledger #178 (c0af235f T12): the solver held all twenty attackers while the line
             # search attacks; the push judges the solver's declaration like the model's.
@@ -2152,8 +2155,12 @@ class ActionPlanner(_ActionLegalityMixin):
         if str(context.get("type") or "").lower() != "declare_attackers":
             return
         declared = next((a for a in plan.actions if a.action_type == ActionType.DECLARE_ATTACKERS), None)
-        no_attack = declared is None and bool(plan.actions) and all(
-            a.action_type in (ActionType.CLICK_BUTTON, ActionType.PASS_PRIORITY) for a in plan.actions
+        no_attack = (
+            declared is None
+            and bool(plan.actions)
+            and all(
+                a.action_type in (ActionType.CLICK_BUTTON, ActionType.PASS_PRIORITY) for a in plan.actions
+            )
         )
         if (declared is not None and len(plan.actions) == 1) or no_attack:
             if self._push_line_attack(plan, state, context, declared):
@@ -2348,18 +2355,16 @@ class ActionPlanner(_ActionLegalityMixin):
         blocks = "; ".join(f"{label(b)} against {label(a)}" for b, a in assignments.items())
         if explanation.startswith("Identical copy"):
             plan.fallback_reason = "planner_commander_identity"
-            plan.overall_strategy = (
-                "Same combat outcome; lose the commander (recoverable from the command zone) rather than a token copy."
-            )
-            plan.voice_advice = (
-                f"Blocking with {blocks}: the commander comes back from the command zone, a token copy would not."
-            )
+            plan.overall_strategy = "Same combat outcome; lose the commander (recoverable from the command zone) rather than a token copy."
+            plan.voice_advice = f"Blocking with {blocks}: the commander comes back from the command zone, a token copy would not."
         else:
             plan.fallback_reason = "planner_combat_recovery"
             plan.overall_strategy = (
                 "Keep the same combat outcome and use affordable commander recovery to rebuild resources."
             )
-            plan.voice_advice = f"Blocking with {blocks} to rebuild through an affordable recast of my commander."
+            plan.voice_advice = (
+                f"Blocking with {blocks} to rebuild through an affordable recast of my commander."
+            )
         local = next((p for p in state.get("players", []) if p.get("is_local")), {})
         recovering = set(assignments) & set(local.get("commander_ids") or [])
         if len(recovering) == 1 and state.get("match_id") and state.get("turn", {}).get("turn_number"):
@@ -3485,7 +3490,9 @@ class ActionPlanner(_ActionLegalityMixin):
 
                 context = decision_context or {}
                 ids = context.get("legal_attacker_ids") or [
-                    a.get("attackerInstanceId") for a in context.get("raw_attackers") or [] if isinstance(a, dict)
+                    a.get("attackerInstanceId")
+                    for a in context.get("raw_attackers") or []
+                    if isinstance(a, dict)
                 ]
                 repaired = normalize_attack_declaration(action, legal_actions, ids)
                 if repaired:
@@ -3756,7 +3763,10 @@ class ActionPlanner(_ActionLegalityMixin):
                 and str(item.get("object_kind") or "").upper() != "ABILITY"
             } - {""}
             for record in reversed(self._memory().this_turn(game_state)):
-                if record.request_type != "CastingTimeOptions" or record.source.strip().casefold() not in ours:
+                if (
+                    record.request_type != "CastingTimeOptions"
+                    or record.source.strip().casefold() not in ours
+                ):
                     continue
                 if not any("kick" in str(label).casefold() for label in record.option_labels.values()):
                     continue
@@ -4019,7 +4029,10 @@ class ActionPlanner(_ActionLegalityMixin):
         from arenamcp import sneak
 
         try:
-            for policy, picker in (("sneak_lethal", sneak.sneak_cast_pick), ("sneak_return", sneak.return_pick)):
+            for policy, picker in (
+                ("sneak_lethal", sneak.sneak_cast_pick),
+                ("sneak_return", sneak.return_pick),
+            ):
                 picked, why = picker(decision, game_state)
                 if picked and policy == "sneak_lethal" and not why.startswith("Lethal"):
                     policy = "sneak_margin"  # ledger #179: half their life more than the normal cast
@@ -4097,7 +4110,10 @@ class ActionPlanner(_ActionLegalityMixin):
             if declined:
                 self._last_decision_option_ids = ["optional:decline"]
                 self._last_decision_reasoning = declined
-                self._last_decision_trace = {"policy": "low_life_payment", "validated_ids": ["optional:decline"]}
+                self._last_decision_trace = {
+                    "policy": "low_life_payment",
+                    "validated_ids": ["optional:decline"],
+                }
                 logger.info("typed-decision: %s — no LLM choice", declined)
                 return ["optional:decline"]
             from arenamcp.optional_prompts import top_or_bottom_choice
@@ -4303,8 +4319,7 @@ class ActionPlanner(_ActionLegalityMixin):
                     self._last_decision_trace["policy"] = "select_from_groups_safe_default"
                     self._last_decision_trace["validated_ids"] = fallback
                     logger.warning(
-                        "typed-decision: model answer %s not a legal per-group keep; "
-                        "safe default %s instead",
+                        "typed-decision: model answer %s not a legal per-group keep; safe default %s instead",
                         chosen,
                         fallback,
                     )
@@ -4848,9 +4863,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 f"STACK TIMING: {', '.join(names)} are held while our {pending} is on the stack: the best line "
                 f"casts {plays} next, and they would leave it unpaid. Passing lets {pending} resolve."
             )
-        self._held_instants = list(
-            dict.fromkeys(names_of(instants) + names_of(sweepers) + names_of(stacked))
-        )
+        self._held_instants = list(dict.fromkeys(names_of(instants) + names_of(sweepers) + names_of(stacked)))
         self._held_notes = notes
         kept = tuple(option for option in decision.options if option.option_id not in held_ids)
         filtered = replace(decision, options=kept)
@@ -4937,7 +4950,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 f"UPKEEP: {', '.join(names)} are held for our main phase: nothing of theirs is on the stack to "
                 "answer, and there they do the same after the land drop and our creatures."
             ]
-            logger.info("Instant timing: holding %s for our main phase (our upkeep/draw step)", ", ".join(names))
+            logger.info(
+                "Instant timing: holding %s for our main phase (our upkeep/draw step)", ", ".join(names)
+            )
             why = (
                 f"Holding {', '.join(names)} for our main phase: nothing of theirs is on the stack, and cast "
                 "there it does the same after the land drop and our creatures."
@@ -5074,8 +5089,10 @@ class ActionPlanner(_ActionLegalityMixin):
             return ""
         kept = list(getattr(self, "_end_step_kept", []) or [])
         if kept:
-            return "OPPONENT'S END STEP: keeping " + "; ".join(f"{name} ({why})" for name, why in kept) + (
-                " for our turn; they are off this menu."
+            return (
+                "OPPONENT'S END STEP: keeping "
+                + "; ".join(f"{name} ({why})" for name, why in kept)
+                + (" for our turn; they are off this menu.")
             )
         if not any(
             option.payable is not False and (option.meta or {}).get("actionType") == "ActionType_Cast"
@@ -5575,7 +5592,9 @@ class ActionPlanner(_ActionLegalityMixin):
             trace["role_guard"] = {"replaced": chosen[0], "with": verdict.option_id, "reason": verdict.reason}
         return [verdict.option_id]
 
-    def _apply_landfall_order(self, decision: Any, game_state: dict[str, Any], chosen: list[str]) -> list[str]:
+    def _apply_landfall_order(
+        self, decision: Any, game_state: dict[str, Any], chosen: list[str]
+    ) -> list[str]:
         """The model picked the land drop: cast this turn's planned landfall permanent first.
 
         See :mod:`arenamcp.landfall_order` (2026-10-12 T11: Ba Sing Se, then
@@ -5611,7 +5630,11 @@ class ActionPlanner(_ActionLegalityMixin):
         self._last_decision_option_ids = [verdict.option_id]
         trace = getattr(self, "_last_decision_trace", None)
         if isinstance(trace, dict):
-            trace["landfall_order"] = {"replaced": chosen[0], "with": verdict.option_id, "reason": verdict.reason}
+            trace["landfall_order"] = {
+                "replaced": chosen[0],
+                "with": verdict.option_id,
+                "reason": verdict.reason,
+            }
         return [verdict.option_id]
 
     def _apply_line_guard(
@@ -6202,7 +6225,11 @@ class ActionPlanner(_ActionLegalityMixin):
         """Keep the X picked while casting so the spell's target check can read its damage."""
         for option in decision.options:
             meta = option.meta or {}
-            if option.option_id in chosen and meta.get("choiceKind") == "numeric_input" and "numericValue" in meta:
+            if (
+                option.option_id in chosen
+                and meta.get("choiceKind") == "numeric_input"
+                and "numericValue" in meta
+            ):
                 self._chosen_x = (
                     _as_int(meta.get("sourceId")),
                     str(getattr(decision, "source_label", "") or "").strip().lower(),
@@ -6844,13 +6871,17 @@ class ActionPlanner(_ActionLegalityMixin):
                 if casts and len(bodies) == len(casts)
                 else []
             )
-            target_id = exact[-1] if exact else next(
-                (
-                    _as_int(body.get("instance_id"))
-                    for _variant, body in plays
-                    if isinstance(body, dict) and body.get("name") == target
-                ),
-                0,
+            target_id = (
+                exact[-1]
+                if exact
+                else next(
+                    (
+                        _as_int(body.get("instance_id"))
+                        for _variant, body in plays
+                        if isinstance(body, dict) and body.get("name") == target
+                    ),
+                    0,
+                )
             )
             return target, target_id
         except Exception as error:  # the strategic layer never blocks a decision
@@ -6951,14 +6982,20 @@ class ActionPlanner(_ActionLegalityMixin):
 
         played = str(getattr(decision, "source_label", "") or "").lower()
         played_id = self._decision_source_instance(game_state)
-        reasoning = " ".join(re.findall(r"[a-z0-9']+", str(getattr(self, "_last_decision_reasoning", "") or "").lower()))
+        reasoning = " ".join(
+            re.findall(r"[a-z0-9']+", str(getattr(self, "_last_decision_reasoning", "") or "").lower())
+        )
         total = int(damage)
         for card in game_state.get("hand", []) or []:
             if not isinstance(card, dict) or card.get("instance_id") == played_id:
                 continue
             name = str(card.get("name") or "").lower()
             words = [w for w in re.findall(r"[a-z0-9']+", name) if len(w) >= 4 and w not in played]
-            if not name or name == played or not (name in reasoning or any(f" {w} " in f" {reasoning} " for w in words)):
+            if (
+                not name
+                or name == played
+                or not (name in reasoning or any(f" {w} " in f" {reasoning} " for w in words))
+            ):
                 continue
             parsed = damage_effect(card, game_state)
             text = str(card.get("oracle_text") or "").lower()
@@ -6973,11 +7010,20 @@ class ActionPlanner(_ActionLegalityMixin):
                 total += int(face.group(1))
         turn = game_state.get("turn") or {}
         local = game_state.get("local_seat_id") or next(
-            (p.get("seat_id") for p in game_state.get("players") or [] if isinstance(p, dict) and p.get("is_local")),
+            (
+                p.get("seat_id")
+                for p in game_state.get("players") or []
+                if isinstance(p, dict) and p.get("is_local")
+            ),
             None,
         )
         phase = str(turn.get("phase") or "")
-        if local is None or turn.get("active_player") != local or "Combat" in phase or phase.endswith("Main2"):
+        if (
+            local is None
+            or turn.get("active_player") != local
+            or "Combat" in phase
+            or phase.endswith("Main2")
+        ):
             return total
         number = _as_int(turn.get("turn_number")) or 0
         for card in game_state.get("battlefield", []) or []:
@@ -8171,7 +8217,9 @@ class ActionPlanner(_ActionLegalityMixin):
         # model thinks at high effort with a longer budget. Routine priority
         # windows stay at low effort within the short budget.
         passed_over: list[str] = []
-        critical = critical_decision(decision, game_state, getattr(self, "_game_plan", ""), skipped=passed_over)
+        critical = critical_decision(
+            decision, game_state, getattr(self, "_game_plan", ""), skipped=passed_over
+        )
         # On the opponent's turn the windows close fast (2026-10-11 turn 9: 13
         # windows each answered within 3 s while one high-effort call ran its
         # full 15 s and timed out), so every decision there runs at low effort.
@@ -8279,7 +8327,9 @@ class ActionPlanner(_ActionLegalityMixin):
 
         # Ledger #182 (15:48:58): a 38K-character prompt got no first token from either leg within
         # 8.0 s. A big prompt's first token may come later, and each leg keeps its answer time.
-        first_token_s = first_token_budget(self._FIRST_TOKEN_TIMEOUT_S, len(system_prompt) + len(user_message))
+        first_token_s = first_token_budget(
+            self._FIRST_TOKEN_TIMEOUT_S, len(system_prompt) + len(user_message)
+        )
         normal_budget = self._sized_budget(min(self._timeout, 12.0), first_token_s)
         if first_token_s > self._FIRST_TOKEN_TIMEOUT_S:
             logger.info(
@@ -8372,7 +8422,9 @@ class ActionPlanner(_ActionLegalityMixin):
                     ask(
                         user_message + check,
                         effort=None if opponent_turn else "high",
-                        budget=min(self._timeout, 12.0) if opponent_turn else self._CRITICAL_DECISION_BUDGET_S,
+                        budget=min(self._timeout, 12.0)
+                        if opponent_turn
+                        else self._CRITICAL_DECISION_BUDGET_S,
                     )
                 )
                 self._last_decision_trace["reversal_check"] = {

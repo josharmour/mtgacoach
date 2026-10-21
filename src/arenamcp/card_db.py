@@ -363,7 +363,9 @@ class FallbackCardDatabase:
         if not card.mana_cost:
             # Lands and tokens legitimately have no mana cost, but non-land cards should
             card_types = getattr(card, "card_types", []) or []
-            is_land = any("land" in ct.lower() for ct in card_types) or "land" in (card.type_line or "").lower()
+            is_land = (
+                any("land" in ct.lower() for ct in card_types) or "land" in (card.type_line or "").lower()
+            )
             if not is_land and not FallbackCardDatabase._is_token(card):
                 return True
         # A numeric type code is not a type line (defence in depth — the MTGA

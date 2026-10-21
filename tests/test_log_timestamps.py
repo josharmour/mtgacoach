@@ -17,7 +17,9 @@ def _formatted(level: int, message: str) -> str:
 
 
 def test_log_lines_carry_milliseconds():
-    assert _formatted(logging.INFO, "hello").startswith("2026-10-18 12:00:01.042 | INFO     | arenamcp.test | hello")
+    assert _formatted(logging.INFO, "hello").startswith(
+        "2026-10-18 12:00:01.042 | INFO     | arenamcp.test | hello"
+    )
 
 
 def test_coach_log_slice_reads_old_and_new_stamps(tmp_path):

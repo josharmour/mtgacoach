@@ -2098,7 +2098,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     att_owner = "OPP" if att.get("owner_seat_id") != local_seat else "YOUR"
                 else:
                     att_owner = "YOUR" if att.get("owner_seat_id") == local_seat else "OPP"
-                buff_note = self.STATIC_BUFF_NOTE if self._static_pt_buff(att.get("oracle_text") or "") else ""
+                buff_note = (
+                    self.STATIC_BUFF_NOTE if self._static_pt_buff(att.get("oracle_text") or "") else ""
+                )
                 lines.append(f"    >> {att_owner} AURA: {att_name}{buff_note}")
                 if att_oracle:
                     lines.append(f"       {self._clean_oracle_for_prompt(att_oracle)}")
@@ -3206,7 +3208,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                             target_label = "Opponent"
                         elif tid:
                             target_label = next(
-                                (str(c.get("name")) for c in (game_state.get("battlefield") or []) if isinstance(c, dict) and c.get("instance_id") == tid and c.get("name")),
+                                (
+                                    str(c.get("name"))
+                                    for c in (game_state.get("battlefield") or [])
+                                    if isinstance(c, dict) and c.get("instance_id") == tid and c.get("name")
+                                ),
                                 f"#{tid}",
                             )
                         else:

@@ -49,7 +49,12 @@ ELEMENTAL = {
 
 
 def _mountain(iid: int) -> dict:
-    return {"instance_id": iid, "name": "Mountain", "type_line": "Basic Land — Mountain", "controller_seat_id": 2}
+    return {
+        "instance_id": iid,
+        "name": "Mountain",
+        "type_line": "Basic Land — Mountain",
+        "controller_seat_id": 2,
+    }
 
 
 def _state(*, lands: int = 4, hand=(HAZARD,), theirs=(ELEMENTAL,), stack=(IROH,), active: int = 2) -> dict:
@@ -66,12 +71,16 @@ def _planner(oracle: str = IROH_MODE, source: int = 228) -> ActionPlanner:
     planner = ActionPlanner.__new__(ActionPlanner)
     planner._decision_source_oracle = lambda decision, state: oracle
     planner._decision_source_instance = lambda state: source
-    planner._last_decision_reasoning = "The 4-damage mode kills the Hearth Elemental, their only clock, exactly as intended."
+    planner._last_decision_reasoning = (
+        "The 4-damage mode kills the Hearth Elemental, their only clock, exactly as intended."
+    )
     return planner
 
 
 def _decision(*targets: int, source: str = "Iroh's Demonstration"):
-    return SimpleNamespace(source_label=source, options=[SimpleNamespace(option_id=f"tgt:{t}") for t in targets])
+    return SimpleNamespace(
+        source_label=source, options=[SimpleNamespace(option_id=f"tgt:{t}") for t in targets]
+    )
 
 
 def test_the_live_iroh_plus_hazard_kill_is_kept(caplog):
@@ -79,7 +88,9 @@ def test_the_live_iroh_plus_hazard_kill_is_kept(caplog):
         chosen = _planner()._prefer_lethal_damage_target(_decision(342), _state(), ["tgt:342"])
     assert chosen == ["tgt:342"]
     kept = [r.getMessage() for r in caplog.records if "burn combo" in r.getMessage()]
-    assert kept and "Iroh's Demonstration (4) + Tectonic Hazard (1) = 5 damage kills Hearth Elemental" in kept[0]
+    assert (
+        kept and "Iroh's Demonstration (4) + Tectonic Hazard (1) = 5 damage kills Hearth Elemental" in kept[0]
+    )
     assert not [r for r in caplog.records if "kills no legal opposing target" in r.getMessage()]
 
 
@@ -91,12 +102,16 @@ def test_the_stack_spell_is_found_by_name_when_the_request_has_no_source_id():
 def test_without_the_mana_for_both_it_is_still_declined():
     # Two Mountains: Iroh's (2) leaves nothing for the Hazard (1).
     planner = _planner()
-    assert planner._prefer_lethal_damage_target(_decision(342), _state(lands=2), ["tgt:342"]) == [DECLINE_DECISION]
+    assert planner._prefer_lethal_damage_target(_decision(342), _state(lands=2), ["tgt:342"]) == [
+        DECLINE_DECISION
+    ]
 
 
 def test_without_burn_in_hand_it_is_still_declined():
     planner = _planner()
-    assert planner._prefer_lethal_damage_target(_decision(342), _state(hand=()), ["tgt:342"]) == [DECLINE_DECISION]
+    assert planner._prefer_lethal_damage_target(_decision(342), _state(hand=()), ["tgt:342"]) == [
+        DECLINE_DECISION
+    ]
 
 
 def test_a_combo_on_another_creature_does_not_keep_this_target():
@@ -121,14 +136,14 @@ def test_a_sorcery_follow_up_does_not_count_on_their_turn():
     four_four = dict(ELEMENTAL, toughness=4)
     planner = _planner(oracle="fire prophecy deals 3 damage to target creature.", source=229)
     ours = _state(theirs=(four_four,), stack=(prophecy,))
-    assert planner._prefer_lethal_damage_target(_decision(342, source="Fire Prophecy"), ours, ["tgt:342"]) == [
-        "tgt:342"
-    ]
+    assert planner._prefer_lethal_damage_target(
+        _decision(342, source="Fire Prophecy"), ours, ["tgt:342"]
+    ) == ["tgt:342"]
     planner = _planner(oracle="fire prophecy deals 3 damage to target creature.", source=229)
     theirs = _state(theirs=(four_four,), stack=(prophecy,), active=1)
-    assert planner._prefer_lethal_damage_target(_decision(342, source="Fire Prophecy"), theirs, ["tgt:342"]) == [
-        DECLINE_DECISION
-    ]
+    assert planner._prefer_lethal_damage_target(
+        _decision(342, source="Fire Prophecy"), theirs, ["tgt:342"]
+    ) == [DECLINE_DECISION]
 
 
 def test_the_chosen_mode_damage_is_what_the_combo_counts():

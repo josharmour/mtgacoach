@@ -39,10 +39,14 @@ def test_failed_call_returns_a_tagged_detectable_sentinel_without_raising():
 
 def test_served_model_recorded_and_a_mismatch_warned_once(caplog):
     """2026-07-05: alias 'nemotron-3-super' silently ran an ollama 12B."""
-    be = make_backend([ok_stream("hello", model="glm-5.3-flash-0930"), ok_stream("again", model="glm-5.3-flash-0930")])
+    be = make_backend(
+        [ok_stream("hello", model="glm-5.3-flash-0930"), ok_stream("again", model="glm-5.3-flash-0930")]
+    )
     with caplog.at_level(logging.WARNING, logger=proxy.__name__):
         assert be.complete("sys", "user", 16) == "hello"
         assert be.complete("sys", "user", 16) == "again"
     assert be.last_served_model == "glm-5.3-flash-0930"
     warnings = [r.getMessage() for r in caplog.records if "!= configured alias" in r.getMessage()]
-    assert warnings == ["[PROXY] served model 'glm-5.3-flash-0930' != configured alias 'glm-5.3-flash' — routing is gateway-side"]
+    assert warnings == [
+        "[PROXY] served model 'glm-5.3-flash-0930' != configured alias 'glm-5.3-flash' — routing is gateway-side"
+    ]

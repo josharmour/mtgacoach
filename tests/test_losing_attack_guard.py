@@ -655,7 +655,13 @@ def _skyward_spider_turn9_state(*, modified: bool = False) -> dict:
         ),
     }
     return {
-        "turn": {"turn_number": 9, "active_player": 2, "priority_player": 2, "phase": "Phase_Combat", "step": "Step_DeclareAttack"},
+        "turn": {
+            "turn_number": 9,
+            "active_player": 2,
+            "priority_player": 2,
+            "phase": "Phase_Combat",
+            "step": "Step_DeclareAttack",
+        },
         "local_seat_id": 2,
         "players": [
             {"seat_id": 2, "life": 18, "is_local": True, "mana_pool": {}},

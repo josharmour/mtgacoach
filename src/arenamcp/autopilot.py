@@ -2435,7 +2435,9 @@ class AutopilotEngine(
                 chosen = search_safe_default(decision)
                 if chosen is not None and submit_option(bridge, decision, chosen):
                     names = [decision.find(option_id).label for option_id in chosen]
-                    self._request_tracker.note_submitted(decision_fingerprint(decision), request_window(state))
+                    self._request_tracker.note_submitted(
+                        decision_fingerprint(decision), request_window(state)
+                    )
                     self._log_execution_path(ExecutionPath.GRE_AWARE, f"watchdog: search -> {names}")
                     return True, ("chose " + ", ".join(names)) if names else "found nothing"
                 return False, "search selection was not accepted"
@@ -3388,7 +3390,9 @@ class AutopilotEngine(
                     if step and self._progress_bridge(game_state).submit_payment_action(
                         step["instance_id"], step["ability_grp_id"], step["color"]
                     ):
-                        self._log_execution_path(ExecutionPath.GRE_AWARE, "manual mana via submit_payment_action")
+                        self._log_execution_path(
+                            ExecutionPath.GRE_AWARE, "manual mana via submit_payment_action"
+                        )
                         self._record_autopilot_decision(
                             game_state,
                             trigger,
@@ -4762,7 +4766,9 @@ class AutopilotEngine(
     # pending request changes. None (tests, no bridge) = no early cancel.
     _request_watch_fn: Callable[[Callable[[dict[str, Any]], None]], Callable[[], None]] | None = None
 
-    def _cancel_on_request_change(self, decision: Any, fp: Any, cancel: threading.Event) -> Callable[[], None]:
+    def _cancel_on_request_change(
+        self, decision: Any, fp: Any, cancel: threading.Event
+    ) -> Callable[[], None]:
         """Set ``cancel`` once the bridge shows a different request than ``decision``.
 
         Only a different *pending* request counts: a momentarily empty poll
@@ -4849,6 +4855,7 @@ class AutopilotEngine(
                 resp = None
             if resp and resp.get("has_pending"):
                 return resp
+
     _LOG_CATCH_UP_POLL_S = 0.03
     # Set by the coaching runtime to the MCP poll_log(): reads Player.log now.
     # The wait below used to re-read only the parsed state, so when nothing
@@ -5415,17 +5422,14 @@ class AutopilotEngine(
                     logger.debug("Typed-decision speech failed: %s", error)
             self._actions_executed += 1
             self._last_exec_success_ts = time.time()
-            if (
-                decision.request_type == "ActionsAvailable"
-                and self._submitted_should_stop(fresh_poll, option_ids)
+            if decision.request_type == "ActionsAvailable" and self._submitted_should_stop(
+                fresh_poll, option_ids
             ):
                 # Arena holds priority for us after this action (shouldStop):
                 # a fresh request addressed to our seat follows. #206: the
                 # bridge reported the old decision cleared and never surfaced
                 # it — poll for it here instead of going silent for 45 s.
-                self._surface_post_cast_priority(
-                    decision, option_ids, fresh_poll, game_state, trigger, depth
-                )
+                self._surface_post_cast_priority(decision, option_ids, fresh_poll, game_state, trigger, depth)
             self._state = AutopilotState.IDLE
             return True
         if self._abort_event.is_set():

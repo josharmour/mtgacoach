@@ -74,7 +74,11 @@ def choose_payment_source(context: dict[str, Any]) -> dict[str, Any] | None:
             return None  # a colored requirement nothing here can pay
         color = min(colored, key=lambda c: (len(candidates[c]), COLORED.index(c)))
         source = min(candidates[color], key=rank)
-        return {"instance_id": source["instance_id"], "ability_grp_id": source.get("ability_grp_id", 0), "color": color}
+        return {
+            "instance_id": source["instance_id"],
+            "ability_grp_id": source.get("ability_grp_id", 0),
+            "color": color,
+        }
     if needs.get("generic"):
         source = min(sources, key=rank)
         return {

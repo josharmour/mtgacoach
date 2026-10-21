@@ -576,7 +576,10 @@ def _lethal_on_board() -> tuple[dict, object]:
     """G1 T15 from the opponent's side: lethal on board, two casts in hand."""
     source = deepcopy(G1_T15_FROM_OPPONENT)
     source["hand"] = [card(801, "Twinned Vision", 2), card(802, "Theorix Metamage", 2)]
-    menu = [("idx:0", "Cast Twinned Vision", cast(801), True), ("idx:1", "Cast Theorix Metamage", cast(802), True)]
+    menu = [
+        ("idx:0", "Cast Twinned Vision", cast(801), True),
+        ("idx:1", "Cast Theorix Metamage", cast(802), True),
+    ]
     return source, actions_decision(menu)
 
 

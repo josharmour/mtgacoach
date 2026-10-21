@@ -837,9 +837,7 @@ def _attack_push(result, declared_ids, state, *, eligible, lethal_now, all_in, u
     declared_line = result.first_action.get(("attack", declared) if declared else ("noattack",))
     if declared_line is None:
         return None
-    dead_sooner = (
-        declared_line.cls == DEAD and _dies_at(best) - _dies_at(declared_line) >= ATTACK_LINE_MARGIN
-    )
+    dead_sooner = declared_line.cls == DEAD and _dies_at(best) - _dies_at(declared_line) >= ATTACK_LINE_MARGIN
     ranks_below = result.posture == "attack" and (
         best.ranked[:2] > declared_line.ranked[:2]
         or (

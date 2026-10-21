@@ -28,7 +28,9 @@ def test_parse_greatest_power_and_for_each():
     perms = [{"type_line": "Artifact — Equipment"}, {"type_line": "Basic Land — Forest"},
              {"type_line": "Artifact Creature — Golem"}]  # fmt: skip
     assert reduction_amount(each, [], perms) == 2
-    number = parse_cost_reduction("This spell costs {X} less to cast, where X is the number of creatures you control.")
+    number = parse_cost_reduction(
+        "This spell costs {X} less to cast, where X is the number of creatures you control."
+    )
     assert reduction_amount(number, [2, 3, 1]) == 3
     # Another permanent's reduction for other spells is not this spell's own.
     assert parse_cost_reduction("Noncreature spells you cast cost {1} less to cast.") is None
@@ -70,4 +72,3 @@ def test_without_the_pump_ghalta_and_phytomedic_still_cost_six():
     result = search_lines(model, survival=False, lethal_now=False, hard_ms=1e9)
     # Ghalta at 9 - 4 = 5 plus Phytomedic's 1: the printed nine is gone.
     assert "Ghalta the Unstoppable" in result.best.steps[0].casts, result.best.steps[0]
-

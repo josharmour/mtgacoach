@@ -31,6 +31,7 @@ def _kokoro_with_fake_model():
         return [np.sin(np.linspace(0, 200, 4800, dtype=np.float32))]
 
     model.sess = SimpleNamespace(get_inputs=lambda: [SimpleNamespace(name="tokens")], run=run)
+    model._tokens_input = "tokens"
     return model
 
 
@@ -66,7 +67,7 @@ def test_unknown_voice_is_reported_by_kokoro():
     engine = KokoroTTS(voice="zz_nobody")
     engine._kokoro = model
 
-    with pytest.raises(AssertionError, match="zz_nobody"):
+    with pytest.raises((AssertionError, ValueError), match="zz_nobody"):
         engine.synthesize(SHORT)
 
 

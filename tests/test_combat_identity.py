@@ -334,7 +334,9 @@ def test_attackers_that_differ_still_require_an_instance_id(difference):
     ("plugin_version", "accepted", "finalized"),
     [("0.7.2", True, True), ("0.7.2", False, False), ("0.6.5", False, True)],
 )
-def test_bepinex_attack_groups_recipients_and_verifies_from_0_7_2(monkeypatch, plugin_version, accepted, finalized):
+def test_bepinex_attack_groups_recipients_and_verifies_from_0_7_2(
+    monkeypatch, plugin_version, accepted, finalized
+):
     """2026-10-18 22:31:30 (bug_20261018_223140, Linux/Proton BepInEx): Gallia -> Jace and
     Blessed Ghoul -> player went out as one update, the server rejected it
     (InvalidDamageRecipient), the empty finalize passed with no attackers and the
@@ -356,7 +358,11 @@ def test_bepinex_attack_groups_recipients_and_verifies_from_0_7_2(monkeypatch, p
         "msg_id": 1200,
         "can_submit": True,
         "attackers": [
-            {"attackerInstanceId": iid, "legalDamageRecipients": [PLAYER, walker], "selectedDamageRecipient": None}
+            {
+                "attackerInstanceId": iid,
+                "legalDamageRecipients": [PLAYER, walker],
+                "selectedDamageRecipient": None,
+            }
             for iid in (388, 414)
         ],
     }
@@ -379,7 +385,10 @@ def test_bepinex_attack_groups_recipients_and_verifies_from_0_7_2(monkeypatch, p
         ActionType.DECLARE_ATTACKERS,
         attacker_names=["Gallia, Tragic Host", "Blessed Ghoul"],
         attacker_instance_ids=[388, 414],
-        attacker_targets={"Gallia, Tragic Host": "Jace, the Mind Sculptor [469]", "Blessed Ghoul": "Opponent"},
+        attacker_targets={
+            "Gallia, Tragic Host": "Jace, the Mind Sculptor [469]",
+            "Blessed Ghoul": "Opponent",
+        },
     )
     result = engine._try_bridge_declare_attackers(action)
     calls = engine._gre_bridge.submit_attackers_raw.call_args_list

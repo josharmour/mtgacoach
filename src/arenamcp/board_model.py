@@ -242,7 +242,9 @@ def _action_cost(entries: Any) -> str:
             if isinstance(colors, list)
             else [
                 "ManaColor_" + name
-                for name in re.findall(r"(?:ManaColor_)?(White|Blue|Black|Red|Green|Colorless)\b", str(colors))
+                for name in re.findall(
+                    r"(?:ManaColor_)?(White|Blue|Black|Red|Green|Colorless)\b", str(colors)
+                )
             ]
         )
         symbols = [_MANA_COLORS[c] for c in names if c in _MANA_COLORS]

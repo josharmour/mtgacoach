@@ -58,7 +58,9 @@ def test_the_1301_answer_uses_the_plan_written_after_the_broken_drafts():
     plan = _parse(text)
     assert plan is not None and not plan.is_empty()
     assert plan.role == "race"
-    assert plan.path == "Swing both while Hortimancer taps out; drawn removal clears it; burn finishes from <=8."
+    assert (
+        plan.path == "Swing both while Hortimancer taps out; drawn removal clears it; burn finishes from <=8."
+    )
     assert plan.win_conditions == [
         "Both attackers connect twice plus drawn burn reach",
         "Kill Hortimancer, grind out with topdecked burn",
@@ -102,7 +104,7 @@ def test_a_bare_string_member_mid_object_is_dropped():
 
 def test_an_object_written_with_escaped_quotes_is_used():
     text = (
-        "```json\n{\n  \"role\": \"race\",\n  resource_priorities,\n  ...\n}\n```\n\n"
+        '```json\n{\n  "role": "race",\n  resource_priorities,\n  ...\n}\n```\n\n'
         "Wait—I need clean final output:\n\n```json\n"
         '{\n  \\"role\\": \\"race\\",\n  \\"turns\\": [{\\"turn\\": \\"T\\", \\"attack\\": \\"all\\"}],\n'
         '  \\"path\\": \\"swing every turn\\"\n}\n```'
@@ -141,7 +143,7 @@ class _Backend:
 
 def test_an_unusable_answer_is_logged_and_saved_in_full(caplog):
     mgr = GamePlanManager(_Backend())
-    answer = "```json\n{\n  \"role\": \"race\",\n" + "  \"note\": \"" + "x" * 900 + "\" oops\n}\n```"
+    answer = '```json\n{\n  "role": "race",\n' + '  "note": "' + "x" * 900 + '" oops\n}\n```'
     with caplog.at_level(logging.INFO, logger="arenamcp.game_plan"):
         assert mgr._usable_plan(answer, 14, cancel=None, effort="high") is None
     warning = next(r.getMessage() for r in caplog.records if "no usable plan" in r.getMessage())
@@ -149,7 +151,9 @@ def test_an_unusable_answer_is_logged_and_saved_in_full(caplog):
     saved = list(game_plan.UNUSABLE_PLAN_DIR.glob("game_plan_unusable_*.txt"))
     assert len(saved) == 1
     content = saved[0].read_text(encoding="utf-8")
-    assert content.startswith(f"# game-plan answer with no usable plan: turn 14, high effort, {len(answer)} chars")
+    assert content.startswith(
+        f"# game-plan answer with no usable plan: turn 14, high effort, {len(answer)} chars"
+    )
     assert content.endswith(answer)
     assert any(str(saved[0]) in r.getMessage() for r in caplog.records)
     assert mgr._reform_failure == "no usable plan from the model"
@@ -176,7 +180,9 @@ def test_a_failed_save_never_raises(monkeypatch, tmp_path):
     assert save_unusable_answer("answer", turn_num=1, effort="high") is None
 
 
-@pytest.mark.parametrize("fixture", ["game_plan_answer_20261019_130036.txt", "game_plan_answer_20261019_130129.txt"])
+@pytest.mark.parametrize(
+    "fixture", ["game_plan_answer_20261019_130036.txt", "game_plan_answer_20261019_130129.txt"]
+)
 def test_the_live_answers_now_form_a_plan_through_the_reform_path(fixture):
     mgr = GamePlanManager(_Backend())
     plan = mgr._usable_plan(_answer(fixture), 14, cancel=None, effort="high")

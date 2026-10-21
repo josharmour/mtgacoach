@@ -893,7 +893,12 @@ def _stack_burn_combo(
 
 
 def stack_burn_combo_on(
-    state: dict | None, victim_id: int, *, source_id: int = 0, source_name: str = "", damage: int | None = None
+    state: dict | None,
+    victim_id: int,
+    *,
+    source_id: int = 0,
+    source_name: str = "",
+    damage: int | None = None,
 ) -> BurnCombo | None:
     """The kill of ``victim_id`` our burn on the stack makes with burn still castable from hand.
 
@@ -1046,9 +1051,7 @@ def _sneak_reach(
 def _menu_can_change_combat(decision: Any, state: dict) -> bool:
     """A payable activation, or a payable cast of a card that is not a creature (or unknown)."""
     hand = {
-        int(card.get("instance_id") or 0): card
-        for card in state.get("hand") or []
-        if isinstance(card, dict)
+        int(card.get("instance_id") or 0): card for card in state.get("hand") or [] if isinstance(card, dict)
     }
     for option in getattr(decision, "options", ()) or ():
         if getattr(option, "payable", None) is False:
@@ -1065,7 +1068,9 @@ def _menu_can_change_combat(decision: Any, state: dict) -> bool:
             card = None
         if card is None:
             return True
-        kinds = " ".join(str(k) for k in card.get("card_types") or []) + " " + str(card.get("type_line") or "")
+        kinds = (
+            " ".join(str(k) for k in card.get("card_types") or []) + " " + str(card.get("type_line") or "")
+        )
         if "creature" not in kinds.lower():
             return True
     return False

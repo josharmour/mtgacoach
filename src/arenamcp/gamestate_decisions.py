@@ -104,9 +104,7 @@ def prompt_card_ids(prompt: Any) -> list[int]:
     return ids
 
 
-def _optional_prompt_cards(
-    game_state: "GameState", prompt: Any, source_id: int = 0
-) -> list[dict[str, Any]]:
+def _optional_prompt_cards(game_state: "GameState", prompt: Any, source_id: int = 0) -> list[dict[str, Any]]:
     """The cards an optional prompt names, with their rules text, for the decision prompt."""
     cards: list[dict[str, Any]] = []
     for instance_id in prompt_card_ids(prompt):
@@ -135,11 +133,7 @@ def _optional_prompt_cards(
             or (_decision_source_name(game_state, source_id) if source_obj else "")
             or ""
         )
-        oracle = str(
-            source_ctx.get("source_oracle_text")
-            or source_ctx.get("source_card_oracle_text")
-            or ""
-        )
+        oracle = str(source_ctx.get("source_oracle_text") or source_ctx.get("source_card_oracle_text") or "")
         if name or oracle:
             cards.append(
                 {
@@ -698,7 +692,9 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
 
             prompt_text = arena_prompts.prompt_text(
                 prompt,
-                lambda iid: _decision_source_name(game_state, iid) if game_state.game_objects.get(iid) else "",
+                lambda iid: (
+                    _decision_source_name(game_state, iid) if game_state.game_objects.get(iid) else ""
+                ),
             )
         recipient_ids = _ensure_int_list(opt.get("recipientIds", []))
         action_types = _coerce_str_list(opt.get("optionalActionTypes", []))
@@ -723,7 +719,9 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         if commander_return:
             prompt_text = f"Return {', '.join(recipient_names)} to the command zone?"
         elif not prompt_text and prompt_cards:
-            prompt_text = "Optional effect of " + ", ".join(card["name"] for card in prompt_cards if card.get("name"))
+            prompt_text = "Optional effect of " + ", ".join(
+                card["name"] for card in prompt_cards if card.get("name")
+            )
         logger.info(f"Captured Decision: Optional Action ({prompt_text[:60]})")
         game_state.pending_decision = "Optional Action"
         game_state.decision_seat_id = game_state.local_seat_id
@@ -1357,7 +1355,9 @@ def _handle_pay_costs(game_state: "GameState", msg: dict) -> bool:
     # whether it spends a treasure. Without Auto Pay (an X spell taking every
     # source, 2026-10-18 21:40) the autopilot pays from these one at a time.
     payment_sources = []
-    for action in _ensure_dict_list(payment_actions.get("actions", []) if isinstance(payment_actions, dict) else []):
+    for action in _ensure_dict_list(
+        payment_actions.get("actions", []) if isinstance(payment_actions, dict) else []
+    ):
         options = _ensure_dict_list(action.get("manaPaymentOptions", []))
         mana = [m for option in options for m in _ensure_dict_list(option.get("mana", []))]
         specs = {str(s.get("type")) for m in mana for s in _ensure_dict_list(m.get("specs", []))}

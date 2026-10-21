@@ -41,4 +41,3 @@ def test_cast_and_land_unchanged():
 
 def test_pass_is_terse():
     assert h("Pass (Opponent has priority)") == "Pass."
-

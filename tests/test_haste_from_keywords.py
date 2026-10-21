@@ -106,5 +106,12 @@ def test_activated_abilities_with_an_empty_hand_do_not_crash():
 
     # The haste check reads the creature, not the last card left in hand.
     state["turn"]["turn_number"] = 3
-    state["hand"] = [{"name": "Raging Goblin", "type_line": "Creature — Goblin", "oracle_text": "Haste", "mana_cost": "{R}"}]
+    state["hand"] = [
+        {
+            "name": "Raging Goblin",
+            "type_line": "Creature — Goblin",
+            "oracle_text": "Haste",
+            "mana_cost": "{R}",
+        }
+    ]
     assert "Activate Living Library" not in RulesEngine.get_legal_actions(state)

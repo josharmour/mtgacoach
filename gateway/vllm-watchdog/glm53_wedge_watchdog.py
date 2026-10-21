@@ -195,7 +195,9 @@ def main():
             stuck_since = last = None
             continue
         in_flight, counters = sample
-        progressed = last is not None and any(new != old for new, old in zip(counters, last))
+        progressed = last is not None and any(
+            new != old for new, old in zip(counters, last, strict=False)
+        )
         last = counters
         if in_flight >= 1 and not progressed:
             if stuck_since is None:

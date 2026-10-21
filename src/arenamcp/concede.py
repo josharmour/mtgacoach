@@ -1091,7 +1091,9 @@ def _estimate(state: Any) -> LossEstimate:
     # under way they are in the snapshot) and an extra combat (Aurelia).
     their_able = attack_bodies(their_able, declared=declared)
     extra = extra_combats(their_able, declared=declared)
-    again = [b for b in their_able if extra is not None and (extra.untap_all or has_combat_keyword(b, "vigilance"))]
+    again = [
+        b for b in their_able if extra is not None and (extra.untap_all or has_combat_keyword(b, "vigilance"))
+    ]
     air_cover = any(_reach_or_flying(b) for b in our_blockers)
     evasive = [b for b in their_able if b["_unblockable"] or (_flying(b) and not air_cover)]
     evasive_power = sum(b["power"] for b in evasive) + sum(b["power"] for b in evasive if b in again)

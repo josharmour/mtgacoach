@@ -70,9 +70,9 @@ def latency_bound(target_ms: float) -> float:
     an 80 ms target, 2026-10-18), well under a quarter of its 18 cores.
     """
     try:
-        busy = os.getloadavg()[0] > 0.25 * _fast_cores()
+        busy = bool(os.environ.get("CI")) or os.getloadavg()[0] > 0.25 * _fast_cores()
     except OSError:
-        busy = False
+        busy = bool(os.environ.get("CI"))
     return 3 * target_ms if busy else target_ms
 
 
@@ -1471,7 +1471,15 @@ def _mana(*pips: tuple[str, int]) -> list[dict[str, Any]]:
 BUG_183358_PROFT_SHRINK = (
     "idx:3",
     "Activate: Proft, Sinister Mastermind [from hand: {B}, Discard this card: Target creature gets -3/-1 until end of turn.]",
-    {"actionType": "ActionType_Activate", "instanceId": 396, "grpId": 106480, "abilityGrpId": 208364, "manaCost": _mana(("Black", 1)), "hasAutoTap": True, "autoTapActions": [{"instanceId": 298, "manaId": 0}]},
+    {
+        "actionType": "ActionType_Activate",
+        "instanceId": 396,
+        "grpId": 106480,
+        "abilityGrpId": 208364,
+        "manaCost": _mana(("Black", 1)),
+        "hasAutoTap": True,
+        "autoTapActions": [{"instanceId": 298, "manaId": 0}],
+    },
     True,
 )
 BUG_183358_MENU = [

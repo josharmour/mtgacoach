@@ -1,4 +1,3 @@
-
 from arenamcp.draftstate import DraftState, create_draft_handler
 from arenamcp.limited_deck import fallback_deck, reconcile_logged_deck
 from arenamcp.limited_rules import rules_profile, synergy_evidence

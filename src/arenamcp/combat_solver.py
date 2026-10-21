@@ -1823,7 +1823,6 @@ def evaluate_attack(
     return plan
 
 
-
 def _attack_subsets(n: int) -> Iterable[tuple[int, ...]]:
     """Attacker subsets, most informative first.
 

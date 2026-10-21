@@ -1449,8 +1449,7 @@ class _BridgeSubmitMixin:
             from arenamcp.gre_bridge import _version_tuple
 
             verified = native or (
-                bepinex
-                and _version_tuple(getattr(bridge, "plugin_version", None)) >= _version_tuple("0.7.2")
+                bepinex and _version_tuple(getattr(bridge, "plugin_version", None)) >= _version_tuple("0.7.2")
             )
             request_key = (pending.get("game_state_id"), pending.get("msg_id"))
             outcome, request_key = self._await_attack_selection(
@@ -1463,9 +1462,7 @@ class _BridgeSubmitMixin:
                     outcome,
                 )
                 return None
-            resp2 = bridge.submit_attackers_raw(
-                [], expected_request_id=request_key, finalize_only=True
-            )
+            resp2 = bridge.submit_attackers_raw([], expected_request_id=request_key, finalize_only=True)
             if not resp2 or not resp2.get("ok"):
                 logger.warning("Bridge declare_attackers: no-attack finalize failed: %s", resp2)
                 return None
@@ -2541,11 +2538,7 @@ class _BridgeSubmitMixin:
         # Must be checked BEFORE the generic Group branch — "SelectFromGroups"
         # contains "Group", which routed it to submit_group/submit_order (both
         # wrong request classes) and then to an illegal empty submit.
-        if (
-            dec_type == "select_from_groups"
-            or "SelectFromGroups" in btype
-            or "SelectFromGroups" in bclass
-        ):
+        if dec_type == "select_from_groups" or "SelectFromGroups" in btype or "SelectFromGroups" in bclass:
             return self._safe_default_select_from_groups(game_state, pending, _ok)
 
         # Group: London-mulligan bottoming / scry-surveil / ordering default.

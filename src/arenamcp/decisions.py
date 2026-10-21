@@ -418,7 +418,12 @@ _SELECT_FROM_GROUPS_TYPES = {
     "SelectFromGroupsRequest",
     "select_from_groups",
 }
-_CASTING_TYPES = {"CastingTimeOptions", "CastingTimeOptionsReq", "CastingTimeOptionRequest", "CastingTimeOptionsRequest"}
+_CASTING_TYPES = {
+    "CastingTimeOptions",
+    "CastingTimeOptionsReq",
+    "CastingTimeOptionRequest",
+    "CastingTimeOptionsRequest",
+}
 _OPTIONAL_TYPES = {
     "OptionalAction",
     "OptionalActionReq",
@@ -602,7 +607,9 @@ def build_pending_decision(
     can_cancel = bool(poll.get("can_cancel"))
     prompt_label = poll.get("prompt")
     # A structured prompt ({promptId, parameters}) is not a label.
-    source_label = str(poll.get("source_card") or (prompt_label if isinstance(prompt_label, str) else "") or "")
+    source_label = str(
+        poll.get("source_card") or (prompt_label if isinstance(prompt_label, str) else "") or ""
+    )
 
     if rtype in _CASTING_TYPES or request_class in _CASTING_TYPES:
         options = tuple(
@@ -633,12 +640,16 @@ def build_pending_decision(
         # prompt's CardId parameters name the card asking (2026-10-11:
         # Witch-Blessed Meadow's "pay 3 life?" reached the model unnamed).
         prompt_ids = _prompt_card_ids(poll)
-        prompt_names = [name for name in (resolve_instance(i) for i in prompt_ids) if name] if resolve_instance else []
+        prompt_names = (
+            [name for name in (resolve_instance(i) for i in prompt_ids) if name] if resolve_instance else []
+        )
         if not source_label and prompt_names:
             source_label = prompt_names[0]
         recipient_ids = [int(i) for i in (poll.get("optional_recipients") or []) if int(i or 0) > 0]
         recipient_names = (
-            [name for name in (resolve_instance(i) for i in recipient_ids) if name] if resolve_instance else []
+            [name for name in (resolve_instance(i) for i in recipient_ids) if name]
+            if resolve_instance
+            else []
         )
         prompt_obj = arena_prompts.request_prompt(
             poll, poll.get("request_payload"), poll.get("decision_context")
@@ -684,6 +695,7 @@ def build_pending_decision(
             resolve_name,
             resolve_zone,
             activation_unaffordable,
+            resolve_instance,
         )
     if rtype in _SELECT_TARGETS_TYPES or request_class in _SELECT_TARGETS_TYPES:
         source_id = int(
@@ -812,6 +824,7 @@ def _build_actions_available(
     resolve_name: Callable[[int], str],
     resolve_zone: Callable[[int], str] | None = None,
     activation_unaffordable: Callable[[dict[str, Any]], bool] | None = None,
+    resolve_instance: Callable[[int], str] | None = None,
 ) -> PendingDecision | None:
     options: list[DecisionOption] = []
     saw_pass = False
@@ -831,6 +844,8 @@ def _build_actions_available(
             atype = f"ActionType_{atype}"
         grp_id = int(action.get("grpId") or 0)
         name = resolve_name(grp_id) if grp_id else ""
+        if (not name or is_unknown_card_name(name)) and resolve_instance is not None:
+            name = resolve_instance(int(action.get("instanceId") or 0)) or name
         payable: bool | None = None
         if atype == "ActionType_Pass":
             saw_pass = True
@@ -1132,10 +1147,7 @@ def _select_from_group_specs(poll: dict[str, Any]) -> list[dict[str, Any]]:
             "group_id": _int(raw.get("groupId") or raw.get("groupIdx") or raw.get("group_id")),
             "ids": ids,
             "min": _int(raw.get("minSelections") or raw.get("minSelect") or raw.get("min") or 0),
-            "max": _int(
-                raw.get("maxSelections") or raw.get("maxSelect") or raw.get("max")
-                or len(ids) or 0
-            ),
+            "max": _int(raw.get("maxSelections") or raw.get("maxSelect") or raw.get("max") or len(ids) or 0),
         }
         specs.append(spec)
     return specs
@@ -1166,9 +1178,7 @@ def _build_select_from_groups(
             # Resolve BEFORE any display fallback: identity_known must reflect
             # what the resolver actually returned, not the synthesized
             # "Permanent <id>" label (which is_unknown_card_name never flags).
-            resolved_name = (
-                str(resolve_instance(instance_id) or "") if resolve_instance is not None else ""
-            )
+            resolved_name = str(resolve_instance(instance_id) or "") if resolve_instance is not None else ""
             name = resolved_name or f"Permanent {instance_id}"
             options.append(
                 DecisionOption(
@@ -1180,8 +1190,7 @@ def _build_select_from_groups(
                         "instance_id": instance_id,
                         "group_min": spec["min"],
                         "group_max": spec["max"],
-                        "identity_known": bool(resolved_name)
-                        and not is_unknown_card_name(resolved_name),
+                        "identity_known": bool(resolved_name) and not is_unknown_card_name(resolved_name),
                     },
                 )
             )
@@ -1401,7 +1410,9 @@ def _build_subtype_choice(
     same_request = list(context.get("request_id") or []) == list(request_id) and any(request_id)
     if poll.get("select_n_ids_truncated") and same_request:
         logged = subtype_selection_ids(
-            list_type=context.get("list_type"), static_list=context.get("static_list"), ids=context.get("option_ids") or []
+            list_type=context.get("list_type"),
+            static_list=context.get("static_list"),
+            ids=context.get("option_ids") or [],
         )
         if logged and set(ids) <= set(logged):
             ids = logged
@@ -1480,7 +1491,9 @@ def _build_prompt_choice(
         text = (resolve_prompt(pid) if resolve_prompt and pid else "") or str(
             (log_choices.get(oid) or {}).get("text") or ""
         )
-        label = text or (f"Unlabeled choice {position} of {len(ids)} (prompt {pid})" if pid else f"Option {oid}")
+        label = text or (
+            f"Unlabeled choice {position} of {len(ids)} (prompt {pid})" if pid else f"Option {oid}"
+        )
         meta = {"choice": "prompt", "promptId": pid, "sourceId": source_id, "identity_known": bool(text)}
         options.append(DecisionOption(option_id=f"sel:{oid}", label=label, meta=meta))
     return PendingDecision(
@@ -2543,7 +2556,9 @@ def _int_or_zero(value: Any) -> int:
 def _context_source_id(context: dict[str, Any]) -> int:
     """A decision context's source: the bridge's ``sourceId``, the log's ``source_id``, or a SelectN's
     ``prompt_source_id`` (kept apart because ``source_id`` arms the stack-based auto-clear)."""
-    return _int_or_zero(context.get("sourceId") or context.get("source_id") or context.get("prompt_source_id"))
+    return _int_or_zero(
+        context.get("sourceId") or context.get("source_id") or context.get("prompt_source_id")
+    )
 
 
 def _request_source_id(state: dict[str, Any]) -> int:
@@ -2727,7 +2742,7 @@ def prompt_choice_note(decision: Any, state: dict[str, Any]) -> str:
         whose = (
             " (YOUR card)"
             if controller == local_seat
-            else " (OPPONENT's card: in its text \"you\" is them and \"each opponent\" is you)"
+            else ' (OPPONENT\'s card: in its text "you" is them and "each opponent" is you)'
         )
     return (
         f"CHOICE FROM {name}{whose}" + (f': "{oracle}"' if oracle else "") + ". Each option below is one of "
@@ -2831,7 +2846,11 @@ def hand_loss_choice(decision: Any, state: dict[str, Any]) -> tuple[list[str], s
     loss = hand_loss(decision, state)
     if loss is None or loss.unusual:
         return [], ""
-    if decision.min_weight is not None or decision.min_select != decision.max_select or decision.min_select < 1:
+    if (
+        decision.min_weight is not None
+        or decision.min_select != decision.max_select
+        or decision.min_select < 1
+    ):
         return [], ""
     from arenamcp import mulligan_policy
 

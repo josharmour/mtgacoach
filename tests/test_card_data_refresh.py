@@ -185,4 +185,3 @@ def test_scryfall_api_fallback_for_a_card_missing_from_bulk(tmp_path, monkeypatc
         assert card is None and 12345 in cache._not_found_cache
     cache.get_card_by_arena_id(12345)  # served from the session cache either way
     assert asked == [12345]
-

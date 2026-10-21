@@ -58,7 +58,9 @@ def _fmt_when(value: str) -> str:
 
 
 def _section(title: str, body: str) -> str:
-    return theme.block(theme.span(title, "muted", size="caption", weight=700), gap=2) + theme.block(body, gap=8)
+    return theme.block(theme.span(title, "muted", size="caption", weight=700), gap=2) + theme.block(
+        body, gap=8
+    )
 
 
 def report_html(report: dict[str, Any], name: str = "") -> str:
@@ -107,7 +109,11 @@ def report_html(report: dict[str, Any], name: str = "") -> str:
     if commanders:
         rows = "".join(
             f"<li>{theme.span(c.get('name', ''), None, weight=600)}: {theme.span(c.get('deployment', ''))}"
-            + (f"<br>{theme.span('Keep or recast: ' + c.get('preserve_or_reuse', ''), 'muted', size='caption')}" if c.get("preserve_or_reuse") else "")
+            + (
+                f"<br>{theme.span('Keep or recast: ' + c.get('preserve_or_reuse', ''), 'muted', size='caption')}"
+                if c.get("preserve_or_reuse")
+                else ""
+            )
             + "</li>"
             for c in commanders
         )
@@ -117,8 +123,16 @@ def report_html(report: dict[str, Any], name: str = "") -> str:
         rows = "".join(
             f"<li>{theme.span(', '.join(r.get('decisions') or []) + ': ', 'muted', size='caption')}"
             f"{theme.span(r.get('prefer', ''))}"
-            + (f"<br>{theme.span('When: ' + r.get('when', ''), 'muted', size='caption')}" if r.get("when") else "")
-            + (f"<br>{theme.span('Unless: ' + r.get('unless', ''), 'muted', size='caption')}" if r.get("unless") else "")
+            + (
+                f"<br>{theme.span('When: ' + r.get('when', ''), 'muted', size='caption')}"
+                if r.get("when")
+                else ""
+            )
+            + (
+                f"<br>{theme.span('Unless: ' + r.get('unless', ''), 'muted', size='caption')}"
+                if r.get("unless")
+                else ""
+            )
             + "</li>"
             for r in rules
         )
@@ -147,8 +161,10 @@ class DecksTab(QWidget):
         lay.setSpacing(8)
 
         header = QHBoxLayout()
-        self._summary = QLabel("Refresh to list your decks. Arena must be running; the bridge reads every deck, "
-                               "Player.log only the ones you have opened or played.")
+        self._summary = QLabel(
+            "Refresh to list your decks. Arena must be running; the bridge reads every deck, "
+            "Player.log only the ones you have opened or played."
+        )
         self._summary.setWordWrap(True)
         self._summary.setProperty("role", "muted")
         header.addWidget(self._summary, 1)
@@ -173,7 +189,9 @@ class DecksTab(QWidget):
 
         actions = QHBoxLayout()
         self.strategy_btn = QPushButton("Deck strategy")
-        self.strategy_btn.setToolTip("Build (or show) this deck's playbook: how it wins, its engines, its decision rules")
+        self.strategy_btn.setToolTip(
+            "Build (or show) this deck's playbook: how it wins, its engines, its decision rules"
+        )
         self.strategy_btn.clicked.connect(lambda: self._analyze_selected(refresh=False))
         self.rebuild_btn = QPushButton("Rebuild")
         self.rebuild_btn.setToolTip("Throw away the cached strategy and analyse the deck again")
@@ -228,9 +246,12 @@ class DecksTab(QWidget):
         if not self._decks:
             summary = "No decks found. " + (note or "Is Arena running?")
         self._summary.setText(summary)
-        self.all_btn.setEnabled(any(
-            d.get("complete") and (d.get("strategy") or {}).get("status") in ("none", "error") for d in self._decks
-        ))
+        self.all_btn.setEnabled(
+            any(
+                d.get("complete") and (d.get("strategy") or {}).get("status") in ("none", "error")
+                for d in self._decks
+            )
+        )
         if selected is not None:
             for row, deck in enumerate(self._decks):
                 if deck["deck_id"] == selected:
@@ -303,9 +324,9 @@ class DecksTab(QWidget):
         detail = str(strategy.get("detail") or "")
         if strategy.get("status") == "none":
             detail = "Press Deck strategy to analyse how this deck wins. It takes a minute or two and is kept on disk."
-        text = theme.block(theme.span(deck.get("name", ""), None, size="title", weight=700), gap=4) + theme.block(
-            theme.span(label, tone) + (f"<br>{theme.span(detail, 'muted')}" if detail else "")
-        )
+        text = theme.block(
+            theme.span(deck.get("name", ""), None, size="title", weight=700), gap=4
+        ) + theme.block(theme.span(label, tone) + (f"<br>{theme.span(detail, 'muted')}" if detail else ""))
         self._detail.setText(text)
 
     def _analyze_selected(self, *, refresh: bool) -> None:

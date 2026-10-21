@@ -784,7 +784,11 @@ def clock_unmodelled(battlefield: list[dict], modelled_seat: int | None = None) 
         text = _QUOTED.sub("", _text(card))
         if any(
             _ATTACK_TRIGGER.search(line)
-            and not (modelled_seat is not None and _controller(card) == modelled_seat and modelled_attack_trigger(card, line))
+            and not (
+                modelled_seat is not None
+                and _controller(card) == modelled_seat
+                and modelled_attack_trigger(card, line)
+            )
             for line in text.splitlines()
         ):
             found.setdefault(_name(card), "attack trigger")
@@ -1608,9 +1612,7 @@ def _side_engines(
     ):
         return None
     static_after = getattr(engines, "static_drain_after_upkeep", engines.static_drain)
-    combat_noncreature = any(
-        not is_c for _sid, is_c, _n, _k, _o in getattr(engines, "combat_counters", ())
-    )
+    combat_noncreature = any(not is_c for _sid, is_c, _n, _k, _o in getattr(engines, "combat_counters", ()))
     if not active or not attack_pending:
         return ClockEngines(
             engines.static_drain,
@@ -2586,7 +2588,9 @@ def _threats(
             score += count * (float(tok_power) + 0.3 * tok_toughness + flying_bonus)
             kw_text = f" {' '.join(kw)}" if kw else ""
             qty = f"{count}x " if count > 1 else ""
-            why.append(f"locked {door_label}: creates {qty}{tok_power}/{tok_toughness}{kw_text} {tok_name} when unlocked")
+            why.append(
+                f"locked {door_label}: creates {qty}{tok_power}/{tok_toughness}{kw_text} {tok_name} when unlocked"
+            )
         if score:
             threats.append(Threat(_name(card), _int(card.get("instance_id")), score, ", ".join(why)))
     threats.sort(key=lambda t: (-t.score, t.name))

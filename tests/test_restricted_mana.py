@@ -34,5 +34,10 @@ def test_crafter_mana_pays_for_a_cast_from_exile():
 def test_spend_only_mana_never_counts_and_free_mana_still_does():
     restriction = RulesEngine._mana_restriction
     assert restriction("{T}: Add {C}. Spend this mana only to cast artifact spells.") == "only"
-    assert restriction("{T}: Add {C}.\n{T}: Add one mana of any color. Spend this mana only to cast a creature spell.") == ""
+    assert (
+        restriction(
+            "{T}: Add {C}.\n{T}: Add one mana of any color. Spend this mana only to cast a creature spell."
+        )
+        == ""
+    )
     assert restriction("{T}: Add {G}.") == ""

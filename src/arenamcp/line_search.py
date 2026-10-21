@@ -853,14 +853,20 @@ class _Search(Moves):
         if not attacking or not holding:
             return "either", "" if attacking else "no attack available"
         top, hold = max(attacking, key=_order), max(holding, key=_order)
-        reason = f"attack with {', '.join(top.steps[0].attack)}: {top.outcome_text()}; hold: {hold.outcome_text()}"
+        reason = (
+            f"attack with {', '.join(top.steps[0].attack)}: {top.outcome_text()}; hold: {hold.outcome_text()}"
+        )
         # Ledger #180 (c0af235f T8/T12): Faramir draws them a card on each turn we hold (and makes
         # three 1/1s on each we attack): what holding costs, net, weighs on lines that end alike.
         cost, punished = hold_punishers(self.model)
         if punished:
             reason += f"; {punished}"
         unblockable = self._holding_worthless(top)
-        if unblockable and top.cls != DEAD and not (hold.ranked[0] == WIN and hold.ranked[:2] > top.ranked[:2]):
+        if (
+            unblockable
+            and top.cls != DEAD
+            and not (hold.ranked[0] == WIN and hold.ranked[:2] > top.ranked[:2])
+        ):
             # Ledger #158 (be1a945f T10): their Lathliss and Ureni fly and nothing of ours blocks
             # either; the creatures kept home only waited while the attack dealt 7.
             return "attack", f"{reason}; holding back blocks nothing ({unblockable})"

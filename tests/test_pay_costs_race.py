@@ -69,7 +69,11 @@ def test_a_window_paid_by_a_concurrent_trigger_is_done_not_manual_required(monke
         "local_seat_id": 1,
         "turn": {"turn_number": 6, "active_player": 1, "phase": "Phase_Main1"},
         "pending_decision": "Pay Costs",
-        "decision_context": {"type": "pay_costs", "source_card": "Hei Bai, Forest Guardian", "mana_cost": "{3}{G}"},
+        "decision_context": {
+            "type": "pay_costs",
+            "source_card": "Hei Bai, Forest Guardian",
+            "mana_cost": "{3}{G}",
+        },
         "_bridge_connected": True,
         "_bridge_has_pending": True,
         "_bridge_request_type": "PayCostsReq",

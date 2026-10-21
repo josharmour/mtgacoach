@@ -1479,7 +1479,11 @@ def _token_creator_facts(obj: dict[str, Any]) -> dict[str, Any]:
         logger.debug("token creator lookup failed for %s/%s: %s", ability, source, exc)
         source_info = {}
     name = str(source_info.get("name") or "")
-    if name and not is_unknown_card_name(name) and not name.startswith(("Card#", "Unknown (ID:", "Ability (ID:")):
+    if (
+        name
+        and not is_unknown_card_name(name)
+        and not name.startswith(("Card#", "Unknown (ID:", "Ability (ID:"))
+    ):
         facts["token_creator"] = name
     if creator_id:
         facts["token_creator_id"] = creator_id

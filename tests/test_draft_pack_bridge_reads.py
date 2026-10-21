@@ -36,7 +36,9 @@ def run(monkeypatch, match_id, turn, result=None):
     monkeypatch.setattr(
         server,
         "game_state",
-        SimpleNamespace(match_id=match_id, turn_info=SimpleNamespace(turn_number=turn), last_game_result=result),
+        SimpleNamespace(
+            match_id=match_id, turn_info=SimpleNamespace(turn_number=turn), last_game_result=result
+        ),
     )
     server.get_draft_pack()
     return bridge.calls

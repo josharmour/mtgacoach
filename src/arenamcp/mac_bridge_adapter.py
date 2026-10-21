@@ -801,7 +801,12 @@ class MacBridgeAdapter:
     # constructed deck with its contents, filled by the client at login (see
     # re-output DeckDataProvider: GetFullDeck is a cache read, no request).
     _DECKS_PER_BATCH = 4
-    _PILE_NAMES = {"Main": "main", "Sideboard": "sideboard", "CommandZone": "command_zone", "Companions": "companions"}
+    _PILE_NAMES = {
+        "Main": "main",
+        "Sideboard": "sideboard",
+        "CommandZone": "command_zone",
+        "Companions": "companions",
+    }
 
     def _cmd_get_decks(self, command: dict, timeout: float | None) -> dict:
         ops = _Ops()
@@ -1689,7 +1694,6 @@ class MacBridgeAdapter:
                 response["grp_id"] = num(field(child, "GrpId"))
             break
 
-
     _shape_CastingTimeOptionsRequest = _shape_CastingTimeOptionRequest  # Arena 2026.64.50's name
 
     def _shape_SelectTargetsRequest(self, request: dict, getters: dict, response: dict) -> None:
@@ -2340,7 +2344,9 @@ class MacBridgeAdapter:
             "declared_count": len(matched),
         }
 
-    def _withdraw_attack_declaration(self, snapshot: Snapshot, available: list, timeout: float | None) -> dict:
+    def _withdraw_attack_declaration(
+        self, snapshot: Snapshot, available: list, timeout: float | None
+    ) -> dict:
         """Clear every held attacker selection; the caller finalizes afterwards (#210).
 
         An empty attacker list alone only calls SubmitAttackers, which submits
@@ -2361,9 +2367,7 @@ class MacBridgeAdapter:
         the caller's second step instead of calling SubmitAttackers here.
         """
         selected = [
-            attacker
-            for attacker in available
-            if field(attacker, "SelectedDamageRecipient") is not None
+            attacker for attacker in available if field(attacker, "SelectedDamageRecipient") is not None
         ]
         if not selected:
             # Nothing held: the plain finalize is already a no-attack.
@@ -2374,6 +2378,7 @@ class MacBridgeAdapter:
             for attacker in selected:
                 ops.set(H(handle(attacker)), "SelectedDamageRecipient", {"null": True})
             ops.call(request, "UpdateAttacker", LIST([H(handle(a)) for a in selected]))
+
         self._submit(snapshot, build, timeout)
         return {
             "ok": True,
@@ -2538,7 +2543,9 @@ class MacBridgeAdapter:
         }
         if not set(wanted) <= set(offered):
             raise AdapterError(f"Target slot {target_idx} no longer offers {wanted}; refusing to finalize")
-        self._send_target_slots(current, [(selection, [offered[instance_id] for instance_id in wanted])], timeout)
+        self._send_target_slots(
+            current, [(selection, [offered[instance_id] for instance_id in wanted])], timeout
+        )
         return True
 
     def _deferred_commit_targets(

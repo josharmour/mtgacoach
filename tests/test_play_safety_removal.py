@@ -103,7 +103,9 @@ def test_x_damage_reads_the_chosen_x():
 
     assert x_damage_removal(INTERVENTION, 1) == (2, True)
     assert x_damage_removal({"oracle_text": "Deals X damage to target creature."}, 3) == (3, False)
-    where_x = {"oracle_text": "Deals X damage to target creature, where X is the number of cards in your hand."}
+    where_x = {
+        "oracle_text": "Deals X damage to target creature, where X is the number of cards in your hand."
+    }
     assert x_damage_removal(where_x, 3) is None
     assert x_damage_removal(WRATH, 3) is None
 
@@ -117,7 +119,11 @@ def test_x_damage_removal_is_retargeted_at_the_chosen_x():
     planner._decision_source_oracle = lambda decision, state: INTERVENTION["oracle_text"]
     planner._remember_chosen_x(x_choice(500, 1), ["idx:1"])
     state = {
-        **board((283, "Sanguine Syphoner", 1, 3, {}), (284, "Leonin Warleader", 4, 4, {}), (285, "Squire", 1, 2, {})),
+        **board(
+            (283, "Sanguine Syphoner", 1, 3, {}),
+            (284, "Leonin Warleader", 4, 4, {}),
+            (285, "Squire", 1, 2, {}),
+        ),
         "decision_context": {"source_id": 500},
     }
     targets = SimpleNamespace(
@@ -125,8 +131,13 @@ def test_x_damage_removal_is_retargeted_at_the_chosen_x():
         options=[SimpleNamespace(option_id=f"tgt:{i}") for i in (283, 284, 285)],
     )
     assert planner._prefer_lethal_damage_target(targets, state, ["tgt:283"]) == ["tgt:285"]
-    no_kill = {**board((283, "Sanguine Syphoner", 1, 3, {}), (284, "Leonin Warleader", 4, 4, {})), "decision_context": {"source_id": 500}}
-    two = SimpleNamespace(source_label="", options=[SimpleNamespace(option_id=f"tgt:{i}") for i in (283, 284)])
+    no_kill = {
+        **board((283, "Sanguine Syphoner", 1, 3, {}), (284, "Leonin Warleader", 4, 4, {})),
+        "decision_context": {"source_id": 500},
+    }
+    two = SimpleNamespace(
+        source_label="", options=[SimpleNamespace(option_id=f"tgt:{i}") for i in (283, 284)]
+    )
     assert planner._prefer_lethal_damage_target(two, no_kill, ["tgt:283"]) == [DECLINE_DECISION]
     # At X=2 (4 damage) the Warleader dies, so the model's pick stands.
     planner._remember_chosen_x(x_choice(500, 2), ["idx:2"])
@@ -139,6 +150,11 @@ def test_an_x_from_another_spell_is_not_used():
     planner = ActionPlanner.__new__(ActionPlanner)
     planner._decision_source_oracle = lambda decision, state: INTERVENTION["oracle_text"]
     planner._remember_chosen_x(x_choice(500, 1), ["idx:1"])
-    other = {**board((283, "Sanguine Syphoner", 1, 3, {}), (285, "Squire", 1, 2, {})), "decision_context": {"source_id": 777}}
-    targets = SimpleNamespace(source_label="", options=[SimpleNamespace(option_id=f"tgt:{i}") for i in (283, 285)])
+    other = {
+        **board((283, "Sanguine Syphoner", 1, 3, {}), (285, "Squire", 1, 2, {})),
+        "decision_context": {"source_id": 777},
+    }
+    targets = SimpleNamespace(
+        source_label="", options=[SimpleNamespace(option_id=f"tgt:{i}") for i in (283, 285)]
+    )
     assert planner._prefer_lethal_damage_target(targets, other, ["tgt:283"]) == ["tgt:283"]

@@ -52,9 +52,12 @@ def _signed(body: dict) -> tuple[bytes, dict]:
 
 def _pledge_event(email="pat@example.com", status="active_patron"):
     return {
-        "data": {"type": "member", "id": "member-1",
-                 "attributes": {"patron_status": status},
-                 "relationships": {"user": {"data": {"type": "user", "id": "12345"}}}},
+        "data": {
+            "type": "member",
+            "id": "member-1",
+            "attributes": {"patron_status": status},
+            "relationships": {"user": {"data": {"type": "user", "id": "12345"}}},
+        },
         "included": [
             {
                 "type": "user",
@@ -157,12 +160,19 @@ def test_membership_gate(env):
     assert patreon._membership_allows_key(empty)[0] is True
 
 
-@pytest.mark.parametrize("event", ["members:create", "members:update", "members:pledge:create", "members:pledge:update"])
+@pytest.mark.parametrize(
+    "event", ["members:create", "members:update", "members:pledge:create", "members:pledge:update"]
+)
 def test_v2_member_events_use_linked_user(env, event):
     _, db, fake, client = env
     body = _pledge_event()
-    body["included"].append({"type": "user", "id": "creator", "attributes": {
-        "email": "creator@example.com", "full_name": "Creator"}})
+    body["included"].append(
+        {
+            "type": "user",
+            "id": "creator",
+            "attributes": {"email": "creator@example.com", "full_name": "Creator"},
+        }
+    )
     raw, headers = _signed(body)
     headers["X-Patreon-Event"] = event
     assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 200
@@ -241,8 +251,10 @@ def test_webhook_requires_configured_secret(env, monkeypatch):
 def test_malformed_json_returns_400(env):
     _, _, _, client = env
     raw = b"{bad json"
-    headers = {"X-Patreon-Event": "members:update", "X-Patreon-Signature":
-               hmac.new(WEBHOOK_SECRET.encode(), raw, hashlib.md5).hexdigest()}
+    headers = {
+        "X-Patreon-Event": "members:update",
+        "X-Patreon-Signature": hmac.new(WEBHOOK_SECRET.encode(), raw, hashlib.md5).hexdigest(),
+    }
     assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 400
 
 
@@ -255,8 +267,10 @@ def test_gateway_failure_is_retryable_without_local_state_change(env, monkeypatc
         client.post("/patreon/webhook", content=raw, headers=headers)
         raw, headers = _signed(_pledge_event(status="former_patron"))
         headers["X-Patreon-Event"] = "members:update"
+
     async def fail(*args, **kwargs):
         raise RuntimeError("gateway unavailable")
+
     monkeypatch.setattr(patreon, "mint_litellm_key" if operation == "mint" else "delete_litellm_key", fail)
     client = TestClient(client.app, raise_server_exceptions=False)
     assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 500

@@ -254,7 +254,9 @@ def test_three_off_colour_lands_are_not_an_automatic_keep():
     assert verdict([ISLAND] * 3 + BLUE_SPELLS, mulligans=0)[0] == "keep"
     assert verdict([MOUNTAIN] * 3 + BLUE_SPELLS, mulligans=0) is None  # left to the model
     lines = mp.describe(state([MOUNTAIN] * 3 + BLUE_SPELLS, mulligans=0))
-    assert any(line.startswith("  - Unsummon") and "needs U mana this hand cannot make" in line for line in lines)
+    assert any(
+        line.startswith("  - Unsummon") and "needs U mana this hand cannot make" in line for line in lines
+    )
 
 
 def test_a_one_lander_at_five_mulligans_when_its_land_casts_nothing():

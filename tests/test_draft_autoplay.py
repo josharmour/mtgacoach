@@ -725,7 +725,9 @@ class _InMatchHarness:
         monkeypatch.setattr(
             server,
             "game_state",
-            SimpleNamespace(match_id=match_id, turn_info=SimpleNamespace(turn_number=turn), last_game_result=result),
+            SimpleNamespace(
+                match_id=match_id, turn_info=SimpleNamespace(turn_number=turn), last_game_result=result
+            ),
         )
 
     def in_match(self, pack=None):

@@ -201,7 +201,9 @@ def test_remote_tts_offload_when_server_configured_and_lag_detected(qapp, monkey
         "tts_mode": "auto",
         "tts_lag_threshold_ms": 1000,
     }
-    monkeypatch.setattr("arenamcp.settings.get_settings", lambda: Mock(get=lambda k, d=None: settings_dict.get(k, d)))
+    monkeypatch.setattr(
+        "arenamcp.settings.get_settings", lambda: Mock(get=lambda k, d=None: settings_dict.get(k, d))
+    )
     manager._last_local_latencies = [2.5, 3.1, 2.8]
 
     remote_mock = Mock()
@@ -219,7 +221,9 @@ def test_remote_tts_does_not_offload_when_no_server(qapp, monkeypatch):
         "tts_mode": "auto",
         "tts_lag_threshold_ms": 1000,
     }
-    monkeypatch.setattr("arenamcp.settings.get_settings", lambda: Mock(get=lambda k, d=None: settings_dict.get(k, d)))
+    monkeypatch.setattr(
+        "arenamcp.settings.get_settings", lambda: Mock(get=lambda k, d=None: settings_dict.get(k, d))
+    )
     manager._last_local_latencies = [2.5, 3.1, 2.8]
     monkeypatch.setattr(TtsManager, "is_running", property(lambda self: True))
     dispatch_mock = Mock()

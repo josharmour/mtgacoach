@@ -43,6 +43,10 @@ def test_no_attack_no_reordering():
 def test_a_hasty_or_team_pumping_creature_goes_first():
     source = deepcopy(M3_T7)
     source["hand"] = [
-        {**card(195, "Enlightened Confidant", 2), "name": "Lord", "oracle_text": "Other creatures you control get +1/+1."}
+        {
+            **card(195, "Enlightened Confidant", 2),
+            "name": "Lord",
+            "oracle_text": "Other creatures you control get +1/+1.",
+        }
     ]
     assert _turn(source, attack=True).post_combat == ()

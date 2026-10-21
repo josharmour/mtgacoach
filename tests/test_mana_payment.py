@@ -63,8 +63,16 @@ def test_log_capture_lists_each_source_its_colors_and_treasures():
                     "instanceId": 536,
                     "abilityGrpId": 1131,
                     "manaPaymentOptions": [
-                        {"mana": [{"color": "ManaColor_Red", "specs": [{"type": "ManaSpecType_Predictive"}]}]},
-                        {"mana": [{"color": "ManaColor_Green", "specs": [{"type": "ManaSpecType_Predictive"}]}]},
+                        {
+                            "mana": [
+                                {"color": "ManaColor_Red", "specs": [{"type": "ManaSpecType_Predictive"}]}
+                            ]
+                        },
+                        {
+                            "mana": [
+                                {"color": "ManaColor_Green", "specs": [{"type": "ManaSpecType_Predictive"}]}
+                            ]
+                        },
                     ],
                 },
                 {
@@ -72,7 +80,11 @@ def test_log_capture_lists_each_source_its_colors_and_treasures():
                     "instanceId": 578,
                     "abilityGrpId": 183,
                     "manaPaymentOptions": [
-                        {"mana": [{"color": "ManaColor_White", "specs": [{"type": "ManaSpecType_FromTreasure"}]}]}
+                        {
+                            "mana": [
+                                {"color": "ManaColor_White", "specs": [{"type": "ManaSpecType_FromTreasure"}]}
+                            ]
+                        }
                     ],
                 },
             ]
@@ -92,8 +104,16 @@ def test_log_capture_lists_each_source_its_colors_and_treasures():
 def test_mac_adapter_submits_a_copy_holding_only_the_chosen_color():
     from arenamcp.mac_bridge_adapter import MESSAGING, MacBridgeAdapter
 
-    red = {"$c": "ManaPaymentOption", "$h": 31, "mana_": {"$items": [{"color_": {"e": "ManaColor_Red", "v": 4}}]}}
-    green = {"$c": "ManaPaymentOption", "$h": 32, "mana_": {"$items": [{"color_": {"e": "ManaColor_Green", "v": 5}}]}}
+    red = {
+        "$c": "ManaPaymentOption",
+        "$h": 31,
+        "mana_": {"$items": [{"color_": {"e": "ManaColor_Red", "v": 4}}]},
+    }
+    green = {
+        "$c": "ManaPaymentOption",
+        "$h": 32,
+        "mana_": {"$items": [{"color_": {"e": "ManaColor_Green", "v": 5}}]},
+    }
     action = {
         "$c": "Wotc.Mtgo.Gre.External.Messaging.Action",
         "$h": 20,
@@ -116,7 +136,12 @@ def test_mac_adapter_submits_a_copy_holding_only_the_chosen_color():
 
     adapter = MacBridgeAdapter(send, "il2cpp-macos")
     reply = adapter.handle(
-        {"action": "submit_payment_action", "instance_id": 536, "ability_grp_id": 1131, "color": "ManaColor_Green"}
+        {
+            "action": "submit_payment_action",
+            "instance_id": 536,
+            "ability_grp_id": 1131,
+            "color": "ManaColor_Green",
+        }
     )
     assert reply == {"ok": True, "submitted_type": "PaymentAction", "instance_id": 536}
     ops = sent[-1]["ops"]

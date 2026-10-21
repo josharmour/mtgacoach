@@ -74,7 +74,9 @@ _RECURSION = re.compile(
 # the model's picks were replaced with no targets, and the BepInEx bridge (which
 # cannot submit an empty selection) went MANUAL REQUIRED. "Exile target card
 # from a graveyard" (graveyard hate) stays harmful.
-_OWN_YARD_EXILE = re.compile(rf"\bexile (?:{_QUANTITY})?target [^.]*?\bcards?\b[^.]*?\bfrom (?:your|my) graveyard\b")
+_OWN_YARD_EXILE = re.compile(
+    rf"\bexile (?:{_QUANTITY})?target [^.]*?\bcards?\b[^.]*?\bfrom (?:your|my) graveyard\b"
+)
 _ATTACH_KEYWORD = re.compile(r"^\s*(?:equip|reconfigure)\b[^\n]*$", re.IGNORECASE)
 
 

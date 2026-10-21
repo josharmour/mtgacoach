@@ -38,6 +38,7 @@ def _make_observer() -> Observer:
             logger.warning("kqueue observer unavailable (%s); using the default observer", error)
     return Observer()
 
+
 MATCH_START_TOKENS = (
     "MatchCreated",
     "MatchGameRoomStateChangedEvent",

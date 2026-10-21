@@ -155,10 +155,7 @@ def test_turn_plan_filters_non_user_visible_steps():
 
 
 def test_turn_plan_tolerates_fences_and_trailing_commas():
-    fenced = (
-        '```json\n{"turn_plan": {"steps": '
-        '[{"action_type": "play_land", "card_name": "Forest"},]}}\n```'
-    )
+    fenced = '```json\n{"turn_plan": {"steps": [{"action_type": "play_land", "card_name": "Forest"},]}}\n```'
     plan = _parse(fenced)
     assert plan is not None
     assert [(s.action_type, s.card_name) for s in plan.steps] == [("play_land", "Forest")]

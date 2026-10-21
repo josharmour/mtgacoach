@@ -742,7 +742,9 @@ def test_at_their_end_step_a_payable_cast_the_release_does_not_take_gets_the_las
     board = _strike_board(
         stack=[], active_player=THEM, priority_player=ME, phase="Phase_Ending", step="Step_End"
     )
-    board["hand"] = [_card(281, "Lightning Strike", ME, oracle_text="Lightning Strike deals 3 damage to target creature.")]
+    board["hand"] = [
+        _card(281, "Lightning Strike", ME, oracle_text="Lightning Strike deals 3 damage to target creature.")
+    ]
     model = _Model(_reply("pass", "Nothing to kill."))
     planner = _planner(model)
     menu = _menu(_cast("idx:0", board["hand"][0]))

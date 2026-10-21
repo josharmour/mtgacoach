@@ -19,7 +19,9 @@ def test_bridge_shows_pending_needs_a_connected_bridge_with_a_request():
     assert not bridge_shows_pending(dict(BUSY, _bridge_request_type="ActionsAvailable"))
     assert bridge_shows_pending(dict(BUSY, _bridge_connected=True, _bridge_request_type="ActionsAvailable"))
     assert bridge_shows_pending(dict(BUSY, _bridge_connected=True, _bridge_trigger={"has_pending": True}))
-    assert not bridge_shows_pending(dict(BUSY, _bridge_connected=True, _bridge_trigger={"has_pending": False}))
+    assert not bridge_shows_pending(
+        dict(BUSY, _bridge_connected=True, _bridge_trigger={"has_pending": False})
+    )
 
 
 def test_engine_busy_without_a_live_request_still_waits():
@@ -33,7 +35,9 @@ def test_engine_busy_with_a_live_bridge_request_plans_anyway():
     reached = []
     engine._detect_manual_play = MagicMock(side_effect=lambda state: reached.append(True) or True)
     state = dict(BUSY, _bridge_connected=True, _bridge_request_type="ActionsAvailable")
-    assert engine.process_trigger(state, "decision_required") is False  # stood down by the stub, past the gate
+    assert (
+        engine.process_trigger(state, "decision_required") is False
+    )  # stood down by the stub, past the gate
     assert reached == [True]
 
 

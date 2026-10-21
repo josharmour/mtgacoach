@@ -41,7 +41,13 @@ SLICKSHOT = (
     "rare",
     "Flying, haste\nWhenever you cast a noncreature spell, this creature gets +2/+0 until end of turn.",
 )
-CLAW = ("Hired Claw", "Creature — Lizard Mercenary", "{R}", "rare", "Whenever you attack with one or more Lizards…")
+CLAW = (
+    "Hired Claw",
+    "Creature — Lizard Mercenary",
+    "{R}",
+    "rare",
+    "Whenever you attack with one or more Lizards…",
+)
 EFFIGY = (
     "Fleeting Effigy",
     "Creature — Elemental",
@@ -117,7 +123,9 @@ def _bottom_decision(state):
         request_id=(6, 21),
         request_type="Group",
         options=tuple(
-            DecisionOption(f"grp:{c['instance_id']}", f"Bottom {c['name']}", meta={"instance_id": c["instance_id"]})
+            DecisionOption(
+                f"grp:{c['instance_id']}", f"Bottom {c['name']}", meta={"instance_id": c["instance_id"]}
+            )
             for c in state["hand"]
         ),
         min_select=1,

@@ -241,18 +241,27 @@ def describe_access(
     st = status.status if status else SubscriptionStatus.UNKNOWN
     kind = status.kind if status else ""
     is_trial = kind == "trial" or st == SubscriptionStatus.TRIAL or (not kind and bool(trial_expires_at))
-    expires = _to_epoch(status.expires_at if status and status.expires_at else None) or _to_epoch(trial_expires_at)
+    expires = _to_epoch(status.expires_at if status and status.expires_at else None) or _to_epoch(
+        trial_expires_at
+    )
 
     if is_trial:
         if st in (SubscriptionStatus.EXPIRED, SubscriptionStatus.INVALID) or (expires and expires <= now):
-            return ("Trial ended — Subscribe", "bad",
-                    f"Your 7-day free trial has ended. Subscribe at {SUBSCRIBE_URL} and paste your key in Setup & Repair.",
-                    True)
+            return (
+                "Trial ended — Subscribe",
+                "bad",
+                f"Your 7-day free trial has ended. Subscribe at {SUBSCRIBE_URL} and paste your key in Setup & Repair.",
+                True,
+            )
         if expires:
             tone = "warn" if expires - now < 86400 else "good"
-            return (f"Trial · {_remaining(expires - now)}", tone,
-                    f"Free trial — ends {time.strftime('%b %d %H:%M', time.localtime(expires))}. "
-                    f"Click to subscribe on Patreon.", False)
+            return (
+                f"Trial · {_remaining(expires - now)}",
+                tone,
+                f"Free trial — ends {time.strftime('%b %d %H:%M', time.localtime(expires))}. "
+                f"Click to subscribe on Patreon.",
+                False,
+            )
         return "Trial", "good", "Free trial. Click to subscribe on Patreon.", False
     if st == SubscriptionStatus.ACTIVE:
         who = f" — {status.name}" if status and status.name else ""
@@ -261,8 +270,16 @@ def describe_access(
         return "Subscription expired", "bad", status.message or f"Renew at {SUBSCRIBE_URL}", True
     if st == SubscriptionStatus.INVALID:
         return "Key invalid", "bad", "This license key isn't recognised. Fix it in Setup & Repair.", True
-    return "Status unknown", "muted", (status.message if status and status.message else
-                                       "Couldn't reach mtgacoach.com to check your subscription."), False
+    return (
+        "Status unknown",
+        "muted",
+        (
+            status.message
+            if status and status.message
+            else "Couldn't reach mtgacoach.com to check your subscription."
+        ),
+        False,
+    )
 
 
 def _load_cache(license_key: str, ignore_ttl: bool = False) -> SubscriptionStatus | None:

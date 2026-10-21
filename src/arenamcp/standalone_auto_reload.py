@@ -386,7 +386,6 @@ class _AutoReloadMixin:
             return False
         return not self._auto_reload_between_matches(state)
 
-
     def _auto_reload_work_holds(self, state: dict) -> bool:
         """A change found between matches holds navigation while the match's records are written.
 

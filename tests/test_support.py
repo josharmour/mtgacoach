@@ -44,7 +44,10 @@ def test_disabled_email_and_patreon_share_no_draft(monkeypatch, browser_ok):
     opened = []
     monkeypatch.setattr(support, "SUPPORT_EMAIL", "")
     monkeypatch.setenv("API_KEY", "secret-sentinel")
-    monkeypatch.setattr(support.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()) or browser_ok)
+    monkeypatch.setattr(
+        support.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()) or browser_ok
+    )
+
     def inspect(dialog):
         dialog.show()
         app.processEvents()
@@ -64,10 +67,12 @@ def test_disabled_email_and_patreon_share_no_draft(monkeypatch, browser_ok):
         assert opened == ["https://www.patreon.com/c/mtgacoach"]
         assert app.clipboard().text() == "clipboard-sentinel"
         from PySide6.QtWidgets import QLabel
+
         status = " ".join(label.text() for label in dialog.findChildren(QLabel))
         assert "sent successfully" not in status.lower()
         assert "paste and send" in status if browser_ok else "in your browser" in status
         dialog.close()
         return 0
+
     monkeypatch.setattr(QDialog, "exec", inspect)
     support.contact_josh()

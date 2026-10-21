@@ -11,7 +11,13 @@ from __future__ import annotations
 
 from arenamcp.gre_bridge import GREBridge
 
-PLUGIN_PAYCOSTS = {"ok": True, "has_pending": True, "request_type": "PayCosts", "request_class": "PayCostsRequest", "actions": []}
+PLUGIN_PAYCOSTS = {
+    "ok": True,
+    "has_pending": True,
+    "request_type": "PayCosts",
+    "request_class": "PayCostsRequest",
+    "actions": [],
+}
 SHAPED = {
     "ok": True,
     "has_pending": True,

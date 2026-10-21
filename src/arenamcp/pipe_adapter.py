@@ -666,7 +666,9 @@ class PipeAdapter:
             elif action == "set_draft_research_online":
                 enabled = cmd.get("enabled") is True
                 coach.settings.set("draft_research_online", enabled)
-                self.log(f"Online draft research {'on' if enabled else 'off'} (applies to the next set strategy built)")
+                self.log(
+                    f"Online draft research {'on' if enabled else 'off'} (applies to the next set strategy built)"
+                )
             elif action == "set_guard_mode":
                 from arenamcp.guard_settings import (
                     GUARD_ENV,
@@ -1002,7 +1004,9 @@ class PipeAdapter:
         runner = getattr(coach, "analyze_deck_async", None)
         deck_id = str(cmd.get("deck_id") or "")
         if not callable(runner) or not deck_id:
-            self.emit_deck_analysis({"deck_id": deck_id, "status": "error", "error": "Deck analysis unavailable"})
+            self.emit_deck_analysis(
+                {"deck_id": deck_id, "status": "error", "error": "Deck analysis unavailable"}
+            )
             return
         runner(deck_id, refresh=bool(cmd.get("refresh")))
 

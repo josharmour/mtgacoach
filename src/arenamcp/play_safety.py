@@ -1177,9 +1177,7 @@ def named_burn_damage(reasoning: str, state: dict, played: dict) -> int:
         return 0
     own_list = words(played.get("name"))
     own_words = set(own_list)
-    own_stems = "|".join(
-        re.escape(w) + "s?" for w in sorted(own_words, key=len, reverse=True) if len(w) >= 4
-    )
+    own_stems = "|".join(re.escape(w) + "s?" for w in sorted(own_words, key=len, reverse=True) if len(w) >= 4)
     same_card_multi = bool(
         own_stems
         and re.search(
@@ -1193,9 +1191,7 @@ def named_burn_damage(reasoning: str, state: dict, played: dict) -> int:
         isinstance(s, dict) and set(words(s.get("name"))) == own_words for s in state.get("stack") or []
     )
     skip_unidentified_own = (
-        played.get("instance_id") is None
-        and not any(c is played for c in hand)
-        and not on_stack
+        played.get("instance_id") is None and not any(c is played for c in hand) and not on_stack
     )
     total = 0
     for card in hand:
@@ -1746,7 +1742,8 @@ def opponent_open_mana(state: dict) -> int | None:
     theirs = [
         card
         for card in state.get("battlefield") or []
-        if isinstance(card, dict) and (card.get("controller_seat_id") or card.get("owner_seat_id")) == opponent
+        if isinstance(card, dict)
+        and (card.get("controller_seat_id") or card.get("owner_seat_id")) == opponent
     ]
     if not any(
         "land" in str(card.get("type_line") or "").lower()
@@ -1819,7 +1816,9 @@ def evasive_power_next_turn(state: dict) -> tuple[int, list[str]]:
     def rules(card: dict) -> str:
         return re.sub(r"<[^>]*>", "", str(card.get("oracle_text") or "")).lower()
 
-    blockers = [c for c in creatures if controller(c) == local and not re.search(r"can(?:'|no)t block\b", rules(c))]
+    blockers = [
+        c for c in creatures if controller(c) == local and not re.search(r"can(?:'|no)t block\b", rules(c))
+    ]
     air = any(has_combat_keyword(c, "flying") or has_combat_keyword(c, "reach") for c in blockers)
     total, names = 0, []
     for card in creatures:
@@ -1828,9 +1827,15 @@ def evasive_power_next_turn(state: dict) -> tuple[int, list[str]]:
         power = card.get("power")
         if isinstance(power, bool) or not isinstance(power, int) or power <= 0:
             continue
-        if has_combat_keyword(card, "defender") or re.search(r"(?m)^(?:this creature )?can't attack\b", rules(card)):
+        if has_combat_keyword(card, "defender") or re.search(
+            r"(?m)^(?:this creature )?can't attack\b", rules(card)
+        ):
             continue
-        evasive = bool(card.get("cant_be_blocked")) or not blockers or (has_combat_keyword(card, "flying") and not air)
+        evasive = (
+            bool(card.get("cant_be_blocked"))
+            or not blockers
+            or (has_combat_keyword(card, "flying") and not air)
+        )
         if evasive:
             total += power
             names.append(str(card.get("name") or "a creature"))

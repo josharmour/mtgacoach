@@ -372,11 +372,16 @@ def test_a_dead_planned_attacker_reforms_the_plan_even_on_our_turn():
     sig = mgr._signature(after)
     assert mgr._should_reform(sig, our_turn=True, board=board_basis(after)) == "planned attacker gone"
     assert "planned attacker gone" in mgr._OUR_TURN_REASONS
-    assert mgr._should_reform(sig, our_turn=True, board=board_basis(_cindermaw_board(alive=True, turn=12))) == ""
+    assert (
+        mgr._should_reform(sig, our_turn=True, board=board_basis(_cindermaw_board(alive=True, turn=12))) == ""
+    )
 
 
 def test_the_decision_prompt_says_the_attacks_are_void():
     after = _cindermaw_board(alive=False, turn=12, active=US)
     block = compose_strategy_block(assess(after), _cindermaw_plan(), state=after)
     assert "Giant Cindermaw left the battlefield: its attacks are void" in block
-    assert "PLAN ATTACKER GONE: Giant Cindermaw (in the game plan's attacks) is no longer on our battlefield" in block
+    assert (
+        "PLAN ATTACKER GONE: Giant Cindermaw (in the game plan's attacks) is no longer on our battlefield"
+        in block
+    )

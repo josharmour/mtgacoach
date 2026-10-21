@@ -1257,11 +1257,8 @@ class AutoQueueNavigator:
                 return
             if action is None:
                 self._last_rejection = None
-                if (
-                    data.get("action") == "stop" or self._stage in {"blocked", "sideboard"}
-                ) and not (
-                    (self._queue_started or self._queue_confirmed)
-                    and self._stage != "sideboard"
+                if (data.get("action") == "stop" or self._stage in {"blocked", "sideboard"}) and not (
+                    (self._queue_started or self._queue_confirmed) and self._stage != "sideboard"
                 ):
                     expected = self._expected_queue
                     if not expected and self._stage in {"recent", "play", "deck"}:

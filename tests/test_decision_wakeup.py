@@ -20,6 +20,7 @@ from arenamcp.standalone import StandaloneCoach
 # --- watcher -----------------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="kqueue is the macOS observer")
 def test_macos_watches_player_log_with_kqueue(monkeypatch):
     from watchdog.observers.kqueue import KqueueObserver
 
@@ -151,7 +152,13 @@ class _Bridge:
 
 
 IDLE = {"ok": True, "has_pending": False}
-ATTACK = {"ok": True, "has_pending": True, "request_type": "DeclareAttackers", "game_state_id": 7, "msg_id": 3}
+ATTACK = {
+    "ok": True,
+    "has_pending": True,
+    "request_type": "DeclareAttackers",
+    "game_state_id": 7,
+    "msg_id": 3,
+}
 
 
 def test_a_changed_request_wakes_the_loop_and_tells_watchers_once():

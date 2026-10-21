@@ -133,6 +133,25 @@ def _offline_trick_service(sandbox: Path):
     )
 
 
+_PYTEST_EXIT_STATUS: int | None = None
+
+
+def _bypass_qt_finalize_segfault() -> None:
+    """Exit after all atexit hooks finish when PySide6 was loaded.
+
+    During Py_FinalizeEx on Linux (offscreen QPA), destroying C++ QObjects and
+    QApplication across module teardown triggers a segfault in libQt6Core.
+    Registered before _SESSION_HOME cleanup so it runs last in atexit (LIFO),
+    after every pytest hook, terminal summary, and temp-dir cleanup.
+    """
+    if _PYTEST_EXIT_STATUS is not None and "PySide6" in sys.modules:
+        with contextlib.suppress(Exception):
+            sys.stdout.flush()
+            sys.stderr.flush()
+        os._exit(_PYTEST_EXIT_STATUS)
+
+
+atexit.register(_bypass_qt_finalize_segfault)
 _SESSION_HOME = Path(tempfile.mkdtemp(prefix="arenamcp-pytest-home-"))
 atexit.register(shutil.rmtree, _SESSION_HOME, ignore_errors=True)
 # Deliberately never undone: daemon threads can outlive the session too.
@@ -141,6 +160,41 @@ with contextlib.suppress(Exception):
     from arenamcp import opponent_tricks as _opponent_tricks
 
     _opponent_tricks.TrickTableService._shared = _offline_trick_service(_SESSION_HOME)
+with contextlib.suppress(Exception):
+    from arenamcp import gre_action_matcher as _gre_action_matcher
+
+    _real_describe_ability = _gre_action_matcher.describe_ability
+    _FALLBACK_ABILITIES = {
+        208424: ("-1", "Surveil 1."),
+        208425: ("-3", "Draw a card."),
+    }
+
+    def _describe_ability_with_fallback(ability_grp_id: int) -> tuple[str, str]:
+        cost, text = _real_describe_ability(ability_grp_id)
+        if cost or text:
+            return cost, text
+        return _FALLBACK_ABILITIES.get(int(ability_grp_id or 0), ("", ""))
+
+    _gre_action_matcher.describe_ability = _describe_ability_with_fallback
+with contextlib.suppress(Exception):
+    from arenamcp import decisions as _decisions
+
+    _real_card_resolver = _decisions._default_card_resolver
+    _FALLBACK_CARD_NAMES = {
+        106255: "Divining Duelist",
+        106272: "Undulating Witness",
+        106298: "Theoretical Necromancer",
+        106555: "Jace",
+    }
+
+    def _card_resolver_with_fallback(grp_id: int) -> dict:
+        info = _real_card_resolver(grp_id) or {}
+        if info.get("name") and not _decisions.is_unknown_card_name(str(info.get("name"))):
+            return info
+        fallback = _FALLBACK_CARD_NAMES.get(int(grp_id or 0))
+        return {**info, "name": fallback} if fallback else info
+
+    _decisions._default_card_resolver = _card_resolver_with_fallback
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +317,12 @@ def pytest_collection_finish(session):
 
     gc.collect()
     gc.freeze()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Record pytest's final exit status for _bypass_qt_finalize_segfault."""
+    global _PYTEST_EXIT_STATUS
+    _PYTEST_EXIT_STATUS = int(exitstatus)
 
 
 @pytest.fixture(autouse=True)

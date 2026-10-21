@@ -1,10 +1,11 @@
 from pathlib import Path
+
 from arenamcp import game_plan
 from arenamcp.game_plan import GamePlanManager, _plan_object, save_unusable_answer
 
 
 def test_parse_game_plan_salvages_truncated_json_after_complete_turns():
-    raw = '''{
+    raw = """{
   "role": "aggressor",
   "role_reason": "we have two flyers and burn in hand",
   "turns": [
@@ -13,7 +14,7 @@ def test_parse_game_plan_salvages_truncated_json_after_complete_turns():
   ],
   "win_conditions": ["Burn opponent out after flyer chip damage"],
   "path": "Attack for 4 in the air on T5 and finish with Shock",
-  "assumptions": ["opponent has no lifegain'''
+  "assumptions": ["opponent has no lifegain"""
     obj = _plan_object(raw)
     assert obj is not None
     data, _ = obj
@@ -26,7 +27,7 @@ def test_parse_game_plan_salvages_truncated_json_after_complete_turns():
 
 
 def test_parse_game_plan_repairs_multiline_and_digit_leading_unquoted_list_item():
-    raw = '''{
+    raw = """{
   "role": "defender",
   "role_reason": "behind on board against two attackers",
   "turns": [
@@ -39,7 +40,7 @@ def test_parse_game_plan_repairs_multiline_and_digit_leading_unquoted_list_item(
     2 turns of breathing room after wiping the board
     to deploy Elspeth
   ]
-}'''
+}"""
     plan = GamePlanManager._parse(raw, turn_num=4)
     assert not plan.is_empty()
     assert plan.role == "defender"

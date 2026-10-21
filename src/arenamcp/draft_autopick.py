@@ -923,8 +923,11 @@ def rank_pack(
                         rare, why = scarcity(tags, base, hypothesis.plan, supply, castable_in, quality_of)
                         ledger = hypothesis.ledger
                         # Scarce or not, a role the deck has filled matters less.
-                        if "removal" in tags.roles and ledger.removal >= REMOVAL_ENOUGH or "removal" not in tags.roles and any(
-                            ledger.payoffs.get(e, 0) >= PAYOFF_ENOUGH for e in tags.engine_payoffs()
+                        if (
+                            "removal" in tags.roles
+                            and ledger.removal >= REMOVAL_ENOUGH
+                            or "removal" not in tags.roles
+                            and any(ledger.payoffs.get(e, 0) >= PAYOFF_ENOUGH for e in tags.engine_payoffs())
                         ):
                             rare *= 0.3
                         if support and "removal" not in tags.roles:

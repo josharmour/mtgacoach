@@ -63,7 +63,9 @@ def normalize_attack_declaration(
     names = [str(n) for n in names or [] if isinstance(n, str) and n.strip()]
     menu = _menu_attackers(legal_actions)
     if menu and len(names) == 1 and (shorthand := _ALL_ATTACK.match(names[0])):
-        excluded = [x.strip() for x in re.split(r",\s*|\s+and\s+", shorthand.group("rest") or "") if x.strip()]
+        excluded = [
+            x.strip() for x in re.split(r",\s*|\s+and\s+", shorthand.group("rest") or "") if x.strip()
+        ]
         ids = list(attacker_ids or [])
         keep = [
             re.sub(r"\s*#\d+\s*$", "", m) + f" [id:{ids[i]}]" if len(ids) == len(menu) else m
@@ -86,7 +88,11 @@ def normalize_attack_declaration(
         raw = {}
     targets: dict[str, str] = {}
     default = next(
-        (str(v) for k, v in raw.items() if str(k).strip().casefold() in _ALL_TARGET_KEYS and str(v or "").strip()),
+        (
+            str(v)
+            for k, v in raw.items()
+            if str(k).strip().casefold() in _ALL_TARGET_KEYS and str(v or "").strip()
+        ),
         "",
     )
     by_exact = {str(k).strip().casefold(): v for k, v in raw.items()}

@@ -24,11 +24,14 @@ def test_subscriber_badge_includes_name_in_tooltip():
     assert text == "★ Subscriber" and tone == "good" and "Josh Armour" in tip and not needs
 
 
-@pytest.mark.parametrize("left,expected,tone", [
-    (4 * 86400 + 6 * 3600 + 60, "Trial · 4d 6h left", "good"),
-    (5 * 3600 + 30 * 60, "Trial · 5h 30m left", "warn"),
-    (90, "Trial · 1m left", "warn"),
-])
+@pytest.mark.parametrize(
+    "left,expected,tone",
+    [
+        (4 * 86400 + 6 * 3600 + 60, "Trial · 4d 6h left", "good"),
+        (5 * 3600 + 30 * 60, "Trial · 5h 30m left", "warn"),
+        (90, "Trial · 1m left", "warn"),
+    ],
+)
 def test_trial_countdown_from_server_expiry(left, expected, tone):
     st = SubscriptionStatus("trial", kind="trial", expires_at=NOW + left)
     text, got_tone, _, needs = describe_access("sk-trial", st, now=NOW)
@@ -86,8 +89,9 @@ def test_check_targets_website_not_gateway(no_cache, monkeypatch):
 
 
 def test_expired_trial_402_keeps_server_message(no_cache, monkeypatch):
-    body = json.dumps({"status": "expired", "kind": "trial", "expires_at": NOW,
-                       "message": "Your 7-day trial has ended."}).encode()
+    body = json.dumps(
+        {"status": "expired", "kind": "trial", "expires_at": NOW, "message": "Your 7-day trial has ended."}
+    ).encode()
 
     def fake_urlopen(req, timeout=0):
         raise urllib.error.HTTPError(req.full_url, 402, "Payment Required", {}, io.BytesIO(body))

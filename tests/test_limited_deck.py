@@ -123,7 +123,11 @@ def test_deck_explanation_uses_selected_cards_and_states_a_real_weakness():
     ("plan", "spoken", "unspoken"),
     [
         # An accepted model strategy is spoken as the plan.
-        ("Green creature pressure with a low curve.", "Its plan: Green creature pressure with a low curve, ", None),
+        (
+            "Green creature pressure with a low curve.",
+            "Its plan: Green creature pressure with a low curve, ",
+            None,
+        ),
         # A long plan is cut to one clause so the summary stays two sentences.
         (
             "Fly over the top with drakes. Burn blockers early; bounce their best threat. Then race.",

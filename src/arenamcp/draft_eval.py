@@ -236,9 +236,7 @@ def get_card_type_score(type_line: str, oracle_text: str) -> tuple[float, str]:
     return (0.0, "")
 
 
-def check_synergy(
-    card: ScryfallCard, picked_cards: list[int], scryfall: ScryfallCache
-) -> tuple[float, str]:
+def check_synergy(card: ScryfallCard, picked_cards: list[int], scryfall: ScryfallCache) -> tuple[float, str]:
     """Check for synergies with picked cards.
 
     Scans ALL picked cards (not just recent) to detect:

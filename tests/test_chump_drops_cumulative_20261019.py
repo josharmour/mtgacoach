@@ -33,7 +33,12 @@ def _creature(iid, name, power, toughness, seat, attacking=False, keywords=()):
 def _board(life=14):
     return {
         "local_seat_id": ME,
-        "turn": {"turn_number": 9, "active_player": THEM, "phase": "Phase_Combat", "step": "Step_DeclareBlock"},
+        "turn": {
+            "turn_number": 9,
+            "active_player": THEM,
+            "phase": "Phase_Combat",
+            "step": "Step_DeclareBlock",
+        },
         "players": [
             {"seat_id": THEM, "life_total": 15, "is_local": False},
             {"seat_id": ME, "life_total": life, "is_local": True},

@@ -1198,7 +1198,9 @@ class StandaloneCoach(
                     or engine.is_window_given_up(judged)
                     or self._live_request_handed_to_user(resp)
                 )
-        step = watchdog.step(resp, last_answer_at=last_answer, clock_remaining_s=remaining, handed_to_user=handed)
+        step = watchdog.step(
+            resp, last_answer_at=last_answer, clock_remaining_s=remaining, handed_to_user=handed
+        )
         if step is None:
             return None
         if step.action == "replan":
@@ -1233,7 +1235,9 @@ class StandaloneCoach(
             if step is None:
                 return None
         clock = f" — about {step.remaining_s:.0f} seconds left" if step.remaining_s is not None else ""
-        text = f"MANUAL REQUIRED: answer {step.label} in Arena now{clock}. Autoplay has no safe choice for it."
+        text = (
+            f"MANUAL REQUIRED: answer {step.label} in Arena now{clock}. Autoplay has no safe choice for it."
+        )
         logger.warning(f"[WATCHDOG] {step.describe()} — {text}")
         with contextlib.suppress(Exception):
             self.ui.advice(text, "AUTOPILOT")

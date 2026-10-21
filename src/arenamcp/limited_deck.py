@@ -286,9 +286,15 @@ def _effective_cmc(card: dict, colors: tuple[str, ...] = ()) -> float:
 
 
 _TAP_FOR_MANA = re.compile(r"\{o?t\}:[^\n]*?\badd\b")
-_UNTAP_LANDS = re.compile(r"\buntap (?:up to )?(?:two|three|four|\d+) target lands\b|\buntap all lands you control\b")
-_LAND_TO_BATTLEFIELD = re.compile(r"\bsearch your library for [^.]*\bland cards?\b[^.]*\bonto the battlefield\b")
-_RESTRICTED_MANA = re.compile(r"\bthis mana can't be spent to cast spells from your hand\b|\bspend this mana only\b")
+_UNTAP_LANDS = re.compile(
+    r"\buntap (?:up to )?(?:two|three|four|\d+) target lands\b|\buntap all lands you control\b"
+)
+_LAND_TO_BATTLEFIELD = re.compile(
+    r"\bsearch your library for [^.]*\bland cards?\b[^.]*\bonto the battlefield\b"
+)
+_RESTRICTED_MANA = re.compile(
+    r"\bthis mana can't be spent to cast spells from your hand\b|\bspend this mana only\b"
+)
 
 
 def _ramp(card: dict) -> float:
@@ -555,7 +561,17 @@ def _build_for_colors(
         ramp, slots = _ramped_slots(chosen, colors)
         top_end = sum(_top_end(card, colors) for card in chosen)
 
-        def fit(card, bodies=bodies, early=early, expensive=expensive, chosen=tuple(chosen), legends=legends):
+        def fit(
+            card,
+            bodies=bodies,
+            early=early,
+            expensive=expensive,
+            chosen=tuple(chosen),
+            legends=legends,
+            ramp=ramp,
+            slots=slots,
+            top_end=top_end,
+        ):
             profile = rules_profile(card)
             supported = _top_end(card, colors) and top_end < slots
             cost = _deck_cost(card, colors, ramp, supported)

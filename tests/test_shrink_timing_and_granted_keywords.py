@@ -73,7 +73,11 @@ def test_gre_abilities_grant_combat_keywords():
             "cardTypes": ["CardType_Creature"],
             "power": {"value": 13},
             "toughness": {"value": 11},
-            "uniqueAbilities": [{"id": 160, "grpId": 13}, {"id": 177, "grpId": 8}, {"id": 178, "grpId": 189117}],
+            "uniqueAbilities": [
+                {"id": 160, "grpId": 13},
+                {"id": 177, "grpId": 8},
+                {"id": 178, "grpId": 189117},
+            ],
         }
     )
     assert state.game_objects[233].keywords == ["reach", "flying"]

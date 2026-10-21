@@ -164,7 +164,13 @@ def test_native_mac_adapter_plays_matches_and_bepinex_does_not():
     assert not bepinex.plays_matches
     assert not bepinex.handles({"action": "submit_action"})
     assert not bepinex.handles({"action": "ping"})
-    for action in ("get_screen", "set_limited_deck", "submit_limited_deck", "finish_sealed_open", "get_draft_state"):
+    for action in (
+        "get_screen",
+        "set_limited_deck",
+        "submit_limited_deck",
+        "finish_sealed_open",
+        "get_draft_state",
+    ):
         assert bepinex.handles({"action": action})
 
 

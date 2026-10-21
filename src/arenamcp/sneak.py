@@ -164,7 +164,12 @@ def sneak_casts(state: dict | None) -> list[SneakCast]:
             casts = commander.casts or 0
             found.append(
                 SneakCast(
-                    commander.card, commander.name, printed, with_tax(printed, casts), "command", 2 * casts,
+                    commander.card,
+                    commander.name,
+                    printed,
+                    with_tax(printed, casts),
+                    "command",
+                    2 * casts,
                     commander.cost,
                 )
             )

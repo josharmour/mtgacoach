@@ -309,7 +309,9 @@ class _GameStateAnnotationsMixin:
                     # Hatred). Its text says whether the token leaves at the next end step
                     # (ledger #185, token_lifetime.py); the ability object is gone soon after.
                     creator = (
-                        self.game_objects.get(_coerce_int(ann.get("affectorId", 0), 0)) if is_created else None
+                        self.game_objects.get(_coerce_int(ann.get("affectorId", 0), 0))
+                        if is_created
+                        else None
                     )
                     for obj_id in affected_ids:
                         obj = self.game_objects.get(obj_id)

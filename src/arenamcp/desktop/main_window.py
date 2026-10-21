@@ -231,6 +231,7 @@ class MainWindow(QMainWindow):
 
         # Help Menu
         from arenamcp.support import contact_josh
+
         help_menu = menu_bar.addMenu("Help")
         contact_act = help_menu.addAction("Contact Josh…")
         contact_act.triggered.connect(lambda: contact_josh(self))

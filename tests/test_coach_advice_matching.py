@@ -189,7 +189,11 @@ def _short_on_mana_state() -> dict[str, Any]:
         ],
         hand=[
             {"name": "Mountain", "type_line": "Basic Land — Mountain"},
-            {"name": "Eagle of the Great Shelf", "type_line": "Creature — Bird Soldier", "mana_cost": "{4}{W}"},
+            {
+                "name": "Eagle of the Great Shelf",
+                "type_line": "Creature — Bird Soldier",
+                "mana_cost": "{4}{W}",
+            },
         ],
     )
     mountain = {

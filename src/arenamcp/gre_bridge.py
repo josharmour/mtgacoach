@@ -328,7 +328,9 @@ class GREBridge:
 
                         self._mac_adapter = MacBridgeAdapter(self._send_command_raw, runtime)
                         if runtime == "bepinex":
-                            logger.info("GRE bridge: BepInEx client; limited-event commands run via reflection")
+                            logger.info(
+                                "GRE bridge: BepInEx client; limited-event commands run via reflection"
+                            )
                         else:
                             logger.info(f"GRE bridge: {runtime} client; plugin commands run via reflection")
                     return True
@@ -2931,9 +2933,8 @@ class BridgeDecisionPoller:
             self._request_listeners.append(listener)
 
         def unsubscribe() -> None:
-            with self._prefetch_lock:
-                with contextlib.suppress(ValueError):
-                    self._request_listeners.remove(listener)
+            with self._prefetch_lock, contextlib.suppress(ValueError):
+                self._request_listeners.remove(listener)
 
         return unsubscribe
 

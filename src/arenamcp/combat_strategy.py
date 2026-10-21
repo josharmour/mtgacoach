@@ -718,9 +718,7 @@ def _group_can_block(attacker: dict, group: list[dict]) -> bool:
     return all(_can_block(attacker, blocker) for blocker in group)
 
 
-def _modified_would_change_block(
-    attacker: dict, group: list[dict], battlefield: list[dict] | None
-) -> bool:
+def _modified_would_change_block(attacker: dict, group: list[dict], battlefield: list[dict] | None) -> bool:
     """True when an unmodified creature's conditional keywords would stop or survive this block."""
     oracle = str(attacker.get("oracle_text") or "")
     cond_kws = modified_conditional_keywords(oracle)
@@ -1856,9 +1854,7 @@ def free_attackers(
     our_life = int(local.get("life_total", 20))
     opp_life = int(opponent.get("life_total", 20))
     theirs = [
-        card
-        for card in battlefield
-        if _controller(card) == opponent.get("seat_id") and is_creature_now(card)
+        card for card in battlefield if _controller(card) == opponent.get("seat_id") and is_creature_now(card)
     ]
     blockers = _eligible_blockers(state, opponent.get("seat_id"))
     ours_home = [
@@ -2025,7 +2021,11 @@ def _their_next_attack(state: dict, theirs: list[dict], local_seat) -> tuple[lis
             combat_grow = engines.combat_targets(able)
             if combat_grow:
                 able = [
-                    {**c, "power": (_int(c.get("power")) or 0) + n, "toughness": (_int(c.get("toughness")) or 0) + n}
+                    {
+                        **c,
+                        "power": (_int(c.get("power")) or 0) + n,
+                        "toughness": (_int(c.get("toughness")) or 0) + n,
+                    }
                     if (n := combat_grow.get(_int(c.get("instance_id")) or 0, 0))
                     else c
                     for c in able
@@ -2221,9 +2221,7 @@ def _refused_chumps(
     return refused
 
 
-def guarded_block_plan(
-    attackers: list[dict], defenders: list[dict], life: int, *, max_options: int = 50_000
-):
+def guarded_block_plan(attackers: list[dict], defenders: list[dict], life: int, *, max_options: int = 50_000):
     """Our best blocks against ``attackers`` (a crackback forecast) without chumps the chump guard refuses.
 
     2026-10-19 T10 (match c36db3a3): the free-attack rule held Slickshot
@@ -2404,7 +2402,9 @@ def _incoming_attackers(
     if any(identity not in cards for identity in ids):
         return None
     ids -= phantom_attackers(state, ids)
-    return with_hit_bonus(pumped_attackers([cards[identity] for identity in sorted(ids)], state), state, local_seat)
+    return with_hit_bonus(
+        pumped_attackers([cards[identity] for identity in sorted(ids)], state), state, local_seat
+    )
 
 
 def phantom_attackers(state: dict, attacker_ids, raw_blockers: list | None = None) -> set[int]:
@@ -2743,7 +2743,9 @@ def wasteful_chump_blocks(
     wasteful: dict[int, str] = {}
     kept = dict(assignments)
     kept_through = through
-    for _saved_alone, _attacker_id, blockers, attacker, bodies in sorted(candidates, key=lambda c: (c[0], c[1])):
+    for _saved_alone, _attacker_id, blockers, attacker, bodies in sorted(
+        candidates, key=lambda c: (c[0], c[1])
+    ):
         without = {b: a for b, a in kept.items() if b not in blockers}
         through_without = _damage_through(attackers, without, cards, factors)
         life_without, life_with = life - through_without, life - kept_through

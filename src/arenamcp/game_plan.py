@@ -2782,9 +2782,7 @@ def plan_attackers_gone(
     return gone
 
 
-def plan_removal_target_predates_threat(
-    plan: GamePlan | None, board: dict | None, turn: int
-) -> bool:
+def plan_removal_target_predates_threat(plan: GamePlan | None, board: dict | None, turn: int) -> bool:
     """True when ``plan``'s step for ``turn`` names an opposing creature from ``plan.basis`` as a
     removal target and a new opposing threat has entered since (#134, match 16ed84d0 T7)."""
     if plan is None or plan.is_empty() or not isinstance(plan.basis, dict) or not board:
@@ -3253,8 +3251,7 @@ def _plan_object(text: str) -> tuple[dict, str] | None:
             break
     tails = [text[start:] for start in starts if _PLAN_START.match(text, start)]
     tails += [
-        text[match.start() :].replace('\\"', '"')
-        for match in _ESCAPED_PLAN_START.finditer(text, start)
+        text[match.start() :].replace('\\"', '"') for match in _ESCAPED_PLAN_START.finditer(text, start)
     ][:_MAX_JSON_STARTS]
     for tail in tails:
         found = _repaired_object(tail)
@@ -3270,9 +3267,7 @@ UNUSABLE_PLAN_KEEP = 20
 _UNUSABLE_PLAN_PREFIX = "game_plan_unusable_"
 
 
-def save_unusable_answer(
-    text: str, *, turn_num: int, effort: str, match_id: str = ""
-) -> Path | None:
+def save_unusable_answer(text: str, *, turn_num: int, effort: str, match_id: str = "") -> Path | None:
     """Write an unusable plan answer in full under ``UNUSABLE_PLAN_DIR``, keeping the newest 20.
 
     Returns the file, or None when it could not be written (never raises).
@@ -3552,11 +3547,13 @@ class GamePlanManager:
             source = self._turn_decisions_source
             decisions_cb = None
             if callable(source):
+
                 def decisions_cb(closed_turn: int) -> list[str]:
                     try:
                         return list(source(closed_turn, game_state) or [])
                     except TypeError:
                         return list(source(closed_turn) or [])
+
             self._ledger.turn_started(
                 turn,
                 ours=bool(getattr(assessment, "our_turn", self._our_turn(game_state))),
@@ -4107,7 +4104,9 @@ class GamePlanManager:
             return
         started = getattr(self, "_inflight_started_at", None)
         running = time.monotonic() - float(started) if started else 0.0
-        if (self._plan is None or self._keep_late_plan(game_state, turn)) and running <= self._FIRST_PLAN_PATIENCE_S:
+        if (
+            self._plan is None or self._keep_late_plan(game_state, turn)
+        ) and running <= self._FIRST_PLAN_PATIENCE_S:
             # 2026-10-10 Brawl, turn 20 after a restart: the first plan's call
             # (73k-character prompt) outlived the turn and was superseded, then
             # the next one too. With no plan at all (or after repeated late-game
@@ -4637,9 +4636,7 @@ class GamePlanManager:
             # at high effort on a 21k-token prompt. With no plan at all, a quick
             # low-effort plan comes first; the next reform (their turn, a role
             # flip, staleness) runs at high effort as usual.
-            effort = (
-                "low" if self._low_effort_reform(game_state, turn_num) else self._PLAN_REASONING_EFFORT
-            )
+            effort = "low" if self._low_effort_reform(game_state, turn_num) else self._PLAN_REASONING_EFFORT
             if effort == "low":
                 logger.info("Game plan: reform at low effort for speed")
             response = self._complete(GAME_PLAN_PROMPT, user_message, cancel=cancel, effort=effort)

@@ -158,9 +158,7 @@ def test_selection_validity_requires_one_per_group():
     assert decision.selection_is_valid([keep_creature, keep_land])
     # Both picks from one group leave the other (minSelect 1) unanswered.
     assert not decision.selection_is_valid([keep_creature])
-    assert not decision.selection_is_valid(
-        [f"sfg:0:{_CREATURE_IDS[0]}", f"sfg:0:{_CREATURE_IDS[1]}"]
-    )
+    assert not decision.selection_is_valid([f"sfg:0:{_CREATURE_IDS[0]}", f"sfg:0:{_CREATURE_IDS[1]}"])
     # Empty is illegal while any group's minSelect > 0.
     assert not decision.selection_is_valid([])
 
@@ -196,7 +194,7 @@ def test_safe_default_prefers_commander_then_power():
     ]
     decision = build_pending_decision(_edict_pending(), resolve_instance=_resolve_instance)
     choice = select_from_groups_safe_default(decision, state)
-    assert f"sfg:0:9002" in choice
+    assert "sfg:0:9002" in choice
 
 
 def test_safe_default_empty_only_when_every_group_min_is_zero():

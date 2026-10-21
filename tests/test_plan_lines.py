@@ -400,7 +400,14 @@ def test_the_plan_names_unmodelled_effects_with_the_search_s_own_check():
     # in test_line_search::test_unmodelled_effect_names_what_the_search_cannot_value.
     from arenamcp.line_search_moves import unmodelled_effect as canonical
 
-    for name in ("Elemental Surge", "Pacifism", "Seismic Jolt", "Beast Summons", "Archive Arbiter", "Splinter Twin"):
+    for name in (
+        "Elemental Surge",
+        "Pacifism",
+        "Seismic Jolt",
+        "Beast Summons",
+        "Archive Arbiter",
+        "Splinter Twin",
+    ):
         assert gp.unmodelled_effect(S.card(10, name, 1)) == canonical(S.card(10, name, 1))
 
 

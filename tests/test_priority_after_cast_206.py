@@ -71,7 +71,9 @@ def _engine(polls, planner_choices):
     bridge = MagicMock()
     bridge.connected = True
     queue = iter(polls)
-    bridge.get_pending_actions.side_effect = lambda: next(queue, polls[-1] if polls else {"has_pending": False})
+    bridge.get_pending_actions.side_effect = lambda: next(
+        queue, polls[-1] if polls else {"has_pending": False}
+    )
     engine._gre_bridge = bridge
     # Keep the post-cast poll tight so tests stay fast.
     engine._POST_CAST_PRIORITY_POLL_INTERVAL_S = 0.001
@@ -120,7 +122,11 @@ def test_post_cast_chain_is_bounded():
     engine._try_typed_decision_path = lambda *a, **k: calls.append(a) or True
 
     engine._surface_post_cast_priority(
-        decision, ["idx:0"], _cast_poll(), {}, "decision_required",
+        decision,
+        ["idx:0"],
+        _cast_poll(),
+        {},
+        "decision_required",
         depth=engine._MAX_POST_CAST_PRIORITY_HOPS,
     )
     # depth + 1 would exceed the limit: surfaced, but not re-entered.
@@ -185,9 +191,7 @@ def _blind_state(**overrides):
         # Leonardo sits on the stack: Arena accepted our cast and owes us a
         # priority window the bridge never reported.
         "stack": [{"instance_id": 900, "name": "Leonardo, Big Brother"}],
-        "timer_state": {
-            2: {"is_ticking": True, "time_remaining_ms": 40_000, "received_at": time.time()}
-        },
+        "timer_state": {2: {"is_ticking": True, "time_remaining_ms": 40_000, "received_at": time.time()}},
     }
     state.update(overrides)
     return state
@@ -221,8 +225,15 @@ def test_log_priority_request_synthesized_while_bridge_blind():
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"turn": {"turn_number": 7, "phase": "Phase_Upkeep", "active_player": 1,
-                  "priority_player": 1, "decision_player": 1}},
+        {
+            "turn": {
+                "turn_number": 7,
+                "phase": "Phase_Upkeep",
+                "active_player": 1,
+                "priority_player": 1,
+                "decision_player": 1,
+            }
+        },
         {"timer_state": {2: {"is_ticking": False, "time_remaining_ms": 40_000}}},
         {"stack": [], "pending_decision": None},
         {"players": [], "local_seat_id": None},

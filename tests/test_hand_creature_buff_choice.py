@@ -32,12 +32,20 @@ HAND = [
 
 def _decision(ids=(162, 200, 284, 298), label="Dina, Flesh Sower"):
     return PendingDecision(
-        (262, 375), "SelectN", tuple(DecisionOption(f"sel:{i}", f"Option {i}") for i in ids), source_label=label
+        (262, 375),
+        "SelectN",
+        tuple(DecisionOption(f"sel:{i}", f"Option {i}") for i in ids),
+        source_label=label,
     )
 
 
 def _state(hand=HAND):
-    dina = {"instance_id": 311, "name": "Dina, Flesh Sower", "oracle_text": DINA, "type_line": "Legendary Creature"}
+    dina = {
+        "instance_id": 311,
+        "name": "Dina, Flesh Sower",
+        "oracle_text": DINA,
+        "type_line": "Legendary Creature",
+    }
     return {"hand": list(hand), "graveyard": [dina], "battlefield": [], "local_seat_id": 2}
 
 

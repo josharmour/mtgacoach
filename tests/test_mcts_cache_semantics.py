@@ -69,7 +69,13 @@ def _clean_cache():
 
 
 def _spell(name: str, iid: int) -> dict[str, Any]:
-    return {"instance_id": iid, "name": name, "controller_seat_id": 2, "owner_seat_id": 2, "type_line": "Instant"}
+    return {
+        "instance_id": iid,
+        "name": name,
+        "controller_seat_id": 2,
+        "owner_seat_id": 2,
+        "type_line": "Instant",
+    }
 
 
 def _nothing(state: dict[str, Any]) -> None:

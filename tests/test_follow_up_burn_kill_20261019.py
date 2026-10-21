@@ -52,7 +52,9 @@ def _planner(reasoning: str):
 
 
 def _decision():
-    return SimpleNamespace(source_label="Iroh's Demonstration", options=[SimpleNamespace(option_id="tgt:401")])
+    return SimpleNamespace(
+        source_label="Iroh's Demonstration", options=[SimpleNamespace(option_id="tgt:401")]
+    )
 
 
 def test_the_named_follow_up_burn_makes_it_a_kill():
@@ -84,7 +86,9 @@ def test_a_named_card_that_is_not_burn_does_not_count():
         "oracle_text": "Haste. At the beginning of your end step, return this creature to its owner's hand.",
     }
     planner = _planner("4 damage now, then Fleeting Effigy attacks to finish the Elemental.")
-    assert planner._prefer_lethal_damage_target(_decision(), _state([effigy]), ["tgt:401"]) == [DECLINE_DECISION]
+    assert planner._prefer_lethal_damage_target(_decision(), _state([effigy]), ["tgt:401"]) == [
+        DECLINE_DECISION
+    ]
 
 
 def test_negated_kill_sentences_are_not_kill_claims():

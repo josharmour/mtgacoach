@@ -162,9 +162,21 @@ _ANTHEM = {
 @pytest.mark.parametrize(
     ("threat", "empty_hand", "line"),
     [
-        (_SHEOLDRED, False, "Sheoldred, the Apocalypse is the key threat. Best line: use Go for the Throat on it now"),
-        (_SHEOLDRED, True, "Sheoldred, the Apocalypse is the threat to plan around. You do not have clean instant"),
-        (_ANTHEM, True, "Glorious Anthem is the card to answer. Pumps their whole team. If you cannot remove it"),
+        (
+            _SHEOLDRED,
+            False,
+            "Sheoldred, the Apocalypse is the key threat. Best line: use Go for the Throat on it now",
+        ),
+        (
+            _SHEOLDRED,
+            True,
+            "Sheoldred, the Apocalypse is the threat to plan around. You do not have clean instant",
+        ),
+        (
+            _ANTHEM,
+            True,
+            "Glorious Anthem is the card to answer. Pumps their whole team. If you cannot remove it",
+        ),
     ],
     ids=["answer-in-hand", "creature-no-answer", "other-permanent"],
 )

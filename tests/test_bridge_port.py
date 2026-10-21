@@ -57,7 +57,9 @@ def test_a_port_held_by_another_process_is_warned_about_once(caplog):
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 1
         assert f"127.0.0.1:{port} is already in use" in warnings[0].getMessage()
-        assert not [r for r in caplog.records if r.levelno == logging.INFO and "connect error" in r.getMessage()]
+        assert not [
+            r for r in caplog.records if r.levelno == logging.INFO and "connect error" in r.getMessage()
+        ]
         assert bridge._server_socket is None
     finally:
         holder.close()

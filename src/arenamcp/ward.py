@@ -706,7 +706,8 @@ def tax_asker_fact(state: dict[str, Any]) -> str:
                     item
                     for item in reversed(theirs)
                     if not item.get("targeting")
-                    and _UNLESS_PAYS.search(str(item.get("oracle_text") or "")).group("verb").lower() == "counter"
+                    and _UNLESS_PAYS.search(str(item.get("oracle_text") or "")).group("verb").lower()
+                    == "counter"
                 ),
                 None,
             )

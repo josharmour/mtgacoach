@@ -139,7 +139,9 @@ def is_creature_modified(
     for att in attachments:
         if not isinstance(att, dict) or att.get("is_phased_out"):
             continue
-        types = f"{att.get('type_line') or ''} {att.get('card_types') or ''} {att.get('subtypes') or ''}".lower()
+        types = (
+            f"{att.get('type_line') or ''} {att.get('card_types') or ''} {att.get('subtypes') or ''}".lower()
+        )
         if "equipment" in types:
             return True
         if "aura" in types:
@@ -167,11 +169,11 @@ def unmet_modified_flag(
     cond_kws = modified_conditional_keywords(oracle)
     if not cond_kws and not has_modified_condition(oracle):
         return ""
-    if is_creature_modified(card, attached=attached, battlefield=battlefield, controller_seat=controller_seat):
+    if is_creature_modified(
+        card, attached=attached, battlefield=battlefield, controller_seat=controller_seat
+    ):
         return ""
-    active_kws = {str(k).lower() for k in (card.get("keywords") or ())} | set(
-        printed_combat_keywords(oracle)
-    )
+    active_kws = {str(k).lower() for k in (card.get("keywords") or ())} | set(printed_combat_keywords(oracle))
     missing = sorted(k.upper() for k in (cond_kws - active_kws))
     if missing:
         return f"NOT MODIFIED — NO {'/'.join(missing)}"

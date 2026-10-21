@@ -97,7 +97,9 @@ def test_a_restart_into_a_match_says_why_it_does_not_requeue(real_log, navigator
     runtime = Runtime()
     runtime._auto_queue_restart_pending = True
     with caplog.at_level(logging.INFO, logger="arenamcp.standalone_auto_queue"):
-        runtime._poll_auto_queue({"match_id": "73ccac27-ce9c-4a68-a258-263e00e0fcf9", "turn": {"turn_number": 1}})
+        runtime._poll_auto_queue(
+            {"match_id": "73ccac27-ce9c-4a68-a258-263e00e0fcf9", "turn": {"turn_number": 1}}
+        )
     navigator.note_match_end.assert_not_called()
     assert (
         "Auto queue after restart: match 73ccac27-ce9c-4a68-a258-263e00e0fcf9 is being played (turn 1); "

@@ -150,7 +150,10 @@ def test_the_pay_prompt_names_the_asker_and_the_answered_kicker():
     kicker_step = SimpleNamespace(
         request_type="CastingTimeOptions",
         source_label="Burst Lightning",
-        options=[SimpleNamespace(option_id="idx:0", label="Kicker"), SimpleNamespace(option_id="idx:1", label="Done")],
+        options=[
+            SimpleNamespace(option_id="idx:0", label="Kicker"),
+            SimpleNamespace(option_id="idx:1", label="Done"),
+        ],
     )
     planner._memory().record(state, kicker_step, ["idx:1"], "the base 2 is already lethal")
     assert planner.plan_pay_or_decline("Spell Pierce", PIERCE_TEXT, state) is True
@@ -168,7 +171,10 @@ def test_no_kicker_line_without_a_kicker_step_this_turn():
     modal = SimpleNamespace(
         request_type="CastingTimeOptions",
         source_label="Burst Lightning",
-        options=[SimpleNamespace(option_id="idx:0", label="Mode 0"), SimpleNamespace(option_id="idx:1", label="Done")],
+        options=[
+            SimpleNamespace(option_id="idx:0", label="Mode 0"),
+            SimpleNamespace(option_id="idx:1", label="Done"),
+        ],
     )
     planner._memory().record(state, modal, ["idx:0"], "")
     assert planner.plan_pay_or_decline("Burst Lightning", BURST_TEXT, state) is True

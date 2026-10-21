@@ -1036,7 +1036,9 @@ class TheirEngines:
             for b in bodies:
                 if not isinstance(b.get("power"), int):
                     continue
-                origin = b.get("_origin") or _int((b.get("_card") or b).get("instance_id")) or b.get("instance_id")
+                origin = (
+                    b.get("_origin") or _int((b.get("_card") or b).get("instance_id")) or b.get("instance_id")
+                )
                 if kind == "self":
                     if origin == source_id:
                         eligible.append(b)
@@ -1049,7 +1051,9 @@ class TheirEngines:
                 key=lambda b: (
                     bool(b.get("_can_attack", True)),
                     not bool(b.get("_sick", False)),
-                    bool(b.get("_unblockable") or b.get("cant_be_blocked") or has_combat_keyword(b, "flying")),
+                    bool(
+                        b.get("_unblockable") or b.get("cant_be_blocked") or has_combat_keyword(b, "flying")
+                    ),
                     has_combat_keyword(b, "double strike"),
                     has_combat_keyword(b, "trample") or has_combat_keyword(b, "menace"),
                     b.get("power") or 0,
@@ -1646,7 +1650,9 @@ def token_specs(
     return specs
 
 
-def named_token_specs(text: str, own_name: str = "") -> tuple[tuple[int, int, tuple[str, ...], str, str, bool], ...]:
+def named_token_specs(
+    text: str, own_name: str = ""
+) -> tuple[tuple[int, int, tuple[str, ...], str, str, bool], ...]:
     """Creature tokens whose count is the number of creatures we control with a name, read when
     the effect resolves: ((power, toughness, keywords, token name, counted name, other), ...).
 
@@ -1679,7 +1685,8 @@ def named_count(spec, bodies, itself: dict | None = None) -> int:
     count = sum(
         1
         for b in bodies
-        if str(b.get("name") or "").casefold() == wanted and not (other and itself is not None and b is itself)
+        if str(b.get("name") or "").casefold() == wanted
+        and not (other and itself is not None and b is itself)
     )
     return max(0, min(20, count))
 
@@ -2356,9 +2363,7 @@ class Moves:
         named = named_token_specs(outside, spell.name)
         # "Create X ... tokens, where X is the amount of life you gained this turn": per life.
         per_life = tuple(
-            token_specs(_life_scaled(outside, 1), life_gained=0) or ()
-            if life_scaled_tokens(outside)
-            else ()
+            token_specs(_life_scaled(outside, 1), life_gained=0) or () if life_scaled_tokens(outside) else ()
         )
         if per_life:
             per_life = tuple(s for s in per_life if s not in base_specs) or per_life
@@ -3559,7 +3564,9 @@ class Moves:
                 if swap is not None:  # a Sneak creature in for an unblocked attacker (#156)
                     gain, returned, entered = swap
                     damage += gain
-                    attackers = [a for a in attackers if a["instance_id"] != returned["instance_id"]] + [entered]
+                    attackers = [a for a in attackers if a["instance_id"] != returned["instance_id"]] + [
+                        entered
+                    ]
             # Lifelink on both sides lands with the combat damage: the net change decides lethal.
             mid.opp_life -= damage - healed
             mid.our_life += gained
@@ -3572,7 +3579,11 @@ class Moves:
         post_combat: tuple[str, ...] = ()
         # A creature cast before combat grows an attacker counting our creatures (Leonardo): it is
         # never "after combat" then (#157).
-        if attackers and not mid.attack_first and not any(a["instance_id"] in self._scale_base for a in attackers):
+        if (
+            attackers
+            and not mid.attack_first
+            and not any(a["instance_id"] in self._scale_base for a in attackers)
+        ):
             post_combat = tuple(
                 self.spells[var.spell].name for var, _target in mid.casts if self._attack_neutral(var)
             )

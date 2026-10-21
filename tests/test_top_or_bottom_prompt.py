@@ -31,7 +31,10 @@ def _decision(source: int, recipient: int, names: list[str]) -> PendingDecision:
     return PendingDecision(
         (307, 432),
         "OptionalAction",
-        (DecisionOption("optional:accept", "Accept", meta=meta), DecisionOption("optional:decline", "Decline")),
+        (
+            DecisionOption("optional:accept", "Accept", meta=meta),
+            DecisionOption("optional:decline", "Decline"),
+        ),
     )
 
 
@@ -54,7 +57,10 @@ def test_a_token_goes_to_the_bottom():
 
 
 def test_low_life_leaves_it_to_the_model():
-    assert top_or_bottom_choice(_decision(296, 251, ["Clash of Elements", "Garruk"]), _state(life=6)) == ("", "")
+    assert top_or_bottom_choice(_decision(296, 251, ["Clash of Elements", "Garruk"]), _state(life=6)) == (
+        "",
+        "",
+    )
 
 
 def test_cheap_permanent_is_not_worth_the_damage():

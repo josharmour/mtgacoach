@@ -8,9 +8,10 @@ autopilot's log catch-up gate waited for gameStateId 234 that the log never reac
 
 from unittest.mock import MagicMock
 
+from tests.fakes import make_engine
+
 from arenamcp.gamestate import GameState, create_game_state_handler
 from arenamcp.parser import LogParser
-from tests.fakes import make_engine
 
 OPTIONAL_ACTION_SUMMARY = """\
 [UnityCrossThreadLogger]10/20/2026 5:41:41 PM: Match to FMRW2YNB5NFRPBE7I5I7CQ2RYI: GreToClientEvent

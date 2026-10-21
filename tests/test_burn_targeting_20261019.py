@@ -110,7 +110,9 @@ def _targets(ids, source_label):
     return PendingDecision(
         request_id=(276, 376),
         request_type="SelectTargets",
-        options=tuple(DecisionOption(f"tgt:{iid}", f"Target #{iid}", meta={"instanceId": iid}) for iid in ids),
+        options=tuple(
+            DecisionOption(f"tgt:{iid}", f"Target #{iid}", meta={"instanceId": iid}) for iid in ids
+        ),
         min_select=1,
         max_select=1,
         can_cancel=True,
@@ -258,7 +260,9 @@ def test_hazard_on_a_one_toughness_creature_is_kept():
 
 def _strike_window(lands=3):
     marshal = _creature(300, "Dawnwing Marshal", OPP, 4, 4, "Flying\nLifelink")
-    strike = _spell(320, "Lightning Strike", "Instant", "{1}{R}", STRIKE.replace("cardname", "Lightning Strike"))
+    strike = _spell(
+        320, "Lightning Strike", "Instant", "{1}{R}", STRIKE.replace("cardname", "Lightning Strike")
+    )
     burst = _spell(321, "Burst Lightning", "Instant", "{R}", BURST)
     state = _state([marshal, *[_mountain(i) for i in range(1, lands + 1)]], hand=[strike, burst], opp_life=20)
     return state, _cast_menu((320, "Lightning Strike"), (321, "Burst Lightning"))
@@ -384,10 +388,14 @@ def test_the_board_math_cast_keeps_its_line_target(monkeypatch):
 
 
 def _shock_targets_state(*, berserker_toughness=4, **berserker):
-    berserker_card = _creature(324, "Battlesong Berserker", OPP, 3, berserker_toughness, "Menace", **berserker)
+    berserker_card = _creature(
+        324, "Battlesong Berserker", OPP, 3, berserker_toughness, "Menace", **berserker
+    )
     effigy = _creature(320, "Fleeting Effigy", LOCAL, 2, 2, "Haste")
     shock = _spell(329, "Shock", "Instant", "{R}", SHOCK)
-    strike = _spell(330, "Lightning Strike", "Instant", "{1}{R}", STRIKE.replace("cardname", "Lightning Strike"))
+    strike = _spell(
+        330, "Lightning Strike", "Instant", "{1}{R}", STRIKE.replace("cardname", "Lightning Strike")
+    )
     state = _state(
         [berserker_card, effigy, _mountain(279, True), _mountain(286, True), _mountain(295)],
         hand=[strike],
@@ -443,7 +451,9 @@ def test_the_target_prompt_carries_the_cast_intent_and_the_line(monkeypatch):
     before.pop("_bridge_request_payload")
     _line_says(monkeypatch, "Shock", "opponent")
     planner = _planner(
-        json.dumps({"option_ids": ["idx:0"], "reasoning": "Shock to face advances the burn race; Effigy attacks."})
+        json.dumps(
+            {"option_ids": ["idx:0"], "reasoning": "Shock to face advances the burn race; Effigy attacks."}
+        )
     )
     # Since ledger #80 this face-only Shock is held in our main phase for the opponent's
     # end step (tests/test_decision_layer_20261019.py). This test is about the cast
@@ -457,4 +467,3 @@ def test_the_target_prompt_carries_the_cast_intent_and_the_line(monkeypatch):
     assert "The best searched line aims Shock at the opponent's face." in prompt
     assert "2 damage kills none of their creatures" in prompt
     assert prompt.index("CAST INTENT") < prompt.index("OPTIONS:")
-

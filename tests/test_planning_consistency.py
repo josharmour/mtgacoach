@@ -169,7 +169,9 @@ def test_ability_id_collision_does_not_render_unrelated_card(monkeypatch):
     monkeypatch.setattr(server, "enrich_with_oracle_text", infos.get)
     # Abilities are read in the ability table (ledger #88); here its text is unknown, so the
     # source card's text stands in (hermetic: the real Arena DB has ability 76611, "Crew 4").
-    monkeypatch.setattr(server, "_get_card_db", lambda: SimpleNamespace(get_ability_text=lambda _grp_id: None))
+    monkeypatch.setattr(
+        server, "_get_card_db", lambda: SimpleNamespace(get_ability_text=lambda _grp_id: None)
+    )
     state = GameState()
     parent = GameObject(instance_id=652, grp_id=123, zone_id=1, owner_seat_id=1)
     ability = GameObject(

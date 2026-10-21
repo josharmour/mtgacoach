@@ -75,7 +75,8 @@ class AccessBadge(QLabel):
     def _render(self) -> None:
         settings = get_settings()
         text, tone, tip, needs = describe_access(
-            (settings.get("license_key") or "").strip(), self._status, settings.get("trial_expires_at"))
+            (settings.get("license_key") or "").strip(), self._status, settings.get("trial_expires_at")
+        )
         self._needs_subscription = needs
         self.setText(theme.span(text, tone, weight=600))
         self.setToolTip(tip)

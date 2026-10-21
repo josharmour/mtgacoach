@@ -211,7 +211,12 @@ def parse_player_log(text: str) -> dict[str, DeckRecord]:
                 continue
             summary = course.get("CourseDeckSummary") or {}
             deck = course.get("CourseDeck") or {}
-            if isinstance(summary, dict) and summary.get("DeckId") and isinstance(deck, dict) and deck.get("MainDeck"):
+            if (
+                isinstance(summary, dict)
+                and summary.get("DeckId")
+                and isinstance(deck, dict)
+                and deck.get("MainDeck")
+            ):
                 record = record_from_deck(summary, deck, "log")
                 if record is not None:
                     record.snapshot = True

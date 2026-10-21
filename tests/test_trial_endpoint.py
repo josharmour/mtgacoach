@@ -146,7 +146,6 @@ def test_trials_are_per_machine(env):
     assert len(fake.minted) == 2
 
 
-
 # ── Signup abuse limits (website/abuse_protection.py) ──
 
 

@@ -64,9 +64,17 @@ def test_the_id_is_the_one_this_cast_aims_at(line):
     # A landcycle, then Shock at the undamaged Elemental, then Iroh's at the damaged one.
     line(
         Step(
-            k=0, turn=16, label="T", casts=("Shock", "Iroh's Demonstration"), cycles=("Ash Barrens",),
+            k=0,
+            turn=16,
+            label="T",
+            casts=("Shock", "Iroh's Demonstration"),
+            cycles=("Ash Barrens",),
             targets=(("Shock", "Hearth Elemental"), ("Iroh's Demonstration", "Hearth Elemental")),
-            plays=(None, ((SimpleNamespace(kind="cycle"), None), (_cast(), UNDAMAGED), (_cast(), DAMAGED)), ()),
+            plays=(
+                None,
+                ((SimpleNamespace(kind="cycle"), None), (_cast(), UNDAMAGED), (_cast(), DAMAGED)),
+                (),
+            ),
         )  # fmt: skip
     )
     state = _state(DAMAGED, UNDAMAGED)
@@ -78,7 +86,10 @@ def test_without_a_per_cast_record_the_name_decides(line):
     # Plays that do not line up with the casts: the first body of the name, as before.
     line(
         Step(
-            k=0, turn=16, label="T", casts=("Iroh's Demonstration",),
+            k=0,
+            turn=16,
+            label="T",
+            casts=("Iroh's Demonstration",),
             targets=(("Iroh's Demonstration", "Hearth Elemental"),),
             plays=(None, ((_cast(), UNDAMAGED), (_cast(), DAMAGED)), ()),
         )  # fmt: skip
@@ -131,8 +142,12 @@ def test_the_name_decides_without_twins_or_without_the_id():
     assert _reasoning_names_target(reasoning, "Hearth Elemental", target_id=0, game_state=state)
     # Twins that look alike are told apart only by id.
     alike = _state(DAMAGED, dict(DAMAGED, instance_id=372))
-    assert not _reasoning_names_target("the damaged Hearth Elemental", "Hearth Elemental", target_id=361, game_state=alike)
-    assert _reasoning_names_target("Hearth Elemental [id:361]", "Hearth Elemental", target_id=361, game_state=alike)
+    assert not _reasoning_names_target(
+        "the damaged Hearth Elemental", "Hearth Elemental", target_id=361, game_state=alike
+    )
+    assert _reasoning_names_target(
+        "Hearth Elemental [id:361]", "Hearth Elemental", target_id=361, game_state=alike
+    )
 
 
 # --- board_math_agreement --------------------------------------------------------------------------
@@ -149,4 +164,7 @@ def test_the_low_answer_at_the_wrong_twin_is_not_the_board_math_play(monkeypatch
     decision = SimpleNamespace(request_type="ActionsAvailable", find=lambda oid: SimpleNamespace(meta={}))
     state = _state(DAMAGED, UNDAMAGED)
     assert board_math_agreement(decision, state, ["idx:0"], LIVE_LOW_ANSWER) == ""
-    assert board_math_agreement(decision, state, ["idx:0"], "Iroh's finishes the damaged Hearth Elemental.") == "line"
+    assert (
+        board_math_agreement(decision, state, ["idx:0"], "Iroh's finishes the damaged Hearth Elemental.")
+        == "line"
+    )

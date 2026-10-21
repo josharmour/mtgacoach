@@ -456,7 +456,9 @@ def test_second_look_raises_when_repicked_choice_reasoning_still_makes_refuted_c
             {"reasoning": "Cast Fleeting Effigy."},
             ["idx:0"],
             concerns_for=lambda _c, _d: [("attack_only", "Fleeting Effigy would not attack.")],
-            ask=lambda *_a, **_kw: '{"reasoning": "Casting Fleeting Effigy triggers Slickshot Show-Off prowess."}',
+            ask=lambda *_a, **_kw: (
+                '{"reasoning": "Casting Fleeting Effigy triggers Slickshot Show-Off prowess."}'
+            ),
             parse=lambda _raw: (
                 {"reasoning": "Casting Fleeting Effigy triggers Slickshot Show-Off prowess."},
                 ["idx:0"],
@@ -543,9 +545,7 @@ def test_engine_creature_counts_as_threat_and_replans_when_removal_target_predat
     )
     old_basis = board_basis(before)
     new_basis = board_basis(after)
-    assert board_changes(old_basis, new_basis, threats_only=True) == [
-        "Biotech Specialist 1/3 entered"
-    ]
+    assert board_changes(old_basis, new_basis, threats_only=True) == ["Biotech Specialist 1/3 entered"]
     plan = GamePlan(
         win_conditions=["Burn"],
         path="Kill Frodo, Determined Hero with Iroh's Demonstration",
@@ -645,7 +645,9 @@ def test_one_supersede_with_a_sparse_late_hand_keeps_the_late_plan():
     assert not mgr._keep_late_plan(sparse_t10, 10)
     mgr._consecutive_supersedes = 1
     assert mgr._keep_late_plan(sparse_t10, 10)
-    assert not mgr._keep_late_plan({"turn": {"turn_number": 5}, "hand": []}, 5)  # early game: one is not enough
+    assert not mgr._keep_late_plan(
+        {"turn": {"turn_number": 5}, "hand": []}, 5
+    )  # early game: one is not enough
     mgr._consecutive_supersedes = 2
     assert mgr._keep_late_plan({"turn": {"turn_number": 5}, "hand": []}, 5)
 
@@ -694,21 +696,27 @@ def test_named_burn_damage_counts_second_copy_when_reasoning_names_both_bursts()
     board["battlefield"] += [mountain(1101), mountain(1102)]  # {R}{R}: both Bursts are payable
     # Naming "both Bursts" / "two Bursts" / "second Burst" counts the second copy in hand (2 damage).
     assert (
-        named_burn_damage("Cast Burst Lightning; kills Dazzling Angel (2/3) — needs both Bursts.", board, burst1)
+        named_burn_damage(
+            "Cast Burst Lightning; kills Dazzling Angel (2/3) — needs both Bursts.", board, burst1
+        )
         == 2
     )
-    assert (
-        named_burn_damage("Two Bursts kill Dazzling Angel (2/3).", board, burst1)
-        == 2
-    )
+    assert named_burn_damage("Two Bursts kill Dazzling Angel (2/3).", board, burst1) == 2
     # Ordinary single-copy reasoning does not count the second copy in hand.
     assert (
-        named_burn_damage("Cast Burst Lightning to kill Dazzling Angel (2/3) and trigger both prowess creatures.", board, burst1)
+        named_burn_damage(
+            "Cast Burst Lightning to kill Dazzling Angel (2/3) and trigger both prowess creatures.",
+            board,
+            burst1,
+        )
         == 0
     )
     # Review 2026-10-20: the card's name written twice is no second copy, and neither is a copy
     # the mana can't pay for.
-    assert named_burn_damage("Burst Lightning on the Angel; Burst Lightning is our best play.", board, burst1) == 0
+    assert (
+        named_burn_damage("Burst Lightning on the Angel; Burst Lightning is our best play.", board, burst1)
+        == 0
+    )
     board["battlefield"] = [c for c in board["battlefield"] if c["instance_id"] != 1102]
     assert named_burn_damage("Needs both Bursts for Dazzling Angel (2/3).", board, burst1) == 0
 
@@ -846,8 +854,14 @@ def test_their_untargeted_trigger_that_may_hit_their_own_creature_still_holds_th
     assert caps and caps[0][0] == 0.7
     # With a creature of ours on the battlefield it can (and will) aim at ours: no cap.
     view["battlefield"].append(
-        {"instance_id": 60, "name": "Our Bear", "controller_seat_id": 1, "card_types": ["CardType_Creature"],
-         "power": 2, "toughness": 2}
+        {
+            "instance_id": 60,
+            "name": "Our Bear",
+            "controller_seat_id": 1,
+            "card_types": ["CardType_Creature"],
+            "power": 2,
+            "toughness": 2,
+        }
     )
     assert _stack_caps(view, local=1, opponent=2) == []
     # "any target" can always aim at us.
@@ -910,13 +924,19 @@ def test_spoken_concede_reason_uses_chump_margin_and_deduplicates_outs():
 
     # Duplicate copies of Hare Apparent in hand produce one "Hare Apparent (castable now)" entry.
     hares = [
-        spell(30 + i, "Hare Apparent", "Creature — Rabbit Noble", "{1}{W}", "Create tokens.", power=2, toughness=2)
+        spell(
+            30 + i,
+            "Hare Apparent",
+            "Creature — Rabbit Noble",
+            "{1}{W}",
+            "Create tokens.",
+            power=2,
+            toughness=2,
+        )
         for i in range(4)
     ]
     plains = [basic(40 + i, 1, "Plains") for i in range(3)]
-    est_outs = estimate_loss(
-        board(theirs + ours + plains, life=4, active=1, phase="Phase_Main1", hand=hares)
-    )
+    est_outs = estimate_loss(board(theirs + ours + plains, life=4, active=1, phase="Phase_Main1", hand=hares))
     assert est_outs.facts["outs"] == ["Hare Apparent (castable now)"]
 
 
@@ -929,9 +949,15 @@ def test_damage_dealt_uses_affector_id_and_formats_target():
 
     gs = GameState()
     gs.local_seat_id = 1
-    gs.game_objects[101] = GameObject(instance_id=101, grp_id=1001, zone_id=28, owner_seat_id=1, controller_seat_id=1)
-    gs.game_objects[202] = GameObject(instance_id=202, grp_id=2002, zone_id=28, owner_seat_id=2, controller_seat_id=2)
-    gs._resolve_card_name = lambda grp_id: {1001: "Burst Lightning", 2002: "Pyrewood Gearhulk"}.get(grp_id, "?")
+    gs.game_objects[101] = GameObject(
+        instance_id=101, grp_id=1001, zone_id=28, owner_seat_id=1, controller_seat_id=1
+    )
+    gs.game_objects[202] = GameObject(
+        instance_id=202, grp_id=2002, zone_id=28, owner_seat_id=2, controller_seat_id=2
+    )
+    gs._resolve_card_name = lambda grp_id: {1001: "Burst Lightning", 2002: "Pyrewood Gearhulk"}.get(
+        grp_id, "?"
+    )
 
     gs._process_annotations(
         [
@@ -1021,7 +1047,9 @@ def test_decision_trace_stores_plan_and_staleness_block():
     backend.complete.return_value = '{"selected_ids": ["pass"], "reasoning": "Hold mana."}'
     planner = ActionPlanner(backend=backend)
     planner.set_game_plan_source(
-        lambda state, with_lines=True: "GAME PLAN (formed turn 6):\n  PLAN PREDATES: Biotech Specialist entered."
+        lambda state, with_lines=True: (
+            "GAME PLAN (formed turn 6):\n  PLAN PREDATES: Biotech Specialist entered."
+        )
     )
     decision = PendingDecision((1, 1), "ActionsAvailable", (DecisionOption("pass", "Pass"),))
     state = {
@@ -1069,7 +1097,10 @@ def test_attack_hold_records_combat_decision_in_packet(monkeypatch):
     }
     bridge = Mock()
     bridge.connect.return_value = True
-    bridge.get_pending_actions.return_value = {"has_pending": True, "request_class": "DeclareAttackersRequest"}
+    bridge.get_pending_actions.return_value = {
+        "has_pending": True,
+        "request_class": "DeclareAttackersRequest",
+    }
     bridge.submit_attackers.return_value = True
     engine._gre_bridge = bridge
 
@@ -1288,6 +1319,3 @@ def test_auto_queue_treats_blocked_after_queue_started_as_bounded_matchmaking_wa
     assert nav._queue_started is True
     assert nav.paused_reason == ""
     assert statuses[-1] == "Waiting for the next match"
-
-
-

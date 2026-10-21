@@ -563,7 +563,9 @@ class CoachSession(QObject):
 
         elif ev_type == "deck_list":
             decks = event.get("decks")
-            self.deckListChanged.emit(list(decks) if isinstance(decks, list) else [], str(event.get("error") or ""))
+            self.deckListChanged.emit(
+                list(decks) if isinstance(decks, list) else [], str(event.get("error") or "")
+            )
 
         elif ev_type == "deck_analysis":
             self.deckAnalysisChanged.emit({k: v for k, v in event.items() if k != "type"})
@@ -578,7 +580,9 @@ class CoachSession(QObject):
                 self.logEmitted.emit(f"{reason}; reloading the engine between matches.", "status")
                 self.engineReloadRequested.emit(reason)
             else:
-                logger.info("Ignored an engine reload request (%s): a reload or shutdown is under way", reason)
+                logger.info(
+                    "Ignored an engine reload request (%s): a reload or shutdown is under way", reason
+                )
 
     def _handle_stderr(self, line: str) -> None:
         logger.debug(f"[coach stderr] {line}")

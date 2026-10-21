@@ -70,7 +70,13 @@ def test_removal_filter_needs_an_opponent_target(owner, lacks) -> None:
     [
         # Harmful spell, our permanent the only candidate: decline it.
         (1, "Enchantment — Aura", "Seam Rip", "Destroy target enchantment.", None),
-        (1, "Creature — Human", "Shardmage's Rescue", "Target creature you control gets +1/+1 until end of turn.", 10),
+        (
+            1,
+            "Creature — Human",
+            "Shardmage's Rescue",
+            "Target creature you control gets +1/+1 until end of turn.",
+            10,
+        ),
         # A buff onto the opponent's only candidate is declined too.
         (2, "Creature — Soldier", "Mutagen", "Put a +1/+1 counter on target creature.", None),
         (2, "Creature — Soldier", "Seam Rip", "Destroy target enchantment.", 20),
@@ -85,7 +91,10 @@ def test_pick_single_target_candidate_respects_the_effect(owner, type_line, spel
     game_state.update(
         {
             "stack": [{"instance_id": 900, "name": spell, "oracle_text": oracle}],
-            "_bridge_last_poll": {"has_pending": True, "target_candidates": [{"targetInstanceId": candidate}]},
+            "_bridge_last_poll": {
+                "has_pending": True,
+                "target_candidates": [{"targetInstanceId": candidate}],
+            },
             "decision_context": {"type": "target_selection"},
         }
     )

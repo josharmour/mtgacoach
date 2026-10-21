@@ -38,7 +38,9 @@ def test_their_attack_trigger_on_the_stack_leaves_the_verdict():
     gain = _their("Pest ability", "Whenever this creature attacks, you gain 1 life.", object_kind="ABILITY")
     estimate = estimate_loss(_with_stack(gain))
     assert estimate.confidence >= 0.95, estimate.blockers
-    pump = _their("Inspiring Call", "Put a +1/+1 counter on target creature you control.", targeting=[THOPTER])
+    pump = _their(
+        "Inspiring Call", "Put a +1/+1 counter on target creature you control.", targeting=[THOPTER]
+    )
     assert estimate_loss(_with_stack(pump)).confidence >= 0.95
 
 
@@ -56,7 +58,12 @@ def test_stack_objects_that_could_still_save_us_hold_it_off():
     # A board-wide effect, an unknown text, and anything of ours.
     sweeper = _their("Pyroclasm", "Pyroclasm deals 2 damage to each creature.")
     unknown = _their("Mystery", "")
-    ours = {"instance_id": 991, "name": "Fog", "oracle_text": "Prevent all combat damage.", "controller_seat_id": 1}
+    ours = {
+        "instance_id": 991,
+        "name": "Fog",
+        "oracle_text": "Prevent all combat damage.",
+        "controller_seat_id": 1,
+    }
     for item in (own_attacker, blind, sweeper, unknown, ours):
         estimate = estimate_loss(_with_stack(item))
         assert estimate.confidence < 0.95, item["name"]
@@ -78,7 +85,13 @@ def test_their_trigger_no_longer_aborts_a_running_countdown():
 
 
 def _flier(name: str, power: int, toughness: int) -> dict:
-    return {"name": name, "power": power, "toughness": toughness, "keywords": ["flying"], "_unblockable": False}
+    return {
+        "name": name,
+        "power": power,
+        "toughness": toughness,
+        "keywords": ["flying"],
+        "_unblockable": False,
+    }
 
 
 def test_the_named_fliers_and_the_rest_add_up_to_the_damage_through():

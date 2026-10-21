@@ -62,7 +62,9 @@ def _raw_find_card(state: dict, instance_id: int) -> dict:
                 own_oracle = str(card.get("oracle_text") or "").strip()
                 src_oracle = str(src.get("oracle_text") or "").strip()
                 if own_oracle and own_oracle not in src_oracle:
-                    merged["oracle_text"] = f"{own_oracle} ({src_oracle})".strip() if src_oracle else own_oracle
+                    merged["oracle_text"] = (
+                        f"{own_oracle} ({src_oracle})".strip() if src_oracle else own_oracle
+                    )
                 return merged
     return {}
 
@@ -150,12 +152,12 @@ def prompt_note(decision: Any, state: dict) -> str:
     if not question:
         question = str(getattr(decision, "prompt_text", "") or meta.get("promptText") or "")
     if not question:
-        mechanics = list(meta.get("mechanics") or (context.get("optional_action_types") if same_ctx else []) or [])
+        mechanics = list(
+            meta.get("mechanics") or (context.get("optional_action_types") if same_ctx else []) or []
+        )
         if any("ZoneTransfer" in str(m) for m in mechanics):
             recipient_names = list(
-                meta.get("recipientCards")
-                or (context.get("recipient_names") if same_ctx else [])
-                or []
+                meta.get("recipientCards") or (context.get("recipient_names") if same_ctx else []) or []
             )
             if not recipient_names:
                 for rid in meta.get("recipients") or []:
@@ -290,7 +292,9 @@ def top_or_bottom_choice(decision: Any, state: dict) -> tuple[str, str]:
     for card in cards:
         iid = _int(card.get("instance_id"))
         full = _find_card(state, iid or 0) or card
-        if (recipients and iid not in recipients) or _TOP_OR_BOTTOM.search(str(full.get("oracle_text") or "")):
+        if (recipients and iid not in recipients) or _TOP_OR_BOTTOM.search(
+            str(full.get("oracle_text") or "")
+        ):
             continue
         controller = _int(full.get("controller_seat_id") or full.get("owner_seat_id"))
         if local is not None and controller == local:
@@ -304,7 +308,9 @@ def top_or_bottom_choice(decision: Any, state: dict) -> tuple[str, str]:
             f"Put {name} on the bottom: a token leaves the library at once, so the top only costs "
             f"{damage} life."
         )
-    types = " ".join(str(t) for t in target.get("card_types") or []) + " " + str(target.get("type_line") or "")
+    types = (
+        " ".join(str(t) for t in target.get("card_types") or []) + " " + str(target.get("type_line") or "")
+    )
     valuable = "planeswalker" in types.lower() or _mana_value(target) >= 3
     life = _our_life(state, local)
     if not valuable or life is None:

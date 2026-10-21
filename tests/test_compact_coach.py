@@ -196,7 +196,13 @@ def test_recovery_buttons_always_visible_without_opening_a_menu(panel, qapp, the
     assert not panel.voice_style_popover.isVisible()
     assert panel.size().width() == 240
     assert panel.size().height() == 600
-    for button in (panel.autopilot_bug_btn, panel.bug_report_btn, panel.support_btn, panel.reload_engine_btn, panel.restart_btn):
+    for button in (
+        panel.autopilot_bug_btn,
+        panel.bug_report_btn,
+        panel.support_btn,
+        panel.reload_engine_btn,
+        panel.restart_btn,
+    ):
         assert button.parent() is panel
         assert button.isVisible()
         assert button.isEnabled()
@@ -382,7 +388,9 @@ def test_compact_coach_bug_report_copies_exact_local_link(panel, tmp_path, qapp,
     report_file = tmp_path / "bug report #1.json"
     original = '{"prompt": "private-game-sentinel", "local_path": "/local/debug/path"}'
     report_file.write_text(original, encoding="utf-8")
-    monkeypatch.setattr(support, "contact_josh", lambda *args: pytest.fail("Debug report must not open support review"))
+    monkeypatch.setattr(
+        support, "contact_josh", lambda *args: pytest.fail("Debug report must not open support review")
+    )
     panel.session.bugReportSaved.emit(str(report_file), "")
     assert qapp.clipboard().text() == report_file.resolve().as_uri()
     assert report_file.read_text() == original
@@ -405,7 +413,9 @@ def test_debug_report_generates_file_and_copies_link(qapp, tmp_path, monkeypatch
     from arenamcp.desktop.main_window import MainWindow
 
     monkeypatch.setattr("arenamcp.logging_config.LOG_DIR", tmp_path / "debug reports")
-    monkeypatch.setattr(support, "contact_josh", lambda *args: pytest.fail("Debug report must not open support review"))
+    monkeypatch.setattr(
+        support, "contact_josh", lambda *args: pytest.fail("Debug report must not open support review")
+    )
     win = MainWindow()
     try:
         # Avoid capturing the user's screen, while preserving screenshot references in the report.
@@ -427,7 +437,6 @@ def test_debug_report_generates_file_and_copies_link(qapp, tmp_path, monkeypatch
         assert qapp.clipboard().text() == reports[0].resolve().as_uri()
     finally:
         win.close()
-
 
 
 def test_compact_coach_voice_status_updates(panel):

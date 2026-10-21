@@ -367,7 +367,13 @@ def test_attack_prompt_names_their_untapped_blockers():
 def test_static_buffs_say_they_are_already_in_the_shown_pt():
     # 115944ce 11:11:35: "the anthemed 6-toughness Trostani" — a 5/5 that already counted the anthem.
     anthem = _creature(
-        410, "Anthem of Champions", 2, None, None, text="Creatures you control get +1/+1.", type_line="Enchantment"
+        410,
+        "Anthem of Champions",
+        2,
+        None,
+        None,
+        text="Creatures you control get +1/+1.",
+        type_line="Enchantment",
     )
     board = [
         _creature(362, "Fleeting Effigy", 1, 2, 2, text=EFFIGY),
@@ -404,7 +410,11 @@ def _planner(menu: list[str]) -> ActionPlanner:
     return planner
 
 
-ATTACK_MENU = ["Attack with: Fleeting Effigy (2/2)", "Attack with: Hired Claw (1/2)", "Done (confirm attackers)"]
+ATTACK_MENU = [
+    "Attack with: Fleeting Effigy (2/2)",
+    "Attack with: Hired Claw (1/2)",
+    "Done (confirm attackers)",
+]
 
 
 def test_schema_pick_is_one_based_and_optional():
@@ -460,7 +470,9 @@ def test_assign_damage_pick_carries_the_structured_assignment(caplog):
     # 11:23:58: "Planner pick 1 ('Assign damage (order targets by priority)') has no executable mapping".
     menu = ["Assign damage (order targets by priority)", "Done"]
     planner = _planner(menu)
-    response = '{"actions": [{"pick": 1, "distribution": {"Trostani": 5, "Opponent": 2}, "reasoning": "trample"}]}'
+    response = (
+        '{"actions": [{"pick": 1, "distribution": {"Trostani": 5, "Opponent": 2}, "reasoning": "trample"}]}'
+    )
     with caplog.at_level(logging.WARNING, logger="arenamcp.action_planner"):
         plan = planner._parse_response(
             response, menu, decision_context={"type": "assign_damage"}, bridge_request="AssignDamage"
@@ -512,7 +524,9 @@ def mode_texts(monkeypatch):
     import arenamcp.card_db as card_db
 
     monkeypatch.setattr(
-        card_db, "get_card_database", lambda: SimpleNamespace(get_ability_text=lambda grp_id: MODES.get(grp_id))
+        card_db,
+        "get_card_database",
+        lambda: SimpleNamespace(get_ability_text=lambda grp_id: MODES.get(grp_id)),
     )
     monkeypatch.setattr(
         server_module,
@@ -571,7 +585,10 @@ def test_kicker_menu_offers_the_kicker_and_its_cost():
                 "castingTimeOptionType": "CastingTimeOptionType_Kicker",
                 "affectedId": 293,
                 "grpId": 2852,
-                "manaCost": [{"color": ["ManaColor_Red"], "count": 1}, {"color": ["ManaColor_Generic"], "count": 4}],
+                "manaCost": [
+                    {"color": ["ManaColor_Red"], "count": 1},
+                    {"color": ["ManaColor_Generic"], "count": 4},
+                ],
             },
             {"castingTimeOptionType": "CastingTimeOptionType_Done", "isRequired": True},
         ]

@@ -16,15 +16,13 @@ from tests.bug_180436_states import ISLAND, bug_state
 
 from arenamcp.concede import estimate_loss
 
-
 BRAVE = {
     "instance_id": 910,
     "name": "Brave the Elements",
     "type_line": "Instant",
     "card_types": ["Instant"],
     "oracle_text": (
-        "Choose a color. White creatures you control gain protection from "
-        "the chosen color until end of turn."
+        "Choose a color. White creatures you control gain protection from the chosen color until end of turn."
     ),
     "mana_cost": "{oW}",
     "owner_seat_id": 1,
@@ -134,10 +132,12 @@ BIG_BROTHER = {
     "power": 6,
     "toughness": 6,
     # Arena packs the Sneak cost as {oW}; the per-creature bonus scales with our board.
-    "oracle_text": "\n".join([
-        "Sneak {oW}",
-        "~ gets +1/+0 for each other creature you control.",
-    ]),
+    "oracle_text": "\n".join(
+        [
+            "Sneak {oW}",
+            "~ gets +1/+0 for each other creature you control.",
+        ]
+    ),
     "mana_cost": "{o4oW}",
     "owner_seat_id": 1,
     "controller_seat_id": 1,

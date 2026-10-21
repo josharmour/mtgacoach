@@ -65,9 +65,15 @@ class _DeckLibraryMixin:
         """Playbook cache status for one deck: ready (with archetype), building, or none."""
         running = getattr(self, "_deck_analysis_running", set())
         if record.deck_id in running:
-            return {"status": "building", "stage": getattr(self, "_deck_analysis_stage", {}).get(record.deck_id, "")}
+            return {
+                "status": "building",
+                "stage": getattr(self, "_deck_analysis_stage", {}).get(record.deck_id, ""),
+            }
         if not record.complete:
-            return {"status": "incomplete", "detail": "card list not seen yet: open the deck in Arena or play it once"}
+            return {
+                "status": "incomplete",
+                "detail": "card list not seen yet: open the deck in Arena or play it once",
+            }
         coach = getattr(self, "_coach", None)
         cached = getattr(coach, "_cached_playbook", None)
         if not callable(cached):
@@ -81,7 +87,11 @@ class _DeckLibraryMixin:
             return {"status": "none"}
         from arenamcp.deck_library import playbook_report
 
-        return {"status": "ready", "archetype": playbook.data.get("archetype", ""), "report": playbook_report(playbook)}
+        return {
+            "status": "ready",
+            "archetype": playbook.data.get("archetype", ""),
+            "report": playbook_report(playbook),
+        }
 
     def deck_payloads(self) -> list[dict[str, Any]]:
         from arenamcp.deck_library import deck_payload
@@ -129,7 +139,8 @@ class _DeckLibraryMixin:
         def progress(stage: str) -> None:
             stages[record.deck_id] = stage
             self._deck_library_emit(
-                "emit_deck_analysis", {"deck_id": record.deck_id, "name": record.name, "status": "building", "stage": stage}
+                "emit_deck_analysis",
+                {"deck_id": record.deck_id, "name": record.name, "status": "building", "stage": stage},
             )
 
         try:
@@ -163,7 +174,9 @@ class _DeckLibraryMixin:
         def work() -> None:
             record = self._deck_record(deck_id)
             if record is None:
-                self._deck_library_emit("emit_deck_analysis", {"deck_id": deck_id, "status": "error", "error": "deck not found"})
+                self._deck_library_emit(
+                    "emit_deck_analysis", {"deck_id": deck_id, "status": "error", "error": "deck not found"}
+                )
                 return
             self._deck_library_emit("emit_deck_analysis", analyze_deck_record_safe(self, record, refresh))
 
@@ -209,7 +222,9 @@ class _DeckLibraryMixin:
                         logger.info("Deck strategy: analyze-all resumes after the match")
                         if self.deck_strategy_status(record).get("status") == "ready":
                             continue
-                    self._deck_library_emit("emit_deck_analysis", analyze_deck_record_safe(self, record, False))
+                    self._deck_library_emit(
+                        "emit_deck_analysis", analyze_deck_record_safe(self, record, False)
+                    )
                 self._deck_library_emit("emit_deck_list", self.deck_payloads(), "")
             finally:
                 _ANALYZE_ALL_LOCK.release()

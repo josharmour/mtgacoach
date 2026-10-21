@@ -2159,7 +2159,9 @@ class GameState(_GameStateAnnotationsMixin):
             logger.debug(f"Room door facts lookup failed for grp_id={grp_id}: {e}")
         specs: list[tuple] = []
         for face in info.get("related_faces") or []:
-            specs.extend(_door_token_specs(str(face.get("oracle_text") or ""), str(face.get("name") or "") or None))
+            specs.extend(
+                _door_token_specs(str(face.get("oracle_text") or ""), str(face.get("name") or "") or None)
+            )
         if not specs:
             specs.extend(_door_token_specs(str(info.get("oracle_text") or ""), None))
         facts = ("room" in str(info.get("type_line") or "").lower(), specs)
@@ -2459,7 +2461,9 @@ class GameState(_GameStateAnnotationsMixin):
         # (Medic's Kitesail's flying shows up as grpId 8 on the wearer).
         if "uniqueAbilities" in obj_data or "abilities" in obj_data:
             ability_ids = []
-            for entry in _ensure_list(obj_data.get("uniqueAbilities")) + _ensure_list(obj_data.get("abilities")):
+            for entry in _ensure_list(obj_data.get("uniqueAbilities")) + _ensure_list(
+                obj_data.get("abilities")
+            ):
                 raw_id = entry.get("grpId") if isinstance(entry, dict) else entry
                 ability_ids.append(_coerce_int(raw_id, 0))
             keywords = ability_keywords(ability_ids)
@@ -3276,6 +3280,7 @@ def _note_gre_timers(
         for timer_id in player.get("timerIds") or []:
             if owner and _coerce_int(timer_id, 0):
                 seats[_coerce_int(timer_id, 0)] = owner
+
     def owner_of(timer_id: int) -> int:
         # Arena numbers seat 1's timers 1-6 and seat 2's 7-12 (every match in
         # the 2026-10-19 logs); used only until a message names the seat.
@@ -3453,7 +3458,11 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                 elif msg_type == "GREMessageType_TimerStateMessage":
                     # ── Phase 1: Parse chess clock / timer data ──
                     timer_msg = msg.get("timerStateMessage", msg.get("timerState", {}))
-                    real = timer_entry(timer_msg, event_wall_time(payload)) if isinstance(timer_msg, dict) else None
+                    real = (
+                        timer_entry(timer_msg, event_wall_time(payload))
+                        if isinstance(timer_msg, dict)
+                        else None
+                    )
                     if real:
                         # Arena's actual shape: seat at message level, one
                         # message per seat; keep the other seat's reading.

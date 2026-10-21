@@ -74,9 +74,7 @@ def _build(fixture) -> dict:
 
 
 def _names(build: dict) -> Counter:
-    return Counter(
-        {pro1.NAMES[entry["grp_id"]]: entry["count"] for entry in build["main_deck"]}
-    )
+    return Counter({pro1.NAMES[entry["grp_id"]]: entry["count"] for entry in build["main_deck"]})
 
 
 def _pro(fixture) -> tuple[Counter, Counter]:
@@ -167,7 +165,9 @@ def test_selesnya_mana_matches_the_pro(selesnya):
     assert sum(selesnya["basic_lands"].values()) == sum(pro_basics.values())
 
 
-@pytest.mark.xfail(strict=True, reason="Ghalta (49.8% GIH) loses its slot to 55%+ cards; the pro's third ramp threat")
+@pytest.mark.xfail(
+    strict=True, reason="Ghalta (49.8% GIH) loses its slot to 55%+ cards; the pro's third ramp threat"
+)
 def test_selesnya_runs_the_pros_three_big_threats(selesnya):
     assert _names(selesnya)["Ghalta the Unstoppable"] == 1
 

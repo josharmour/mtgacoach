@@ -1024,7 +1024,12 @@ def test_unmodelled_effect_names_what_the_search_cannot_value():
     }
     assert unmodelled_effect(scaled) == "its triggered ability"
     assert unmodelled_effect(fighter) == "its triggered ability"
-    draw = {"name": "Test Study", "type_line": "Sorcery", "mana_cost": "{2}{R}", "oracle_text": "Draw two cards."}
+    draw = {
+        "name": "Test Study",
+        "type_line": "Sorcery",
+        "mana_cost": "{2}{R}",
+        "oracle_text": "Draw two cards.",
+    }
     assert unmodelled_effect(draw) == ""  # card draw changes nothing the search values
     assert unmodelled_effect(card(8, "Grizzly Bears", 1)) == ""
     assert unmodelled_effect(card(9, "Unsummon", 1)) == ""  # bounce
