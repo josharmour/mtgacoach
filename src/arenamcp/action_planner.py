@@ -3925,9 +3925,9 @@ class ActionPlanner(_ActionLegalityMixin):
         """Our latest typed decisions, one per line, for the game-plan reform prompt."""
         return self._memory().recent_actions_text()
 
-    def decisions_for_turn(self, turn: int) -> list[str]:
+    def decisions_for_turn(self, turn: int, state: dict[str, Any] | None = None) -> list[str]:
         """Our typed decisions during ``turn``, for the game-plan match ledger."""
-        return self._memory().lines_for_turn(int(turn))
+        return self._memory().lines_for_turn(int(turn), state=state)
 
     def _memory(self) -> DecisionMemory:
         """The decision memory, created on first use (tests build planners without __init__)."""

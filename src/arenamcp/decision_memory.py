@@ -120,6 +120,7 @@ class DecisionRecord:
 # the autopilot cancels the request, which for a cast's sub-decision cancels the cast.
 _DECLINE = "__decline__"
 CANCELLED = "cancelled — no effect"
+COUNTERED = "countered — no effect"
 
 
 def _is_land(card: dict) -> bool:
@@ -165,15 +166,18 @@ class DecisionMemory:
         self._limit = limit
         self._match_id: Any = None
         self._records: list[DecisionRecord] = []
+        self._countered_keys: set[tuple[Any, ...]] = set()
 
     def reset(self) -> None:
         self._records = []
+        self._countered_keys = set()
 
     def _sync_match(self, state: dict) -> None:
         match_id = state.get("match_id")
         if match_id != self._match_id:
             self._match_id = match_id
             self._records = []
+            self._countered_keys = set()
 
     def record(self, state: dict, decision: Any, chosen: list[str], reasoning: str) -> DecisionRecord | None:
         if not isinstance(state, dict) or decision is None:
@@ -197,6 +201,7 @@ class DecisionMemory:
         del self._records[: -self._limit]
         if declined and record.request_type != "ActionsAvailable" and record.source:
             self.mark_cancelled(state, record.source)
+        self.observe_countered(state)
         return record
 
     def note(self, state: dict, request_type: str, what: str, reasoning: str = "") -> DecisionRecord | None:
@@ -263,11 +268,79 @@ class DecisionMemory:
                 marked.append(record)
         return marked
 
+    def observe_countered(self, state: dict | None) -> list[DecisionRecord]:
+        """Mark casts whose stack ZoneTransfer had ``category == 'Countered'`` as countered — no effect.
+
+        Uses only Arena's own ``AnnotationType_ZoneTransfer`` ``category == 'Countered'``
+        (never ``action_history`` counterspell heuristics, which misclassify resolved spells
+        whose Spell Pierce tax was paid — ledger #106).
+        """
+        if not isinstance(state, dict):
+            return []
+        if self._match_id is not None and state.get("match_id") != self._match_id:
+            return []
+        if not self._records:
+            return []
+        local = _local_seat(state)
+        current_turn = int(((state.get("turn") or {}).get("turn_number")) or 0)
+        seen = getattr(self, "_countered_keys", None)
+        if seen is None:
+            seen = self._countered_keys = set()
+        marked: list[DecisionRecord] = []
+        for idx, ev in enumerate(state.get("recent_events") or []):
+            if not isinstance(ev, dict) or ev.get("type") != "zone_transfer":
+                continue
+            if str(ev.get("category") or "") != "Countered":
+                continue
+            owner = ev.get("controller_seat_id") or ev.get("owner_seat_id")
+            if local is not None and owner is not None and int(owner) != int(local):
+                continue
+            card = str(ev.get("card") or "").strip()
+            if not card or card == "Unknown":
+                continue
+            ev_turn = int(ev.get("turn") or current_turn or 0)
+            iid = int(ev.get("instance_id") or ev.get("orig_instance_id") or 0)
+            key = (ev_turn, card.casefold(), iid if iid else f"idx:{idx}")
+            if key in seen:
+                continue
+            seen.add(key)
+            marked.extend(self._mark_countered_cast(ev_turn, card))
+        return marked
+
+    def _mark_countered_cast(self, turn: int, card: str) -> list[DecisionRecord]:
+        name = card.strip().casefold()
+        if not name:
+            return []
+        turn_records = [r for r in self._records if r.turn == turn] if turn > 0 else list(self._records)
+        target_idx: int | None = None
+        for idx in range(len(turn_records) - 1, -1, -1):
+            rec = turn_records[idx]
+            if rec.outcome or rec.request_type != "ActionsAvailable":
+                continue
+            label = (rec.chosen_labels or [""])[0].split(" [", 1)[0].strip().casefold()
+            if label == f"cast {name}" or label.startswith(f"cast {name} "):
+                target_idx = idx
+                break
+        if target_idx is None:
+            return []
+        marked: list[DecisionRecord] = []
+        cast_rec = turn_records[target_idx]
+        cast_rec.outcome = COUNTERED
+        marked.append(cast_rec)
+        for rec in turn_records[target_idx + 1 :]:
+            if rec.request_type == "ActionsAvailable":
+                break
+            if rec.source.strip().casefold() == name and not rec.outcome:
+                rec.outcome = COUNTERED
+                marked.append(rec)
+        return marked
+
     def this_turn(self, state: dict | None) -> list[DecisionRecord]:
         if not isinstance(state, dict):
             return []
         if state.get("match_id") != self._match_id:
             return []
+        self.observe_countered(state)
         turn = int(((state.get("turn") or {}).get("turn_number")) or 0)
         return [r for r in self._records if r.turn == turn]
 
@@ -345,8 +418,10 @@ class DecisionMemory:
         match = _LATER_IN_TURN_RE.search(record.reasoning)
         return match.group(0) if match else ""
 
-    def lines_for_turn(self, turn: int) -> list[str]:
+    def lines_for_turn(self, turn: int, state: dict | None = None) -> list[str]:
         """The decisions recorded for one turn of the current match, oldest first."""
+        if state is not None:
+            self.observe_countered(state)
         return [r.line() for r in self._records if r.turn == turn]
 
     def recent_actions_text(self, limit: int = REFORM_ACTIONS) -> str:
