@@ -264,11 +264,17 @@ class _ActionLegalityMixin:
         act = self._normalize_action_text(legal_action)
         lower = act.lower()
 
-        mode = re.match(r"mode (\d+):", lower)
+        mode = re.match(r"(?:select\s+)?mode\s+(\d+)\s*:\s*(.*)", act, re.IGNORECASE)
         if mode:
             # Casting-time modal entry ("Mode 1: deals 4 damage to target
-            # creature") — the bridge's optionIndex (#73).
-            return GameAction(action_type=ActionType.MODAL_CHOICE, modal_index=int(mode.group(1)))
+            # creature" or "Select Mode 1: ...") — the bridge's optionIndex (#73, #202).
+            idx = int(mode.group(1))
+            desc = self._strip_decoration(mode.group(2).strip()) or f"Mode {idx}"
+            return GameAction(
+                action_type=ActionType.MODAL_CHOICE,
+                card_name=desc,
+                modal_index=idx,
+            )
 
         if lower.startswith("play land:"):
             return GameAction(
@@ -718,6 +724,12 @@ class _ActionLegalityMixin:
                 if legal.card_name.strip().lower() == normalized_card_name:
                     return True
                 continue
+
+            if action.action_type == ActionType.MODAL_CHOICE:
+                if action.modal_index and legal.modal_index:
+                    if action.modal_index == legal.modal_index:
+                        return True
+                    continue
 
             if action.action_type == ActionType.SELECT_TARGET:
                 if legal.target_names and action.target_names:

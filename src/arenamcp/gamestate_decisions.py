@@ -95,13 +95,18 @@ def prompt_card_ids(prompt: Any) -> list[int]:
         name = str(param.get("parameterName") or param.get("ParameterName") or "")
         if name != "CardId":
             continue
-        value = _coerce_int(param.get("numberValue", param.get("NumberValue")), 0)
+        value = _coerce_int(
+            param.get("numberValue", param.get("NumberValue", param.get("value", param.get("Value")))),
+            0,
+        )
         if value > 0 and value not in ids:
             ids.append(value)
     return ids
 
 
-def _optional_prompt_cards(game_state: "GameState", prompt: Any) -> list[dict[str, Any]]:
+def _optional_prompt_cards(
+    game_state: "GameState", prompt: Any, source_id: int = 0
+) -> list[dict[str, Any]]:
     """The cards an optional prompt names, with their rules text, for the decision prompt."""
     cards: list[dict[str, Any]] = []
     for instance_id in prompt_card_ids(prompt):
@@ -122,6 +127,33 @@ def _optional_prompt_cards(game_state: "GameState", prompt: Any) -> list[dict[st
         except Exception as error:
             logger.debug(f"optional prompt oracle lookup failed for {obj.grp_id}: {error}")
         cards.append(entry)
+    if source_id > 0 and all(c.get("instance_id") != source_id for c in cards):
+        source_obj = game_state.game_objects.get(source_id)
+        source_ctx = _resolve_request_source_context(game_state, source_id)
+        name = str(
+            source_ctx.get("source_card")
+            or (_decision_source_name(game_state, source_id) if source_obj else "")
+            or ""
+        )
+        oracle = str(
+            source_ctx.get("source_oracle_text")
+            or source_ctx.get("source_card_oracle_text")
+            or ""
+        )
+        if name or oracle:
+            cards.append(
+                {
+                    "instance_id": source_id,
+                    "grp_id": getattr(source_obj, "grp_id", 0) if source_obj else 0,
+                    "name": name,
+                    "controller_seat_id": (
+                        (source_obj.controller_seat_id or source_obj.owner_seat_id)
+                        if source_obj is not None
+                        else None
+                    ),
+                    "oracle_text": oracle,
+                }
+            )
     return cards
 
 
@@ -659,6 +691,15 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         prompt = msg.get("prompt") or opt.get("prompt") or {}
         prompt_text = str(prompt.get("text", "")) if isinstance(prompt, dict) else str(prompt)
         prompt_id = _coerce_int(prompt.get("promptId", 0), 0) if isinstance(prompt, dict) else 0
+        source_id = _coerce_int(opt.get("sourceId", msg.get("sourceId", 0)), 0)
+        source_ctx = _resolve_request_source_context(game_state, source_id)
+        if not prompt_text and isinstance(prompt, dict):
+            from arenamcp import arena_prompts
+
+            prompt_text = arena_prompts.prompt_text(
+                prompt,
+                lambda iid: _decision_source_name(game_state, iid) if game_state.game_objects.get(iid) else "",
+            )
         recipient_ids = _ensure_int_list(opt.get("recipientIds", []))
         action_types = _coerce_str_list(opt.get("optionalActionTypes", []))
         recipients = [game_state.game_objects.get(instance_id) for instance_id in recipient_ids]
@@ -678,11 +719,11 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         # The prompt's CardId parameters name the card asking (2026-10-11:
         # Witch-Blessed Meadow's "pay 3 life?" arrived with only a numeric
         # source id, and the autopilot judged it as a free Shrine at 5 life).
-        prompt_cards = _optional_prompt_cards(game_state, prompt)
+        prompt_cards = _optional_prompt_cards(game_state, prompt, source_id=source_id)
         if commander_return:
             prompt_text = f"Return {', '.join(recipient_names)} to the command zone?"
         elif not prompt_text and prompt_cards:
-            prompt_text = "Optional effect of " + ", ".join(card["name"] for card in prompt_cards)
+            prompt_text = "Optional effect of " + ", ".join(card["name"] for card in prompt_cards if card.get("name"))
         logger.info(f"Captured Decision: Optional Action ({prompt_text[:60]})")
         game_state.pending_decision = "Optional Action"
         game_state.decision_seat_id = game_state.local_seat_id
@@ -691,11 +732,13 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
             "type": "optional_action",
             "prompt": prompt_text,
             "prompt_id": prompt_id,
+            "prompt_source_id": source_id,
             "recipient_ids": recipient_ids,
             "recipient_names": recipient_names,
             "optional_action_types": action_types,
             "prompt_cards": prompt_cards,
             "commander_return": commander_return,
+            **source_ctx,
             "raw": {k: v for k, v in msg.items() if k != "type"},
         }
         return False

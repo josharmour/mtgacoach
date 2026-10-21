@@ -254,9 +254,12 @@ class _ActionExecMixin:
                             )
                             return ClickResult(True, 0, 0, "select_target", "GRE bridge")
 
+                detail = action.card_name or (
+                    f"mode {action.modal_index}" if getattr(action, "modal_index", None) else "?"
+                )
                 msg = (
                     f"Bridge couldn't handle {action.action_type.value} "
-                    f"({action.card_name or '?'}) — take this action manually."
+                    f"({detail}) — take this action manually."
                 )
                 return self._manual_required_bridge_result(
                     action,
@@ -265,9 +268,12 @@ class _ActionExecMixin:
                     msg,
                 )
 
+            detail = action.card_name or (
+                f"mode {action.modal_index}" if getattr(action, "modal_index", None) else "?"
+            )
             msg = (
                 f"GRE bridge is unavailable for {action.action_type.value} "
-                f"({action.card_name or '?'}) — take this action manually."
+                f"({detail}) — take this action manually."
             )
             return self._manual_required_bridge_result(
                 action,
