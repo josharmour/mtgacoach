@@ -2777,7 +2777,10 @@ def wasteful_chump_blocks(
 def repair_menace_blocks(
     state: dict, assignments: dict[int, int], pending: dict | None = None
 ) -> tuple[dict[int, int], list[str]]:
-    """Make a block declaration legal against menace: never one lone blocker on a menace attacker.
+    """Make a block declaration legal against menace and blocker caps.
+
+    Never one lone blocker on a menace attacker; never more blockers than a
+    "can't be blocked by more than N creatures" effect allows (repair_blocker_caps).
 
     2026-10-19 07:34:34 (match cd41ad5a): Rabbit 485 alone blocked Biting-Palm
     Ninja, menace from a counter (ability grpId 142); Arena answered the
@@ -2796,7 +2799,7 @@ def repair_menace_blocks(
         if count == 1 and attacker_id in cards and _has(cards[attacker_id], "menace")
     ]
     if not lone:
-        return declared, []
+        return repair_blocker_caps(state, declared)
     local = _local_player(state) or {}
     life = local.get("life_total")
     legal = _legal_block_map(state, pending) or {}
@@ -2833,6 +2836,95 @@ def repair_menace_blocks(
         notes.append(
             f"not blocking {name(attacker_id)} with {name(blocker_id)} alone: it has menace "
             "and can only be blocked by two or more creatures"
+        )
+    declared, cap_notes = repair_blocker_caps(state, declared)
+    return declared, notes + cap_notes
+
+
+_BLOCKER_CAP_RE = re.compile(r"can't be blocked by more than (one|two|three|\d+) creatures?", re.IGNORECASE)
+_CAP_WORDS = {"one": 1, "two": 2, "three": 3}
+# A static grant from another permanent: "Each creature you control with power
+# 4 or greater can't be blocked by more than one creature." (Flopsie, Bumi's
+# Buddy), "Creatures you control can't be blocked by more than one creature."
+_BLOCKER_CAP_GRANT_RE = re.compile(
+    r"(?:each )?creatures? you control(?: with power (?P<power>\d+) or greater)? "
+    r"can't be blocked by more than (?P<cap>one|two|three|\d+) creatures?",
+    re.IGNORECASE,
+)
+
+
+def _cap_value(raw: str) -> int:
+    return _CAP_WORDS.get(raw.lower()) or int(raw)
+
+
+def max_blockers(attacker: dict, cards: dict[int, dict] | None = None) -> int | None:
+    """How many creatures may block ``attacker`` at most, or None when unrestricted.
+
+    Read from the attacker's own rules text and from the static grants of the
+    permanents its controller controls (``cards``: instance id -> battlefield
+    card). 2026-10-21 22:09 (match 7b898598): Flopsie, Bumi's Buddy made the
+    9/9 Groundchuck & Dirtbag blockable by one creature only; nine Rabbits
+    were declared and Arena answered IllegalRequest FailureReason_InvalidBlocker.
+    """
+    caps: list[int] = []
+    own = re.sub(r"\([^()]*\)", "", str(attacker.get("oracle_text") or ""))
+    for match in _BLOCKER_CAP_RE.finditer(own):
+        caps.append(_cap_value(match.group(1)))
+    controller = attacker.get("controller_seat_id")
+    power = attacker.get("power")
+    for card in (cards or {}).values():
+        if card is attacker or card.get("controller_seat_id") != controller:
+            continue
+        text = re.sub(r"\([^()]*\)", "", str(card.get("oracle_text") or ""))
+        for match in _BLOCKER_CAP_GRANT_RE.finditer(text):
+            threshold = match.group("power")
+            if threshold is not None and not (_is_int(power) and int(power) >= int(threshold)):
+                continue
+            caps.append(_cap_value(match.group("cap")))
+    return min(caps) if caps else None
+
+
+def repair_blocker_caps(state: dict, assignments: dict[int, int]) -> tuple[dict[int, int], list[str]]:
+    """Keep a declaration within "can't be blocked by more than N creatures".
+
+    When more blockers than allowed sit on one attacker, keep the ones that
+    kill it if any set that size does (highest power first), else the cheapest
+    bodies (a chump stays a chump), and drop the rest with one note.
+    """
+    cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
+    declared = dict(assignments)
+    notes: list[str] = []
+    for attacker_id, count in Counter(declared.values()).items():
+        attacker = cards.get(attacker_id)
+        if attacker is None or count <= 1:
+            continue
+        cap = max_blockers(attacker, cards)
+        if cap is None or count <= cap:
+            continue
+        blockers = [blocker for blocker, target in declared.items() if target == attacker_id]
+
+        def power_of(blocker: int) -> int:
+            card = cards.get(blocker) or {}
+            return int(card["power"]) if _is_int(card.get("power")) else 0
+
+        toughness = int(attacker["toughness"]) if _is_int(attacker.get("toughness")) else None
+        by_power = sorted(blockers, key=lambda b: (-power_of(b), _material(cards.get(b) or {})))
+        killers = by_power[:cap]
+        kills = toughness is not None and (
+            sum(power_of(b) for b in killers) >= toughness
+            or any(_has(cards.get(b) or {}, "deathtouch") for b in killers)
+        )
+        keep = killers if kills else sorted(blockers, key=lambda b: (_material(cards.get(b) or {}), b))[:cap]
+        dropped = [blocker for blocker in blockers if blocker not in keep]
+        for blocker in dropped:
+            del declared[blocker]
+
+        def name(identity: int) -> str:
+            return f"{cards.get(identity, {}).get('name') or 'creature'} [{identity}]"
+
+        notes.append(
+            f"{name(attacker_id)} can't be blocked by more than {cap} creature{'s' if cap != 1 else ''}: "
+            f"keeping {', '.join(name(b) for b in keep)}, not blocking with {', '.join(name(b) for b in dropped)}"
         )
     return declared, notes
 
