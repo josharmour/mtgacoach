@@ -90,9 +90,23 @@ def test_finalize_requires_all_intended_blocks_to_be_accepted(combat, selected_i
         assert result.success
         assert engine._gre_bridge.submit_blockers.call_count == 2
         assert engine._gre_bridge.submit_blockers.call_args == call([])
+    elif selected_ids:
+        # Arena kept one of the three: the retry (2026-10-21 22:09) confirms
+        # the one block it accepted rather than standing the autopilot down.
+        assert result.success
+        assert result.submitted_action.blocker_instance_assignments == {714: 553}
+        assert engine._gre_bridge.submit_blockers.call_args == call([])
     else:
         assert result is None
-        assert engine._gre_bridge.submit_blockers.call_count == 1
+        # The refused declaration is retried as a fallback (2026-10-21 22:09)
+        # before the autopilot hands over; the first update is the plan's.
+        assert engine._gre_bridge.submit_blockers.call_args_list[0] == call(
+            [
+                {"blockerInstanceId": instance_id, "attackerInstanceIds": [553]}
+                for instance_id in (714, 721, 722)
+            ]
+        )
+        assert engine._gre_bridge.submit_blockers.call_count >= 1
 
 
 @pytest.mark.parametrize("suffix", ["", " #4"])

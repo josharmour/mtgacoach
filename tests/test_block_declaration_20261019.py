@@ -487,8 +487,53 @@ def test_finalize_still_refuses_a_dropped_selection():
 
     bridge.submit_blockers = lose_the_update
     assert engine_for(bridge, state)._try_gre_bridge_blockers(action) is None
-    assert bridge.blocker_calls == [[select(491, NINJA_TOKEN), select(484)]]
+    # The refused declaration is retried once as the safe default (2026-10-21
+    # 22:09); when Arena drops that too the autopilot hands over.
+    assert bridge.blocker_calls[0] == [select(491, NINJA_TOKEN), select(484)]
+    assert 2 <= len(bridge.blocker_calls) <= 3 and all(call for call in bridge.blocker_calls)
     assert bridge.committed is None
+
+
+@pytest.mark.usefixtures("instant_combat_acks")
+def test_a_rejected_declaration_is_retried_with_one_blocker_per_attacker():
+    """2026-10-21 22:09 (match 7b898598): nine Rabbits on a 9/9 under Flopsie's
+    "can't be blocked by more than one creature" came back IllegalRequest
+    InvalidBlocker; the refusal stood the autopilot down and the attack went
+    unblocked. Arena rejects the gang block here; the retry keeps one Rabbit."""
+    request = blockers_request(gsid=224, msg=300)
+    state = with_context(incident_board(), request)
+    action = GameAction(
+        ActionType.DECLARE_BLOCKERS,
+        blocker_assignments={
+            "*Rabbit [id:484]": "Shark Shredder, Killer Clone [id:468]",
+            "*Rabbit [id:485]": "Shark Shredder, Killer Clone [id:468]",
+            "*Rabbit [id:490]": "Shark Shredder, Killer Clone [id:468]",
+        },
+        blocker_instance_assignments={484: SHARK, 485: SHARK, 490: SHARK},
+    )
+    bridge = ArenaBlockers(request, state)
+    original = bridge.submit_blockers
+
+    def reject_gang_blocks(assignments):
+        per_attacker = {}
+        for entry in assignments:
+            for attacker in entry["attackerInstanceIds"]:
+                per_attacker[attacker] = per_attacker.get(attacker, 0) + 1
+        if any(n > 1 for n in per_attacker.values()):  # IllegalRequest: re-issued without the selection
+            bridge.blocker_calls.append(deepcopy(assignments))
+            bridge.request = {**deepcopy(bridge.request), "game_state_id": 225, "msg_id": 302}
+            return True
+        return original(assignments)
+
+    bridge.submit_blockers = reject_gang_blocks
+    engine = engine_for(bridge, state)
+    engine._get_game_state = lambda: state
+    result = engine._try_gre_bridge_blockers(action)
+    assert result is not None and result.success
+    assert bridge.blocker_calls[0] == [select(484, SHARK), select(485, SHARK), select(490, SHARK)]
+    assert bridge.committed is not None
+    committed_on_shark = [b for b, a in bridge.committed.items() if a == {SHARK}]
+    assert len(committed_on_shark) <= 1  # the retry went through the guards (a lone chump at 20 life is dropped)
 
 
 @pytest.mark.usefixtures("instant_combat_acks")

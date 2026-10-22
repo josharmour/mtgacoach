@@ -1780,7 +1780,7 @@ class _BridgeSubmitMixin:
                             want,
                             selected,
                         )
-                        return None
+                        return _BridgeSubmitMixin._blocks_after_rejection(self, game_state, still, want)
                 request = still
             except Exception as e:
                 logger.debug(f"Bridge declare_blockers finalize check failed: {e}")
@@ -1800,6 +1800,67 @@ class _BridgeSubmitMixin:
             f"declare_blockers: {desc} submitted via GRE bridge (bridge-authoritative ids)",
         )
         return ClickResult(True, 0, 0, "declare_blockers", "GRE bridge", submitted_action=submitted_action)
+
+    def _blocks_after_rejection(
+        self, game_state: dict[str, Any], pending: dict[str, Any], want: dict[int, set[int]]
+    ) -> ClickResult | None:
+        """Arena re-issued the request without our declaration: declare something legal instead.
+
+        2026-10-21 22:09 (match 7b898598): nine Rabbits on a 9/9 under
+        Flopsie's "can't be blocked by more than one creature" came back
+        IllegalRequest InvalidBlocker; the refusal above stood the autopilot
+        down (MANUAL REQUIRED) and the attack went unblocked. A restriction we
+        have not modelled is not a reason to stop blocking: try the solver's
+        safe default, then the refused declaration cut to one blocker per
+        attacker, each through the normal path (the guards apply). One retry
+        per declaration; a second rejection still hands over.
+        """
+        if getattr(self, "_block_rejection_retry", False):
+            return None
+        from arenamcp.combat_solver import _material
+        from arenamcp.combat_strategy import safe_default_blocks
+
+        refused = {blocker: next(iter(attackers)) for blocker, attackers in want.items() if attackers}
+        cards = {card.get("instance_id"): card for card in game_state.get("battlefield") or []}
+
+        def label(identity: int) -> str:
+            card = cards.get(identity) or {}
+            token = card.get("is_token") or "token" in str(card.get("object_kind", "")).lower()
+            return f"{'*' if token else ''}{card.get('name') or 'Creature'} [id:{identity}]"
+
+        candidates: list[tuple[dict[int, int], str]] = []
+        choice = safe_default_blocks(game_state, pending)
+        if choice is not None:
+            candidates.append((choice[0], f"after Arena rejected the declaration, safe default: {choice[1]}"))
+        cheapest: dict[int, int] = {}
+        for blocker, attacker in refused.items():
+            held = cheapest.get(attacker)
+            if held is None or _material(cards.get(blocker) or {}) < _material(cards.get(held) or {}):
+                cheapest[attacker] = blocker
+        reduced = {blocker: attacker for attacker, blocker in cheapest.items()}
+        candidates.append((reduced, "after Arena rejected the declaration, one blocker per attacker"))
+        tried: list[dict[int, int]] = [refused]
+        for mapping, reason in candidates:
+            if mapping in tried:
+                continue
+            tried.append(mapping)
+            fallback = GameAction(
+                action_type=ActionType.DECLARE_BLOCKERS,
+                blocker_assignments={label(b): label(a) for b, a in mapping.items()},
+                blocker_instance_assignments=dict(mapping),
+                reasoning=reason,
+            )
+            self._block_rejection_retry = True
+            try:
+                result = _BridgeSubmitMixin._try_gre_bridge_blockers_inner(self, fallback)
+            finally:
+                self._block_rejection_retry = False
+            if result is not None and result.success:
+                logger.warning("Bridge declare_blockers: %s -> %s", reason, mapping or "[No Blocks]")
+                if getattr(result, "submitted_action", None) is None:
+                    result = replace(result, submitted_action=fallback)
+                return result
+        return None
 
     def _try_gre_bridge_select_target(self, action: GameAction) -> ClickResult | None:
         """Submit target selection via bridge.
