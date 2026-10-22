@@ -441,4 +441,3 @@ def test_first_token_timeout_and_stream_stall_say_too_slow_until_circuit_opens(m
         planner.plan_decision_options(decision, jace_state())
     assert planner._last_decision_reasoning.startswith("Decision cancelled;")
     assert "model unavailable" not in caplog.text.lower()
-

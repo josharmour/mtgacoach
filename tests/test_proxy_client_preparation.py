@@ -134,12 +134,14 @@ def test_public_gateway_canary_alerts_when_api_mtgacoach_goes_down_and_recovers(
         base_url="http://10.0.0.10:8444/v1",
     )
 
-    outcomes = iter([
-        (True, "api.mtgacoach.com OK (90ms)"),
-        (False, "api.mtgacoach.com unreachable after 6000ms: timed out"),
-        (False, "api.mtgacoach.com unreachable after 6000ms: timed out"),
-        (True, "api.mtgacoach.com OK (85ms)"),
-    ])
+    outcomes = iter(
+        [
+            (True, "api.mtgacoach.com OK (90ms)"),
+            (False, "api.mtgacoach.com unreachable after 6000ms: timed out"),
+            (False, "api.mtgacoach.com unreachable after 6000ms: timed out"),
+            (True, "api.mtgacoach.com OK (85ms)"),
+        ]
+    )
     monkeypatch.setattr(
         "arenamcp.backends.proxy.probe_public_gateway",
         lambda license_key="", timeout=6.0: next(outcomes),
@@ -161,4 +163,3 @@ def test_public_gateway_canary_alerts_when_api_mtgacoach_goes_down_and_recovers(
     # 4. Public gateway recovers -> green recovery notice in UI log
     assert coach._check_public_gateway_once(backend) is True
     assert len(logs) == 2 and "Public api.mtgacoach.com recovered" in logs[1]
-

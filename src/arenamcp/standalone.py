@@ -571,9 +571,7 @@ class StandaloneCoach(
             f"monitoring public {ONLINE_BASE_URL} every {self._PUBLIC_CANARY_INTERVAL_S:.0f}s"
         )
         with contextlib.suppress(Exception):
-            self.ui.log(
-                f"Gateway override active: {base_url} (monitoring public api.mtgacoach.com)"
-            )
+            self.ui.log(f"Gateway override active: {base_url} (monitoring public api.mtgacoach.com)")
 
         def _loop() -> None:
             while getattr(self, "_running", True):

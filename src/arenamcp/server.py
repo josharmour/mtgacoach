@@ -2236,6 +2236,8 @@ def get_game_state() -> dict[str, Any]:
     if isinstance(public_zones, dict):
         public_zones["opponent_library_count"] = zones.get("opponent_library_count")
     response["revealed_cards"] = _serialize_revealed_cards(snap.get("revealed_in_opponent_hand"))
+    # Our library cards the GRE revealed to us (search candidates), by name.
+    response["library_visible"] = list(zones.get("library_visible") or [])
 
     effective_local_seat_id = response.get("local_seat_id")
     if decision_seat_id is None and snap.get("pending_decision"):

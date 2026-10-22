@@ -804,7 +804,9 @@ def test_howlsquad_heavy_goblin_must_attack_never_held_by_crackback_or_omitted()
             }
         ],
         "hasRequirements": True,
-        "AttackWarnings": [{"instanceId": 360, "type": "AttackWarningType_MustAttack", "warningPromptId": 124}],
+        "AttackWarnings": [
+            {"instanceId": 360, "type": "AttackWarningType_MustAttack", "warningPromptId": 124}
+        ],
         "qualifiedAttackers": [
             {
                 "attackerInstanceId": 328,
@@ -823,7 +825,12 @@ def test_howlsquad_heavy_goblin_must_attack_never_held_by_crackback_or_omitted()
     ]
 
     state = {
-        "turn": {"turn_number": 16, "active_player": 2, "phase": "Phase_Combat", "step": "Step_DeclareAttack"},
+        "turn": {
+            "turn_number": 16,
+            "active_player": 2,
+            "phase": "Phase_Combat",
+            "step": "Step_DeclareAttack",
+        },
         "players": [
             {"seat_id": 2, "is_local": True, "life_total": 3},
             {"seat_id": 1, "is_local": False, "life_total": 14},
@@ -880,4 +887,3 @@ def test_howlsquad_heavy_goblin_must_attack_never_held_by_crackback_or_omitted()
     assert pilot._try_bridge_declare_attackers(only_heavy).success
     entries = pilot._gre_bridge.submit_attackers_raw.call_args.args[0]
     assert [entry["attackerInstanceId"] for entry in entries] == [328, 360]
-

@@ -2427,12 +2427,20 @@ class AutopilotEngine(
                 declared = self._watchdog_attack(state, poll)
                 if declared is not None:
                     return declared
-            from arenamcp.decisions import build_pending_decision, search_safe_default, submit_option
+            from arenamcp.decisions import (
+                build_pending_decision,
+                search_from_groups_safe_default,
+                search_safe_default,
+                submit_option,
+            )
             from arenamcp.request_tracker import decision_fingerprint, request_window
 
             decision = build_pending_decision(poll)
-            if decision is not None and decision.request_type == "Search":
-                chosen = search_safe_default(decision)
+            if decision is not None and decision.request_type in ("Search", "SearchFromGroups"):
+                if decision.request_type == "SearchFromGroups":
+                    chosen = search_from_groups_safe_default(decision, state)
+                else:
+                    chosen = search_safe_default(decision)
                 if chosen is not None and submit_option(bridge, decision, chosen):
                     names = [decision.find(option_id).label for option_id in chosen]
                     self._request_tracker.note_submitted(
@@ -4745,6 +4753,7 @@ class AutopilotEngine(
             "Mulligan",
             "Group",
             "SelectFromGroups",
+            "SearchFromGroups",
             "ActionsAvailable",
             "CastingTimeOptions",
             "OptionalAction",
@@ -4875,10 +4884,8 @@ class AutopilotEngine(
         poll can resolve those identities; cap the wait for genuinely unreadable
         choices. Returning True owns this trigger and prevents legacy fallback.
         """
-        is_search = decision.request_type == "Search"
-        unknown = decision.request_type == "Search" and any(
-            option.meta.get("identity_known") is False for option in decision.options
-        )
+        is_search = decision.request_type in ("Search", "SearchFromGroups")
+        unknown = is_search and any(option.meta.get("identity_known") is False for option in decision.options)
         if decision.request_type == "SelectN" and not unknown:
             # Only a choice among our own hand cards (a loot's discard) can be
             # missing a name the log is about to supply; crew/payment and
@@ -5373,7 +5380,7 @@ class AutopilotEngine(
             reasoning = get_reasoning(option_ids) if callable(get_reasoning) else ""
             reasoning = reasoning if isinstance(reasoning, str) else ""
             explanation = " ".join(ActionPlanner._humanize_legal_action(label) for label in labels)
-            if decision.request_type == "Search":
+            if decision.request_type in ("Search", "SearchFromGroups"):
                 explanation = f"Choose {', '.join(labels)}." if labels else "Find no cards."
             elif decision.request_type == "SelectTargets" and not labels:
                 explanation = "Choose no targets."

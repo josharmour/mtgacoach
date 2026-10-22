@@ -1167,9 +1167,7 @@ class _BridgeSubmitMixin:
         pairs = [(name, entry) for name, entry in pairs if entry["attackerInstanceId"] not in losing]
         present_ids = {int(entry["attackerInstanceId"]) for _, entry in pairs}
         cards = {
-            int(c.get("instance_id") or 0): c
-            for c in state.get("battlefield") or []
-            if isinstance(c, dict)
+            int(c.get("instance_id") or 0): c for c in state.get("battlefield") or [] if isinstance(c, dict)
         }
         for candidate in attack_candidates(state, pending) or []:
             if not isinstance(candidate, dict) or not candidate.get("mustAttack"):
@@ -2581,7 +2579,11 @@ class _BridgeSubmitMixin:
         # Must be checked BEFORE the generic Group branch — "SelectFromGroups"
         # contains "Group", which routed it to submit_group/submit_order (both
         # wrong request classes) and then to an illegal empty submit.
-        if dec_type == "select_from_groups" or "SelectFromGroups" in btype or "SelectFromGroups" in bclass:
+        if (
+            dec_type in ("select_from_groups", "search_from_groups")
+            or "SelectFromGroups" in btype + bclass
+            or "SearchFromGroups" in btype + bclass
+        ):
             return self._safe_default_select_from_groups(game_state, pending, _ok)
 
         # Group: London-mulligan bottoming / scry-surveil / ordering default.
@@ -2706,7 +2708,7 @@ class _BridgeSubmitMixin:
             pending,
             resolve_instance=lambda iid: self._card_name_by_instance_id(game_state, iid),
         )
-        if decision is None or decision.request_type != "SelectFromGroups":
+        if decision is None or decision.request_type not in ("SelectFromGroups", "SearchFromGroups"):
             return False
         choice = select_from_groups_safe_default(decision, game_state)
         if choice is None or not decision.selection_is_valid(choice):
@@ -3070,7 +3072,14 @@ class _BridgeSubmitMixin:
         options (bug #203) carry real card names in labels, logs and the
         identity_known flag instead of synthesized "Permanent <id>" strings.
         """
-        for zone_key in ("battlefield", "command", "hand", "library_top_revealed", "stack"):
+        for zone_key in (
+            "battlefield",
+            "command",
+            "hand",
+            "library_top_revealed",
+            "library_visible",
+            "stack",
+        ):
             for c in game_state.get(zone_key) or []:
                 if not isinstance(c, dict):
                     continue

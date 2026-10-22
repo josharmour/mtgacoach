@@ -144,7 +144,10 @@ def _snapcaster_board(untapped_lands: int, graveyard: list[dict]) -> dict:
     return {
         "turn": {"turn_number": 9, "phase": "Phase_Main1", "step": "", "active_player": 1},
         "local_seat_id": 1,
-        "players": [{"seat_id": 1, "is_local": True, "life_total": 14}, {"seat_id": 2, "is_local": False, "life_total": 17}],
+        "players": [
+            {"seat_id": 1, "is_local": True, "life_total": 14},
+            {"seat_id": 2, "is_local": False, "life_total": 17},
+        ],
         "hand": [SNAPCASTER],
         "graveyard": list(graveyard),
         "battlefield": [
@@ -219,4 +222,3 @@ def test_snapcaster_with_unpayable_graveyard_target_warns_and_refutes_claim():
     assert any(kind == "wasted_flashback" for kind, _text in concerns)
     picked, _why = board_math_option_pick(decision, board_2_mana)
     assert picked == ["pass"]
-

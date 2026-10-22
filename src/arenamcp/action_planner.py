@@ -1941,7 +1941,9 @@ class ActionPlanner(_ActionLegalityMixin):
         blockers = _eligible_blockers(state, opponent.get("seat_id"))
         our_life = int(local.get("life_total", 20))
         opp_life = int(opponent.get("life_total", 20))
-        raw_attackers = context.get("raw_attackers") or (state.get("decision_context") or {}).get("raw_attackers") or []
+        raw_attackers = (
+            context.get("raw_attackers") or (state.get("decision_context") or {}).get("raw_attackers") or []
+        )
         forced_ids = {
             int(entry.get("attackerInstanceId", entry.get("instanceId", 0)) or 0)
             for entry in raw_attackers
@@ -2264,7 +2266,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 original[:200] or "no reason given",
             )
             return
-        raw_attackers = context.get("raw_attackers") or (state.get("decision_context") or {}).get("raw_attackers") or []
+        raw_attackers = (
+            context.get("raw_attackers") or (state.get("decision_context") or {}).get("raw_attackers") or []
+        )
         forced_ids = {
             int(entry.get("attackerInstanceId", entry.get("instanceId", 0)) or 0)
             for entry in raw_attackers
@@ -2321,7 +2325,9 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         if str(context.get("type") or "").lower() != "declare_attackers":
             return
-        raw_attackers = context.get("raw_attackers") or (state.get("decision_context") or {}).get("raw_attackers") or []
+        raw_attackers = (
+            context.get("raw_attackers") or (state.get("decision_context") or {}).get("raw_attackers") or []
+        )
         forced_ids = [
             int(entry.get("attackerInstanceId", entry.get("instanceId", 0)) or 0)
             for entry in raw_attackers
@@ -2332,8 +2338,10 @@ class ActionPlanner(_ActionLegalityMixin):
             return
         actions = plan.actions
         declared = next((a for a in actions if a.action_type == ActionType.DECLARE_ATTACKERS), None)
-        no_attack = declared is None and bool(actions) and all(
-            a.action_type in (ActionType.CLICK_BUTTON, ActionType.PASS_PRIORITY) for a in actions
+        no_attack = (
+            declared is None
+            and bool(actions)
+            and all(a.action_type in (ActionType.CLICK_BUTTON, ActionType.PASS_PRIORITY) for a in actions)
         )
         if declared is None and not no_attack:
             return
@@ -2347,7 +2355,9 @@ class ActionPlanner(_ActionLegalityMixin):
                     for entry in raw_attackers
                     if isinstance(entry, dict)
                 ]
-                planned_ids = set(resolve_combatants(declared.attacker_names, state, eligible, local_side=True))
+                planned_ids = set(
+                    resolve_combatants(declared.attacker_names, state, eligible, local_side=True)
+                )
             except Exception:
                 planned_ids = set()
         cards = {_as_int(card.get("instance_id")): card for card in state.get("battlefield") or []}
@@ -4426,7 +4436,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 if len(chosen) == decision.min_select and decision.selection_is_valid(chosen):
                     return chosen
                 chosen = []
-            if decision.request_type == "SelectFromGroups":
+            if decision.request_type in ("SelectFromGroups", "SearchFromGroups"):
                 # Bug #203: an answer that skips a required group (one keep per
                 # type) is illegal even when the total count fits — fall back
                 # to the deterministic keep rather than submitting it.
@@ -4515,8 +4525,9 @@ class ActionPlanner(_ActionLegalityMixin):
             return default_group_choice(decision, game_state)
         if decision.request_type == "CastingTimeOptions":
             return self._casting_options_fallback(decision, game_state)
-        if decision.request_type == "SelectFromGroups":
-            # Bug #203: never an empty answer when a group's minSelect > 0.
+        if decision.request_type in ("SelectFromGroups", "SearchFromGroups"):
+            # Bug #203: never an empty answer when a group's minSelect > 0;
+            # a SearchFromGroups finds something rather than failing to find.
             from arenamcp.decisions import select_from_groups_safe_default
 
             picked = select_from_groups_safe_default(decision, game_state)
@@ -5732,9 +5743,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 f"{name}'s flashback trigger has no {info['kind']} card in your graveyard to target. "
                 f"Hold {name} unless you need the body right now for a concrete board reason."
             )
-        targets_desc = ", ".join(
-            f"{n} ({c})" if c else n for n, c, _cmc in info["targets"][:3]
-        )
+        targets_desc = ", ".join(f"{n} ({c})" if c else n for n, c, _cmc in info["targets"][:3])
         return (
             f"{name} grants flashback only until end of turn, and casting it now leaves {info['mana_after']} "
             f"mana — not enough to cast {targets_desc} this turn (the flashback expires at end of turn and "
@@ -8121,7 +8130,7 @@ class ActionPlanner(_ActionLegalityMixin):
         game_state = prepare_match_context(
             game_state,
             reveal=_option_grp_ids(decision),
-            library=True if decision.request_type == "Search" else None,
+            library=True if decision.request_type in ("Search", "SearchFromGroups") else None,
         )
         lines = [
             f"PENDING DECISION: {decision.request_type}"
@@ -8137,7 +8146,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 "For crew, tap creatures totaling the required power; preserve useful attackers/blockers. "
                 "Summoning-sick creatures may crew. Crewing does not let a newly entered Vehicle attack.",
             )
-        if decision.request_type == "SelectFromGroups":
+        if decision.request_type in ("SelectFromGroups", "SearchFromGroups"):
             # Bug #203: the generic min/max line alone had the model keep one
             # permanent from a single group of an edict and leave the other
             # group (its own minSelect 1) unanswered.

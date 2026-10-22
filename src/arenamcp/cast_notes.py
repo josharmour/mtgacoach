@@ -265,9 +265,7 @@ def graveyard_flashback_note(state: dict, card: dict | None, meta: dict | None =
             f"  [FLASHBACK UNTIL END OF TURN ONLY: your graveyard has no {info['kind']} card to target "
             f"— casting {info['card_name']} now gets no flashback spell]"
         )
-    targets_desc = ", ".join(
-        f"{name} ({cost})" if cost else name for name, cost, _cmc in info["targets"][:3]
-    )
+    targets_desc = ", ".join(f"{name} ({cost})" if cost else name for name, cost, _cmc in info["targets"][:3])
     return (
         f"  [FLASHBACK UNTIL END OF TURN ONLY: casting {info['card_name']} leaves {info['mana_after']} mana, "
         f"not enough to cast {targets_desc} this turn — the flashback expires at end of turn and does NOT "

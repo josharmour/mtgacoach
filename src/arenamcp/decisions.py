@@ -126,7 +126,7 @@ class PendingDecision:
                 return False
         if self.request_type == "Group" and any("spec_index" in o.meta for o in self.options):
             return destination_groups(self, chosen) is not None
-        if self.request_type == "SelectFromGroups":
+        if self.request_type in _GROUPED_TYPES:
             # Each group has its own min/max (bug #203): one keep per type in
             # the Liliana edict, so a single pick from one group is invalid
             # even when the overall total bounds are satisfied.
@@ -418,6 +418,18 @@ _SELECT_FROM_GROUPS_TYPES = {
     "SelectFromGroupsRequest",
     "select_from_groups",
 }
+# A library search whose candidates come pre-grouped (Fblthp, Knows the Way:
+# "search for up to X basic lands" sends one SearchFromGroupsReq per land with
+# the matching library cards in a group). 2026-10-21 21:07 and 21:17: untyped,
+# the planner answered "Done" and the bridge refused it — MANUAL REQUIRED on
+# an ETB that only wanted a Forest.
+_SEARCH_FROM_GROUPS_TYPES = {
+    "SearchFromGroups",
+    "SearchFromGroupsReq",
+    "SearchFromGroupsRequest",
+    "search_from_groups",
+}
+_GROUPED_TYPES = frozenset({"SelectFromGroups", "SearchFromGroups"})
 _CASTING_TYPES = {
     "CastingTimeOptions",
     "CastingTimeOptionsReq",
@@ -743,6 +755,21 @@ def build_pending_decision(
             source_label = resolve_instance(source_id)
         return _build_select_from_groups(
             poll, request_id, can_cancel, source_label, resolve_name, resolve_instance
+        )
+    if rtype in _SEARCH_FROM_GROUPS_TYPES or request_class in _SEARCH_FROM_GROUPS_TYPES:
+        source_id = int(
+            poll.get("source_instance_id") or (poll.get("request_payload") or {}).get("sourceId") or 0
+        ) or _prompt_card_instance(poll)
+        if not source_label and resolve_instance and source_id:
+            source_label = resolve_instance(source_id)
+        return _build_select_from_groups(
+            poll,
+            request_id,
+            can_cancel,
+            source_label,
+            resolve_name,
+            resolve_instance,
+            request_type="SearchFromGroups",
         )
     if rtype in _GROUP_TYPES or request_class in _GROUP_TYPES:
         return _build_group(poll, request_id, can_cancel, source_label, resolve_instance, resolve_card)
@@ -1160,6 +1187,7 @@ def _build_select_from_groups(
     source_label: str,
     resolve_name: Callable[[int], str],
     resolve_instance: Callable[[int], str] | None = None,
+    request_type: str = "SelectFromGroups",
 ) -> PendingDecision | None:
     """Build the typed decision for a SelectFromGroupsRequest (bug #203).
 
@@ -1168,10 +1196,16 @@ def _build_select_from_groups(
     bounds plus overall totals. The option id encodes both: one labelled
     option PER GROUP, ``sfg:<group>:<instance_id>``, so the model sees the
     actual choices and the answer parses back per group mechanically.
+
+    A SearchFromGroupsRequest has the same shape (groups of library ids, a
+    per-group ``maxSelect``) with ``minFind``/``maxFind`` as the totals; it
+    is built here with ``request_type="SearchFromGroups"`` and submitted
+    through ``submit_search_from_groups``.
     """
     specs = _select_from_group_specs(poll)
     if not specs:
         return None
+    is_search = request_type == "SearchFromGroups"
     options: list[DecisionOption] = []
     for index, spec in enumerate(specs):
         for instance_id in spec["ids"]:
@@ -1179,7 +1213,7 @@ def _build_select_from_groups(
             # what the resolver actually returned, not the synthesized
             # "Permanent <id>" label (which is_unknown_card_name never flags).
             resolved_name = str(resolve_instance(instance_id) or "") if resolve_instance is not None else ""
-            name = resolved_name or f"Permanent {instance_id}"
+            name = resolved_name or (f"Card {instance_id}" if is_search else f"Permanent {instance_id}")
             options.append(
                 DecisionOption(
                     option_id=f"sfg:{index}:{instance_id}",
@@ -1199,21 +1233,26 @@ def _build_select_from_groups(
     total_min = sum(spec["min"] for spec in specs)
     total_max = sum(spec["max"] for spec in specs if spec["max"] > 0) or len(options)
     payload = poll.get("request_payload") or {}
-    min_total = int(
-        poll.get("select_from_groups_min_total")
-        or payload.get("minTotalSelections")
-        or payload.get("minTotalSel")
-        or total_min
-    )
-    max_total = int(
-        poll.get("select_from_groups_max_total")
-        or payload.get("maxTotalSelections")
-        or payload.get("maxTotalSel")
-        or total_max
-    )
+    if is_search:
+        # "up to X": minFind is usually 0 (AllowFailToFind), maxFind the X.
+        min_total = int(poll.get("search_min_find") or payload.get("minFind") or 0)
+        max_total = int(poll.get("search_max_find") or payload.get("maxFind") or total_max)
+    else:
+        min_total = int(
+            poll.get("select_from_groups_min_total")
+            or payload.get("minTotalSelections")
+            or payload.get("minTotalSel")
+            or total_min
+        )
+        max_total = int(
+            poll.get("select_from_groups_max_total")
+            or payload.get("maxTotalSelections")
+            or payload.get("maxTotalSel")
+            or total_max
+        )
     return PendingDecision(
         request_id=request_id,
-        request_type="SelectFromGroups",
+        request_type=request_type,
         options=tuple(options),
         min_select=min_total,
         max_select=max(max_total, min_total),
@@ -1240,6 +1279,12 @@ def select_from_groups_note(decision: PendingDecision) -> str:
         lo = int(first.meta.get("group_min", 0))
         hi = int(first.meta.get("group_max", len(groups[index])))
         parts.append(f"group {index + 1} needs {lo}-{hi} of sfg:{index}:*")
+    if decision.request_type == "SearchFromGroups":
+        return (
+            f"LIBRARY SEARCH — find {decision.min_select}-{decision.max_select} card(s) in total: "
+            + "; ".join(parts)
+            + ". Pick the card(s) to find; an empty answer fails to find (only when nothing offered helps)."
+        )
     return (
         "SEPARATE GROUPS — answer EVERY group: "
         + "; ".join(parts)
@@ -1270,7 +1315,11 @@ def select_from_groups_safe_default(
     answered IllegalRequest each time). Returns None when no legal selection
     can be determined.
     """
-    if decision is None or decision.request_type != "SelectFromGroups" or not game_state:
+    if decision is None or not game_state:
+        return None
+    if decision.request_type == "SearchFromGroups":
+        return search_from_groups_safe_default(decision, game_state)
+    if decision.request_type != "SelectFromGroups":
         return None
     groups: dict[int, list[DecisionOption]] = {}
     for option in decision.options:
@@ -1313,6 +1362,71 @@ def select_from_groups_safe_default(
     if not decision.selection_is_valid(chosen):
         return None
     return chosen
+
+
+def search_from_groups_safe_default(
+    decision: PendingDecision | None, game_state: dict[str, Any] | None
+) -> list[str] | None:
+    """Deterministic answer for a SearchFromGroups request: find something.
+
+    A search is "up to N", so the empty answer is always legal — and always
+    wrong when the offer holds a card we can use (Fblthp, 2026-10-21: the
+    offer was six basics; failing to find threw away two land drops). Finds up
+    to the request's maximum, one card per group where the groups allow it:
+    the land whose colour our hand asks for most and our lands supply least,
+    else the first named card.
+    """
+    if decision is None or decision.request_type != "SearchFromGroups" or not game_state:
+        return None
+    groups: dict[int, list[DecisionOption]] = {}
+    for option in decision.options:
+        groups.setdefault(int(option.meta.get("group", 0)), []).append(option)
+    if not groups:
+        return None
+    cards: dict[int, dict[str, Any]] = {}
+    for zone in ("library_visible", "library_top_revealed", "hand", "battlefield", "graveyard", "exile"):
+        for card in game_state.get(zone) or []:
+            if isinstance(card, dict) and card.get("instance_id"):
+                cards.setdefault(int(card["instance_id"]), card)
+
+    # Colour pressure: pips our hand wants minus the colours our lands make.
+    local_seat = game_state.get("local_seat_id")
+    pips: dict[str, int] = {}
+    for card in game_state.get("hand") or []:
+        if isinstance(card, dict):
+            for symbol in re.findall(r"\{([WUBRG])\}", str(card.get("mana_cost") or "")):
+                pips[symbol] = pips.get(symbol, 0) + 1
+    supply: dict[str, int] = {}
+    for card in game_state.get("battlefield") or []:
+        if not isinstance(card, dict) or "land" not in str(card.get("type_line") or "").lower():
+            continue
+        if local_seat is not None and card.get("controller_seat_id") not in (None, local_seat):
+            continue
+        for colour in _land_card_colors(card):
+            supply[colour] = supply.get(colour, 0) + 1
+
+    def rank(option: DecisionOption) -> tuple[int, int, int]:
+        card = cards.get(int(option.meta.get("instance_id") or 0)) or {}
+        known = 0 if option.meta.get("identity_known") else 1
+        colours = _land_card_colors(card) if card else set()
+        if not colours:
+            return (known, 0, 1)
+        need = max((pips.get(colour, 0) - supply.get(colour, 0)) for colour in colours)
+        return (known, -need, 0)
+
+    remaining = max(0, int(decision.max_select))
+    chosen: list[str] = []
+    for index in sorted(groups):
+        if remaining <= 0:
+            break
+        options = groups[index]
+        take = min(remaining, max(1, int(options[0].meta.get("group_max", 1)) or 1))
+        picked = [option.option_id for option in sorted(options, key=rank)[:take]]
+        chosen.extend(picked)
+        remaining -= len(picked)
+    if chosen and decision.selection_is_valid(chosen):
+        return chosen
+    return [] if decision.selection_is_valid([]) else None
 
 
 def _prompt_card_instance(poll: dict[str, Any]) -> int:
@@ -2331,12 +2445,15 @@ def submit_option(
     if decision.request_type == "SelectN" and not option_ids and decision.max_select == 0:
         # A look selection ("Click OK to continue"): OK is the empty selection.
         return bool(bridge.submit_selection([]))
-    if decision.request_type == "SelectFromGroups" and not option_ids:
+    if decision.request_type in _GROUPED_TYPES and not option_ids:
         # An edict whose every group has minSelect 0 may legally be answered
         # with no keeps at all (bug #203): submit the empty selection instead
-        # of falling through to the generic "no valid ids" rejection.
+        # of falling through to the generic "no valid ids" rejection. For a
+        # search that is "fail to find".
         if not decision.selection_is_valid([]):
             return False
+        if decision.request_type == "SearchFromGroups":
+            return bool(bridge.submit_search_from_groups(groups=[]))
         return bool(bridge.submit_select_from_groups([]))
     valid = decision.option_ids()
     chosen = [oid for oid in option_ids if oid in valid]
@@ -2412,6 +2529,8 @@ def submit_option(
             {"ids": spec["ids"], **({"groupId": spec["groupId"]} if spec["groupId"] else {})}
             for _, spec in sorted(by_group.items())
         ]
+        if decision.request_type == "SearchFromGroups":
+            return bool(bridge.submit_search_from_groups(groups=groups))
         return bool(bridge.submit_select_from_groups(groups))
     if first.startswith("grp:") and "spec_index" in decision.find(first).meta:
         groups = destination_groups(decision, chosen)

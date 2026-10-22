@@ -1142,7 +1142,9 @@ class ProxyBackend:
                 url = self._base_url or DEFAULT_LOCAL_URL
                 key = self._api_key or "ollama"
                 client_headers = (
-                    get_client_headers() if (url == ONLINE_BASE_URL or getattr(self, "_is_online", False)) else None
+                    get_client_headers()
+                    if (url == ONLINE_BASE_URL or getattr(self, "_is_online", False))
+                    else None
                 )
 
                 # max_retries=0: the SDK's default (2) honors Retry-After

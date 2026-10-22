@@ -1456,4 +1456,3 @@ def test_must_attack_goblin_token_shapes_and_submits_with_qualified_attackers():
     update = game.submits()[-1]
     assert update[-1]["method"] == "UpdateAttacker"
     assert update[-1]["args"] == [{"list": [{"h": 40}, {"h": 51}]}]
-

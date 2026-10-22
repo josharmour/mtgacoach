@@ -1672,6 +1672,16 @@ class GameState(_GameStateAnnotationsMixin):
                 ],
                 "library_count": library_count if library_count is not None else "?",
                 "library_count_source": "log_zone_membership" if library_count is not None else "unknown",
+                # Our library cards the GRE has materialized for us (a search
+                # reveals its candidates as private objects with us as viewer;
+                # hidden cards never arrive as GameObjects). 2026-10-21 21:07:
+                # Fblthp's SearchFromGroups offered six library ids nothing
+                # could name.
+                "library_visible": (
+                    [obj.to_dict() for obj in self.get_objects_in_zone(ZoneType.LIBRARY, self.local_seat_id)]
+                    if self.local_seat_id
+                    else []
+                ),
             },
             "pending_decision": self.pending_decision,
             "_log_game_state_id": getattr(self, "log_game_state_id", 0),
@@ -1804,6 +1814,7 @@ class GameState(_GameStateAnnotationsMixin):
             "command": [enrich_obj(o) for o in zones.get("command", [])],
             "library_count": zones.get("library_count", "?"),
             "library_count_source": zones.get("library_count_source", "unknown"),
+            "library_visible": [enrich_obj(o) for o in zones.get("library_visible", [])],
         }
         return raw
 

@@ -1751,10 +1751,7 @@ def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[
         name = str(card.get("name") or info["card_name"])
         target_names = [t_name.lower() for t_name, _c, _m in info.get("targets") or () if t_name]
         for sentence in re.split(r"[;.\n]", lowered):
-            if not (
-                "flashback" in sentence
-                or (target_names and any(t in sentence for t in target_names))
-            ):
+            if not ("flashback" in sentence or (target_names and any(t in sentence for t in target_names))):
                 continue
             if re.search(
                 r"\b(?:no|not|without|can't|cannot|unable to|expires?|wastes?|0 mana|zero mana)\b",
@@ -1764,9 +1761,7 @@ def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[
             if info["reason"] == "empty_graveyard":
                 fact = f"{name}'s flashback trigger has no {info['kind']} card in your graveyard to target"
             else:
-                targets_desc = ", ".join(
-                    f"{n} ({c})" if c else n for n, c, _cmc in info["targets"][:3]
-                )
+                targets_desc = ", ".join(f"{n} ({c})" if c else n for n, c, _cmc in info["targets"][:3])
                 fact = (
                     f"{name} grants flashback only until end of turn and leaves {info['mana_after']} mana: "
                     f"{targets_desc} cannot be cast this turn and the flashback does not carry over"

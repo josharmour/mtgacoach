@@ -432,9 +432,7 @@ class DraftEventDriver:
             return
         self._announce_then_pick(decision, context, seconds, read_at)
 
-    def _announce_then_pick(
-        self, decision: dict, context: dict, seconds: Any, read_at: float
-    ) -> None:
+    def _announce_then_pick(self, decision: dict, context: dict, seconds: Any, read_at: float) -> None:
         """Say 'Picking X...' first, wait 2 seconds so the player can find the card, then submit."""
         run, key, chosen = self.run, decision["key"], decision["chosen"]
         control = self._control

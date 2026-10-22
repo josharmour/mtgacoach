@@ -825,13 +825,49 @@ def test_prompt_tells_the_model_the_lane_must_match_the_plan():
 
 def test_committed_plan_lane_and_fixing_land_keep_gruul_cards_ahead_of_colorless_filler():
     cards = {
-        1: SetCard(1, "Lumbering Worldwagon", "G", "R", "Artifact - Vehicle", cmc=3, gih_wr=0.649, baseline=2.8, games=2000),
-        2: SetCard(2, "Boommobile", "R", "R", "Artifact - Vehicle", cmc=4, gih_wr=0.59, baseline=1.1, games=2000),
-        3: SetCard(3, "Rugged Highlands", "", "C", "Land", oracle="{T}: Add {R} or {G}.", gih_wr=0.543, baseline=-0.29, games=2000),
-        4: SetCard(4, "Wreckage Wickerfolk", "B", "C", "Artifact Creature", cmc=2, gih_wr=0.575, baseline=0.65, games=2000),
+        1: SetCard(
+            1,
+            "Lumbering Worldwagon",
+            "G",
+            "R",
+            "Artifact - Vehicle",
+            cmc=3,
+            gih_wr=0.649,
+            baseline=2.8,
+            games=2000,
+        ),
+        2: SetCard(
+            2, "Boommobile", "R", "R", "Artifact - Vehicle", cmc=4, gih_wr=0.59, baseline=1.1, games=2000
+        ),
+        3: SetCard(
+            3,
+            "Rugged Highlands",
+            "",
+            "C",
+            "Land",
+            oracle="{T}: Add {R} or {G}.",
+            gih_wr=0.543,
+            baseline=-0.29,
+            games=2000,
+        ),
+        4: SetCard(
+            4,
+            "Wreckage Wickerfolk",
+            "B",
+            "C",
+            "Artifact Creature",
+            cmc=2,
+            gih_wr=0.575,
+            baseline=0.65,
+            games=2000,
+        ),
         5: SetCard(5, "Risky Shortcut", "B", "C", "Sorcery", cmc=3, gih_wr=0.542, baseline=-0.31, games=2000),
-        6: SetCard(6, "Chitin Gravestalker", "B", "C", "Creature", cmc=6, gih_wr=0.536, baseline=-0.49, games=2000),
-        10: SetCard(10, "Greenbelt Guardian", "G", "U", "Creature", cmc=2, gih_wr=0.581, baseline=0.82, games=2000),
+        6: SetCard(
+            6, "Chitin Gravestalker", "B", "C", "Creature", cmc=6, gih_wr=0.536, baseline=-0.49, games=2000
+        ),
+        10: SetCard(
+            10, "Greenbelt Guardian", "G", "U", "Creature", cmc=2, gih_wr=0.581, baseline=0.82, games=2000
+        ),
         11: SetCard(
             11,
             "Run Over",
@@ -844,7 +880,17 @@ def test_committed_plan_lane_and_fixing_land_keep_gruul_cards_ahead_of_colorless
             baseline=0.66,
             games=2000,
         ),
-        12: SetCard(12, "Ticket Tortoise", "", "C", "Artifact Creature", cmc=2, gih_wr=0.534, baseline=-0.55, games=2000),
+        12: SetCard(
+            12,
+            "Ticket Tortoise",
+            "",
+            "C",
+            "Artifact Creature",
+            cmc=2,
+            gih_wr=0.534,
+            baseline=-0.55,
+            games=2000,
+        ),
     }
     primer = SetPrimer(set_code="DFT", cards=cards)
     lane_with_dual = pool_lane([3], primer)
@@ -891,5 +937,3 @@ def test_merge_public_catalog_rows_enriches_empty_17lands_ratings():
     assert merged[0]["ever_drawn_game_count"] == 18231
     assert round(merged[1]["ever_drawn_win_rate"], 4) == 0.5756
     assert merged[1]["ever_drawn_game_count"] == 58195
-
-
