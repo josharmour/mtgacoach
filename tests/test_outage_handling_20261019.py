@@ -320,3 +320,125 @@ def test_a_healthy_server_still_hedges(monkeypatch):
     backend = _Healthy()
     _run(backend)
     assert sorted(backend.calls, key=str) == sorted(["high", None], key=str)
+
+
+def test_an_inflight_game_plan_reform_that_does_not_yield_gets_one_low_effort_call(monkeypatch, caplog):
+    """bug_20261021_165042: a threat-triggered reform that keeps running alongside
+    a decision must not have both low and high decision legs piled on top of it."""
+    from tests.jace_states import jace_engine, jace_state
+
+    monkeypatch.setattr(action_planner, "critical_decision", lambda *a, **k: "removal")
+    backend = _Legs(low=(0.01, LOW))
+    engine, bridge, _ = jace_engine(LOW)
+    engine._planner._backend = backend
+    engine._game_plan_mgr = None
+    engine._planner.set_background_yield(lambda: False)
+    with caplog.at_level("INFO", logger="arenamcp.action_planner"):
+        assert engine._try_typed_decision_path(jace_state(), "decision_required") is True
+    assert backend.calls == [None]
+    assert engine._planner._last_decision_trace["hedge"] == {
+        "winner": "low",
+        "why": "high not sent: game-plan reform in flight",
+    }
+    assert "game-plan reform running alongside; one low-effort call, no high-effort leg" in caplog.text
+    bridge.submit_action_by_index.assert_called_once()
+
+
+def test_concurrent_hedge_legs_failing_count_as_one_circuit_failure_and_do_not_reopen_probation(hung):
+    """bug_20261021_165042 (16:50:19 & 16:52:40): both legs of one hedged decision
+    timed out at 8.0 s and were counted as 2 consecutive failures, reopening the
+    breaker in probation on a single decision (0.0 s span)."""
+    server = hung(["hang", "hang"])
+    be = _backend(server.url)
+    breaker = be._circuit()
+    # Put the breaker into probation after a recovery.
+    for _ in range(5):
+        breaker.record_failure("down")
+    assert not breaker.available()
+    breaker.record_success("probe OK")
+    assert be.circuit_snapshot()["probation"] is True
+
+    barrier = threading.Barrier(2)
+    errors: list = []
+
+    def leg(effort):
+        barrier.wait(2)
+        err, _ = _timed(
+            be.complete,
+            "s",
+            "PENDING DECISION",
+            request_timeout_s=5,
+            first_token_timeout_s=0.4,
+            call_class="decision.typed",
+            reasoning_effort=effort,
+            raise_on_error=True,
+        )
+        errors.append(err)
+
+    t1 = threading.Thread(target=leg, args=(None,), daemon=True)
+    t2 = threading.Thread(target=leg, args=("high",), daemon=True)
+    t1.start()
+    t2.start()
+    t1.join(5)
+    t2.join(5)
+    assert len(errors) == 2 and all(isinstance(e, BackendError) for e in errors)
+    snap = be.circuit_snapshot()
+    assert snap["consecutive_failures"] == 1, "two concurrent legs of one decision count as 1 failure"
+    assert snap["state"] == "closed" and be.available()
+
+
+def test_probation_requires_a_non_zero_span_to_reopen():
+    now = [100.0]
+    breaker = CircuitBreaker("k", clock=lambda: now[0], probe_thread=False)
+    for _ in range(5):
+        breaker.record_failure("down")
+    breaker.record_success("recovered")
+    assert not breaker.record_failure("leg 1")
+    # Simultaneous second failure (0.0 s span) does not reopen probation.
+    assert not breaker.record_failure("leg 2")
+    assert breaker.available()
+    now[0] += 1.0
+    assert breaker.record_failure("next call 1 s later")
+    assert not breaker.available()
+
+
+def test_first_token_timeout_and_stream_stall_say_too_slow_until_circuit_opens(monkeypatch, caplog):
+    """bug_20261021_165042: a single FirstTokenTimeout or StreamStalled while the
+    circuit is closed should report 'Model too slow', not 'Model unavailable'."""
+    from tests.jace_states import POLL, jace_state
+
+    from arenamcp.decisions import build_pending_decision
+
+    decision = build_pending_decision(POLL, resolve_instance=lambda _iid: "")
+    ttft_err = BackendError("no first token within 8.0s (FirstTokenTimeout)", kind="first_token_timeout")
+    stall_err = BackendError("stream stalled: no data for 4s after the first token", kind="stream_stall")
+
+    for err in (ttft_err, stall_err):
+        backend = _Legs(high=(0.01, err), low=(0.01, err))
+        planner = action_planner.ActionPlanner(backend=backend)
+        planner.plan_decision_options(decision, jace_state())
+        assert planner.last_llm_failure == "unavailable"
+        assert planner._last_decision_reasoning.startswith("Model too slow;")
+
+    # Once the circuit is open, it reports "Model unavailable".
+    class _OpenBackend(_Legs):
+        def available(self):
+            return False
+
+    planner = action_planner.ActionPlanner(backend=_OpenBackend(high=(0.01, ttft_err), low=(0.01, ttft_err)))
+    planner.plan_decision_options(decision, jace_state())
+    assert planner._last_decision_reasoning.startswith("Model unavailable;")
+
+    # And a caller-cancelled decision (request changed) says "Decision cancelled", not "Model unavailable".
+    monkeypatch.setattr(action_planner, "critical_decision", lambda *a, **k: "removal")
+    slow_backend = _Legs(high=(0.5, LOW), low=(0.5, LOW))
+    planner = action_planner.ActionPlanner(backend=slow_backend)
+    outer = threading.Event()
+    planner.set_decision_cancel_event(outer)
+    threading.Timer(0.02, outer.set).start()
+    caplog.clear()
+    with caplog.at_level("INFO", logger="arenamcp.action_planner"):
+        planner.plan_decision_options(decision, jace_state())
+    assert planner._last_decision_reasoning.startswith("Decision cancelled;")
+    assert "model unavailable" not in caplog.text.lower()
+

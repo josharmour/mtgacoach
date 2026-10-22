@@ -548,9 +548,72 @@ class StandaloneCoach(
             _on_health_transition(boot)
             self._startup_probe_detail = boot.get("detail") or ""
             self._startup_probe_reported = True
+            self._start_public_gateway_canary(backend)
         except Exception as e:
             self._startup_connection_error = str(e)
             logger.debug(f"Startup backend health probe failed (non-fatal): {e}")
+
+    _PUBLIC_CANARY_INTERVAL_S = 60.0
+
+    def _start_public_gateway_canary(self, backend: Any) -> None:
+        """Monitor public ``api.mtgacoach.com`` in the background when a local ``gateway_url`` override is active."""
+        from arenamcp.backends.proxy import ONLINE_BASE_URL
+
+        base_url = getattr(backend, "_base_url", None)
+        if not base_url or base_url == ONLINE_BASE_URL or not getattr(backend, "_is_online", False):
+            return
+        if getattr(self, "_public_canary_started", False):
+            return
+        self._public_canary_started = True
+        self._public_gateway_ok: bool | None = None
+        logger.info(
+            f"[PUBLIC GATEWAY] Local gateway_url override active ({base_url}); "
+            f"monitoring public {ONLINE_BASE_URL} every {self._PUBLIC_CANARY_INTERVAL_S:.0f}s"
+        )
+        with contextlib.suppress(Exception):
+            self.ui.log(
+                f"Gateway override active: {base_url} (monitoring public api.mtgacoach.com)"
+            )
+
+        def _loop() -> None:
+            while getattr(self, "_running", True):
+                self._check_public_gateway_once(backend)
+                for _ in range(int(self._PUBLIC_CANARY_INTERVAL_S * 2)):
+                    if not getattr(self, "_running", True):
+                        return
+                    time.sleep(0.5)
+
+        threading.Thread(target=_loop, name="public-gateway-canary", daemon=True).start()
+
+    def _check_public_gateway_once(self, backend: Any) -> bool:
+        """Probe public ``api.mtgacoach.com`` once and report any DOWN/RECOVERED transitions."""
+        from arenamcp.backends.proxy import ONLINE_BASE_URL, probe_public_gateway
+
+        base_url = getattr(backend, "_base_url", ONLINE_BASE_URL)
+        license_key = getattr(backend, "_api_key", "") or ""
+        ok, detail = probe_public_gateway(license_key=license_key, timeout=6.0)
+        prev = getattr(self, "_public_gateway_ok", None)
+        self._public_gateway_ok = ok
+        if not ok and prev is not False:
+            logger.warning(
+                f"[PUBLIC GATEWAY] DOWN — {ONLINE_BASE_URL} is unreachable ({detail}); "
+                f"local gateway_url override ({base_url}) is still active"
+            )
+            with contextlib.suppress(Exception):
+                self.ui.log(
+                    f"[bold red]⚠ Public api.mtgacoach.com is DOWN ({detail}) — "
+                    f"local override ({base_url}) is still active.[/]"
+                )
+                self.ui.status(f"⚠ Public api.mtgacoach.com DOWN ({detail})")
+        elif ok and prev is False:
+            logger.info(f"[PUBLIC GATEWAY] RECOVERED — {ONLINE_BASE_URL} is responding again ({detail})")
+            with contextlib.suppress(Exception):
+                self.ui.log(f"[green]✓ Public api.mtgacoach.com recovered ({detail}).[/]")
+        elif ok and prev is None:
+            logger.info(
+                f"[PUBLIC GATEWAY] Canary OK ({detail}) while using gateway_url override ({base_url})"
+            )
+        return ok
 
     @staticmethod
     def _probe_inference_health(probe: Any) -> tuple[HealthState, str]:

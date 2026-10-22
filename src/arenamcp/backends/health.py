@@ -105,8 +105,11 @@ class CircuitBreaker:
     PROBE_SLOW_AFTER_S = 300.0
     PROBE_SLOW_INTERVAL_S = 15.0
     PROBATION_S = 120.0
-    # Consecutive counted failures that re-open the breaker during probation.
+    # Consecutive counted failures that re-open the breaker during probation,
+    # provided they span at least PROBATION_REOPEN_SPAN_S (so two concurrent
+    # calls failing at the same instant do not reopen it on a 0.0 s span).
     PROBATION_REOPEN_FAILURES = 2
+    PROBATION_REOPEN_SPAN_S = 0.5
 
     def __init__(
         self,
@@ -120,6 +123,10 @@ class CircuitBreaker:
         self._lock = threading.Lock()
         self._open = False
         self._consecutive = 0
+        # Monotonic count of counted failures, used to deduplicate concurrent
+        # calls (such as two legs of one hedged decision) that were admitted
+        # before the first failure was recorded.
+        self._failure_seq = 0
         # The current streak holds a saturation failure (see "Degraded").
         self._saturated = False
         self._streak_started: float | None = None
@@ -206,6 +213,11 @@ class CircuitBreaker:
         with self._lock:
             return self._generation
 
+    def failure_seq(self) -> int:
+        """Monotonic count of counted failures at the time a call is admitted."""
+        with self._lock:
+            return self._failure_seq
+
     def background_blocked(self) -> bool:
         """True when background work should not call the model at all."""
         if not circuit_enabled():
@@ -275,7 +287,14 @@ class CircuitBreaker:
         )
         return True
 
-    def record_failure(self, error: str = "", *, token: int | None = None, saturation: bool = False) -> bool:
+    def record_failure(
+        self,
+        error: str = "",
+        *,
+        token: int | None = None,
+        saturation: bool = False,
+        admitted_failures: int | None = None,
+    ) -> bool:
         """Record one counted failure. Returns True when this call opened it.
 
         ``token`` is the generation the call was admitted in (None = current).
@@ -285,6 +304,10 @@ class CircuitBreaker:
         admitted before the latest open/close is old news and not counted.
         ``saturation``: the server took the request but generated nothing
         (no first token, or a stream that stalled): the endpoint is degraded.
+        ``admitted_failures``: ``failure_seq()`` when the call was admitted; if
+        another concurrent call already advanced the fresh failure streak since
+        then (e.g. the other leg of the same hedged decision), this call does
+        not double-count as a second consecutive failure.
         """
         with self._lock:
             now = self._clock()
@@ -301,14 +324,26 @@ class CircuitBreaker:
                 self._consecutive = 0
                 self._saturated = False
                 self._streak_started = None
+            if (
+                admitted_failures is not None
+                and self._consecutive > 0
+                and admitted_failures < self._failure_seq
+            ):
+                self._saturated = self._saturated or bool(saturation)
+                return False
             self._consecutive += 1
+            self._failure_seq += 1
             self._saturated = self._saturated or bool(saturation)
             if self._streak_started is None:
                 self._streak_started = now
             self._last_failure_at = now
             span = now - self._streak_started
             trip = (
-                (self._in_probation_locked(now) and self._consecutive >= self.PROBATION_REOPEN_FAILURES)
+                (
+                    self._in_probation_locked(now)
+                    and self._consecutive >= self.PROBATION_REOPEN_FAILURES
+                    and span >= self.PROBATION_REOPEN_SPAN_S
+                )
                 or (self._consecutive >= self.TRIP_FAILURES and span >= self.TRIP_SPAN_S)
                 or self._consecutive >= self.TRIP_FAILURES_ANY_SPAN
             )

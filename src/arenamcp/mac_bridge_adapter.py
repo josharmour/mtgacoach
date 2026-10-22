@@ -1595,7 +1595,13 @@ class MacBridgeAdapter:
             num(field(attacker, "AttackerInstanceId")): attacker
             for attacker in attacker_nodes(request, "Attackers")
         }
-        for attacker in attacker_nodes(request, "QualifiedAttackers"):
+        warning_must_ids = {
+            num(field(warning, "InstanceId"))
+            for warning in items(field(request, "AttackWarnings"))
+            if "MustAttack" in str(enum_name(field(warning, "Type")) or "")
+        }
+        menu_nodes = attacker_nodes(request, "QualifiedAttackers") or attacker_nodes(request, "Attackers")
+        for attacker in menu_nodes:
             recipients = []
             recipient_nodes = items(field(attacker, "LegalDamageRecipients"))
             for recipient in recipient_nodes:
@@ -1609,14 +1615,19 @@ class MacBridgeAdapter:
                     if value is not None:
                         entry[key] = value
                 recipients.append(entry)
-            entry = {
-                "attackerInstanceId": num(field(attacker, "AttackerInstanceId")),
-                "mustAttack": bool(field(attacker, "MustAttack")),
-                "legalDamageRecipients": recipients,
-            }
-            declared = declarations.get(num(field(attacker, "AttackerInstanceId")))
+            attacker_id = num(field(attacker, "AttackerInstanceId"))
+            declared = declarations.get(attacker_id)
             if field(request, "Attackers") is None:
                 declared = attacker  # Compatibility with snapshots exposing only the legal menu.
+            entry = {
+                "attackerInstanceId": attacker_id,
+                "mustAttack": bool(
+                    field(attacker, "MustAttack")
+                    or field(declared, "MustAttack")
+                    or attacker_id in warning_must_ids
+                ),
+                "legalDamageRecipients": recipients,
+            }
             selected = field(declared, "SelectedDamageRecipient")
             entry["selectedDamageRecipient"] = None
             if isinstance(selected, dict):
@@ -2272,7 +2283,32 @@ class MacBridgeAdapter:
             if command.get(name) is not None and command[name] != actual:
                 raise AdapterError("Stale attack declaration: request changed before confirmation")
         wanted = {int(a.get("attackerInstanceId") or 0) for a in command.get("attackers") or []}
-        available = attacker_nodes(snapshot.request, "Attackers")
+        declared_nodes = attacker_nodes(snapshot.request, "Attackers")
+        declared_by_id = {num(field(attacker, "AttackerInstanceId")): attacker for attacker in declared_nodes}
+        qualified_nodes = attacker_nodes(snapshot.request, "QualifiedAttackers")
+        if qualified_nodes:
+            # When a creature has mustAttack (e.g. Howlsquad Heavy's Goblin token),
+            # the initial DeclareAttackerRequest puts ONLY the mustAttack creature
+            # in Attackers while QualifiedAttackers holds all legal attackers.
+            # Prefer the mutable Attackers node when present; fall back to the
+            # QualifiedAttackers node so UpdateAttacker can declare any legal attacker.
+            available = [
+                declared_by_id.get(num(field(attacker, "AttackerInstanceId")), attacker)
+                for attacker in qualified_nodes
+            ]
+            seen_ids = {num(field(attacker, "AttackerInstanceId")) for attacker in available}
+            available.extend(
+                attacker
+                for attacker in declared_nodes
+                if num(field(attacker, "AttackerInstanceId")) not in seen_ids
+            )
+        else:
+            available = declared_nodes
+        authoritative_ids = (
+            set(declared_by_id)
+            if field(snapshot.request, "Attackers") is not None
+            else {num(field(attacker, "AttackerInstanceId")) for attacker in available}
+        )
         legal_ids = {num(field(attacker, "AttackerInstanceId")) for attacker in available}
         if not wanted.issubset(legal_ids):
             raise AdapterError(
@@ -2313,14 +2349,15 @@ class MacBridgeAdapter:
                 recipient = legal[0]
             else:
                 raise AdapterError(f"Attacker {identity} needs an explicit legal damage recipient")
-            selected = field(attacker, "SelectedDamageRecipient")
+            selected = field(attacker, "SelectedDamageRecipient") if identity in authoritative_ids else None
             if not same_damage_recipient(selected, recipient):
                 matched.append((attacker, recipient))
         if command.get("finalize_only") or (wanted and not matched):
             selected_ids = {
                 num(field(attacker, "AttackerInstanceId"))
                 for attacker in available
-                if field(attacker, "SelectedDamageRecipient") is not None
+                if num(field(attacker, "AttackerInstanceId")) in authoritative_ids
+                and field(attacker, "SelectedDamageRecipient") is not None
             }
             if matched or selected_ids != wanted:
                 raise AdapterError("Attack declaration changed before confirmation; no selection submitted")

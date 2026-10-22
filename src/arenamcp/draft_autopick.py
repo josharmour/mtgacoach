@@ -154,16 +154,18 @@ _LIFEGAIN_DENIAL = re.compile(
     r"\b(?:players|your opponents|opponents) can't gain life\b|\blife totals? can't change\b"
 )
 
+_NOT_SELF_TARGET = r"(?!\s+(?:or\s+[a-z]+\s+)*you control\b)"
 _REMOVAL_PATTERNS = tuple(
     re.compile(pattern)
     for pattern in (
-        r"\bdestroy target\b",
-        r"\bexile target (?:[a-z]+ )*?(?:creature|planeswalker|permanent)\b",
-        r"\bdeals? (?:\d+|x) damage to (?:any target|(?:up to one )?target (?:[a-z]+ )*?(?:creature|planeswalker))",
-        r"\btarget creature\b[^.]*?\bgets -(?:\d+|x)/-(?:[1-9]\d*|x)\b",
+        rf"\bdestroy target (?:[a-z]+ )*?(?:creature|planeswalker|permanent)\b{_NOT_SELF_TARGET}",
+        rf"\bexile target (?:[a-z]+ )*?(?:creature|planeswalker|permanent)\b{_NOT_SELF_TARGET}",
+        rf"\bdeals? (?:[2-9]|\d{{2,}}|x|that much) damage to (?:any target|(?:up to one )?target (?:[a-z]+ )*?(?:creature|planeswalker)\b{_NOT_SELF_TARGET})",
+        rf"\bdeals? damage equal to its (?:power|toughness) to (?:any target|(?:up to one )?target (?:[a-z]+ )*?(?:creature|planeswalker)\b{_NOT_SELF_TARGET})",
+        rf"\btarget creature\b{_NOT_SELF_TARGET}[^.]*?\bgets -(?:\d+|x)/-(?:[1-9]\d*|x)\b",
         r"\b(?:target|each) opponent sacrifices (?:a|an|one) (?:[a-z]+ )*?(?:creature|planeswalker)",
         r"\bbase power and toughness 0/0\b",
-        r"\bfights? (?:up to one )?(?:other )?target (?:[a-z]+ )*?creature",
+        rf"\bfights? (?:up to one )?(?:other )?target (?:[a-z]+ )*?creature\b{_NOT_SELF_TARGET}",
     )
 )
 
@@ -356,10 +358,9 @@ def _unrated_prior(card: Any, stats: _SetStats) -> tuple[float, str]:
 
 def is_removal(card: Any) -> bool:
     """Kills, exiles, shrinks or forces a sacrifice of an opponent's creature, from rules text."""
-    text = html.unescape(re.sub(r"<[^>]*>", "", str(getattr(card, "oracle", "") or ""))).lower()
+    raw = getattr(card, "oracle", None) or getattr(card, "oracle_text", None) or ""
+    text = html.unescape(re.sub(r"<[^>]*>", "", str(raw))).lower()
     for sentence in re.split(r"[.\n]", text):
-        if "you control" in sentence:
-            continue
         if any(pattern.search(sentence) for pattern in _REMOVAL_PATTERNS):
             return True
     return False
@@ -455,6 +456,12 @@ def pool_lane(pool: list[int], primer: SetPrimer | None, mana_costs: dict[int, s
     for grp_id in pool:
         card = primer.card(grp_id) if primer else None
         if card is None or is_ordinary_basic(card.name):
+            continue
+        if is_nonbasic_land(card):
+            produced = land_colors(card)
+            if 2 <= len(produced) <= 3:
+                for color in produced:
+                    weights[color] += 0.35 / len(produced)
             continue
         needs = _mana_needs(card, mana_costs)
         if not needs:
@@ -691,6 +698,16 @@ def rank_pack(
     mana_costs = mana_costs or {}
     stats = _set_stats(primer)
     lane = pool_lane(pool, primer, mana_costs)
+    committed_colors = normalize_colors(plan_lane)
+    if len(committed_colors) == 2:
+        committed_main = max(committed_colors, key=lambda c: lane.weights.get(c, 0.0))
+        lane = Lane(
+            colors=committed_colors,
+            weights=lane.weights,
+            commitment=lane.commitment,
+            main=committed_main,
+            second_hold=max(lane.second_hold, 0.75),
+        )
     main = lane.main or (lane.colors[:1] if lane.colors else "")
     second = "".join(color for color in lane.colors if color != main)
     hold = second_color_hold(lane, pack_number, pick_number)

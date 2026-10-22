@@ -412,8 +412,12 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
         return False
 
     elif msg_type == "GREMessageType_DeclareAttackersReq":
+        from arenamcp.combat_targets import merge_declare_attackers
+
         req = msg.get("declareAttackersReq", {})
-        legal_attackers = _ensure_list(req.get("attackers", req.get("qualifiedAttackers", [])))
+        legal_attackers = merge_declare_attackers(req) if isinstance(req, dict) else []
+        if not legal_attackers:
+            legal_attackers = _ensure_list(req.get("attackers", req.get("qualifiedAttackers", [])))
         attacker_names, attacker_ids = [], []
         for atk in legal_attackers:
             obj_id = (

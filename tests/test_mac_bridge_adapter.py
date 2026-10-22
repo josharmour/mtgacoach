@@ -1390,3 +1390,70 @@ def test_leaving_the_result_screen_reports_a_survey_it_cannot_skip():
     result = MacBridgeAdapter(world.send).handle({"action": "leave_match"})
     assert result["ok"] is False and "Skip button" in result["error"]
     assert not world.calls
+
+
+def test_must_attack_goblin_token_shapes_and_submits_with_qualified_attackers():
+    """bug_20261021_205401: Howlsquad Heavy's Goblin token has mustAttack=True.
+
+    On the initial DeclareAttackerRequest (gsid=353 / gsid=457), Attackers holds
+    ONLY the mandatory Goblin token (with mustAttack=True), while
+    QualifiedAttackers holds all legal attackers (with mustAttack=False).
+    Both get_pending_actions and submit_attackers must expose and accept all
+    qualified attackers while preserving mustAttack=True on the Goblin token.
+    """
+    opponent = {"$h": 31, "type_": enum("Player", 1), "playerSystemSeatId_": 2}
+    q_heavy = {
+        "$c": MSG + "Attacker",
+        "$h": 40,
+        "attackerInstanceId_": 328,
+        "legalDamageRecipients_": listing(opponent),
+        "selectedDamageRecipient_": None,
+        "mustAttack_": False,
+    }
+    q_goblin = {
+        "$c": MSG + "Attacker",
+        "$h": 41,
+        "attackerInstanceId_": 360,
+        "legalDamageRecipients_": listing(opponent),
+        "selectedDamageRecipient_": None,
+        "mustAttack_": False,
+    }
+    d_goblin = {
+        "$c": MSG + "Attacker",
+        "$h": 51,
+        "attackerInstanceId_": 360,
+        "legalDamageRecipients_": listing(opponent),
+        "selectedDamageRecipient_": None,
+        "mustAttack_": True,
+    }
+    request = {
+        "$c": "GreClient.Rules.DeclareAttackerRequest",
+        "$h": 5,
+        "QualifiedAttackers": listing(q_heavy, q_goblin),
+        "Attackers": listing(d_goblin),
+    }
+    game = FakeGame(request, {"CanSubmit": False}, gsid=457, msg=636)
+    adapter = adapter_for(game)
+
+    pending = adapter.handle({"action": "get_pending_actions"})
+    assert [(a["attackerInstanceId"], a["mustAttack"]) for a in pending["attackers"]] == [
+        (328, False),
+        (360, True),
+    ]
+
+    step1 = adapter.handle(
+        {
+            "action": "submit_attackers",
+            "attackers": [
+                {"attackerInstanceId": 328, "damageRecipient": {"playerSystemSeatId": 2}},
+                {"attackerInstanceId": 360, "damageRecipient": {"playerSystemSeatId": 2}},
+            ],
+        }
+    )
+    assert step1["ok"] is True
+    assert step1["needs_finalize"] is True
+    assert step1["declared_count"] == 2
+    update = game.submits()[-1]
+    assert update[-1]["method"] == "UpdateAttacker"
+    assert update[-1]["args"] == [{"list": [{"h": 40}, {"h": 51}]}]
+

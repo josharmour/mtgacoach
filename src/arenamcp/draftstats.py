@@ -70,6 +70,32 @@ def merge_alchemy_rows(alchemy: list[dict[str, Any]], base: list[dict[str, Any]]
     return merged
 
 
+def merge_public_catalog_rows(
+    rows: list[dict[str, Any]], catalog_cards: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Fill in GIH/GP win rates from precomputed 17Lands public game data when the live API omits past sets."""
+    if not catalog_cards:
+        return rows
+    by_name = {str(name).lower(): card for name, card in catalog_cards.items()}
+    merged: list[dict[str, Any]] = []
+    for row in rows:
+        name = str(row.get("name") or "").lower()
+        cat = by_name.get(name)
+        if row.get("ever_drawn_win_rate") is None and cat is not None:
+            gih_wr = cat.get("gih_wr")
+            gp_wr = cat.get("gp_wr")
+            games = int(cat.get("gih_games") or 0)
+            if gih_wr is not None or gp_wr is not None:
+                row = dict(row) | {
+                    "ever_drawn_win_rate": gih_wr,
+                    "ever_drawn_game_count": games,
+                    "win_rate": gp_wr,
+                    "game_count": games,
+                }
+        merged.append(row)
+    return merged
+
+
 def _parse_color_key(color_name: str) -> str | None:
     """Extract parenthesized color letters from a 17lands color_name string."""
     if "(" not in color_name or ")" not in color_name:
@@ -121,6 +147,8 @@ class DraftStatsCache:
 
         # In-memory cache: {set_code: {card_name_lower: DraftStats}}
         self._stats_cache: dict[str, dict[str, DraftStats]] = {}
+        # In-memory cache: {expansion: list[dict[str, Any]]}
+        self._raw_cache: dict[str, list[dict[str, Any]]] = {}
         # In-memory cache: {set_code: {color_key: ColorPairStats}}
         self._color_cache: dict[str, dict[str, ColorPairStats]] = {}
 
@@ -211,12 +239,27 @@ class DraftStatsCache:
         return self._stats_cache[expansion]
 
     def _expansion_rows(self, expansion: str) -> list[dict[str, Any]]:
+        expansion = expansion.upper()
         cache_path = self._get_cache_path(expansion)
-        if cache_path.exists() and not self._is_cache_stale(expansion):
+        valid = cache_path.exists() and not self._is_cache_stale(expansion)
+        if valid and expansion in self._raw_cache:
+            return self._raw_cache[expansion]
+        if valid:
             logger.info(f"Loading cached 17lands data from {cache_path}")
             with open(cache_path, encoding="utf-8") as f:
-                return json.load(f)
-        return self._download_set_data(expansion)
+                rows = json.load(f)
+        else:
+            rows = self._download_set_data(expansion)
+        if sum(1 for row in rows if row.get("ever_drawn_win_rate") is not None) < 20:
+            catalog_path = self._cache_dir / "public" / "work" / f"{expansion}.catalog.json"
+            if catalog_path.exists():
+                try:
+                    catalog_cards = json.loads(catalog_path.read_text(encoding="utf-8")).get("cards") or {}
+                    rows = merge_public_catalog_rows(rows, catalog_cards)
+                except Exception as e:
+                    logger.debug(f"Public catalog fallback for {expansion} unavailable: {e}")
+        self._raw_cache[expansion] = rows
+        return rows
 
     def get_raw_ratings(self, set_code: str) -> list[dict[str, Any]]:
         """The 17lands rows for the current event's format (mtga_id, ATA, ALSA, GIH, IWD...).

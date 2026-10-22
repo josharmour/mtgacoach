@@ -272,12 +272,12 @@ def test_a_reform_for_a_new_threat_keeps_running_alongside_a_decision(caplog):
     mgr._inflight_started_at = time.monotonic()  # fresh: would yield
     mgr._inflight_basis = board_basis(after)
     with caplog.at_level(logging.INFO, logger="arenamcp.game_plan"):
-        mgr.yield_for_decision()
+        assert mgr.yield_for_decision() is False
     assert not cancel.is_set() and mgr._inflight is True
     assert "the current plan predates Dawnwing Marshal is now 4/4" in caplog.text
     # Nothing new in the in-flight snapshot: a fresh reform still yields.
     mgr._inflight_basis = board_basis(before)
-    mgr.yield_for_decision()
+    assert mgr.yield_for_decision() is True
     assert cancel.is_set() and mgr._inflight is False
 
 

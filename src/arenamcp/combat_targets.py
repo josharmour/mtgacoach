@@ -3,14 +3,80 @@
 from typing import Any
 
 
+def merge_declare_attackers(req: dict[str, Any]) -> list[Any]:
+    """Merge GRE ``qualifiedAttackers`` and ``attackers`` (preserving ``mustAttack`` and selections).
+
+    When a creature has a mandatory attack requirement (e.g. Howlsquad Heavy's
+    Goblin token with "attacks this combat if able"), the initial
+    ``DeclareAttackersReq`` puts ONLY the mandatory creature(s) in ``attackers``
+    (with ``mustAttack: true``) while ``qualifiedAttackers`` holds all legal
+    attackers (without ``mustAttack`` set). Merging both lists exposes every
+    legal attacker while keeping ``mustAttack`` and ``selectedDamageRecipient``.
+    """
+    declared = req.get("attackers") if isinstance(req.get("attackers"), list) else []
+    qualified = req.get("qualifiedAttackers") if isinstance(req.get("qualifiedAttackers"), list) else []
+    warnings = req.get("AttackWarnings") or req.get("attackWarnings") or []
+    warning_must_ids = {
+        int(w.get("instanceId") or 0)
+        for w in (warnings if isinstance(warnings, list) else [])
+        if isinstance(w, dict) and "MustAttack" in str(w.get("type") or "")
+    }
+    declared_by_id: dict[int, dict[str, Any]] = {}
+    for entry in declared:
+        if isinstance(entry, dict):
+            try:
+                iid = int(entry.get("attackerInstanceId", entry.get("instanceId", 0)) or 0)
+            except (TypeError, ValueError):
+                iid = 0
+            if iid:
+                declared_by_id[iid] = entry
+    if qualified:
+        merged: list[Any] = []
+        seen: set[int] = set()
+        for entry in qualified:
+            if not isinstance(entry, dict):
+                merged.append(entry)
+                continue
+            try:
+                iid = int(entry.get("attackerInstanceId", entry.get("instanceId", 0)) or 0)
+            except (TypeError, ValueError):
+                iid = 0
+            dec = declared_by_id.get(iid, {})
+            item = dict(entry)
+            if dec.get("mustAttack") or entry.get("mustAttack") or (iid and iid in warning_must_ids):
+                item["mustAttack"] = True
+            if dec.get("selectedDamageRecipient") is not None:
+                item["selectedDamageRecipient"] = dec["selectedDamageRecipient"]
+            merged.append(item)
+            if iid:
+                seen.add(iid)
+        for iid, dec in declared_by_id.items():
+            if iid not in seen:
+                item = dict(dec)
+                if iid in warning_must_ids:
+                    item["mustAttack"] = True
+                merged.append(item)
+        return merged
+    result: list[Any] = []
+    for entry in declared:
+        if isinstance(entry, dict):
+            try:
+                iid = int(entry.get("attackerInstanceId", entry.get("instanceId", 0)) or 0)
+            except (TypeError, ValueError):
+                iid = 0
+            if iid and iid in warning_must_ids and not entry.get("mustAttack"):
+                entry = {**entry, "mustAttack": True}
+        result.append(entry)
+    return result
+
+
 def attack_candidates(state: dict, pending: dict | None = None) -> list[dict] | None:
     if pending is not None:
         if isinstance(pending.get("attackers"), list):
             return pending["attackers"]
         payload = pending.get("request_payload") or {}
-        for key in ("qualifiedAttackers", "attackers"):
-            if isinstance(payload.get(key), list):
-                return payload[key]
+        if isinstance(payload.get("qualifiedAttackers"), list) or isinstance(payload.get("attackers"), list):
+            return merge_declare_attackers(payload)
     return (state.get("decision_context") or {}).get("raw_attackers")
 
 

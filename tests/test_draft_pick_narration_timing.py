@@ -115,7 +115,9 @@ def test_commentary_off_picks_at_once_without_selecting_or_waiting(primer):
     w = world(primer, commentary=False)
     w.driver._step()
     assert actions(w) == ["get_screen", "get_draft_state", "submit_draft_pick"]
-    assert w.clock.now == 1000.0 and w.spoken == ["Taking Blue Ace."]
+    assert w.clock.now == pytest.approx(1000.0 + draft_event.PICK_ANNOUNCE_DELAY_S)
+    assert at(w, "submit_draft_pick") == pytest.approx(1000.0 + draft_event.PICK_ANNOUNCE_DELAY_S)
+    assert w.spoken == ["Picking Blue Ace."]
 
 
 def test_muted_voice_holds_for_reading_time_but_never_past_the_cap(primer):
@@ -151,7 +153,8 @@ def test_low_pick_clock_picks_first_and_explains_after(primer):
     w = world(primer, seconds=14)
     w.driver._step()
     assert actions(w) == ["get_screen", "get_draft_state", "submit_draft_pick"]
-    assert len(w.spoken) == 1 and w.spoken[0].startswith("Taking Blue Ace: ")
+    assert at(w, "submit_draft_pick") == pytest.approx(1000.0 + draft_event.PICK_ANNOUNCE_DELAY_S)
+    assert len(w.spoken) == 1 and w.spoken[0].startswith("Picking Blue Ace: ")
 
 
 def test_narration_is_cut_short_to_confirm_before_the_pick_clock_runs_out(primer):
@@ -356,14 +359,22 @@ def test_confirm_reports_a_press_that_did_not_draft():
 
 
 def test_default_confirms_at_once_and_explains_as_the_next_pack_loads(primer):
-    """2026-10-18 (Linux/Proton): with the explanation spoken first, Arena moved on
-    before the confirm ("P3p12 moved on while narrating"). Off by default now:
-    the pick is confirmed straight away and explained afterwards, never blocking."""
+    """By default, announce 'Picking <Card>...' first and wait 2 seconds before
+    submitting the pick so the player can find and read the card in the pack."""
+    speak_times = []
     w = world(primer, narrate_first_fn=lambda: False)
+    orig_speak = w.driver._speak_fn
+
+    def timed_speak(text):
+        speak_times.append(w.clock.now)
+        orig_speak(text)
+
+    w.driver._speak_fn = timed_speak
     w.driver._step()
     assert actions(w) == ["get_screen", "get_draft_state", "submit_draft_pick"]
-    assert w.clock.now == 1000.0  # nothing waited on the voice
-    assert len(w.spoken) == 1 and w.spoken[0].startswith("Taking Blue Ace: ")
+    assert speak_times == [1000.0]
+    assert at(w, "submit_draft_pick") == pytest.approx(1000.0 + draft_event.PICK_ANNOUNCE_DELAY_S)
+    assert len(w.spoken) == 1 and w.spoken[0].startswith("Picking Blue Ace: ")
 
 
 def test_narrating_before_the_pick_is_an_opt_in_setting():

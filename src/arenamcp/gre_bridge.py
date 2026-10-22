@@ -2411,8 +2411,10 @@ def _apply_bridge_attackers(snapshot: dict[str, Any], poll: dict[str, Any]) -> N
         return
     payload = poll.get("request_payload") or {}
     raw_attackers = poll.get("attackers")
-    if raw_attackers is None:
-        raw_attackers = payload.get("qualifiedAttackers", payload.get("attackers"))
+    if raw_attackers is None and isinstance(payload, dict):
+        from arenamcp.combat_targets import merge_declare_attackers
+
+        raw_attackers = merge_declare_attackers(payload) or None
     if not isinstance(raw_attackers, list):
         return
     attacker_ids = []

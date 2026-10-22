@@ -67,6 +67,7 @@ PICK_NARRATION_MIN_CLOCK_S = 15.0
 PICK_NARRATION_MAX_S = 12.0
 PICK_CLOCK_RESERVE_S = 5.0
 PICK_CONFIRM_BEAT_S = 1.0
+PICK_ANNOUNCE_DELAY_S = 2.0
 # The model may overrule the ranking only among near-equals: within this many
 # score units of the ranking's own pick (one point is one standard deviation
 # of 17Lands quality, or the same in deck value), or in its top few and no
@@ -113,8 +114,10 @@ class DraftRun:
     sealed_done_presses: int = 0
     # The build decided for a pool, reused on retries so a retried submit is the same deck.
     deck_plan: dict | None = None
+    deck_explained_pool: tuple | None = None
     # The pick autoplay selected in Arena and has not confirmed yet (key, cards, decision).
     preview: dict | None = None
+    announced_pick_key: tuple | None = None
     # The deck plan the model last stated; the commentary's lane follows it, not the pool estimate.
     plan: str = ""
     plan_lane: str = ""  # the advisor's validated lane code for that plan
@@ -427,14 +430,42 @@ class DraftEventDriver:
         if deadline is not None:
             self._narrate_then_pick(decision, context, deadline)
             return
+        self._announce_then_pick(decision, context, seconds, read_at)
+
+    def _announce_then_pick(
+        self, decision: dict, context: dict, seconds: Any, read_at: float
+    ) -> None:
+        """Say 'Picking X...' first, wait 2 seconds so the player can find the card, then submit."""
+        run, key, chosen = self.run, decision["key"], decision["chosen"]
+        control = self._control
+
+        def cancelled() -> bool:
+            return not self.enabled or self._control != control
+
+        self.owns_ui = True
+        if self._speak_fn is not None and run.announced_pick_key != key:
+            names = [self._card_name(g) for g in chosen]
+            line = self._pick_commentary(chosen=chosen, names=names, verb="Picking", **context)
+            run.announced_pick_key = key
+            self._status(f"P{key[0]}p{key[1]}: {line}")
+            self._say(line)
+            delay = PICK_ANNOUNCE_DELAY_S
+            if seconds:
+                left = float(seconds) - (self._clock() - read_at)
+                delay = min(delay, max(0.0, left - PICK_CLOCK_RESERVE_S))
+            self._hold(delay, cancelled)
+            if cancelled():
+                logger.info(
+                    "Draft pick P%sp%s not submitted: autoplay was switched off during pick delay", *key[:2]
+                )
+                return
         result = self._command("submit_draft_pick", cards=decision["cards"], timeout=8.0)
         run.pick_attempts[key] += 1
         if not result.get("ok"):
-            self._status(f"Pick P{pack_number}p{pick_number} not accepted yet: {result.get('error')}")
+            self._status(f"Pick P{key[0]}p{key[1]} not accepted yet: {result.get('error')}")
             self._wait(1.5)
             return
-        names = self._record_pick(decision)
-        self._say(self._pick_commentary(chosen=chosen, names=names, **context))
+        self._record_pick(decision)
         self._wait(1.2)
 
     # -- narrated picks: select, explain, beat, confirm ---------------------------
@@ -585,7 +616,7 @@ class DraftEventDriver:
         pick_number,
         model_reasons,
         required=1,
-        verb="Taking",
+        verb="Picking",
     ) -> str:
         """Why these cards and where the draft is heading, or just the cards when commentary is off."""
         brief = f"{verb} {' and '.join(names)}."
@@ -967,19 +998,37 @@ class DraftEventDriver:
             self._status(f"Deck not written yet: {written.get('error') or written.get('mismatched')}")
             self._wait(2.0)
             return
+        total = sum(entry["count"] for entry in target)
+        if run.deck_explained_pool != pool_signature:
+            from arenamcp.limited_deck import deck_choice_summary
+
+            explanation = deck_choice_summary(build, cards)
+            logger.info("Draft deck explanation: %s", explanation)
+            self._status(f"Built a {total}-card deck ({source}): {build.get('plan') or ''}".strip())
+            run.deck_explained_pool = pool_signature
+            control = self._control
+
+            def cancelled() -> bool:
+                return not self.enabled or self._control != control
+
+            self.owns_ui = True
+            if self._narrate_fn is not None:
+                try:
+                    self._narrate_fn(explanation, cancelled)
+                except Exception as exc:
+                    logger.warning("Draft deck narration failed: %s", exc)
+            else:
+                self._say(explanation)
+            if cancelled():
+                logger.info("Draft deck not submitted: autoplay was switched off while explaining the deck")
+                return
         submitted = self._command("submit_limited_deck", timeout=10.0)
         if not submitted.get("ok"):
             self._status(f"Deck Done not accepted yet: {submitted.get('error')}")
             self._wait(2.0)
             return
         run.deck_submitted_at = time.monotonic()
-        total = sum(entry["count"] for entry in target)
         self._status(f"Submitted a {total}-card deck ({source}): {build.get('plan') or ''}".strip())
-        from arenamcp.limited_deck import deck_choice_summary
-
-        explanation = deck_choice_summary(build, cards)
-        logger.info("Draft deck explanation: %s", explanation)
-        self._say(explanation)
         self._wait(3.0)
 
     def _decide_deck(self, pool_ids: list[int]) -> dict | None:

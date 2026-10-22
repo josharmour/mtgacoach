@@ -781,3 +781,103 @@ def test_game_plan_validate_strips_unmodified_skyward_spider_attack():
     validated = validate_plan(raw_plan, assessment, state)
     assert validated.turn_plan[0]["attack"] == ""
     assert any("held back Skyward Spider" in issue for issue in validated.issues)
+
+
+def test_howlsquad_heavy_goblin_must_attack_never_held_by_crackback_or_omitted():
+    """bug_20261021_205401: Howlsquad Heavy's 1/1 Goblin token has mustAttack=True.
+
+    1) merge_declare_attackers merges qualifiedAttackers ([328, 360]) with
+       attackers ([360 mustAttack=True]) so both are legal and 360 has mustAttack=True.
+    2) _check_attack_crackback must never hold back the mandatory Goblin (360)
+       even when crackback is dangerous; it holds back Howlsquad Heavy (328) instead.
+    3) _ensure_mandatory_attacks and bridge _prepare_attack_submission add the
+       mustAttack Goblin if a plan or guard omitted it.
+    """
+    from arenamcp.combat_targets import merge_declare_attackers
+
+    req = {
+        "attackers": [
+            {
+                "attackerInstanceId": 360,
+                "legalDamageRecipients": [{"type": "DamageRecType_Player", "playerSystemSeatId": 1}],
+                "mustAttack": True,
+            }
+        ],
+        "hasRequirements": True,
+        "AttackWarnings": [{"instanceId": 360, "type": "AttackWarningType_MustAttack", "warningPromptId": 124}],
+        "qualifiedAttackers": [
+            {
+                "attackerInstanceId": 328,
+                "legalDamageRecipients": [{"type": "DamageRecType_Player", "playerSystemSeatId": 1}],
+            },
+            {
+                "attackerInstanceId": 360,
+                "legalDamageRecipients": [{"type": "DamageRecType_Player", "playerSystemSeatId": 1}],
+            },
+        ],
+    }
+    raw = merge_declare_attackers(req)
+    assert [(a["attackerInstanceId"], bool(a.get("mustAttack"))) for a in raw] == [
+        (328, False),
+        (360, True),
+    ]
+
+    state = {
+        "turn": {"turn_number": 16, "active_player": 2, "phase": "Phase_Combat", "step": "Step_DeclareAttack"},
+        "players": [
+            {"seat_id": 2, "is_local": True, "life_total": 3},
+            {"seat_id": 1, "is_local": False, "life_total": 14},
+        ],
+        "battlefield": [
+            creature(328, "Howlsquad Heavy", 2, 2, 3),
+            creature(360, "Goblin", 2, 1, 1, "Haste"),
+            {**creature(301, "Tusked Colossodon", 1, 6, 5), "is_tapped": True},
+        ],
+        "hand": [],
+        "decision_context": {
+            "type": "declare_attackers",
+            "legal_attackers": ["Howlsquad Heavy", "Goblin"],
+            "legal_attacker_ids": [328, 360],
+            "raw_attackers": raw,
+        },
+    }
+    planner = ActionPlanner.__new__(ActionPlanner)
+    plan = ActionPlan(
+        actions=[
+            GameAction(
+                action_type=ActionType.DECLARE_ATTACKERS,
+                attacker_names=["Howlsquad Heavy [id:328]", "Goblin [id:360]"],
+                attacker_instance_ids=[328, 360],
+                attacker_targets={"Howlsquad Heavy [id:328]": "Opponent", "Goblin [id:360]": "Opponent"},
+                reasoning="Attack with both",
+            )
+        ],
+        overall_strategy="Attack with both",
+        voice_advice="Attack with both",
+    )
+    planner._check_attack_crackback(plan, state, state["decision_context"])
+    # Goblin (360) has mustAttack=True and MUST remain in the attack declaration;
+    # Howlsquad Heavy (328) is held back to block the 6/5 on crackback.
+    assert plan.actions[0].attacker_instance_ids == [360]
+    assert plan.actions[0].attacker_names == ["Goblin [id:360]"]
+
+    # If a plan omits the mustAttack Goblin (e.g. only names Howlsquad Heavy or Done),
+    # _ensure_mandatory_attacks and bridge _prepare_attack_submission both add Goblin [id:360].
+    omitted_plan = ActionPlan(
+        actions=[GameAction(action_type=ActionType.CLICK_BUTTON, card_name="Done (confirm attackers)")]
+    )
+    planner._ensure_mandatory_attacks(omitted_plan, state, state["decision_context"])
+    assert omitted_plan.actions[0].action_type == ActionType.DECLARE_ATTACKERS
+    assert omitted_plan.actions[0].attacker_instance_ids == [360]
+
+    pilot = bridge_pilot(state, raw)
+    only_heavy = GameAction(
+        ActionType.DECLARE_ATTACKERS,
+        attacker_names=["Howlsquad Heavy [id:328]"],
+        attacker_instance_ids=[328],
+        attacker_targets={"Howlsquad Heavy [id:328]": "Opponent"},
+    )
+    assert pilot._try_bridge_declare_attackers(only_heavy).success
+    entries = pilot._gre_bridge.submit_attackers_raw.call_args.args[0]
+    assert [entry["attackerInstanceId"] for entry in entries] == [328, 360]
+

@@ -165,3 +165,111 @@ def turn_investments_note(state: dict) -> str:
         "THIS TURN'S INVESTMENTS (deterministic; made after the game plan above was formed, so follow through on them):\n"
         + "\n".join(f"  - {line}" for line in lines)
     )
+
+
+_TEMP_GY_GRANT_RE = re.compile(
+    r"\btarget (?P<kind>instant or sorcery|instant|sorcery|nonland) card in your graveyard gains flashback until end of turn\b"
+    r"|\byou may cast target (?P<cast_kind>instant or sorcery|instant|sorcery|nonland) card from your graveyard (?:this turn|until end of turn)\b"
+    r"|\buntil end of turn, you may cast target (?P<uet_kind>instant or sorcery|instant|sorcery|nonland) card from your graveyard\b",
+    re.IGNORECASE,
+)
+
+
+def _matches_gy_kind(gy_card: dict, kind: str) -> bool:
+    types = (
+        f"{gy_card.get('type_line') or ''} "
+        f"{' '.join(str(t) for t in (gy_card.get('card_types') or gy_card.get('types') or []))}"
+    ).lower()
+    if kind == "instant or sorcery":
+        return "instant" in types or "sorcery" in types
+    if kind == "instant":
+        return "instant" in types
+    if kind == "sorcery":
+        return "sorcery" in types
+    if kind == "nonland":
+        return bool(types.strip()) and "land" not in types
+    return False
+
+
+def unpayable_graveyard_flashback(
+    state: dict, card: dict | None, meta: dict | None = None
+) -> dict[str, Any] | None:
+    """When ``card`` grants temporary 'until end of turn' flashback/cast to a card in your graveyard
+    and either your graveyard has no legal target or casting ``card`` leaves too little mana to cast
+    any target in your graveyard this turn (e.g. Snapcaster Mage with 2 mana open and only Cryptic
+    Command in the graveyard), return a structured dict describing why; else None."""
+    if not isinstance(state, dict) or not card:
+        return None
+    oracle = str(card.get("oracle_text") or "")
+    match = _TEMP_GY_GRANT_RE.search(oracle)
+    if match is None or "without paying its mana cost" in oracle.lower():
+        return None
+    kind = (
+        match.group("kind") or match.group("cast_kind") or match.group("uet_kind") or "instant or sorcery"
+    ).lower()
+    local = state.get("local_seat_id")
+    if local is None:
+        local = next((p.get("seat_id") for p in state.get("players") or [] if p.get("is_local")), None)
+    gy_targets = [
+        c
+        for c in (state.get("graveyard") or [])
+        if isinstance(c, dict)
+        and (local is None or c.get("owner_seat_id") in (None, local))
+        and _matches_gy_kind(c, kind)
+    ]
+    from arenamcp.mana import mana_cost_to_cmc
+    from arenamcp.play_safety import _effective_cost, exact_mana_total
+
+    total_mana = exact_mana_total(state)
+    auto_tap = (meta or {}).get("autoTapActions")
+    printed_cmc = mana_cost_to_cmc(_effective_cost(card, meta or {}))
+    cast_cost = max(len(auto_tap) if isinstance(auto_tap, list) else 0, printed_cmc)
+    mana_after = max(0, total_mana - cast_cost) if total_mana is not None else None
+    card_name = str(card.get("name") or "this card")
+    if not gy_targets:
+        return {
+            "reason": "empty_graveyard",
+            "card_name": card_name,
+            "kind": kind,
+            "mana_after": mana_after,
+            "targets": [],
+        }
+    if mana_after is None:
+        return None
+    targets_info: list[tuple[str, str, int]] = []
+    for g in gy_targets:
+        g_cost = str(g.get("mana_cost") or "").strip()
+        if not g_cost:
+            return None
+        g_cmc = mana_cost_to_cmc(g_cost)
+        if g_cmc <= mana_after:
+            return None
+        targets_info.append((str(g.get("name") or "card"), g_cost, g_cmc))
+    return {
+        "reason": "unpayable_targets",
+        "card_name": card_name,
+        "kind": kind,
+        "mana_after": mana_after,
+        "targets": targets_info,
+    }
+
+
+def graveyard_flashback_note(state: dict, card: dict | None, meta: dict | None = None) -> str:
+    """Warn on an option when casting ``card`` grants temporary 'until end of turn' graveyard flashback
+    that cannot be paid for this turn."""
+    info = unpayable_graveyard_flashback(state, card, meta)
+    if info is None:
+        return ""
+    if info["reason"] == "empty_graveyard":
+        return (
+            f"  [FLASHBACK UNTIL END OF TURN ONLY: your graveyard has no {info['kind']} card to target "
+            f"— casting {info['card_name']} now gets no flashback spell]"
+        )
+    targets_desc = ", ".join(
+        f"{name} ({cost})" if cost else name for name, cost, _cmc in info["targets"][:3]
+    )
+    return (
+        f"  [FLASHBACK UNTIL END OF TURN ONLY: casting {info['card_name']} leaves {info['mana_after']} mana, "
+        f"not enough to cast {targets_desc} this turn — the flashback expires at end of turn and does NOT "
+        "carry over to future turns]"
+    )

@@ -84,6 +84,10 @@ DEFAULTS = {
     "model": None,  # None = use backend default
     # Subscription license key for online mode
     "license_key": "",
+    # Optional LAN/local LiteLLM gateway URL override (e.g. "http://10.0.0.10:8444/v1").
+    # Empty uses https://api.mtgacoach.com/v1. When set, public api.mtgacoach.com is
+    # still monitored in the background so outages are surfaced immediately.
+    "gateway_url": "",
     # Bearer token for a self-hosted TTS server (tts_server_url); the name is
     # left over from the removed local LLM mode.
     "local_api_key": "vllm",

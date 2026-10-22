@@ -1742,6 +1742,37 @@ def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[
 
     # A creature cast now: no noncreature-spell trigger, and summoning sick.
     cast = [c for c in hand if c.get("instance_id") in cast_ids]
+    from arenamcp.cast_notes import unpayable_graveyard_flashback
+
+    for card in cast:
+        info = unpayable_graveyard_flashback(state, card)
+        if info is None:
+            continue
+        name = str(card.get("name") or info["card_name"])
+        target_names = [t_name.lower() for t_name, _c, _m in info.get("targets") or () if t_name]
+        for sentence in re.split(r"[;.\n]", lowered):
+            if not (
+                "flashback" in sentence
+                or (target_names and any(t in sentence for t in target_names))
+            ):
+                continue
+            if re.search(
+                r"\b(?:no|not|without|can't|cannot|unable to|expires?|wastes?|0 mana|zero mana)\b",
+                sentence,
+            ):
+                continue
+            if info["reason"] == "empty_graveyard":
+                fact = f"{name}'s flashback trigger has no {info['kind']} card in your graveyard to target"
+            else:
+                targets_desc = ", ".join(
+                    f"{n} ({c})" if c else n for n, c, _cmc in info["targets"][:3]
+                )
+                fact = (
+                    f"{name} grants flashback only until end of turn and leaves {info['mana_after']} mana: "
+                    f"{targets_desc} cannot be cast this turn and the flashback does not carry over"
+                )
+            if fact not in notes:
+                notes.append(fact)
     for card in cast:
         name = str(card.get("name"))
         if not _is_creature_card(card):
@@ -3415,17 +3446,21 @@ class GamePlanManager:
                 logger.debug("playbook source failed: %s", error)
         return self._seed
 
-    def yield_for_decision(self) -> None:
+    def yield_for_decision(self) -> bool:
         """Cancel an in-flight reform so a per-decision call has the server to itself.
 
         The reform is re-requested at the next quiet moment ("resumed after a
         decision"), from the newer board. 2026-10-10 15:28: a 23 s high-effort
         reform overlapped the declare-blockers call, which then ran out its
         15 s budget and fell back to the safe-default blocks.
+
+        Returns True when no reform is running alongside the decision (none was
+        in flight, or the in-flight reform yielded), and False when an in-flight
+        reform keeps running alongside the decision call.
         """
         with self._lock:
             if not self._inflight or self._inflight_cancel is None or self._inflight_cancel.is_set():
-                return
+                return True
             # 2026-10-10 Brawl game: decisions came every few seconds on our turn
             # and every reform was cancelled before finishing (no plan by turn
             # 10). The first plan of a game is never cancelled: a plan is worth
@@ -3434,7 +3469,7 @@ class GamePlanManager:
             # aside.
             if self._plan is None:
                 logger.info("Game plan reform keeps running alongside a decision call: no plan exists yet")
-                return
+                return True
             # 2026-10-19 match 41753907: the reform started at 09:02:24 for
             # Unflinching Courage (Dawnwing Marshal now 4/4 flying, trample,
             # lifelink) yielded to our first T7 decision 3 s later; the resume
@@ -3450,12 +3485,12 @@ class GamePlanManager:
                     "Game plan reform keeps running alongside a decision call: the current plan predates %s",
                     "; ".join(newer),
                 )
-                return
+                return False
             started = getattr(self, "_inflight_started_at", None)
             running = time.monotonic() - float(started) if started else 0.0
             if running > self._YIELD_GRACE_S:
                 logger.info("Game plan reform keeps running (%.0fs in) alongside a decision call", running)
-                return
+                return False
             logger.info("Game plan reform yields to a decision call; it will be re-requested afterwards")
             self._plan_cancels += 1
             self._plan_outcome = "yielded to a decision"
@@ -3463,6 +3498,7 @@ class GamePlanManager:
             self._resume_after_yield = True
             # Let the re-request happen as soon as no decision is pending.
             self._last_attempt_at = None
+            return True
 
     def set_turn_decisions_source(self, source: Callable[[int], list[str]] | None) -> None:
         """Where the ledger reads one turn's decisions (ActionPlanner.decisions_for_turn)."""

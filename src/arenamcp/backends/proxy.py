@@ -147,12 +147,77 @@ def _reads_like_deliberation(candidate: str) -> bool:
     return any(head.startswith(m) for m in _ORPHAN_REFERENCE_MARKERS)
 
 
-# Online mode: hardcoded API endpoint
+# Online mode: default public API endpoint (can be overridden for LAN/dev via
+# ARENAMCP_GATEWAY_URL or settings.json "gateway_url").
 ONLINE_BASE_URL = "https://api.mtgacoach.com/v1"
+GATEWAY_URL_ENV = "ARENAMCP_GATEWAY_URL"
 
 # Base URL of a ProxyBackend built without one (tests). Deliberately not the
 # gateway, so a bare backend can never send real customer traffic.
 DEFAULT_LOCAL_URL = "http://localhost:8000/v1"
+
+
+def normalize_gateway_url(url: str | None) -> str:
+    """Normalize a gateway base URL to end with ``/v1`` (or return ``""`` if blank)."""
+    raw = (url or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    if not raw.endswith("/v1"):
+        raw = f"{raw}/v1"
+    return raw
+
+
+def resolve_online_base_url(override: str | None = None) -> str:
+    """Return the active online gateway URL (override -> env -> settings.gateway_url -> ONLINE_BASE_URL)."""
+    for candidate in (override, os.environ.get(GATEWAY_URL_ENV)):
+        norm = normalize_gateway_url(candidate)
+        if norm:
+            return norm
+    try:
+        from arenamcp.settings import get_settings
+
+        norm = normalize_gateway_url(get_settings().get("gateway_url"))
+        if norm:
+            return norm
+    except Exception:
+        pass
+    return ONLINE_BASE_URL
+
+
+def probe_public_gateway(license_key: str = "", timeout: float = 6.0) -> tuple[bool, str]:
+    """Probe the public ``https://api.mtgacoach.com/v1/models`` endpoint directly.
+
+    Used when a LAN ``gateway_url`` override is active so the user still gets
+    immediate visibility whenever the public Cloudflare/LiteLLM gateway goes down.
+    """
+    import json
+    import urllib.request as _urlreq
+
+    started = time.perf_counter()
+    url = f"{ONLINE_BASE_URL}/models"
+    headers = dict(get_client_headers())
+    headers.setdefault("User-Agent", "mtgacoach-client/1.0")
+    if license_key:
+        headers["Authorization"] = f"Bearer {license_key}"
+    req = _urlreq.Request(url, headers=headers)
+    try:
+        with _urlreq.urlopen(req, timeout=timeout) as resp:
+            body = resp.read()
+            status = getattr(resp, "status", 200)
+        ms = (time.perf_counter() - started) * 1000
+        if status >= 400:
+            return False, f"api.mtgacoach.com HTTP {status} ({ms:.0f}ms)"
+        data = json.loads(body) if body else {}
+        if not isinstance(data, dict) or "data" not in data:
+            return False, f"api.mtgacoach.com invalid /v1/models payload ({ms:.0f}ms)"
+        return True, f"api.mtgacoach.com OK ({ms:.0f}ms)"
+    except Exception as exc:
+        ms = (time.perf_counter() - started) * 1000
+        code = getattr(exc, "code", None)
+        if code in (401, 403):
+            # Gateway itself is reachable and answering auth checks.
+            return True, f"api.mtgacoach.com reachable (HTTP {code}, {ms:.0f}ms)"
+        return False, f"api.mtgacoach.com unreachable after {ms:.0f}ms: {str(exc)[:180]}"
 
 
 class BackendError(Exception):
@@ -1028,6 +1093,7 @@ class ProxyBackend:
         self.enable_thinking = enable_thinking
         self._base_url = base_url
         self._api_key = api_key
+        self._is_online = False
         self._client = None
         self._client_lock = threading.Lock()
         # What the server said it actually ran (R4: gateway aliases lie).
@@ -1037,16 +1103,24 @@ class ProxyBackend:
         self.last_request_metrics: dict | None = None
 
     @classmethod
-    def create_online(cls, model: str | None = None, license_key: str = "") -> "ProxyBackend":
-        """Create a backend configured for online mode (mtgacoach.com)."""
+    def create_online(
+        cls,
+        model: str | None = None,
+        license_key: str = "",
+        base_url: str | None = None,
+    ) -> "ProxyBackend":
+        """Create a backend configured for online mode (mtgacoach.com or gateway_url override)."""
         # Hosted service currently runs one model. Migrate saved selections from
         # retired aliases; custom providers still keep their explicit model.
         resolved_model = "glm-5.3-flash"
-        return cls(
+        resolved_url = resolve_online_base_url(base_url)
+        instance = cls(
             model=resolved_model,
-            base_url=ONLINE_BASE_URL,
+            base_url=resolved_url,
             api_key=license_key,
         )
+        instance._is_online = True
+        return instance
 
     # Hard ceiling applied at the SDK level. Per-call request_timeout_s in
     # complete() can tighten this. Without a finite client-level timeout,
@@ -1067,7 +1141,9 @@ class ProxyBackend:
 
                 url = self._base_url or DEFAULT_LOCAL_URL
                 key = self._api_key or "ollama"
-                client_headers = get_client_headers() if url == ONLINE_BASE_URL else None
+                client_headers = (
+                    get_client_headers() if (url == ONLINE_BASE_URL or getattr(self, "_is_online", False)) else None
+                )
 
                 # max_retries=0: the SDK's default (2) honors Retry-After
                 # headers between attempts, and those sleeps are NOT capped
@@ -1214,6 +1290,7 @@ class ProxyBackend:
                     input_chars=len(system_prompt or "") + len(user_message or ""),
                     raise_on_error=raise_on_error,
                 )
+            admitted_failures = breaker.failure_seq()
 
             client = self._get_client()
             params = self._build_params(
@@ -1259,6 +1336,7 @@ class ProxyBackend:
                         input_chars=len(system_prompt or "") + len(user_message or ""),
                         raise_on_error=raise_on_error,
                     )
+                admitted_failures = breaker.failure_seq()
 
             # Bounded retry: one extra attempt for transient failures
             # (429/5xx/connection). A 60s Retry-After is useless mid-match —
@@ -1344,7 +1422,12 @@ class ProxyBackend:
             )
             logger.error(f"API error: {last_err}")
             if _counts_for_circuit(last_err):
-                breaker.record_failure(str(last_err), token=token, saturation=_is_saturation(last_err))
+                breaker.record_failure(
+                    str(last_err),
+                    token=token,
+                    saturation=_is_saturation(last_err),
+                    admitted_failures=admitted_failures,
+                )
                 if breaker.degraded() and background_lane_enabled():
                     # A hung or saturated server: free the slots background
                     # work holds (09:34 a game plan held one for 57 s).

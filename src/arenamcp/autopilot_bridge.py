@@ -338,6 +338,24 @@ class _BridgeSubmitMixin:
                         logger.info(
                             "click_button(done) on DeclareAttacker: honouring the plan's choice not to attack"
                         )
+                    from arenamcp.combat_targets import attack_candidates
+
+                    if game_state.get("_bridge_connected") and any(
+                        isinstance(entry, dict) and entry.get("mustAttack")
+                        for entry in (attack_candidates(game_state) or [])
+                    ):
+                        logger.info(
+                            "click_button(done) on DeclareAttacker with mustAttack creature(s); "
+                            "routing through declare_attackers to satisfy mandatory attack"
+                        )
+                        return self._try_bridge_declare_attackers(
+                            GameAction(
+                                action_type=ActionType.DECLARE_ATTACKERS,
+                                reasoning=action.reasoning,
+                                model_choice=action.model_choice,
+                                guard_hold=True,
+                            )
+                        )
                     if bridge.submit_attackers([]):
                         self._log_execution_path(
                             ExecutionPath.GRE_AWARE,
@@ -1112,7 +1130,7 @@ class _BridgeSubmitMixin:
         (bug_20261006_135027: a 1/1 sent at a Jace past an untapped 3/2).
         """
         from arenamcp.combat_strategy import losing_attackers, unproductive_attackers
-        from arenamcp.combat_targets import recipient_label
+        from arenamcp.combat_targets import attack_candidates, choose_recipient, recipient_label
 
         unproductive = unproductive_attackers(state, pending)
         pairs = [
@@ -1147,6 +1165,31 @@ class _BridgeSubmitMixin:
                     losing[entry["attackerInstanceId"]],
                 )
         pairs = [(name, entry) for name, entry in pairs if entry["attackerInstanceId"] not in losing]
+        present_ids = {int(entry["attackerInstanceId"]) for _, entry in pairs}
+        cards = {
+            int(c.get("instance_id") or 0): c
+            for c in state.get("battlefield") or []
+            if isinstance(c, dict)
+        }
+        for candidate in attack_candidates(state, pending) or []:
+            if not isinstance(candidate, dict) or not candidate.get("mustAttack"):
+                continue
+            iid = int(candidate.get("attackerInstanceId") or 0)
+            if not iid or iid in present_ids:
+                continue
+            legal = [r for r in candidate.get("legalDamageRecipients") or [] if isinstance(r, dict)]
+            if not legal:
+                continue
+            try:
+                card = cards.get(iid)
+                recipient = choose_recipient("", legal, state, card)
+            except (TypeError, ValueError):
+                continue
+            card_name = str((card or {}).get("name") or f"Creature {iid}")
+            label = f"{card_name} [id:{iid}]"
+            pairs.append((label, {"attackerInstanceId": iid, "damageRecipient": recipient}))
+            present_ids.add(iid)
+            logger.info("Bridge declare_attackers: adding mandatory (mustAttack) attacker %s", label)
         submitted = replace(
             action,
             action_type=ActionType.DECLARE_ATTACKERS,

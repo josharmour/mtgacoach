@@ -802,10 +802,22 @@ def actions(bridge):
 
 
 def test_deck_is_submitted_without_options_and_explained_once(primer):
+    order: list[str] = []
     driver, bridge, spoken = deck_step_world(primer)
+
+    def narrate(text, cancelled):
+        order.append(f"narrate:{len(bridge.sent)}")
+        spoken.append(text)
+        return not cancelled()
+
+    driver._narrate_fn = narrate
     driver._step()
     sent = actions(bridge)
-    assert sent.index("set_limited_deck") < sent.index("submit_limited_deck")
+    set_idx = sent.index("set_limited_deck")
+    submit_idx = sent.index("submit_limited_deck")
+    assert set_idx < submit_idx
+    # Explained after set_limited_deck (while the built deck is visible) and before submit_limited_deck.
+    assert order == [f"narrate:{set_idx + 1}"]
     assert len(spoken) == 1 and spoken[0].startswith("I built ")
     assert "Option" not in spoken[0]
 

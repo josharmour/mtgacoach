@@ -898,6 +898,10 @@ class SetPrimerService:
             raw = self._ratings_fn(base)
             primer = data_primer(key, raw, self._color_stats_fn(base), self._rules_lookup)
             if len([c for c in primer.cards.values() if c.baseline is not None]) < 20:
+                with self._lock:
+                    if primer.cards:
+                        self._primers.setdefault(key, primer)
+                    self._partial[key] = time.monotonic() + PARTIAL_RETRY_S
                 logger.warning("Set primer for %s skipped: too little 17lands data", key)
                 return
             backend = self._backend_fn()

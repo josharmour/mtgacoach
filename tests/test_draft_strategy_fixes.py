@@ -511,6 +511,7 @@ def test_primer_roles_cannot_lift_an_unrated_card_over_a_rated_playable():
         "When this enchantment enters, exile target nonland permanent an opponent controls.",
         "Target creature has base power and toughness 0/0 until end of turn.",
         "When this creature enters, it fights up to one target creature an opponent controls.",
+        "Target creature you control deals damage equal to its power to target creature an opponent controls.",
     ],
 )
 def test_removal_is_read_from_rules_text(text):
@@ -526,6 +527,8 @@ def test_removal_is_read_from_rules_text(text):
         "{3}{R}: Exile target creature or planeswalker you control. Reveal cards until a creature.",
         "Whenever this creature attacks, exile up to one target card from a graveyard.",
         "Choose target nonland permanent. Its owner may put it on top of their library.",
+        "When this creature enters, you may sacrifice a creature or Vehicle. When you do, destroy target artifact an opponent controls.",
+        "When this creature dies, it deals 1 damage to any target.",
     ],
 )
 def test_bounce_tucks_and_self_targets_are_not_removal(text):
@@ -818,3 +821,75 @@ def test_prompt_tells_the_model_the_lane_must_match_the_plan():
 
     assert '"lane":' in DRAFT_SYSTEM_PROMPT
     assert "a splash or a color merely kept open is never part of lane" in DRAFT_SYSTEM_PROMPT
+
+
+def test_committed_plan_lane_and_fixing_land_keep_gruul_cards_ahead_of_colorless_filler():
+    cards = {
+        1: SetCard(1, "Lumbering Worldwagon", "G", "R", "Artifact - Vehicle", cmc=3, gih_wr=0.649, baseline=2.8, games=2000),
+        2: SetCard(2, "Boommobile", "R", "R", "Artifact - Vehicle", cmc=4, gih_wr=0.59, baseline=1.1, games=2000),
+        3: SetCard(3, "Rugged Highlands", "", "C", "Land", oracle="{T}: Add {R} or {G}.", gih_wr=0.543, baseline=-0.29, games=2000),
+        4: SetCard(4, "Wreckage Wickerfolk", "B", "C", "Artifact Creature", cmc=2, gih_wr=0.575, baseline=0.65, games=2000),
+        5: SetCard(5, "Risky Shortcut", "B", "C", "Sorcery", cmc=3, gih_wr=0.542, baseline=-0.31, games=2000),
+        6: SetCard(6, "Chitin Gravestalker", "B", "C", "Creature", cmc=6, gih_wr=0.536, baseline=-0.49, games=2000),
+        10: SetCard(10, "Greenbelt Guardian", "G", "U", "Creature", cmc=2, gih_wr=0.581, baseline=0.82, games=2000),
+        11: SetCard(
+            11,
+            "Run Over",
+            "G",
+            "C",
+            "Instant",
+            cmc=2,
+            oracle="Target creature you control deals damage equal to its power to target creature an opponent controls.",
+            gih_wr=0.576,
+            baseline=0.66,
+            games=2000,
+        ),
+        12: SetCard(12, "Ticket Tortoise", "", "C", "Artifact Creature", cmc=2, gih_wr=0.534, baseline=-0.55, games=2000),
+    }
+    primer = SetPrimer(set_code="DFT", cards=cards)
+    lane_with_dual = pool_lane([3], primer)
+    assert lane_with_dual.weights["R"] > 0 and lane_with_dual.weights["G"] > 0
+
+    # Even if pool_lane alone leaned BR (e.g. before ratings loaded), committed plan_lane="RG"
+    # keeps Greenbelt Guardian and Run Over in lane RG above Ticket Tortoise.
+    pool = [2, 4, 5, 6]
+    ranked = rank_pack([12, 11, 10], pool, primer, pack_number=2, pick_number=3, plan_lane="RG")
+    assert {r.name for r in ranked[:2]} == {"Run Over", "Greenbelt Guardian"}
+    assert ranked[2].name == "Ticket Tortoise"
+    assert all("in lane RG" in r.reasons for r in ranked[:2])
+
+
+def test_merge_public_catalog_rows_enriches_empty_17lands_ratings():
+    from arenamcp.draftstats import merge_public_catalog_rows
+
+    raw_rows = [
+        {
+            "name": "Greenbelt Guardian",
+            "mtga_id": 94966,
+            "color": "G",
+            "rarity": "uncommon",
+            "ever_drawn_win_rate": None,
+            "ever_drawn_game_count": 0,
+        },
+        {
+            "name": "Run Over",
+            "mtga_id": 94981,
+            "color": "G",
+            "rarity": "common",
+            "ever_drawn_win_rate": None,
+            "ever_drawn_game_count": 0,
+        },
+    ]
+    catalog_cards = {
+        "Greenbelt Guardian": {"gih_games": 18231, "gih_wr": 0.5812, "gp_wr": 0.5425},
+        "Run Over": {"gih_games": 58195, "gih_wr": 0.5756, "gp_wr": 0.5419},
+    }
+
+    merged = merge_public_catalog_rows(raw_rows, catalog_cards)
+    assert len(merged) == 2
+    assert round(merged[0]["ever_drawn_win_rate"], 4) == 0.5812
+    assert merged[0]["ever_drawn_game_count"] == 18231
+    assert round(merged[1]["ever_drawn_win_rate"], 4) == 0.5756
+    assert merged[1]["ever_drawn_game_count"] == 58195
+
+

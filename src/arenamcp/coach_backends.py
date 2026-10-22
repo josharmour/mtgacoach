@@ -26,14 +26,14 @@ def get_models_for_mode(mode: str) -> list[tuple[str, str | None]]:
 
     if mode == "online":
         try:
-            from arenamcp.backends.proxy import ONLINE_BASE_URL
+            from arenamcp.backends.proxy import resolve_online_base_url
             from arenamcp.settings import get_settings
 
             license_key = get_settings().get("license_key", "")
             headers = {"User-Agent": "mtgacoach-client/1.0"}
             if license_key:
                 headers["Authorization"] = f"Bearer {license_key}"
-            req = _urlreq.Request(f"{ONLINE_BASE_URL}/models", headers=headers)
+            req = _urlreq.Request(f"{resolve_online_base_url()}/models", headers=headers)
             with _urlreq.urlopen(req, timeout=3) as resp:
                 data = json.loads(resp.read())
             models: list[tuple[str, str | None]] = []
@@ -62,7 +62,7 @@ def pick_thinking_model() -> str | None:
     import urllib.request
 
     try:
-        from arenamcp.backends.proxy import ONLINE_BASE_URL
+        from arenamcp.backends.proxy import resolve_online_base_url
         from arenamcp.settings import get_settings
 
         s = get_settings()
@@ -71,7 +71,7 @@ def pick_thinking_model() -> str | None:
             return None
 
         req = urllib.request.Request(
-            f"{ONLINE_BASE_URL}/models",
+            f"{resolve_online_base_url()}/models",
             headers={
                 "Authorization": f"Bearer {license_key}",
                 "User-Agent": "mtgacoach-client/1.0",

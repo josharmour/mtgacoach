@@ -274,7 +274,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             from arenamcp.backends.proxy import ONLINE_BASE_URL
 
             base_url = getattr(be, "_base_url", "")
-            if base_url and ONLINE_BASE_URL in base_url:
+            if base_url and (ONLINE_BASE_URL in base_url or getattr(be, "_is_online", False)):
                 info["backend_name"] = "online"
             else:
                 info["backend_name"] = "local"
