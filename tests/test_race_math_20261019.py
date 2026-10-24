@@ -55,13 +55,14 @@ def _first_targets(line) -> list[tuple[str, str]]:
 def test_combat_heals_each_side_by_its_lifelink_damage():
     marshal = _body("Dawnwing Marshal", 1, **rb._MARSHAL_44)
     bears = _body("Grizzly Bears", 2, rb.LOCAL)
-    # Unblocked: 4 through, the attacker's side gains 4.
-    assert ba._combat_life([marshal], [], 20) == (4, set(), set(), 4, 0)
+    # Unblocked: 4 through, the attacker's side gains 4 (all of it lifelink, #199(a)).
+    assert ba._combat_life([marshal], [], 20) == (4, set(), set(), 4, 0, 4, 0)
     # A lifelink blocker (a chump at 3 life) heals the defender by the damage it deals.
     giant = _body("Hill Giant", 3, rb.LOCAL)
     linked = {**_body("Grizzly Bears", 4), "keywords": ["lifelink"]}
-    damage, _dead_att, dead_blk, gained, healed = ba._combat_life([giant], [linked], 3)
+    damage, _dead_att, dead_blk, gained, healed, ll_gain, ll_heal = ba._combat_life([giant], [linked], 3)
     assert (damage, dead_blk, gained, healed) == (0, {4}, 0, 2)
+    assert (ll_gain, ll_heal) == (0, 2)
     # Killed by a first striker before it deals damage: no life.
     striker = {**giant, "keywords": ["first strike"]}
     assert ba._combat_life([striker], [linked], 3)[:5] == (0, set(), {4}, 0, 0)

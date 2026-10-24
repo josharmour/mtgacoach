@@ -83,3 +83,19 @@ def test_the_kept_blocker_is_the_one_that_kills_when_one_can():
     plan = {HARE: GROUNDCHUCK, 506: GROUNDCHUCK, 512: GROUNDCHUCK}
     repaired, _notes = repair_blocker_caps(state, plan)
     assert repaired == {HARE: GROUNDCHUCK}  # the 2/2 kills the x/2; the 1/1s would not
+
+
+def test_request_flagged_restrictions_tighten_without_readable_text():
+    """#220 residual: hasRestrictions on the live request with no cap in any
+    rules text still tightens to one blocker per attacker (the nine-Rabbit
+    declaration 7b898598 rejected)."""
+    state = board()
+    # Drop Flopsie: no rules text names a cap for Groundchuck & Dirtbag.
+    state["battlefield"] = [c for c in state["battlefield"] if c["instance_id"] != FLOPSIE]
+    plan = {iid: GROUNDCHUCK for iid in RABBITS}
+    repaired, notes = repair_blocker_caps(state, plan, pending={"hasRestrictions": True})
+    assert len(repaired) == 1 and set(repaired.values()) == {GROUNDCHUCK}
+    assert len(notes) == 1 and "blocking restrictions" in notes[0]
+    # Without the flag the declaration is left alone (unknown restriction, no evidence).
+    untouched, no_notes = repair_blocker_caps(state, plan)
+    assert untouched == plan and no_notes == []

@@ -636,9 +636,19 @@ def _combat_life(attackers: list[dict], blockers: list[dict], life: int, *, deta
     what decides lethal. Before this (match 41753907, 2026-10-19 T7) every
     line was blind to a 4/4 flying lifelink Dawnwing Marshal that gained the
     opponent 29 life over the game.
+
+    Ledger #199(a): the lifelink gains and the death-trigger life swings
+    (``_death_life``, signed: a "when this dies, each opponent loses 2 life"
+    is a loss) are returned separately. Indexes 3/4 stay the NET life change
+    (lifelink + death swings) every life-total computation reads; indexes 5/6
+    are the lifelink gains alone, what "life gained this turn" counts
+    (``line_search_moves``' token scalers, ledger #195) — a death-trigger
+    drain is not life gained.
     """
     if not attackers:
-        return (0, set(), set(), 0, 0, {}, set()) if detail else (0, set(), set(), 0, 0)
+        return (
+            (0, set(), set(), 0, 0, 0, 0, {}, set()) if detail else (0, set(), set(), 0, 0, 0, 0)
+        )
     blockers = [b for b in blockers if b["_can_block"]]
     groups: dict[int, list[dict]] = {}
     if blockers:
@@ -659,6 +669,7 @@ def _combat_life(attackers: list[dict], blockers: list[dict], life: int, *, deta
                 groups.setdefault(attacker_id, []).append(by_id[blocker_id])
     damage, dead_attackers, dead_blockers = 0, set(), set()
     attacker_gain = defender_gain = 0
+    attacker_lifelink = defender_lifelink = 0
     through: dict[int, int] = {}
     for attacker in attackers:
         group = groups.get(attacker["instance_id"], [])
@@ -666,6 +677,7 @@ def _combat_life(attackers: list[dict], blockers: list[dict], life: int, *, deta
         damage += outcome.damage_through
         through[attacker["instance_id"]] = outcome.damage_through
         attacker_gain += outcome.life_gained
+        attacker_lifelink += outcome.life_gained
         if outcome.attacker_died or outcome.blockers_died:
             blocking_death, attacking_death = _death_life(attacker, outcome)
             defender_gain += blocking_death
@@ -680,11 +692,31 @@ def _combat_life(attackers: list[dict], blockers: list[dict], life: int, *, deta
             if striker and any(dead is blocker for dead in outcome.blockers_died):
                 continue  # killed in the first-strike step, before it dealt damage
             twice = has_combat_keyword(blocker, "double strike") and not outcome.attacker_died
-            defender_gain += blocker["power"] * (2 if twice else 1)
+            gain = blocker["power"] * (2 if twice else 1)
+            defender_lifelink += gain
+            defender_gain += gain
     if detail:
         used = {b["instance_id"] for group in groups.values() for b in group}
-        return damage, dead_attackers, dead_blockers, attacker_gain, defender_gain, through, used
-    return damage, dead_attackers, dead_blockers, attacker_gain, defender_gain
+        return (
+            damage,
+            dead_attackers,
+            dead_blockers,
+            attacker_gain,
+            defender_gain,
+            attacker_lifelink,
+            defender_lifelink,
+            through,
+            used,
+        )
+    return (
+        damage,
+        dead_attackers,
+        dead_blockers,
+        attacker_gain,
+        defender_gain,
+        attacker_lifelink,
+        defender_lifelink,
+    )
 
 
 def _attack_round(attackers: list[dict], blockers: list[dict], life: int) -> tuple[int, set[int], set[int]]:
@@ -694,7 +726,7 @@ def _attack_round(attackers: list[dict], blockers: list[dict], life: int) -> tup
 
 def _attack_round_life(
     attackers: list[dict], blockers: list[dict], life: int, *, declared: bool = False
-) -> tuple[int, set[int], set[int], int, int]:
+) -> tuple[int, set[int], set[int], int, int, int, int]:
     """``_attack_once`` with what their attackers add (``attack_potential``, annotated bodies of
     theirs only): their Treasure-fed and mana pumps, attack-trigger grants (not for an attack
     ``declared`` already: those are in the snapshot) and an extra combat (ledger #191, #193, #194)."""
@@ -705,7 +737,7 @@ def _attack_round_life(
 
 def _attack_once(
     attackers: list[dict], blockers: list[dict], life: int
-) -> tuple[int, set[int], set[int], int, int]:
+) -> tuple[int, set[int], set[int], int, int, int, int]:
     """The attacker's better of 'everyone attacks' and 'hold back what just dies'.
 
     Attacking with everything and letting the defender's best blocks answer it
@@ -721,9 +753,11 @@ def _attack_once(
     if not full[1]:
         return full
     survivors = [a for a in attackers if a["instance_id"] not in full[1]]
-    held = _combat_life(survivors, blockers, life) if survivors else (0, set(), set(), 0, 0)
+    held = (
+        _combat_life(survivors, blockers, life) if survivors else (0, set(), set(), 0, 0, 0, 0)
+    )
     if held[0] <= 0 and not held[2]:
-        held = (0, set(), set(), 0, 0)
+        held = (0, set(), set(), 0, 0, 0, 0)
     return full if full[0] - full[4] > held[0] - held[4] else held
 
 
@@ -806,7 +840,9 @@ def lifelink_drain(attackers: list[dict], blockers: list[dict], life: int) -> in
     able = [a for a in attackers if a["_can_attack"]]
     if not any(_lifelink(a) for a in able):
         return 0
-    return _attack_round_life(able, blockers, life)[3]
+    # Index 5 is the lifelink gains alone (#199(a)): the net gain at index 3 mixes in the
+    # death-trigger swings, which are not lifelink.
+    return _attack_round_life(able, blockers, life)[5]
 
 
 @dataclass(frozen=True)
@@ -1015,7 +1051,7 @@ def _simulate_attacks(
                 new_tokens += made_tokens(
                     source, min(source["_tokens"], _MAX_TOKEN_BODIES - made - len(new_tokens)), index
                 )
-        damage, dead_att, dead_def, gain, healed = _attack_round_life(
+        damage, dead_att, dead_def, gain, healed, _ll_gain, _ll_heal = _attack_round_life(
             able, blockers, life, declared=first_declared and index == 0 and first_attackers is not None
         )
         life -= damage - healed + engine
@@ -3091,7 +3127,7 @@ def _project(
     now_life: int | None = None
     if their_attack_pending:
         able = [a for a in (first_their_attackers or []) if a["_can_attack"]]
-        damage, dead_att, dead_def, _gain, healed = _attack_round_life(
+        damage, dead_att, dead_def, _gain, healed, _ll_gain, _ll_heal = _attack_round_life(
             able, blockers_first, life, declared=their_declared
         )
         life -= damage - healed  # our lifelink blockers heal us
@@ -3122,7 +3158,9 @@ def _project(
         life_after = None
         if dead_in is None:
             able = [a for a in enemy if a["_can_attack"]]
-            damage, dead_att, dead_def, _gain, healed = _attack_round_life(able, blockers, life)
+            damage, dead_att, dead_def, _gain, healed, _ll_gain, _ll_heal = _attack_round_life(
+                able, blockers, life
+            )
             life -= damage - healed
             attacks += 1
             life_after = life

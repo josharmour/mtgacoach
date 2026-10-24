@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from itertools import combinations, product
 
 from arenamcp import combat_solver
+from arenamcp.big_board import BIG_ATTACK_MENU
 from arenamcp.combat_keywords import (
     annotate_cant_be_blocked,
     is_creature_modified,
@@ -117,7 +118,79 @@ def combat_choice(state: dict, *, budget: int = 20000, deadline_s: float = 0.7) 
     annotate_cant_be_blocked(state.get("battlefield"))
     relevant = {key: state.get(key) for key in ("players", "battlefield", "decision_context")}
     key = ("combat_recipients", json.dumps(relevant, sort_keys=True, default=str), budget, deadline_s)
-    return _memoized(key, lambda: _search(state, raw, budget, deadline_s))
+    return _memoized(key, lambda: _hold_weighed(state, raw, budget, deadline_s))
+
+
+def _hold_weighed(state: dict, raw: list[dict], budget: int, deadline_s: float) -> CombatChoice | None:
+    """``_search`` with the line search weighing a hold-all on a big board (ledger #212)."""
+    best = _search(state, raw, budget, deadline_s)
+    if best is None or best.assignments or len(raw) < BIG_ATTACK_MENU:
+        return best
+    override = _line_search_hold_attack(state, raw, best)
+    return best if override is None else override
+
+
+def _line_search_hold_attack(state: dict, raw: list[dict], best: CombatChoice) -> CombatChoice | None:
+    """The assessment line search's attack when the solver held every attacker on a big board.
+
+    Ledger #212 (match 51a59f12 T14, 2026-10-20 18:35:49): 21 attackers
+    (Leonardo 28/3) against a snowballing Cloud, Ex-SOLDIER board; the
+    visible-board search held everything — the tokens it would lose and their
+    crackback outweighed one turn's damage — while the line search's best line
+    attacked, lethal on T16 with the race ahead. The hold stood (the #178
+    planner push declined silently) and the opponent won: we conceded on T17
+    having never attacked. A big-board hold-all is therefore judged by the
+    line search: when its best line attacks with legal attackers (posture
+    'attack' or 'lethal', a usable search, no unknown power/toughness), the
+    solver declares that attack. Gated on ``ARENAMCP_ATTACK_PUSH`` 'on' (the
+    default): in shadow the declaration stays the solver's hold and the #178
+    push logs what it would do.
+    """
+    try:
+        from arenamcp import line_guard
+        from arenamcp.board_assessment import assess
+
+        if line_guard.attack_push_mode() != "on":
+            return None
+        assessment = assess(state)
+        result = getattr(assessment, "line_search", None)
+        if result is None or assessment is None or not line_guard._usable(result):
+            return None
+        model = result.model
+        if not model.our_turn or not model.our_attack_pending or model.unknown_bodies:
+            return None
+        if result.posture not in ("attack", "lethal"):
+            return None
+        best_line = result.best
+        attack_ids = line_guard._attack_ids(best_line) if best_line is not None else None
+    except Exception:  # the strategic layer never blocks a declaration
+        logger.debug("line-search hold override failed", exc_info=True)
+        return None
+    if best_line is None or not attack_ids:
+        return None
+    allowed = set()
+    for entry in raw:
+        try:
+            allowed.add(int(entry.get("attackerInstanceId") or 0))
+        except (TypeError, ValueError):
+            continue
+    allowed.discard(0)
+    if not attack_ids <= allowed:
+        return None
+    players = state.get("players") or []
+    local = next((player for player in players if player.get("is_local")), None)
+    opponent = next((player for player in players if not player.get("is_local")), None)
+    if local is None or opponent is None:
+        return None
+    cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
+    names = ", ".join(str((cards.get(i) or {}).get("name") or f"#{i}") for i in sorted(attack_ids))
+    return CombatChoice(
+        assignments={iid: {"playerSystemSeatId": opponent["seat_id"]} for iid in sorted(attack_ids)},
+        explanation=(
+            f"line search over the hold-all (#212): attack with {names} — {best_line.outcome_text()}; "
+            f"the visible-board search held all ({best.explanation})"
+        ),
+    )
 
 
 def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> CombatChoice | None:
@@ -2799,7 +2872,7 @@ def repair_menace_blocks(
         if count == 1 and attacker_id in cards and _has(cards[attacker_id], "menace")
     ]
     if not lone:
-        return repair_blocker_caps(state, declared)
+        return repair_blocker_caps(state, declared, pending)
     local = _local_player(state) or {}
     life = local.get("life_total")
     legal = _legal_block_map(state, pending) or {}
@@ -2837,7 +2910,7 @@ def repair_menace_blocks(
             f"not blocking {name(attacker_id)} with {name(blocker_id)} alone: it has menace "
             "and can only be blocked by two or more creatures"
         )
-    declared, cap_notes = repair_blocker_caps(state, declared)
+    declared, cap_notes = repair_blocker_caps(state, declared, pending)
     return declared, notes + cap_notes
 
 
@@ -2884,22 +2957,51 @@ def max_blockers(attacker: dict, cards: dict[int, dict] | None = None) -> int | 
     return min(caps) if caps else None
 
 
-def repair_blocker_caps(state: dict, assignments: dict[int, int]) -> tuple[dict[int, int], list[str]]:
+def _request_flags_restrictions(pending: dict | None) -> bool:
+    """True when the DeclareBlockers request says this combat has blocking restrictions.
+
+    The request carries ``hasRestrictions`` (top level or per blocker entry);
+    the ledger #220 declaration it rejected had it true.
+    """
+    if not isinstance(pending, dict):
+        return False
+    if pending.get("hasRestrictions"):
+        return True
+    return any(
+        isinstance(blk, dict) and blk.get("hasRestrictions") for blk in pending.get("blockers") or []
+    )
+
+
+def repair_blocker_caps(
+    state: dict, assignments: dict[int, int], pending: dict | None = None
+) -> tuple[dict[int, int], list[str]]:
     """Keep a declaration within "can't be blocked by more than N creatures".
 
     When more blockers than allowed sit on one attacker, keep the ones that
     kill it if any set that size does (highest power first), else the cheapest
     bodies (a chump stays a chump), and drop the rest with one note.
+
+    ``pending``: the live DeclareBlockers request. When it flags blocking
+    restrictions (``hasRestrictions``, ledger #220's second half) and no cap
+    is readable from the rules text, the declaration is tightened to one
+    blocker per attacker anyway: an unknown restriction rejected a nine-Rabbit
+    declaration outright (match 7b898598, FailureReason_InvalidBlocker) and a
+    legal-but-thinner block beats a MANUAL REQUIRED handover.
     """
     cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
     declared = dict(assignments)
     notes: list[str] = []
+    strict = _request_flags_restrictions(pending)
     for attacker_id, count in Counter(declared.values()).items():
         attacker = cards.get(attacker_id)
         if attacker is None or count <= 1:
             continue
         cap = max_blockers(attacker, cards)
-        if cap is None or count <= cap:
+        if cap is None:
+            if not strict:
+                continue
+            cap = 1  # an unknown restriction: never multi-block what we cannot prove accepts it
+        elif count <= cap:
             continue
         blockers = [blocker for blocker, target in declared.items() if target == attacker_id]
 
@@ -2922,8 +3024,13 @@ def repair_blocker_caps(state: dict, assignments: dict[int, int]) -> tuple[dict[
         def name(identity: int) -> str:
             return f"{cards.get(identity, {}).get('name') or 'creature'} [{identity}]"
 
+        why = (
+            "the request flags blocking restrictions no rules text names"
+            if cap == 1 and strict and max_blockers(attacker, cards) is None
+            else f"can't be blocked by more than {cap} creature{'s' if cap != 1 else ''}"
+        )
         notes.append(
-            f"{name(attacker_id)} can't be blocked by more than {cap} creature{'s' if cap != 1 else ''}: "
+            f"{name(attacker_id)} {why}: "
             f"keeping {', '.join(name(b) for b in keep)}, not blocking with {', '.join(name(b) for b in dropped)}"
         )
     return declared, notes
