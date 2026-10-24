@@ -115,6 +115,39 @@ class _DeckLibraryMixin:
 
         threading.Thread(target=work, name="deck-library-list", daemon=True).start()
 
+    # -- collection, deck edits and crafting (feature #204) --------------------
+    # All four go through the Mac bridge's reflect commands and only work on
+    # the home screen (the front-end wrapper is unloaded during a duel).
+
+    def _deck_bridge_command(self, action: str, emit: str, **fields: Any) -> None:
+        def work() -> None:
+            bridge = self._deck_library_bridge()
+            if bridge is None:
+                self._deck_library_emit(emit, {"ok": False, "error": "bridge offline"})
+                return
+            try:
+                response = bridge.draft_command(action, timeout=30.0, **fields)
+            except Exception as error:  # the UI never breaks on a bridge fault
+                logger.warning("Deck bridge command %s failed: %s", action, error)
+                response = {"ok": False, "error": str(error)}
+            self._deck_library_emit(emit, response)
+
+        threading.Thread(target=work, name=f"deck-bridge-{action}", daemon=True).start()
+
+    def collection_async(self) -> None:
+        self._deck_bridge_command("get_collection", "emit_collection")
+
+    def update_deck_async(self, deck_id: str, piles: dict[str, Any]) -> None:
+        self._deck_bridge_command("update_deck", "emit_deck_op", deck_id=deck_id, piles=piles)
+
+    def create_deck_async(self, source_deck_id: str, name: str) -> None:
+        self._deck_bridge_command("create_deck", "emit_deck_op", source_deck_id=source_deck_id, name=name)
+
+    def craft_async(self, cards: list[dict[str, int]]) -> None:
+        # The desktop's confirmation dialog already happened; confirm=True on
+        # the wire is the adapter's second gate before any wildcard is spent.
+        self._deck_bridge_command("craft", "emit_deck_op", cards=cards, confirm=True)
+
     # -- analysis --------------------------------------------------------------
 
     def _deck_library_backend(self) -> Any:

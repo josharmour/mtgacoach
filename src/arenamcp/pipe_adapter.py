@@ -608,6 +608,26 @@ class PipeAdapter:
                 threading.Thread(target=self._handle_win_probability, daemon=True).start()
             elif action == "list_decks":
                 self._handle_list_decks()
+            elif action == "get_collection":
+                threading.Thread(target=self._handle_deck_bridge, args=("collection_async",), daemon=True).start()
+            elif action == "update_deck":
+                threading.Thread(
+                    target=self._handle_deck_bridge,
+                    args=("update_deck_async", str(cmd.get("deck_id") or ""), cmd.get("piles") or {}),
+                    daemon=True,
+                ).start()
+            elif action == "create_deck":
+                threading.Thread(
+                    target=self._handle_deck_bridge,
+                    args=("create_deck_async", str(cmd.get("source_deck_id") or ""), str(cmd.get("name") or "")),
+                    daemon=True,
+                ).start()
+            elif action == "craft":
+                threading.Thread(
+                    target=self._handle_deck_bridge,
+                    args=("craft_async", cmd.get("cards") or []),
+                    daemon=True,
+                ).start()
             elif action == "analyze_deck":
                 self._handle_analyze_deck(cmd)
             elif action == "analyze_all_decks":
@@ -990,6 +1010,25 @@ class PipeAdapter:
 
     def emit_deck_analysis(self, payload: dict[str, Any]) -> None:
         self._emit({"type": "deck_analysis", **payload})
+
+    def emit_collection(self, payload: dict[str, Any]) -> None:
+        self._emit({"type": "collection", **payload})
+
+    def emit_deck_op(self, payload: dict[str, Any]) -> None:
+        self._emit({"type": "deck_op", **payload})
+
+    def _handle_deck_bridge(self, method: str, *args: Any) -> None:
+        """Run one deck-library bridge call (collection/edit/craft) on the coach."""
+        coach = self._coach
+        runner = getattr(coach, method, None)
+        if not callable(runner):
+            self.emit_deck_op({"ok": False, "error": f"Deck bridge command unavailable: {method}"})
+            return
+        try:
+            runner(*args)
+        except Exception as error:
+            logger.warning("Deck bridge command %s failed: %s", method, error)
+            self.emit_deck_op({"ok": False, "error": str(error)})
 
     def _handle_list_decks(self) -> None:
         coach = self._coach

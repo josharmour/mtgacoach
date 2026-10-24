@@ -42,6 +42,8 @@ REPORT = {
 class FakeSession(QObject):
     deckListChanged = Signal(list, str)
     deckAnalysisChanged = Signal(dict)
+    collectionChanged = Signal(dict)
+    deckOpResult = Signal(dict)
 
     def __init__(self) -> None:
         super().__init__()
@@ -49,6 +51,18 @@ class FakeSession(QObject):
 
     def request_deck_list(self) -> None:
         self.requests.append(("list",))
+
+    def request_collection(self) -> None:
+        self.requests.append(("collection",))
+
+    def request_update_deck(self, deck_id: str, piles: dict) -> None:
+        self.requests.append(("update", deck_id, piles))
+
+    def request_create_deck(self, source_deck_id: str, name: str) -> None:
+        self.requests.append(("create", source_deck_id, name))
+
+    def request_craft(self, cards: list) -> None:
+        self.requests.append(("craft", cards))
 
     def analyze_deck(self, deck_id: str, *, refresh: bool = False) -> None:
         self.requests.append(("analyze", deck_id, refresh))

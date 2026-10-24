@@ -34,6 +34,8 @@ class CoachSession(QObject):
     adviceReceived = Signal(str, str)  # text, label
     deckListChanged = Signal(list, str)  # decks, note
     deckAnalysisChanged = Signal(dict)
+    collectionChanged = Signal(dict)  # owned cards + wildcard balances (#204)
+    deckOpResult = Signal(dict)  # update_deck / create_deck / craft result (#204)
     bugReportSaved = Signal(str, str)  # path, error
     errorOccurred = Signal(str)
 
@@ -196,6 +198,20 @@ class CoachSession(QObject):
 
     def request_deck_list(self) -> None:
         self._process.send_payload({"cmd": "list_decks"})
+
+    def request_collection(self) -> None:
+        self._process.send_payload({"cmd": "get_collection"})
+
+    def request_update_deck(self, deck_id: str, piles: dict) -> None:
+        self._process.send_payload({"cmd": "update_deck", "deck_id": deck_id, "piles": piles})
+
+    def request_create_deck(self, source_deck_id: str, name: str) -> None:
+        self._process.send_payload({"cmd": "create_deck", "source_deck_id": source_deck_id, "name": name})
+
+    def request_craft(self, cards: list) -> None:
+        # Only called after the Decks tab's confirmation dialog; the adapter
+        # re-checks confirm=True before touching wildcards.
+        self._process.send_payload({"cmd": "craft", "cards": cards})
 
     def analyze_deck(self, deck_id: str, *, refresh: bool = False) -> None:
         self._process.send_payload({"cmd": "analyze_deck", "deck_id": deck_id, "refresh": bool(refresh)})
@@ -586,6 +602,12 @@ class CoachSession(QObject):
 
         elif ev_type == "deck_analysis":
             self.deckAnalysisChanged.emit({k: v for k, v in event.items() if k != "type"})
+
+        elif ev_type == "collection":
+            self.collectionChanged.emit({k: v for k, v in event.items() if k != "type"})
+
+        elif ev_type == "deck_op":
+            self.deckOpResult.emit({k: v for k, v in event.items() if k != "type"})
 
         elif ev_type == "request_engine_reload":
             # Sent between matches when the engine's code changed on disk
