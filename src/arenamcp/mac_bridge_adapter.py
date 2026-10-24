@@ -808,7 +808,14 @@ class MacBridgeAdapter:
         "Companions": "companions",
     }
 
-    def _cmd_get_decks(self, command: dict, timeout: float | None) -> dict:
+    def _cached_deck_records(self, timeout: float | None) -> list[dict[str, Any]]:
+        """Every cached constructed deck with its piles and live list handles.
+
+        One record per deck: identity from Summary plus, per pile, the card
+        entries and the handle of the live ``List<Client_DeckCard>`` that deck
+        edits mutate (feature #204). ``_cmd_get_decks`` projects these records
+        to the plugin's response shape.
+        """
         ops = _Ops()
         wrapper = ops.add("static", **{"class": "WrapperController"}, member="Instance", depth=0)
         manager = ops.get(wrapper, "DecksManager", optional=True)
@@ -817,9 +824,9 @@ class MacBridgeAdapter:
         if handle(values[wrapper["ref"]]) is None:
             # The front-end wrapper is unloaded during a duel (Instance = null
             # in OnDestroy, live 2026-10-11 10:46); the home screen has it.
-            return {"ok": False, "error": "Arena's deck list is only readable outside a match (home screen)"}
+            raise AdapterError("Arena's deck list is only readable outside a match (home screen)")
         handles = [handle(node) for node in items(values[decks["ref"]]) if handle(node)]
-        out: list[dict] = []
+        records: list[dict[str, Any]] = []
         for start in range(0, len(handles), self._DECKS_PER_BATCH):
             chunk = handles[start : start + self._DECKS_PER_BATCH]
             ops = _Ops()
@@ -829,9 +836,9 @@ class MacBridgeAdapter:
                 fmt = ops.get(summary, "Format", optional=True)
                 contents = ops.get(H(deck_handle), "Contents", optional=True)
                 piles = ops.add("get", target=contents, member="Piles", depth=6, optional=True, max_items=256)
-                refs.append((summary, fmt, piles))
+                refs.append((deck_handle, summary, fmt, piles))
             values = self._run(ops, timeout)
-            for summary, fmt, piles in refs:
+            for deck_handle, summary, fmt, piles in refs:
                 node = values[summary["ref"]]
                 if not isinstance(node, dict):
                     continue
@@ -843,22 +850,254 @@ class MacBridgeAdapter:
                     "deck_id": deck_id,
                     "name": str(field(node, "Name") or ""),
                     "format": str(values[fmt["ref"]] or ""),
-                    "main": [],
-                    "sideboard": [],
-                    "command_zone": [],
-                    "companions": [],
+                    "handle": deck_handle,
+                    "piles": {},
                 }
                 for entry in items(field(values[piles["ref"]], "entries")):
                     pile = self._PILE_NAMES.get(enum_name(field(entry, "key")))
                     if pile is None:
                         continue
-                    record[pile] = [
-                        {"grp_id": num(field(card, "Id")), "count": num(field(card, "Quantity"))}
-                        for card in items(field(entry, "value"))
-                        if num(field(card, "Id")) > 0 and num(field(card, "Quantity")) > 0
-                    ]
-                out.append(record)
-        return {"ok": True, "decks": out}
+                    listing = field(entry, "value")
+                    record["piles"][pile] = {
+                        # Struct entries carry no handle; edits rebuild them by value.
+                        "handle": handle(listing),
+                        "cards": [
+                            {"grp_id": num(field(card, "Id")), "count": num(field(card, "Quantity"))}
+                            for card in items(listing)
+                            if num(field(card, "Id")) > 0 and num(field(card, "Quantity")) > 0
+                        ],
+                    }
+                records.append(record)
+        return records
+
+    def _cmd_get_decks(self, command: dict, timeout: float | None) -> dict:
+        decks = []
+        for record in self._cached_deck_records(timeout):
+            piles = record["piles"]
+            decks.append(
+                {
+                    "deck_id": record["deck_id"],
+                    "name": record["name"],
+                    "format": record["format"],
+                    **{
+                        pile: [dict(card) for card in piles.get(pile, {}).get("cards", [])]
+                        for pile in ("main", "sideboard", "command_zone", "companions")
+                    },
+                }
+            )
+        return {"ok": True, "decks": decks}
+
+    # -- deck editing and crafting (feature #204) -----------------------------
+    # Classes verified in the re-output: Client_DeckCard is a struct of two
+    # readonly uints (Wizards.Mtga.Decks/Client_DeckCard.cs), so an edit removes
+    # the exact (id, quantity) entry and adds the new one on the live pile list;
+    # DecksManager.UpdateDeck(deck, DeckActionType.Updated) /
+    # CreateDeck(deck, action string, forceCopy) save it (Core/DecksManager.cs
+    # ~157-174; DeckManagerController passes action.ToString(), e.g. "Cloned").
+    # Crafting goes through InventoryManager.Coroutine_RedeemWildcards started
+    # on WrapperController (a MonoBehaviour), exactly like CardViewerController
+    # ~909; the coroutine forwards to InventoryServiceWrapper.RedeemWildcards
+    # (Core/InventoryManager.cs ~52). Wildcard balances live on
+    # ClientPlayerInventory (wcCommon/wcUncommon/wcRare/wcMythic).
+    DECK_CARD_STRUCT = "Wizards.Mtga.Decks.Client_DeckCard"
+    CLIENT_DECK_CLASS = "Wizards.Mtga.Decks.Client_Deck"
+    WILDCARD_BULK_REQUEST_CLASS = "Wizards.MDN.WildcardBulkRequest"
+    CARD_AND_QUANTITY_STRUCT = "Wizards.MDN.CardAndQuantity"
+    _COLLECTION_MAX_ITEMS = 30000
+
+    @staticmethod
+    def _normalize_pile_cards(raw: Any) -> dict[int, int]:
+        """grp_id -> positive count from [{"grp_id", "count"}] or [[id, count]]."""
+        cards: dict[int, int] = {}
+        for entry in raw or []:
+            if isinstance(entry, dict):
+                grp_id, count = num(entry.get("grp_id")), num(entry.get("count"))
+            elif isinstance(entry, (list, tuple)) and len(entry) == 2:
+                grp_id, count = num(entry[0]), num(entry[1])
+            else:
+                grp_id, count = num(entry), 1
+            if grp_id > 0 and count > 0:
+                cards[grp_id] = cards.get(grp_id, 0) + count
+        return cards
+
+    def _cmd_get_collection(self, command: dict, timeout: float | None) -> dict:
+        """The owned cards plus wildcard/gold/gem balances (home screen only).
+
+        ``InventoryManagerCore.Cards`` is the collection dictionary
+        (Dictionary<uint, int>); the wildcard balances and currencies live on
+        ``ClientPlayerInventory`` (re-output Wizards.Mtga.Inventory).
+        """
+        ops = _Ops()
+        wrapper = ops.add("static", **{"class": "WrapperController"}, member="Instance", depth=0)
+        manager = ops.get(wrapper, "InventoryManager", optional=True)
+        cards_ref = ops.add(
+            "get",
+            target=manager,
+            member="Cards",
+            depth=4,
+            optional=True,
+            max_items=self._COLLECTION_MAX_ITEMS,
+        )
+        inventory_ref = ops.get(manager, "Inventory", depth=1, optional=True)
+        values = self._run(ops, timeout)
+        if handle(values[wrapper["ref"]]) is None:
+            return {"ok": False, "error": "The collection is only readable outside a match (home screen)"}
+        node = values[cards_ref["ref"]]
+        entries = items(field(node, "entries"))
+        declared = num(field(node, "$n")) if isinstance(node, dict) else 0
+        if declared and len(entries) < declared:
+            raise AdapterError(f"Collection snapshot truncated ({len(entries)} of {declared} entries)")
+        cards: dict[int, int] = {}
+        for entry in entries:
+            grp_id, count = num(field(entry, "key")), num(field(entry, "value"))
+            if grp_id > 0 and count > 0:
+                cards[grp_id] = count
+        inventory = values[inventory_ref["ref"]]
+        inventory = inventory if isinstance(inventory, dict) else {}
+        return {
+            "ok": True,
+            "cards": cards,
+            "wildcards": {
+                rarity: num(field(inventory, f"wc{rarity.capitalize()}"))
+                for rarity in ("common", "uncommon", "rare", "mythic")
+            },
+            "gold": num(field(inventory, "gold")),
+            "gems": num(field(inventory, "gems")),
+        }
+
+    def _cmd_update_deck(self, command: dict, timeout: float | None) -> dict:
+        """Rewrite piles of one cached deck in place and save it with UpdateDeck.
+
+        The client's own editor mutates the cached ``Client_Deck`` and then
+        calls ``DecksManager.UpdateDeck(deck, DeckActionType.Updated)``; this
+        mirrors that. If the save fails after the mutation the cache holds the
+        edit — the same trade-off the editor makes. Entries are structs of two
+        readonly uints, so each changed printing is removed by its exact
+        ``(id, quantity)`` value and re-added with the new one.
+        """
+        deck_id = str(command.get("deck_id") or "")
+        wanted_raw = command.get("piles") or {}
+        edits: dict[str, dict[int, int]] = {}
+        for pile in self._PILE_NAMES.values():
+            if wanted_raw.get(pile) is not None:
+                edits[pile] = self._normalize_pile_cards(wanted_raw[pile])
+        if not deck_id or not edits:
+            return {"ok": False, "error": "update_deck needs a deck_id and at least one pile to set"}
+        if not edits.get("main"):
+            return {"ok": False, "error": "refusing to save a deck with an empty main pile"}
+
+        target = None
+        for record in self._cached_deck_records(timeout):
+            if record["deck_id"] == deck_id:
+                target = record
+                break
+        if target is None:
+            return {"ok": False, "error": f"No cached deck {deck_id}"}
+
+        changes: dict[str, dict[str, dict[int, int]]] = {}
+        ops = _Ops()
+        for pile_name in self._PILE_NAMES.values():
+            if pile_name not in edits:
+                continue
+            pile = target["piles"].get(pile_name) or {}
+            list_handle = pile.get("handle")
+            if not list_handle:
+                return {"ok": False, "error": f"Deck {deck_id} has no readable {pile_name} pile"}
+            listing = H(list_handle)
+            current = self._normalize_pile_cards(pile.get("cards"))
+            desired = edits[pile_name]
+            delta: dict[str, dict[int, int]] = {"added": {}, "removed": {}}
+            for grp_id in sorted(set(current) | set(desired)):
+                have, want = current.get(grp_id, 0), desired.get(grp_id, 0)
+                if have == want:
+                    continue
+                if have:
+                    card = ops.new(self.DECK_CARD_STRUCT, U(grp_id), U(have))
+                    ops.call(listing, "Remove", REF(card["ref"]))
+                    delta["removed"][grp_id] = have
+                if want:
+                    card = ops.new(self.DECK_CARD_STRUCT, U(grp_id), U(want))
+                    ops.call(listing, "Add", REF(card["ref"]))
+                    delta["added"][grp_id] = want
+            if delta["added"] or delta["removed"]:
+                changes[pile_name] = delta
+        if not changes:
+            return {"ok": True, "submitted_type": "DeckUpdate", "deck_id": deck_id, "changes": {}, "unchanged": True}
+        wrapper = ops.add("static", **{"class": "WrapperController"}, member="Instance", depth=0)
+        manager = ops.get(wrapper, "DecksManager", optional=True)
+        ops.call(manager, "UpdateDeck", H(target["handle"]), E("Updated"))
+        self._run(ops, timeout)
+        return {"ok": True, "submitted_type": "DeckUpdate", "deck_id": deck_id, "changes": changes}
+
+    def _cmd_create_deck(self, command: dict, timeout: float | None) -> dict:
+        """Clone a cached deck under a new name via DecksManager.CreateDeck.
+
+        ``CreateDeck(deck, action, forceCopy=True)`` assigns a fresh Guid and a
+        unique name (Core/DecksManager.cs ~157); the copy carries the wanted
+        name as the base. Building from scratch stays in Arena's editor — this
+        covers duplicate-then-edit.
+        """
+        source_id = str(command.get("source_deck_id") or "")
+        name = str(command.get("name") or "").strip()
+        if not source_id or not name:
+            return {"ok": False, "error": "create_deck needs a source_deck_id and a name"}
+        target = None
+        for record in self._cached_deck_records(timeout):
+            if record["deck_id"] == source_id:
+                target = record
+                break
+        if target is None:
+            return {"ok": False, "error": f"No cached deck {source_id} to clone"}
+        ops = _Ops()
+        wrapper = ops.add("static", **{"class": "WrapperController"}, member="Instance", depth=0)
+        manager = ops.get(wrapper, "DecksManager", optional=True)
+        copy = ops.new(self.CLIENT_DECK_CLASS, H(target["handle"]))
+        summary = ops.get(copy, "Summary")
+        ops.set(summary, "Name", {"str": name})
+        ops.call(manager, "CreateDeck", REF(copy["ref"]), {"str": "Cloned"}, B(True))
+        self._run(ops, timeout)
+        return {"ok": True, "submitted_type": "DeckCreate", "name": name}
+
+    def _cmd_craft(self, command: dict, timeout: float | None) -> dict:
+        """Redeem wildcards for the requested cards — only after confirmation.
+
+        Builds a ``WildcardBulkRequest`` of ``CardAndQuantity`` entries and runs
+        ``InventoryManager.Coroutine_RedeemWildcards`` on WrapperController's
+        scheduler (CardViewerController ~909 does the same). The coroutine's
+        completion surfaces as a collection update; re-read get_collection to
+        confirm the spend. Never called without the desktop's explicit
+        confirmation step: ``confirm`` must be true on the wire.
+        """
+        cards = self._normalize_craft_cards(command.get("cards"))
+        if not cards:
+            return {"ok": False, "error": "craft needs a non-empty cards list of {grp_id, count}"}
+        if command.get("confirm") is not True:
+            return {
+                "ok": False,
+                "error": "crafting spends wildcards: resend with confirm=true after the user approves the spend",
+            }
+        ops = _Ops()
+        wrapper = ops.add("static", **{"class": "WrapperController"}, member="Instance", depth=0)
+        manager = ops.get(wrapper, "InventoryManager", optional=True)
+        request = ops.new(self.WILDCARD_BULK_REQUEST_CLASS, I(len(cards)))
+        bulk = ops.get(request, "bulkRequest")
+        for card in cards:
+            entry = ops.new(self.CARD_AND_QUANTITY_STRUCT, I(card["grp_id"]), I(card["count"]))
+            ops.call(bulk, "Add", REF(entry["ref"]))
+        routine = ops.call(manager, "Coroutine_RedeemWildcards", REF(request["ref"]))
+        ops.call(wrapper, "StartCoroutine", REF(routine["ref"]))
+        self._run(ops, timeout)
+        return {
+            "ok": True,
+            "submitted_type": "WildcardRedeem",
+            "cards": cards,
+            "total_crafted": sum(card["count"] for card in cards),
+        }
+
+    @staticmethod
+    def _normalize_craft_cards(raw: Any) -> list[dict[str, int]]:
+        cards: dict[int, int] = MacBridgeAdapter._normalize_pile_cards(raw)
+        return [{"grp_id": grp_id, "count": count} for grp_id, count in sorted(cards.items())]
 
     def _cmd_get_event_page(self, command: dict, timeout: float | None) -> dict:
         found = self._find(EVENT_PAGE_CONTROLLER, timeout)

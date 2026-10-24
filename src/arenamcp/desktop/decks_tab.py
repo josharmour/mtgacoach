@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
+from .deck_editor import DeckEditorDialog, NewDeckDialog
 
 _COLUMNS = ["Deck", "Format", "Cards", "Strategy", "Last played"]
 
@@ -149,10 +150,15 @@ class DecksTab(QWidget):
         self._decks: list[dict[str, Any]] = []
         self._reports: dict[str, dict[str, Any]] = {}
         self._names: dict[str, str] = {}
+        self._collection: dict[int, int] = {}
+        self._wildcards: dict[str, int] = {}
+        self._editor: DeckEditorDialog | None = None
         self._build_ui()
         if session is not None:
             session.deckListChanged.connect(self.set_decks)
             session.deckAnalysisChanged.connect(self.on_analysis)
+            session.collectionChanged.connect(self.on_collection)
+            session.deckOpResult.connect(self.on_deck_op)
 
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -172,6 +178,12 @@ class DecksTab(QWidget):
         self.refresh_btn.setToolTip("Read the deck list from Arena (bridge) and Player.log")
         self.refresh_btn.clicked.connect(self.refresh)
         header.addWidget(self.refresh_btn, 0, Qt.AlignTop)
+        self.collection_btn = QPushButton("Collection")
+        self.collection_btn.setToolTip(
+            "Read the owned cards and wildcard balances from Arena (home screen only)"
+        )
+        self.collection_btn.clicked.connect(self.refresh_collection)
+        header.addWidget(self.collection_btn, 0, Qt.AlignTop)
         lay.addLayout(header)
 
         self._table = QTableWidget(0, len(_COLUMNS))
@@ -188,6 +200,14 @@ class DecksTab(QWidget):
         lay.addWidget(self._table, 1)
 
         actions = QHBoxLayout()
+        self.edit_btn = QPushButton("Edit / build deck")
+        self.edit_btn.setToolTip(
+            "Change this deck's main and sideboard against the collection; craft what is missing"
+        )
+        self.edit_btn.clicked.connect(self._edit_selected)
+        self.duplicate_btn = QPushButton("Duplicate…")
+        self.duplicate_btn.setToolTip("Clone an existing deck under a new name, then edit the copy")
+        self.duplicate_btn.clicked.connect(self._duplicate_deck)
         self.strategy_btn = QPushButton("Deck strategy")
         self.strategy_btn.setToolTip(
             "Build (or show) this deck's playbook: how it wins, its engines, its decision rules"
@@ -199,7 +219,7 @@ class DecksTab(QWidget):
         self.all_btn = QPushButton("Build all missing")
         self.all_btn.setToolTip("Build a strategy for every deck that has none, one at a time")
         self.all_btn.clicked.connect(self._analyze_all)
-        for button in (self.strategy_btn, self.rebuild_btn, self.all_btn):
+        for button in (self.edit_btn, self.duplicate_btn, self.strategy_btn, self.rebuild_btn, self.all_btn):
             button.setEnabled(False)
             actions.addWidget(button)
         actions.addStretch(1)
@@ -219,6 +239,67 @@ class DecksTab(QWidget):
         if self._session is not None:
             self._summary.setText("Reading decks…")
             self._session.request_deck_list()
+
+    # -- collection, editing and crafting (feature #204) -----------------------
+    def refresh_collection(self) -> None:
+        if self._session is not None:
+            self._summary.setText("Reading the collection…")
+            self._session.request_collection()
+
+    def on_collection(self, payload: dict[str, Any]) -> None:
+        if payload.get("ok") is not True:
+            self._summary.setText(f"Collection failed: {payload.get('error') or 'unknown error'}")
+            return
+        cards = payload.get("cards") or {}
+        self._collection = {int(grp_id): int(count) for grp_id, count in cards.items()}
+        wildcards = payload.get("wildcards") or {}
+        self._wildcards = {str(k): int(v) for k, v in wildcards.items()}
+        balance = ", ".join(f"{self._wildcards.get(r, 0)} {r[:3]}" for r in ("common", "uncommon", "rare", "mythic"))
+        self._summary.setText(
+            f"{len(self._collection)} printings owned · wildcards: {balance}"
+            f" · gold {payload.get('gold', 0)} · gems {payload.get('gems', 0)}"
+        )
+        if self._editor is not None:
+            self._editor._collection = dict(self._collection)
+            self._editor._wildcards = dict(self._wildcards)
+            self._editor._reload()
+
+    def on_deck_op(self, payload: dict[str, Any]) -> None:
+        """Result of an update_deck / create_deck / craft bridge command."""
+        if self._editor is not None:
+            self._editor.on_deck_op(payload)
+        if payload.get("ok") is True and payload.get("submitted_type") == "DeckCreate":
+            self.refresh()
+        elif payload.get("ok") is True and payload.get("submitted_type") == "WildcardRedeem":
+            # The spend lands asynchronously; re-read the balances.
+            self.refresh_collection()
+
+    def _edit_selected(self) -> None:
+        deck_id = self.selected_deck_id()
+        found = self._deck_at(deck_id) if deck_id else None
+        if found is None or self._session is None:
+            return
+        _row, deck = found
+        if not deck.get("complete"):
+            self._summary.setText("This deck's card list is unknown; open it in Arena once, then refresh.")
+            return
+        record = {
+            "deck_id": deck["deck_id"],
+            "name": deck.get("name", ""),
+            "format": deck.get("format", ""),
+            **{pile: deck.get(pile) or [] for pile in ("main", "sideboard", "command_zone", "companions")},
+        }
+        self._editor = DeckEditorDialog(
+            self._session, record, collection=self._collection, wildcards=self._wildcards, parent=self.window()
+        )
+        self._editor.show()
+
+    def _duplicate_deck(self) -> None:
+        if self._session is None or not self._decks:
+            return
+        # Non-modal: the create goes out when the user presses Create; a modal
+        # exec() would block the coach's event loop while Arena answers.
+        NewDeckDialog(self._session, self._decks, parent=self.window()).show()
 
     def selected_deck_id(self) -> str | None:
         rows = self._table.selectionModel().selectedRows() if self._table.selectionModel() else []
@@ -246,6 +327,7 @@ class DecksTab(QWidget):
         if not self._decks:
             summary = "No decks found. " + (note or "Is Arena running?")
         self._summary.setText(summary)
+        self.duplicate_btn.setEnabled(bool(self._decks))
         self.all_btn.setEnabled(
             any(
                 d.get("complete") and (d.get("strategy") or {}).get("status") in ("none", "error")
@@ -304,12 +386,14 @@ class DecksTab(QWidget):
         found = self._deck_at(deck_id) if deck_id else None
         if found is None:
             self._detail.setText(theme.span("Select a deck.", "muted"))
+            self.edit_btn.setEnabled(False)
             self.strategy_btn.setEnabled(False)
             self.rebuild_btn.setEnabled(False)
             return
         _row, deck = found
         strategy = deck.get("strategy") or {}
         building = strategy.get("status") == "building"
+        self.edit_btn.setEnabled(bool(deck.get("complete")))
         self.strategy_btn.setEnabled(bool(deck.get("complete")) and not building)
         self.rebuild_btn.setEnabled(strategy.get("status") == "ready")
         self._show_deck(deck)
