@@ -25,6 +25,9 @@ class CoachSession(QObject):
     concedeCountdownChanged = Signal(dict)
     statusChanged = Signal(str, str)
     startupStatusChanged = Signal(dict)
+    # Transient backend health (ok/degraded/down) from the engine (#215):
+    # rendered as a small status line, never as the startup card.
+    backendHealthChanged = Signal(dict)
     autopilotBugStatusChanged = Signal(dict)
     spokenLine = Signal(str)
     logEmitted = Signal(str, str)  # message, role
@@ -66,6 +69,7 @@ class CoachSession(QObject):
         self._autopilot_active = False
         self._muted = False
         self._last_startup_status: dict[str, Any] = {}
+        self._last_backend_health: dict[str, Any] = {}
         self._last_autopilot_bug_status: dict[str, Any] = {}
         self._last_concede: dict[str, Any] = {}
         self._start_options = {"autopilot": False, "dry_run": False, "afk": False}
@@ -83,6 +87,10 @@ class CoachSession(QObject):
     @property
     def last_startup_status(self) -> dict[str, Any]:
         return dict(self._last_startup_status)
+
+    @property
+    def last_backend_health(self) -> dict[str, Any]:
+        return dict(self._last_backend_health)
 
     @property
     def last_autopilot_bug_status(self) -> dict[str, Any]:
@@ -462,6 +470,15 @@ class CoachSession(QObject):
             status = event.get("data", event)
             if isinstance(status, dict):
                 self._set_startup_status(status)
+
+        elif ev_type == "backend_health":
+            # Pipe adapter sends flat state/detail/timestamp plus the full
+            # snapshot under "data"; prefer the snapshot.
+            snap = event.get("data")
+            if not isinstance(snap, dict):
+                snap = {k: v for k, v in event.items() if k != "type"}
+            self._last_backend_health = dict(snap)
+            self.backendHealthChanged.emit(dict(snap))
 
         elif ev_type == "autopilot_bug_status":
             status = event.get("data", event)

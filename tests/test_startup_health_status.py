@@ -35,15 +35,25 @@ def test_inference_probe_then_failure_and_recovery_update_the_banner(boot_ok):
         def last_status():
             return coach.ui.emit_startup_status.call_args.args[0]
 
+        def health_states():
+            return [c.args[0]["state"] for c in coach.ui.emit_backend_health.call_args_list]
+
         coach._probe_backend_health_at_startup()
         phases = [c.args[0]["phase"] for c in coach.ui.emit_startup_status.call_args_list]
         assert "checking_connection" in phases
         coach._startup_complete()
         if boot_ok:
             assert last_status()["phase"] == "ready" and last_status()["ready"]
+            # #215: mid-match trouble is transient. The startup card stays
+            # ready; the degraded state travels on the backend_health event
+            # (rendered as a small status line), not as a new error phase.
             BackendHealth.instance().record_failure("Inference authentication failed", status_code=401)
-            assert last_status()["phase"] == "error"
-            assert "authentication" in last_status()["message"]
+            assert last_status()["phase"] == "ready" and last_status()["ready"]
+            assert health_states()[-1] == "degraded"
+            BackendHealth.instance().record_failure("first token timeout")
+            BackendHealth.instance().record_failure("stream stalled")
+            assert last_status()["phase"] == "ready" and last_status()["ready"]
+            assert health_states()[-1] == "down"
         else:
             assert last_status()["phase"] == "error"
             assert "Connection error" in last_status()["message"]
@@ -51,6 +61,7 @@ def test_inference_probe_then_failure_and_recovery_update_the_banner(boot_ok):
 
         BackendHealth.instance().record_success()
         assert last_status()["ready"] and last_status()["phase"] == "ready"
+        assert health_states()[-1] == "ok"
     finally:
         BackendHealth.reset_instance()
 

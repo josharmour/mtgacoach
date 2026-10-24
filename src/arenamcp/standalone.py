@@ -494,14 +494,23 @@ class StandaloneCoach(
                     emit = getattr(self.ui, "emit_backend_health", None)
                     if callable(emit):
                         emit(snapshot)
-                    if snapshot.get("state") == "ok" and getattr(self, "_startup_connection_error", ""):
-                        self._startup_connection_error = ""
-                        if getattr(self, "_startup_finished", False):
+                    state = snapshot.get("state")
+                    if state == "ok":
+                        if getattr(self, "_startup_connection_error", ""):
+                            self._startup_connection_error = ""
                             self._startup_complete()
-                    elif snapshot.get("state") in ("degraded", "down") and snapshot.get("total_failures", 0):
-                        self._startup_connection_error = snapshot.get("detail") or "Model request failed"
-                        if getattr(self, "_startup_finished", False):
+                    elif state in ("degraded", "down") and snapshot.get("total_failures", 0):
+                        if not getattr(self, "_startup_finished", False):
+                            # Still starting up: a failing gateway IS a startup
+                            # problem, and the startup card is the right place.
+                            self._startup_connection_error = snapshot.get("detail") or "Model request failed"
                             self._startup_complete()
+                        # else (#215): mid-match trouble is transient — a 4 s
+                        # stream stall or a slow first token recovers on its
+                        # own. The backend_health event above drives the
+                        # sidebar's small status line; re-opening the "Startup
+                        # needs attention" card here made a healthy install
+                        # look broken mid-game.
                     logger.info(
                         f"Backend health transition: {snapshot.get('state')} — {snapshot.get('detail')}"
                     )
