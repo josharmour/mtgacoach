@@ -428,7 +428,7 @@ def sneak_attack(attackers: list[dict], blockers: list[dict], life: int, sneak_p
 
     if not attackers:
         return 0, 0
-    damage, _dead, _killed, _gain, healed, through, _used = _combat_life(
+    damage, _dead, _killed, _gain, healed, _ll_gain, _ll_heal, through, _used = _combat_life(
         attackers, blockers, max(1, life), detail=True
     )
     net = damage - healed

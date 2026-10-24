@@ -731,7 +731,28 @@ def attack_round(
     extra = extra_combats(attackers, declared=declared)
     if extra is None or not fighting:
         return result
-    damage, dead_att, dead_blk, gain, healed = result[:5]
+    if len(result) < 7:
+        damage, dead_att, dead_blk, gain, healed = result[:5]
+        left = life - damage + healed
+        if left <= 0:
+            return result
+        again = [b for b in fighting if b.get("instance_id") not in dead_att]
+        if not extra.untap_all:
+            again = [b for b in again if has_combat_keyword(b, "vigilance")]
+        if not again:
+            return result
+        standing = [b for b in blockers if b.get("instance_id") not in dead_blk]
+        damage2, dead_att2, dead_blk2, gain2, healed2 = once(again, standing, left)[:5]
+        return (
+            damage + damage2,
+            set(dead_att) | set(dead_att2),
+            set(dead_blk) | set(dead_blk2),
+            gain + gain2,
+            healed + healed2,
+        )
+    # ``_combat_life``'s separated shape (#199(a)): the lifelink gains (indexes 5/6) compose
+    # like the net gains; the extra combat's blockers are the survivors.
+    damage, dead_att, dead_blk, gain, healed, ll_gain, ll_heal = result
     left = life - damage + healed
     if left <= 0:
         return result
@@ -741,11 +762,21 @@ def attack_round(
     if not again:
         return result
     standing = [b for b in blockers if b.get("instance_id") not in dead_blk]
-    damage2, dead_att2, dead_blk2, gain2, healed2 = once(again, standing, left)[:5]
+    (
+        damage2,
+        dead_att2,
+        dead_blk2,
+        gain2,
+        healed2,
+        ll_gain2,
+        ll_heal2,
+    ) = once(again, standing, left)
     return (
         damage + damage2,
         set(dead_att) | set(dead_att2),
         set(dead_blk) | set(dead_blk2),
         gain + gain2,
         healed + healed2,
+        ll_gain + ll_gain2,
+        ll_heal + ll_heal2,
     )

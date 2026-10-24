@@ -2616,12 +2616,20 @@ class Moves:
         if found is None:
             self.combats += 1
             self.work += 2 + len(attackers) + able
-            damage, dead_att, dead_blk, gained, healed, through, used = _combat_life(
-                attackers, blockers, life, detail=True
-            )
+            (
+                damage,
+                dead_att,
+                dead_blk,
+                gained,
+                healed,
+                ll_gain,
+                ll_heal,
+                through,
+                used,
+            ) = _combat_life(attackers, blockers, life, detail=True)
             found = self._memo[key] = (
                 damage, frozenset(dead_att), frozenset(dead_blk), gained, healed, tuple(sorted(through.items())),
-                frozenset(used),
+                frozenset(used), ll_gain, ll_heal,
             )  # fmt: skip
         return found
 
@@ -3633,25 +3641,50 @@ class Moves:
                 # defend), then the player with the blockers left over.
                 name, loyal = mid.walkers[walker_id]
                 sent = [b for b in fighting if b["instance_id"] in at]
-                hit, w_dead_ours, w_dead_theirs, w_gained, w_healed, _t, used = self.combat_detail(
-                    sent, blockers, loyal, tag=tag + "walker"
-                )
+                (
+                    hit,
+                    w_dead_ours,
+                    w_dead_theirs,
+                    w_gained,
+                    w_healed,
+                    _t,
+                    used,
+                    w_ll_gain,
+                    w_ll_heal,
+                ) = self.combat_detail(sent, blockers, loyal, tag=tag + "walker")
                 rest = [b for b in fighting if b["instance_id"] not in at]
                 spare = [b for b in blockers if b["instance_id"] not in used]
-                damage, dead_ours, dead_theirs, gained, healed = self.combat_life(
-                    rest, spare, mid.opp_life, tag=tag
-                )
+                (
+                    damage,
+                    dead_ours,
+                    dead_theirs,
+                    gained,
+                    healed,
+                    _rt,
+                    _ru,
+                    ll_gain,
+                    ll_heal,
+                ) = self.combat_detail(rest, spare, mid.opp_life, tag=tag)
                 dead_ours, dead_theirs = dead_ours | w_dead_ours, dead_theirs | w_dead_theirs
                 gained, healed = gained + w_gained, healed + w_healed
+                ll_gain, ll_heal = ll_gain + w_ll_gain, ll_heal + w_ll_heal
                 at_walkers = [(b["name"], name) for b in sent]
                 if loyal - hit > 0:
                     mid.walkers[walker_id] = (name, loyal - hit)
                 else:
                     del mid.walkers[walker_id]
             else:
-                damage, dead_ours, dead_theirs, gained, healed = self.combat_life(
-                    fighting, blockers, mid.opp_life, tag=tag
-                )
+                (
+                    damage,
+                    dead_ours,
+                    dead_theirs,
+                    gained,
+                    healed,
+                    _t,
+                    _u,
+                    ll_gain,
+                    ll_heal,
+                ) = self.combat_detail(fighting, blockers, mid.opp_life, tag=tag)
                 swap = self._sneak_swap(mid, fighting, blockers, tag)
                 if swap is not None:  # a Sneak creature in for an unblocked attacker (#156)
                     gain, returned, entered = swap
@@ -3660,9 +3693,11 @@ class Moves:
                         entered
                     ]
             # Lifelink on both sides lands with the combat damage: the net change decides lethal.
+            # "Life gained this turn" counts the lifelink gains alone (#199(a)): the death-trigger
+            # swings mixed into ``gained`` are not life gained (a drain is a loss).
             mid.opp_life -= damage - healed
             mid.our_life += gained
-            mid.gained += gained
+            mid.gained += ll_gain
             opp_after = mid.opp_life
             mid.ours = self.rescale([b for b in mid.ours if b["instance_id"] not in dead_ours])
             mid.theirs = [b for b in mid.theirs if b["instance_id"] not in dead_theirs]

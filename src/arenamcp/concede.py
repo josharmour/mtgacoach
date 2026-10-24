@@ -1077,7 +1077,7 @@ def _estimate(state: Any) -> LossEstimate:
         our_turn=our_turn,
         declared=any(b["_attacking"] for b in theirs),
     )
-    grown = sum(growth.get(b["instance_id"], 0) for b in their_able)
+    grown = _counter_damage(growth, their_able)
     their_able = [
         {**b, "power": b["power"] + n, "toughness": b["toughness"] + n}
         if (n := growth.get(b["instance_id"], 0))
@@ -1240,6 +1240,20 @@ def _sneak_hold_text(
         return None
 
 
+def _counter_damage(growth: dict[int, int], their_able: list[dict]) -> int:
+    """The damage their beginning-of-combat +1/+1 counters add to the attack (#199(b), #198).
+
+    Each counter is +1 power; a double striker deals it twice, so its counters
+    count double towards the cap (the power/toughness bump on the bodies stays
+    +1/+1 per counter — that is what the blocks face).
+    """
+    return sum(
+        n * (2 if has_combat_keyword(b, "double strike") else 1)
+        for b in their_able
+        if (n := growth.get(b["instance_id"], 0))
+    )
+
+
 def _their_turn_engines(
     view: dict,
     local: int,
@@ -1264,7 +1278,12 @@ def _their_turn_engines(
     phase = str(turn_info.get("phase") or "")
     step = str(turn_info.get("step") or "")
     after_upkeep = not our_turn and (phase not in ("", "Phase_Beginning") or step == "Step_Draw")
-    before_combat = phase in ("Phase_Beginning", "Phase_Main1")
+    # A beginning-of-combat counter trigger still on the stack grows them before the attack too
+    # (#199(c), ledger #198): Step_BeginCombat is where it resolves; by Step_DeclareAttack it is
+    # in the snapshot.
+    before_combat = phase in ("Phase_Beginning", "Phase_Main1") or (
+        phase == "Phase_Combat" and step in ("", "Step_BeginCombat")
+    )
     if after_upkeep:
         drain = engines.static_drain_after_upkeep + sum(
             b.get("_drain_after_upkeep", b.get("_drain") or 0) for b in theirs
