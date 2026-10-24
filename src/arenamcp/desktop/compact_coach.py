@@ -339,6 +339,9 @@ class CompactCoachPanel(QWidget):
         self._auto_queue_enabled = bool(self._settings.get("auto_queue_enabled", False))
         self._auto_queue_detail = "Waiting for coaching to start." if self._auto_queue_enabled else ""
         self._startup_status: dict[str, Any] = {}
+        # Latest backend-health snapshot (#215): transient trouble renders as
+        # a small status line, never as the startup card.
+        self._backend_health: dict[str, Any] = {}
         self._startup_elapsed_s = 0.0
         self._startup_updated_at = time.monotonic()
         self._startup_timer = QTimer(self)
@@ -441,6 +444,16 @@ class CompactCoachPanel(QWidget):
         self.arena_status_label.setWordWrap(True)
         self.arena_status_label.hide()
         root.addWidget(self.arena_status_label)
+
+        # Transient backend trouble (#215): "Model slow, retrying…" as a small
+        # caption line. The red startup card stays reserved for real startup
+        # failures; mid-match stalls recover on their own.
+        self.backend_status_label = QLabel()
+        self.backend_status_label.setObjectName("backendStatus")
+        self.backend_status_label.setTextFormat(Qt.RichText)
+        self.backend_status_label.setWordWrap(True)
+        self.backend_status_label.hide()
+        root.addWidget(self.backend_status_label)
 
         # Now card: the latest spoken advice, then the tactical line and plan.
         self.now_card, now_layout = _card()
@@ -749,6 +762,12 @@ class CompactCoachPanel(QWidget):
         startup_status = getattr(self._session, "last_startup_status", None)
         if isinstance(startup_status, dict) and startup_status:
             self._on_startup_status(startup_status)
+        health_signal = getattr(self._session, "backendHealthChanged", None)
+        if health_signal is not None:
+            health_signal.connect(self._on_backend_health)
+        last_health = getattr(self._session, "last_backend_health", None)
+        if isinstance(last_health, dict) and last_health:
+            self._on_backend_health(last_health)
         concede_signal = getattr(self._session, "concedeCountdownChanged", None)
         if concede_signal is not None:
             concede_signal.connect(self._on_concede_countdown)
@@ -786,10 +805,40 @@ class CompactCoachPanel(QWidget):
         self._render_startup_status()
         self._refresh_status_dots()
 
+    def _on_backend_health(self, snapshot: dict[str, Any]) -> None:
+        if not isinstance(snapshot, dict):
+            return
+        self._backend_health = dict(snapshot)
+        self._render_backend_status()
+
+    def _render_backend_status(self) -> None:
+        """Transient backend trouble as a small status line (#215).
+
+        Degraded (slow first token, a stalled stream that is retrying) and
+        DOWN (circuit open; deterministic fallbacks are playing) are mid-match
+        conditions that usually recover on their own — they must not reopen
+        the red "Startup needs attention" card, which is reserved for real
+        startup failures.
+        """
+        state = str(self._backend_health.get("state") or "")
+        if not state or state == "ok" or self.startup_banner.isVisible():
+            self.backend_status_label.hide()
+            return
+        detail = str(self._backend_health.get("detail") or "").strip()
+        if state == "down":
+            text, tone = "Model unavailable — playing from board math until it is back", "bad"
+        else:
+            text, tone = "Model slow, retrying…", "warn"
+        if detail:
+            text = f"{text} ({detail[:120]})"
+        self.backend_status_label.setText(block(span(text, tone), size="caption"))
+        self.backend_status_label.show()
+
     def _render_startup_status(self) -> None:
         status = self._startup_status
         if not status or status.get("ready"):
             self.startup_banner.hide()
+            self._render_backend_status()
             return
         phase = str(status.get("phase", "starting"))
         failed = phase in ("error", "stopped")
@@ -817,6 +866,8 @@ class CompactCoachPanel(QWidget):
             f"border: 1px solid {theme.color(tone)}; border-radius: {tokens.radius_card}px; }}"
         )
         self.startup_banner.show()
+        # The startup card owns the sidebar while it is up (#215).
+        self.backend_status_label.hide()
 
     # -- auto-concede countdown -------------------------------------------------
 

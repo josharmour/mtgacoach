@@ -27,6 +27,33 @@ def test_coach_session_bug_report_saved_event(qapp):
     session.shutdown()
 
 
+def test_backend_health_event_reaches_the_sidebar(qapp):
+    """#215: the engine's backend_health snapshots must reach the desktop."""
+    session = CoachSession()
+    seen: list[dict] = []
+    session.backendHealthChanged.connect(seen.append)
+
+    session._handle_process_event(
+        {
+            "type": "backend_health",
+            "state": "degraded",
+            "detail": "stream stalled: no data for 4s",
+            "timestamp": 1.0,
+            "data": {"state": "degraded", "detail": "stream stalled: no data for 4s", "total_failures": 2},
+        }
+    )
+
+    assert seen and seen[-1]["state"] == "degraded"
+    assert seen[-1]["total_failures"] == 2
+    assert session.last_backend_health["detail"] == "stream stalled: no data for 4s"
+
+    # Flat payloads without a nested snapshot still carry state and detail.
+    session._handle_process_event({"type": "backend_health", "state": "ok", "detail": "reachable"})
+    assert seen[-1]["state"] == "ok"
+    assert session.last_backend_health["state"] == "ok"
+    session.shutdown()
+
+
 def test_coach_session_offline_debug_report(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr("arenamcp.logging_config.LOG_DIR", tmp_path)
     session = CoachSession()

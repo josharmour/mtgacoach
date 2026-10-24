@@ -360,6 +360,20 @@ def test_background_refresh_waits_for_deck_analysis(plan_threads):
     assert plan_threads == []
 
 
+def test_plan_forms_once_the_deck_analysis_gate_releases(plan_threads):
+    """#205: a playbook build must not suppress plan formation for its whole
+    duration — the bounded gate releases and the plan runs without it."""
+    mgr = GamePlanManager(FakeBackend([_plan_json()]))
+    suspended = [True]
+    mgr.background_suspended_fn = lambda: suspended[0]
+    assert not mgr.request_reform(_state(turn=3))
+    assert plan_threads == []
+    suspended[0] = False  # the bounded gate expired; the playbook still builds
+    assert mgr.request_reform(_state(turn=3))
+    plan_threads[-1].join(timeout=2)
+    assert mgr.current is not None
+
+
 def test_background_snapshot_does_not_reset_a_newer_turn():
     mgr = GamePlanManager(FakeBackend([_plan_json()]))
     # Formed during the opponent's turn 3 for our turn 4, arriving on turn 4.

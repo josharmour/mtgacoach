@@ -54,3 +54,36 @@ def test_plan_waits_for_the_deck_analysis_only_briefly():
     assert coach._deck_analysis_blocks_plan() is False
     coach.clear_deck_strategy()
     assert coach._deck_analysis_blocks_plan() is False
+
+
+def test_autopilot_game_plan_gate_waits_only_briefly_for_deck_analysis():
+    """#205: the autopilot's plan gate must be the coach's bounded one.
+
+    Suspending background plan work for as long as ``_deck_strategy_pending``
+    (a 74 s playbook build with one validation retry) left the first match on
+    a changed deck list with no game-plan attempt on turns 3-5 at all.
+    """
+    from arenamcp.standalone import StandaloneCoach
+
+    engine = CoachEngine(backend=Mock())
+    standalone = StandaloneCoach.__new__(StandaloneCoach)
+    standalone._coach = engine
+    gate = standalone._game_plan_background_suspended
+    assert gate() is False
+    engine.begin_deck_analysis("abc")
+    assert gate() is True  # the analysis just started: give it a moment
+    engine._deck_strategy_pending_since = time.monotonic() - 60
+    assert gate() is False  # the plan forms while the playbook keeps building
+    standalone._coach = None
+    assert gate() is False
+
+
+def test_autopilot_init_wires_the_bounded_game_plan_gate():
+    """Guard against reintroducing the unbounded ``_deck_strategy_pending`` lambda."""
+    import inspect
+
+    from arenamcp.standalone import StandaloneCoach
+
+    source = inspect.getsource(StandaloneCoach._init_autopilot)
+    assert "_game_plan_background_suspended" in source
+    assert "background_suspended_fn = lambda" not in source

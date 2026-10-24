@@ -355,6 +355,56 @@ def test_arena_connection_notice_is_separate_from_model_startup(panel):
     assert panel.arena_status_label.isHidden()
 
 
+def test_transient_backend_trouble_is_a_status_line_not_the_startup_card(panel):
+    """#215: a mid-match stream stall shows 'Model slow, retrying…' as a small
+    line; the red 'Startup needs attention' card stays hidden."""
+    panel._on_startup_status({"phase": "ready", "message": "Ready", "ready": True})
+    assert panel.startup_banner.isHidden()
+    panel.session._handle_process_event(
+        {
+            "type": "backend_health",
+            "state": "degraded",
+            "detail": "stream stalled: no data for 4s after the first token",
+            "data": {
+                "state": "degraded",
+                "detail": "stream stalled: no data for 4s after the first token",
+            },
+        }
+    )
+    assert not panel.backend_status_label.isHidden()
+    assert "Model slow, retrying" in panel.backend_status_label.text()
+    assert panel.startup_banner.isHidden()
+    # Recovery takes the line back down.
+    panel.session._handle_process_event({"type": "backend_health", "state": "ok", "data": {"state": "ok"}})
+    assert panel.backend_status_label.isHidden()
+
+
+def test_backend_down_mid_match_never_reopens_the_startup_card(panel):
+    panel._on_startup_status({"phase": "ready", "ready": True})
+    panel.session._handle_process_event(
+        {
+            "type": "backend_health",
+            "state": "down",
+            "detail": "circuit open; retry in 8s",
+            "data": {"state": "down", "detail": "circuit open; retry in 8s"},
+        }
+    )
+    assert not panel.backend_status_label.isHidden()
+    assert "Model unavailable" in panel.backend_status_label.text()
+    assert panel.startup_banner.isHidden()
+
+
+def test_startup_card_owns_the_sidebar_while_it_is_up(panel):
+    """During startup (or a real startup failure) the card wins; no double banner."""
+    panel._on_startup_status({"phase": "starting", "message": "Starting coach…", "ready": False})
+    panel._on_backend_health({"state": "degraded", "detail": "slow first token"})
+    assert not panel.startup_banner.isHidden()
+    assert panel.backend_status_label.isHidden()
+    # Once startup completes, a still-degraded backend shows the line again.
+    panel._on_startup_status({"phase": "ready", "ready": True})
+    assert not panel.backend_status_label.isHidden()
+
+
 @pytest.mark.parametrize("phase", ["error", "stopped"])
 def test_failed_startup_remains_visible_without_running_timer(panel, phase):
     panel._on_startup_status({"phase": phase, "message": "Connection unavailable <retry>", "ready": False})

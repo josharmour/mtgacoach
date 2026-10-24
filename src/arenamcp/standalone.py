@@ -494,14 +494,23 @@ class StandaloneCoach(
                     emit = getattr(self.ui, "emit_backend_health", None)
                     if callable(emit):
                         emit(snapshot)
-                    if snapshot.get("state") == "ok" and getattr(self, "_startup_connection_error", ""):
-                        self._startup_connection_error = ""
-                        if getattr(self, "_startup_finished", False):
+                    state = snapshot.get("state")
+                    if state == "ok":
+                        if getattr(self, "_startup_connection_error", ""):
+                            self._startup_connection_error = ""
                             self._startup_complete()
-                    elif snapshot.get("state") in ("degraded", "down") and snapshot.get("total_failures", 0):
-                        self._startup_connection_error = snapshot.get("detail") or "Model request failed"
-                        if getattr(self, "_startup_finished", False):
+                    elif state in ("degraded", "down") and snapshot.get("total_failures", 0):
+                        if not getattr(self, "_startup_finished", False):
+                            # Still starting up: a failing gateway IS a startup
+                            # problem, and the startup card is the right place.
+                            self._startup_connection_error = snapshot.get("detail") or "Model request failed"
                             self._startup_complete()
+                        # else (#215): mid-match trouble is transient — a 4 s
+                        # stream stall or a slow first token recovers on its
+                        # own. The backend_health event above drives the
+                        # sidebar's small status line; re-opening the "Startup
+                        # needs attention" card here made a healthy install
+                        # look broken mid-game.
                     logger.info(
                         f"Backend health transition: {snapshot.get('state')} — {snapshot.get('detail')}"
                     )
@@ -1049,6 +1058,23 @@ class StandaloneCoach(
         """Vision mapper is disabled in streamlined mode."""
         self._vision_mapper = None
 
+    def _game_plan_background_suspended(self) -> bool:
+        """Whether background game-plan work must wait for a deck analysis.
+
+        #205: the coach's gate waits only ``_PLAN_WAITS_FOR_DECK_ANALYSIS_S``
+        for the playbook, then the plan forms on the board facts (and whatever
+        archetype seed exists) while the analysis keeps building in the
+        background. Waiting for the whole analysis left the first match on a
+        changed deck list with no plan for turns 3-5.
+        """
+        coach = getattr(self, "_coach", None)
+        if coach is None:
+            return False
+        try:
+            return bool(coach._deck_analysis_blocks_plan())
+        except Exception:
+            return False
+
     def _init_autopilot(self) -> None:
         """Initialize autopilot components (requires LLM backend + MCP)."""
         try:
@@ -1112,8 +1138,12 @@ class StandaloneCoach(
             if self._coach:
                 self._autopilot._game_plan_mgr = self._coach._ensure_game_plan_mgr()
                 if self._autopilot._game_plan_mgr:
-                    self._autopilot._game_plan_mgr.background_suspended_fn = lambda: bool(
-                        self._coach and self._coach._deck_strategy_pending
+                    # #205: wait only briefly for a deck analysis (the coach's
+                    # bounded gate). Suspending on _deck_strategy_pending for
+                    # the whole multi-minute playbook build left the first
+                    # match on a changed deck list with no game plan at all.
+                    self._autopilot._game_plan_mgr.background_suspended_fn = (
+                        self._game_plan_background_suspended
                     )
 
             mode = "DRY-RUN" if self._autopilot_dry_run else "LIVE"
