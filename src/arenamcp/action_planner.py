@@ -4027,6 +4027,18 @@ class ActionPlanner(_ActionLegalityMixin):
         and the background game-plan reform both read.
         """
         chosen = self._plan_decision_options(decision, game_state)
+        # Bookkeeping that must survive a mid-planning request change: a
+        # completed answer is exactly what an identical re-presented window
+        # reuses (#226(b)), and our resolved burn's damage is board fact
+        # whichever window it was paid in (#227).
+        try:
+            self._cache_answer(decision, game_state, chosen, self._last_decision_reasoning)
+        except Exception as error:  # the cache never blocks a decision
+            logger.debug("answer cache skipped: %s", error)
+        try:
+            self._note_resolved_burn(decision, game_state, chosen)
+        except Exception as error:  # the mark never blocks a decision
+            logger.debug("burn mark skipped: %s", error)
         cancel_event = getattr(self, "_decision_cancel_event", None)
         if cancel_event is not None and cancel_event.is_set():
             return chosen  # superseded: the caller discards it, memory must not keep it
@@ -4063,6 +4075,268 @@ class ActionPlanner(_ActionLegalityMixin):
 
             ledger = self._hold_fate_ledger = HoldFates()
         return ledger
+
+    def _single_option_answer(self, decision: Any) -> list[str] | None:
+        """#226(a): one legal action left — submit it without the model.
+
+        13% of typed decisions (2026-10-23 audit) offered exactly one legal
+        option and still waited ~1.8 s of model time to name it. A window with
+        a single submittable ACTION has no choice in it: the deterministic
+        guards above had their chance, and every policy below (drain loop,
+        sneak, burn timing) only chooses AMONG options.
+
+        Deliberately out of scope:
+
+        - the selection families (targets, searches, groups, casting-time
+          modes) — with one candidate the interesting question is still
+          cast-or-decline / find-or-fail, and the harmful-target gates are
+          model-pick features;
+        - a lone ``pass`` (or decline) — the model's pass reasoning feeds the
+          decision memory and the reversal check, and several guards key on
+          it;
+        - anything with a cancel (a decline escape is a real choice);
+        - an unpayable option, a count that cannot be 1, or a family whose
+          own validation rejects the pick.
+        """
+        if len(decision.options) != 1:
+            return None
+        if decision.request_type not in ("ActionsAvailable", "OptionalAction"):
+            # Selection families (targets, searches, groups, modes) keep their
+            # model call even with one candidate: cast-or-decline, fail-to-find
+            # and the harmful-target gates are real content there.
+            return None
+        if decision.can_cancel:
+            return None
+        option = decision.options[0]
+        if option.payable is False:
+            return None
+        if option.option_id in ("pass", DECLINE_DECISION, NO_TARGETS_DECISION):
+            return None
+        if not decision.min_select <= 1 <= decision.max_select:
+            return None
+        chosen = [option.option_id]
+        try:
+            valid = decision.selection_is_valid(chosen)
+        except Exception:  # a validation surprise must not block the submit
+            valid = True
+        if not valid:
+            return None
+        why = f"Only {option.label or option.option_id} is legal in this window; submitting it directly."
+        self._last_decision_option_ids = chosen
+        self._last_decision_reasoning = why
+        self._last_decision_trace = {"policy": "single_option", "validated_ids": chosen}
+        logger.info("typed-decision: %s — no LLM choice", why)
+        return chosen
+
+    # How long a completed answer may serve an identical re-presented window (#226(b)).
+    _ANSWER_REUSE_TTL_S = 30.0
+
+    def _decision_cache_key(self, decision: Any) -> tuple:
+        """What makes two typed windows the same question (ledger #226(b)).
+
+        The request id (game-state id, msg id) is deliberately NOT part of it:
+        Arena re-presents a pending request with a bumped game-state id and
+        identical options ~14% of the time, and the answer already paid for is
+        then discarded ("request changed during planning", ~480 s of model
+        time in the 2026-10-23 audit). Option ids, labels and payability are:
+        an ActionsAvailable menu's ``idx:N`` ids are positional, so the label
+        must disambiguate a re-ordered or reshaped menu.
+        """
+        return (
+            decision.request_type,
+            str(decision.source_label or ""),
+            int(decision.min_select or 0),
+            int(decision.max_select or 0),
+            tuple(sorted((o.option_id, o.label, o.payable) for o in decision.options)),
+        )
+
+    def _reusable_answer(self, decision: Any, game_state: dict[str, Any]) -> list[str] | None:
+        """The cached answer to an identical window re-presented this turn, or None.
+
+        Only model answers are cached (the deterministic policies recompute
+        cheaply and must track the live board), only within the same turn AND
+        the same turn window — a menu re-presented in a later step is a new
+        question (mana emptied, combat happened; ledger #153's reversal re-ask
+        lives there) — only within ``_ANSWER_REUSE_TTL_S``, and only while the
+        cached ids are still legal for this request.
+        """
+        entry = getattr(self, "_answer_cache", None)
+        if not entry or entry.get("key") != self._decision_cache_key(decision):
+            return None
+        turn = (game_state.get("turn") or {}).get("turn_number")
+        if entry.get("turn") != turn or time.monotonic() - entry["at"] > self._ANSWER_REUSE_TTL_S:
+            return None
+        if entry.get("window") != self._turn_window_of(game_state):
+            return None
+        if entry.get("sig") != self._reuse_state_signature(game_state):
+            return None
+        chosen = list(entry["chosen"])
+        if not chosen or not set(chosen).issubset(decision.option_ids()):
+            return None
+        try:
+            if not decision.selection_is_valid(chosen):
+                return None
+        except Exception:
+            pass
+        self._last_decision_option_ids = chosen
+        self._last_decision_reasoning = (
+            f"{entry.get('reasoning') or 'Decided moments ago.'} (the same window was re-presented; "
+            "the answer stands.)"
+        )
+        self._last_decision_trace = {"policy": "reused_answer", "validated_ids": chosen}
+        logger.info("typed-decision: reusing the answer to the identical earlier window: %s", chosen)
+        return chosen
+
+    def _cache_answer(self, decision: Any, game_state: dict[str, Any], chosen: list[str], reasoning: str) -> None:
+        """Remember a model answer for an identical re-presented window (#226(b))."""
+        if not getattr(self, "_last_llm_asked", False):
+            return
+        if self.last_llm_failure or getattr(self, "_last_llm_cancelled", False):
+            return
+        if not chosen or chosen == [DECLINE_DECISION]:
+            return
+        self._answer_cache = {
+            "key": self._decision_cache_key(decision),
+            "chosen": list(chosen),
+            "reasoning": str(reasoning or "")[:400],
+            "turn": (game_state.get("turn") or {}).get("turn_number"),
+            "window": self._turn_window_of(game_state),
+            "sig": self._reuse_state_signature(game_state),
+            "at": time.monotonic(),
+        }
+
+    @staticmethod
+    def _turn_window_of(game_state: dict[str, Any]) -> int | None:
+        try:
+            from arenamcp.decision_memory import turn_window
+
+            return turn_window(game_state)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _reuse_state_signature(game_state: dict[str, Any]) -> tuple:
+        """That nothing but the request id moved between the two windows (#226(b)).
+
+        The decision memory's board signature (turn, life, permanents, stack)
+        plus each permanent's controller and the hand size: a re-presented
+        window over a changed board — a controller swap, a new card — is a
+        new question even when its option list looks identical.
+        """
+        from arenamcp.decision_memory import board_signature
+
+        controllers = tuple(
+            sorted(
+                (int(card.get("instance_id") or 0), card.get("controller_seat_id"))
+                for card in game_state.get("battlefield") or []
+            )
+        )
+        return (board_signature(game_state), controllers, len(game_state.get("hand") or []))
+
+    # ── #227: damage our own resolved burn left on their creatures ────────
+
+    def _resolved_burn_marks(self) -> dict:
+        """This turn's record of burn damage WE dealt to their creatures.
+
+        The log's object snapshots routinely miss the damage a resolved spell
+        marked (2c397f62 T14: Lightning Strike resolved on their 5/4 Enigma
+        Drake, the next window's state still showed it undamaged), so the
+        hold policy re-held Tectonic Hazard with the pre-cast rationale "it
+        kills none of their creatures now" — false after the Strike, and the
+        Drake won the race. We watched our own target step: that is board
+        fact. Keyed by turn; damage washes at end of turn.
+        """
+        marks = getattr(self, "_burn_mark_ledger", None)
+        if marks is None:
+            marks = self._burn_mark_ledger = {}
+        return marks
+
+    def _note_resolved_burn(self, decision: Any, game_state: dict[str, Any], chosen: list[str]) -> None:
+        """Record the damage the burn we just aimed deals to its target (#227).
+
+        Called for every answered SelectTargets whose source is a damage-only
+        spell; the mark applies from the next window (the cast was submitted)
+        and accumulates across this turn's spells.
+        """
+        if decision.request_type != "SelectTargets" or len(chosen) != 1:
+            return
+        option_id = str(chosen[0])
+        if not option_id.startswith("tgt:"):
+            return
+        target_id = _as_int(option_id[len("tgt:") :])
+        if target_id <= 0:
+            return
+        source_name = str(decision.source_label or "")
+        if not source_name:
+            return
+        card = next(
+            (
+                candidate
+                for zone in ("hand", "graveyard", "exile", "stack")
+                for candidate in (game_state.get(zone) or [])
+                if isinstance(candidate, dict) and candidate.get("name") == source_name
+            ),
+            None,
+        )
+        if card is None:
+            return
+        from arenamcp.decision_memory import burn_reach
+
+        burn = burn_reach(str(card.get("oracle_text") or ""), card, game_state)
+        if burn is None or not burn.creatures:
+            return
+        damage = max(dmg for _need, dmg in burn.variants)
+        if damage <= 0:
+            return
+        marks = self._resolved_burn_marks()
+        turn = (game_state.get("turn") or {}).get("turn_number")
+        if marks.get("turn") != turn:
+            marks.clear()
+            marks["turn"] = turn
+            marks["damage"] = {}
+        dealt = marks.setdefault("damage", {})
+        dealt[target_id] = int(dealt.get(target_id, 0)) + int(damage)
+        logger.debug(
+            "burn mark: %s deals %s to instance %s this turn (%s total)",
+            source_name,
+            damage,
+            target_id,
+            dealt[target_id],
+        )
+
+    def _state_with_our_burn_marks(self, game_state: dict[str, Any]) -> dict[str, Any]:
+        """The board as the hold policy must see it: their creatures carry our resolved damage (#227).
+
+        A shallow copy with patched creature dicts — the hold checks
+        (``burn_kills_nothing`` and friends) read ``damage`` off the state's
+        battlefield, and the original state belongs to the caller. Marks from
+        an earlier turn are ignored: damage washes at end of turn.
+        """
+        marks = getattr(self, "_burn_mark_ledger", None) or {}
+        if marks.get("turn") != (game_state.get("turn") or {}).get("turn_number"):
+            return game_state
+        dealt = marks.get("damage") or {}
+        if not dealt:
+            return game_state
+        local = game_state.get("local_seat_id")
+        battlefield = []
+        changed = False
+        for card in game_state.get("battlefield") or []:
+            mark = dealt.get(card.get("instance_id"))
+            controller = card.get("controller_seat_id")
+            if mark and controller is not None and controller != local:
+                card = {
+                    **card,
+                    "damage": int(card.get("damage") or 0) + int(mark),
+                    "damaged_this_turn": True,
+                }
+                changed = True
+            battlefield.append(card)
+        if not changed:
+            return game_state
+        patched = dict(game_state)
+        patched["battlefield"] = battlefield
+        return patched
 
     def recent_decisions_text(self) -> str:
         """Our latest typed decisions, one per line, for the game-plan reform prompt."""
@@ -4204,6 +4478,7 @@ class ActionPlanner(_ActionLegalityMixin):
         self.last_llm_failure = ""
         self._last_llm_too_slow = False
         self._last_llm_cancelled = False
+        self._last_llm_asked = False
         context = game_state.get("decision_context") or {}
         raw = context.get("raw") or {}
         accept = decision.find("optional:accept")
@@ -4355,6 +4630,12 @@ class ActionPlanner(_ActionLegalityMixin):
         ):
             logger.info("Search has unidentified cards; declining a blind tutor choice")
             return [DECLINE_DECISION]
+        single = self._single_option_answer(decision)
+        if single is not None:
+            return single
+        reused = self._reusable_answer(decision, game_state)
+        if reused is not None:
+            return reused
         try:
             chosen = self._llm_decision_options(decision, game_state)
             self._correct_false_lethal_claim(game_state)
@@ -4396,7 +4677,9 @@ class ActionPlanner(_ActionLegalityMixin):
                     chosen = meant[:1]
                     self._last_decision_option_ids = chosen
             if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
-                chosen = self._reject_false_kill_claim(decision, game_state, chosen)
+                chosen = self._reject_false_kill_claim(
+                    decision, self._state_with_our_burn_marks(game_state), chosen
+                )
             if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
                 chosen = self._apply_role_guard(decision, game_state, chosen)
             if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
@@ -4812,21 +5095,28 @@ class ActionPlanner(_ActionLegalityMixin):
         StopType_EndStep for opponents is set, and 2026-10-18 18:50:52 (match
         5d72aecb T2) and 18:59:27 (1e900e6e T3) it sent ActionsAvailableReq in
         Phase_Ending/Step_End offering the held instant.
+
+        Every window recomputes its holds against the board WITH the damage
+        our own resolved burn dealt this turn (#227): after our Lightning
+        Strike resolved on their 5/4 Enigma Drake, Tectonic Hazard's "kills
+        none of their creatures now" is false, and the hold must yield so the
+        multi-spell plan finishes inside the same plan window.
         """
         self._hold_fates().tick(game_state)
+        marked = self._state_with_our_burn_marks(game_state)
         if decision.request_type == "SelectTargets":
-            return decision, self._release_target_pick(decision, game_state)
+            return decision, self._release_target_pick(decision, marked)
         if decision.request_type != "ActionsAvailable":
             return decision, []
         if not _local_turn(game_state):
-            return self._release_held_burn(decision, game_state)
+            return self._release_held_burn(decision, marked)
         from arenamcp.decision_memory import _TURN_STEPS, turn_window
 
-        window = turn_window(game_state)
+        window = turn_window(marked)
         if window in (_TURN_STEPS.index("main1"), _TURN_STEPS.index("main2")):
-            return self._hold_main_phase_burn(decision, game_state)
+            return self._hold_main_phase_burn(decision, marked)
         if window is not None and _TURN_STEPS[window] != "end" and _TURN_STEPS[window] != "cleanup":
-            return self._hold_for_main_phase(decision, game_state)  # upkeep, draw, our combat
+            return self._hold_for_main_phase(decision, marked)  # upkeep, draw, our combat
         return decision, []
 
     def _hold_main_phase_burn(self, decision: Any, game_state: dict[str, Any]) -> tuple[Any, list[str]]:
@@ -7960,6 +8250,15 @@ class ActionPlanner(_ActionLegalityMixin):
     # low answer was ready at 4.9 s and the action left at 15.0 s, when the
     # high leg ran out of budget with nothing.
     _HIGH_AFTER_LOW_S = 3.0
+    # A DOUBTED low answer used to wait out the whole high budget (15 s + 2 s
+    # grace) and was then set aside to the board-math fallback anyway — the
+    # 20:23/20:41 stalls of ledger #222 burned exactly that on windows whose
+    # deterministic answer was computable at once. The high leg now gets this
+    # much longer after the low one; past it the second look hands over at
+    # once. High answers land p50 ~9.5 s when they finish at all, so a high
+    # arriving more than 6 s after its low rarely lands inside Arena's
+    # patience either.
+    _DOUBT_AFTER_LOW_S = 6.0
 
     def _hedged_decision(
         self,
@@ -8028,6 +8327,19 @@ class ActionPlanner(_ActionLegalityMixin):
                     if outer is not None and outer.is_set():
                         for event in cancels.values():
                             event.set()
+                        # Ledger #226(b): a leg that already finished holds a
+                        # valid answer to THIS window — the request changed
+                        # underneath it, not the options. Return it (the
+                        # caller's superseded path decides) instead of
+                        # discarding a completed model call.
+                        ready = "high" if ok("high") else "low" if ok("low") else None
+                        if ready is not None:
+                            if isinstance(trace, dict):
+                                trace["hedge"] = {
+                                    "winner": ready,
+                                    "why": "request changed with the answer already ready",
+                                }
+                            return
                         raise LLMUnavailableError("decision cancelled: the request changed")
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -8055,7 +8367,17 @@ class ActionPlanner(_ActionLegalityMixin):
                 logger.info(
                     "typed-decision hedge: the low answer %s waits for high effort (%s)", low_ids, doubt
                 )
-                wait_until(high_deadline, lambda: "high" in results)
+                # Ledger #222: bounded, not the whole high budget — past this
+                # the second look hands over to the board-math fallback at
+                # once instead of stalling the window and discarding anyway.
+                # A patient window (lethal reach, ledger #100) keeps the full
+                # high budget: there the high answer is worth waiting for.
+                doubt_deadline = (
+                    high_deadline
+                    if patient
+                    else min(high_deadline, time.monotonic() + self._DOUBT_AFTER_LOW_S)
+                )
+                wait_until(doubt_deadline, lambda: "high" in results)
             elif patient and high_pending:
                 logger.info(
                     "typed-decision hedge: within lethal reach; the low answer %s waits for high", low_ids
@@ -8083,6 +8405,20 @@ class ActionPlanner(_ActionLegalityMixin):
             wait_until(started + legs["low"][1] + self._HEDGE_GRACE_S, lambda: "low" in results)
         high, low = results.get("high"), results.get("low")
         if doubt and low is not None and low[0] == "ok":
+            if outer is not None and outer.is_set():
+                # The request changed mid-hedge: hand the completed answer up
+                # (the caller's superseded path owns it) instead of failing
+                # over to a fallback for a window that is already gone.
+                logger.info(
+                    "typed-decision hedge: request changed; the doubted low answer %s stands", low[1][1]
+                )
+                if isinstance(trace, dict):
+                    trace["hedge"] = {
+                        "winner": "low",
+                        "low_ms": round(low[2]),
+                        "why": "request changed; the doubted low answer stands",
+                    }
+                return low[1]
             why = f"high: {high[1]}" if high is not None else "high: no answer in time"
             logger.info("typed-decision hedge: low answer %s set aside (%s; %s)", low[1][1], doubt, why)
             if isinstance(trace, dict):
@@ -8118,6 +8454,7 @@ class ActionPlanner(_ActionLegalityMixin):
         # caller's deterministic pick lands at once instead of after 12 s.
         if llm_circuit_open(getattr(self, "_backend", None)):
             raise LLMUnavailableError("model server unavailable (circuit open)")
+        self._last_llm_asked = True
         # Tags and LINES read the snapshot the guards assess (one search, cached).
         line_source, lines_text, unmodelled = self._line_prompt_context(decision, game_state)
         tag_state = game_state
