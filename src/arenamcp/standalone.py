@@ -1058,6 +1058,23 @@ class StandaloneCoach(
         """Vision mapper is disabled in streamlined mode."""
         self._vision_mapper = None
 
+    def _game_plan_background_suspended(self) -> bool:
+        """Whether background game-plan work must wait for a deck analysis.
+
+        #205: the coach's gate waits only ``_PLAN_WAITS_FOR_DECK_ANALYSIS_S``
+        for the playbook, then the plan forms on the board facts (and whatever
+        archetype seed exists) while the analysis keeps building in the
+        background. Waiting for the whole analysis left the first match on a
+        changed deck list with no plan for turns 3-5.
+        """
+        coach = getattr(self, "_coach", None)
+        if coach is None:
+            return False
+        try:
+            return bool(coach._deck_analysis_blocks_plan())
+        except Exception:
+            return False
+
     def _init_autopilot(self) -> None:
         """Initialize autopilot components (requires LLM backend + MCP)."""
         try:
@@ -1121,8 +1138,12 @@ class StandaloneCoach(
             if self._coach:
                 self._autopilot._game_plan_mgr = self._coach._ensure_game_plan_mgr()
                 if self._autopilot._game_plan_mgr:
-                    self._autopilot._game_plan_mgr.background_suspended_fn = lambda: bool(
-                        self._coach and self._coach._deck_strategy_pending
+                    # #205: wait only briefly for a deck analysis (the coach's
+                    # bounded gate). Suspending on _deck_strategy_pending for
+                    # the whole multi-minute playbook build left the first
+                    # match on a changed deck list with no game plan at all.
+                    self._autopilot._game_plan_mgr.background_suspended_fn = (
+                        self._game_plan_background_suspended
                     )
 
             mode = "DRY-RUN" if self._autopilot_dry_run else "LIVE"
