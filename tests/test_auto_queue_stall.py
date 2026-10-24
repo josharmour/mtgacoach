@@ -303,3 +303,40 @@ def test_matchmaking_is_reported_but_not_treated_as_a_stall(clock, log):
     assert not log.matching("watchdog")
     still = log.matching("Auto queue still waiting")
     assert len(still) >= 6 and all("on: Waiting for the next match" in line[2] for line in still)
+
+
+# --- #199(f): a blocked error dialog is named, not 'Waiting for the next match' ------
+
+
+def test_blocked_error_dialog_is_named_and_pauses_fast(clock, log):
+    state = {"match_id": None}
+    arena = FakeArena(clock)
+    error = answer("blocked", "wait", reason="Server connection error dialog")
+    model = Answers(VICTORY, HOME, RECENT, error)
+    nav = navigator(arena, model, state)
+    run(nav, state, clock, 30.0)
+    named = log.matching("Auto queue: Arena shows a blocked screen")
+    assert named and "Server connection error dialog" in named[0][2]
+    assert not log.matching("Auto queue: Waiting for the next match")
+    run(nav, state, clock, 60.0)
+    assert nav.paused_reason.startswith(
+        "Arena shows a blocked screen (Server connection error dialog)"
+    )
+    warning = log.matching("screenshots answered wait for")
+    assert warning and warning[0][1] == "WARNING"
+    # Paused on the short blocked limit, not after the full 180 s screen wait.
+    first_blocked = named[0][0]
+    assert warning[0][0] - first_blocked < auto_queue._BLOCKED_SCREEN_WAIT_LIMIT_S + 15
+
+
+def test_benign_blocked_transitions_keep_the_long_matchmaking_wait():
+    # #85: 'Waiting for Opponent' is the normal between-matches transition.
+    assert auto_queue._benign_blocked_transition(
+        {"label": "Waiting for Opponent", "reason": "Matchmaking transition screen"}
+    )
+    assert auto_queue._benign_blocked_transition({"label": "", "reason": "finding an opponent"})
+    # An error dialog is not a transition.
+    assert not auto_queue._benign_blocked_transition(
+        {"label": "Error", "reason": "Server connection error dialog"}
+    )
+    assert not auto_queue._benign_blocked_transition({"label": "", "reason": ""})

@@ -75,14 +75,29 @@ class _DeckAnalysisMixin:
             or state.get("game_over")
         ):
             return False
-        # ConnectResp in Brawl often sends the 99-card maindeck before the
+        # ConnectResp in Brawl often sends the maindeck before the
         # first GameStateMessage populates the command zone (#163). Wait for
         # the commander so we do not start and immediately cancel a
         # commanderless analysis, but only before turn 1 (the command zone
-        # is filled by then; review 2026-10-20: a 98-100 card deck with no
+        # is filled by then; review 2026-10-20: a deck with no
         # commander, or a coach started mid-game, must not wait forever).
+        # #199(d): Standard Brawl is a 59/60-card singleton list (the review
+        # above only recognised the 98-100 card Historic Brawl deck), so a
+        # 59-60 card deck counts as Brawl too when it is singleton or carries
+        # commander evidence (commander grp ids, a command zone, or a Brawl
+        # event id). A duplicated 60-card constructed deck is never waited on.
         turn = int(((state.get("turn") or {}).get("turn_number")) or 0)
-        brawl_deck = len(state.get("deck_cards") or []) in range(98, 101)
+        deck_cards = state.get("deck_cards") or []
+        deck_size = len(deck_cards)
+        commander_evidence = bool(
+            state.get("commander_grp_ids")
+            or state.get("command")
+            or "brawl" in str(state.get("event_id") or "").lower()
+        )
+        singleton = len(set(deck_cards)) == deck_size and deck_size > 0
+        brawl_deck = deck_size in range(98, 101) or (
+            deck_size in range(59, 61) and (commander_evidence or singleton)
+        )
         if brawl_deck and turn < 1 and not commander_ids(state):
             return False
         identity = deck_identity(state)

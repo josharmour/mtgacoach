@@ -142,6 +142,29 @@ _STEP_LIMIT_S = 90.0
 # Screenshots that keep answering "wait" on a loading or unrecognised screen (not
 # matchmaking) pause after this long instead of polling the model forever.
 _SCREEN_WAIT_LIMIT_S = 180.0
+# #199(f): a 'blocked' screen while our queue runs is usually a real error
+# dialog, not the between-matches screen; it gets a much shorter wait before
+# navigation pauses and says so, instead of 'Waiting for the next match' for
+# the full 180 s.
+_BLOCKED_SCREEN_WAIT_LIMIT_S = 45.0
+# A blocked screen whose label/reason reads as one of these is the normal
+# matchmaking transition (#85: 'Waiting for Opponent'), not an error dialog.
+_BENIGN_TRANSITION_HINTS = (
+    "waiting for opponent",
+    "matchmaking",
+    "finding an opponent",
+    "opponent connection",
+    "reconnecting",
+    "transition",
+)
+
+
+def _benign_blocked_transition(data: dict) -> bool:
+    """Whether a screen=blocked answer describes the normal matchmaking wait (#199(f))."""
+    text = f"{data.get('label') or ''} {data.get('reason') or ''}".lower()
+    return any(hint in text for hint in _BENIGN_TRANSITION_HINTS)
+
+
 # 2026-10-19 08:27:49: three unreadable observations of the rank-progress screen
 # paused navigation until someone clicked through Arena at 08:47:29. A pause that
 # only means the screen could not be read looks again after this long, at most
@@ -1292,27 +1315,51 @@ class AutoQueueNavigator:
                     else:
                         now = time.monotonic()
                         self._screen_wait_since = self._screen_wait_since or now
-                        if now - self._screen_wait_since >= _SCREEN_WAIT_LIMIT_S:
+                        waited = now - self._screen_wait_since
+                        # #199(f): a 'blocked' screen while our queue is running is
+                        # usually a real error dialog, not the between-matches
+                        # screen — it used to sit under 'Waiting for the next
+                        # match' for the full 180 s. A transition that reads as a
+                        # matchmaking wait (#85: 'Waiting for Opponent') keeps the
+                        # long bounded wait; anything else gets a short one and a
+                        # status that names the blocked screen.
+                        benign = self._stage == "blocked" and _benign_blocked_transition(data)
+                        limit = (
+                            _SCREEN_WAIT_LIMIT_S
+                            if benign or self._stage != "blocked"
+                            else _BLOCKED_SCREEN_WAIT_LIMIT_S
+                        )
+                        if waited >= limit:
                             logger.warning(
                                 "Auto queue: screenshots answered wait for %.0fs (screen=%s, reason=%r)",
-                                now - self._screen_wait_since,
+                                waited,
                                 self._stage,
                                 data.get("reason"),
                             )
-                            self._pause(
-                                f"Arena stayed on a {self._stage} screen with nothing to click for "
-                                f"{now - self._screen_wait_since:.0f}s."
-                            )
+                            if self._stage == "blocked" and not benign:
+                                self._pause(
+                                    f"Arena shows a blocked screen ({(data.get('reason') or 'unrecognised dialog').strip()}) "
+                                    f"for {waited:.0f}s — an error dialog needs a manual check before requeueing."
+                                )
+                            else:
+                                self._pause(
+                                    f"Arena stayed on a {self._stage} screen with nothing to click for "
+                                    f"{waited:.0f}s."
+                                )
                             return
                     self._failures = 0
                     self._next_poll = time.monotonic() + (30 if matchmaking else 3)
-                    self._status(
-                        "Waiting for the next match"
-                        if matchmaking or self._queue_started or self._queue_confirmed
-                        else "Waiting for Arena to finish loading"
-                        if self._stage == "queue"
-                        else "Waiting for Arena"
-                    )
+                    if self._stage == "blocked" and not _benign_blocked_transition(data):
+                        reason = str(data.get("reason") or "").strip()
+                        self._status(f"Arena shows a blocked screen{': ' + reason[:80] if reason else ''}")
+                    else:
+                        self._status(
+                            "Waiting for the next match"
+                            if matchmaking or self._queue_started or self._queue_confirmed
+                            else "Waiting for Arena to finish loading"
+                            if self._stage == "queue"
+                            else "Waiting for Arena"
+                        )
                 return
             if time.monotonic() - frame.captured_at > 12:
                 raise ValueError("Navigation screenshot expired")
