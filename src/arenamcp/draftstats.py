@@ -251,13 +251,19 @@ class DraftStatsCache:
         else:
             rows = self._download_set_data(expansion)
         if sum(1 for row in rows if row.get("ever_drawn_win_rate") is not None) < 20:
-            catalog_path = self._cache_dir / "public" / "work" / f"{expansion}.catalog.json"
-            if catalog_path.exists():
-                try:
-                    catalog_cards = json.loads(catalog_path.read_text(encoding="utf-8")).get("cards") or {}
-                    rows = merge_public_catalog_rows(rows, catalog_cards)
-                except Exception as e:
-                    logger.debug(f"Public catalog fallback for {expansion} unavailable: {e}")
+            # Rotated sets: the ratings API serves names but 0 games (#218).
+            # User cache first, then a catalog packaged with the app; if neither
+            # exists, a background rebuild from 17lands' public game data starts
+            # (rate-limited) and later loads pick it up.
+            try:
+                from arenamcp import seventeenlands_catalog
+
+                catalog_cards = seventeenlands_catalog.resolve_catalog(expansion, self._cache_dir)
+            except Exception as e:
+                logger.debug(f"Public catalog fallback for {expansion} unavailable: {e}")
+                catalog_cards = None
+            if catalog_cards:
+                rows = merge_public_catalog_rows(rows, catalog_cards)
         self._raw_cache[expansion] = rows
         return rows
 
