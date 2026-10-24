@@ -390,3 +390,18 @@ def test_telemetry_failure_never_fails_trial_issue(env, monkeypatch):
     monkeypatch.setattr(proxy_db, "record_trial_event", broken)
 
     assert _post_trial(client).status_code == 200
+
+
+def test_blackwell_tunnel_bridge_is_a_trusted_peer(env):
+    """cloudflared on blackwell reaches the site via the bridge gateway; its
+    callers must be limited per Cloudflare client, not as one network."""
+    proxy_app, proxy_db, _, fake, _ = env
+    with TestClient(proxy_app.app, client=("172.23.0.1", 40000)) as bridge:
+        for n in range(4):
+            r = bridge.post(
+                "/api/trial", json={"machine_id": _machine(n + 1)},
+                headers={"CF-Connecting-IP": f"198.51.100.{n + 1}"},
+            )
+            assert r.status_code == 200, (n, r.text)
+    assert len(fake.minted) == 4
+    assert len({e["network_hash"] for e in _events(proxy_db)}) == 4

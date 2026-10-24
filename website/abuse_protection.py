@@ -5,9 +5,11 @@ import time
 
 from fastapi import HTTPException
 
-# The existing Cloudflare tunnel runs on this verified NAS peer. Never trust
-# forwarding headers from arbitrary callers, other LAN hosts, or X-Forwarded-For.
-TRUSTED_TUNNEL_PEERS = {"10.0.0.2"}
+# Cloudflare tunnel connectors: the NAS, and since 2026-10-22 the blackwell
+# cloudflared container, whose host-port hairpin arrives from the
+# trash-guides_default bridge gateway. Never trust forwarding headers from
+# arbitrary callers, other LAN hosts, or X-Forwarded-For.
+TRUSTED_TUNNEL_PEERS = {"10.0.0.2", "172.23.0.1"}
 TRIAL_LIMITS = {"rpm_limit": 30, "tpm_limit": 500_000, "max_parallel_requests": 2}
 PATRON_LIMITS = {"rpm_limit": 60, "tpm_limit": 1_000_000, "max_parallel_requests": 4}
 
