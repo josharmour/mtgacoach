@@ -8,6 +8,7 @@ import concurrent.futures
 import inspect
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -870,22 +871,141 @@ class ActionPlanner(_ActionLegalityMixin):
         (a typed decision's) selects the playbook rules for that request.
         """
         parts = []
+        stable = self._stable_strategy_context(state, request_type=request_type)
+        if stable:
+            parts.append(stable)
+        grounded = self._grounded_plan_block(state, with_lines=with_lines)
+        self._last_plan_block = grounded or ""
+        if grounded:
+            parts.append(grounded)
+        return "\n\n".join(parts)
+
+    def _stable_strategy_context(self, state: dict | None, *, request_type: str | None = None) -> str:
+        """The call-to-call STABLE strategy text (#224): deck strategy and playbook rules.
+
+        The typed-decision prompt puts this BEFORE the volatile decision text
+        (PENDING DECISION / OPTIONS / GAME STATE), so vLLM's prefix cache keeps
+        matching from the deck reference straight through the strategy instead
+        of stopping at the first per-window byte. The per-turn grounded facts
+        stay in the volatile tail: they legitimately change every turn.
+        """
+        parts = []
         playbook = self._deck_playbook()
         if playbook is None or state is None:
             provider = getattr(self, "_deck_strategy_fn", None)
             strategy = provider() if provider else None
             if strategy:
                 parts.append(f"DECK STRATEGY:\n{strategy}")
-        grounded = self._grounded_plan_block(state, with_lines=with_lines)
-        self._last_plan_block = grounded or ""
-        if grounded:
-            parts.append(grounded)
         if playbook is not None and state is not None:
             # The full Oracle reference already accompanies the live state.
             # Reuse just the plan and relevant rules instead of repeating the
             # entire playbook, every source quotation, and then these rules.
             parts.append(playbook.decision_context(state, request_type=request_type))
         return "\n\n".join(parts)
+
+    # Ledger #219 (Sealed 98c89a24 T15/T17/T19): with the attack bug (#216) gone
+    # the model still held real creatures behind blockers for whole turns while
+    # ahead on board ("hold value creatures behind blockers"). Deterministic
+    # nudge in the decision prompt; set ARENAMCP_LIMITED_AGGRESSION=0 to
+    # disable while live judgement is re-judged on real games.
+    LIMITED_AGGRESSION_ENV = "ARENAMCP_LIMITED_AGGRESSION"
+
+    @staticmethod
+    def _limited_aggression_enabled() -> bool:
+        return os.environ.get(ActionPlanner.LIMITED_AGGRESSION_ENV, "").strip() != "0"
+
+    def _note_llm_cache_metrics(self) -> None:
+        """Surface the backend's cached-input count in the decision trace (#224).
+
+        vLLM's prefix cache is on server-side; whether it actually hit is only
+        visible if the response's usage survives the gateway. The proxy records
+        ``cached_input_tokens`` per request (None when the backend does not
+        report it); copy the last request's counts into the trace and log a hit
+        so cache behaviour is checkable end-to-end from the decision logs.
+        """
+        metrics = getattr(getattr(self, "_backend", None), "last_request_metrics", None)
+        if not isinstance(metrics, dict):
+            return
+        cached = metrics.get("cached_input_tokens")
+        input_tokens = metrics.get("input_tokens")
+        if cached is None and input_tokens is None:
+            return  # backend reports no usage at all (older gateways)
+        self._last_decision_trace["llm_usage"] = {
+            "input_tokens": input_tokens,
+            "cached_input_tokens": cached,
+        }
+        if cached:
+            logger.info(
+                "typed-decision: prefix cache hit: %s of %s input tokens cached",
+                cached,
+                input_tokens,
+            )
+
+    @staticmethod
+    def _board_creatures(state: dict, seat: int | None) -> tuple[int, int]:
+        """Our (or their) creature count and total power on the battlefield."""
+        count = power = 0
+        for card in state.get("battlefield") or []:
+            if not isinstance(card, dict):
+                continue
+            controller = card.get("controller_seat_id", card.get("owner_seat_id"))
+            if seat is not None and controller != seat:
+                continue
+            types = card.get("card_types") or []
+            type_line = str(card.get("type_line") or "")
+            if "CardType_Creature" not in types and "creature" not in type_line.lower():
+                continue
+            count += 1
+            try:
+                power += int(float(card.get("power") or 0))
+            except (TypeError, ValueError):
+                pass
+        return count, power
+
+    def _limited_aggression_note(self, state: dict | None) -> str:
+        """A tempo nudge when we are ahead on board in a limited/sealed format (#219).
+
+        Empty unless the format is limited (40-45 card deck or a draft/sealed/
+        jump-in/cube event id), we strictly lead on BOTH creature count and
+        total power with at least two creatures, and the nudge is enabled.
+        """
+        if state is None or not self._limited_aggression_enabled():
+            return ""
+        deck_size = len(state.get("deck_cards") or [])
+        event = str(state.get("event_id") or state.get("event_name") or "").lower()
+        limited = 40 <= deck_size <= 45 or any(
+            kind in event for kind in ("draft", "sealed", "jump_in", "cube")
+        )
+        if not limited:
+            return ""
+        local = state.get("local_seat_id") or next(
+            (
+                p.get("seat_id")
+                for p in state.get("players", [])
+                if isinstance(p, dict) and p.get("is_local")
+            ),
+            None,
+        )
+        opponent = state.get("opponent_seat_id") or next(
+            (
+                p.get("seat_id")
+                for p in state.get("players", [])
+                if isinstance(p, dict) and not p.get("is_local")
+            ),
+            None,
+        )
+        our_count, our_power = self._board_creatures(state, local)
+        their_count, their_power = self._board_creatures(state, opponent)
+        if our_count < 2 or our_count <= their_count or our_power <= their_power:
+            return ""
+        return (
+            f"LIMITED AGGRESSION: you are ahead on board ({our_count} creatures/{our_power} power "
+            f"vs their {their_count}/{their_power}). In limited, tempo and chip damage win races: "
+            "attack with your real creatures this turn when the crackback cannot kill you and the "
+            "blocks are not disastrous. Do NOT hold value creatures behind blockers while ahead — "
+            "a held creature deals zero damage. Hold back only what must survive as blockers against "
+            "a lethal crackback."
+        )
 
     # Decision calls give up on a server that has produced no first token by
     # then (bug_20261006_185403: saturated, no token in 30 s / 12 s). Proxies
@@ -8512,6 +8632,11 @@ class ActionPlanner(_ActionLegalityMixin):
             reveal=_option_grp_ids(decision),
             library=True if decision.request_type in ("Search", "SearchFromGroups") else None,
         )
+        # #224: the call-to-call STABLE strategy text (deck strategy, playbook
+        # decision rules) leads the message, right after the deck reference, so
+        # vLLM's prefix cache matches through it; the per-turn plan facts stay
+        # in the volatile tail below.
+        stable_strategy = self._stable_strategy_context(game_state, request_type=decision.request_type)
         lines = [
             f"PENDING DECISION: {decision.request_type}"
             + (f" (source: {decision.source_label})" if decision.source_label else ""),
@@ -8776,17 +8901,21 @@ class ActionPlanner(_ActionLegalityMixin):
         if reach:
             lines.append(reach)
         lines.append(self._decision_game_context(context_state, options_listed=True))
-        # The LINES line is shown once, above OPTIONS: not again in the strategy block.
-        strategy_context = self._strategy_context(
-            game_state, with_lines=not lines_text.startswith("LINES"), request_type=decision.request_type
-        )
-        if strategy_context:
-            lines.append(strategy_context)
+        # The LINES line is shown once, above OPTIONS: not again in the plan block.
+        grounded = self._grounded_plan_block(game_state, with_lines=not lines_text.startswith("LINES"))
+        self._last_plan_block = grounded or ""
+        if grounded:
+            lines.append(grounded)
+        aggression = self._limited_aggression_note(game_state)
+        if aggression:
+            lines.append(aggression)
         memory_block = self._memory().prompt_block(game_state)
         if memory_block:
             lines.append("")
             lines.append(memory_block)
-        user_message = with_deck_reference("\n".join(lines), game_state)
+        user_message = with_deck_reference(
+            (stable_strategy + "\n\n" if stable_strategy else "") + "\n".join(lines), game_state
+        )
         # Removal, spending a plan card, or targeting a removal effect: the
         # model thinks at high effort with a longer budget. Routine priority
         # windows stay at low effort within the short budget.
@@ -8831,11 +8960,19 @@ class ActionPlanner(_ActionLegalityMixin):
                 self._last_decision_trace["lines"]["unmodelled"] = dict(unmodelled)
         plan_block = getattr(self, "_last_plan_block", "")
         if plan_block:
-            # Capped: every decision of a match carries it into packets and bug reports (review 2026-10-20).
+            # Capped: every decision of a match carries it into packets and bug
+            # reports (review 2026-10-20). #199(e): the same block rode on EVERY
+            # decision's trace; store it in full only when it changed since the
+            # last stored copy (per match), else a one-line marker.
             limit = 2000
-            self._last_decision_trace["plan_block"] = (
-                plan_block if len(plan_block) <= limit else plan_block[:limit] + " …[truncated]"
-            )
+            key = (game_state.get("match_id"), plan_block)
+            if getattr(self, "_stored_plan_block_key", None) == key:
+                self._last_decision_trace["plan_block"] = f"unchanged ({len(plan_block)} chars)"
+            else:
+                self._stored_plan_block_key = key
+                self._last_decision_trace["plan_block"] = (
+                    plan_block if len(plan_block) <= limit else plan_block[:limit] + " …[truncated]"
+                )
         if getattr(self, "_held_instants", None):
             self._last_decision_trace["held_instants"] = list(self._held_instants)
 
@@ -8974,6 +9111,7 @@ class ActionPlanner(_ActionLegalityMixin):
             answered_high = (self._last_decision_trace.get("hedge") or {}).get("winner") == "high"
         else:
             data, chosen = parse(ask(user_message, effort=None, budget=normal_budget))
+        self._note_llm_cache_metrics()
         reversed_record = self._memory().reversal(game_state, decision, chosen)
         followed = self._memory().stated_plan_followed(reversed_record, game_state, decision, chosen)
         if followed:
