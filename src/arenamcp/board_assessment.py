@@ -830,6 +830,54 @@ _MAX_TOKEN_BODIES = 8  # their tokens a projection adds to the board, at most (c
 _TOKEN_BODY_IDS = 650_000_000
 
 
+def _walker_token_sources(battlefield: list[dict], seat: int | None) -> list[dict]:
+    """Bodies for ``seat``'s planeswalkers whose loyalty abilities make creature tokens (#229):
+    non-attacking token sources for ``_simulate_attacks`` — ``_tokens``, ``_token_pt`` and
+    ``_token_every`` (a minus ability paces at one casting per recharge by its plus ability:
+    Garruk, Curse Breaker's −3 Beast every second turn of his, not every turn).
+
+    The walkers themselves never attack (no ``_can_attack``) and never die in the
+    simulation; only their tokens join the board.
+    """
+    try:
+        from arenamcp.combat_strategy import loyalty as walker_loyalty
+        from arenamcp.line_search_moves import walker_growth
+    except Exception:  # a reading aid: the clocks never fail on it
+        return []
+    out: list[dict] = []
+    for card in battlefield or []:
+        if not isinstance(card, dict) or card.get("controller_seat_id") != seat:
+            continue
+        if "planeswalker" not in _types(card):
+            continue
+        plus, abilities = walker_growth(card)
+        if not abilities:
+            continue
+        loyal = walker_loyalty(card)
+        best = max(
+            (a for a in abilities if loyal is None or loyal + a[0] >= 0),
+            key=lambda a: a[1] * (2 * a[2] + a[3]),
+            default=None,
+        )
+        if best is None:
+            continue
+        delta, n, p, t = best
+        every = 1 if delta >= 0 else max(1, math.ceil(-delta / plus)) if plus > 0 else -delta
+        origin = _int(card.get("instance_id")) or 0
+        out.append(
+            {
+                "instance_id": origin,
+                "name": _name(card),
+                "power": p,
+                "toughness": t,
+                "_tokens": n,
+                "_token_pt": (p, t),
+                "_token_every": every,
+            }
+        )
+    return out
+
+
 def made_tokens(source: dict, count: int, generation: int, rules: dict | None = None) -> list[dict]:
     """``count`` creature token bodies ``source``'s token engine makes (``_token_pt``), with ids
     fixed by the source and ``generation`` (a projection's turn), so repeated projections share
@@ -922,10 +970,10 @@ def _simulate_attacks(
     combat_turns = 0  # beginning-of-combat counter steps resolved while a source lives
     for index in range(_MAX_CLOCK):
         if index == 0 and first_attackers is not None:
-            able = [a for a in first_attackers if a["_can_attack"]]
+            able = [a for a in first_attackers if a.get("_can_attack")]
             blockers = list(first_blockers if first_blockers is not None else alive_def)
         else:
-            able = [a for a in alive_att if a["_can_attack"]]
+            able = [a for a in alive_att if a.get("_can_attack")]
             blockers = [d for d in alive_def if d["instance_id"] not in racing] if index else list(alive_def)
         engine = growing = 0
         if engines is not None:
@@ -956,10 +1004,14 @@ def _simulate_attacks(
                 for a in alive_att
             )
         # Their token engines' tokens of this turn, made in their main phase before the attack (#172;
-        # not for the turn already under way: its mana is spent or not read).
+        # not for the turn already under way: its mana is spent or not read). A source with
+        # ``_token_every`` (a planeswalker's minus loyalty ability, #229) makes them only once per
+        # recharge by its plus ability.
         new_tokens: list[dict] = []
         if engines is not None and made < _MAX_TOKEN_BODIES and (index or engines.grow_first):
             for source in [a for a in alive_att if a.get("_tokens")]:
+                if index % max(1, int(source.get("_token_every") or 1)):
+                    continue
                 new_tokens += made_tokens(
                     source, min(source["_tokens"], _MAX_TOKEN_BODIES - made - len(new_tokens)), index
                 )
@@ -1650,7 +1702,11 @@ def their_clock_engines(model: Any) -> ClockEngines | None:
         model.phase not in ("", "Phase_Beginning") or model.step == "Step_Draw"
     )
     return _side_engines(
-        getattr(model, "engines", None), model.theirs, active=not model.our_turn,
+        getattr(model, "engines", None),
+        # Their planeswalkers' token-making loyalty abilities count too (#229): Garruk's beasts
+        # are an engine even with no creature of theirs on the battlefield.
+        [*model.theirs, *_walker_token_sources(model.battlefield, model.opponent)],
+        active=not model.our_turn,
         attack_pending=model.their_attack_pending, attacking=model.any_theirs_attacking,
         before_combat=before_combat, after_upkeep=after_upkeep,
     )  # fmt: skip
@@ -1664,7 +1720,9 @@ def our_clock_engines(model: Any) -> ClockEngines | None:
         model.pre_combat or (model.in_combat_before_damage and model.any_ours_attacking)
     )
     return _side_engines(
-        getattr(model, "our_engines", None), model.ours, active=model.our_turn, attack_pending=pending,
+        getattr(model, "our_engines", None),
+        [*model.ours, *_walker_token_sources(model.battlefield, model.local)],
+        active=model.our_turn, attack_pending=pending,
         attacking=pending,
     )  # fmt: skip
 
@@ -1679,6 +1737,10 @@ def _engine_notes(model: Any) -> list[str]:
         if (n := (b.get("_growth") or 0) + (b.get("_combat_source_growth") or 0))
     ]
     notes += [f"{b['name']} makes ~{b['_tokens']} tokens a turn" for b in model.theirs if b.get("_tokens")]
+    notes += [
+        f"{body['name']} makes ~{body['_tokens']} token(s) every {body['_token_every']} turn(s)"
+        for body in _walker_token_sources(model.battlefield, model.opponent)
+    ]
     engines = getattr(model, "engines", None)
     creatures = {b["name"] for b in model.theirs}
     notes += [
@@ -1704,10 +1766,13 @@ def _clock_facts(model: Any) -> SimpleNamespace:
     their_drain = lifelink_drain(theirs, ours, model.our_life)
     our_drain = lifelink_drain(ours, theirs, model.opp_life)
     # Their creatures' growth and their drain engines each turn of theirs (ledger #128-#133, #143);
-    # ours alike in our clock.
+    # ours alike in our clock. Their planeswalkers' token-making loyalty abilities join the board
+    # too (#229): Garruk's beasts are the escalation the race projection missed.
     engines = their_clock_engines(model)
+    their_walker_sources = _walker_token_sources(model.battlefield, model.opponent)
+    our_walker_sources = _walker_token_sources(model.battlefield, model.local)
     our_clock, our_lives = _simulate_attacks(
-        ours,
+        [*ours, *our_walker_sources],
         theirs,
         model.opp_life,
         first_attackers=first_our_attackers,
@@ -1716,7 +1781,7 @@ def _clock_facts(model: Any) -> SimpleNamespace:
         engines=our_clock_engines(model),
     )
     their_clock, their_lives = _simulate_attacks(
-        theirs,
+        [*theirs, *their_walker_sources],
         ours,
         model.our_life,
         first_attackers=first_their_attackers,
@@ -1734,7 +1799,7 @@ def _clock_facts(model: Any) -> SimpleNamespace:
     our_racers = _racers(ours, theirs, model.opp_life, first_our_attackers, model.untapped_theirs, our_clock)
     if our_racers:
         racing_clock, _racing_lives = _simulate_attacks(
-            theirs,
+            [*theirs, *their_walker_sources],
             ours,
             model.our_life,
             first_attackers=first_their_attackers,
@@ -1749,7 +1814,7 @@ def _clock_facts(model: Any) -> SimpleNamespace:
     # (2026-10-08 game 1 T8-T12: Tetsuko made every 1-power attacker
     # unblockable and the role said "defender — block, trade, deploy bodies").
     _unblocked_clock, unblocked_lives = _simulate_attacks(
-        theirs, [], model.our_life, first_attackers=first_their_attackers, first_blockers=[], engines=engines,
+        [*theirs, *their_walker_sources], [], model.our_life, first_attackers=first_their_attackers, first_blockers=[], engines=engines,
         first_declared=model.any_theirs_attacking,
     )  # fmt: skip
     # Only with creatures of our own to block with: an empty board is "deploy
