@@ -101,6 +101,23 @@ def init_db():
                 expires_at TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS trial_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created REAL NOT NULL,
+                event TEXT NOT NULL,
+                machine_id TEXT NOT NULL DEFAULT '',
+                network_hash TEXT NOT NULL DEFAULT '',
+                client_hash TEXT NOT NULL DEFAULT '',
+                peer TEXT NOT NULL DEFAULT '',
+                country TEXT NOT NULL DEFAULT '',
+                app_version TEXT NOT NULL DEFAULT '',
+                install_id TEXT NOT NULL DEFAULT '',
+                frontend TEXT NOT NULL DEFAULT '',
+                user_agent TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trial_events_created ON trial_events(created);
+            CREATE INDEX IF NOT EXISTS idx_trial_events_machine ON trial_events(machine_id, created);
             CREATE INDEX IF NOT EXISTS idx_client_installs_key ON client_installs(license_key);
             CREATE INDEX IF NOT EXISTS idx_client_installs_last_seen ON client_installs(last_seen);
         """)
@@ -254,6 +271,65 @@ def create_trial(machine_id: str, litellm_key: str, created_at: str, expires_at:
             "VALUES (?, ?, ?, ?)",
             (machine_id, litellm_key, created_at, expires_at),
         )
+
+
+TRIAL_EVENT_FIELDS = (
+    "machine_id", "network_hash", "client_hash", "peer", "country",
+    "app_version", "install_id", "frontend", "user_agent",
+)
+
+
+def record_trial_event(event: str, **fields: str) -> None:
+    """Append one trial lifecycle event (request, issue, limit, app check-in)."""
+    values = [str(fields.get(name) or "") for name in TRIAL_EVENT_FIELDS]
+    with get_db() as conn:
+        conn.execute(
+            f"INSERT INTO trial_events (created, event, {', '.join(TRIAL_EVENT_FIELDS)}) "
+            f"VALUES (?, ?, {', '.join('?' * len(TRIAL_EVENT_FIELDS))})",
+            (time.time(), event, *values),
+        )
+
+
+def get_trial_event_summary(days: int = 7, recent: int = 200) -> dict:
+    """Trial funnel: events per day, callers per network, and the latest events."""
+    since = time.time() - (days * 86400)
+    with get_db() as conn:
+        daily = conn.execute(
+            "SELECT date(created, 'unixepoch') AS day, event, COUNT(*) AS events, "
+            "COUNT(DISTINCT machine_id) AS machines "
+            "FROM trial_events WHERE created > ? GROUP BY day, event ORDER BY day DESC, event",
+            (since,),
+        ).fetchall()
+        networks = conn.execute(
+            "SELECT substr(network_hash, 1, 12) AS network, peer, "
+            "COUNT(DISTINCT machine_id) AS machines, COUNT(DISTINCT client_hash) AS clients, "
+            "SUM(event = 'created') AS created, SUM(event = 'rate_limited') AS rate_limited "
+            "FROM trial_events WHERE created > ? GROUP BY network_hash, peer "
+            "ORDER BY machines DESC LIMIT 25",
+            (since,),
+        ).fetchall()
+        machines = conn.execute(
+            "SELECT substr(machine_id, 1, 12) AS machine, min(created) AS first_seen, "
+            "max(created) AS last_seen, SUM(event = 'created') AS created, "
+            "SUM(event LIKE 'check%') AS checks, max(app_version) AS app_version, "
+            "max(country) AS country "
+            "FROM trial_events WHERE created > ? AND machine_id != '' "
+            "GROUP BY machine_id ORDER BY last_seen DESC LIMIT ?",
+            (since, recent),
+        ).fetchall()
+        events = conn.execute(
+            "SELECT created, event, substr(machine_id, 1, 12) AS machine, "
+            "substr(network_hash, 1, 12) AS network, substr(client_hash, 1, 12) AS client, "
+            "peer, country, app_version, install_id, frontend "
+            "FROM trial_events WHERE created > ? ORDER BY created DESC LIMIT ?",
+            (since, recent),
+        ).fetchall()
+    return {
+        "daily": [dict(r) for r in daily],
+        "networks": [dict(r) for r in networks],
+        "machines": [dict(r) for r in machines],
+        "events": [dict(r) for r in events],
+    }
 
 
 # --- Messages ---

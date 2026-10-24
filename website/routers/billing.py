@@ -71,7 +71,10 @@ async def check_subscription(request: Request):
                 "status": "invalid",
                 "message": "Invalid license key.",
             })
-        return _trial_status(trial)
+        response = _trial_status(trial)
+        event = "check" if response.status_code == 200 else "check_expired"
+        state._record_trial_event(request, event, trial["machine_id"])
+        return response
 
     _record_client_telemetry(request, sub["license_key"])
 

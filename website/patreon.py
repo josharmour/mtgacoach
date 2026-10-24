@@ -130,11 +130,12 @@ async def mint_litellm_key(email: str, name: str, patron_id: str) -> str:
     raise RuntimeError("unreachable")
 
 
-async def mint_trial_key(machine_id: str) -> str:
+async def mint_trial_key(machine_id: str, context: Optional[dict[str, str]] = None) -> str:
     """Create a 7-day free-trial LiteLLM key for a machine and return it.
 
     LiteLLM enforces expiry (``duration``) and spend cap (``max_budget``)
-    gateway-side, so a leaked trial key dies on its own.
+    gateway-side, so a leaked trial key dies on its own. ``context`` (app
+    version, install, coarse origin) is stored in the key metadata.
     """
     payload: dict[str, Any] = {
         "models": PATRON_KEY_MODELS,
@@ -143,6 +144,7 @@ async def mint_trial_key(machine_id: str) -> str:
         "duration": TRIAL_KEY_DURATION,
         "max_budget": TRIAL_KEY_BUDGET,
         "metadata": {
+            **(context or {}),
             "trial": True,
             "machine_id": machine_id,
             "source": "trial",

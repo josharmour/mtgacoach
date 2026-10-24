@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 import httpx
 import yaml
+from abuse_protection import request_origin
 from fastapi import HTTPException, Request
 from fastapi.templating import Jinja2Templates
 from providers import ProviderRouter
@@ -170,6 +171,30 @@ def _record_client_telemetry(request: Request, license_key: str) -> None:
         user_agent=metadata.get("user_agent", ""),
         last_ip=request.client.host if request.client else "",
     )
+
+
+def _record_trial_event(request: Request, event: str, machine_id: str = "", app_version: str = "") -> None:
+    """Log and persist one trial lifecycle event. Telemetry never fails the request."""
+    try:
+        metadata = _extract_client_metadata(request)
+        fields = {
+            **request_origin(request),
+            "machine_id": machine_id,
+            "app_version": app_version or metadata["client_version"],
+            "install_id": metadata["install_id"],
+            "frontend": metadata["frontend"],
+            "user_agent": metadata["user_agent"],
+        }
+        logger.info(
+            "trial_event event=%s machine=%s network=%s client=%s peer=%s country=%s "
+            "version=%s install=%s frontend=%s",
+            event, machine_id[:12] or "-", fields["network_hash"][:12] or "-",
+            fields["client_hash"][:12] or "-", fields["peer"] or "-", fields["country"] or "-",
+            fields["app_version"] or "-", fields["install_id"][:16] or "-", fields["frontend"] or "-",
+        )
+        _get_db().record_trial_event(event, **fields)
+    except Exception as e:
+        logger.warning(f"Could not record trial event {event}: {e}")
 
 
 def _require_license(request: Request) -> dict:
