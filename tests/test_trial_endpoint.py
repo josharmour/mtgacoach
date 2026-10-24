@@ -280,3 +280,128 @@ def test_subscription_check_marks_subscribers_and_rejects_unknown_keys(env):
 
     r = _check(client, "sk-nobody")
     assert r.status_code == 401 and r.json()["status"] == "invalid"
+
+
+# ── Trial telemetry: every /api/trial outcome and app check-in is recorded ──
+
+
+def _events(proxy_db):
+    with proxy_db.get_db() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM trial_events ORDER BY id")]
+
+
+CLIENT_HEADERS = {
+    "X-MTGACoach-Install-ID": "inst_test",
+    "X-MTGACoach-Version": "3.6.2",
+    "X-MTGACoach-Frontend": "winui",
+    "CF-IPCountry": "tr",
+}
+
+
+def test_trial_outcomes_are_recorded_as_events(env):
+    _, proxy_db, _, _, client = env
+    body = {"machine_id": MACHINE_ID, "app_version": "3.6.2"}
+
+    issued = client.post("/api/trial", json=body, headers=CLIENT_HEADERS).json()
+    client.post("/api/trial", json=body, headers=CLIENT_HEADERS)
+    client.post("/api/trial", json={"machine_id": "nope"})
+    _check(client, issued["key"])
+
+    events = _events(proxy_db)
+    assert [e["event"] for e in events] == ["created", "existing", "invalid", "check"]
+    created = events[0]
+    assert created["machine_id"] == MACHINE_ID
+    assert (created["app_version"], created["install_id"], created["frontend"]) == ("3.6.2", "inst_test", "winui")
+    assert created["country"] == "TR"
+    assert created["peer"] == CLIENT_ADDR[0]
+    assert len(created["network_hash"]) == 64
+    assert events[3]["machine_id"] == MACHINE_ID  # check-in resolves the key to its machine
+
+
+def test_lapsed_trial_check_in_is_recorded(env):
+    _, proxy_db, _, _, client = env
+    past = _iso(datetime.now(timezone.utc) - timedelta(hours=1))
+    proxy_db.create_trial(MACHINE_ID, "sk-fake-lapsed", past, past)
+
+    _check(client, "sk-fake-lapsed")
+    _post_trial(client)
+
+    assert [(e["event"], e["machine_id"]) for e in _events(proxy_db)] == [
+        ("check_expired", MACHINE_ID), ("expired", MACHINE_ID),
+    ]
+
+
+def test_untrusted_peer_keeps_distinct_client_hashes_for_rate_limited_callers(env, monkeypatch):
+    """A proxy that is not a trusted tunnel peer collapses callers onto one
+    enforced network; the unverified Cloudflare header still tells them apart."""
+    proxy_app, proxy_db, _, _, _ = env
+    abuse = __import__("sys").modules["abuse_protection"]
+    monkeypatch.setattr(abuse, "TRUSTED_TUNNEL_PEERS", {"10.0.0.2"})
+    with TestClient(proxy_app.app, client=("172.23.0.1", 40000)) as bridge:
+        for n in range(4):
+            bridge.post(
+                "/api/trial", json={"machine_id": _machine(n + 1)},
+                headers={"CF-Connecting-IP": f"198.51.100.{n + 1}"},
+            )
+
+    events = _events(proxy_db)
+    assert [e["event"] for e in events] == ["created"] * 3 + ["rate_limited"]
+    assert len({e["network_hash"] for e in events}) == 1
+    assert len({e["client_hash"] for e in events}) == 4
+    summary = proxy_db.get_trial_event_summary(days=1)
+    assert summary["networks"][0] | {"network": None} == {
+        "network": None, "peer": "172.23.0.1", "machines": 4, "clients": 4, "created": 3, "rate_limited": 1,
+    }
+
+
+def test_unverifiable_tunnel_caller_and_mint_failure_are_recorded(env, monkeypatch):
+    proxy_app, proxy_db, patreon, _, client = env
+    abuse = __import__("sys").modules["abuse_protection"]
+    monkeypatch.setattr(abuse, "TRUSTED_TUNNEL_PEERS", {"10.0.0.2"})
+    with TestClient(proxy_app.app, client=("10.0.0.2", 40000)) as tunnel:
+        assert tunnel.post("/api/trial", json={"machine_id": _machine(5)}).status_code == 400
+
+    async def broken(machine_id, context=None):
+        raise RuntimeError("gateway down")
+
+    monkeypatch.setattr(patreon, "mint_trial_key", broken)
+    assert _post_trial(client).status_code == 503
+
+    assert [e["event"] for e in _events(proxy_db)] == ["unverified_network", "mint_failed"]
+
+
+def test_trial_key_metadata_carries_signup_context(env):
+    _, _, _, fake, client = env
+
+    client.post("/api/trial", json={"machine_id": MACHINE_ID, "app_version": "3.6.2"}, headers=CLIENT_HEADERS)
+
+    metadata = fake.minted[0]["payload"]["metadata"]
+    assert (metadata["app_version"], metadata["install_id"], metadata["country"]) == ("3.6.2", "inst_test", "TR")
+    assert len(metadata["network"]) == 12
+    assert (metadata["trial"], metadata["source"], metadata["machine_id"]) == (True, "trial", MACHINE_ID)
+
+
+def test_telemetry_failure_never_fails_trial_issue(env, monkeypatch):
+    _, proxy_db, _, _, client = env
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(proxy_db, "record_trial_event", broken)
+
+    assert _post_trial(client).status_code == 200
+
+
+def test_blackwell_tunnel_bridge_is_a_trusted_peer(env):
+    """cloudflared on blackwell reaches the site via the bridge gateway; its
+    callers must be limited per Cloudflare client, not as one network."""
+    proxy_app, proxy_db, _, fake, _ = env
+    with TestClient(proxy_app.app, client=("172.23.0.1", 40000)) as bridge:
+        for n in range(4):
+            r = bridge.post(
+                "/api/trial", json={"machine_id": _machine(n + 1)},
+                headers={"CF-Connecting-IP": f"198.51.100.{n + 1}"},
+            )
+            assert r.status_code == 200, (n, r.text)
+    assert len(fake.minted) == 4
+    assert len({e["network_hash"] for e in _events(proxy_db)}) == 4

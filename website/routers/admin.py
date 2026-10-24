@@ -153,6 +153,16 @@ async def admin_usage(request: Request, _=Depends(_require_admin)):
     return _get_db().get_all_usage_summary(30)
 
 
+@router.get("/admin/api/trials")
+async def admin_trial_events(request: Request, _=Depends(_require_admin)):
+    """Trial funnel: signups, limits and app check-ins by day, network and machine."""
+    try:
+        days = max(1, min(90, int(request.query_params.get("days", "7"))))
+    except ValueError:
+        days = 7
+    return _get_db().get_trial_event_summary(days=days)
+
+
 @router.get("/admin/api/activity")
 async def admin_activity(request: Request, _=Depends(_require_admin)):
     """Time-bucketed activity series for the dashboard chart.

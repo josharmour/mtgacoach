@@ -5,28 +5,53 @@ import time
 
 from fastapi import HTTPException
 
-# The existing Cloudflare tunnel runs on this verified NAS peer. Never trust
-# forwarding headers from arbitrary callers, other LAN hosts, or X-Forwarded-For.
-TRUSTED_TUNNEL_PEERS = {"10.0.0.2"}
+# Cloudflare tunnel connectors: the NAS, and since 2026-10-22 the blackwell
+# cloudflared container, whose host-port hairpin arrives from the
+# trash-guides_default bridge gateway. Never trust forwarding headers from
+# arbitrary callers, other LAN hosts, or X-Forwarded-For.
+TRUSTED_TUNNEL_PEERS = {"10.0.0.2", "172.23.0.1"}
 TRIAL_LIMITS = {"rpm_limit": 30, "tpm_limit": 500_000, "max_parallel_requests": 2}
 PATRON_LIMITS = {"rpm_limit": 60, "tpm_limit": 1_000_000, "max_parallel_requests": 4}
+
+
+def _network_hash(address):
+    address = ipaddress.ip_address(address)
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    network = ipaddress.ip_network(f"{address}/{'64' if address.version == 6 else '32'}", strict=False)
+    return hashlib.sha256(str(network).encode()).hexdigest()
 
 
 def network_identity(request):
     peer = request.client.host if request.client else ""
     try:
-        address = ipaddress.ip_address(peer)
         if peer in TRUSTED_TUNNEL_PEERS:
-            forwarded = request.headers.get("cf-connecting-ip", "")
             # Missing/invalid headers fail closed; do not collapse all public
             # signups onto the tunnel's address or accept a client-chosen ID.
-            address = ipaddress.ip_address(forwarded)
-        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-            address = address.ipv4_mapped
-        network = ipaddress.ip_network(f"{address}/{'64' if address.version == 6 else '32'}", strict=False)
+            return _network_hash(request.headers.get("cf-connecting-ip", ""))
+        return _network_hash(peer)
     except ValueError:
         raise HTTPException(400, "Unable to verify signup network") from None
-    return hashlib.sha256(str(network).encode()).hexdigest()
+
+
+def request_origin(request):
+    """Telemetry view of a caller; never raises, keeps digests only.
+
+    network_hash is what the limits enforce. client_hash digests the
+    Cloudflare header even from an untrusted peer, so a tunnel path that
+    collapses callers onto one network still shows how many there were.
+    """
+    peer = request.client.host if request.client else ""
+    try:
+        network = network_identity(request)
+    except HTTPException:
+        network = ""
+    try:
+        client = _network_hash(request.headers.get("cf-connecting-ip", ""))
+    except ValueError:
+        client = ""
+    country = request.headers.get("cf-ipcountry", "").strip().upper()[:2]
+    return {"network_hash": network, "client_hash": client, "peer": peer[:64], "country": country}
 
 
 def _reject(detail, retry):
