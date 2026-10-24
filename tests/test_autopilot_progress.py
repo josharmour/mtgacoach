@@ -119,7 +119,9 @@ def test_typed_path_pauses_and_captures_before_a_fourth_model_call(monkeypatch):
         bridge.poll_resp = _poll(game_state_id=i + 1, msg_id=i + 10)
         assert engine._try_typed_decision_path({}, "decision_required") is True
     assert bridge.submitted == [("selection", [101])] * 3
-    assert planner._backend.calls == 3
+    # #226(b): the re-presented window (only the gsid/msg-id bumped) reuses the
+    # cached answer, so the model is asked once, not once per re-presentation.
+    assert planner._backend.calls == 1
     assert len(evidence) == 1 and evidence[0][1] is not None
     assert evidence[0][0]["semantic_progress"]["attempts"] == 3
     assert engine._abort_event.is_set() and engine.state == AutopilotState.PAUSED

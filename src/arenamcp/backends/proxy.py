@@ -440,6 +440,18 @@ def _slow_but_alive(err: BackendError) -> bool:
     return err.kind == "timeout" and bool(getattr(err, "first_token_seen", False))
 
 
+def _budget_cut_stream(err: BackendError) -> bool:
+    """Our own streaming budget cut a call that was already generating (ledger #222).
+
+    2026-10-23 20:40:26 (match 2c397f62): "LLM streaming time budget exhausted"
+    left BackendHealth at OK — ``_slow_but_alive`` kept it out — while every
+    decision that window fell to the deterministic fallback. Slow-but-alive
+    still stays out of the circuit breaker (a busy server recovers on its own),
+    but the health tracker must see it: the coach IS degraded for live play.
+    """
+    return err.kind == "timeout" and bool(getattr(err, "first_token_seen", False))
+
+
 def _litellm_already_retried(err: BackendError) -> bool:
     """LiteLLM (num_retries 1) already retried this 500: a client retry doubles the cost."""
     return "litellm retried" in str(err).lower()
@@ -1434,7 +1446,7 @@ class ProxyBackend:
                     # A hung or saturated server: free the slots background
                     # work holds (09:34 a game plan held one for 57 s).
                     _BACKGROUND_LANE.cancel_all("degraded", keep=call.handle)
-            if not _slow_but_alive(last_err):
+            if not _slow_but_alive(last_err) or _budget_cut_stream(last_err):
                 BackendHealth.instance().record_failure(error=str(last_err), status_code=last_err.status_code)
             if raise_on_error:
                 raise last_err
@@ -1527,6 +1539,13 @@ class ProxyBackend:
             stalled = BackendError(str(e), retryable=False, kind="stream_stall")
             stalled.first_token_seen = True
             return stalled
+        if isinstance(e, TimeoutError) and "time budget exhausted" in str(e):
+            # Our own budget cut the call (ledger #222): the server was slow,
+            # not transiently broken. A retry would start a fresh request with
+            # no budget left — never retry it.
+            err = BackendError(str(e), retryable=False, kind="timeout")
+            err.first_token_seen = call.first_token_at is not None
+            return err
         err = _classify_api_error(e)
         token_seen = call.first_token_at is not None
         ftt = call.first_token_timeout_s

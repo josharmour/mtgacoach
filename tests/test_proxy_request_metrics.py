@@ -185,10 +185,13 @@ def test_nonstream_fallback_has_usage_but_no_fabricated_ttft(monkeypatch):
     assert metrics["finish_reason"] == "length"
 
 
-def test_a_streaming_answer_cut_by_our_budget_is_not_a_backend_failure(monkeypatch):
+def test_a_streaming_answer_cut_by_our_budget_degrades_health_but_not_the_circuit(monkeypatch):
     # 2026-10-20 12:24:03: a high-effort hedge streamed from 4.2 s and was cut
-    # at its 15 s budget; health went "degraded" and the desktop showed
-    # "Startup needs attention" mid-match while the low-effort answer stood.
+    # at its 15 s budget while the low-effort answer stood. Ledger #215's
+    # complaint was the desktop's "Startup needs attention" banner (a UI fix);
+    # ledger #222 asks the health tracker to SEE these cuts — the coach is
+    # degraded for live play even though the server is slow, not down. The
+    # circuit breaker still ignores them (a busy server recovers on its own).
     from arenamcp.backend_health import BackendHealth, HealthState
 
     clock = FakeClock()
@@ -197,8 +200,10 @@ def test_a_streaming_answer_cut_by_our_budget_is_not_a_backend_failure(monkeypat
     with pytest.raises(proxy.BackendError, match="time budget exhausted"):
         be.complete("s", "u", request_timeout_s=12, raise_on_error=True)
     snapshot = BackendHealth.instance().snapshot()
-    assert BackendHealth.instance().state is HealthState.OK
-    assert snapshot["total_failures"] == 0
+    assert BackendHealth.instance().state is HealthState.DEGRADED
+    assert snapshot["total_failures"] == 1
+    assert "time budget exhausted" in snapshot["last_error"]
+    assert be.circuit_snapshot()["consecutive_failures"] == 0
 
 
 def test_a_request_that_never_answers_still_degrades_health(monkeypatch):

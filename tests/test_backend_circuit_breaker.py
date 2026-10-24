@@ -608,9 +608,12 @@ def test_timeout_after_the_first_token_is_slow_not_down(fake_time):
         be.complete("s", "u", request_timeout_s=12, raise_on_error=True)
     assert exc.value.first_token_seen is True
     assert be.circuit_snapshot()["consecutive_failures"] == 0
-    # Not a health failure either (2026-10-20 12:24:03: one such hedge put
-    # "Startup needs attention" on the desktop mid-match).
-    assert BackendHealth.instance().snapshot()["total_failures"] == 0
+    # Ledger #222: the health tracker DOES see the cut (the coach is degraded
+    # for live play even though the server is slow, not down); the desktop
+    # banner distinction is ledger #215's UI fix.
+    snapshot = BackendHealth.instance().snapshot()
+    assert snapshot["total_failures"] == 1
+    assert "time budget exhausted" in snapshot["last_error"]
 
 
 def test_one_first_token_timeout_during_probation_does_not_reopen(fake_time):
