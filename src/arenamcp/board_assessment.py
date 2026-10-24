@@ -1150,6 +1150,15 @@ class BoardAssessment:
     # What their clock counts beyond combat: drains and growth each turn of theirs
     # ("Biotech Specialist drains 2 a turn"; ``their_clock_engines``, ledger #128-#133, #143).
     clock_engines: list[str] = field(default_factory=list)
+    # Alternate win conditions (ledger #221): the opposing mill clock against our
+    # library — turns until we deck, its rate and engines (``arenamcp.decking_clock``),
+    # plus the opponent's library count for our own mill plans.
+    decking_turns: int | None = None
+    mill_rate: int | None = None
+    mill_engines: list[str] = field(default_factory=list)
+    milled_recent: int = 0
+    opponent_library_count: int | None = None
+    decking_fact: str = ""  # the rendered FACTS-line fact ('we deck in ~N turns (...)')
 
     @property
     def survival_mode(self) -> bool:
@@ -1222,6 +1231,8 @@ class BoardAssessment:
             line += " | their clock counts: " + ", ".join(self.clock_engines[:4])
         if self.clock_unmodelled:
             line += " | clock leaves out: " + ", ".join(self.clock_unmodelled[:4])
+        if self.decking_fact:
+            line += " | " + self.decking_fact
         if self.flags:
             line += " | !! " + "; ".join(self.flags)
         return line
@@ -1965,6 +1976,17 @@ def _assess(state: dict) -> BoardAssessment | None:
     board_advantage = our_nonland - their_nonland
     deck_curve = _deck_curve(state)
 
+    # --- alternate win conditions (ledger #221) -------------------------------
+    # Their mill clock against our library: an engine on board or observed Mill
+    # transfers out of our library (decking_clock). Never raises.
+    try:
+        from arenamcp.decking_clock import decking_threat, role_note as decking_role_note
+
+        decking = decking_threat(state)
+    except Exception as error:
+        logger.debug("decking clock failed: %s", error, exc_info=True)
+        decking, decking_role_note = None, (lambda threat, our_clock: "")
+
     our_power = sum(b["power"] for b in ours)
     their_power = sum(b["power"] for b in theirs)
 
@@ -2088,6 +2110,9 @@ def _assess(state: dict) -> BoardAssessment | None:
             flags.append(punished)
     except Exception as error:
         logger.debug("anthem / punisher facts failed: %s", error, exc_info=True)
+    if decking is not None and decking.turns is not None and decking.turns <= 2:
+        names = ", ".join(decking.engines[:2]) or "their mill engine"
+        flags.append(f"DECKING IN ~{decking.turns} TURNS — remove {names} or win before it fires")
 
     # --- role ----------------------------------------------------------------
     role, reason = _role(
@@ -2126,6 +2151,9 @@ def _assess(state: dict) -> BoardAssessment | None:
     if posture in ("attack", "hold") and posture_reason:
         reason = f"{reason}; {posture_reason}"
     reason += pending_note
+    deck_note = decking_role_note(decking, our_clock)
+    if deck_note:
+        reason = f"{reason}; {deck_note}"
 
     commander: list[str] = []
     if model.commanders:
@@ -2177,6 +2205,12 @@ def _assess(state: dict) -> BoardAssessment | None:
         lookahead=lookahead,
         unknowns=unknowns,
         library_count=library,
+        decking_turns=decking.turns if decking is not None else None,
+        mill_rate=decking.rate if decking is not None else None,
+        mill_engines=list(decking.engines) if decking is not None else [],
+        milled_recent=decking.milled_recent if decking is not None else 0,
+        opponent_library_count=_int((zones or {}).get("opponent_library_count")),
+        decking_fact=decking.fact() if decking is not None else "",
         line_search=search,
         lines=list(found.lines) if found is not None else [],
         posture=posture,

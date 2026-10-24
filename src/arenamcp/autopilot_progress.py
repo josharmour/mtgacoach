@@ -104,6 +104,13 @@ def decision_semantics(poll: dict[str, Any], state: dict[str, Any]) -> dict[str,
                 for card in state.get(zone) or []
                 if isinstance(card, dict)
             ]
+    # Our library count (ledger #221): a mill activation thins the library
+    # without touching the zones above, and must start a new progress window.
+    raw_zones = state.get("zones")
+    zones = raw_zones if isinstance(raw_zones, dict) else {}
+    library = zones.get("library_count", state.get("library_count"))
+    if library is not None and library != "?":
+        board["library_count"] = library
     return _stable(
         {
             "match_id": state.get("match_id"),

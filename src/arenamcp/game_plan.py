@@ -632,6 +632,15 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
 def _grounded_win(assessment: Any, state: dict) -> str:
     from arenamcp.board_assessment import ROLE_AGGRESSOR, ROLE_RACE
 
+    # Ledger #221: an opposing mill clock that beats our damage clock is the
+    # win condition to answer first — name removing it, not chipping faces.
+    decking_turns = getattr(assessment, "decking_turns", None)
+    if decking_turns is not None and (
+        assessment.our_clock is None or decking_turns <= assessment.our_clock
+    ):
+        engines = getattr(assessment, "mill_engines", []) or []
+        engine = ", ".join(engines[:2]) or "their mill engine"
+        return f"Remove {engine} (decks us in ~{decking_turns}), then win with creature damage"
     local = state.get("local_seat_id") or next(
         (p.get("seat_id") for p in state.get("players") or [] if isinstance(p, dict) and p.get("is_local")),
         None,
