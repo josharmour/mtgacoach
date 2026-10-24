@@ -3365,7 +3365,10 @@ class GamePlanManager:
     turn only when the board math flips the role or a lethal flag, the
     commander zone changes, the opponent adds a threat the plan was not
     written from (once per turn), the plan stalls, or no plan exists for this
-    turn. Routine reforms wait for a moment with no decision pending.
+    turn. Routine reforms wait for a moment with no decision pending, and
+    mid-turn triggers (resumed after a decision, stale plan, role flip) wait
+    for the opponent's turn — except a genuine lethal flip, which replans the
+    current turn at once (#223: waiting could cost the game).
     Background requests are rate-limited, one at a time process-wide
     (:data:`STRATEGIC_LANE`), and a request for a turn that has already passed
     is cancelled and its plan discarded.
@@ -4038,6 +4041,7 @@ class GamePlanManager:
             if (
                 our_turn
                 and reason not in self._OUR_TURN_REASONS
+                and reason != "lethal flip"
                 and not (
                     reason == "new opposing threat"
                     and plan_removal_target_predates_threat(self._plan, self._live_basis, sig[0])
@@ -4050,6 +4054,9 @@ class GamePlanManager:
                 # every decision prompt already re-renders the live board
                 # facts. Wait for the opponent's turn and plan our next turn
                 # there ("plan our next turn" fires then), at full effort.
+                # Exception (#223): a genuine lethal flip — we can suddenly win
+                # or suddenly die — replans the current turn at once; waiting
+                # for the opponent's turn could cost the game.
                 logger.debug("Game plan reform (%s) deferred to the opponent's turn", reason)
                 return False
             if reason in self._ROUTINE_REASONS and _decision_pending(game_state):
@@ -4389,9 +4396,11 @@ class GamePlanManager:
         old_facts, new_facts = old[0], new[0]
         if old_facts is not None and new_facts is not None and old_facts != new_facts:
             if tuple(old_facts[1:]) != tuple(new_facts[1:]):
-                return "role/lethal flip"
+                # A lethal flag moved (we can now win or die, or the clock says
+                # two turns): the plan must follow at once, mid-turn (#223).
+                return "lethal flip"
             if not {old_facts[0], new_facts[0]} <= self._ROLE_NOISE:
-                return "role/lethal flip"
+                return "role flip"
         if tuple(old[1:3]) != tuple(new[1:3]):
             return "commander change"
         old_engines = old[3] if len(old) > 3 else frozenset()
