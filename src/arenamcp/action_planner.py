@@ -789,6 +789,19 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         self._game_plan = (plan_text or "").strip()
 
+    def _plan_text_now(self, game_state: dict[str, Any]) -> str:
+        """The game plan as of THIS window (#228): the live renderer's block when one is set, else
+        the static plan text. The hold policy recomputes against it every window, so a hold never
+        outlives the plan that justified it (f5169733 T8-T12: GamePlan T11 said "Chip with Hazard
+        now" while the frozen hold passed three turns running)."""
+        source = getattr(self, "_game_plan_source", None)
+        if source is not None:
+            try:
+                return str(source(game_state) or "")
+            except Exception:
+                logger.debug("plan-text renderer failed; falling back to the static plan", exc_info=True)
+        return str(getattr(self, "_game_plan", "") or "")
+
     def _deck_playbook(self):
         provider = getattr(self, "_deck_playbook_fn", None)
         return provider() if provider else None
@@ -5152,9 +5165,11 @@ class ActionPlanner(_ActionLegalityMixin):
         try:
             from arenamcp.burn_timing import (
                 cast_pumped_attackers,
+                chip_damage,
                 hold_overrides,
                 own_stack_holds,
                 own_stack_line_waits,
+                plan_chip_release,
                 stack_is_ours,
                 sweeper_hold,
                 two_turn_reach,
@@ -5194,6 +5209,20 @@ class ActionPlanner(_ActionLegalityMixin):
             if combo is not None:
                 instants = [(o, c) for o, c in instants if c.get("name") not in combo.spells]
                 sweepers = [(o, c) for o, c in sweepers if c.get("name") not in combo.spells]
+            # #228: the hold recomputes against the CURRENT plan each window — when the plan says
+            # chip, it yields (f5169733 T8-T12: GamePlan T11 said "Chip with Hazard now" and the
+            # frozen hold passed three turns running while Garruk escalated).
+            chip_pairs = instants + sweepers
+            if chip_pairs:
+                released, why_chip = plan_chip_release(self._plan_text_now(game_state), chip_pairs)
+                if released:
+                    logger.info(
+                        "Instant timing: not holding %s: %s",
+                        ", ".join(released),
+                        why_chip,
+                    )
+                    instants = [(o, c) for o, c in instants if str(c.get("name") or "") not in released]
+                    sweepers = [(o, c) for o, c in sweepers if str(c.get("name") or "") not in released]
             life = next(
                 (
                     _as_int(player.get("life_total"))
@@ -5264,18 +5293,22 @@ class ActionPlanner(_ActionLegalityMixin):
             )
         if sweepers:
             names = names_of(sweepers)
+            chip = sum(chip_damage(card, game_state) for _option, card in sweepers)
+            chip_text = f" One cast still chips for {chip}." if chip else ""
             logger.info(
                 "Sweeper timing: holding %s (kills none of their creatures now, pumps no attacker, their life "
-                "out of reach)",
+                "out of reach%s)",
                 ", ".join(names),
+                f"; it would chip for {chip} a cast" if chip else "",
             )
             reasons.append(
                 f"Holding {', '.join(names)}: it kills none of their creatures now and pumps nothing; it waits "
-                "for creatures it kills."
+                f"for creatures it kills.{chip_text}"
             )
             notes.append(
                 f"SWEEPER TIMING: {', '.join(names)} are held this window: damage to each of their creatures "
-                "that kills none now, with no attacker of ours to pump; it waits for creatures it kills."
+                f"that kills none now, with no attacker of ours to pump; it waits for creatures it kills."
+                f"{chip_text}"
             )
         if stacked and wait is not None:
             names = names_of(stacked)
@@ -5345,6 +5378,16 @@ class ActionPlanner(_ActionLegalityMixin):
             holds = combat_holds(decision, game_state) if in_combat else upkeep_holds(decision, game_state)
             if not holds:
                 return decision, []
+            # #228: the hold recomputes against the CURRENT plan each window — when the plan says
+            # chip, it yields here too (the main-phase hold does; same frozen-rationale family).
+            from arenamcp.burn_timing import plan_chip_release
+
+            released, why_chip = plan_chip_release(self._plan_text_now(game_state), holds)
+            if released:
+                logger.info("Instant timing: not holding %s: %s", ", ".join(released), why_chip)
+                holds = [(o, c) for o, c in holds if str(c.get("name") or "") not in released]
+                if not holds:
+                    return decision, []
             life = their_life(game_state)
             face = (
                 combat_face_reach(game_state, holds)

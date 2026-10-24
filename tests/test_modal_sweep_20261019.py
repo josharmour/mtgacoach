@@ -153,8 +153,9 @@ def test_compare_modes_sweeps_the_hawk_and_both_soldiers():
     assert len(comparison.kills["idx:1"]) == 1
     sweep, single = comparison.lines["idx:0"], comparison.lines["idx:1"]
     # Recorded: both "survives T15 at 15, 13 after T17, 11 after T19". Their board is empty after
-    # the sweep (Elspeth's new Soldiers are not modelled); one creature is left after mode 2.
-    assert sweep.lives()[:3] == [17, 17, 17], sweep.summary()
+    # the sweep; since #229 Elspeth's +1 Soldier engine is modelled, so her replacement attacks
+    # from their next turn on (16), and two of them the turn after (14). The sweep still dominates.
+    assert sweep.lives()[:3] == [17, 16, 14], sweep.summary()
     assert single.lives()[0] < 17, single.summary()
     assert sweep.score > single.score
     assert option_note(comparison, decision.options[0], source).startswith("[LINE best: ")
@@ -180,7 +181,11 @@ def test_the_line_search_casts_the_sweep_mode_from_hand():
     assert sweep.steps[0].their_creatures_after == 0, sweep.summary()
     assert single.steps[0].their_creatures_after == 2, single.summary()
     assert sweep.score > single.score
-    assert result.best.first_sig == sweep.first_sig, result.best.summary()
+    # The best line still casts the sweep mode from hand; since #229 Elspeth's +1 Soldier engine
+    # is modelled it waits a turn and clears her new Soldier with the rest (their attack lands
+    # first, then the sweep takes the hawk, both Soldiers and the replacement).
+    best_modes = [label for step in result.best.steps for _name, label in step.modes]
+    assert any("deals 1 damage to each creature…" in label for label in best_modes), result.best.summary()
 
 
 # --- the targeted mode and plain sweeps still work ------------------------------------------

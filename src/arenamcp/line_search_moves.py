@@ -12,7 +12,9 @@ survive their best blocks / the evasive ones / the survivors with the fewest
 that can finish a planeswalker of theirs sent at it, their blockers protecting
 it first). Their planeswalkers (``Node.walkers``) are worth
 ``combat_solver.walker_value`` to them and go up one loyalty each of their
-turns (more when their own life-gain trigger feeds them). Lifelink heals its
+turns (more when their own life-gain trigger feeds them); a token-making
+loyalty ability is used when its loyalty affords it and its tokens join their
+board (``walker_growth``, ``Moves.walker_turn``, ledger #229). Lifelink heals its
 side with the combat damage. A cast pays its additional
 mana cost and the life it costs; a set that would kill us is never cast, nor is
 a spell whose "can't cast unless" condition is unmet. A creature of ours that
@@ -408,6 +410,48 @@ def cast_growth(card: dict) -> int:
         found = match.group("n")
         counters += (_COUNT_WORDS.get(found) or _int(found) or 0) if found else 1
     return counters
+
+
+# A planeswalker's loyalty ability (ledger #229): "[+2]: Untap up to two target lands."
+# (MTGJSON's brackets) or "+2: ..." / "−3: ..." (Arena's unicode minus).
+_WALKER_LOYALTY = re.compile(r"^\[?(?P<delta>[+−–-]?\d+)\]?:\s*(?P<effect>.+)$")
+_CREATE_TOKENS = re.compile(
+    r"create (?P<n>a|an|one|two|three|four|\d+) (?P<p>\d+)/(?P<t>\d+) (?P<desc>[a-z ,'-]*?)\bcreature tokens?"
+)
+
+
+def walker_growth(card: dict) -> tuple[int, tuple[tuple[int, int, int, int], ...]]:
+    """(the loyalty a plus ability gains, ((loyalty delta, creature tokens, power, toughness),
+    ...) of the planeswalker's token-making loyalty abilities) (ledger #229); (0, ()) without one.
+
+    Garruk, Curse Breaker (+2 untap lands; −3: Create a 4/4 Beast token with
+    trample; −4: an attack pump): the −3's beast is the escalation the 2-turn
+    search missed — every line scored "survives (life 20, 20, 20)" while the
+    walker ticked 5→7 and spawned. A minus ability's tokens carry its loyalty
+    cost: the walker can use it only while its loyalty lasts, so the search
+    replays the cost each turn (``Moves.walker_turn``) and the board clocks pace
+    it (``_token_every``) at one casting per recharge by its plus ability.
+    """
+    if "planeswalker" not in _types(card):
+        return 0, ()
+    text = _engine_text(*_key(card))
+    if "create" not in text:
+        return 0, ()
+    plus = 0
+    abilities: list[tuple[int, int, int, int]] = []
+    for line in _own_lines(text):
+        match = _WALKER_LOYALTY.match(line)
+        if match is None:
+            continue
+        delta = int(match.group("delta").replace("−", "-").replace("–", "-"))
+        if delta > 0:
+            plus = max(plus, delta)
+        made = _CREATE_TOKENS.search(match.group("effect"))
+        if made is None or made.group("n") == "x":
+            continue  # an X we don't read
+        n = _COUNT_WORDS.get(made.group("n")) or _int(made.group("n")) or 1
+        abilities.append((delta, n, int(made.group("p")), int(made.group("t"))))
+    return plus, tuple(abilities)
 
 
 # Ledger #177 (match c0af235f T12, 2026-10-19): Righteous Valkyrie, "As long as you have at least 7
@@ -1015,6 +1059,10 @@ class TheirEngines:
     # pings, and their sacrifice outlets' damage a creature (the reach of their board this turn).
     entering: int = 1
     outlet: int = 0
+    # Their planeswalkers' token-making loyalty abilities (#229): ((instance id, the loyalty a plus
+    # ability gains, ((loyalty delta, tokens, power, toughness), ...)), ...) — the walker escalation
+    # the clocks and the search replay (``walker_growth``, ``Moves.walker_turn``).
+    walker_engines: tuple = ()
 
     def reach(self, creatures: int) -> int:
         """Damage their sacrifice outlets deal us with ``creatures`` creatures to sacrifice."""
@@ -1207,6 +1255,7 @@ def their_engines(
     ) or any(_NO_GAIN_SELF.search(_engine_text(*_key(c))) for c in theirs)  # fmt: skip
     gains = per_ours = life_ours = 0
     walkers: set[int] = set()
+    walker_abilities: list[tuple[int, int, tuple[tuple[int, int, int, int], ...]]] = []
     team: list[tuple[int, str, int]] = []
     combat_counters: list[tuple[int, bool, int, str, bool]] = []
     spells = [c for c in theirs if not _is_land(c)]  # (a land's own triggers are not engines here)
@@ -1219,6 +1268,10 @@ def their_engines(
             team.append((_int(card.get("instance_id")) or 0, kind, n))
         cid = _int(card.get("instance_id")) or 0
         is_creat = _is_creature(card)
+        if "planeswalker" in _types(card):
+            plus, abilities = walker_growth(card)
+            if abilities:
+                walker_abilities.append((cid, plus, abilities))
         for n, kind, other in combat_counter_growth(card):
             combat_counters.append((cid, is_creat, n, kind, other))
     # Their mana (#172): each land (twice under a land-mana doubler, Caged Sun), each mana ability.
@@ -1255,6 +1308,7 @@ def their_engines(
         team=tuple(team), combat_counters=tuple(combat_counters),
         counts=fodder_counts(theirs, opponent), drops=max(0, drops),
         mana=mana, mana_now=mana_now, kinds=kinds, token_pt=token_pt,
+        walker_engines=tuple(walker_abilities),
     )  # fmt: skip
     # Their creatures entering a turn (their enters pings, Impact Tremors): their token makers'.
     entering = sum(engines.body_tokens(c)[0] for c in spells)
@@ -2144,6 +2198,12 @@ class Moves:
             if isinstance(c, dict) and _controller(c) == model.opponent and "planeswalker" in _types(c)
         }
         self.walker_gains = {iid: n for iid, n in self.walker_gains.items() if n}
+        # Their planeswalkers' token-making loyalty abilities (#229): the escalation the search
+        # replays (``walker_turn``) instead of scoring every line against a static board.
+        self.walker_abilities = {
+            iid: (plus, abilities)
+            for iid, plus, abilities in (engines.walker_engines if engines is not None else ())
+        }
         self.consuls = engines is not None and (engines.enter_tapped or engines.per_our_creature > 0)
         self._their_creature_ids = {_int((b.get("_card") or b).get("instance_id")) for b in model.theirs}
         self._turn_growth_memo: dict = {}
@@ -3016,6 +3076,38 @@ class Moves:
         Consuls and our creature cast: +2)."""
         return max(1, self.walker_gains.get(iid, 0) * gains)
 
+    def walker_turn(self, walkers, gains: int, generation: int) -> tuple[tuple, list[dict]]:
+        """Their planeswalkers after this their-turn's loyalty ability, and the creature tokens it
+        made (ledger #229): a token-making ability is used when its loyalty affords it (paranoid:
+        they spend the loyalty on the biggest body it makes; the tokens join their board), else the
+        walker ticks its plus gain (``walker_growth``: +1 a turn, more on their life gain).
+
+        Returns ((instance id, name, loyalty), ...) and the token bodies.
+        """
+        out: list[tuple[int, str, int]] = []
+        made: list[dict] = []
+        for iid, name, loyal in walkers:
+            plus, abilities = self.walker_abilities.get(iid, (0, ()))
+            best = None
+            if abilities:
+                best = max(
+                    (a for a in abilities if loyal + a[0] >= 0),
+                    key=lambda a: a[1] * (2 * a[2] + a[3]),
+                    default=None,
+                )
+            if best is not None:
+                delta, n, p, t = best
+                out.append((iid, name, loyal + delta))
+                made += made_tokens(
+                    {"instance_id": iid, "name": name, "_token_pt": (p, t)},
+                    n,
+                    generation,
+                    dict(self.model.their_rules),
+                )
+            else:
+                out.append((iid, name, loyal + max(self.walker_growth(iid, gains), plus)))
+        return tuple(out), made
+
     def turn_growth(self, theirs, gains: int, *, combat_only: bool = False) -> dict[int, int]:
         """+1/+1 counters each of their creatures gets on one turn of theirs before their attack
         (``TheirEngines.growth``: ``gains`` life-gain events, their draws, and beginning-of-combat
@@ -3664,14 +3756,19 @@ class Moves:
                 attacks=attacks, dead_at=attacks, dead_turn=node.abs_turn + 1, overkill=-hit["life"],
             )  # fmt: skip
         # Their lifelink attackers (and our lifelink blockers) changed both life totals; each of
-        # their planeswalkers used a plus ability (paranoid: +1 loyalty a turn), or grew more on
-        # their life gain (``walker_growth``).
-        walkers = tuple(
-            (iid, name, loyal + self.walker_growth(iid, gains)) for iid, name, loyal in carry["walkers"]
-        )
+        # their planeswalkers used a loyalty ability (#229): a token-making one when its loyalty
+        # affords it (the tokens join their board), else its plus gain (paranoid: +1 a turn, more
+        # on their life gain — ``walker_growth``).
+        if self.walker_abilities:
+            walkers, spawned = self.walker_turn(carry["walkers"], gains, node.k + 1)
+        else:
+            walkers = tuple(
+                (iid, name, loyal + self.walker_growth(iid, gains)) for iid, name, loyal in carry["walkers"]
+            )
+            spawned = []
         carry.update(
             our_life=hit["life"], opp_life=hit["opp_life"], ours=tuple(self.rescale(list(hit["ours"]))),
-            theirs=tuple(hit["theirs"]), hand=hit["hand"], walkers=walkers,
+            theirs=tuple([*hit["theirs"], *spawned]), hand=hit["hand"], walkers=walkers,
         )  # fmt: skip
         return dataclasses.replace(
             node,

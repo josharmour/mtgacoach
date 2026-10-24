@@ -110,6 +110,29 @@ def is_sweeper(card: dict) -> bool:
     return bool(_SWEEP_RE.search(_text(card)))
 
 
+_SWEEP_AMOUNT_RE = re.compile(
+    r"deals? (\d+) damage to (?:each opponent and )?each creature", re.IGNORECASE
+)
+
+
+def sweep_chip(card: dict, creatures: int) -> int:
+    """The sweep half's chip weight (#228): its damage to each of their creatures times how many
+    they control. Chipping their board down is race progress like face damage is — it was invisible
+    to the hold math (Tectonic Hazard's 1, Iroh's Demonstration's mode 1), so the holds froze while
+    their board escalated. 0 without their creatures (an empty board is #136's face-only waste)."""
+    if creatures <= 0:
+        return 0
+    amount = max((int(n) for n in _SWEEP_AMOUNT_RE.findall(_text(card))), default=0)
+    return amount * creatures
+
+
+def chip_damage(card: dict, state: dict) -> int:
+    """Damage one cast of ``card`` deals right now even though it kills nothing (#228): its face
+    half plus its sweep half on each of their creatures."""
+    creatures = sum(1 for c in _theirs(state) if "creature" in _types(c))
+    return face_damage(card) + sweep_chip(card, creatures)
+
+
 def damage_only(card: dict, state: dict) -> bool:
     """A noncreature spell whose whole effect is damage (Shock, Lightning Strike, Burst Lightning)."""
     from arenamcp.decision_memory import burn_reach
@@ -245,8 +268,10 @@ def two_turn_reach(state: dict) -> str:
 
     Our turn: the creatures that can still attack this turn, all our creatures
     again next turn, and the face damage of the burn in hand the two turns'
-    mana pays for, each spell with the cast pumps of our creatures. Blockers,
-    removal and their life gain are ignored: it only stops a hold.
+    mana pays for, each spell with the cast pumps of our creatures. A sweeper's
+    damage to each of their creatures counts at that weight too (#228): chipping
+    their board down is race progress, and it was invisible to the hold math.
+    Blockers, removal and their life gain are ignored: it only stops a hold.
     """
     life = their_life(state)
     if life is None or life <= 0 or not _our_turn(state):
@@ -265,10 +290,14 @@ def two_turn_reach(state: dict) -> str:
     hand = [c for c in state.get("hand") or [] if isinstance(c, dict)]
     lands = sum(1 for c in _ours(state) if "land" in _types(c))
     budget = mana_available(state) + lands + (1 if any("land" in _types(c) for c in hand) else 0)
+    their_creatures = sum(1 for c in _theirs(state) if "creature" in _types(c))
     spells = [
-        (_cost(c), face_damage(c) + per_spell)
+        (_cost(c), face_damage(c) + sweep_chip(c, their_creatures) + per_spell)
         for c in hand
-        if "creature" not in _types(c) and "land" not in _types(c) and not _x_spell(c) and face_damage(c)
+        if "creature" not in _types(c)
+        and "land" not in _types(c)
+        and not _x_spell(c)
+        and (face_damage(c) or sweep_chip(c, their_creatures))
     ]
     best = [0] * (budget + 1)
     for cost, damage in spells:
@@ -346,6 +375,51 @@ def hold_overrides(decision: Any, state: dict, held: list[tuple[Any, dict]]) -> 
                 f"other plays, {cost} for the held spells)"
             )
     return ""
+
+
+# The game plan tells us to chip (#228): "Chip with Hazard now", "chip their life with Iroh's
+# mode 1 each turn". Match f5169733 T8-T12: GamePlan T11 said "Chip with Hazard now" and the
+# hold kept Tectonic Hazard (and both Iroh's Demonstrations) off the menu three turns running —
+# the frozen rationale never faced the plan.
+_CHIP_WORD_RE = re.compile(r"\bchip(?:s|ping|ped)?\b", re.IGNORECASE)
+_CHIP_TEMPORAL_RE = re.compile(
+    r"\b(?:now|this turn|each turn|every turn|main phase|main)\b", re.IGNORECASE
+)
+_CONDITIONAL_LINE_RE = re.compile(r"^(?:if|when|unless|switch|otherwise)\b", re.IGNORECASE)
+_NAME_TOKEN_RE = re.compile(r"[a-z]{4,}")
+
+
+def plan_chip_release(plan_text: str | None, held: list[tuple[Any, dict]]) -> tuple[list[str], str]:
+    """((the held cards' names the game plan's chip directive releases), why), or ([], '').
+
+    A chip line naming a held card releases it. When no chip line names a held
+    card but an unconditional one demands chipping now / this turn / each turn,
+    every held damage spell is that chip. Recomputed against the CURRENT plan
+    each window: a hold never outlives the plan that justified it (#228).
+    """
+    text = str(plan_text or "")
+    if not text or not held:
+        return [], ""
+    chip_lines = [line.strip() for line in text.splitlines() if _CHIP_WORD_RE.search(line)]
+    if not chip_lines:
+        return [], ""
+    named: list[str] = []
+    for line in chip_lines:
+        low = line.lower()
+        for _option, card in held:
+            name = str(card.get("name") or "")
+            if name and (
+                name.lower() in low or any(tok in low for tok in _NAME_TOKEN_RE.findall(name.lower()))
+            ):
+                named.append(name)
+    if not named:
+        imperative = [line for line in chip_lines if not _CONDITIONAL_LINE_RE.search(line)]
+        if any(_CHIP_TEMPORAL_RE.search(line) for line in imperative):
+            named = list(dict.fromkeys(str(card.get("name") or "") for _option, card in held))
+    named = [name for name in dict.fromkeys(named) if name]
+    if not named:
+        return [], ""
+    return named, f"the game plan says chip ({chip_lines[0][:120]})"
 
 
 def line_gain_is_face_only(result: Any, face: int) -> bool:
