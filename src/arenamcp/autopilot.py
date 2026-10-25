@@ -732,7 +732,7 @@ class AutopilotEngine(
     # same board gets the same refusal. 2026-10-06 18:57 (bug_20261006_185803):
     # Theoretical Necromancer was activated and cancelled at its target step
     # four times in 13 s, each rollback un-counted, until the user force-stopped.
-    _SELF_CANCEL_KINDS = ("ActionType_Cast", "ActionType_Activate")
+    _SELF_CANCEL_KINDS = ("ActionType_Cast", "ActionType_CastOmen", "ActionType_Activate")
 
     @classmethod
     def _play_name(cls, label: str) -> tuple[str, str]:
@@ -807,7 +807,12 @@ class AutopilotEngine(
             missing = "no cast or activation of ours is on record"
         else:
             age = time.monotonic() - note[0]
-            if age > self._ACTIVATION_ROLLBACK_MAX_AGE_S:
+            pending_omen = (
+                note[2] == "ActionType_CastOmen"
+                and note[1] == self._turn_number(game_state)
+                and self._cancelled_request_spell(game_state)
+            )
+            if age > self._ACTIVATION_ROLLBACK_MAX_AGE_S and not pending_omen:
                 missing = f"the last recorded play ({note[5] or note[3]!r}) is {age:.0f}s old"
             elif note[1] != self._turn_number(game_state):
                 missing = f"the last recorded play ({note[5] or note[3]!r}) was on turn {note[1]}"
@@ -838,7 +843,9 @@ class AutopilotEngine(
                 name or instance_id,
             )
             return
-        if kind == "ActionType_Cast" and (parent or self._request_source_is_ability(game_state, context)):
+        if kind in ("ActionType_Cast", "ActionType_CastOmen") and (
+            parent or self._request_source_is_ability(game_state, context)
+        ):
             # The declined request belongs to an ability, not to the spell: a
             # resolved creature's ETB trigger asking for targets. Cancelling it
             # steps back to that trigger; the cast itself stands. 2026-10-06
@@ -856,7 +863,7 @@ class AutopilotEngine(
         self._self_cancelled_plays.add((turn, kind, instance_id, ability_id, name))
         logger.warning(
             "Self-cancel guard: %s %r was cancelled by the autopilot (%s); withholding it for the rest of turn %d",
-            "cast" if kind == "ActionType_Cast" else "activation",
+            "cast" if kind in ("ActionType_Cast", "ActionType_CastOmen") else "activation",
             name or instance_id,
             why,
             turn,
@@ -867,7 +874,7 @@ class AutopilotEngine(
         self._report_oops(
             "self_cancel",
             (kind, name or instance_id, ability_id),
-            f"the autopilot started {'casting' if kind == 'ActionType_Cast' else 'activating'} "
+            f"the autopilot started {'casting' if kind in ('ActionType_Cast', 'ActionType_CastOmen') else 'activating'} "
             f"{name or instance_id!r} and cancelled it ({why})",
             game_state,
         )

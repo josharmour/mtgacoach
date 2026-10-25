@@ -161,10 +161,30 @@ def exact_mana_total(state: dict) -> int | None:
     if local is None:
         return None
     for card in state.get("battlefield") or []:
-        if (card.get("controller_seat_id") or card.get("owner_seat_id")) == local and _INEXACT_MANA.search(
-            _plain_text(card)
-        ):
-            return None
+        if (card.get("controller_seat_id") or card.get("owner_seat_id")) != local:
+            continue
+        text = _plain_text(card)
+        if not _INEXACT_MANA.search(text):
+            continue
+        # A tapped producer or a sick mana creature cannot enlarge this turn's
+        # budget. Static reducers/multipliers remain relevant even when tapped.
+        static = re.search(r"costs? .*less|additional|twice|three times", text)
+        if "{t}" in text and not static:
+            sick = (
+                "creature" in str(card.get("type_line") or "").lower()
+                and (
+                    card.get("summoning_sickness")
+                    or card.get("turn_entered_battlefield") == (state.get("turn") or {}).get("turn_number")
+                )
+                and not has_combat_keyword(card, "haste")
+            )
+            if card.get("is_tapped") or sick:
+                continue
+        if "enchanted" in text and "tapped for mana" in text:
+            attached = find_source(state, {"instanceId": card.get("attached_to_id")})
+            if attached.get("is_tapped"):
+                continue
+        return None
     return int(RulesEngine._get_mana_pool(state, local).get("total") or 0)
 
 
@@ -1517,6 +1537,17 @@ def pump_before_blocks_wasted(card: dict, state: dict, metadata: dict | None = N
 def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict | None = None) -> str:
     """Return a reason to withhold a play, not a claim of full MTG legality."""
     action_type = action_type.removeprefix("ActionType_").lower()
+    if action_type == "castomen":
+        # The front face's printed cost and effect are not the Omen's.
+        # Trust a real Arena payment solution, otherwise reject a cost that
+        # exceeds even our exact total before it reaches PayCosts.
+        metadata = metadata or {}
+        cost = _effective_cost({}, metadata)
+        total = exact_mana_total(state)
+        if cost and not has_autotap_solution(metadata) and total is not None:
+            if RulesEngine._parse_cmc(cost) > total:
+                return f"Omen costs {cost} but only {total} mana is available"
+        return ""
     if action_type not in ("cast", "activate") or not card:
         return ""
     metadata = metadata or next(

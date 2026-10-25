@@ -41,6 +41,7 @@ from arenamcp.situational_rules import subjects_in_play
 from arenamcp.target_effects import (
     GOOD_TARGET,
     effect_mentions_benefit,
+    effect_mentions_blink,
     effect_mentions_harm,
     enchant_effect_text,
     highlight_is_bad,
@@ -8020,6 +8021,16 @@ class ActionPlanner(_ActionLegalityMixin):
             justified = (
                 acknowledged == expected and isinstance(justification, str) and bool(justification.strip())
             )
+            if ctrl != local_seat and effect_mentions_blink(oracle) and not justified:
+                # Blink may remove a token or a current attacker, but can also
+                # reset an opposing ETB/Saga. Never silently replace that plan
+                # with an arbitrary friendly permanent (Fenrir -> Signet).
+                self._decline_reason = (
+                    "Opponent blink needs explicit controller and unusual-target justification; "
+                    "returning during our turn does not prevent its next-turn attack"
+                )
+                logger.warning("Declining opponent blink %s: %s", oid, self._decline_reason)
+                return [DECLINE_DECISION]
             hint = hints.get(iid, "")
             if highlight_is_bad(hint) and not justified:
                 arena_bad.append(oid)
@@ -8730,6 +8741,14 @@ class ActionPlanner(_ActionLegalityMixin):
                 + (self._decision_source_oracle(decision, game_state) or "unknown")
                 + power_only_note(self._decision_source_oracle(decision, game_state)),
             )
+            if effect_mentions_blink(self._decision_source_oracle(decision, game_state)):
+                lines.append(
+                    "BLINK TIMING: Immediate exile-and-return during your turn does not prevent "
+                    "that creature attacking on its controller's next turn. Blinking a current "
+                    "attacker removes it from combat; an exiled token cannot return. Check ETB "
+                    "and Saga resets before helping the opponent. An opponent blink requires "
+                    "target_controllers and unusual_target_reasons with a concrete benefit."
+                )
             lines.append(
                 "For each selected target also return target_controllers keyed by option_id, "
                 "with value self or opponent matching its CURRENT controller below. "

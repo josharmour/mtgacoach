@@ -168,6 +168,12 @@ _TARGET_HARM = re.compile(
 _ACTIVATION_COST = re.compile(r"^[^:\n]*:", re.MULTILINE)
 
 
+def effect_mentions_blink(oracle: str) -> bool:
+    """Exile followed by return to the battlefield needs contextual target intent."""
+    text = _QUOTED.sub("", re.sub(r"<[^>]*>", "", (oracle or "").lower()))
+    return bool(_BLINK.search(text))
+
+
 def effect_mentions_harm(oracle: str) -> bool:
     """True when the text could hurt what it targets, costs and granted abilities aside."""
     text = _QUOTED.sub("", re.sub(r"<[^>]*>", "", (oracle or "").lower()))

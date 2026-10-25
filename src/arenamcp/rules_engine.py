@@ -189,7 +189,7 @@ class RulesEngine:
                         break
             entered = card.get("turn_entered_battlefield", -1)
             has_haste = card_has_haste(card)
-            is_sick = is_creature and (entered == turn_num) and not has_haste
+            is_sick = is_creature and (card.get("summoning_sickness") or entered == turn_num) and not has_haste
             # Any permanent with a tap-for-mana ability is a source, not just
             # lands and mana creatures — Talismans, Signets, Sol Ring and the
             # rest were previously invisible, undercounting available mana.
