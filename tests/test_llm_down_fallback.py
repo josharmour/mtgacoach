@@ -483,7 +483,7 @@ def test_decision_calls_carry_call_class_and_first_token_timeout():
     assert classes[:3] == ["decision.typed", "decision.pay", "decision.plan"]
     typed, pay, plan = backend.calls[:3]
     assert typed["first_token_timeout_s"] == ActionPlanner._FIRST_TOKEN_TIMEOUT_S
-    assert typed["request_timeout_s"] == 12.0
+    assert 11.9 <= typed["request_timeout_s"] <= 12.0
     assert pay["first_token_timeout_s"] is None
     # Plan prompts are the big ones: 12 s (two real plan calls that succeeded
     # had first tokens at 11.3 s and 11.7 s), 2 s inside the 15 s budget.

@@ -744,18 +744,35 @@ class AutopilotEngine(
         source = cls._activation_source_name(text)
         return ("ActionType_Activate", cls._plain_card_name(source).lower()) if source else ("", "")
 
+    @classmethod
+    def _typed_play_name(cls, game_state: dict[str, Any], option: Any) -> str:
+        """Use the actual Omen face, which has a different stack name from its creature."""
+        if option.meta.get("actionType") == "ActionType_CastOmen":
+            from arenamcp.play_safety import find_source
+
+            source = find_source(game_state, option.meta)
+            for face in [source, *(source.get("related_faces") or [])]:
+                if face.get("grp_id") == option.meta.get("grpId") and face.get("name"):
+                    return cls._plain_card_name(str(face["name"])).lower()
+        return cls._play_name(option.label)[1]
+
     def _note_typed_play(self, game_state: dict[str, Any], option: Any) -> None:
         """Remember the cast/activation just submitted so its own cancel can be attributed."""
         kind = option.meta.get("actionType")
         if kind not in self._SELF_CANCEL_KINDS:
             return
+        name = self._typed_play_name(game_state, option)
+        if kind == "ActionType_CastOmen" and name:
+            recent = getattr(self, "_recent_bot_submissions", [])
+            recent.append((time.monotonic(), name))
+            self._recent_bot_submissions = recent[-24:]
         self._last_typed_play = (
             time.monotonic(),
             self._turn_number(game_state),
             kind,
             int(option.meta.get("instanceId") or 0),
             int(option.meta.get("abilityGrpId") or 0),
-            self._play_name(option.label)[1],
+            name,
         )
 
     @classmethod
@@ -827,7 +844,14 @@ class AutopilotEngine(
                 why,
                 spell,
             )
-            note = (time.monotonic(), self._turn_number(game_state), "ActionType_Cast", 0, 0, spell)
+            kind = "ActionType_Cast"
+            if any(
+                str(card.get("name") or "").lower() == spell
+                and "omen" in str(card.get("type_line") or "").lower()
+                for card in game_state.get("stack") or []
+            ):
+                kind = "ActionType_CastOmen"
+            note = (time.monotonic(), self._turn_number(game_state), kind, 0, 0, spell)
         noted_at, turn, kind, instance_id, ability_id, name = note
         context = game_state.get("decision_context") or {}
         try:
@@ -5200,7 +5224,7 @@ class AutopilotEngine(
                     o.meta["actionType"],
                     int(o.meta.get("instanceId") or 0),
                     int(o.meta.get("abilityGrpId") or 0),
-                    self._play_name(o.label)[1],
+                    self._typed_play_name(game_state, o),
                 )
             ]
             if withheld:

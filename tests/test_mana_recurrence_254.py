@@ -118,3 +118,43 @@ def test_cancelled_omen_removed_before_model_or_cached_answer(monkeypatch):
     assert engine._try_typed_decision_path(state, "decision_required")
     offered = planner.plan_decision_options.call_args.args[0].options
     assert all(o.meta.get("actionType") != "ActionType_CastOmen" for o in offered)
+
+
+def test_own_omen_is_not_mistaken_for_manual_play():
+    engine = AutopilotEngine.__new__(AutopilotEngine)
+    engine._recent_bot_submissions = []
+    engine._last_seen_own_stack = set()
+    engine._own_stack_first_turn = 8
+    engine._manual_play_cooldown_until = 0
+    state = board()
+    state["hand"] = [
+        {
+            "instance_id": 345,
+            "grp_id": 95657,
+            "name": "Bloomvine Regent",
+            "related_faces": [{"grp_id": 95658, "name": "Claim Territory"}],
+        }
+    ]
+    option = SimpleNamespace(
+        meta={"actionType": "ActionType_CastOmen", "instanceId": 345, "grpId": 95658}, label="CastOmen"
+    )
+    engine._note_typed_play(state, option)
+    state["stack"] = [
+        {
+            "instance_id": 600,
+            "grp_id": 95658,
+            "name": "Claim Territory",
+            "type_line": "Sorcery — Omen",
+            "controller_seat_id": 2,
+        }
+    ]
+    assert not engine._detect_manual_play(state)
+    assert engine._manual_play_cooldown_until == 0
+    # If the coach restarted mid-payment, the source face can still be suppressed.
+    engine._last_typed_play = None
+    engine._report_oops = Mock()
+    state["decision_context"] = {"source_id": 600, "type": "pay_costs"}
+    engine._withhold_after_self_cancel(state, "PayCosts cancelled")
+    assert engine._self_cancel_withheld(
+        state, "ActionType_CastOmen", 345, name=engine._typed_play_name(state, option)
+    )

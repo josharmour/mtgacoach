@@ -9062,18 +9062,38 @@ class ActionPlanner(_ActionLegalityMixin):
             # A high-effort decision holds new game-plan reforms back: vLLM
             # runs several sequences at once, so the reform's priority only
             # orders the queue, it does not stop the two sharing the GPU.
-            with critical_decision_call(effort == "high"):
-                return self._call_llm(
-                    system_prompt,
-                    message,
-                    self._DECISION_MAX_TOKENS,
-                    timeout_s=budget,
-                    call_class=call_class,
-                    first_token_timeout_s=first_token_s,
-                    reasoning_effort=effort,
-                    cancel_event=cancel_event,
-                    yield_background=False,
-                )
+            remaining = min(budget, decision_deadline - time.monotonic())
+            if remaining <= 0:
+                raise concurrent.futures.TimeoutError("typed decision budget exhausted")
+            # Reversal checks and second looks share the first call's deadline.
+            # A legacy backend that ignores request_timeout_s must not hold the
+            # coaching loop until the watchdog fires either.
+            outer = getattr(self, "_decision_cancel_event", None)
+            request_cancel = (
+                cancel_event if cancel_event is not None and cancel_event is not outer else threading.Event()
+            )
+            try:
+                with critical_decision_call(effort == "high"):
+                    return self._bounded_call(
+                        lambda: self._call_llm(
+                            system_prompt,
+                            message,
+                            self._DECISION_MAX_TOKENS,
+                            timeout_s=remaining,
+                            call_class=call_class,
+                            first_token_timeout_s=first_token_s,
+                            reasoning_effort=effort,
+                            cancel_event=request_cancel,
+                            yield_background=False,
+                        ),
+                        timeout_s=remaining,
+                    )
+            except Exception:
+                request_cancel.set()
+                raise
+            finally:
+                if outer is not None and outer.is_set():
+                    request_cancel.set()
 
         def parse(response: str) -> tuple[dict, list[str]]:
             # P1-1: models prose-prefix the JSON despite "reply ONLY with JSON"
@@ -9140,6 +9160,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 decision, tag_state, ids, reasoning_of(data), line_source, line_tags
             )
 
+        decision_deadline = time.monotonic() + (
+            self._sized_budget(self._CRITICAL_DECISION_BUDGET_S, first_token_s) if critical else normal_budget
+        )
         answered_high = False
         if critical:
             low_agrees = None

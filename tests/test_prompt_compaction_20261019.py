@@ -254,7 +254,7 @@ def test_a_big_typed_prompt_gets_the_later_first_token_and_keeps_its_answer_time
     assert first > ActionPlanner._FIRST_TOKEN_TIMEOUT_S
     assert call["first_token"] == pytest.approx(first)
     # The leg's budget grows by as much as its first token may come later (at most 18 s).
-    assert call["budget"] == pytest.approx(min(18.0, 12.0 + first - 8.0))
+    assert call["budget"] == pytest.approx(min(18.0, 12.0 + first - 8.0), abs=0.1)
     assert call["budget"] - call["first_token"] >= 3.0
     # An ordinary prompt keeps today's 8 s / 12 s.
     backend.calls.clear()
