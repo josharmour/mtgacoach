@@ -933,6 +933,8 @@ class GREBridge:
             ):
                 if expected.get(source) is not None:
                     command[key] = expected[source]
+            if "selectionIds" in expected:
+                command["expected_selection_ids"] = expected["selectionIds"]
             if expected.get("choiceKind"):
                 command["expected_choice_kind"] = expected["choiceKind"]
                 if expected.get("optionIndex") is not None:

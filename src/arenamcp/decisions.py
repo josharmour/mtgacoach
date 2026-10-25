@@ -627,7 +627,7 @@ def build_pending_decision(
 
     if rtype in _CASTING_TYPES or request_class in _CASTING_TYPES:
         options = tuple(
-            DecisionOption(f"idx:{index}", _casting_label(action), meta=dict(action))
+            DecisionOption(f"idx:{index}", _casting_label(action, resolve_instance), meta=dict(action))
             for index, action in enumerate(poll.get("actions") or [])
             if action.get("actionType") == "CastingTimeOption"
         )
@@ -790,8 +790,17 @@ def build_pending_decision(
     return None
 
 
-def _casting_label(action: dict) -> str:
+def _casting_label(action: dict, resolve_instance: Callable[[int], str] | None = None) -> str:
     label = str(action.get("label") or action.get("choiceKind") or "Casting choice")
+    if action.get("choiceKind") == "selection":
+        ids = action.get("selectionIds") or []
+        if not ids:
+            return "Choose no creature for this casting-cost selection"
+        names = [
+            ((resolve_instance(iid) if resolve_instance else "") or f"creature #{iid}") + f" [id:{iid}]"
+            for iid in ids
+        ]
+        return "Casting-cost selection: " + ", ".join(names)
     if action.get("choiceKind") == "modal" and action.get("grpId"):
         from arenamcp.card_db import get_card_database
 

@@ -2238,6 +2238,11 @@ class MacBridgeAdapter:
         ] != payload.get("optionIndex"):
             raise AdapterError(f"identity mismatch: option {index} is {payload}")
 
+        if payload.get("choiceKind") == "selection" and command.get("expected_selection_ids") != payload.get(
+            "selectionIds"
+        ):
+            raise AdapterError("identity mismatch: casting selection changed or is missing")
+
         def build(ops: _Ops, request: dict) -> None:
             ops.expect_class(H(entry["child_handle"]), entry["child_class"])
             ops.call(H(entry["child_handle"]), entry["method"], *entry["args"])
@@ -3450,6 +3455,50 @@ def casting_time_entries(request: dict) -> list[dict[str, Any]]:
                     grp,
                     **extra,
                 )
+        elif kind == "CastingTimeOption_SelectNRequest":
+            # Harmonize's tap-for-discount choice is a nested SelectN, not a
+            # mode or the later library search. Verified in live IL2CPP metadata.
+            selection = field(child, "SelectNRequest")
+            if not isinstance(selection, dict) or not handle(selection):
+                continue
+            low, high = field(selection, "MinSel"), field(selection, "MaxSel")
+            ids = field(selection, "Ids")
+            offered = [num(value) for value in items(ids)]
+            if (
+                low is None
+                or high is None
+                or num(low) not in (0, 1)
+                or num(high) != 1
+                or "InstanceId" not in enum_name(field(selection, "IdType"))
+                or (isinstance(ids, dict) and num(ids.get("$n"), len(offered)) != len(offered))
+            ):
+                continue
+            weights = [num(value) for value in items(field(selection, "Weights"))]
+            if weights and len(weights) != len(offered):
+                continue
+            min_weight = num(field(selection, "MinWeight"), -(2**31))
+            max_weight = num(field(selection, "MaxWeight"), 2**31 - 1)
+            choices = ([([], 0)] if num(low) == 0 else []) + [
+                ([iid], weights[i] if weights else 1) for i, iid in enumerate(offered)
+            ]
+            for option, (selected, weight) in enumerate(choices):
+                if not min_weight <= weight <= max_weight:
+                    continue
+                add(
+                    child,
+                    index,
+                    "selection",
+                    "Select no creature" if not selected else f"Select creature #{selected[0]}",
+                    "SubmitSelection",
+                    [UINTS(selected)],
+                    option,
+                    grp,
+                    selectionIds=selected,
+                    sourceId=num(field(child, "AffectedId")),
+                )
+                # The wrapper's OnChildSubmit propagates this inner response.
+                entries[-1]["child_handle"] = handle(selection)
+                entries[-1]["child_class"] = short_class(selection)
         elif kind == "CastingTimeOption_DoneRequest":
             payload = add(child, index, "done", "Done", "SubmitDone", [])
             costs = mana_costs(field(child, "ManaCost"))

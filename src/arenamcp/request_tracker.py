@@ -60,7 +60,14 @@ def decision_fingerprint(decision: Any) -> Fingerprint:
                     json.dumps(
                         {
                             key: option.meta.get(key)
-                            for key in ("choiceKind", "childIndex", "optionIndex", "numericValue", "sourceId")
+                            for key in (
+                                "choiceKind",
+                                "childIndex",
+                                "optionIndex",
+                                "numericValue",
+                                "sourceId",
+                                "selectionIds",
+                            )
                         },
                         sort_keys=True,
                     ),

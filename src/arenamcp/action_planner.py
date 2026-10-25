@@ -8703,6 +8703,15 @@ class ActionPlanner(_ActionLegalityMixin):
         from arenamcp.commander_combat import commander_sacrifice_context
 
         lines.extend(commander_sacrifice_context(game_state, decision))
+        if any(o.meta.get("choiceKind") == "selection" for o in decision.options):
+            lines.append(
+                "CASTING-COST SELECTION: choose only among these offered battlefield creatures, "
+                "not the later library-search target. For Harmonize, tapping a creature reduces "
+                "generic mana by its power, never the colored requirement. Compare the discount "
+                "against that creature's mana ability, blocking and attack value. Don't count a "
+                "creature both as tapped for this discount and available to tap for mana. "
+                "Choose no creature only if paying without the discount is preferable and affordable."
+            )
         if decision.min_weight is not None:
             lines.insert(
                 2,
