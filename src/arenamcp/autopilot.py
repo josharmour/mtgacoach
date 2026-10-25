@@ -732,7 +732,7 @@ class AutopilotEngine(
     # same board gets the same refusal. 2026-10-06 18:57 (bug_20261006_185803):
     # Theoretical Necromancer was activated and cancelled at its target step
     # four times in 13 s, each rollback un-counted, until the user force-stopped.
-    _SELF_CANCEL_KINDS = ("ActionType_Cast", "ActionType_CastOmen", "ActionType_Activate")
+    _SELF_CANCEL_KINDS = ("ActionType_Cast", "ActionType_CastOmen", "ActionType_Activate", "ActionType_Special")
 
     @classmethod
     def _play_name(cls, label: str) -> tuple[str, str]:
@@ -747,6 +747,10 @@ class AutopilotEngine(
     @classmethod
     def _typed_play_name(cls, game_state: dict[str, Any], option: Any) -> str:
         """Use the actual Omen face, which has a different stack name from its creature."""
+        if option.meta.get("actionType") == "ActionType_Special":
+            from arenamcp.play_safety import find_source
+
+            return cls._plain_card_name(str(find_source(game_state, option.meta).get("name") or "")).lower()
         if option.meta.get("actionType") == "ActionType_CastOmen":
             from arenamcp.play_safety import find_source
 
@@ -858,7 +862,7 @@ class AutopilotEngine(
             parent = int(context.get("source_parent_instance_id") or 0)
         except (TypeError, ValueError):
             parent = 0
-        if kind == "ActionType_Activate" and parent and instance_id and parent != instance_id:
+        if kind in ("ActionType_Activate", "ActionType_Special") and parent and instance_id and parent != instance_id:
             logger.info(
                 "Self-cancel guard: the cancelled %s belonged to another source (%s), "
                 "not to the activation of %r",
@@ -4797,9 +4801,10 @@ class AutopilotEngine(
     # re-triggered the autopilot, and Arena's NonActivePlayer rope ended the
     # game 45 s later. Poll the bridge directly after such a cast instead of
     # trusting the trigger plumbing; bound everything.
-    _POST_CAST_PRIORITY_POLL_S = 6.0
+    # Yield to the request watcher/outer loop instead of polling a stale request for six seconds.
+    _POST_CAST_PRIORITY_POLL_S = 1.0
     _POST_CAST_PRIORITY_POLL_INTERVAL_S = 0.25
-    _MAX_POST_CAST_PRIORITY_HOPS = 3
+    _MAX_POST_CAST_PRIORITY_HOPS = 1
 
     # Set by the coaching runtime to BridgeDecisionPoller.watch_requests:
     # listener(response) runs on the bridge prefetch thread whenever the
@@ -5586,6 +5591,11 @@ class AutopilotEngine(
                 logger.debug("post-cast priority decision build failed: %s", error)
                 continue
             if live is None:
+                # A declaration/payment family handled by the outer loop is
+                # already waiting. Do not consume the full six-second poll.
+                if latest.get("request_type") != decision.request_type:
+                    logger.info("post-cast priority: yielding to %s", latest.get("request_type"))
+                    return
                 continue
             if live.request_id == decision.request_id and decision_fingerprint(live) == answered_fp:
                 # The request we just answered, still winding down.

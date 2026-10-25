@@ -391,6 +391,8 @@ def test_board_math_fallback_skips_attack_only_cast_set_aside_when_no_attack_fol
     planner.last_llm_failure = "set_aside"
     picked = planner._board_math_fallback(decision, board)
     assert picked == ["pass"]
+    assert "passing" in planner._last_decision_reasoning.lower()
+    assert "line casts Fleeting Effigy" not in planner._last_decision_reasoning
 
 
 # --- #150: _second_look rejects re-picked choice whose new reasoning repeats a refuted claim ------

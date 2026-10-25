@@ -294,3 +294,19 @@ def test_watchdog_alerts_on_log_derived_request_the_bridge_cannot_see():
     now[0] = 1035.0
     assert coach._tick_decision_watchdog(state) == "alerted"
     assert advice and advice[0].startswith("MANUAL REQUIRED")
+
+
+def test_post_cast_yields_immediately_to_declaration_family():
+    from arenamcp.decisions import build_pending_decision
+
+    engine = _engine([], [])
+    engine._gre_bridge.get_pending_actions = MagicMock(
+        return_value={
+            "has_pending": True,
+            "request_type": "DeclareAttackers",
+            "msg_id": 201,
+        }
+    )
+    answered = build_pending_decision(_cast_poll(), resolve_instance=lambda _iid: "")
+    engine._surface_post_cast_priority(answered, ["idx:0"], _cast_poll(), {}, "decision_required")
+    assert engine._gre_bridge.get_pending_actions.call_count == 1

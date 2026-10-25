@@ -58,6 +58,10 @@ def critical(monkeypatch):
 def _run(backend):
     engine, bridge, _ = jace_engine(HIGH)
     engine._planner._backend = backend
+    # These tests isolate decision hedging with no background generation.
+    # An in-flight first plan now correctly suppresses the high leg.
+    engine._game_plan_mgr = None
+    engine._planner.set_background_yield(None)
     started = time.monotonic()
     assert engine._try_typed_decision_path(jace_state(), "decision_required") is True
     return engine, bridge, time.monotonic() - started

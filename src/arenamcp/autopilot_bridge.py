@@ -1690,6 +1690,8 @@ class _BridgeSubmitMixin:
                 blocker_assignments=dict(labels for labels, _ in kept),
                 blocker_instance_assignments=dict(ids for _, ids in kept),
                 reasoning="; ".join([*dict.fromkeys(chumps.values()), *menace_notes]),
+                override_note="; ".join([*dict.fromkeys(chumps.values()), *menace_notes]),
+                model_reasoning=action.model_reasoning or action.reasoning,
             )
         desc = ", ".join(f"{b}->{a}" for b, a in action.blocker_assignments.items()) or "[No Blocks]"
 

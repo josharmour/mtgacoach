@@ -3382,6 +3382,7 @@ class StandaloneCoach(
                 poll_interval = self._get_poll_interval(curr_state)
             except NameError:
                 poll_interval = self._POLL_NORMAL
+            self._loop_heartbeat = time.monotonic()
             self._wait_for_wake(poll_interval)
 
         logger.info("Coaching loop stopped")

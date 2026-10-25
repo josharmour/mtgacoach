@@ -9062,6 +9062,12 @@ class ActionPlanner(_ActionLegalityMixin):
             # A high-effort decision holds new game-plan reforms back: vLLM
             # runs several sequences at once, so the reform's priority only
             # orders the queue, it does not stop the two sharing the GPU.
+            if effort == "high" and not yielded:
+                # Second looks and reversal checks must honor the same load
+                # signal as the initial hedge. Keep the correction, but do not
+                # add high-effort reasoning alongside the background reform.
+                logger.info("typed-decision: correction uses low effort while game-plan reform is in flight")
+                effort = None
             remaining = min(budget, decision_deadline - time.monotonic())
             if remaining <= 0:
                 raise concurrent.futures.TimeoutError("typed decision budget exhausted")
@@ -9728,7 +9734,7 @@ def board_math_option_pick(decision: Any, game_state: dict[str, Any]) -> tuple[l
         if deferred:
             later = ", ".join(sorted(deferred))
             return ["pass"], f"{plan_text}; attack first, {later} after combat"
-        return ["pass"], plan_text or "nothing safe to cast"
+        return ["pass"], "passing: no safe payable cast from the searched line is available in this menu"
     return fallback, "no pass option, so the first legal option"
 
 

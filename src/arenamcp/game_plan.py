@@ -3476,7 +3476,7 @@ class GamePlanManager:
             # aside.
             if self._plan is None:
                 logger.info("Game plan reform keeps running alongside a decision call: no plan exists yet")
-                return True
+                return False
             # 2026-10-19 match 41753907: the reform started at 09:02:24 for
             # Unflinching Courage (Dawnwing Marshal now 4/4 flying, trample,
             # lifelink) yielded to our first T7 decision 3 s later; the resume

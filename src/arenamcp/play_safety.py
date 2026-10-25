@@ -1534,10 +1534,58 @@ def pump_before_blocks_wasted(card: dict, state: dict, metadata: dict | None = N
         return ""
 
 
+def pending_ward_reserve_reason(state: dict, card: dict, action_type: str, metadata: dict) -> str:
+    """Do not spend a payable ward tax on another spell while removal is pending.
+
+    Scan below unrelated triggers too: payment-context lookup deliberately only
+    considers the request at the top, whereas a reserve must survive priority.
+    Unknown mana/costs stay advisory; free plays and land drops remain available.
+    """
+    from arenamcp.ward import _as_ward_trigger
+
+    seat = _local_seat(state)
+    battlefield = state.get("battlefield") or []
+    stack = state.get("stack") or []
+    ours = [s for s in stack if (s.get("controller_seat_id") or s.get("owner_seat_id")) == seat]
+    targets = {iid for spell in ours for iid in spell.get("targeting") or []}
+    reserve = sum(
+        trigger.ward.mana or 0
+        for entry in stack
+        if (trigger := _as_ward_trigger(entry, battlefield, seat)) is not None
+        and (trigger.permanent or {}).get("instance_id") in targets
+    )
+    if not reserve:
+        return ""
+    # Responses that interact with the ward/source need a tactical choice, not
+    # a blanket ban (a counterspell may save the threatened spell itself).
+    text = str(card.get("oracle_text") or "").lower()
+    if "counter target" in text:
+        return ""
+    if action_type == "cast":
+        from arenamcp.board_assessment import face_damage
+
+        aimed, each = face_damage(card)
+        opponents = [p for p in state.get("players") or [] if p.get("seat_id") not in (None, seat)]
+        if len(opponents) == 1 and 0 < (opponents[0].get("life_total") or 0) <= aimed + each:
+            # Let the planner take immediate lethal above the ward trigger.
+            return ""
+    cost = _effective_cost(card if action_type == "cast" else {}, metadata)
+    total = exact_mana_total(state)
+    if cost and total is not None and total >= reserve:
+        spend = RulesEngine._parse_cmc(cost)
+        if spend and total - spend < reserve:
+            return f"Reserve {reserve} mana for pending ward; removal has not resolved"
+    return ""
+
+
 def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict | None = None) -> str:
     """Return a reason to withhold a play, not a claim of full MTG legality."""
     action_type = action_type.removeprefix("ActionType_").lower()
-    if action_type == "castomen":
+    if action_type in ("cast", "castomen", "activate", "special"):
+        reason = pending_ward_reserve_reason(state, card, action_type, metadata or {})
+        if reason:
+            return reason
+    if action_type in ("castomen", "special"):
         # The front face's printed cost and effect are not the Omen's.
         # Trust a real Arena payment solution, otherwise reject a cost that
         # exceeds even our exact total before it reaches PayCosts.
@@ -1546,7 +1594,8 @@ def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict
         total = exact_mana_total(state)
         if cost and not has_autotap_solution(metadata) and total is not None:
             if RulesEngine._parse_cmc(cost) > total:
-                return f"Omen costs {cost} but only {total} mana is available"
+                kind = "Omen" if action_type == "castomen" else "Special action"
+                return f"{kind} costs {cost} but only {total} mana is available"
         return ""
     if action_type not in ("cast", "activate") or not card:
         return ""

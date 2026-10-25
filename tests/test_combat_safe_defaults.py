@@ -284,6 +284,11 @@ def test_bridge_blocker_submission_drops_the_trample_chump():
     assert result.success
     assert bridge.blocker_calls == [[]]
     assert result.submitted_action.blocker_assignments == {}
+    from arenamcp.action_planner import ActionPlan
+
+    speech = ActionPlan(actions=[result.submitted_action]).spoken_actions()
+    assert "Don't block" in speech and "damage" in speech
+    assert result.submitted_action.override_note
 
 
 @pytest.mark.usefixtures("instant_combat_acks")

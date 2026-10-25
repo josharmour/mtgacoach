@@ -825,8 +825,57 @@ class _Search(Moves):
         today's pick.
         """
 
+        def dominates(a: Line, b: Line) -> bool:
+            # Keep hysteresis for real tradeoffs, not redundant burn (#263).
+            # Compare actual simulated resources and every intervening life
+            # total, not merely a small difference in the heuristic score.
+            x, y = a._leaf, b._leaf
+            if x is None or y is None or a.cls != ALIVE or b.cls != ALIVE:
+                return False
+            if len(a.steps) != len(b.steps) or not a.steps:
+                return False
+            equal = (
+                "k",
+                "abs_turn",
+                "ours",
+                "theirs",
+                "our_tapped",
+                "their_tapped",
+                "entered",
+                "lands",
+                "played",
+                "rocks",
+                "returning",
+                "walkers",
+            )
+            if any(getattr(x, field) != getattr(y, field) for field in equal):
+                return False
+            if not set(x.hand).issuperset(y.hand):
+                return False
+            for left, right in zip(a.steps, b.steps, strict=True):
+                if (
+                    left.life_after is None
+                    or right.life_after is None
+                    or left.life_after < right.life_after
+                    or left.their_creatures_after != right.their_creatures_after
+                    or left.attack != right.attack
+                    or (
+                        left.opp_life_after is not None
+                        and right.opp_life_after is not None
+                        and left.opp_life_after > right.opp_life_after
+                    )
+                ):
+                    return False
+            return (
+                x.our_life >= y.our_life
+                and x.opp_life <= y.opp_life
+                and (x.our_life > y.our_life or x.opp_life < y.opp_life or set(x.hand) > set(y.hand))
+            )
+
         def close(a: Line, b: Line) -> bool:
-            return a.ranked[:2] == b.ranked[:2] and a.ranked[2] - b.ranked[2] < LINE_TOL
+            return (
+                a.ranked[:2] == b.ranked[:2] and a.ranked[2] - b.ranked[2] < LINE_TOL and not dominates(a, b)
+            )
 
         top = ranked[0] if ranked else baseline
         anchor = max(

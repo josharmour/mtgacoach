@@ -895,6 +895,11 @@ def _build_actions_available(
             if alternative == "Sneak":
                 # A trailing [tag]: every "Cast X" name parser strips it as decoration.
                 label += f" [{_sneak_note(name or 'it', action)}]"
+        elif atype == "ActionType_Special":
+            # A special action is not a land play. Arena exposes plot here,
+            # with its own manaCost rather than the creature's casting cost.
+            label = f"Special action: {name or 'card'}"
+            payable = True if has_autotap_solution(action) else None
         elif atype == "ActionType_Play":
             label = f"Play land: {name or 'land'}"
         elif atype == "ActionType_Activate":

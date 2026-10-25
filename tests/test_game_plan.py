@@ -550,7 +550,7 @@ def test_plan_status_reports_none_forming_and_ready_and_the_first_plan_never_yie
     mgr._inflight_lane = None
     mgr._inflight_plan_turn = 6
     mgr._inflight_started_at = time.monotonic() - 1.0
-    mgr.yield_for_decision()
+    assert mgr.yield_for_decision() is False
     assert not cancel.is_set()
     status = mgr.plan_status(board)
     assert status["state"] == "forming" and status["inflight_for_turn"] == 6
