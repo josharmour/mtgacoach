@@ -979,11 +979,7 @@ class ActionPlanner(_ActionLegalityMixin):
         if not limited:
             return ""
         local = state.get("local_seat_id") or next(
-            (
-                p.get("seat_id")
-                for p in state.get("players", [])
-                if isinstance(p, dict) and p.get("is_local")
-            ),
+            (p.get("seat_id") for p in state.get("players", []) if isinstance(p, dict) and p.get("is_local")),
             None,
         )
         opponent = state.get("opponent_seat_id") or next(
@@ -1090,18 +1086,34 @@ class ActionPlanner(_ActionLegalityMixin):
             raise LLMUnavailableError(str(response)[:200])
         return response
 
-    def _bounded_call(self, call: Callable[[], str]) -> str:
-        """Run ``call`` with a hard wall-clock limit of ``self._timeout`` seconds.
+    def _wait_for_model(self, future, deadline: float):
+        """Stop waiting when the live request changes, including legacy backends."""
+        while True:
+            cancelled = getattr(self, "_decision_cancel_event", None)
+            if cancelled is not None and cancelled.is_set():
+                raise LLMUnavailableError("request changed during planning")
+            if future.done():
+                return future.result()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise concurrent.futures.TimeoutError()
+            try:
+                return future.result(timeout=min(0.05, remaining))
+            except concurrent.futures.TimeoutError:
+                if future.done():
+                    return future.result()
 
-        On timeout the worker is abandoned rather than joined: a with-block
-        here used to wait for the worker, so a backend that ignored
-        request_timeout_s held the coaching loop until the SDK gave up.
-        """
+    def _bounded_call(self, call: Callable[[], str], *, timeout_s: float | None = None) -> str:
+        """Bound a call without joining a slow backend; repair shares the original budget."""
+        budget = self._timeout if timeout_s is None else timeout_s
+        if budget <= 0:
+            raise concurrent.futures.TimeoutError()
+        deadline = time.monotonic() + budget
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="planner-llm")
         try:
-            return pool.submit(call).result(timeout=self._timeout)
+            return self._wait_for_model(pool.submit(call), deadline)
         finally:
-            pool.shutdown(wait=False)
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def _hedged_declaration(self, complete: Callable[..., str]) -> str:
         """A high-effort declaration with a low-effort one racing alongside (ledger #159).
@@ -1116,11 +1128,11 @@ class ActionPlanner(_ActionLegalityMixin):
             high = pool.submit(complete, "decision.plan", "high")
             low = pool.submit(complete, "decision.plan", None)
             try:
-                return high.result(timeout=max(0.1, deadline - time.monotonic()))
+                return self._wait_for_model(high, deadline)
             except Exception as error:
                 logger.info("Declaration plan: high effort failed (%s); trying the low-effort answer", error)
                 try:
-                    answer = low.result(timeout=max(0.1, deadline - time.monotonic()))
+                    answer = self._wait_for_model(low, deadline)
                 except Exception:
                     raise error from None
                 logger.info("Declaration plan: the low-effort answer stands")
@@ -1364,12 +1376,17 @@ class ActionPlanner(_ActionLegalityMixin):
         # reach the JSON parser — during a backend outage the parse yields 0
         # actions and _fallback_plan would submit a real game action (blind
         # passes, 2026-07-05). _call_llm raises on a sentinel as well.
+        model_deadline = time.monotonic() + self._timeout
+
         def _complete(call_class: str = "decision.plan", effort: str | None = None) -> str:
+            remaining = model_deadline - time.monotonic()
+            if remaining <= 0:
+                raise concurrent.futures.TimeoutError()
             return self._call_llm(
                 system_prompt,
                 user_message,
                 4096,
-                timeout_s=self._timeout,
+                timeout_s=remaining,
                 call_class=call_class,
                 first_token_timeout_s=self._plan_first_token_timeout(len(system_prompt) + len(user_message)),
                 reasoning_effort=effort,
@@ -1449,7 +1466,10 @@ class ActionPlanner(_ActionLegalityMixin):
                 'A bare "pick" cannot specify the attacker. Use {} only to deliberately decline all blocks.'
             )
             try:
-                repair_response = self._bounded_call(lambda: _complete("decision.block_repair"))
+                repair_response = self._bounded_call(
+                    lambda: _complete("decision.block_repair"),
+                    timeout_s=model_deadline - time.monotonic(),
+                )
                 plan = self._parse_response(
                     repair_response,
                     effective_legal_actions,
@@ -1734,6 +1754,7 @@ class ActionPlanner(_ActionLegalityMixin):
         if plan.actions[0].action_type != ActionType.DECLARE_BLOCKERS and not declined:
             return
         from arenamcp.attack_potential import pumped_attackers
+        from arenamcp.combat_hit import loses_on_combat_hit
         from arenamcp.combat_solver import _death_life, _resolve_attacker, blocker_options, optimal_blocks
         from arenamcp.combat_strategy import extra_combat_damage, phantom_attackers, with_hit_bonus
         from arenamcp.death_triggers import annotate_death_swings
@@ -1768,15 +1789,21 @@ class ActionPlanner(_ActionLegalityMixin):
         action = plan.actions[0]
         planned = {} if declined else action.blocker_instance_assignments or {}
         through = 0
+        hit_loss = False
         for atk in attackers:
             outcome = _resolve_attacker(
                 atk, [cards[b] for b, a in planned.items() if a == atk["instance_id"] and b in cards]
+            )
+            hit_loss |= (
+                outcome.damage_through > 0
+                and loses_on_combat_hit(atk)
+                and atk.get("attack_target_id") not in cards
             )
             through += outcome.damage_through - _death_life(atk, outcome)[0]
         # An extra combat follows this one (Aurelia, ledger #191): its damage through the blockers
         # these blocks leave counts as this turn's.
         through += extra_combat_damage(state, attackers, planned)
-        lethal = through >= life
+        lethal = hit_loss or through >= life
         if not lethal and life - through > BLOCK_DANGER_LIFE:
             return
         allowed = blocker_options(context.get("raw_blockers") or [], context.get("blocker_options"))
@@ -1788,7 +1815,7 @@ class ActionPlanner(_ActionLegalityMixin):
             + survival.death_drain
             + extra_combat_damage(state, attackers, survival.assignments)
         )
-        if survival_through >= life:
+        if survival.player_loses or survival_through >= life:
             return
         if not lethal and survival_through > through - BLOCK_DANGER_MARGIN:
             return  # the solver's blocks do not keep meaningfully more life
@@ -1812,7 +1839,11 @@ class ActionPlanner(_ActionLegalityMixin):
             action = plan.actions[0] = GameAction(action_type=ActionType.DECLARE_BLOCKERS)
         action.blocker_instance_assignments = dict(survival.assignments)
         action.blocker_assignments = {label(b): label(a) for b, a in survival.assignments.items()}
-        outcome = "were lethal" if lethal else f"left us at {life - through}"
+        outcome = (
+            "lose the game to a combat-hit trigger"
+            if hit_loss
+            else ("were lethal" if lethal else f"left us at {life - through}")
+        )
         action.reasoning = (
             f"Planned blocks {outcome} ({through} damage at {life} life); {survival.explanation}."
         )
@@ -3649,6 +3680,14 @@ class ActionPlanner(_ActionLegalityMixin):
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError as e:
+            from arenamcp.action_json import recover_action_json
+
+            recovered = recover_action_json(json_str)
+            if recovered is not None:
+                logger.warning("Recovered action payload before malformed/truncated trailing text: %s", e)
+                return self._parse_response(
+                    json.dumps(recovered), legal_actions, decision_context, bridge_request, game_state
+                )
             # #37 (live 2026-07-06): DSV4 sporadically emits unquoted garbage
             # tokens as the pick value ('"pick": 什么人') which invalidates the
             # whole JSON. The pick intent is usually still recoverable —
@@ -4320,7 +4359,9 @@ class ActionPlanner(_ActionLegalityMixin):
         logger.info("typed-decision: reusing the answer to the identical earlier window: %s", chosen)
         return chosen
 
-    def _cache_answer(self, decision: Any, game_state: dict[str, Any], chosen: list[str], reasoning: str) -> None:
+    def _cache_answer(
+        self, decision: Any, game_state: dict[str, Any], chosen: list[str], reasoning: str
+    ) -> None:
         """Remember a model answer for an identical re-presented window (#226(b))."""
         if not getattr(self, "_last_llm_asked", False):
             return

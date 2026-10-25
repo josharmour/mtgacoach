@@ -254,10 +254,16 @@ def test_schedule_fetch_runs_once_and_backs_off_after_failure(tmp_path):
     with patch.object(slc, "fetch_catalog", side_effect=lambda exp, cache_dir: calls.append(exp)):
 
         def wait_for(n):
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and len(calls) < n:
+            # Observing fetch_catalog's call is not observing worker completion:
+            # the thread still has to publish its backoff state under the lock.
+            # perf_counter is unaffected by the mocked scheduling clock below.
+            deadline = time.perf_counter() + 5
+            while time.perf_counter() < deadline:
+                with slc._lock:
+                    if len(calls) >= n and "DFT" not in slc._threads:
+                        return len(calls)
                 time.sleep(0.01)
-            return len(calls)
+            raise AssertionError("catalog worker did not finish")
 
         assert slc.schedule_fetch("DFT", tmp_path) is True
         # A second schedule inside the attempt interval is suppressed.
@@ -274,9 +280,7 @@ def test_schedule_fetch_runs_once_and_backs_off_after_failure(tmp_path):
         with patch.object(slc.time, "monotonic", return_value=future + slc._MAX_BACKOFF_S + 1):
             with patch.object(slc, "fetch_catalog", side_effect=lambda exp, cache_dir: tmp_path):
                 assert slc.schedule_fetch("DFT", tmp_path) is True
-                deadline = time.monotonic() + 5
-                while time.monotonic() < deadline and slc._failure_count.get("DFT"):
-                    time.sleep(0.01)
+                assert wait_for(2) == 2
                 assert slc._failure_count.get("DFT") is None
     slc.reset_fetch_state()
 

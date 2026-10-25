@@ -31,6 +31,7 @@ from functools import lru_cache
 from itertools import combinations, product
 from typing import Any
 
+from arenamcp.combat_hit import loses_on_combat_hit
 from arenamcp.combat_keywords import can_be_blocked_by, has_combat_keyword
 from arenamcp.death_triggers import swing_of
 from arenamcp.token_lifetime import token_expires
@@ -56,6 +57,7 @@ def _card_key(c: dict) -> tuple:
         tuple(c.get("keywords") or ()),
         c.get("cant_be_blocked"),
         c.get("combat_hit_bonus"),
+        loses_on_combat_hit(c),
         c.get("is_tapped"),
         c.get("_engine_value"),
         swing_of(c),
@@ -440,6 +442,7 @@ class BlockPlan:
     # (negative: loses; also counted in ``attacker_life_gained``).
     death_drain: int = 0
     attacker_death_life: int = 0
+    player_loses: bool = False  # a connected terminal combat-hit trigger
 
 
 # What a life point the attacking side gains from a death trigger costs the blocking side, in
@@ -706,6 +709,7 @@ def _search_blocks(
     # Cap search space — 4 attackers x 6 blockers = 5^6 = 15625 which is
     # cheap; but 8 attackers × 8 blockers = 9^8 ≈ 43M which is not. Fall
     # back to a greedy heuristic when combinatorial search would be slow.
+    terminal_hits = [loses_on_combat_hit(a) for a in attackers]
     n_attackers = len(attackers)
     n_blockers = len(blockers)
     n_options = (n_attackers + 1) ** n_blockers
@@ -787,6 +791,7 @@ def _search_blocks(
 
         evaluated += 1
         total_damage = 0
+        player_loses = False
         atk_killed_material = 0
         blocker_lost_material = 0
         blowout = 0
@@ -807,6 +812,7 @@ def _search_blocks(
                     *_death_life(attackers[a_idx], outcome),
                 )
                 fights[key] = fight
+            player_loses |= fight[0] > 0 and terminal_hits[a_idx]
             total_damage += fight[0]
             atk_killed_material += fight[1]
             blocker_lost_material += fight[2]
@@ -822,8 +828,9 @@ def _search_blocks(
             your_life,
             death_loss=-death_blocking,
             their_gain=death_attacking,
+            player_loses=player_loses,
         )
-        if recovery_credit is not None and total_damage - death_blocking < your_life:
+        if recovery_credit is not None and not player_loses and total_damage - death_blocking < your_life:
             score += recovery_credit(frozenset(lost_ids))
         if raw_best is None or score > raw_best:
             raw_best = score
@@ -979,6 +986,7 @@ def _rebuild_block_plan(
     for a_idx, atk in enumerate(attackers):
         assigned = assigned_to_atk.get(a_idx, [])
         outcome = _resolve_attacker(atk, assigned)
+        plan.player_loses |= outcome.damage_through > 0 and loses_on_combat_hit(atk)
         plan.damage_through += outcome.damage_through
         plan.attacker_life_gained += outcome.life_gained
         blocking, attacking = _death_life(atk, outcome)
@@ -997,7 +1005,11 @@ def _rebuild_block_plan(
     plan.score = _score_block_plan(plan, your_life)
     plan.blockers_lost_ids = frozenset(c.get("instance_id", 0) for c in lost_blockers)
     plan.attackers_killed_ids = frozenset(c.get("instance_id", 0) for c in killed_attackers)
-    if recovery_credit is not None and plan.damage_through + plan.death_drain < your_life:
+    if (
+        recovery_credit is not None
+        and not plan.player_loses
+        and plan.damage_through + plan.death_drain < your_life
+    ):
         plan.recovery_credit = recovery_credit(plan.blockers_lost_ids)
         plan.score += plan.recovery_credit
     plan.trick_cost = trick_p * blowout
@@ -1066,6 +1078,7 @@ def _block_score(
     *,
     death_loss: int = 0,
     their_gain: int = 0,
+    player_loses: bool = False,
 ) -> float:
     """Score a block assignment.
 
@@ -1079,6 +1092,8 @@ def _block_score(
     ``their_gain``: life the attacking side gains from them, at
     ``DEATH_LIFE_WEIGHT`` a point (ledger #184).
     """
+    if player_loses:
+        return -1_000_000.0
     # If this block plan kills you, it's worst possible.
     lost = damage_through + death_loss
     life_after = your_life - lost
@@ -1102,6 +1117,7 @@ def _score_block_plan(plan: BlockPlan, your_life: int) -> float:
         your_life,
         death_loss=plan.death_drain,
         their_gain=plan.attacker_death_life,
+        player_loses=plan.player_loses,
     )
 
 
@@ -1124,6 +1140,8 @@ def _explain_block_plan(
     kills = [a.get("name", "?") for a in killed_attackers]
     losses = [b.get("name", "?") for b in lost_blockers]
     tail = []
+    if plan.player_loses:
+        tail.append("combat-hit trigger loses the game")
     if plan.damage_through > 0:
         tail.append(f"{plan.damage_through} dmg through")
     if kills:
@@ -1165,7 +1183,7 @@ def _greedy_block_plan(
     exactly lethal trade into open mana is charged its trick risk (#74).
     """
     trick_p = trick_probability(trick_exposure)
-    sorted_atk = sorted(enumerate(attackers), key=lambda ia: -_pt(ia[1])[0])
+    sorted_atk = sorted(enumerate(attackers), key=lambda ia: (not loses_on_combat_hit(ia[1]), -_pt(ia[1])[0]))
     remaining_blockers = list(blockers)
     assignments: dict[int, int] = {}
     total_damage = 0
@@ -1175,6 +1193,7 @@ def _greedy_block_plan(
     lost_blockers: list[dict] = []
     trick_cost = 0.0
     death_drain = attacker_death_life = 0
+    player_loses = False
 
     for _atk_idx, atk in sorted_atk:
         atk_iid = int(atk.get("instance_id") or 0)
@@ -1193,7 +1212,13 @@ def _greedy_block_plan(
             lost = sum(_material(dead) for dead in outcome.blockers_died)
             blocking, attacking = _death_life(atk, outcome)
             score = _block_score(
-                outcome.damage_through, killed, lost, life_left, death_loss=-blocking, their_gain=attacking
+                outcome.damage_through,
+                killed,
+                lost,
+                life_left,
+                death_loss=-blocking,
+                their_gain=attacking,
+                player_loses=outcome.damage_through > 0 and loses_on_combat_hit(atk),
             )
             if trick_p > 0:
                 score -= trick_p * _blowout_loss(atk, [blk], outcome)
@@ -1201,13 +1226,21 @@ def _greedy_block_plan(
             key = (score, -_material(blk), _pt(blk)[1])
             if best is None or key > best[:3]:
                 best = (*key, blk, outcome)
-        no_block = _block_score(unblocked.damage_through, 0, 0, life_left)
+        no_block = _block_score(
+            unblocked.damage_through,
+            0,
+            0,
+            life_left,
+            player_loses=unblocked.damage_through > 0 and loses_on_combat_hit(atk),
+        )
         if best is None or best[0] <= no_block:
+            player_loses |= unblocked.damage_through > 0 and loses_on_combat_hit(atk)
             total_damage += unblocked.damage_through
             continue
         chosen, outcome = best[3], best[4]
         remaining_blockers.remove(chosen)
         assignments[int(chosen.get("instance_id") or 0)] = atk_iid
+        player_loses |= outcome.damage_through > 0 and loses_on_combat_hit(atk)
         total_damage += outcome.damage_through
         blocking, attacking = _death_life(atk, outcome)
         death_drain -= blocking
@@ -1223,6 +1256,7 @@ def _greedy_block_plan(
 
     plan = BlockPlan(
         assignments=assignments,
+        player_loses=player_loses,
         damage_through=total_damage,
         attackers_killed_material=atk_killed_material,
         blockers_lost_material=blocker_lost_material,
@@ -1240,7 +1274,10 @@ def _greedy_block_plan(
         if int(b.get("instance_id") or 0) in assignments
     )
     no_blocks = BlockPlan(
-        damage_through=sum(_resolve_attacker(attacker, []).damage_through for attacker in attackers)
+        damage_through=sum(_resolve_attacker(attacker, []).damage_through for attacker in attackers),
+        player_loses=any(
+            loses_on_combat_hit(a) and _resolve_attacker(a, []).damage_through > 0 for a in attackers
+        ),
     )
     no_blocks.score = _score_block_plan(no_blocks, your_life)
     if no_blocks.score >= plan.score:
@@ -1268,6 +1305,8 @@ class AttackPlan:
     # Life the opponent loses to the death triggers of this combat's deaths (negative: gains;
     # Vein Ripper, Blood Artist; ledger #184). Our side's share is in ``life_gained``.
     opponent_death_loss: int = 0
+    opponent_loses: bool = False
+    lose_to_crackback: bool = False
 
 
 # Attack searches with more candidates than this are "big" for the callers that only show the
@@ -1805,6 +1844,8 @@ def evaluate_attack(
         blockers_killed_material=blk_killed_mat,
         life_gained=life_gained,
         opponent_death_loss=opponent_death_loss,
+        opponent_loses=bool(opp_block and opp_block.player_loses),
+        lose_to_crackback=bool(crack_block and crack_block.player_loses),
     )
     plan.score = _score_attack_plan(plan, your_life, opponent_life)
     walker_cost = walker_crackback_cost(crackback, your_life + life_gained, our_walker_loyalties)
@@ -1816,6 +1857,10 @@ def evaluate_attack(
         f"{damage_through} through, crackback {crackback} "
         f"(lose material {atk_lost_mat}, kill {blk_killed_mat})"
     )
+    if plan.opponent_loses:
+        plan.explanation += "; combat-hit trigger wins the game"
+    if plan.lose_to_crackback:
+        plan.explanation += "; crackback combat-hit trigger loses the game"
     if opp_block is not None and (opp_block.death_drain or opp_block.attacker_death_life):
         plan.explanation += (
             f"; death triggers: them {-opp_block.death_drain:+d}, us {opp_block.attacker_death_life:+d} life"
@@ -1875,13 +1920,13 @@ def _score_attack_plan(plan: AttackPlan, your_life: int, opponent_life: int) -> 
     # (``opponent_death_loss``; negative when their Vein Ripper gains them life).
     dealt = plan.damage_through + plan.opponent_death_loss
     # Lethal this swing is the best possible outcome.
-    if dealt >= opponent_life:
+    if plan.opponent_loses or dealt >= opponent_life:
         return 10_000.0
 
     # Lifelink damage this swing is life we have for their crackback (Dina, Flesh Sower).
     your_life += plan.life_gained
     # Dying to crackback is the worst.
-    if plan.worst_case_crackback >= your_life:
+    if plan.lose_to_crackback or plan.worst_case_crackback >= your_life:
         return -1_000.0
 
     # Weight damage dealt by how close it gets us to lethal.

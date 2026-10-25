@@ -308,8 +308,10 @@ MEADOW_TEXT = "As Witch-Blessed Meadow enters, you may pay 3 life. If you don't,
 
 @pytest.fixture
 def meadow_context(monkeypatch):
-    from arenamcp import server
+    from arenamcp import arena_prompts, server
 
+    # Exercise the card-name fallback regardless of a prior test's prompt-table cache.
+    monkeypatch.setattr(arena_prompts, "prompt_text", lambda *args: "")
     monkeypatch.setattr(server, "enrich_with_oracle_text", lambda grp: {"oracle_text": MEADOW_TEXT})
     game = GameState()
     game.local_seat_id = ME

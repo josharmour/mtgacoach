@@ -27,7 +27,6 @@ from arenamcp.action_planner import ActionPlan, ActionPlanner, ActionType, GameA
 from arenamcp.autopilot import AutopilotState
 from arenamcp.autopilot_bridge import _BridgeSubmitMixin
 from arenamcp.damage_assignment import (
-    FALLBACK_DAMAGE_ASSIGNMENT,
     deterministic_split,
     illegal_reason,
     plan_assigners,
@@ -274,8 +273,9 @@ def test_the_cut_off_answer_plans_the_assignment_not_done():
     plan = planner.plan_actions(state, "decision_required", LEGAL, state["decision_context"])
 
     assert [a.action_type for a in plan.actions] == [ActionType.ASSIGN_DAMAGE]
-    assert plan.fallback_reason == FALLBACK_DAMAGE_ASSIGNMENT
-    assert "2 to Pyrewood Gearhulk and 2 to the opponent" in plan.actions[0].reasoning
+    # #233: the complete action survives the broken trailing wrapper.
+    assert plan.actions[0].distribution == {"Pyrewood Gearhulk [350]": 2, "Opponent [1]": 2}
+    assert "2 kills" in plan.actions[0].reasoning
 
 
 # --- the bridge: Done on AssignDamage is the assignment, never a pass ----------------------

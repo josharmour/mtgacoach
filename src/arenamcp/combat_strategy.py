@@ -11,6 +11,7 @@ from itertools import combinations, product
 
 from arenamcp import combat_solver
 from arenamcp.big_board import BIG_ATTACK_MENU
+from arenamcp.combat_hit import loses_on_combat_hit
 from arenamcp.combat_keywords import (
     annotate_cant_be_blocked,
     is_creature_modified,
@@ -2274,7 +2275,9 @@ def _refused_chumps(
             continue
         if any(_BLOCKER_PAYOFF.search(_rules_text(body)) for body in bodies):
             continue
-        if outcome.damage_through == 0 and _ATTACKER_HIT_PAYOFF.search(_rules_text(attacker)):
+        if outcome.damage_through == 0 and (
+            loses_on_combat_hit(attacker) or _ATTACKER_HIT_PAYOFF.search(_rules_text(attacker))
+        ):
             continue
         life_without = life_with - (_resolve_attacker(attacker, []).damage_through - outcome.damage_through)
         if life_without <= CHUMP_DANGER_LIFE:
@@ -2806,7 +2809,9 @@ def wasteful_chump_blocks(
             continue  # a trade, a kill or a blocker that survives
         if any(_BLOCKER_PAYOFF.search(_rules_text(body)) for body in bodies):
             continue
-        if outcome.damage_through == 0 and _ATTACKER_HIT_PAYOFF.search(_rules_text(attacker)):
+        if outcome.damage_through == 0 and (
+            loses_on_combat_hit(attacker) or _ATTACKER_HIT_PAYOFF.search(_rules_text(attacker))
+        ):
             continue
         if _may_guard_planeswalker(attacker, outcome.damage_through, cards, local_seat):
             continue
@@ -2967,9 +2972,7 @@ def _request_flags_restrictions(pending: dict | None) -> bool:
         return False
     if pending.get("hasRestrictions"):
         return True
-    return any(
-        isinstance(blk, dict) and blk.get("hasRestrictions") for blk in pending.get("blockers") or []
-    )
+    return any(isinstance(blk, dict) and blk.get("hasRestrictions") for blk in pending.get("blockers") or [])
 
 
 def repair_blocker_caps(
