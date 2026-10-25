@@ -2631,6 +2631,47 @@ class _BridgeSubmitMixin:
             )
             return True
 
+        # These families reject ClientMessageType_AutoResp. A successful
+        # bridge invocation only means the message was sent, not accepted
+        # (bug_20261025_132718: six rejected Charm replies exhausted the rope).
+        if "CastingTimeOption" in btype + bclass or dec_type == "casting_time_options":
+            from arenamcp.casting_options import casting_fallback_choice
+            from arenamcp.decisions import build_pending_decision, submit_option
+            from arenamcp.play_safety import filter_play_options
+
+            decision = build_pending_decision(pending)
+            if decision is not None:
+                decision = filter_play_options(decision, game_state)
+                selected, reason = casting_fallback_choice(decision, game_state)
+                if selected and decision.selection_is_valid(selected):
+                    if submit_option(bridge, decision, selected):
+                        return _ok(reason)
+                    return False
+            if pending.get("can_cancel") and bridge.cancel_action():
+                self._note_cast_rollback("CastingTimeOptions cancelled (no safe default)")
+                return _ok("cancelled: no safe casting choice")
+            return False
+
+        if "PayCosts" in btype + bclass or dec_type == "pay_costs":
+            from arenamcp.mana_payment import choose_payment_source, payment_shortfall
+
+            if self._should_decline_optional_cost(game_state):
+                return bool(pending.get("can_cancel") and bridge.cancel_action())
+            if bridge.submit_auto_tap():
+                return _ok("auto-pay")
+            context = game_state.get("decision_context") or {}
+            shortfall = payment_shortfall(context)
+            if shortfall or context.get("no_payment_route"):
+                return self._cancel_unpayable_costs(
+                    game_state, trigger, f"PayCosts cancelled ({shortfall or 'no payment route'})"
+                )
+            step = choose_payment_source(context)
+            if step and bridge.submit_payment_action(
+                step["instance_id"], step["ability_grp_id"], step["color"]
+            ):
+                return _ok("manual mana payment")
+            return False
+
         # Combat declarations: never MTGA's AutoRespond (unvalidated), but a
         # declaration we can check against the board.
         if dec_type == "declare_blockers" or "DeclareBlock" in btype + bclass:

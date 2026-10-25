@@ -307,3 +307,142 @@ def test_planner_context_carries_hint_with_live_bridge_menu():
     }
     context = coach._format_game_context(state, for_planner=True)
     assert "HASTE-EQUIP MANA: Lightning Greaves" in context
+
+
+def _relay_state():
+    return {
+        "match_id": "greaves-relay",
+        "local_seat_id": LOCAL,
+        "players": [{"seat_id": LOCAL, "is_local": True}],
+        "turn": {"turn_number": 9, "active_player": LOCAL, "priority_player": LOCAL, "phase": "Phase_Main1"},
+        "battlefield": _board(wearer=583),
+        "hand": [{"instance_id": 900, "name": "Large spell", "mana_cost": "{9}"}],
+        "stack": [],
+    }
+
+
+def _relay_poll(wearer=583):
+    return {
+        "has_pending": True,
+        "request_type": "ActionsAvailable",
+        "game_state_id": 230,
+        "msg_id": 308,
+        "can_pass": True,
+        "actions": [
+            {"actionType": "ActionType_Activate_Mana", "instanceId": 447},
+            {"actionType": "ActionType_Activate_Mana", "instanceId": wearer, "abilityGrpId": 123},
+            {"actionType": "ActionType_Activate", "instanceId": 454, "abilityGrpId": 2152},
+            {"actionType": "ActionType_Pass"},
+        ],
+    }
+
+
+def test_relay_banks_current_wearer_then_moves_haste_to_next_copy():
+    from arenamcp.mana import haste_relay_mana_sources
+
+    state = _relay_state()
+    assert haste_relay_mana_sources(state) == {583}
+    state["battlefield"][1]["is_tapped"] = True
+    assert haste_relay_mana_sources(state) == set()  # must equip another first
+    state["battlefield"][0]["attached_to_id"] = 590
+    assert haste_relay_mana_sources(state) == {590}
+    state["battlefield"][2]["is_tapped"] = True
+    state["battlefield"][0]["attached_to_id"] = 591
+    assert haste_relay_mana_sources(state) == set()  # last wearer can auto-pay the spell
+    hint = haste_equipment_mana_hint(state["battlefield"], LOCAL, 9)
+    assert "+3 mana" in hint  # already tapped Hobbits are not counted again
+    assert "Notary produces colorless, not green" in hint
+    assert "activate its tap-for-mana ability" in hint
+    assert "same main phase" in hint
+
+
+def test_relay_requires_main_phase_free_haste_gear_and_a_use():
+    import copy
+
+    from arenamcp.mana import haste_relay_mana_sources
+
+    base = _relay_state()
+    variants = []
+    for phase in ("Phase_Combat", "Phase_Ending"):
+        state = copy.deepcopy(base)
+        state["turn"]["phase"] = phase
+        variants.append(state)
+    state = copy.deepcopy(base)
+    state["turn"]["active_player"] = 2
+    variants.append(state)
+    state = copy.deepcopy(base)
+    state["stack"] = [{"name": "spell"}]
+    variants.append(state)
+    for cost in ("", "{G}{G}"):
+        state = copy.deepcopy(base)
+        state["hand"][0]["mana_cost"] = cost
+        variants.append(state)
+    for text in (GREAVES.replace("{0}", "{1}"), "Equip {0}"):
+        state = copy.deepcopy(base)
+        state["battlefield"][0]["oracle_text"] = text
+        variants.append(state)
+    for key, value in (("attached_to_id", 447), ("controller_seat_id", 2)):
+        state = copy.deepcopy(base)
+        state["battlefield"][0][key] = value
+        variants.append(state)
+    state = copy.deepcopy(base)
+    state["turn"]["turn_number"] = 10  # no longer needs haste
+    variants.append(state)
+    for state in variants:
+        assert not haste_relay_mana_sources(state)
+
+
+def test_relay_menu_exposes_only_arena_offered_wearer_and_keeps_indices():
+    from arenamcp.decisions import build_pending_decision, submit_option
+    from arenamcp.mana import haste_relay_mana_sources
+
+    state = _relay_state()
+    decision = build_pending_decision(_relay_poll(), mana_source_ids=haste_relay_mana_sources(state))
+    assert decision.find("idx:0") is None  # Forest stays on auto-pay
+    assert decision.find("idx:1").meta["hasteRelayMana"]
+    assert "Bank mana" in decision.find("idx:1").label
+    bridge = MagicMock()
+    bridge.submit_action_by_index.return_value = True
+    assert submit_option(bridge, decision, ["idx:1"])
+    assert bridge.submit_action_by_index.call_args.args == (1,)
+    assert bridge.submit_action_by_index.call_args.kwargs["expected"]["instanceId"] == 583
+    # An unoffered creature never gains a synthetic action.
+    unavailable = build_pending_decision(_relay_poll(wearer=590), mana_source_ids=frozenset({583}))
+    assert unavailable.find("idx:1") is None
+
+
+def test_typed_relay_survives_request_watcher_and_revalidation(monkeypatch):
+    import threading
+
+    from tests.test_llm_down_fallback import _Bridge, _engine
+
+    from arenamcp.decisions import build_pending_decision
+    from arenamcp.mana import haste_relay_mana_sources
+    from arenamcp.request_tracker import decision_fingerprint
+
+    state = _relay_state()
+    poll = _relay_poll()
+    bridge = _Bridge(poll)
+    bridge.submit_action_by_index = MagicMock(return_value=True)
+    planner = MagicMock()
+    planner.plan_decision_options.return_value = ["idx:1"]
+    engine = _engine(monkeypatch, planner, bridge, state)
+    engine._await_log_catch_up = lambda *_: state
+    assert engine._try_typed_decision_path(state, "decision_required")
+    bridge.submit_action_by_index.assert_called_once()
+    assert bridge.submit_action_by_index.call_args.args == (1,)
+    decision = build_pending_decision(poll, mana_source_ids=haste_relay_mana_sources(state))
+    listeners = []
+    engine._watch_requests = lambda listener: listeners.append(listener)
+    cancel = threading.Event()
+    engine._cancel_on_request_change(decision, decision_fingerprint(decision), cancel)
+    listeners[0](poll)
+    assert not cancel.is_set()
+    listeners[0]({**poll, "game_state_id": 231})
+    assert cancel.is_set()
+    # Each tap changes the equipment guard's board key, allowing the next equip.
+    for card in state["battlefield"][1:4]:
+        assert not engine._activation_exhausted(state, 454, "Lightning Greaves")
+        engine._note_activation(state, 454, "Lightning Greaves")
+        assert engine._activation_exhausted(state, 454, "Lightning Greaves")
+        card["is_tapped"] = True

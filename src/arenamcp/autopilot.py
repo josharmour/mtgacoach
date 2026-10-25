@@ -1802,12 +1802,10 @@ class AutopilotEngine(
     def _try_auto_respond_escape(self, game_state: dict[str, Any] | None, reason: str) -> bool:
         """Escape a stuck interactive request via the GRE's own auto_respond().
 
-        Last-resort, universal unblocker. ``auto_respond()`` invokes the pending
-        request's ``AutoRespond()`` on the MTGA side, which picks a legal default
-        for ANY request type (color choice, X value, target, modal, ...). It is
-        not always the optimal choice, but it always advances the game — which is
-        what lets the autopilot finish a match unattended on a request type we
-        don't have an explicit handler for. Restricted to interactive
+        ``auto_respond()`` invokes the pending request's ``AutoRespond()`` on
+        the MTGA side. Some request families reject that message entirely;
+        others need a validated choice. Those use explicit handlers instead.
+        Restricted to interactive
         (non-ActionsAvailable) requests; ActionsAvailable windows pass/play
         through their own paths.
         """
@@ -1824,6 +1822,7 @@ class AutopilotEngine(
             for kind in (
                 "SelectTargets",
                 "CastingTimeOption",
+                "PayCosts",
                 "NumericInput",
                 "DeclareBlock",
                 "DeclareAttack",
@@ -1834,6 +1833,7 @@ class AutopilotEngine(
             in (
                 "target_selection",
                 "casting_time_options",
+                "pay_costs",
                 "numeric_input",
                 "declare_blockers",
                 "declare_attackers",
@@ -3416,6 +3416,24 @@ class AutopilotEngine(
                     # the server's next PayCostsReq asks for what is left.
                     from arenamcp.mana_payment import choose_payment_source, payment_shortfall
 
+                    # The bridge can reach PayCosts before the triggering
+                    # snapshot has the log's payment details. Re-read after
+                    # the AutoTap retry instead of treating missing metadata
+                    # as a payable cast requiring manual intervention.
+                    fresh = self._get_game_state()
+                    fresh_context = fresh.get("decision_context") or {}
+                    if (
+                        fresh.get("match_id") == game_state.get("match_id")
+                        and self._turn_number(fresh) == self._turn_number(game_state)
+                        and fresh_context.get("type") == "pay_costs"
+                        and fresh_context.get("requirements_modeled") is not None
+                        and (
+                            not pay_context.get("source_id")
+                            or fresh_context.get("source_id") == pay_context.get("source_id")
+                        )
+                    ):
+                        pay_context = fresh_context
+
                     # Arena's own Auto Pay solution says the cost is payable.
                     shortfall = "" if pay_context.get("has_autotap") else payment_shortfall(pay_context)
                     if shortfall:
@@ -4828,7 +4846,13 @@ class AutopilotEngine(
             if cancel.is_set() or resp.get("ok") is False or not resp.get("has_pending"):
                 return
             try:
-                live = build_pending_decision(resp, resolve_instance=lambda _iid: "")
+                live = build_pending_decision(
+                    resp,
+                    resolve_instance=lambda _iid: "",
+                    mana_source_ids=frozenset(
+                        o.meta["instanceId"] for o in decision.options if o.meta.get("hasteRelayMana")
+                    ),
+                )
             except Exception:
                 return
             live_fp = decision_fingerprint(live) if live else None
@@ -5169,7 +5193,12 @@ class AutopilotEngine(
                         return str(c.get("name") or "")
             return ""
 
-        decision = build_pending_decision(poll, resolve_instance=_resolve_instance)
+        from arenamcp.mana import haste_relay_mana_sources
+
+        mana_source_ids = haste_relay_mana_sources(game_state)
+        decision = build_pending_decision(
+            poll, resolve_instance=_resolve_instance, mana_source_ids=mana_source_ids
+        )
         if poll.get("payment_selection") and self._should_decline_optional_cost(game_state):
             return None
         if poll.get("payment_selection") and decision is None:
@@ -5311,7 +5340,9 @@ class AutopilotEngine(
             return True
         try:
             fresh_poll = self._gre_bridge.get_pending_actions() or {}
-            fresh_decision = build_pending_decision(fresh_poll, resolve_instance=_resolve_instance)
+            fresh_decision = build_pending_decision(
+                fresh_poll, resolve_instance=_resolve_instance, mana_source_ids=mana_source_ids
+            )
         except Exception as exc:
             logger.info("typed-decision: cannot revalidate request after planning: %s", exc)
             self._state = AutopilotState.IDLE
@@ -5586,7 +5617,13 @@ class AutopilotEngine(
                 logger.info("post-cast priority: window closed with no follow-up request")
                 return
             try:
-                live = build_pending_decision(latest, resolve_instance=lambda _iid: "")
+                live = build_pending_decision(
+                    latest,
+                    resolve_instance=lambda _iid: "",
+                    mana_source_ids=frozenset(
+                        o.meta["instanceId"] for o in decision.options if o.meta.get("hasteRelayMana")
+                    ),
+                )
             except Exception as error:
                 logger.debug("post-cast priority decision build failed: %s", error)
                 continue

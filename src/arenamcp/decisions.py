@@ -585,6 +585,7 @@ def build_pending_decision(
     activation_unaffordable: Callable[[dict[str, Any]], bool] | None = None,
     resolve_prompt: Callable[[int], str] | None = None,
     resolve_player: Callable[[int], str] | None = None,
+    mana_source_ids: frozenset[int] = frozenset(),
 ) -> PendingDecision | None:
     """Build a PendingDecision from a raw get_pending_actions() response.
 
@@ -598,7 +599,8 @@ def build_pending_decision(
     autotap solution failed the mana check (default: the log's verdict).
     ``resolve_prompt`` maps a GRE prompt id to its text (default: the card
     database); ``resolve_player`` labels a player target by seat (default:
-    the log-fed GameState).
+    the log-fed GameState). ``mana_source_ids`` opts in only the current
+    haste-relay wearer; ordinary mana sources remain hidden for auto-pay.
     """
     resolve_zone = resolve_zone or _default_instance_zone
     resolve_card = resolve_card or _default_instance_card
@@ -708,6 +710,7 @@ def build_pending_decision(
             resolve_zone,
             activation_unaffordable,
             resolve_instance,
+            mana_source_ids,
         )
     if rtype in _SELECT_TARGETS_TYPES or request_class in _SELECT_TARGETS_TYPES:
         source_id = int(
@@ -852,6 +855,7 @@ def _build_actions_available(
     resolve_zone: Callable[[int], str] | None = None,
     activation_unaffordable: Callable[[dict[str, Any]], bool] | None = None,
     resolve_instance: Callable[[int], str] | None = None,
+    mana_source_ids: frozenset[int] = frozenset(),
 ) -> PendingDecision | None:
     options: list[DecisionOption] = []
     saw_pass = False
@@ -883,18 +887,35 @@ def _build_actions_available(
             "ActionType_ActivateMana",
             "ActionType_FloatMana",
         ):
+            if int(action.get("instanceId") or 0) in mana_source_ids:
+                options.append(
+                    DecisionOption(
+                        f"idx:{i}",
+                        f"Bank mana: {name or 'equipped creature'} [haste relay; name the spell to pay for]",
+                        meta={**action, "actionType": atype, "hasteRelayMana": True},
+                    )
+                )
             # Mana abilities tap sources to float mana; MTGA automatically taps
             # mana when casting spells or paying costs. Exposing them in
             # ActionsAvailable causes autopilot to tap lands one by one for no spell.
             continue
         alternative = ""
+        alternative_text = ""
         if atype == "ActionType_Cast":
             payable = has_autotap_solution(action)
             alternative = _alternative_cost_kind(action)
-            label = f"Cast {name or 'spell'}" + ("" if payable else " (cannot auto-pay)")
+            if alternative:
+                _, alternative_text = _default_ability_description(int(action["alternativeGrpId"]))
+                # Non-mana alternative costs have no AutoTap solution. They
+                # still need their sacrifice/exile choice, not a mana veto.
+                if not payable and not action.get("manaCost"):
+                    payable = None
+            label = f"Cast {name or 'spell'}" + (" (cannot auto-pay)" if payable is False else "")
             if alternative == "Sneak":
                 # A trailing [tag]: every "Cast X" name parser strips it as decoration.
                 label += f" [{_sneak_note(name or 'it', action)}]"
+            elif alternative:
+                label += f" [alternative cost: {alternative_text or alternative}]"
         elif atype == "ActionType_Special":
             # A special action is not a land play. Arena exposes plot here,
             # with its own manaCost rather than the creature's casting cost.
@@ -951,6 +972,7 @@ def _build_actions_available(
                         else {}
                     ),
                     **({"alternative": alternative} if alternative else {}),
+                    **({"alternativeCostText": alternative_text} if alternative_text else {}),
                 },
             )
         )

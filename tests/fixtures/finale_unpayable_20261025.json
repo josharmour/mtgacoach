@@ -1,0 +1,295 @@
+{
+  "manaCost": [
+    {
+      "color": [
+        "ManaColor_Generic"
+      ],
+      "count": 10,
+      "objectId": 776
+    },
+    {
+      "color": [
+        "ManaColor_Green"
+      ],
+      "count": 2,
+      "objectId": 776
+    }
+  ],
+  "paymentActions": {
+    "actions": [
+      {
+        "actionType": "ActionType_Activate_Mana",
+        "grpId": 75553,
+        "instanceId": 450,
+        "facetId": 450,
+        "abilityGrpId": 1005,
+        "manaPaymentOptions": [
+          {
+            "mana": [
+              {
+                "manaId": 621,
+                "color": "ManaColor_Green",
+                "srcInstanceId": 450,
+                "specs": [
+                  {
+                    "type": "ManaSpecType_Predictive"
+                  }
+                ],
+                "abilityGrpId": 1005,
+                "count": 1
+              }
+            ]
+          }
+        ],
+        "isBatchable": true,
+        "uniqueAbilityId": 438,
+        "manaSelections": [
+          {
+            "instanceId": 450,
+            "abilityGrpId": 1005,
+            "options": [
+              {
+                "mana": [
+                  {
+                    "color": "ManaColor_Green",
+                    "count": 1
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "actionType": "ActionType_Activate_Mana",
+        "grpId": 54163,
+        "instanceId": 451,
+        "facetId": 451,
+        "abilityGrpId": 1005,
+        "manaPaymentOptions": [
+          {
+            "mana": [
+              {
+                "manaId": 622,
+                "color": "ManaColor_Green",
+                "srcInstanceId": 451,
+                "specs": [
+                  {
+                    "type": "ManaSpecType_Predictive"
+                  },
+                  {
+                    "type": "ManaSpecType_FromCreature"
+                  }
+                ],
+                "abilityGrpId": 1005,
+                "count": 1
+              }
+            ]
+          }
+        ],
+        "isBatchable": true,
+        "uniqueAbilityId": 439,
+        "manaSelections": [
+          {
+            "instanceId": 451,
+            "abilityGrpId": 1005,
+            "options": [
+              {
+                "mana": [
+                  {
+                    "color": "ManaColor_Green",
+                    "count": 1
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "actionType": "ActionType_Activate_Mana",
+        "grpId": 75553,
+        "instanceId": 462,
+        "facetId": 462,
+        "abilityGrpId": 1005,
+        "manaPaymentOptions": [
+          {
+            "mana": [
+              {
+                "manaId": 623,
+                "color": "ManaColor_Green",
+                "srcInstanceId": 462,
+                "specs": [
+                  {
+                    "type": "ManaSpecType_Predictive"
+                  }
+                ],
+                "abilityGrpId": 1005,
+                "count": 1
+              }
+            ]
+          }
+        ],
+        "isBatchable": true,
+        "uniqueAbilityId": 451,
+        "manaSelections": [
+          {
+            "instanceId": 462,
+            "abilityGrpId": 1005,
+            "options": [
+              {
+                "mana": [
+                  {
+                    "color": "ManaColor_Green",
+                    "count": 1
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "actionType": "ActionType_Activate_Mana",
+        "grpId": 98606,
+        "instanceId": 557,
+        "facetId": 557,
+        "abilityGrpId": 1152,
+        "manaPaymentOptions": [
+          {
+            "mana": [
+              {
+                "manaId": 625,
+                "color": "ManaColor_Colorless",
+                "srcInstanceId": 557,
+                "specs": [
+                  {
+                    "type": "ManaSpecType_Predictive"
+                  }
+                ],
+                "abilityGrpId": 1152,
+                "count": 1
+              }
+            ]
+          }
+        ],
+        "isBatchable": true,
+        "uniqueAbilityId": 454,
+        "manaSelections": [
+          {
+            "instanceId": 557,
+            "abilityGrpId": 1152,
+            "options": [
+              {
+                "mana": [
+                  {
+                    "color": "ManaColor_Colorless",
+                    "count": 1
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "actionType": "ActionType_Activate_Mana",
+        "grpId": 75553,
+        "instanceId": 664,
+        "facetId": 664,
+        "abilityGrpId": 1005,
+        "manaPaymentOptions": [
+          {
+            "mana": [
+              {
+                "manaId": 624,
+                "color": "ManaColor_Green",
+                "srcInstanceId": 664,
+                "specs": [
+                  {
+                    "type": "ManaSpecType_Predictive"
+                  }
+                ],
+                "abilityGrpId": 1005,
+                "count": 1
+              }
+            ]
+          }
+        ],
+        "isBatchable": true,
+        "uniqueAbilityId": 474,
+        "manaSelections": [
+          {
+            "instanceId": 664,
+            "abilityGrpId": 1005,
+            "options": [
+              {
+                "mana": [
+                  {
+                    "color": "ManaColor_Green",
+                    "count": 1
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "actionType": "ActionType_Activate_Mana",
+        "grpId": 103511,
+        "instanceId": 752,
+        "facetId": 752,
+        "abilityGrpId": 205210,
+        "manaPaymentOptions": [
+          {
+            "mana": [
+              {
+                "manaId": 626,
+                "color": "ManaColor_Colorless",
+                "srcInstanceId": 752,
+                "specs": [
+                  {
+                    "type": "ManaSpecType_Predictive"
+                  },
+                  {
+                    "type": "ManaSpecType_FromCreature"
+                  }
+                ],
+                "abilityGrpId": 205210,
+                "count": 2
+              }
+            ]
+          }
+        ],
+        "isBatchable": true,
+        "uniqueAbilityId": 476,
+        "manaSelections": [
+          {
+            "instanceId": 752,
+            "abilityGrpId": 205210,
+            "options": [
+              {
+                "mana": [
+                  {
+                    "color": "ManaColor_Colorless",
+                    "count": 2
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "paymentSelection": {
+    "context": "SelectionContext_ManaPool",
+    "optionContext": "OptionContext_Payment",
+    "listType": "SelectionListType_Dynamic",
+    "idType": "IdType_ManaId",
+    "validationType": "SelectionValidationType_NonRepeatable",
+    "minWeight": -2147483648,
+    "maxWeight": 2147483647
+  }
+}

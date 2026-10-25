@@ -188,7 +188,76 @@ def haste_equipment_mana_hint(
     return (
         f"HASTE-EQUIP MANA: {gear.get('name')} grants haste (equip {cost_text}). "
         f"Untapped summoning-sick mana creatures: {listed} (up to +{total} mana this turn).{ready} "
-        "Haste here is mana, not incidental: equip one (sorcery speed), let Arena's auto-pay tap it "
-        "for a spell, then move the equipment to the next untapped one and repeat. "
-        "Spells unpayable now can become payable after equipping."
+        "For one large spell, equip one (sorcery speed), activate its tap-for-mana ability, "
+        "then move the equipment to the next untapped one and repeat before casting. "
+        "Bank the mana in the same main phase; auto-pay alone cannot tap sick creatures after "
+        "Greaves moves away. Name the spell and required colors before floating mana. "
+        "Notary produces colorless, not green; count current Halflings, not an old plan. "
+        "Moving equipment does not untap a creature. Mana normally empties at each step/phase end. "
+        "For a spell payable with just the current wearer, use auto-pay instead. "
+        "Greaves' shroud prevents targeting its wearer with your protection spells too."
     )
+
+
+def haste_relay_mana_sources(state: dict[str, Any]) -> frozenset[int]:
+    """Allow explicit mana banking only for a live free-equip haste relay.
+
+    Ordinary sources stay on auto-pay. Arena must still offer the wearer's
+    mana action; this merely exposes it to the planner, never invents legality.
+    A second sick source and a spell using generic/colorless mana are required
+    so moving haste can plausibly unlock a payment that auto-pay cannot make.
+    """
+    seat = get_local_seat_id(state)
+    turn = state.get("turn") or {}
+    phase = str(turn.get("phase") or "").lower().removeprefix("phase_")
+    if (
+        seat is None
+        or turn.get("active_player") != seat
+        or phase not in {"main1", "main2"}
+        or state.get("stack")
+    ):
+        return frozenset()
+    payoff = any(
+        symbol.lower() in {"x", "c"} or (symbol.isdigit() and int(symbol) > 0)
+        for card in [*(state.get("hand") or []), *(state.get("command") or [])]
+        for symbol in _MANA_SYMBOL_RE.findall(str(card.get("mana_cost") or ""))
+    )
+    if not payoff:
+        return frozenset()
+    mine = [
+        card
+        for card in state.get("battlefield") or []
+        if (card.get("controller_seat_id") or card.get("owner_seat_id")) == seat
+    ]
+    sick = {
+        int(card.get("instance_id") or 0)
+        for card in mine
+        if (
+            "creature" in str(card.get("type_line") or "").lower()
+            or "CardType_Creature" in (card.get("card_types") or [])
+        )
+        and not card.get("is_tapped")
+        and (
+            card.get("summoning_sickness")
+            or (turn.get("turn_number") and card.get("turn_entered_battlefield") == turn["turn_number"])
+        )
+        and _TAP_MANA_RE.search(_rules_text(card))
+        and "haste" not in printed_combat_keywords(str(card.get("oracle_text") or ""))
+    }
+    sick.discard(0)
+    if len(sick) < 2:
+        return frozenset()
+    sources = set()
+    for gear in mine:
+        text = _rules_text(gear)
+        cost = _EQUIP_COST_RE.search(text)
+        wearer = int(gear.get("attached_to_id") or 0)
+        if (
+            wearer in sick
+            and "equipment" in str(gear.get("type_line") or "").lower()
+            and _HASTE_GRANT_RE.search(text)
+            and cost
+            and cost.group(1).replace("{o", "{") == "{0}"
+        ):
+            sources.add(wearer)
+    return frozenset(sources)

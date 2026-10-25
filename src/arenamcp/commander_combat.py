@@ -3,6 +3,53 @@
 from arenamcp.combat_solver import _resolve_attacker
 
 
+def commander_sacrifice_context(state: dict, decision) -> list[str]:
+    """Ground an offered sacrifice alternative in current commander identity.
+
+    A prior game plan may still describe copies that have left the battlefield.
+    Expose the current resources and recovery cost without forcing a sacrifice.
+    """
+    if not any(
+        "sacrifice" in str(option.meta.get("alternativeCostText") or "").lower()
+        for option in decision.options
+    ):
+        return []
+    player = next((p for p in state.get("players", []) if p.get("is_local")), {})
+    seat = player.get("seat_id") or state.get("local_seat_id")
+    ids = set(player.get("commander_ids") or [])
+    ours = [
+        c
+        for c in state.get("battlefield", [])
+        if seat
+        and (c.get("controller_seat_id") or c.get("owner_seat_id")) == seat
+        and "creature" in str(c.get("type_line") or "").lower()
+    ]
+    lines = []
+    for card in ours:
+        if card.get("instance_id") not in ids or card.get("owner_seat_id") != seat:
+            continue
+        if card.get("is_token") or "token" in str(card.get("object_kind") or "").lower():
+            continue
+        grp = card.get("grp_id")
+        casts = state.get("commander_casts") or {}
+        count = casts.get(grp, casts.get(str(grp)))
+        tax = f"{{{2 * count}}}" if type(count) is int and count >= 0 else "UNKNOWN"
+        copies = sum(c.get("grp_id") == grp and c.get("instance_id") != card.get("instance_id") for c in ours)
+        lines.append(
+            f"CURRENT COMMANDER RECOVERY: {card.get('name')} [id:{card['instance_id']}], "
+            f"{copies} other same-card bodies currently on our battlefield. "
+            f"Next command-zone cast: printed {card.get('mana_cost') or 'UNKNOWN'} plus {tax} tax. "
+            f"Current controlled creatures: {', '.join(str(c.get('name')) for c in ours)}. "
+            "These counts override an older plan. Compare paying mana with the offered sacrifice cost: "
+            "an eligible original commander can return to the command zone and be recast to repeat "
+            "entry triggers; tokens cannot. Check eligibility, remaining colored mana, commander tax, "
+            "timing and summoning sickness. A mana ability may be used before sacrificing its source "
+            "if legal, but do not count that source again after it leaves. Do not sacrifice automatically. "
+            f"Commander rules: {card.get('oracle_text') or 'unknown'}"
+        )
+    return lines
+
+
 def commander_block_context(state: dict, context: dict) -> list[str]:
     """Describe recovery choices without pretending a future cast is payable now.
 

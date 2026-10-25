@@ -4151,6 +4151,11 @@ class ActionPlanner(_ActionLegalityMixin):
             "equipment",
             "For haste-granting equipment, reassess after the wearer taps or new creatures enter: "
             "moving it to an untapped summoning-sick creature can enable a useful attack or tap ability. "
+            "To fund one large spell with several fresh Notary Hobbits, equip one, bank its mana via "
+            "the offered Bank mana action, move Greaves, and repeat in the same main phase. "
+            "Name that spell and preserve its colored costs; Notary makes colorless per current Halfling. "
+            "Auto-pay cannot tap sick creatures that no longer wear Greaves; moving it does not untap them. "
+            "Shroud also blocks your own targeted protection. "
             "Equip only when Arena offers it. Do not shuffle equipment without a concrete benefit, "
             "float mana without a use, or abandon valuable shroud/hexproof protection merely for an untapped wearer. ",
         ),
@@ -8695,6 +8700,9 @@ class ActionPlanner(_ActionLegalityMixin):
             f"Choose at least {decision.min_select} and at most {decision.max_select} option(s).",
             "OPTIONS:",
         ]
+        from arenamcp.commander_combat import commander_sacrifice_context
+
+        lines.extend(commander_sacrifice_context(game_state, decision))
         if decision.min_weight is not None:
             lines.insert(
                 2,
