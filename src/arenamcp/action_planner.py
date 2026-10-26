@@ -5288,6 +5288,28 @@ class ActionPlanner(_ActionLegalityMixin):
             return decision, self._release_target_pick(decision, marked)
         if decision.request_type != "ActionsAvailable":
             return decision, []
+        from dataclasses import replace
+
+        from arenamcp.play_safety import aura_waits_for_creature
+
+        held = {
+            option.option_id
+            for option in decision.options
+            if (option.meta or {}).get("actionType") == "ActionType_Cast"
+            and aura_waits_for_creature(marked, find_source(marked, option.meta or {}))
+        }
+        if held:
+            logger.info("Aura timing: waiting for our creature to resolve before casting %s", sorted(held))
+            decision = replace(
+                decision, options=tuple(o for o in decision.options if o.option_id not in held)
+            )
+            if any(o.option_id == "pass" for o in decision.options) and all(
+                o.option_id == "pass" or o.payable is False for o in decision.options
+            ):
+                self._last_decision_option_ids = ["pass"]
+                self._last_decision_reasoning = "Let our creature resolve before casting its Aura."
+                self._last_decision_trace = {"policy": "aura_stack_timing", "held": sorted(held)}
+                return decision, ["pass"]
         if not _local_turn(game_state):
             return self._release_held_burn(decision, marked)
         from arenamcp.decision_memory import _TURN_STEPS, turn_window

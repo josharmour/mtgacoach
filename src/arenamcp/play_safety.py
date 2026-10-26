@@ -30,6 +30,35 @@ def _local_seat(state: dict) -> int | None:
     )
 
 
+def aura_waits_for_creature(state: dict, card: dict) -> bool:
+    """Hold a beneficial creature Aura while our first creature is still a spell."""
+    from arenamcp.target_effects import enchant_effect_text, target_effect_is_harmful
+
+    local = _local_seat(state)
+    if local is None or "battlefield" not in state:
+        return False
+    oracle = str(card.get("oracle_text") or "")
+    enchant = re.search(r"^\s*Enchant creature(?: you control)?\s*$", oracle, re.I | re.M)
+    if "aura" not in str(card.get("type_line") or "").lower() or not enchant:
+        return False
+    if target_effect_is_harmful(enchant_effect_text(enchant.group(), oracle)) is not False:
+        return False
+
+    def creature(obj: dict) -> bool:
+        return "creature" in str(obj.get("type_line") or "").lower()
+
+    # Unknown controllers may be ours: do not infer the lack of a target.
+    if any(
+        creature(obj) and obj.get("controller_seat_id") in (None, local)
+        for obj in state.get("battlefield") or []
+    ):
+        return False
+    stack = state.get("stack") or []
+    return bool(stack) and all(obj.get("controller_seat_id") == local for obj in stack) and any(
+        creature(obj) and obj.get("object_kind") != "ABILITY" for obj in stack
+    )
+
+
 def _tutor_requirement(card: dict) -> re.Match | None:
     return re.search(
         r"search your library for (?:a |an )?(?:(green|white|blue|black|red) )?"

@@ -881,6 +881,35 @@ def test_a_failed_concede_is_reported_once_and_not_retried():
     assert harness.threads == []
 
 
+def test_game_ending_during_farewell_does_not_send_concede():
+    harness = Harness(bug_state(), farewell={"ok": True})
+    original_wait = harness.controller._wait
+
+    def wait(event, seconds):
+        if seconds == 1.0:
+            harness.game_over = True
+        return original_wait(event, seconds)
+
+    harness.controller._wait = wait
+    harness.observe()
+    harness.run_countdown()
+    assert harness.concedes == []
+    assert harness.states[-1] == "aborted"
+    assert harness.advice == ["Good game."]
+
+
+def test_game_ending_during_refused_concede_does_not_request_manual_concede():
+    harness = Harness(
+        bug_state(), result={"ok": False, "error": "Match state is MatchComplete"}
+    )
+    harness.on_concede = lambda: setattr(harness, "game_over", True)
+    harness.observe()
+    harness.run_countdown()
+    assert len(harness.concedes) == 1
+    assert harness.states[-1] == "aborted"
+    assert harness.advice == ["Good game."]
+
+
 def test_an_unsupported_bridge_stops_offering_until_it_reconnects():
     harness = Harness(
         bug_state(), result={"ok": False, "unsupported": True, "error": "Unknown action: concede"}

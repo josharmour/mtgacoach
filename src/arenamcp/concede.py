@@ -2061,12 +2061,21 @@ class ConcedeController:
             except Exception as error:  # the farewell never blocks the concede
                 logger.debug("[CONCEDE] farewell not spoken: %s", error)
             self._send_farewell_emote(fresh)
+            # The emote deliberately waits; Arena can finish combat during that gap.
+            problem, fresh = self._verify(armed)
+            if problem:
+                self._emit({"state": "aborted", "id": armed.token, "reason": problem})
+                return
             try:
                 result = self._concede_fn(fresh)
             except Exception as error:  # the bridge raised: report, never retry
                 result = {"ok": False, "error": str(error)}
             if not isinstance(result, dict):
                 result = {"ok": bool(result)}
+            if not result.get("ok") and self._safe(self._game_over) and not armed.ended_at_arm:
+                # A natural game end can also race the bridge call itself.
+                self._emit({"state": "aborted", "id": armed.token, "reason": "the game is over"})
+                return
             if result.get("ok"):
                 logger.warning("[CONCEDE] concede sent for game %r: %s", armed.game_key, result)
                 self._emit({"state": "sent", "id": armed.token})
