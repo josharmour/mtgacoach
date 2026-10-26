@@ -40,6 +40,24 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
+      - name: Create bundled runtime (dist/runtime)
+        # mtgacoach.iss [Files] ships dist\runtime\* (standalone venv with all
+        # deps pre-installed). build-installer.ps1 creates it locally; CI must
+        # do the same or ISCC aborts with "No files found matching
+        # ..\dist\runtime\*". Python 3.11 to match the local release runtime.
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Populate bundled runtime
+        shell: pwsh
+        run: |
+          python -m venv dist/runtime
+          & "dist\runtime\Scripts\python.exe" -m pip install --upgrade pip
+          & "dist\runtime\Scripts\python.exe" -m pip install -e .[desktop,full]
+          if ($LASTEXITCODE -ne 0) { throw "runtime pip install failed" }
+          if (-not (Test-Path "dist\runtime\Scripts\pythonw.exe")) { throw "dist/runtime incomplete: pythonw.exe missing" }
+
       - name: Build installer
         shell: pwsh
         run: |
