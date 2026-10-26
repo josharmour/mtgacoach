@@ -101,6 +101,15 @@ def init_db():
                 expires_at TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS trial_email_codes (
+                machine_id TEXT PRIMARY KEY,
+                email TEXT,
+                code_hash TEXT,
+                created_at TEXT,
+                expires_at TEXT,
+                attempts INTEGER DEFAULT 0
+            );
+
             CREATE TABLE IF NOT EXISTS trial_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created REAL NOT NULL,
@@ -121,6 +130,14 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_client_installs_key ON client_installs(license_key);
             CREATE INDEX IF NOT EXISTS idx_client_installs_last_seen ON client_installs(last_seen);
         """)
+
+        # Idempotent migration for the verified-email columns on trials tables
+        # created before email verification became part of signup.
+        trial_cols = [r[1] for r in conn.execute("PRAGMA table_info(trials)").fetchall()]
+        if trial_cols and "email" not in trial_cols:
+            conn.execute("ALTER TABLE trials ADD COLUMN email TEXT")
+        if trial_cols and "email_verified" not in trial_cols:
+            conn.execute("ALTER TABLE trials ADD COLUMN email_verified INTEGER DEFAULT 0")
 
 
 # --- Proxy config (provider overrides + default_model) ---
@@ -263,14 +280,74 @@ def get_trial_by_key(litellm_key: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def create_trial(machine_id: str, litellm_key: str, created_at: str, expires_at: str) -> None:
+def create_trial(
+    machine_id: str,
+    litellm_key: str,
+    created_at: str,
+    expires_at: str,
+    email: str = "",
+) -> None:
     """Record a newly-minted trial key for a machine (one trial per machine, ever)."""
     with get_db() as conn:
         conn.execute(
-            "INSERT INTO trials (machine_id, litellm_key, created_at, expires_at) "
-            "VALUES (?, ?, ?, ?)",
-            (machine_id, litellm_key, created_at, expires_at),
+            "INSERT INTO trials (machine_id, litellm_key, created_at, expires_at, email, email_verified) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (machine_id, litellm_key, created_at, expires_at, email, 1 if email else 0),
         )
+
+
+def set_trial_email(machine_id: str, email: str) -> None:
+    """Attach a verified email to an existing trial row (backfill or mint follow-up)."""
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE trials SET email = ?, email_verified = 1 WHERE machine_id = ?",
+            (email, machine_id),
+        )
+
+
+# --- Trial email verification codes (salted-hash only, 15-minute TTL) ---
+
+def save_trial_email_code(
+    machine_id: str,
+    email: str,
+    code_hash: str,
+    created_at: str,
+    expires_at: str,
+) -> None:
+    """Store (or overwrite) the pending verification code for a machine."""
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO trial_email_codes (machine_id, email, code_hash, created_at, expires_at, attempts) "
+            "VALUES (?, ?, ?, ?, ?, 0) "
+            "ON CONFLICT(machine_id) DO UPDATE SET "
+            "email = excluded.email, code_hash = excluded.code_hash, "
+            "created_at = excluded.created_at, expires_at = excluded.expires_at, attempts = 0",
+            (machine_id, email, code_hash, created_at, expires_at),
+        )
+
+
+def get_trial_email_code(machine_id: str) -> Optional[dict]:
+    """Look up the pending verification code row for a machine. Returns None if absent."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM trial_email_codes WHERE machine_id = ?", (machine_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def record_failed_code_attempt(machine_id: str) -> None:
+    """Count one wrong-code guess against the pending row."""
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE trial_email_codes SET attempts = attempts + 1 WHERE machine_id = ?",
+            (machine_id,),
+        )
+
+
+def consume_trial_email_code(machine_id: str) -> None:
+    """Delete the pending row once the code verified successfully."""
+    with get_db() as conn:
+        conn.execute("DELETE FROM trial_email_codes WHERE machine_id = ?", (machine_id,))
 
 
 TRIAL_EVENT_FIELDS = (

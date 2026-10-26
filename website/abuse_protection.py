@@ -85,3 +85,29 @@ def reserve_signup(get_db, machine_id, network, now=None):
 def finish_signup(get_db, machine_id, success):
     with get_db() as conn:
         conn.execute("UPDATE trial_signup_reservations SET status=? WHERE machine_id=? AND status='pending'", ("issued" if success else "failed", machine_id))
+
+
+def reserve_code_request(get_db, machine_id, network, now=None):
+    """Per-machine and per-network verification-code request limits.
+
+    Mirrors reserve_signup's style: its own reservation table, counted inside
+    an immediate transaction, rows never deleted so rotating identities or
+    hammering the mailer can't outrun the budget. Limits: 3/hour per
+    machine_id, 20/hour per network.
+    """
+    now = time.time() if now is None else now
+    with get_db() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS trial_code_reservations (id INTEGER PRIMARY KEY, machine_id TEXT NOT NULL, network_hash TEXT NOT NULL, created REAL NOT NULL)")
+        conn.execute("CREATE INDEX IF NOT EXISTS trial_code_network_time ON trial_code_reservations(network_hash, created)")
+        conn.execute("CREATE INDEX IF NOT EXISTS trial_code_machine_time ON trial_code_reservations(machine_id, created)")
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        for window, limit, column in [(3600, 3, "machine_id"), (3600, 20, "network_hash")]:
+            value = machine_id if column == "machine_id" else network
+            count, oldest = conn.execute(
+                f"SELECT count(*), min(created) FROM trial_code_reservations WHERE {column}=? AND created>?",
+                (value, now - window),
+            ).fetchone()
+            if count >= limit:
+                _reject("Verification code limit reached. Please try later.", oldest + window - now + 1)
+        conn.execute("INSERT INTO trial_code_reservations(machine_id,network_hash,created) VALUES(?,?,?)", (machine_id, network, now))

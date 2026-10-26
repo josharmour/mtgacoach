@@ -285,6 +285,30 @@ async def _email_key(to_addr: str, name: str, key: str) -> None:
         logger.error(f"Failed to email key to {to_addr}: {e}")
 
 
+def send_trial_code_email(to_addr: str, code: str) -> None:
+    """Deliver a trial signup's 6-digit verification code.
+
+    Unlike the fire-and-forget key email this must succeed before the caller
+    proceeds, so failures propagate to the endpoint (which answers 503).
+    """
+    msg = EmailMessage()
+    msg["Subject"] = "Your mtgacoach verification code"
+    msg["From"] = SMTP_FROM
+    msg["To"] = to_addr
+    msg.set_content(
+        "Your mtgacoach verification code is:\n\n"
+        f"    {code}\n\n"
+        "Enter it in the mtgacoach app to start your free trial.\n"
+        "The code is valid for 15 minutes.\n\n"
+        "If you didn't request this, you can ignore this email.\n"
+    )
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as smtp:
+        smtp.starttls()
+        if SMTP_USER:
+            smtp.login(SMTP_USER, SMTP_PASS)
+        smtp.send_message(msg)
+
+
 # ---------------------------------------------------------------------------
 # Webhook
 # ---------------------------------------------------------------------------

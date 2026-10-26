@@ -28,12 +28,43 @@ def env(tmp_path, monkeypatch):
     proxy_app, proxy_db, patreon = load_website_app(tmp_path, monkeypatch)
     fake = FakeLiteLLM(key_prefix="sk-fake-trial-")
     monkeypatch.setattr(patreon, "_http", lambda: fake)
+
+    # SMTP is faked end to end: the endpoint's send call just records the code.
+    SENT_CODES.clear()
+    monkeypatch.setattr(patreon, "SMTP_HOST", "smtp.test")
+
+    def fake_send(to_addr, code):
+        SENT_CODES.append(code)
+
+    monkeypatch.setattr(patreon, "send_trial_code_email", fake_send)
     with TestClient(proxy_app.app, client=CLIENT_ADDR) as client:
         yield proxy_app, proxy_db, patreon, fake, client
 
 
-def _post_trial(client, machine_id=MACHINE_ID, app_version="2.0.1"):
-    return client.post("/api/trial", json={"machine_id": machine_id, "app_version": app_version})
+SENT_CODES: list[str] = []
+EMAIL = "Tripper@Example.COM"  # mixed case on purpose: storage must lowercase it
+
+
+def _request_code(client, machine_id=MACHINE_ID, email=EMAIL, headers=None):
+    return client.post(
+        "/api/trial/request-code",
+        json={"machine_id": machine_id, "email": email},
+        headers=headers or {},
+    )
+
+
+def _post_trial(client, machine_id=MACHINE_ID, app_version="2.0.1", email=EMAIL,
+                code=None, headers=None):
+    """Full signup dance: request a code by email, then mint with it."""
+    rc = _request_code(client, machine_id=machine_id, email=email, headers=headers)
+    assert rc.status_code == 200, rc.text
+    body = {
+        "machine_id": machine_id,
+        "app_version": app_version,
+        "email": email.lower(),
+        "code": code if code is not None else SENT_CODES[-1],
+    }
+    return client.post("/api/trial", json=body, headers=headers or {})
 
 
 def test_first_issue_creates_trial_key(env):
@@ -108,7 +139,7 @@ def test_expired_trial_returns_403(env):
 def test_malformed_machine_id_rejected(env, machine_id):
     _, _, _, fake, client = env
 
-    r = _post_trial(client, machine_id=machine_id)
+    r = client.post("/api/trial", json={"machine_id": machine_id})
 
     assert r.status_code in (400, 422)
     assert len(fake.minted) == 0
@@ -205,18 +236,14 @@ def test_tunnel_peer_is_identified_by_cf_connecting_ip(env, monkeypatch):
         missing = tunnel.post("/api/trial", json={"machine_id": _machine(7)})
         assert missing.status_code == 400  # no header from the tunnel: fail closed
         for n, ip in enumerate(["198.51.100.1", "198.51.100.1", "198.51.100.1", "198.51.100.2"]):
-            r = tunnel.post(
-                "/api/trial", json={"machine_id": _machine(n + 10)}, headers={"CF-Connecting-IP": ip}
-            )
+            r = _post_trial(tunnel, machine_id=_machine(n + 10), headers={"CF-Connecting-IP": ip})
             assert r.status_code == 200, (n, r.text)  # distinct client networks, not the tunnel's
-        r = tunnel.post(
-            "/api/trial", json={"machine_id": _machine(20)}, headers={"CF-Connecting-IP": "198.51.100.1"}
-        )
-        assert r.status_code == 429
+        r = _post_trial(tunnel, machine_id=_machine(20), headers={"CF-Connecting-IP": "198.51.100.1"})
+        assert r.status_code == 429  # third signup on that client network this hour
     assert len(fake.minted) == 4
 
 
-# ── /v1/subscription/check answers trial keys (the desktop access badge) ──
+# -- /v1/subscription/check answers trial keys (the desktop access badge) --
 
 
 def _iso(dt: datetime) -> str:
@@ -300,34 +327,35 @@ CLIENT_HEADERS = {
 
 def test_trial_outcomes_are_recorded_as_events(env):
     _, proxy_db, _, _, client = env
-    body = {"machine_id": MACHINE_ID, "app_version": "3.6.2"}
 
-    issued = client.post("/api/trial", json=body, headers=CLIENT_HEADERS).json()
-    client.post("/api/trial", json=body, headers=CLIENT_HEADERS)
+    issued = _post_trial(client, app_version="3.6.2", headers=CLIENT_HEADERS).json()
+    _post_trial(client, app_version="3.6.2", headers=CLIENT_HEADERS)
     client.post("/api/trial", json={"machine_id": "nope"})
     _check(client, issued["key"])
 
     events = _events(proxy_db)
-    assert [e["event"] for e in events] == ["created", "existing", "invalid", "check"]
-    created = events[0]
+    assert [e["event"] for e in events] == [
+        "code_requested", "created", "code_requested", "existing", "invalid", "check",
+    ]
+    created = events[1]
     assert created["machine_id"] == MACHINE_ID
     assert (created["app_version"], created["install_id"], created["frontend"]) == ("3.6.2", "inst_test", "winui")
     assert created["country"] == "TR"
     assert created["peer"] == CLIENT_ADDR[0]
     assert len(created["network_hash"]) == 64
-    assert events[3]["machine_id"] == MACHINE_ID  # check-in resolves the key to its machine
+    assert events[5]["machine_id"] == MACHINE_ID  # check-in resolves the key to its machine
 
 
 def test_lapsed_trial_check_in_is_recorded(env):
     _, proxy_db, _, _, client = env
     past = _iso(datetime.now(timezone.utc) - timedelta(hours=1))
-    proxy_db.create_trial(MACHINE_ID, "sk-fake-lapsed", past, past)
+    proxy_db.create_trial(MACHINE_ID, "***", past, past)
 
-    _check(client, "sk-fake-lapsed")
+    _check(client, "***")
     _post_trial(client)
 
     assert [(e["event"], e["machine_id"]) for e in _events(proxy_db)] == [
-        ("check_expired", MACHINE_ID), ("expired", MACHINE_ID),
+        ("check_expired", MACHINE_ID), ("code_requested", MACHINE_ID), ("expired", MACHINE_ID),
     ]
 
 
@@ -339,13 +367,16 @@ def test_untrusted_peer_keeps_distinct_client_hashes_for_rate_limited_callers(en
     monkeypatch.setattr(abuse, "TRUSTED_TUNNEL_PEERS", {"10.0.0.2"})
     with TestClient(proxy_app.app, client=("172.23.0.1", 40000)) as bridge:
         for n in range(4):
-            bridge.post(
-                "/api/trial", json={"machine_id": _machine(n + 1)},
+            r = _post_trial(
+                bridge, machine_id=_machine(n + 1),
                 headers={"CF-Connecting-IP": f"198.51.100.{n + 1}"},
             )
+            assert r.status_code == (200 if n < 3 else 429), (n, r.text)
 
     events = _events(proxy_db)
-    assert [e["event"] for e in events] == ["created"] * 3 + ["rate_limited"]
+    assert [e["event"] for e in events] == (
+        ["code_requested", "created"] * 3 + ["code_requested", "rate_limited"]
+    )
     assert len({e["network_hash"] for e in events}) == 1
     assert len({e["client_hash"] for e in events}) == 4
     summary = proxy_db.get_trial_event_summary(days=1)
@@ -367,13 +398,15 @@ def test_unverifiable_tunnel_caller_and_mint_failure_are_recorded(env, monkeypat
     monkeypatch.setattr(patreon, "mint_trial_key", broken)
     assert _post_trial(client).status_code == 503
 
-    assert [e["event"] for e in _events(proxy_db)] == ["unverified_network", "mint_failed"]
+    assert [e["event"] for e in _events(proxy_db)] == [
+        "unverified_network", "code_requested", "mint_failed",
+    ]
 
 
 def test_trial_key_metadata_carries_signup_context(env):
     _, _, _, fake, client = env
 
-    client.post("/api/trial", json={"machine_id": MACHINE_ID, "app_version": "3.6.2"}, headers=CLIENT_HEADERS)
+    _post_trial(client, app_version="3.6.2", headers=CLIENT_HEADERS)
 
     metadata = fake.minted[0]["payload"]["metadata"]
     assert (metadata["app_version"], metadata["install_id"], metadata["country"]) == ("3.6.2", "inst_test", "TR")
@@ -398,10 +431,150 @@ def test_blackwell_tunnel_bridge_is_a_trusted_peer(env):
     proxy_app, proxy_db, _, fake, _ = env
     with TestClient(proxy_app.app, client=("172.23.0.1", 40000)) as bridge:
         for n in range(4):
-            r = bridge.post(
-                "/api/trial", json={"machine_id": _machine(n + 1)},
+            r = _post_trial(
+                bridge, machine_id=_machine(n + 1),
                 headers={"CF-Connecting-IP": f"198.51.100.{n + 1}"},
             )
             assert r.status_code == 200, (n, r.text)
     assert len(fake.minted) == 4
     assert len({e["network_hash"] for e in _events(proxy_db)}) == 4
+
+
+# -- Email verification for new mints (/api/trial/request-code) --
+
+
+def test_request_code_emails_a_six_digit_code_and_stores_only_its_hash(env):
+    _, proxy_db, _, _, client = env
+
+    r = _request_code(client)
+
+    assert r.status_code == 200
+    assert r.json() == {"status": "code_sent", "expires_in": 900}
+    assert len(SENT_CODES) == 1 and len(SENT_CODES[0]) == 6 and SENT_CODES[0].isdigit()
+
+    # only a salted hash is stored -- never the code itself
+    with proxy_db.get_db() as conn:
+        row = dict(conn.execute("SELECT * FROM trial_email_codes WHERE machine_id = ?", (MACHINE_ID,)).fetchone())
+    assert row["email"] == EMAIL.lower()
+    assert row["code_hash"] != SENT_CODES[0] and len(row["code_hash"]) == 64
+    assert row["attempts"] == 0
+
+    minted = client.post(
+        "/api/trial",
+        json={"machine_id": MACHINE_ID, "app_version": "2.0.1", "email": EMAIL.lower(), "code": SENT_CODES[-1]},
+    )
+    assert minted.status_code == 200 and minted.json()["status"] == "created"
+    trial = proxy_db.get_trial(MACHINE_ID)
+    assert trial["email"] == EMAIL.lower() and trial["email_verified"] == 1
+
+def test_wrong_code_is_rejected_and_counts_an_attempt(env):
+    _, proxy_db, _, _, client = env
+
+    assert _request_code(client).status_code == 200
+    wrong = f"{int(SENT_CODES[-1]) + 1:06d}"  # guaranteed different from the sent code
+    for _ in range(2):
+        r = client.post(
+            "/api/trial",
+            json={"machine_id": MACHINE_ID, "email": EMAIL.lower(), "code": wrong},
+        )
+        assert r.status_code == 422 and r.json() == {"detail": "invalid_code"}
+
+    with proxy_db.get_db() as conn:
+        attempts = conn.execute("SELECT attempts FROM trial_email_codes WHERE machine_id = ?", (MACHINE_ID,)).fetchone()[0]
+    assert attempts == 2
+
+    # the right code still works before the lock threshold
+    ok = client.post(
+        "/api/trial",
+        json={"machine_id": MACHINE_ID, "email": EMAIL.lower(), "code": SENT_CODES[-1]},
+    )
+    assert ok.status_code == 200 and ok.json()["status"] == "created"
+
+
+def test_expired_code_is_rejected(env):
+    _, proxy_db, _, _, client = env
+
+    assert _request_code(client).status_code == 200
+    with proxy_db.get_db() as conn:
+        conn.execute("UPDATE trial_email_codes SET expires_at = ? WHERE machine_id = ?", ("2000-01-01T00:00:00Z", MACHINE_ID))
+    r = client.post(
+        "/api/trial",
+        json={"machine_id": MACHINE_ID, "email": EMAIL.lower(), "code": SENT_CODES[-1]},
+    )
+    assert r.status_code == 422 and r.json() == {"detail": "invalid_code"}
+
+
+def test_five_wrong_attempts_lock_the_pending_code(env):
+    _, proxy_db, _, _, client = env
+
+    assert _request_code(client).status_code == 200
+    wrong = f"{int(SENT_CODES[-1]) + 1:06d}"
+    for _ in range(5):
+        client.post(
+            "/api/trial",
+            json={"machine_id": MACHINE_ID, "email": EMAIL.lower(), "code": wrong},
+        )
+    # even the correct code is now locked out
+    r = client.post(
+        "/api/trial",
+        json={"machine_id": MACHINE_ID, "email": EMAIL.lower(), "code": SENT_CODES[-1]},
+    )
+    assert r.status_code == 422 and r.json() == {"detail": "invalid_code"}
+
+def test_missing_email_or_code_requires_verification(env):
+    _, _, _, fake, client = env
+
+    r = client.post("/api/trial", json={"machine_id": MACHINE_ID})
+    assert r.status_code == 422 and r.json() == {"detail": "email_verification_required"}
+    r = client.post("/api/trial", json={"machine_id": MACHINE_ID, "email": EMAIL.lower()})
+    assert r.status_code == 422 and r.json() == {"detail": "email_verification_required"}
+    assert len(fake.minted) == 0
+
+
+def test_existing_active_trial_still_returns_key_without_code(env):
+    _, _, _, fake, client = env
+    first = _post_trial(client).json()
+
+    again = client.post("/api/trial", json={"machine_id": MACHINE_ID})
+
+    assert again.status_code == 200
+    data = again.json()
+    assert data["status"] == "existing" and data["key"] == first["key"]
+    assert len(fake.minted) == 1
+
+
+def test_existing_trial_backfills_verified_email(env):
+    _, proxy_db, _, _, client = env
+    now = datetime.now(timezone.utc)
+    proxy_db.create_trial(
+        OTHER_MACHINE_ID, "sk-legacy",
+        _iso(now - timedelta(days=1)), _iso(now + timedelta(days=6)),
+    )
+
+    r = client.post("/api/trial", json={"machine_id": OTHER_MACHINE_ID, "email": EMAIL.upper()})
+
+    assert r.status_code == 200 and r.json()["status"] == "existing"
+    row = proxy_db.get_trial(OTHER_MACHINE_ID)
+    assert row["email"] == EMAIL.lower() and row["email_verified"] == 1
+
+def test_smtp_unset_returns_503(env, monkeypatch):
+    _, _, patreon, _, client = env
+
+    monkeypatch.setattr(patreon, "SMTP_HOST", "")
+    r = _request_code(client)
+
+    assert r.status_code == 503
+    assert r.json() == {"detail": "email_delivery_unavailable"}
+
+
+def test_code_requests_are_rate_limited_per_machine(env):
+    _, proxy_db, _, _, client = env
+
+    for _ in range(3):
+        assert _request_code(client).status_code == 200
+    r = _request_code(client)
+
+    assert r.status_code == 429
+    assert int(r.headers["Retry-After"]) > 0
+    events = _events(proxy_db)
+    assert events[-1]["event"] == "code_rate_limited"
