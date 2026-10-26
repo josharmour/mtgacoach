@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import threading
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -66,6 +66,7 @@ class RepairTab(QWidget):
         self._guided = False
         self._auto_ran = False
         self._last_report: RepairReport | None = None
+        self._trial_dialog: "TrialSignupDialog | None" = None
         self._build_ui()
         self._report_ready.connect(self._render_report)
         self._progress.connect(self._on_progress)
@@ -234,6 +235,43 @@ class RepairTab(QWidget):
         if self._guided:
             self._guided = False
             self.guided_setup_finished.emit(ready, report.summary())
+
+        # Two-step trial flow: silent auto-provisioning is gone. When the
+        # license check demands attention and no key is configured at all,
+        # offer the email-verification trial signup instead of leaving the
+        # user stranded at a key prompt. Deferred so the modal opens after
+        # this slot (and any guided-setup signals) finish.
+        if needs_license and not self._has_license_key():
+            QTimer.singleShot(0, self._offer_trial_signup)
+
+    # ------------------------------------------------------------------
+    # Free-trial signup (two-step email verification)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _has_license_key() -> bool:
+        from arenamcp.settings import get_settings
+
+        return bool((get_settings().get("license_key") or "").strip())
+
+    def _offer_trial_signup(self) -> None:
+        """Open the 'Start your free trial' wizard (email -> code -> key)."""
+        if self._trial_dialog is not None and self._trial_dialog.isVisible():
+            return
+        from arenamcp.desktop.trial_dialog import TrialSignupDialog
+
+        dlg = TrialSignupDialog(self)
+        self._trial_dialog = dlg
+        dlg.trial_started.connect(self._on_trial_started)
+        dlg.license_key_requested.connect(self._show_license_box)
+        dlg.exec()
+        self._trial_dialog = None
+
+    def _on_trial_started(self, key: str, expires_at: str) -> None:
+        # Key + expiry were persisted by the dialog via save_trial_key();
+        # refresh the badge and re-validate against the gateway.
+        logger.info("Trial started (expires %s)", expires_at or "?")
+        self.license_changed.emit()
+        self.run_checks()
 
     def _apply_license(self) -> None:
         key = self._license_edit.text().strip()

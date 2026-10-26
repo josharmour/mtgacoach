@@ -348,17 +348,90 @@ def get_machine_id() -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def request_trial_key(timeout: int = 10) -> dict:
-    """Ask the website for a trial license key for this machine.
+def request_trial_code(email: str, timeout: int = 10) -> dict:
+    """Ask the website to email a trial verification code for this machine.
+
+    Two-step trial flow, step 1. Server contract (website/app.py):
+    POST /api/trial/request-code with machine_id + email + app_version ->
+    200 {"status":"code_sent","expires_in":900} | 422 invalid input |
+    429 rate limited | 503 email delivery unavailable.
 
     Returns a dict with:
-      status: "created" | "existing" | "trial_expired" | "offline" | "error"
-      key, expires_at: present for created/existing
-      message: human-readable detail for the repair surface
+      status: "code_sent" | "rate_limited" | "offline" | "error"
+      expires_in: seconds until the code expires (when code_sent)
+      message: human-readable detail for the UI
     """
     from arenamcp import __version__
 
-    body = json.dumps({"machine_id": get_machine_id(), "app_version": __version__}).encode("utf-8")
+    body = json.dumps(
+        {
+            "machine_id": get_machine_id(),
+            "email": (email or "").strip(),
+            "app_version": __version__,
+        }
+    ).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    headers.update(get_client_headers())
+    req = urllib.request.Request(
+        f"{WEBSITE_BASE}/api/trial/request-code", data=body, headers=headers, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+        return {
+            "status": "code_sent",
+            "expires_in": int(data.get("expires_in", 900)),
+            "message": "",
+        }
+    except urllib.error.HTTPError as e:
+        detail = _error_detail(e)
+        if e.code == 429:
+            return {
+                "status": "rate_limited",
+                "message": detail or "Too many code requests — please wait a few minutes and try again.",
+            }
+        if e.code == 422:
+            return {"status": "error", "message": detail or "That email address doesn't look valid."}
+        if e.code == 503:
+            return {
+                "status": "error",
+                "message": detail or "Email delivery is temporarily unavailable — please try again shortly.",
+            }
+        if e.code == 404:
+            # Endpoint not deployed yet — behave like offline, not like a bug.
+            return {"status": "offline", "message": "Trial service unavailable."}
+        return {"status": "error", "message": f"Verification code request failed (HTTP {e.code})."}
+    except Exception as e:
+        return {"status": "offline", "message": f"Could not reach {WEBSITE_BASE} ({e})."}
+
+
+def request_trial_key(email: str, code: str, timeout: int = 10) -> dict:
+    """Exchange an emailed verification code for a trial license key.
+
+    Two-step trial flow, step 2 (step 1 is request_trial_code). Server
+    contract: POST /api/trial with machine_id + email + code + app_version ->
+    200 {"key","expires_at","status":"created"|"existing"} |
+    403 {'detail':'trial_expired'} |
+    422 {'detail':'email_verification_required'|'invalid_code'} |
+    429 rate limited | 503 service unavailable.
+
+    Returns a dict with:
+      status: "created" | "existing" | "invalid_code"
+              | "email_verification_required" | "trial_expired"
+              | "rate_limited" | "offline" | "error"
+      key, expires_at: present for created/existing
+      message: human-readable detail for the UI
+    """
+    from arenamcp import __version__
+
+    body = json.dumps(
+        {
+            "machine_id": get_machine_id(),
+            "email": (email or "").strip(),
+            "code": (code or "").strip(),
+            "app_version": __version__,
+        }
+    ).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     headers.update(get_client_headers())
     req = urllib.request.Request(f"{WEBSITE_BASE}/api/trial", data=body, headers=headers, method="POST")
@@ -375,39 +448,81 @@ def request_trial_key(timeout: int = 10) -> dict:
             "message": "",
         }
     except urllib.error.HTTPError as e:
+        detail = _error_detail(e)
         if e.code == 403:
             return {
                 "status": "trial_expired",
-                "message": (f"Your free trial has ended. Subscribe at {SUBSCRIBE_URL} to keep coaching."),
+                "message": (
+                    f"Your free trial has ended. Subscribe at {SUBSCRIBE_URL} to keep coaching."
+                ),
+            }
+        if e.code == 422:
+            status_map = {
+                "email_verification_required": (
+                    "We need to verify your email first — request a fresh code."
+                ),
+                "invalid_code": (
+                    "That code isn't right or has expired. Request a new one and try again."
+                ),
+            }
+            if detail in status_map:
+                return {"status": detail, "message": status_map[detail]}
+            return {"status": "error", "message": detail or f"Trial request failed (HTTP {e.code})."}
+        if e.code == 429:
+            return {
+                "status": "rate_limited",
+                "message": detail or "Too many attempts — please wait a few minutes and try again.",
+            }
+        if e.code == 503:
+            return {
+                "status": "error",
+                "message": detail or "Trial service is temporarily unavailable — please try again shortly.",
             }
         if e.code == 404:
-            # Endpoint not deployed yet — behave like offline, not like a bug.
             return {"status": "offline", "message": "Trial service unavailable."}
         return {"status": "error", "message": f"Trial request failed (HTTP {e.code})."}
     except Exception as e:
         return {"status": "offline", "message": f"Could not reach {WEBSITE_BASE} ({e})."}
 
 
-def ensure_license_key() -> dict:
-    """Auto-provision a trial key when no license key is configured.
+def _error_detail(e: urllib.error.HTTPError) -> str:
+    """Best-effort 'detail' string from an HTTPError JSON body."""
+    try:
+        return str((json.loads(e.read() or b"{}") or {}).get("detail", "") or "")
+    except Exception:
+        return ""
 
-    Returns the request_trial_key() result dict, plus status "existing_key"
-    when a key is already configured (nothing to do). On success the key and
-    trial expiry are persisted to settings.
+
+def ensure_license_key() -> dict:
+    """Report what provisioning action the user must take.
+
+    Trials can no longer be minted silently — they require verifying the
+    user's email with a code first (two-step flow). When no license key is
+    configured this returns status 'email_required' so the desktop UI can
+    walk the user through email + verification code instead of pretending
+    everything was taken care of behind their back. Status 'existing_key'
+    means a key is already configured (nothing to do). Once a key IS minted
+    via request_trial_key(), persist it with save_trial_key().
     """
     from arenamcp.settings import get_settings
 
     settings = get_settings()
     if (settings.get("license_key") or "").strip():
         return {"status": "existing_key", "message": ""}
+    return {
+        "status": "email_required",
+        "message": (
+            f"Starting a free trial now requires verifying your email address "
+            f"— or enter an existing key from {SUBSCRIBE_URL}."
+        ),
+    }
 
-    result = request_trial_key()
-    if result.get("key"):
-        settings.set("license_key", result["key"], save=False)
-        settings.set("trial_expires_at", result.get("expires_at", ""), save=True)
-        logger.info(
-            "Provisioned %s trial key (expires %s)",
-            result.get("status"),
-            result.get("expires_at"),
-        )
-    return result
+
+def save_trial_key(key: str, expires_at) -> None:
+    """Persist a freshly minted trial key + expiry via the existing settings path."""
+    from arenamcp.settings import get_settings
+
+    settings = get_settings()
+    settings.set("license_key", key, save=False)
+    settings.set("trial_expires_at", expires_at or "", save=True)
+    logger.info("Saved trial key (expires %s)", expires_at or "?")

@@ -227,6 +227,18 @@ class RepairEngine:
                     "Your free trial has ended.",
                     f"Subscribe at {SUBSCRIBE_URL} to keep coaching, or enter a license key below.",
                 )
+            elif trial.get("status") == "email_required":
+                # Two-step trial flow: silent minting is gone. The desktop UI
+                # intercepts this status and walks the user through email +
+                # verification code (arenamcp/desktop/trial_dialog.py).
+                return CheckResult(
+                    "license",
+                    "License / online backend",
+                    "action_needed",
+                    "No license key is configured.",
+                    "Start your free trial below — you'll verify your email with a "
+                    "code — or enter a license key below.",
+                )
             else:
                 return CheckResult(
                     "license",
