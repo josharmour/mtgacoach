@@ -2,10 +2,12 @@
 
 Separate from MTGA Coach's seven-day trial and Patreon key lifecycle.
 Match IDs are supplied by the Arena client; bounded sessions also limit replay
-of an old ID by modified clients. This is a device trial, not verified identity.
+of an old ID by modified clients. New trials require email verification.
 """
 from __future__ import annotations
 
+import asyncio
+import secrets
 import hashlib
 import hmac
 import json
@@ -16,6 +18,7 @@ import time
 import db
 import httpx
 import patreon
+from abuse_protection import network_identity, reserve_code_request
 from fastapi import APIRouter, HTTPException, Request
 
 router = APIRouter(prefix="/api/arenaonair")
@@ -24,6 +27,8 @@ SESSION_SECONDS = 4 * 3600
 REQUEST_LIMIT = 1200
 MODEL = os.environ.get("ARENAONAIR_MODEL", "glm-5.3-flash")
 SUBSCRIBE_URL = "https://mtgacoach.com/subscribe"
+CODE_TTL_SECONDS = 900
+MAX_CODE_ATTEMPTS = 5
 
 
 def init_db():
@@ -39,8 +44,17 @@ def init_db():
             minute INTEGER NOT NULL DEFAULT 0, minute_requests INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(token_hash, match_id)
         );
+        CREATE TABLE IF NOT EXISTS arenaonair_trial_codes (
+            device_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, email TEXT NOT NULL,
+            code_hash TEXT NOT NULL, expires REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0
+        );
         CREATE INDEX IF NOT EXISTS arenaonair_trial_ip ON arenaonair_trials(ip_hash, created);
         """)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(arenaonair_trials)")}
+        if "email" not in columns:
+            conn.execute("ALTER TABLE arenaonair_trials ADD COLUMN email TEXT")
+        if "email_verified" not in columns:
+            conn.execute("ALTER TABLE arenaonair_trials ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0")
 
 
 def _digest(value):
@@ -77,29 +91,102 @@ async def _body(request):
     return body
 
 
-@router.post("/trial")
-async def trial(request: Request):
-    body = await _body(request)
+def _device(body):
     device = body.get("device_id", "")
     if not isinstance(device, str) or not re.fullmatch(r"[0-9a-f]{64}", device):
         raise HTTPException(422, "Invalid device identifier")
+    return device
+
+
+def _email(body):
+    email = body.get("email", "")
+    if not isinstance(email, str):
+        raise HTTPException(422, "invalid_email")
+    email = email.strip().lower()
+    if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise HTTPException(422, "invalid_email")
+    return email
+
+
+def _code_hash(request, device, email, code):
+    # The high-entropy possession token is never stored, only its hash. Using
+    # it as the HMAC key also binds the email challenge to this installation.
+    token = request.headers["authorization"].removeprefix("Bearer ")
+    return hmac.new(token.encode(), f"{device}:{email}:{code}".encode(), hashlib.sha256).hexdigest()
+
+
+@router.post("/trial/request-code")
+async def request_trial_code(request: Request):
+    body = await _body(request)
+    device, email = _device(body), _email(body)
     token_hash = _identity(request)
-    # Only a digest of the address is retained; daily signup throttle, not identity proof.
-    ip_hash = _digest(request.headers.get("cf-connecting-ip") or
-                      (request.client.host if request.client else "unknown"))
+    network = network_identity(request)
+    with db.get_db() as conn:
+        existing = conn.execute("SELECT token_hash FROM arenaonair_trials WHERE device_id=?", (device,)).fetchone()
+        if existing and not hmac.compare_digest(existing[0], token_hash):
+            raise HTTPException(409, "This device already has a trial.")
+    # Keep the per-device namespace separate from Coach; share network limits.
+    reserve_code_request(db.get_db, "arenaonair:" + device, network)
+    if not getattr(patreon, "SMTP_HOST", ""):
+        raise HTTPException(503, "email_delivery_unavailable")
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    code_hash = _code_hash(request, device, email, code)
+    with db.get_db() as conn:
+        conn.execute("INSERT OR REPLACE INTO arenaonair_trial_codes "
+                     "(device_id,token_hash,email,code_hash,expires,attempts) VALUES(?,?,?,?,?,0)",
+                     (device, token_hash, email, code_hash, time.time() + CODE_TTL_SECONDS))
+    try:
+        await asyncio.to_thread(patreon.send_trial_code_email, email, code, product="ArenaOnAir")
+    except Exception:
+        with db.get_db() as conn:
+            # A failed old send must not delete a newer request's challenge.
+            conn.execute("DELETE FROM arenaonair_trial_codes WHERE device_id=? AND code_hash=?",
+                         (device, code_hash))
+        raise HTTPException(503, "email_delivery_unavailable") from None
+    return {"status": "code_sent", "expires_in": CODE_TTL_SECONDS}
+
+
+@router.post("/trial")
+async def trial(request: Request):
+    body = await _body(request)
+    device = _device(body)
+    token_hash = _identity(request)
+    invalid_code = False
     with db.get_db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT token_hash FROM arenaonair_trials WHERE device_id=?", (device,)).fetchone()
         if row:
             if not hmac.compare_digest(row[0], token_hash):
                 raise HTTPException(409, "This device already has a trial. Restore its connection file or use a Patreon key.")
+            return _status(conn, token_hash)  # grandfather existing possession-authenticated trials
+        if not body.get("email") or not body.get("code"):
+            raise HTTPException(422, "email_verification_required")
+        email = _email(body)
+        code = body.get("code")
+        pending = conn.execute("SELECT * FROM arenaonair_trial_codes WHERE device_id=?", (device,)).fetchone()
+        valid = (isinstance(code, str) and re.fullmatch(r"[0-9]{6}", code) and pending
+                 and pending["expires"] > time.time() and pending["attempts"] < MAX_CODE_ATTEMPTS
+                 and pending["email"] == email and hmac.compare_digest(pending["token_hash"], token_hash)
+                 and hmac.compare_digest(pending["code_hash"], _code_hash(request, device, email, code)))
+        if not valid:
+            if pending:
+                conn.execute("UPDATE arenaonair_trial_codes SET attempts=attempts+1 WHERE device_id=?", (device,))
+            invalid_code = True
         else:
+            ip_hash = network_identity(request)
             recent = conn.execute("SELECT count(*) FROM arenaonair_trials WHERE ip_hash=? AND created>?",
                                   (ip_hash, time.time() - 86400)).fetchone()[0]
             if recent >= 10:
                 raise HTTPException(429, "Trial signup limit reached. Try again tomorrow.")
-            conn.execute("INSERT INTO arenaonair_trials VALUES (?,?,?,?)", (device, token_hash, time.time(), ip_hash))
-        return _status(conn, token_hash)
+            conn.execute("INSERT INTO arenaonair_trials "
+                         "(device_id,token_hash,created,ip_hash,email,email_verified) VALUES(?,?,?,?,?,1)",
+                         (device, token_hash, time.time(), ip_hash, email))
+            conn.execute("DELETE FROM arenaonair_trial_codes WHERE device_id=?", (device,))
+            result = _status(conn, token_hash)
+    # Raise AFTER the transaction commits so failed attempts cannot roll back.
+    if invalid_code:
+        raise HTTPException(422, "invalid_code")
+    return result
 
 
 @router.get("/status")
@@ -129,7 +216,10 @@ async def completion(request: Request):
     # An allowlist keeps client-controlled routing, callbacks and credentials out.
     payload = {"model": MODEL, "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
                "max_tokens": 1800, "temperature": 0.4,
-               "chat_template_kwargs": {"thinking": True, "reasoning_effort": "low"}}
+               "chat_template_kwargs": {"thinking": False}}
+    options = body.get("chat_template_kwargs")
+    if isinstance(options, dict) and options.get("thinking") is True:
+        payload["chat_template_kwargs"] = {"thinking": True, "reasoning_effort": "low"}
     if isinstance(body.get("response_format"), dict):
         payload["response_format"] = body["response_format"]
     if body.get("temperature") == 0:

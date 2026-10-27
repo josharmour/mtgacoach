@@ -249,21 +249,27 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
     """Handle a GRE decision message. Returns True if snapshot_dirty should be set."""
     import time as _time
 
-    if msg_type in ("GREMessageType_MulliganReq", "GREMessageType_SubmitDeckReq"):
+    if msg_type == "GREMessageType_SubmitDeckReq":
+        # BO3 deck submission is a between-games choice, not an opening-hand
+        # mulligan. Preserve previous-game evidence until a real game reset.
+        submit_req = msg.get("submitDeckReq") or {}
+        deck_data = submit_req.get("deck") or {}
+        sideboard = deck_data.get("sideboardCards", deck_data.get("sideboard", []))
+        game_state.sideboard_cards = list(sideboard or [])
+        game_state.pending_decision = "Sideboard"
+        game_state.decision_seat_id = game_state.local_seat_id
+        game_state.decision_timestamp = _time.time()
+        game_state.decision_context = {"type": "sideboard"}
+        logger.info("Captured deck submission request: %s sideboard cards", len(game_state.sideboard_cards))
+        return True
+
+    elif msg_type == "GREMessageType_MulliganReq":
         logger.info(f"Captured Decision: Mulligan Check ({msg_type})")
         if game_state.turn_info.turn_number > 1:
             logger.info(
                 f"Mulligan Request detected at Turn {game_state.turn_info.turn_number} -> Resetting Ghost State."
             )
             game_state.reset()
-        # ── Phase 1: Extract sideboard from SubmitDeckReq (BO3 between games) ──
-        if msg_type == "GREMessageType_SubmitDeckReq":
-            submit_req = msg.get("submitDeckReq", {})
-            deck_data = submit_req.get("deck", {})
-            sideboard = deck_data.get("sideboardCards", deck_data.get("sideboard", []))
-            if sideboard:
-                game_state.sideboard_cards = list(sideboard)
-                logger.info(f"Captured sideboard: {len(sideboard)} cards")
         game_state.pending_decision = "Mulligan"
         game_state.decision_seat_id = game_state.local_seat_id
         game_state.decision_timestamp = _time.time()

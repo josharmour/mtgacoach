@@ -188,7 +188,10 @@ class _AutoQueueMixin(AutoQuestMixin):
             and not draft_driver.run.finished
         ):
             if getattr(self, "_auto_quest", None):
-                self.ui.status("AUTO_QUEST", "Grind paused: an active draft run owns navigation. Start a free constructed match after leaving the draft run.")
+                self.ui.status(
+                    "AUTO_QUEST",
+                    "Grind paused: an active draft run owns navigation. Start a free constructed match after leaving the draft run.",
+                )
             # Draft autoplay owns navigation between its event's matches.
             self._suspend_auto_queue()
             return False

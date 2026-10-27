@@ -59,6 +59,25 @@ def read_snapshot(path: Path) -> QuestSnapshot:
                 continue
             if kind == "QuestGetQuests":
                 result.quests = payload.get("quests") if isinstance(payload.get("quests"), list) else None
+                if result.quests is not None:
+                    for quest in result.quests:
+                        # QuestGetQuests omits both zero-valued progress fields.
+                        # isNewQuest is transient: the same zero-progress quest
+                        # loses it on the next Home refresh (2026-10-27 report).
+                        # Only normalize complete server quest records; explicit
+                        # invalid values or a lone startingProgress stay unknown.
+                        if (
+                            isinstance(quest, dict)
+                            and isinstance(quest.get("questId"), str)
+                            and quest["questId"]
+                            and isinstance(quest.get("locKey"), str)
+                            and quest["locKey"]
+                            and type(quest.get("goal")) is int
+                            and quest["goal"] > 0
+                            and "endingProgress" not in quest
+                            and "startingProgress" not in quest
+                        ):
+                            quest["endingProgress"] = 0
                 result.observed_at = stamp
             else:
                 result.rewards, result.rewards_at = payload, stamp

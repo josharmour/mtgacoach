@@ -311,3 +311,49 @@ def test_exhausted_xp_stops_on_enable_without_match_or_autoplay(monkeypatch):
     assert not runtime._auto_queue_enabled
     runtime.ui.status.assert_any_call("GRIND", "OFF")
     assert "mastery track may still be unfinished" in runtime.ui.status.call_args.args[1]
+
+
+@pytest.mark.parametrize("is_new", [True, False])
+def test_home_refresh_omits_zero_progress_even_without_new_quest_flag(tmp_path, inputs, is_new):
+    import json
+    from datetime import datetime, timezone
+
+    # bug_20261027_004156: the fresh 07:41:43 response omitted both
+    # progress fields and isNewQuest after the user revisited Home.
+    quest = {"questId": "zero-progress", "goal": 20, "locKey": "q", "canSwap": True}
+    if is_new:
+        quest["isNewQuest"] = True
+    path = tmp_path / "Player.log"
+    path.write_text(
+        "[UnityCrossThreadLogger]10/27/2026 7:41:43 AM\n<== QuestGetQuests(id)\n"
+        + json.dumps({"quests": [quest]})
+        + "\n"
+    )
+    snap = read_snapshot(path)
+    snap.pairs = {"a": "Play"}
+    inputs.update(now=datetime(2026, 10, 27, 7, 41, 44, tzinfo=timezone.utc).timestamp())
+    inputs["deadline"] = inputs["now"] + 3600
+    result = plan(snap, **inputs)
+    assert result.status == "ready"
+    assert "0/20" in result.detail
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"endingProgress": None},
+        {"endingProgress": "0"},
+        {"endingProgress": -1},
+        {"endingProgress": False},
+        {"startingProgress": 5},
+    ],
+)
+def test_log_reader_does_not_turn_invalid_or_partial_progress_into_zero(tmp_path, inputs, fields):
+    import json
+
+    quest = {"questId": "q", "goal": 20, "locKey": "q", **fields}
+    path = tmp_path / "Player.log"
+    path.write_text("<== QuestGetQuests(id)\n" + json.dumps({"quests": [quest]}) + "\n")
+    snap = read_snapshot(path)
+    snap.observed_at = 999
+    assert plan(snap, **inputs).status == "blocked"
