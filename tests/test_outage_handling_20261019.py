@@ -441,3 +441,13 @@ def test_first_token_timeout_and_stream_stall_say_too_slow_until_circuit_opens(m
         planner.plan_decision_options(decision, jace_state())
     assert planner._last_decision_reasoning.startswith("Decision cancelled;")
     assert "model unavailable" not in caplog.text.lower()
+
+
+def test_outer_wait_request_change_is_classified_as_cancellation():
+    # The outer wait and inner hedge can observe cancellation in either order.
+    assert action_planner.is_decision_cancelled_error(
+        action_planner.LLMUnavailableError("request changed during planning")
+    )
+    assert not action_planner.is_decision_cancelled_error(
+        action_planner.LLMUnavailableError("model server unavailable (circuit open)")
+    )

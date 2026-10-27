@@ -338,7 +338,11 @@ def is_decision_cancelled_error(error: BaseException) -> bool:
     if getattr(error, "kind", None) == "cancelled":
         return True
     text = str(error).lower()
-    return "decision cancelled" in text or "request cancelled" in text
+    return (
+        "decision cancelled" in text
+        or "request cancelled" in text
+        or "request changed during planning" in text
+    )
 
 
 def is_llm_unavailable_error(error: BaseException) -> bool:

@@ -278,6 +278,9 @@ def _damage_order(
     eight killable blockers are searched exactly; beyond that the cheapest
     kills lead.
     """
+    if len(blockers) <= 1:
+        # No ordering decision exists; avoid subset scoring for single blocks.
+        return list(blockers)
     unkillable = [
         b
         for b in blockers
@@ -325,21 +328,23 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
     """
     atk_p, atk_t = _pt(attacker)
     atk_p = max(0, atk_p)
-    atk_dth = _has(attacker, "deathtouch")
-    atk_trample = _has(attacker, "trample")
-    atk_fs = _has(attacker, "first strike") or _has(attacker, "double strike")
     atk_ds = _has(attacker, "double strike")
     atk_lifelink = _has(attacker, "lifelink")
-    atk_indestructible = _has(attacker, "indestructible")
-
     out = CombatOutcome()
 
     if not assigned:
+        # Unblocked branches dominate repeated forecasts. Only double strike
+        # and lifelink affect this result; defer blocked-combat keyword work.
         out.damage_through = atk_p * (2 if atk_ds else 1)
         out.life_gained = out.damage_through if atk_lifelink else 0
         if out.damage_through > 0 and "combat_hit_bonus" in attacker:
             out.damage_through += int(attacker["combat_hit_bonus"] or 0)
         return out
+
+    atk_dth = _has(attacker, "deathtouch")
+    atk_trample = _has(attacker, "trample")
+    atk_fs = _has(attacker, "first strike") or atk_ds
+    atk_indestructible = _has(attacker, "indestructible")
 
     assigned = _damage_order(atk_p, assigned, atk_dth, attacker)
 

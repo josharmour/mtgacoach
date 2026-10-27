@@ -38,7 +38,9 @@ def protected_players(card: dict) -> tuple[int, ...]:
     value = card.get("protection_from_players")
     if value is None and isinstance(inner, dict):
         value = inner.get("protection_from_players")
-    return tuple(sorted(int(player) for player in (value or ()) if int(player) > 0))
+    if not value:
+        return ()
+    return tuple(sorted(int(player) for player in value if int(player) > 0))
 
 
 def protected_from_player_source(protected: dict, source: dict) -> bool:

@@ -228,3 +228,17 @@ def test_workflows_are_valid_yaml() -> None:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         assert isinstance(data, dict), f"{path.name} did not parse to a mapping"
         assert "jobs" in data, f"{path.name} has no jobs"
+
+
+def test_ci_installer_output_matches_checked_and_uploaded_filename() -> None:
+    """ISCC succeeded but CI failed because the .iss default used a -v2 suffix."""
+    workflow = (WORKFLOWS / "installer.yml").read_text(encoding="utf-8")
+    command = next(line for line in workflow.splitlines() if 'ISCC.exe"' in line)
+    override = re.search(r"/F([^\s]+)", command)
+    default = re.search(r"^OutputBaseFilename=(.+)$", ISS.read_text(), re.MULTILINE)
+    produced = (override.group(1) if override else default.group(1).strip()) + ".exe"
+    checked = re.search(r"Test-Path dist\\installer\\([^\s)]+)", workflow).group(1)
+    uploaded = re.findall(r"dist/installer/([^\s]+\.exe)", workflow)
+    assert produced == checked
+    assert uploaded and all(name == produced for name in uploaded)
+    assert 'if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }' in workflow
