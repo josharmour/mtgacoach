@@ -470,10 +470,9 @@ class PipeAdapter:
             elif action == "inspect_auto_quest":
                 coach.inspect_auto_quest()
             elif action == "set_auto_quest":
-                coach.set_auto_quest(cmd.get("enabled") is True, cmd.get("goal", "quests"),
+                coach.set_auto_quest(cmd.get("enabled") is True, cmd.get("goal", "mastery"),
                                      cmd.get("minutes", 60), cmd.get("deadline"))
             elif action == "set_auto_queue":
-                coach._auto_quest = None
                 coach.set_auto_queue(cmd.get("enabled") is True)
             elif action == "set_autopilot":
                 # Idempotent control plane (fable-improvements.md item 6):

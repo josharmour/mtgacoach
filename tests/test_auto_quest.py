@@ -220,3 +220,49 @@ def test_stale_postmatch_data_cannot_start_navigation(monkeypatch):
     assert not runtime._prepare_auto_quest({})
     runtime.collect_decks.assert_not_called()
     assert runtime._auto_quest["target"] is None
+
+
+@pytest.mark.parametrize(
+    "daily,weekly,expected", [(10, 15, "complete"), (10, 12, "ready"), (4, 15, "ready"), (4, 12, "ready")]
+)
+def test_mastery_automatically_pursues_either_remaining_xp_source(inputs, daily, weekly, expected):
+    snap = snapshot()
+    snap.quests = []
+    snap.rewards_at = 999
+    snap.rewards = {
+        "_dailyRewardSequenceId": daily,
+        "_weeklyRewardSequenceId": weekly,
+        "_dailyRewardResetTimestamp": "1970-01-01T01:00:00Z",
+        "_weeklyRewardResetTimestamp": "1970-01-01T01:00:00Z",
+    }
+    inputs["goal"] = "mastery"
+    result = plan(snap, **inputs)
+    assert result.status == expected
+    if expected == "complete":
+        assert "next reset" in result.detail
+    else:
+        assert f"daily: {max(0, 10 - daily)}" in result.detail
+        assert f"weekly: {max(0, 15 - weekly)}" in result.detail
+
+
+def test_mastery_prioritizes_quests_before_checking_win_counters(inputs):
+    inputs["goal"] = "mastery"
+    result = plan(snapshot(), **inputs)
+    assert result.status == "ready"
+    assert result.deck_id == "a"
+    assert "Completing quests" in result.detail
+    snap = snapshot()
+    snap.quests = []
+    assert plan(snap, **inputs).status == "waiting"
+
+
+def test_default_grind_and_manual_queue_override_emit_toggle_state():
+    from tests.test_standalone_auto_queue import Runtime
+
+    runtime = Runtime()
+    runtime.set_auto_quest(True)
+    assert runtime._auto_quest["goal"] == "mastery"
+    runtime.ui.status.assert_any_call("GRIND", "ON")
+    runtime.set_auto_queue(True)
+    assert runtime._auto_quest is None
+    runtime.ui.status.assert_any_call("GRIND", "OFF")

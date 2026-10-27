@@ -1,14 +1,18 @@
 # Auto-quest (initial implementation)
 
-Use **Auto-quest… → Inspect detected quests** for a read-only status check without
-Autoplay. For a run, select **Auto-quest…**, choose current quests (optionally
-also 4/10 daily wins or 15 weekly wins), a session duration, and a window end date.
-The date defaults to next month's first day, exclusive, in local time. Enable
-Autoplay and start the first match yourself. The controller observes that match
-finish, returns Home, requires a new quest response, and selects a verified owned
-deck/free queue for the next match. It re-plans after every match. Stop through
-the same button. Ordinary Auto-queue replaces quest mode. A restart requires a
-new explicit start; there is no unattended monthly scheduler.
+Click **Grind: Off**, choose how many minutes to play, enable Autoplay, and start
+the first match yourself. Grind automatically prioritizes detected quests, then
+pursues any remaining daily or weekly win XP. A win can advance both counters.
+It stops once quests are gone, daily wins reach 10, and weekly wins reach 15,
+or the session time expires. Click **Grind: On** to stop early.
+
+There are no daily/weekly goal or end-date choices in the desktop flow. The
+controller re-plans after each match and shows whether it is completing quests,
+earning mastery XP, waiting for fresh data, or finished. Unknown win counters do
+not prevent completing known quests, but must be refreshed before the XP phase.
+Ordinary Auto-queue replaces Grind. A restart requires an explicit start; there
+is no unattended daily scheduler. Read-only inspection remains available through
+the `inspect_auto_quest` runtime command.
 
 This does not buy entry, reroll quests, craft cards, buy mastery levels, or play a
 match during setup. Only Play, Ladder, Play_Brawl_Historic, and Brawl_Ladder are
@@ -78,7 +82,8 @@ Wizards' [Mastery System FAQ](https://mtgarena-support.wizards.com/hc/en-us/arti
 of the first fifteen weekly wins. These explain goal options; they are not used
 as a substitute for observed account XP or as a promise to finish a pass.
 
-Runtime JSON command: `{"cmd":"set_auto_quest","enabled":true,"goal":"quests",
+Runtime JSON command: `{"cmd":"set_auto_quest","enabled":true,"goal":"mastery",
 "minutes":60,"deadline":1793516400}`. `deadline` is optional Unix seconds, capped
-by the session duration. Goals: `quests`, `daily4`, `daily10`, `weekly15`. Status
-uses the existing `AUTO_QUEST` status pipe. `enabled:false` stops quest queueing.
+by the session duration. The default goal is `mastery`; legacy `quests`, `daily4`, `daily10`, `weekly15`
+commands remain supported. Status
+uses `AUTO_QUEST` for details and `GRIND` (`ON`/`OFF`) for the toggle. `enabled:false` stops quest queueing.

@@ -13,6 +13,9 @@ from arenamcp.standalone_auto_quest import AutoQuestMixin
 
 class _AutoQueueMixin(AutoQuestMixin):
     def set_auto_queue(self, enabled: bool) -> bool:
+        if getattr(self, "_auto_quest", None):
+            self._auto_quest = None
+            self.ui.status("GRIND", "OFF")
         self._auto_queue_enabled = bool(enabled)
         self.settings.set("auto_queue_enabled", self._auto_queue_enabled)
         self._auto_queue_since = time.time()

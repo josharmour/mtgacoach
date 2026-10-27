@@ -33,14 +33,15 @@ class AutoQuestMixin:
             self.ui.status("AUTO_QUEST", f"Quest state unavailable: {exc}")
 
     def set_auto_quest(
-        self, enabled: bool, goal: str = "quests", minutes: int = 60, deadline: float | None = None
+        self, enabled: bool, goal: str = "mastery", minutes: int = 60, deadline: float | None = None
     ) -> None:
         if not enabled:
             self._auto_quest = None
             self.set_auto_queue(False)
+            self.ui.status("GRIND", "OFF")
             self.ui.status("AUTO_QUEST", "Off")
             return
-        if goal not in {"quests", "daily4", "daily10", "weekly15"}:
+        if goal not in {"mastery", "quests", "daily4", "daily10", "weekly15"}:
             raise ValueError("Unknown quest goal")
         if type(minutes) is not int or not 1 <= minutes <= 1440:
             raise ValueError("Session must last 1–1440 minutes")
@@ -61,6 +62,7 @@ class AutoQuestMixin:
             home=None,
             target=None,
         )
+        self.ui.status("GRIND", "ON")
         self.ui.status("AUTO_QUEST", "Waiting for a match played with Autoplay; free queues only.")
 
     def _prepare_auto_quest(self, state: dict) -> bool:
@@ -130,6 +132,7 @@ class AutoQuestMixin:
             self.ui.status("AUTO_QUEST", detail)
             if result.status == "complete":
                 self._auto_quest = None
+                self.ui.status("GRIND", "OFF")
                 self.set_auto_queue(False)
                 return False
             if result.status != "ready":

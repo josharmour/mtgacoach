@@ -262,7 +262,7 @@ class CoachSession(QObject):
     def inspect_auto_quest(self) -> None:
         self._process.send_payload({"cmd": "inspect_auto_quest"})
 
-    def set_auto_quest(self, enabled: bool, goal: str = "quests", minutes: int = 60, deadline: float | None = None) -> None:
+    def set_auto_quest(self, enabled: bool, goal: str = "mastery", minutes: int = 60, deadline: float | None = None) -> None:
         self._process.send_payload({"cmd": "set_auto_quest", "enabled": enabled,
                                     "goal": goal, "minutes": minutes, "deadline": deadline})
 

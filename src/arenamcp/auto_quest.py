@@ -162,12 +162,20 @@ def plan(
             if objective(text)[0] == "unknown":
                 return QuestPlan("blocked", f"Unsupported objective: {text or raw.get('locKey', 'unknown')}")
             active.append((text, progress, target))
-    if goal not in {"quests", "daily4", "daily10", "weekly15"}:
+    if goal not in {"mastery", "quests", "daily4", "daily10", "weekly15"}:
         return QuestPlan("blocked", "Unsupported grind goal.")
     wins_left = 0
-    if goal != "quests":
-        prefix = "_weeklyReward" if goal == "weekly15" else "_dailyReward"
-        limit = {"daily4": 4, "daily10": 10, "weekly15": 15}[goal]
+    reward_detail = ""
+    targets = []
+    if goal == "mastery" and not active:
+        targets = [("daily", 10), ("weekly", 15)]
+    elif goal not in {"quests", "mastery"}:
+        targets = [
+            ("weekly" if goal == "weekly15" else "daily", {"daily4": 4, "daily10": 10, "weekly15": 15}[goal])
+        ]
+    remaining = {}
+    for period, limit in targets:
+        prefix = "_" + period + "Reward"
         value = snapshot.rewards.get(prefix + "SequenceId")
         try:
             reset = datetime.fromisoformat(
@@ -181,11 +189,22 @@ def plan(
             or not max(after, now - 1800) <= snapshot.rewards_at <= now < reset
         ):
             return QuestPlan(
-                "waiting", "Daily/weekly reward progress or reset is unknown/stale; refresh Home."
+                "waiting", "Daily/weekly mastery XP availability is unknown or stale; refresh Arena Home."
             )
-        wins_left = max(0, limit - value)
+        remaining[period] = max(0, limit - value)
+    if remaining:
+        # A win advances both counters: do not add the remaining wins together.
+        wins_left = max(remaining.values())
+        reward_detail = "; ".join(
+            f"{period}: {count} XP-awarding wins left" for period, count in remaining.items()
+        )
     if not active and not wins_left:
-        return QuestPlan("complete", "Detected quests and selected reward goal are complete.")
+        return QuestPlan(
+            "complete",
+            "Available mastery XP earned—come back after the next reset."
+            if goal == "mastery"
+            else "Detected quests and selected reward goal are complete.",
+        )
     candidates = []
     gaps = {text for text, _, _ in active}
     for deck_id, deck in decks.items():
@@ -219,7 +238,8 @@ def plan(
     )
     return QuestPlan(
         "ready",
-        f"{name} / {event}. {progress_text} Remaining reward wins: {wins_left}.",
+        f"{name} / {event}. "
+        + (f"Completing quests: {progress_text}" if active else f"Earning mastery XP: {reward_detail}"),
         deck_id,
         name,
         event,
