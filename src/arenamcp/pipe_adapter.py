@@ -467,7 +467,13 @@ class PipeAdapter:
                 # Deprecated alias — prefer set_autopilot (idempotent).
                 enabled = coach.toggle_autopilot()
                 self.status("AUTOPILOT", "AP:ON" if enabled else "AP:OFF")
+            elif action == "inspect_auto_quest":
+                coach.inspect_auto_quest()
+            elif action == "set_auto_quest":
+                coach.set_auto_quest(cmd.get("enabled") is True, cmd.get("goal", "quests"),
+                                     cmd.get("minutes", 60), cmd.get("deadline"))
             elif action == "set_auto_queue":
+                coach._auto_quest = None
                 coach.set_auto_queue(cmd.get("enabled") is True)
             elif action == "set_autopilot":
                 # Idempotent control plane (fable-improvements.md item 6):

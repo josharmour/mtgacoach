@@ -8,7 +8,10 @@ import time
 logger = logging.getLogger(__name__)
 
 
-class _AutoQueueMixin:
+from arenamcp.standalone_auto_quest import AutoQuestMixin
+
+
+class _AutoQueueMixin(AutoQuestMixin):
     def set_auto_queue(self, enabled: bool) -> bool:
         self._auto_queue_enabled = bool(enabled)
         self.settings.set("auto_queue_enabled", self._auto_queue_enabled)
@@ -37,6 +40,8 @@ class _AutoQueueMixin:
 
     def _auto_queue_export(self) -> dict | None:
         """Armed navigation for the engine-reload checkpoint (standalone_startup.py)."""
+        if getattr(self, "_auto_quest", None):
+            return None
         if not getattr(self, "_auto_queue_enabled", False):
             return None
         navigator = getattr(self, "_auto_queue_navigator", None)
@@ -179,6 +184,9 @@ class _AutoQueueMixin:
             # Draft autoplay owns navigation between its event's matches.
             self._suspend_auto_queue()
             return False
+        if not self._prepare_auto_quest(state):
+            self._suspend_auto_queue()
+            return False
         try:
             from arenamcp.auto_queue import AutoQueueNavigator
             from arenamcp.idle_sleep import SleepInhibitor
@@ -230,6 +238,9 @@ class _AutoQueueMixin:
                 and completed.get("completed_at", 0) >= getattr(self, "_auto_queue_since", float("inf"))
                 and match_id != getattr(self, "_auto_queue_last_noted", None)
             ):
+                quest = getattr(self, "_auto_quest", None)
+                if quest and quest.get("target"):
+                    completed = {**completed, **quest["target"]}
                 navigator.note_match_end(completed, confirmed_match_end=True)
                 self._auto_queue_last_noted = match_id
             owns_input = navigator.process_tick(state)

@@ -18,6 +18,7 @@ from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMenu,
     QPushButton,
@@ -557,6 +558,11 @@ class CompactCoachPanel(QWidget):
         )
         self.auto_queue_btn.clicked.connect(self._toggle_auto_queue)
         controls.addWidget(self.auto_queue_btn)
+        self.auto_quest_btn = QPushButton("Auto-quest…")
+        self.auto_quest_btn.setToolTip("Choose a quest/reward goal and session limit. Requires Autoplay and an initial match.")
+        self.auto_quest_btn.clicked.connect(self._configure_auto_quest)
+        controls.addWidget(self.auto_quest_btn)
+
 
         self.stop_speech_btn = QPushButton("■")
         self.stop_speech_btn.setObjectName("stopSpeechButton")
@@ -578,6 +584,10 @@ class CompactCoachPanel(QWidget):
         self.auto_queue_status_label.setWordWrap(True)
         root.addWidget(self.auto_queue_status_label)
         self._render_auto_queue_status()
+        self.auto_quest_status_label = QLabel("Auto-quest: Off")
+        self.auto_quest_status_label.setTextFormat(Qt.PlainText)
+        self.auto_quest_status_label.setWordWrap(True)
+        root.addWidget(self.auto_quest_status_label)
 
         self.autopilot_bug_btn = QPushButton("Autopilot bug")
         self.autopilot_bug_btn.setObjectName("autopilotBugButton")
@@ -694,6 +704,37 @@ class CompactCoachPanel(QWidget):
     def _on_bug_report_clicked(self) -> None:
         self.voice_style_popover.hide()
         self._session.trigger_debug_report()
+
+    def _configure_auto_quest(self) -> None:
+        choices = ["Complete current quests", "Quests + 4 daily wins", "Quests + 10 daily wins",
+                   "Quests + 15 weekly wins", "Inspect detected quests", "Stop auto-quest"]
+        choice, ok = QInputDialog.getItem(self, "Auto-quest", "Grind goal (free queues only):", choices, 0, False)
+        if not ok:
+            return
+        if choice == "Inspect detected quests":
+            self._session.inspect_auto_quest()
+            return
+        if choice == choices[-1]:
+            self._session.set_auto_quest(False)
+            return
+        minutes, ok = QInputDialog.getInt(self, "Auto-quest", "Maximum session minutes:", 60, 1, 1440)
+        if ok:
+            goal = ["quests", "daily4", "daily10", "weekly15"][choices.index(choice)]
+            today = datetime.date.today()
+            default_end = datetime.date(today.year + (today.month == 12), today.month % 12 + 1, 1)
+            end, ok = QInputDialog.getText(self, "Grind window", "Stop before this date (YYYY-MM-DD; local time). "
+                                           "Mastery seasons may end earlier:", text=default_end.isoformat())
+            if not ok:
+                return
+            try:
+                deadline = datetime.datetime.combine(datetime.date.fromisoformat(end), datetime.time()).timestamp()
+            except ValueError:
+                self.auto_quest_status_label.setText("Auto-quest: invalid window end date.")
+                return
+            if deadline <= time.time():
+                self.auto_quest_status_label.setText("Auto-quest: window end must be in the future.")
+                return
+            self._session.set_auto_quest(True, goal, minutes, deadline)
 
     def _toggle_auto_queue(self) -> None:
         self._auto_queue_enabled = not self._auto_queue_enabled
@@ -1196,6 +1237,8 @@ class CompactCoachPanel(QWidget):
             )
             self.ap_btn.setProperty("state", state)
             theme.repolish(self.ap_btn)
+        elif key == "AUTO_QUEST":
+            self.auto_quest_status_label.setText("Auto-quest: " + val)
         elif key == "AUTO_QUEUE":
             state = val.strip().upper()
             if state in {"ON", "OFF"}:

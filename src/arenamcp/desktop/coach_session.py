@@ -259,6 +259,13 @@ class CoachSession(QObject):
         """Stop a running auto-concede countdown and keep playing this game."""
         self._process.send_payload({"cmd": "cancel_concede"})
 
+    def inspect_auto_quest(self) -> None:
+        self._process.send_payload({"cmd": "inspect_auto_quest"})
+
+    def set_auto_quest(self, enabled: bool, goal: str = "quests", minutes: int = 60, deadline: float | None = None) -> None:
+        self._process.send_payload({"cmd": "set_auto_quest", "enabled": enabled,
+                                    "goal": goal, "minutes": minutes, "deadline": deadline})
+
     def set_auto_queue(self, enabled: bool) -> None:
         """Choose whether autoplay may repeat the recent queue after a match."""
         self._process.send_payload({"cmd": "set_auto_queue", "enabled": bool(enabled)})
