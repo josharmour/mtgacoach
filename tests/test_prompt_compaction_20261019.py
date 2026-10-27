@@ -244,12 +244,26 @@ def test_the_first_token_limit_never_drops_below_the_callers():
 
 
 def test_a_big_typed_prompt_gets_the_later_first_token_and_keeps_its_answer_time():
+    import threading
+
+    class BudgetBackend(_Backend):
+        def __init__(self):
+            super().__init__()
+            self.normal_called = threading.Event()
+
+        def complete(self, *args, **kwargs):
+            result = super().complete(*args, **kwargs)
+            if kwargs.get("reasoning_effort") != "high":
+                self.normal_called.set()
+            return result
+
     state = _state(T19)
     state["deck_reference"] = "DECK REFERENCE\n" + "x" * 50_000  # a prompt as big as the live ones
-    backend = _Backend()
+    backend = BudgetBackend()
     planner = ActionPlanner(backend, timeout=15.0, land_drop_first=False)
     planner.plan_decision_options(_t19_decision(state), state)
-    call = backend.calls[-1]
+    assert backend.normal_called.wait(2.0)
+    call = next(c for c in backend.calls if c["effort"] != "high")
     chars = call["chars"]
     first = first_token_budget(ActionPlanner._FIRST_TOKEN_TIMEOUT_S, chars)
     assert first > ActionPlanner._FIRST_TOKEN_TIMEOUT_S
@@ -258,10 +272,15 @@ def test_a_big_typed_prompt_gets_the_later_first_token_and_keeps_its_answer_time
     assert call["budget"] == pytest.approx(min(18.0, 12.0 + first - 8.0), abs=0.1)
     assert call["budget"] - call["first_token"] >= 3.0
     # An ordinary prompt keeps today's 8 s / 12 s.
-    backend.calls.clear()
+    # Hedge legs run concurrently: list order is not an effort identifier.
+    # Use a fresh recorder so a late leg from the first request cannot leak in.
+    backend = BudgetBackend()
+    planner = ActionPlanner(backend, timeout=15.0, land_drop_first=False)
     small = _state(T19)
     planner.plan_decision_options(_t19_decision(small), small)
-    assert (backend.calls[-1]["first_token"], backend.calls[-1]["budget"]) == (8.0, 12.0)
+    assert backend.normal_called.wait(2.0)
+    call = next(c for c in backend.calls if c["effort"] != "high")
+    assert (call["first_token"], call["budget"]) == (8.0, 12.0)
 
 
 def test_a_big_plan_prompt_waits_longer_but_inside_the_planner_budget():
