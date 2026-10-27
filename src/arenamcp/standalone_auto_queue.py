@@ -165,6 +165,9 @@ class _AutoQueueMixin(AutoQuestMixin):
 
     def _poll_auto_queue(self, state: dict) -> bool:
         """Only an explicit match-completion event can hand UI control to navigation."""
+        if not self._check_grind_availability():
+            self._suspend_auto_queue()
+            return False
         enabled = getattr(self, "_auto_queue_enabled", False)
         active = (
             enabled
@@ -184,6 +187,8 @@ class _AutoQueueMixin(AutoQuestMixin):
             and draft_driver.run.event_name
             and not draft_driver.run.finished
         ):
+            if getattr(self, "_auto_quest", None):
+                self.ui.status("AUTO_QUEST", "Grind paused: an active draft run owns navigation. Start a free constructed match after leaving the draft run.")
             # Draft autoplay owns navigation between its event's matches.
             self._suspend_auto_queue()
             return False

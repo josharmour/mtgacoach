@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 
 from arenamcp.auto_quest import plan, quest_descriptions, read_snapshot
+
+logger = logging.getLogger(__name__)
 
 
 class AutoQuestMixin:
@@ -63,7 +66,49 @@ class AutoQuestMixin:
             target=None,
         )
         self.ui.status("GRIND", "ON")
-        self.ui.status("AUTO_QUEST", "Waiting for a match played with Autoplay; free queues only.")
+        self.ui.status("AUTO_QUEST", "Checking available mastery XP…")
+        self._check_grind_availability()
+
+    def _check_grind_availability(self) -> bool:
+        """Read-only preflight, including before the first match or with Autoplay off."""
+        run = getattr(self, "_auto_quest", None)
+        if not run:
+            return True
+        now = time.time()
+        if now >= run["deadline"]:
+            self.set_auto_quest(False)
+            self.ui.status("AUTO_QUEST", "Grind session time ended; no further matches will be queued.")
+            return False
+        if now < run.get("availability_poll", 0) and now < run["deadline"]:
+            return True
+        run["availability_poll"] = now + 10
+        try:
+            from arenamcp.server import _log_path
+
+            snapshot = read_snapshot(_log_path())
+            result = plan(
+                snapshot,
+                now=now,
+                deadline=run["deadline"],
+                goal=run["goal"],
+                decks={},
+                collection={},
+                cards={},
+                descriptions=quest_descriptions(),
+            )
+            if result.status == "complete":
+                self.set_auto_quest(False)
+                self.ui.status("AUTO_QUEST", result.detail)
+                logger.info("Grind stopped: %s", result.detail)
+                return False
+            if not run.get("observed"):
+                detail = result.detail
+                if result.status == "blocked" and detail.startswith("No verified"):
+                    detail = "Mastery XP is available. Enable Autoplay and start a free constructed match to begin."
+                self.ui.status("AUTO_QUEST", detail)
+        except Exception as exc:
+            self.ui.status("AUTO_QUEST", f"Cannot check available mastery XP: {exc}")
+        return True
 
     def _prepare_auto_quest(self, state: dict) -> bool:
         run = getattr(self, "_auto_quest", None)
