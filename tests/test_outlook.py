@@ -63,14 +63,14 @@ def test_sidebar_renders_outlook_bar_and_ledger_rows():
             }
         )
         html = panel.game_plan_label.text()
-        assert "Outlook" in html and "64% · ahead" in html and "↑ 14 since T5" in html
+        assert "Outlook" in html and "ahead" in html and "improving since T5" in html and "64%" not in html
         assert "▮▮▮▮▮▮" in html and "▯▯▯▯" in html
         assert "So far" in html and "No damage dealt on our turns T3, T5" in html
         assert "AGGRESSOR" in html
     finally:
         panel.close()
     plain = _outlook_html({"pct": 20, "label": "losing", "tone": "bad", "trend": [(3, 22)]})
-    assert "20% · losing" in plain and "since" not in plain
+    assert "losing" in plain and "20%" not in plain and "since" not in plain
     del app
 
 
@@ -114,3 +114,78 @@ def test_sidebar_shows_the_plan_status_row_first():
     assert "formed T8" in _plan_status_html({"state": "ready", "turn_formed": 8, "age_turns": 1})
     assert "6 turns old" in _plan_status_html({"state": "ready", "turn_formed": 2, "age_turns": 6})
     del app
+
+
+def test_clock_urgency_and_lethal_precedence():
+    scores = [outlook(facts(their_clock=n))["pct"] for n in (3, 7, 20)]
+    assert scores[0] < scores[1] < scores[2]
+    scores = [outlook(facts(our_clock=n))["pct"] for n in (3, 7, 20)]
+    assert scores[0] > scores[1] > scores[2]
+    result = outlook(facts(lethal_now=True, opp_lethal_on_board=True, dead_in=1))
+    assert result["pct"] >= 95 and result["label"] == "lethal available"
+    assert "lethal available" in result["why"][0]
+
+
+def test_future_or_failed_line_is_not_immediate_lethal():
+    for our_turn, win_at in ((False, 1), (True, 2)):
+        result = outlook(facts(our_turn=our_turn, lines=[SimpleNamespace(outcome="win", win_at=win_at)]))
+        assert result["pct"] == 80 and result["label"] != "lethal available"
+    result = outlook(facts(lines=[SimpleNamespace(outcome="alive", win_at=None)], dead_in=1))
+    assert result["pct"] <= 12
+
+
+def burn_state():
+    return {
+        "local_seat_id": 1,
+        "opponent_seat_id": 2,
+        "players": [{"seat_id": 1, "life_total": 20}, {"seat_id": 2, "life_total": 2}],
+        "turn": {"turn_number": 11, "active_player": 1, "priority_player": 1, "phase": "Phase_Main1"},
+        "battlefield": [
+            {
+                "instance_id": 10,
+                "grp_id": 10,
+                "name": "Mountain",
+                "type_line": "Basic Land — Mountain",
+                "oracle_text": "{T}: Add {R}.",
+                "controller_seat_id": 1,
+                "is_tapped": False,
+            }
+        ],
+        "hand": [
+            {
+                "instance_id": 11,
+                "grp_id": 11,
+                "name": "Boltwave",
+                "type_line": "Sorcery",
+                "oracle_text": "Boltwave deals 3 damage to each opponent.",
+                "mana_cost": "{R}",
+                "cmc": 1,
+                "controller_seat_id": 1,
+            }
+        ],
+    }
+
+
+def test_castable_burn_lethal_drives_both_role_and_outlook(unlimited_search_deadline):
+    from arenamcp.board_assessment import assess
+
+    assessment = assess(burn_state())
+    assert not assessment.lethal_now  # Creature-only clock has no attack.
+    assert assessment.role == "aggressor"
+    assert any("LETHAL LINE" in flag for flag in assessment.flags)
+    result = outlook(assessment)
+    assert result["pct"] >= 95 and result["label"] == "lethal available"
+
+
+def test_empty_board_missing_deck_does_not_assert_defender(unlimited_search_deadline):
+    from arenamcp.board_assessment import assess
+
+    state = burn_state()
+    state["hand"] = []
+    assessment = assess(state)
+    assert assessment.role == "undetermined"
+    assert "deck curve unavailable" in assessment.role_reason
+    assert not assessment.survival_mode
+    state["deck_cards"] = [11]
+    state["deck_catalog"] = {11: {"type_line": "Sorcery", "cmc": 1}}
+    assert assess(state).role == "aggressor"

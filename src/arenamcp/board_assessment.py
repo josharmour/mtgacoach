@@ -74,7 +74,8 @@ ROLE_AGGRESSOR = "aggressor"
 ROLE_DEFENDER = "defender"
 ROLE_RACE = "race"
 ROLE_CONTROL = "control/stabilize"
-ROLES = (ROLE_AGGRESSOR, ROLE_DEFENDER, ROLE_RACE, ROLE_CONTROL)
+ROLE_UNDETERMINED = "undetermined"
+ROLES = (ROLE_AGGRESSOR, ROLE_DEFENDER, ROLE_RACE, ROLE_CONTROL, ROLE_UNDETERMINED)
 
 # Attacks simulated for a clock; beyond this, once nobody dies any more, the
 # last attack is extrapolated (``_simulate_attacks``).
@@ -3380,6 +3381,11 @@ def _role(
             )
         return ROLE_CONTROL, f"no creatures on either side; {sides} — protect it and grind"
     if ours == 0 and theirs == 0:
+        if deck_curve is None:
+            return (
+                ROLE_UNDETERMINED,
+                "empty boards; deck curve unavailable — develop while looking for pressure or answers",
+            )
         if deck_curve is not None and deck_curve <= 2.9:
             return (
                 ROLE_AGGRESSOR,

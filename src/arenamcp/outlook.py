@@ -49,27 +49,39 @@ def outlook(assessment: Any) -> dict[str, Any]:
         score += 5 * _clip(theirs - ours, -3, 3)
         why.append(f"clocks {ours} vs {theirs}")
     elif ours and not theirs:
-        score += 8
+        score += 16 / max(1, ours)
         why.append(f"we have a clock ({ours}), they have none")
     elif theirs and not ours:
-        score -= 8
+        score -= 16 / max(1, theirs)
         why.append(f"they have a clock ({theirs}), we have none")
-    if getattr(assessment, "lethal_now", False):
+    # Search wins include burn and deployment and respect simulated turn order.
+    # Board clocks alone omit those plays. A future winning line is not lethal now.
+    best = next(iter(getattr(assessment, "lines", None) or ()), None)
+    win_at = getattr(best, "win_at", None)
+    line_wins = getattr(best, "outcome", None) == "win" and win_at in (1, 2)
+    immediate = bool(getattr(assessment, "lethal_now", False)) or bool(
+        line_wins and win_at == 1 and getattr(assessment, "our_turn", False)
+    )
+    if immediate:
         score = max(score, 95)
-        why.append("lethal on board")
-    elif getattr(assessment, "lethal_next_turn", False):
+        why.insert(0, "lethal available in the modelled position")
+    elif line_wins:
         score = max(score, 80)
-        why.append("lethal next turn")
-    if getattr(assessment, "opp_lethal_on_board", False):
-        score = min(score, 8)
-        why.append("they have lethal on board")
-    dead_in = getattr(assessment, "dead_in", None)
-    if dead_in == 1:
-        score = min(score, 12)
-        why.append("dead next attack")
-    elif dead_in == 2:
-        score = min(score, 30)
-        why.append("dead in 2 attacks")
+        why.insert(0, "winning line within our next two turns")
+    else:
+        if getattr(assessment, "lethal_next_turn", False):
+            score = max(score, 80)
+            why.insert(0, "lethal next turn if the board holds")
+        if getattr(assessment, "opp_lethal_on_board", False):
+            score = min(score, 8)
+            why.insert(0, "they have lethal on board")
+        dead_in = getattr(assessment, "dead_in", None)
+        if dead_in == 1:
+            score = min(score, 12)
+            why.insert(0, "dead next attack")
+        elif dead_in == 2:
+            score = min(score, 30)
+            why.insert(0, "dead in 2 attacks")
     pct = int(round(_clip(score, 3, 97)))
     label, tone = next((name, tone) for floor, name, tone in LABELS if pct >= floor)
-    return {"pct": pct, "label": label, "tone": tone, "why": why[:4]}
+    return {"pct": pct, "label": "lethal available" if immediate else label, "tone": tone, "why": why[:4]}

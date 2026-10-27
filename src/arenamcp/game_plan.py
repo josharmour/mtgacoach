@@ -254,7 +254,7 @@ The MATCH LEDGER (when present) is the record of this match: each turn's planned
 
 Respond with ONLY a JSON object, no prose, no markdown:
 {
-  "role": "aggressor | defender | race | control/stabilize",
+  "role": "aggressor | defender | race | control/stabilize | undetermined",
   "role_reason": "<=20 words; required when role differs from the assessed role",
   "turns": [
     {"turn": "T", "land": "land from hand to play or ''", "cast": ["exact card names from hand"], "attack": "who attacks, or 'none'", "hold": "mana/cards held back and why, or ''"},

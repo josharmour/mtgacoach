@@ -64,6 +64,7 @@ _ROLE_TONES = {
     "race": "accent",
     "defender": "warn",
     "control/stabilize": "bad",
+    "undetermined": "muted",
 }
 
 
@@ -183,18 +184,18 @@ def _line_rows(facts: dict[str, Any], label: Callable[[str], str]) -> list[str]:
 
 
 def _outlook_html(outlook: dict[str, Any]) -> str:
-    """A ten-segment bar, the percentage, the label and the trend since our last turns."""
+    """A qualitative outlook: the internal heuristic score is not a win probability."""
     pct = max(0, min(100, int(outlook.get("pct") or 0)))
     tone = str(outlook.get("tone") or "muted")
     filled = int(round(pct / 10))
     bar = span("▮" * filled, tone, weight=700) + span("▯" * (10 - filled), "muted")
-    text = f" {pct}% · {outlook.get('label') or ''}".rstrip(" ·")
+    text = f" {outlook.get('label') or 'unknown'}"
     trend = [p for p in (outlook.get("trend") or []) if isinstance(p, (list, tuple)) and len(p) == 2]
     arrow = ""
     if len(trend) >= 2:
-        delta = int(trend[-1][1]) - int(trend[-2][1])
+        delta = pct - int(trend[-2][1])
         if abs(delta) >= 5:
-            arrow = f" · {'↑' if delta > 0 else '↓'} {abs(delta)} since T{trend[-2][0]}"
+            arrow = f" · {'improving' if delta > 0 else 'declining'} since T{trend[-2][0]}"
     return bar + span(text, tone, weight=600) + (span(arrow, "muted") if arrow else "")
 
 
