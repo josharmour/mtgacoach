@@ -315,5 +315,10 @@ def test_standard_brawl_deck_analysis_waits_for_command_zone_commander(monkeypat
 
     # A plain 60-card constructed deck with no commander evidence is not a
     # Brawl deck: never waited on.
-    plain = {"match_id": "std-match-1", "deck_cards": [1002] * 30 + [1003] * 30, "commander_grp_ids": [], "players": []}
+    plain = {
+        "match_id": "std-match-1",
+        "deck_cards": [1002] * 30 + [1003] * 30,
+        "commander_grp_ids": [],
+        "players": [],
+    }
     assert runtime._maybe_analyze_deck(plain)

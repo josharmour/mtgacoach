@@ -963,6 +963,11 @@ def process_match(
         path = save_bundle(data, ctx.bundle_id, bundle_dir)
         logger.info(f"[BUNDLE] saved {path} ({len(data) // 1024} KB)")
         if upload:
+            # Only the local write must survive an engine reload. HTTP retries
+            # can take minutes (429s); the complete bundle is already on disk.
+            worker = threading.current_thread()
+            if worker.name.startswith("match-bundle-"):
+                worker.name = f"match-upload-{ctx.bundle_id[:8]}"
             upload_bundle(
                 data,
                 match_id=ctx.bundle_id,

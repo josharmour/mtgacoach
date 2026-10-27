@@ -366,9 +366,9 @@ def test_opening_picks_declare_no_lane_and_a_lane_needs_pool_support(caplog):
     backend.complete.return_value = json.dumps(payload)
     with caplog.at_level(logging.INFO, logger="arenamcp.draft_advisor"):
         result = advisor.recommend(pack, {})
-    assert result["lane"] == "" and result["lane_rejected"] == "RG"
-    assert result["plan"].startswith("Open toward Gruul")  # the lean stays in the plan text
-    assert any("picks 1-4 take the best card; no lane yet" in m for m in caplog.messages)
+    assert result["lane"] == ""  # the prose itself now correctly means uncommitted
+    assert result["rejected_plan"].startswith("Open toward Gruul")
+    assert "Gruul" not in result["plan"]  # a rejected lane must not anchor the next pick through prose
     # Pick 5: one red card does not support a red-green lane while the pool casts 3 white-blue cards.
     pack, payload = _lane_pack(WU_POOL[:3] + BR_CARDS[:1], "Gruul ramp.", "RG", 5)
     backend.complete.return_value = json.dumps(payload)

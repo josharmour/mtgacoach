@@ -6,6 +6,7 @@ Extracted from autopilot.py: methods are unchanged and mixed back into Autopilot
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 
@@ -69,9 +70,14 @@ class _AutopilotModesMixin:
             return None
         if self._paying_for_own_play(game_state):
             return None
-        if not self._source_spell_is_harmful_to_target(game_state, None, None):
-            return None
         name, oracle = self._resolve_decision_source(game_state)
+        harmful = self._source_spell_is_harmful_to_target(game_state, None, None)
+        # Ledger #306: a beneficial trigger can still spend mana reserved for
+        # protection. Free optional effects do not need this payment review.
+        optional_mana = bool(re.search(r"\bmay pay\s+\{(?:o)?[0-9WUBRGCX]", oracle, re.IGNORECASE))
+        if not harmful and not optional_mana:
+            return None
+        cost_kind = "harmful optional cost" if harmful else "optional mana cost"
         verdict: bool | None = None
         try:
             verdict = self._planner.plan_pay_or_decline(name, oracle, game_state)
@@ -80,8 +86,8 @@ class _AutopilotModesMixin:
         if verdict is True:
             return None
         if verdict is False:
-            return f"harmful optional cost ({name or 'unknown'}): LLM chose decline"
-        return f"harmful optional cost ({name or 'unknown'}): LLM unavailable, declining conservatively"
+            return f"{cost_kind} ({name or 'unknown'}): LLM chose decline"
+        return f"{cost_kind} ({name or 'unknown'}): LLM unavailable, declining conservatively"
 
     def _paying_for_own_play(self, game_state: dict[str, Any]) -> bool:
         """The cost belongs to the cast/activation the autopilot submitted moments ago.
@@ -90,16 +96,34 @@ class _AutopilotModesMixin:
         the request names that play (or nothing): an opponent's trigger asking
         right after our cast is not our cost.
         """
+        context = game_state.get("decision_context") or {}
+        source = context.get("source_card") or ""
+        if isinstance(source, dict):
+            source = source.get("name") or ""
+        source_id = context.get("source_id") or context.get("sourceId")
+        if not source and source_id:
+            card = next(
+                (c for c in game_state.get("stack") or [] if str(c.get("instance_id")) == str(source_id)),
+                {},
+            )
+            source = (card.get("source_card") or {}).get("name") or card.get("name") or ""
+            if not source:
+                # An explicitly identified but unresolved source is not proof
+                # that this cost belongs to the previous play.
+                return False
+        source = str(source).strip().lower()
         if self._last_cast_submitted and (
             time.monotonic() - self._last_cast_submitted_ts <= self._OPTIONAL_COST_OWN_ACTION_WINDOW_S
         ):
-            return True
+            turn, name = self._last_cast_submitted
+            current_turn = (game_state.get("turn") or {}).get("turn_number")
+            if (current_turn is None or turn == current_turn) and (
+                source in ("", "unknown") or str(name).lower() in source
+            ):
+                return True
         recent = getattr(self, "_recent_own_play_name", None)
         name = str(recent(game_state) if callable(recent) else "").strip().lower()
-        if not name:
-            return False
-        source = str((game_state.get("decision_context") or {}).get("source_card") or "").strip().lower()
-        return source in ("", "unknown") or name in source
+        return bool(name) and (source in ("", "unknown") or name in source)
 
     @staticmethod
     def _cost_on_our_spell(game_state: dict[str, Any]) -> bool:

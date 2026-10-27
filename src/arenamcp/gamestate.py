@@ -977,6 +977,11 @@ class GameState(_GameStateAnnotationsMixin):
                             for item in obj_data.get("ability_grp_ids", [])
                             if _coerce_int(item, 0)
                         ],
+                        chosen_player_links={
+                            _coerce_int(ability, 0): _coerce_int(player, 0)
+                            for ability, player in (obj_data.get("chosen_player_links") or {}).items()
+                            if _coerce_int(ability, 0) and _coerce_int(player, 0) > 0
+                        },
                         face_down=bool(obj_data.get("face_down", False)),
                         face_down_reason=_coerce_optional_int(obj_data.get("face_down_reason")),
                         token_source_grp_id=_coerce_optional_int(obj_data.get("token_source_grp_id")),
@@ -1687,6 +1692,23 @@ class GameState(_GameStateAnnotationsMixin):
             "_log_game_state_id": getattr(self, "log_game_state_id", 0),
             "_log_summarized_at_gsid": getattr(self, "log_summarized_at_gsid", -1),
             "decision_seat_id": self.decision_seat_id,
+            # Offered triggers can still be in Arena's pending-ability zone,
+            # before they belong to the stack (#313). Expose only the current
+            # request's known ability objects, never the whole object cache.
+            "pending_selection_objects": [
+                {
+                    **obj.to_dict(),
+                    "selection_source_grp_id": (
+                        self.game_objects[obj.parent_instance_id].grp_id
+                        if obj.parent_instance_id in self.game_objects
+                        else 0
+                    ),
+                }
+                for iid in (self.decision_context or {}).get("option_ids", [])
+                if (self.decision_context or {}).get("context_raw") == "SelectionContext_TriggeredAbility"
+                and (obj := self.game_objects.get(iid)) is not None
+                and obj.object_kind == GameObjectKind.ABILITY
+            ],
             "decision_context": self.decision_context,
             "last_cleared_decision": self.last_cleared_decision,
             "legal_actions": list(self.legal_actions),
@@ -2513,6 +2535,9 @@ class GameState(_GameStateAnnotationsMixin):
             counters=counters,
             keywords=keywords,
             ability_grp_ids=ability_grp_ids,
+            chosen_player_links=dict(existing_obj.chosen_player_links)
+            if existing_obj is not None and existing_obj.zone_id == zone_id
+            else {},
             damage=damage,
             face_down=face_down,
             face_down_reason=face_down_reason,

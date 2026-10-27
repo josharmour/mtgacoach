@@ -635,9 +635,7 @@ def _grounded_win(assessment: Any, state: dict) -> str:
     # Ledger #221: an opposing mill clock that beats our damage clock is the
     # win condition to answer first — name removing it, not chipping faces.
     decking_turns = getattr(assessment, "decking_turns", None)
-    if decking_turns is not None and (
-        assessment.our_clock is None or decking_turns <= assessment.our_clock
-    ):
+    if decking_turns is not None and (assessment.our_clock is None or decking_turns <= assessment.our_clock):
         engines = getattr(assessment, "mill_engines", []) or []
         engine = ", ".join(engines[:2]) or "their mill engine"
         return f"Remove {engine} (decks us in ~{decking_turns}), then win with creature damage"
@@ -1638,7 +1636,7 @@ _NONCREATURE_TRIGGER = re.compile(r"\bnon-?creature[- ]spell\b|\bprowess\b|\bspe
 _CAST_TRIGGER_VERB = re.compile(r"\b(?:trigger(?:s|ed|ing)?|grow(?:s|ing|n)?|pump(?:s|ed|ing)?)\b")
 _EVERY_SPELL = re.compile(r"\b(?:each|every|whenever|later|future)\b")
 _ATTACK_CLAIM = re.compile(
-    r"\b(?:attack(?:s|ing)?|swing(?:s|ing)?|ping(?:s|ing)?|crew(?:s|ing)?|tap(?:s|ping)? (?:it|~)"
+    r"\b(?:attack(?:s|ing)?|swing(?:s|ing)?|ping(?:s|ing)?|tap(?:s|ping)? (?:it|~)"
     r"|attack trigger)\b"
 )
 # Not this turn, or not a claim: "next turn", "later", "can't attack", "T13".
@@ -1828,16 +1826,26 @@ def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[
             before = before[_last_clause_start(before) :]
             # A description counts as a claim when its own clause says this turn.
             this_turn = bool(_THIS_TURN.search(after))
-            claim = next(
-                (
-                    match
-                    for match in _ATTACK_CLAIM.finditer(after)
-                    if this_turn or not _describes_card(after, match)
-                ),
-                None,
-            ) or re.search(r"\battack(?:s|ing)? with\s+(?:the\s+)?$", before)
+            claim = (
+                next(
+                    (
+                        match
+                        for match in _ATTACK_CLAIM.finditer(after)
+                        if (this_turn or not _describes_card(after, match))
+                        and not (
+                            match.group().startswith("tap")
+                            and re.match(r"\s+to\s+(?:crew|saddle)\b", after[match.end() :])
+                        )
+                        # "Kogla's bounce weakens my attack" describes an effect on
+                        # another attack, not this creature attacking while sick.
+                        and not re.search(r"\b(?:my|our|your|their)(?: own)?\s+$", after[: match.start()])
+                    ),
+                    None,
+                )
+                or re.search(r"\battack(?:s|ing)? with\s+(?:the\s+)?$", before)
+            )
             if claim and not _NOT_NOW.search(after) and not _NOT_NOW.search(before):
-                fact = f"{name} is summoning sick: it can't attack, tap or make an attack trigger this turn"
+                fact = f"{name} is summoning sick: it can't attack or activate its own {{T}}/{{Q}} abilities this turn"
                 if fact not in notes:
                     notes.append(fact)
     return notes

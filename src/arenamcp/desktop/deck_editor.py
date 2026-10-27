@@ -38,7 +38,12 @@ logger = logging.getLogger(__name__)
 
 PILES = ("main", "sideboard", "command_zone", "companions")
 EDITABLE_PILES = ("main", "sideboard")
-_PILE_LABELS = {"main": "Main", "sideboard": "Sideboard", "command_zone": "Commander", "companions": "Companion"}
+_PILE_LABELS = {
+    "main": "Main",
+    "sideboard": "Sideboard",
+    "command_zone": "Commander",
+    "companions": "Companion",
+}
 _COLUMNS = ["Card", "Pile", "In deck", "Owned"]
 _RARITY_RANK = {"mythic": 3, "rare": 2, "uncommon": 1, "common": 0}
 
@@ -146,7 +151,9 @@ class DeckEditorDialog(QDialog):
         self._wildcards: dict[str, int] = dict(wildcards or {})
         # The editable truth: absolute counts per editable pile.
         base = pile_counts(self._deck)
-        self._counts: dict[str, dict[int, int]] = {pile: dict(base.get(pile) or {}) for pile in EDITABLE_PILES}
+        self._counts: dict[str, dict[int, int]] = {
+            pile: dict(base.get(pile) or {}) for pile in EDITABLE_PILES
+        }
         self.setWindowTitle(f"Edit deck — {self._deck.get('name') or 'Unnamed'}")
         self.setMinimumWidth(560)
         self._build_ui()
@@ -217,10 +224,14 @@ class DeckEditorDialog(QDialog):
         """The edited deck as a bridge-shaped piles payload."""
         piles: dict[str, list[dict[str, int]]] = {}
         for pile in PILES:
-            counts = self._counts[pile] if pile in EDITABLE_PILES else {
-                int(c["grp_id"]): int(c["count"]) for c in (self._deck.get(pile) or [])
-            }
-            piles[pile] = [{"grp_id": grp_id, "count": count} for grp_id, count in sorted(counts.items()) if count > 0]
+            counts = (
+                self._counts[pile]
+                if pile in EDITABLE_PILES
+                else {int(c["grp_id"]): int(c["count"]) for c in (self._deck.get(pile) or [])}
+            )
+            piles[pile] = [
+                {"grp_id": grp_id, "count": count} for grp_id, count in sorted(counts.items()) if count > 0
+            ]
         return piles
 
     def _shortfall(self) -> dict[int, int]:
@@ -325,7 +336,9 @@ class DeckEditorDialog(QDialog):
             return
         deck_id = str(self._deck.get("deck_id") or "")
         if not deck_id:
-            self._status.setText(theme.span("This deck has no bridge identity; open it in Arena once first.", "warn"))
+            self._status.setText(
+                theme.span("This deck has no bridge identity; open it in Arena once first.", "warn")
+            )
             return
         self.save_btn.setEnabled(False)
         self._status.setText(theme.span("Saving through the bridge…", "muted"))
@@ -335,7 +348,11 @@ class DeckEditorDialog(QDialog):
         """Feedback from the bridge for the last save/craft (session.deckOpResult)."""
         ok = payload.get("ok") is True
         verb = "Craft" if payload.get("submitted_type") == "WildcardRedeem" else "Save"
-        text = f"{verb} accepted by Arena." if ok else f"{verb} failed: {payload.get('error') or 'unknown error'}"
+        text = (
+            f"{verb} accepted by Arena."
+            if ok
+            else f"{verb} failed: {payload.get('error') or 'unknown error'}"
+        )
         self._status.setText(theme.span(text, "good" if ok else "bad"))
         if ok and payload.get("submitted_type") == "WildcardRedeem":
             # The spend lands asynchronously; the Decks tab refreshes the
@@ -356,7 +373,9 @@ class DeckEditorDialog(QDialog):
         cost = wildcard_cost(plan, self._wildcards)
         lines = [f"{row['count']}× {card_name(row['grp_id'])} ({row['rarity'] or 'rarity?'})" for row in plan]
         spend = ", ".join(f"{count} {rarity}" for rarity, count in sorted(cost["spend"].items()))
-        balance = ", ".join(f"{cost['balance'][rarity]} {rarity}" for rarity in ("common", "uncommon", "rare", "mythic"))
+        balance = ", ".join(
+            f"{cost['balance'][rarity]} {rarity}" for rarity in ("common", "uncommon", "rare", "mythic")
+        )
         detail = "\n".join(lines) + f"\n\nSpends: {spend}\nBalance now: {balance}"
         answer = QMessageBox.question(
             self,
@@ -385,7 +404,9 @@ class NewDeckDialog(QDialog):
         lay.addWidget(QLabel(theme.span("Clone a deck, then edit the copy.", "muted")))
         self._picker = QComboBox()
         for deck in decks:
-            self._picker.addItem(f"{deck.get('name', '')} ({deck.get('format', '')})", str(deck.get("deck_id") or ""))
+            self._picker.addItem(
+                f"{deck.get('name', '')} ({deck.get('format', '')})", str(deck.get("deck_id") or "")
+            )
         lay.addWidget(self._picker)
         self._name = QLineEdit()
         self._name.setPlaceholderText("New deck name")
@@ -418,4 +439,3 @@ __all__ = [
     "pile_counts",
     "wildcard_cost",
 ]
-

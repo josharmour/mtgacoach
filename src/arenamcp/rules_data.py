@@ -1,7 +1,7 @@
 """Curated MTG Comprehensive Rules corpus for RAG-based coaching.
 
 Contains ~175 rules most relevant to real-time game coaching decisions.
-Rules text is verbatim from the official MTG Comprehensive Rules.
+Contains rule excerpts and curated summaries based on the official rules.
 """
 
 RULES = [
@@ -291,10 +291,10 @@ RULES = [
         "text": "Prowess is a triggered ability. Whenever you cast a noncreature spell, each creature you control with prowess gets +1/+1 until end of turn.",
     },
     {
-        "number": "702.125a",
+        "number": "702.164a",
         "section": "Toxic",
         "category": "keywords",
-        "text": "Toxic is a triggered ability. Whenever a creature with toxic deals combat damage to a player, that player gets a number of poison counters equal to the creature's toxic value.",
+        "text": "Toxic is static, not triggered. When a creature with toxic deals combat damage to a player, that damage also gives poison counters equal to its total toxic value. Add together the values of all toxic abilities on that creature.",
     },
     # =========================================================================
     # CASTING SPELLS (~20 rules)

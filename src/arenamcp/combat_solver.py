@@ -34,6 +34,7 @@ from typing import Any
 from arenamcp.combat_hit import loses_on_combat_hit
 from arenamcp.combat_keywords import can_be_blocked_by, has_combat_keyword
 from arenamcp.death_triggers import swing_of
+from arenamcp.player_protection import protected_from_player_source, protected_players, source_controller
 from arenamcp.token_lifetime import token_expires
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,8 @@ def _card_key(c: dict) -> tuple:
         c.get("_engine_value"),
         swing_of(c),
         token_expires(c),
+        source_controller(c),
+        protected_players(c),
     )
 
 
@@ -260,9 +263,12 @@ class CombatOutcome:
     attacker_died: bool = False
     blockers_died: list[dict] = field(default_factory=list)
     life_gained: int = 0  # a lifelink attacker's damage dealt (to blockers and through)
+    blocker_life_gained: int = 0  # actual damage dealt by lifelink blockers
 
 
-def _damage_order(power: int, blockers: list[dict], deathtouch: bool) -> list[dict]:
+def _damage_order(
+    power: int, blockers: list[dict], deathtouch: bool, source: dict | None = None
+) -> list[dict]:
     """The attacker's damage assignment order (rule 510.1c): the blockers it kills first.
 
     With ``power`` to assign and lethal damage per blocker (its toughness, 1 with
@@ -272,7 +278,12 @@ def _damage_order(power: int, blockers: list[dict], deathtouch: bool) -> list[di
     eight killable blockers are searched exactly; beyond that the cheapest
     kills lead.
     """
-    killable = [b for b in blockers if not _has(b, "indestructible")]
+    unkillable = [
+        b
+        for b in blockers
+        if _has(b, "indestructible") or (source is not None and protected_from_player_source(b, source))
+    ]
+    killable = [b for b in blockers if b not in unkillable]
     lethal = {id(b): (1 if deathtouch else _pt(b)[1]) for b in killable}
     chosen: tuple[dict, ...] = ()
     if len(killable) <= 8:
@@ -289,7 +300,7 @@ def _damage_order(power: int, blockers: list[dict], deathtouch: bool) -> list[di
     chosen_ids = {id(b) for b in chosen}
     first = sorted(chosen, key=lambda b: lethal[id(b)])
     rest = sorted((b for b in killable if id(b) not in chosen_ids), key=lambda b: lethal[id(b)])
-    return first + rest + [b for b in blockers if _has(b, "indestructible")]
+    return first + rest + unkillable
 
 
 def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
@@ -313,6 +324,7 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
         much more when it connects.
     """
     atk_p, atk_t = _pt(attacker)
+    atk_p = max(0, atk_p)
     atk_dth = _has(attacker, "deathtouch")
     atk_trample = _has(attacker, "trample")
     atk_fs = _has(attacker, "first strike") or _has(attacker, "double strike")
@@ -329,31 +341,52 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
             out.damage_through += int(attacker["combat_hit_bonus"] or 0)
         return out
 
-    assigned = _damage_order(atk_p, assigned, atk_dth)
+    assigned = _damage_order(atk_p, assigned, atk_dth, attacker)
 
     def first_striker(card: dict) -> bool:
         return _has(card, "first strike") or _has(card, "double strike")
 
     fs_blockers = [b for b in assigned if first_striker(b)]
+
+    def blockers_strike(blockers: list[dict]) -> tuple[int, bool]:
+        dealing = [b for b in blockers if not protected_from_player_source(attacker, b)]
+        out.blocker_life_gained += sum(max(0, _pt(b)[0]) for b in dealing if _has(b, "lifelink"))
+        return (
+            sum(max(0, _pt(b)[0]) for b in dealing),
+            any(_has(b, "deathtouch") and _pt(b)[0] > 0 for b in dealing),
+        )
+
     if not atk_fs and not fs_blockers:
         # One simultaneous damage step: the common case, kept cheap for the line search.
         dmg_left = atk_p
-        for blk in assigned:
+        dealt = 0
+        # Without trample, overassigning to an unprotected blocker preserves
+        # lifelink: no damage need be wasted on a protected blocker. Trample
+        # still requires assigning lethal to every blocker before the player.
+        damage_targets = (
+            assigned
+            if atk_trample
+            else [b for b in assigned if not protected_from_player_source(b, attacker)]
+        )
+        for blk in damage_targets:
             lethal = 1 if atk_dth else _pt(blk)[1]
             take = min(dmg_left, lethal)
-            if take >= lethal and not _has(blk, "indestructible"):
+            prevented = protected_from_player_source(blk, attacker)
+            dealt += 0 if prevented else take
+            if not prevented and take >= lethal and not _has(blk, "indestructible"):
                 out.blockers_died.append(blk)
             dmg_left -= take
             if dmg_left <= 0:
                 break
         if atk_trample and dmg_left > 0:
             out.damage_through = dmg_left + int(attacker.get("combat_hit_bonus") or 0)
-        # All of its damage is dealt: excess without trample still goes on the blockers.
-        out.life_gained = atk_p if atk_lifelink else 0
-        back = sum(_pt(b)[0] for b in assigned)
-        if not atk_indestructible and (
-            back >= atk_t or (back > 0 and any(_has(b, "deathtouch") and _pt(b)[0] > 0 for b in assigned))
-        ):
+        # Excess without trample is assigned to one of the unprotected
+        # blockers, even if lethal damage was already assigned to it.
+        if atk_trample or damage_targets:
+            dealt += dmg_left
+        out.life_gained = dealt if atk_lifelink else 0
+        back, deathtouch_back = blockers_strike(assigned)
+        if not atk_indestructible and (back >= atk_t or (back > 0 and deathtouch_back)):
             out.attacker_died = True
         return out
 
@@ -366,23 +399,30 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
 
     def attacker_strikes() -> None:
         # A creature whose blockers are all gone deals no damage without trample (702.19e).
-        if atk_lifelink and (atk_trample or any(b not in out.blockers_died for b in assigned)):
-            out.life_gained += atk_p
+        alive = [b for b in assigned if b not in out.blockers_died]
         dmg_left = atk_p
-        for blk in assigned:
-            if blk in out.blockers_died:
-                continue
+        dealt = 0
+        damage_targets = (
+            alive if atk_trample else [b for b in alive if not protected_from_player_source(b, attacker)]
+        )
+        for blk in damage_targets:
             blk_t = _pt(blk)[1]
             lethal = (1 if marked[id(blk)] == 0 else 0) if atk_dth else max(0, blk_t - marked[id(blk)])
             take = min(dmg_left, lethal)
-            marked[id(blk)] += take
-            if take >= lethal and not _has(blk, "indestructible"):
+            prevented = protected_from_player_source(blk, attacker)
+            dealt += 0 if prevented else take
+            marked[id(blk)] += 0 if prevented else take
+            if not prevented and take >= lethal and not _has(blk, "indestructible"):
                 out.blockers_died.append(blk)
             dmg_left -= take
             if dmg_left <= 0:
                 break
         if atk_trample and dmg_left > 0:
             out.damage_through += dmg_left
+        if atk_trample or damage_targets:
+            dealt += dmg_left
+        if atk_lifelink:
+            out.life_gained += dealt
 
     def attacker_dead() -> bool:
         return not atk_indestructible and ((returning_deathtouch and taken > 0) or taken >= atk_t)
@@ -391,8 +431,8 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
     if atk_fs or fs_blockers:
         if atk_fs and atk_p > 0:
             attacker_strikes()
-        taken += sum(_pt(b)[0] for b in fs_blockers)
-        returning_deathtouch = any(_has(b, "deathtouch") and _pt(b)[0] > 0 for b in fs_blockers)
+        damage, returning_deathtouch = blockers_strike(fs_blockers)
+        taken += damage
         if attacker_dead():
             out.attacker_died = True
             if out.damage_through > 0:
@@ -404,10 +444,9 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
     if atk_p > 0 and (atk_ds or not atk_fs):
         attacker_strikes()
     regular = [b for b in alive if not first_striker(b) or _has(b, "double strike")]
-    taken += sum(_pt(b)[0] for b in regular)
-    returning_deathtouch = returning_deathtouch or any(
-        _has(b, "deathtouch") and _pt(b)[0] > 0 for b in regular
-    )
+    damage, deathtouch_back = blockers_strike(regular)
+    taken += damage
+    returning_deathtouch = returning_deathtouch or deathtouch_back
     out.attacker_died = attacker_dead()
     if out.damage_through > 0:
         out.damage_through += int(attacker.get("combat_hit_bonus") or 0)
@@ -1827,7 +1866,7 @@ def evaluate_attack(
             if not (c.get("instance_id") and c.get("instance_id") in killed)
         ]
         crackers, drain = next_turn_engines(state, crackers, survivors)
-    crack_block = guarded_block_plan(crackers, defenders, your_life)
+    crack_block = guarded_block_plan(crackers, defenders, your_life + life_gained)
     # Our blockers' deaths in their crackback drain us too (Vein Ripper, ledger #184).
     crackback = (
         (crack_block.damage_through + max(0, crack_block.death_drain))

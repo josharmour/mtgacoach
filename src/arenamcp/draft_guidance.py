@@ -364,6 +364,17 @@ def normalize_card(source: Any, stats: Any = None) -> CardData:
 
     types = _types_from_type_line(type_line)
     tags = _derive_tags(type_line, oracle_text, colors)
+    # A free, unconditional mana artifact was treated as an untagged rarity
+    # prior below ordinary two-mana removal (Oct 25 Powered Cube). Match the
+    # complete ability, not just "add mana": filters, sacrifice costs, imprint,
+    # metalcraft and enters-tapped clauses do not establish reusable free mana.
+    if (
+        mana_cost.strip() == "{0}"
+        and "artifact" in type_line.lower()
+        and "creature" not in type_line.lower()
+        and re.fullmatch(r"\s*\{o?T\}:\s*Add\s+(?:\{o?[WUBRGC]\})+\.\s*", oracle_text, re.IGNORECASE)
+    ):
+        tags |= frozenset({"free_repeatable_mana"})
     # Allow callers to pass pre-computed tags through (e.g. curated datasets).
     extra_tags = _get(source, "tags", None)
     if extra_tags:
@@ -509,6 +520,8 @@ def _base_score(card: CardData, fmt: FormatContext) -> tuple[float, str | None]:
     baseline, or a card-quality estimate when 17lands has no data yet."""
     global_wr = card.gih_wr_pct
     if global_wr is None:
+        if "free_repeatable_mana" in card.tags:
+            return 90.0, "Unrated estimate: zero-mana, reusable acceleration without a support requirement"
         # Full 0-90+ heuristic power scale for Cube & custom formats
         est = 35.0
         rarity_lower = (card.rarity or "").lower()

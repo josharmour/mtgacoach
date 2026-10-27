@@ -142,12 +142,26 @@ def test_the_in_flight_mark_counts_overlapping_calls():
 
 
 def test_the_request_changing_cancels_both_legs(critical):
-    backend = _Legs(high=(0.5, HIGH), low=(0.5, LOW))
+    outer = threading.Event()
+    registered = threading.Lock()
+
+    class WaitingLegs(_Legs):
+        def complete(self, system, user, *args, **kwargs):
+            if "PENDING DECISION" not in user:
+                return "{}"
+            effort, cancel = kwargs.get("reasoning_effort"), kwargs["cancel_event"]
+            with registered:
+                self.cancels[effort] = cancel
+                if len(self.cancels) == 2:
+                    outer.set()
+            if not cancel.wait(2):
+                raise AssertionError("hedge did not cancel the registered leg")
+            raise TimeoutError("request cancelled")
+
+    backend = WaitingLegs()
     engine, bridge, _ = jace_engine(HIGH)
     engine._planner._backend = backend
-    outer = threading.Event()
     engine._planner.set_decision_cancel_event(outer)
-    threading.Timer(0.05, outer.set).start()
     from tests.jace_states import POLL
 
     from arenamcp.decisions import build_pending_decision
@@ -155,7 +169,7 @@ def test_the_request_changing_cancels_both_legs(critical):
     decision = build_pending_decision(POLL, resolve_instance=lambda _iid: "")
     started = time.monotonic()
     engine._planner.plan_decision_options(decision, jace_state())
-    assert time.monotonic() - started < 0.4
+    assert time.monotonic() - started < 2
     assert backend.cancels["high"].is_set() and backend.cancels[None].is_set()
 
 
@@ -166,16 +180,19 @@ def test_the_request_changing_cancels_both_legs(critical):
 OTHER = '{"option_ids": ["idx:1"], "reasoning": "high: something else."}'
 
 
-def _hedge(high, low, low_agrees=None):
+def _hedge(high, low, low_agrees=None, *, high_after_low=False):
     """Run ``_hedged_decision`` alone: per effort, (delay, answer or exception)."""
     import json
 
     planner = action_planner.ActionPlanner(backend=None)
     planner._last_decision_trace = {}
     cancels: dict = {}
+    low_recorded = threading.Event()
 
     def ask(message, *, effort, budget, cancel_event=None):
         cancels[effort] = cancel_event
+        if high_after_low and effort == "high":
+            assert low_recorded.wait(1), "low answer never reached the hedge waiter"
         delay, answer = high if effort == "high" else low
         end = time.monotonic() + delay
         while time.monotonic() < end:
@@ -190,8 +207,15 @@ def _hedge(high, low, low_agrees=None):
         data = json.loads(text)
         return data, [str(i) for i in data["option_ids"]]
 
+    def check_low(ids, data):
+        # Called only after the low result has been stored by the hedge.
+        low_recorded.set()
+        return low_agrees(ids, data) if low_agrees is not None else ""
+
     started = time.monotonic()
-    data, chosen = planner._hedged_decision(ask, parse, "PENDING DECISION", 2.0, low_agrees)
+    data, chosen = planner._hedged_decision(
+        ask, parse, "PENDING DECISION", 2.0, check_low if high_after_low else low_agrees
+    )
     return data, chosen, time.monotonic() - started, cancels, planner._last_decision_trace
 
 
@@ -206,14 +230,18 @@ def test_a_valid_low_answer_waits_only_a_short_grace_for_high(monkeypatch, caplo
 
 
 def test_a_high_answer_inside_the_grace_still_wins_and_the_log_compares_them(caplog):
-    data, chosen, _, cancels, trace = _hedge(high=(0.1, OTHER), low=(0.01, LOW))
+    data, chosen, _, cancels, trace = _hedge(high=(0, OTHER), low=(0, LOW), high_after_low=True)
     assert data["reasoning"].startswith("high:") and chosen == ["idx:1"]
     assert cancels[None].is_set() and not cancels["high"].is_set()
     assert "typed-decision hedge: high won in" in caplog.text
     assert "(low: ['idx:2'] at" in caplog.text
     assert trace["hedge"]["winner"] == "high"
-    _hedge(high=(0.05, HIGH), low=(0.01, LOW))
+    _, _, _, _, trace = _hedge(high=(0, HIGH), low=(0, LOW), high_after_low=True)
     assert "(low: the same at" in caplog.text
+    assert trace["hedge"]["same_choice"] is True
+    assert trace["hedge"]["low_ms"] >= 0
+    assert trace["hedge"]["wait_after_low_ms"] >= 0
+    assert trace["hedge"]["patient"] is False
 
 
 def test_a_low_answer_that_is_the_board_math_play_does_not_wait_for_high(caplog):
@@ -335,3 +363,36 @@ def test_carrying_out_a_passes_stated_plan_is_not_asked_again(caplog):
     # Still asked again: the same step, or a pass that rejected the card.
     assert asked("Step_DeclareBlock", "Step_DeclareBlock", kept) == 2
     assert asked("Step_DeclareAttack", "Step_DeclareBlock", "Shock on Bill is a bad trade") == 2
+
+
+def test_cancel_with_completed_low_answer_preserves_it_during_second_look():
+    import json
+
+    planner = action_planner.ActionPlanner(backend=None)
+    planner._last_decision_trace = {}
+    outer = threading.Event()
+    planner.set_decision_cancel_event(outer)
+    cancels = {}
+
+    def ask(message, *, effort, budget, cancel_event):
+        cancels[effort] = cancel_event
+        if effort == "high":
+            cancel_event.wait(2)
+            raise TimeoutError("cancelled")
+        return LOW
+
+    def parse(text):
+        data = json.loads(text)
+        return data, data["option_ids"]
+
+    def doubt(ids, data):
+        # The low answer is already stored; request changes while its
+        # second look is about to wait for high. No sleep-based race.
+        outer.set()
+        return "needs second look"
+
+    data, chosen = planner._hedged_decision(ask, parse, "PENDING DECISION", 2, low_doubt=doubt)
+    assert chosen == ["idx:2"]
+    assert data["reasoning"].startswith("low:")
+    assert cancels[None].is_set()
+    assert planner._last_decision_trace["hedge"]["winner"] == "low"

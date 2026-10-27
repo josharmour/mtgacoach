@@ -41,7 +41,10 @@ _SPLASH = re.compile(
     rf"\bsplash\w*\s+(?:\w+\s+){{0,2}}?{_COLOR}\b|\b{_COLOR}\s+(?:as\s+(?:a\s+)?)?(?:\w+\s+){{0,2}}?(?:splash|secondary)\b"
 )
 _CLAUSE_BREAK = re.compile(r"[,;:()]|\s[-—–]\s|\s(?:while|with|but|though|although|whereas)\s")
-_OPEN = re.compile(r"\bopen\b|fallback|pivot|flexib|alternativ|\bif\b|\bunless\b|possible|optional")
+_OPEN = re.compile(
+    r"\bopen\b|fallback|pivot(?! to\b)|flexib|alternativ|\bif\b|\bunless\b|possible|optional"
+    r"|\bkeeping\b.*\bviable\b"
+)
 _OR = re.compile(r"\bor\b")
 
 
@@ -50,6 +53,7 @@ class PlanColors:
     main: str = ""  # WUBRG order, at most two colors
     splash: str = ""  # colors named as a splash or secondary, outside main
     archetype: str = ""  # the primer archetype the plan names, if any
+    uncommitted: bool = False  # named colors are only alternatives, not a declared lane
 
     def __bool__(self) -> bool:
         return bool(self.main)
@@ -118,10 +122,11 @@ def plan_colors(plan: str, archetypes: list[dict] | None = None) -> PlanColors:
     mentions = _mentions(plan, archetypes)
     # "blue, black and red goodstuff" names no pair: color words count only when
     # the plan (its splash aside) names at most two colors.
-    outside_splash = _SPLASH.sub(" ", plan.lower())
+    clauses = _clauses(plan)
+    outside_splash = _SPLASH.sub(" ", " ".join(text for _, _, text in clauses if not _OPEN.search(text)))
     many_colors = len(set(re.findall(rf"\b{_COLOR}\b", outside_splash))) >= 3
     main, archetype = "", ""
-    for start, end, text in _clauses(plan):
+    for start, end, text in clauses:
         if _OPEN.search(text):
             continue
         here = [m for m in mentions if start <= m.start < end]
@@ -131,7 +136,7 @@ def plan_colors(plan: str, archetypes: list[dict] | None = None) -> PlanColors:
                 shared = set(pairs[0].colors)
                 for mention in pairs[1:]:
                     shared &= set(mention.colors)
-                main = normalize_colors("".join(shared)) or pairs[0].colors
+                main = normalize_colors("".join(shared))
             else:
                 main = pairs[0].colors
             archetype = next((m.archetype for m in pairs if m.archetype and m.colors == main), "")
@@ -145,4 +150,4 @@ def plan_colors(plan: str, archetypes: list[dict] | None = None) -> PlanColors:
         splash = normalize_colors("".join(c for c in splash if c not in main))
     else:
         main, splash = "", ""
-    return PlanColors(main=main, splash=splash, archetype=archetype)
+    return PlanColors(main=main, splash=splash, archetype=archetype, uncommitted=bool(mentions) and not main)

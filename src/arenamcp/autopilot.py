@@ -732,7 +732,12 @@ class AutopilotEngine(
     # same board gets the same refusal. 2026-10-06 18:57 (bug_20261006_185803):
     # Theoretical Necromancer was activated and cancelled at its target step
     # four times in 13 s, each rollback un-counted, until the user force-stopped.
-    _SELF_CANCEL_KINDS = ("ActionType_Cast", "ActionType_CastOmen", "ActionType_Activate", "ActionType_Special")
+    _SELF_CANCEL_KINDS = (
+        "ActionType_Cast",
+        "ActionType_CastOmen",
+        "ActionType_Activate",
+        "ActionType_Special",
+    )
 
     @classmethod
     def _play_name(cls, label: str) -> tuple[str, str]:
@@ -862,7 +867,12 @@ class AutopilotEngine(
             parent = int(context.get("source_parent_instance_id") or 0)
         except (TypeError, ValueError):
             parent = 0
-        if kind in ("ActionType_Activate", "ActionType_Special") and parent and instance_id and parent != instance_id:
+        if (
+            kind in ("ActionType_Activate", "ActionType_Special")
+            and parent
+            and instance_id
+            and parent != instance_id
+        ):
             logger.info(
                 "Self-cancel guard: the cancelled %s belonged to another source (%s), "
                 "not to the activation of %r",
@@ -911,7 +921,12 @@ class AutopilotEngine(
         """Name of the cast/activation the autopilot submitted moments ago, else ""."""
         now = time.monotonic()
         last_cast = self._last_cast_submitted
-        if last_cast and now - self._last_cast_submitted_ts <= self._OPTIONAL_COST_OWN_ACTION_WINDOW_S:
+        current_turn = (game_state.get("turn") or {}).get("turn_number")
+        if (
+            last_cast
+            and now - self._last_cast_submitted_ts <= self._OPTIONAL_COST_OWN_ACTION_WINDOW_S
+            and (current_turn is None or last_cast[0] == current_turn)
+        ):
             return str(last_cast[1])
         note = getattr(self, "_last_typed_play", None)
         if note:
@@ -3813,6 +3828,15 @@ class AutopilotEngine(
                             game_state,
                         )
 
+            # Repeated request recaptures can cancel every model call before
+            # it finishes. Use the current board's checked solver next time.
+            try:
+                if self._recover_cancelled_combat(game_state, trigger):
+                    self._state = AutopilotState.IDLE
+                    return True
+            except Exception:
+                logger.debug("Cancelled combat recovery unavailable", exc_info=True)
+
             # --- 1. PLANNING ---
             self._state = AutopilotState.PLANNING
             self._notify("AUTOPILOT", f"Planning: {trigger}...")
@@ -3887,6 +3911,7 @@ class AutopilotEngine(
                     set_cancel(None)
                 unwatch()
             if cancel.is_set():
+                self._note_cancelled_combat(game_state)
                 logger.info(
                     "Autopilot: request changed during planning (%s gsid=%s); model call cancelled, "
                     "yielding for a fresh decision",
@@ -3903,6 +3928,18 @@ class AutopilotEngine(
             # static panel populates before the first action lands. Safe to
             # call when there's no active plan — the helper short-circuits.
             self._emit_turn_plan_payload()
+
+            # Empty/unusable plans also need freshness validation. They
+            # otherwise reach recovery/manual handoff before the normal
+            # post-plan check below, using a request that may have expired.
+            if (
+                pre_window_identity is not None
+                and self._plan_cannot_legally_submit(plan)
+                and not self._window_identities_match(pre_window_identity, self._live_window_identity())
+            ):
+                logger.info("Autopilot: empty plan belongs to an expired request; yielding for fresh state")
+                self._state = AutopilotState.IDLE
+                return True
 
             # --- SAFE-DEFAULT NET for non-passable interactive requests ---
             # The planner/fallback can only ever emit pass/resolve for many
@@ -4032,7 +4069,6 @@ class AutopilotEngine(
                     fresh_state = self._get_game_state()
                     fresh_turn = fresh_state.get("turn", {})
                     stale = False
-                    superseded = False  # a different request is pending now
                     _plan_ms = (time.perf_counter() - _plan_started_at) * 1000.0
 
                     # R1: when the SAME bridge window is still pending, the
@@ -4052,7 +4088,7 @@ class AutopilotEngine(
                             f"{pre_window_identity} → {fresh_window_identity} "
                             f"(planning took {_plan_ms:.0f}ms)"
                         )
-                        stale = superseded = True
+                        stale = True
                     elif fresh_turn.get("turn_number", 0) != pre_turn_num:
                         logger.warning(
                             f"STALE: turn advanced {pre_turn_num} → "
@@ -4100,10 +4136,10 @@ class AutopilotEngine(
                             reason="plan_went_stale_after_llm",
                         )
                         self._state = AutopilotState.IDLE
-                        # Superseded: yield so the next cycle plans the new
-                        # request (the typed path's rule) instead of falling
-                        # through to a coaching call about it.
-                        return superseded
+                        # An expired window is handled even when the bridge
+                        # is now idle. Re-poll next cycle instead of coaching
+                        # from the old snapshot or handing control to the user.
+                        return True
 
                     # Use the fresh state for execution (more accurate coordinates)
                     game_state = fresh_state
@@ -4177,7 +4213,7 @@ class AutopilotEngine(
                             reason="plan_went_stale_during_countdown",
                         )
                         self._state = AutopilotState.IDLE
-                        return False
+                        return True
                 else:
                     game_state = exec_state  # Use freshest state
             except Exception as e:
@@ -4829,6 +4865,56 @@ class AutopilotEngine(
     # pending request changes. None (tests, no bridge) = no early cancel.
     _request_watch_fn: Callable[[Callable[[dict[str, Any]], None]], Callable[[], None]] | None = None
 
+    @staticmethod
+    def _combat_retry_key(state: dict[str, Any]) -> tuple | None:
+        from arenamcp.request_tracker import request_window
+
+        kind = (state.get("decision_context") or {}).get("type")
+        window = request_window(state)
+        if kind != "declare_blockers" or window is None:
+            return None
+        return (state.get("match_id"), state.get("game_number"), kind, window)
+
+    def _note_cancelled_combat(self, state: dict[str, Any]) -> None:
+        key = self._combat_retry_key(state)
+        if key is None:
+            self._cancelled_combat = None
+            return
+        old = getattr(self, "_cancelled_combat", None)
+        now = time.monotonic()
+        count = old[1] + 1 if old and old[0] == key and now - old[2] <= 10 else 1
+        self._cancelled_combat = (key, count, now)
+
+    def _recover_cancelled_combat(self, state: dict[str, Any], trigger: str) -> bool:
+        """After repeated cancelled plans, try fresh solver-checked combat (#237)."""
+        old = getattr(self, "_cancelled_combat", None)
+        if not old or old[0] != self._combat_retry_key(state) or old[1] < 2:
+            return False
+        if time.monotonic() - old[2] > 10 or self._config.dry_run or self._abort_event.is_set():
+            return False
+        if self.in_manual_play_cooldown() or self.is_window_given_up(state):
+            return False
+        # A new request may have appeared since this loop's snapshot. Do not
+        # feed its menu to a solver using the previous combat's board.
+        identity = self._plan_window_identity(state)
+        if identity is None or not self._window_identities_match(identity, self._live_window_identity()):
+            return False
+        pending = self._gre_bridge.get_pending_actions() or {}
+        expected = "DeclareBlock"
+        kind = str(pending.get("request_type") or pending.get("request_class") or "")
+        if not pending.get("has_pending") or expected not in kind:
+            return False
+        if not self._window_identities_match(identity, self._poll_window_identity(pending)):
+            return False
+
+        def accepted(detail: str) -> bool:
+            self._log_execution_path(ExecutionPath.GRE_AWARE, f"cancelled combat recovery: {detail}")
+            self._record_autopilot_decision(state, trigger, "safe_default", detail)
+            self._cancelled_combat = None
+            return True
+
+        return bool(self._safe_default_blocks(state, pending, accepted))
+
     def _cancel_on_request_change(
         self, decision: Any, fp: Any, cancel: threading.Event
     ) -> Callable[[], None]:
@@ -5187,7 +5273,16 @@ class AutopilotEngine(
             return True
 
         def _resolve_instance(iid: int) -> str:
-            for zone in ("hand", "battlefield", "stack", "graveyard", "command"):
+            for zone in (
+                "hand",
+                "battlefield",
+                "stack",
+                "graveyard",
+                "command",
+                "exile",
+                "library_visible",
+                "pending_selection_objects",
+            ):
                 for c in game_state.get(zone) or []:
                     if isinstance(c, dict) and int(c.get("instance_id") or 0) == iid:
                         return str(c.get("name") or "")
@@ -5443,8 +5538,10 @@ class AutopilotEngine(
                 if clean_name:
                     self._recent_bot_submissions.append((time.monotonic(), clean_name))
             del self._recent_bot_submissions[:-24]
-            get_reasoning = getattr(self._planner, "get_decision_reasoning", None)
-            reasoning = get_reasoning(option_ids) if callable(get_reasoning) else ""
+            get_evidence = getattr(self._planner, "get_decision_evidence", None)
+            evidence = get_evidence(decision, game_state, option_ids) if callable(get_evidence) else {}
+            evidence = evidence if isinstance(evidence, dict) else {}
+            reasoning = evidence.get("reasoning", "")
             reasoning = reasoning if isinstance(reasoning, str) else ""
             explanation = " ".join(ActionPlanner._humanize_legal_action(label) for label in labels)
             if decision.request_type in ("Search", "SearchFromGroups"):
@@ -5464,8 +5561,7 @@ class AutopilotEngine(
 
                 packet = get_current_packet()
                 if packet:
-                    get_trace = getattr(self._planner, "get_last_decision_trace", None)
-                    trace = get_trace() if callable(get_trace) else None
+                    trace = evidence.get("trace")
                     packet.add_decision(
                         decision,
                         option_ids,
@@ -5659,7 +5755,10 @@ class AutopilotEngine(
                 logger.debug("post-cast priority fresh snapshot failed: %s", error)
                 state = None
             if not isinstance(state, dict) or not state:
-                state = dict(game_state)
+                # The cast may have changed mana, targets, or the board. Do
+                # not plan a new request against the pre-cast snapshot.
+                logger.warning("post-cast priority: fresh snapshot unavailable; yielding for a fresh poll")
+                return
             enrich_snapshot_from_pending_response(
                 state, latest, bridge_connected=getattr(self._gre_bridge, "connected", False)
             )
@@ -5830,6 +5929,32 @@ class AutopilotEngine(
                 if bridge_state_authoritative:
                     time.sleep(self._VERIFY_FAST_POLL_S if time.time() < fast_until else poll_interval)
                     continue
+
+                # Consecutive damage requests retain the same display label.
+                # A newer log request for entirely different assigners proves
+                # progress; changed amounts/targets on the same assigner do not.
+                if action.action_type == ActionType.ASSIGN_DAMAGE:
+                    from arenamcp.damage_assignment import log_assigners
+
+                    def assigner_ids(state):
+                        return {
+                            a.get("instanceId")
+                            for a in log_assigners(state.get("decision_context"))
+                            if isinstance(a.get("instanceId"), int) and a["instanceId"] > 0
+                        }
+
+                    before_ids, after_ids = assigner_ids(pre_state), assigner_ids(post_state)
+                    before_gsid = int(pre_state.get("_log_game_state_id") or 0)
+                    after_gsid = int(post_state.get("_log_game_state_id") or 0)
+                    if (
+                        before_ids
+                        and after_ids
+                        and before_ids.isdisjoint(after_ids)
+                        and before_gsid > 0
+                        and after_gsid > before_gsid
+                    ):
+                        logger.info("Action verified: next damage assigner request")
+                        return True
 
                 # 0. New pending decision appeared (ETB choices, mana payments, etc.)
                 # This means the action was processed and MTGA is waiting for a

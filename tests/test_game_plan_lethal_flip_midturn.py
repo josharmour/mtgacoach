@@ -57,6 +57,7 @@ def _state(turn=5, active=1, pending=False):
 @pytest.fixture
 def sync_reforms(monkeypatch):
     """Run request_reform's background thread inline so tests see its result."""
+
     def fake_thread(target=None, **kwargs):
         return SimpleNamespace(start=target)
 
@@ -66,9 +67,7 @@ def sync_reforms(monkeypatch):
 def _manager_with_key(monkeypatch, backend, key_holder):
     mgr = GamePlanManager(backend)
     mgr._REFRESH_INTERVAL_S = 0.0  # instance shadow: tests fire back-to-back
-    monkeypatch.setattr(
-        mgr, "_strategic_key", lambda state, sig=None: (key_holder["value"], (), (), ())
-    )
+    monkeypatch.setattr(mgr, "_strategic_key", lambda state, sig=None: (key_holder["value"], (), (), ()))
     return mgr
 
 
@@ -87,8 +86,7 @@ def test_key_change_reason_splits_lethal_flip_from_role_flip():
     )
     # Only the role moved (beyond the race<->defender noise pair).
     assert (
-        mgr._key_change_reason(base, (("defender", False, False, False), (), (), frozenset()))
-        == "role flip"
+        mgr._key_change_reason(base, (("defender", False, False, False), (), (), frozenset())) == "role flip"
     )
     # Race <-> defender is noise: no reform at all.
     assert (

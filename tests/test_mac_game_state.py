@@ -210,6 +210,14 @@ class FakeProbe:
             target_idx = op.get("target", {}).get("ref")
             target = objects[target_idx] if target_idx is not None and target_idx < len(objects) else None
             member = op.get("member", "")
+            # Native reflect_batch rejects references to null results before
+            # resolving the member; optional reads append null and continue.
+            if kind == "get" and target is None:
+                if not op.get("optional"):
+                    return {"ok": False, "error": "ref does not name an object result", "results": results}
+                results.append(None)
+                objects.append(None)
+                continue
             if kind == "get":
                 if target is self.manager and member == "CurrentGameState":
                     node = self.scalars.get("__state__")
@@ -483,3 +491,19 @@ def test_mac_snapshot_reports_the_loyalty_counter_not_the_boxed_zero():
     assert "loyalty" not in _card_entry({**node, "counterDatas_": listing()})
     with_value = {**zero, "value": 4}
     assert _card_entry({**node, "loyalty": with_value, "counterDatas_": listing()})["loyalty"] == 4
+
+
+@pytest.mark.parametrize("partial", [[], [game_manager(), {"$c": "GameState", "$h": 2}]])
+def test_null_ref_without_proven_missing_state_remains_an_error(partial):
+    error = "ref does not name an object result"
+    assert fetch_game_state(lambda *_: {"ok": False, "error": error, "results": partial}, None) == {
+        "ok": False,
+        "error": error,
+    }
+
+
+def test_other_native_errors_are_not_reclassified_as_missing_state():
+    assert fetch_game_state(lambda *_: {"ok": False, "error": "getter failed", "results": [None]}, None) == {
+        "ok": False,
+        "error": "getter failed",
+    }

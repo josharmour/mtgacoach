@@ -520,3 +520,44 @@ def test_benefit_wording_and_highlight_names():
     assert target_highlight("HighlightType_ReplaceRole") == "ReplaceRole"
     assert target_highlight("Hot") == target_highlight(3) == "Hot"
     assert target_highlight("HighlightType_None") == target_highlight(None) == ""
+
+
+@pytest.mark.parametrize(
+    "extra,slot_ids,expected",
+    [
+        ("", [700, 701], True),
+        (" Its controller draws a card.", [700, 701], False),
+        ("", [691, 700], False),
+    ],
+)
+def test_mixed_pump_bite_opponent_slot(extra, slot_ids, expected):
+    from types import SimpleNamespace
+
+    text = (
+        "Put a +1/+1 counter on target creature you control. "
+        "It deals damage equal to its power to target creature you don't control." + extra
+    )
+    decision = SimpleNamespace(slots=[SimpleNamespace(candidate_ids=slot_ids)])
+    reason = ActionPlanner._unclassified_pick_reason(decision, 700, False, {691: 1, 700: 2, 701: 2}, text)
+    assert bool(reason) is expected
+
+
+def test_charm_pump_bite_gate_keeps_both_recorded_targets(monkeypatch):
+    from types import SimpleNamespace
+
+    planner = ActionPlanner.__new__(ActionPlanner)
+    text = (
+        "Put a +1/+1 counter on target creature you control. "
+        "It deals damage equal to its power to target creature you don't control."
+    )
+    decision = SimpleNamespace(
+        slots=[SimpleNamespace(candidate_ids=[691]), SimpleNamespace(candidate_ids=[700, 701])]
+    )
+    monkeypatch.setattr(planner, "_decision_source_is_harmful", lambda *a: None)
+    monkeypatch.setattr(planner, "_decision_source_oracle", lambda *a: text)
+    monkeypatch.setattr(planner, "_target_highlights", lambda *a: {})
+    monkeypatch.setattr(planner, "_battlefield_controllers", lambda *a: (1, {691: 1, 700: 2, 701: 2}))
+    assert planner._gate_harmful_llm_target_picks(decision, {}, ["tgt:691", "tgt:700"]) == [
+        "tgt:691",
+        "tgt:700",
+    ]

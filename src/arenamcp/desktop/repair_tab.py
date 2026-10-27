@@ -21,6 +21,10 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from arenamcp.desktop.trial_dialog import TrialSignupDialog
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -66,7 +70,7 @@ class RepairTab(QWidget):
         self._guided = False
         self._auto_ran = False
         self._last_report: RepairReport | None = None
-        self._trial_dialog: "TrialSignupDialog | None" = None
+        self._trial_dialog: TrialSignupDialog | None = None
         self._build_ui()
         self._report_ready.connect(self._render_report)
         self._progress.connect(self._on_progress)

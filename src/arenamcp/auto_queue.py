@@ -1210,11 +1210,13 @@ class AutoQueueNavigator:
             )
             self._step_phase = "navigation model"
             response = self._backend.complete_with_image(
-                QUEUE_PROMPT + (
+                QUEUE_PROMPT
+                + (
                     "\nAUTO-QUEST: expected_queue is the planner-selected owned deck and free queue, "
                     "which may differ from the ended match. Navigate to that exact Recently Played tile. "
                     "If it is unavailable, stop; never substitute another deck or event."
-                    if getattr(self, "_quest_mode", False) else ""
+                    if getattr(self, "_quest_mode", False)
+                    else ""
                 ),
                 user,
                 frame.png(),
@@ -1648,11 +1650,16 @@ class AutoQueueNavigator:
                 event_name = self._last_event_id or "AIBotMatch"
                 if getattr(self, "_quest_mode", False):
                     from arenamcp.auto_quest import FREE_EVENTS
+
                     if event_name not in FREE_EVENTS or not self._quest_deck_id:
                         self._pause("Quest queue or deck is not verified")
                         return
                 self._status(f"Re-queueing for {event_name} via bridge...")
-                ok = bridge.queue_match(event=event_name, deck_id=self._quest_deck_id) if getattr(self, "_quest_mode", False) else bridge.queue_match(event=event_name)
+                ok = (
+                    bridge.queue_match(event=event_name, deck_id=self._quest_deck_id)
+                    if getattr(self, "_quest_mode", False)
+                    else bridge.queue_match(event=event_name)
+                )
                 if ok:
                     self._queue_started = True
                     self._queue_observed = True

@@ -202,13 +202,16 @@ def test_auto_respond_escape_budget_per_turn():
     assert eng._try_auto_respond_escape(gs6, "test 4") is True
 
 
-def test_escape_on_casting_window_counts_as_cast_rollback():
-    eng = _engine()
+def test_refused_payment_escape_does_not_record_a_cast_rollback():
+    # PayCosts requires validated payment/cancellation, never generic AutoResp.
+    bridge = _DummyBridge()
+    eng = _engine(bridge)
     eng._last_cast_submitted = (5, "ruthless negotiation")
     eng._last_cast_submitted_ts = time.monotonic()
     gs = _state(5, _bridge_request_type="PayCosts")
-    eng._try_auto_respond_escape(gs, "test")
-    assert eng._cast_rollback_counts.get((5, "ruthless negotiation")) == 1
+    assert eng._try_auto_respond_escape(gs, "test") is False
+    assert bridge.auto_respond_calls == 0
+    assert (5, "ruthless negotiation") not in eng._cast_rollback_counts
 
 
 def test_escape_blocked_on_young_window():

@@ -75,13 +75,15 @@ def test_out_of_band_harmful_cost_pays_when_llm_says_pay():
     assert eng._should_decline_optional_cost(_go_shintai_state()) is None
 
 
-def test_own_fresh_cast_always_auto_pays():
+def test_own_fresh_cast_with_matching_source_auto_pays():
     # The normal casting flow: autopilot cast something seconds ago; the
     # PayCosts belongs to it. No LLM call, no decline.
     eng = _engine()
     eng._last_cast_submitted = (14, "rampant growth")
     eng._last_cast_submitted_ts = time.monotonic()
-    assert eng._should_decline_optional_cost(_go_shintai_state()) is None
+    state = _go_shintai_state()
+    state["stack"][0]["name"] = "Rampant Growth"
+    assert eng._should_decline_optional_cost(state) is None
 
 
 def test_stale_own_cast_does_not_bless_the_cost():
@@ -99,11 +101,11 @@ def test_non_cancellable_cost_keeps_auto_pay():
     assert eng._should_decline_optional_cost(_go_shintai_state(can_cancel=False)) is None
 
 
-def test_benign_trigger_keeps_auto_pay():
+def test_beneficial_mana_trigger_declines_when_planner_unavailable():
     eng = _engine()
     state = _go_shintai_state()
     state["stack"][0]["oracle_text"] = "you may pay {2}. if you do, draw a card."
-    assert eng._should_decline_optional_cost(state) is None
+    assert "optional mana cost" in eng._should_decline_optional_cost(state)
 
 
 def test_command_zone_cast_requires_ok_tag():
@@ -130,3 +132,71 @@ def test_command_zone_cast_requires_ok_tag():
     legal_ok = ["Cast Hei Bai, Forest Guardian [OK]", "Pass"]
     out = p._filter_legal_actions_for_planning(state, legal_ok)
     assert "Cast Hei Bai, Forest Guardian [OK]" in out
+
+
+def test_vendor_payment_respects_planner_reservation_decision():
+    state = _go_shintai_state()
+    state["stack"][0].update(
+        name="Spellbook Vendor",
+        oracle_text=(
+            "At the beginning of combat on your turn, you may pay {o1}. "
+            "When you do, create a Sorcerer Role token attached to target creature you control."
+        ),
+    )
+    assert "LLM chose decline" in _engine(_DeclinePlanner())._should_decline_optional_cost(state)
+    assert _engine(_PayPlanner())._should_decline_optional_cost(state) is None
+
+
+def test_free_beneficial_optional_trigger_does_not_add_payment_call():
+    state = _go_shintai_state()
+    state["stack"][0]["oracle_text"] = "You may draw a card."
+    assert _engine(_DeclinePlanner())._should_decline_optional_cost(state) is None
+
+
+def test_optional_payment_prompt_includes_same_turn_reservation():
+    from unittest.mock import Mock
+
+    from arenamcp.action_planner import ActionPlanner
+
+    planner = ActionPlanner(Mock())
+    state = _go_shintai_state()
+    planner._memory().note(state, "ActionsAvailable", "Pass", "Hold W for Rescue.")
+    planner._call_llm = Mock(return_value='{"pay": false, "reasoning": "Keep Rescue available"}')
+    assert planner.plan_pay_or_decline("Spellbook Vendor", "You may pay {1}.", state) is False
+    system, prompt = planner._call_llm.call_args.args[:2]
+    assert "Hold W for Rescue" in prompt
+    assert "mana reserved for protection" in system
+
+
+def test_fresh_unrelated_cast_does_not_bypass_optional_payment_review():
+    eng = _engine(_DeclinePlanner())
+    eng._last_cast_submitted = (14, "rampant growth")
+    eng._last_cast_submitted_ts = time.monotonic()
+    state = _go_shintai_state()
+    assert "LLM chose decline" in eng._should_decline_optional_cost(state)
+    state["stack"][0].update(
+        name="Spellbook Vendor", oracle_text="You may pay {1}. If you do, create a Role token."
+    )
+    assert "LLM chose decline" in eng._should_decline_optional_cost(state)
+
+
+def test_typed_recent_play_checks_id_resolved_payment_source():
+    eng = _engine(_DeclinePlanner())
+    eng._recent_own_play_name = lambda state: "Rampant Growth"
+    assert eng._paying_for_own_play(_go_shintai_state()) is False
+
+
+def test_unresolved_explicit_source_does_not_inherit_recent_cast():
+    eng = _engine()
+    eng._last_cast_submitted = (14, "rampant growth")
+    eng._last_cast_submitted_ts = time.monotonic()
+    state = _go_shintai_state()
+    state["decision_context"]["sourceId"] = 12345
+    assert eng._paying_for_own_play(state) is False
+
+
+def test_payment_on_later_turn_does_not_inherit_legacy_cast():
+    eng = _engine()
+    eng._last_cast_submitted = (13, "go-shintai of hidden cruelty")
+    eng._last_cast_submitted_ts = time.monotonic()
+    assert eng._paying_for_own_play(_go_shintai_state()) is False

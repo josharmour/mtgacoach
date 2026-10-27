@@ -254,7 +254,9 @@ class DecksTab(QWidget):
         self._collection = {int(grp_id): int(count) for grp_id, count in cards.items()}
         wildcards = payload.get("wildcards") or {}
         self._wildcards = {str(k): int(v) for k, v in wildcards.items()}
-        balance = ", ".join(f"{self._wildcards.get(r, 0)} {r[:3]}" for r in ("common", "uncommon", "rare", "mythic"))
+        balance = ", ".join(
+            f"{self._wildcards.get(r, 0)} {r[:3]}" for r in ("common", "uncommon", "rare", "mythic")
+        )
         self._summary.setText(
             f"{len(self._collection)} printings owned · wildcards: {balance}"
             f" · gold {payload.get('gold', 0)} · gems {payload.get('gems', 0)}"
@@ -290,7 +292,11 @@ class DecksTab(QWidget):
             **{pile: deck.get(pile) or [] for pile in ("main", "sideboard", "command_zone", "companions")},
         }
         self._editor = DeckEditorDialog(
-            self._session, record, collection=self._collection, wildcards=self._wildcards, parent=self.window()
+            self._session,
+            record,
+            collection=self._collection,
+            wildcards=self._wildcards,
+            parent=self.window(),
         )
         self._editor.show()
 

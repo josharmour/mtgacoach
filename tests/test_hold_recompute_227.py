@@ -74,9 +74,9 @@ def test_after_our_strike_resolves_the_hold_yields_and_hazard_goes():
     model = _Model(_reply("tgt:338", "Strike the Drake; Hazard finishes it."))
     planner = _planner(model)
     # The target step of the Strike (the spell is on the stack).
-    assert planner.plan_decision_options(
-        _targets("Lightning Strike", [338]), _strike_target_state()
-    ) == ["tgt:338"]
+    assert planner.plan_decision_options(_targets("Lightning Strike", [338]), _strike_target_state()) == [
+        "tgt:338"
+    ]
     assert planner._resolved_burn_marks().get("damage", {}).get(338) == 3
 
     # The very next window: same snapshot shape, Drake still undamaged on paper.
@@ -95,9 +95,9 @@ def test_after_our_strike_resolves_the_hold_yields_and_hazard_goes():
 def test_the_mark_expires_with_the_turn():
     model = _Model(_reply("tgt:338", "Strike."))
     planner = _planner(model)
-    assert planner.plan_decision_options(
-        _targets("Lightning Strike", [338]), _strike_target_state()
-    ) == ["tgt:338"]
+    assert planner.plan_decision_options(_targets("Lightning Strike", [338]), _strike_target_state()) == [
+        "tgt:338"
+    ]
     target_calls = len(model.efforts)
     next_turn = _t14_main()
     next_turn["turn"]["turn_number"] = 15

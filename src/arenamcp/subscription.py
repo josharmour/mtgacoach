@@ -452,18 +452,12 @@ def request_trial_key(email: str, code: str, timeout: int = 10) -> dict:
         if e.code == 403:
             return {
                 "status": "trial_expired",
-                "message": (
-                    f"Your free trial has ended. Subscribe at {SUBSCRIBE_URL} to keep coaching."
-                ),
+                "message": (f"Your free trial has ended. Subscribe at {SUBSCRIBE_URL} to keep coaching."),
             }
         if e.code == 422:
             status_map = {
-                "email_verification_required": (
-                    "We need to verify your email first — request a fresh code."
-                ),
-                "invalid_code": (
-                    "That code isn't right or has expired. Request a new one and try again."
-                ),
+                "email_verification_required": ("We need to verify your email first — request a fresh code."),
+                "invalid_code": ("That code isn't right or has expired. Request a new one and try again."),
             }
             if detail in status_map:
                 return {"status": detail, "message": status_map[detail]}

@@ -168,6 +168,10 @@ def _player(state: dict, seat: int | None) -> dict:
 
 _TARGET_PHRASE = r"target (?P<what>(?:[a-z-]+,? (?:or )?)*?(?:creature|permanent|planeswalker)s?)"
 _DESTROY = re.compile(r"\b(?:destroy|exile) " + _TARGET_PHRASE)
+_BLINK_RETURN = re.compile(
+    r"^exile\b[^.;\n]*?(?:[.;]\s*)?\breturn (?:it|them|that card|those cards)\b"
+    r"[^.;\n]*?\b(?:to|onto) the battlefield\b[^.;\n]*"
+)
 _DAMAGE = re.compile(
     r"\bdeals? (?P<n>\d+|x) damage to (?:target|any target|each creature|each (?:other )?creature"
     r"|each creature (?:and planeswalker )?(?:your opponents|an opponent) controls?|up to)"
@@ -315,6 +319,25 @@ def _ours_only(words: str) -> bool:
     )
 
 
+def _immediate_blink(text: str, start: int) -> bool:
+    """An exile clause immediately returns its target to the same side.
+
+    Planar Incision is not a lasting answer to a nontoken threat. Its ETB,
+    counters, attachment reset and token exception need contextual reasoning;
+    the simple removal forecast cannot count those as a removed creature.
+    Delayed returns and return under our control remain separate effects.
+    """
+    match = _BLINK_RETURN.match(text[start:])
+    if match is None:
+        return False
+    effect = match.group()
+    return not re.search(
+        r"\bat (?:the )?(?:beginning|end)\b|\buntil\b|\bnext (?:turn|end step|upkeep)\b"
+        r"|\bunder your control\b",
+        effect,
+    )
+
+
 def _removal_clauses(card: dict) -> list[_Clause]:
     """Every clause of the card's cast text that removes an opposing creature."""
     text = _cast_text(card)
@@ -327,7 +350,11 @@ def _removal_clauses(card: dict) -> list[_Clause]:
 
     for match in _DESTROY.finditer(text):
         what = match.group("what")
-        if "noncreature" not in what and ("creature" in what or "permanent" in what):
+        if (
+            "noncreature" not in what
+            and ("creature" in what or "permanent" in what)
+            and not _immediate_blink(text, match.start())
+        ):
             add("destroy", None, match.start())
     for match in _DAMAGE.finditer(text):
         amount = _int(match.group("n"))
@@ -646,9 +673,7 @@ def _combat_life(attackers: list[dict], blockers: list[dict], life: int, *, deta
     drain is not life gained.
     """
     if not attackers:
-        return (
-            (0, set(), set(), 0, 0, 0, 0, {}, set()) if detail else (0, set(), set(), 0, 0, 0, 0)
-        )
+        return (0, set(), set(), 0, 0, 0, 0, {}, set()) if detail else (0, set(), set(), 0, 0, 0, 0)
     blockers = [b for b in blockers if b["_can_block"]]
     groups: dict[int, list[dict]] = {}
     if blockers:
@@ -685,16 +710,8 @@ def _combat_life(attackers: list[dict], blockers: list[dict], life: int, *, deta
         if group and outcome.attacker_died:
             dead_attackers.add(attacker["instance_id"])
         dead_blockers.update(dead["instance_id"] for dead in outcome.blockers_died)
-        for blocker in group:
-            if blocker["power"] <= 0 or not _lifelink(blocker):
-                continue
-            striker = _first_striker(attacker) and not _first_striker(blocker)
-            if striker and any(dead is blocker for dead in outcome.blockers_died):
-                continue  # killed in the first-strike step, before it dealt damage
-            twice = has_combat_keyword(blocker, "double strike") and not outcome.attacker_died
-            gain = blocker["power"] * (2 if twice else 1)
-            defender_lifelink += gain
-            defender_gain += gain
+        defender_lifelink += outcome.blocker_life_gained
+        defender_gain += outcome.blocker_life_gained
     if detail:
         used = {b["instance_id"] for group in groups.values() for b in group}
         return (
@@ -753,9 +770,7 @@ def _attack_once(
     if not full[1]:
         return full
     survivors = [a for a in attackers if a["instance_id"] not in full[1]]
-    held = (
-        _combat_life(survivors, blockers, life) if survivors else (0, set(), set(), 0, 0, 0, 0)
-    )
+    held = _combat_life(survivors, blockers, life) if survivors else (0, set(), set(), 0, 0, 0, 0)
     if held[0] <= 0 and not held[2]:
         held = (0, set(), set(), 0, 0, 0, 0)
     return full if full[0] - full[4] > held[0] - held[4] else held
@@ -1531,6 +1546,7 @@ def _signature(state: dict) -> tuple:
             _controller(c),
             c.get("turn_entered_battlefield"),
             tuple(c.get("keywords") or ()),
+            tuple(c.get("protection_from_players") or ()),
         )
         for c in state.get("battlefield") or []
         if isinstance(c, dict)
@@ -2081,7 +2097,8 @@ def _assess(state: dict) -> BoardAssessment | None:
     # Their mill clock against our library: an engine on board or observed Mill
     # transfers out of our library (decking_clock). Never raises.
     try:
-        from arenamcp.decking_clock import decking_threat, role_note as decking_role_note
+        from arenamcp.decking_clock import decking_threat
+        from arenamcp.decking_clock import role_note as decking_role_note
 
         decking = decking_threat(state)
     except Exception as error:
@@ -2864,7 +2881,7 @@ def _spell_traits(card: dict) -> tuple[str, set[str] | None]:
     return types, (set(colors) if colors is not None else _body_colors(card))
 
 
-def _protected_from(body: dict, card: dict, *, targeted: bool = True) -> bool:
+def _protected_from(body: dict, card: dict, *, targeted: bool = True, damage: bool = True) -> bool:
     """The body has protection (or, for a ``targeted`` effect, hexproof) from a quality
     ``card`` (the spell) has.
 
@@ -2872,6 +2889,14 @@ def _protected_from(body: dict, card: dict, *, targeted: bool = True) -> bool:
     instants" read as targetable by an all-instant burn hand. A spell whose
     type or colour is unknown counts as having none of them.
     """
+    from arenamcp.player_protection import protected_from_player_source
+
+    # Protection prevents targeting and damage, not untargeted destruction,
+    # exile, bounce or -X/-X. Hexproof below only applies to targeting.
+    if not targeted and not damage:
+        return False
+    if protected_from_player_source(body, card):
+        return True
     text = _text(body.get("_card") or body)
     if " from " not in text:
         return False
@@ -3002,7 +3027,7 @@ def _kills(
     for clause in _removal_clauses(card):
         if not _legal_target(clause, body, attacking=attacking, ward_mana=ward_mana):
             continue
-        if _protected_from(body, card, targeted=clause.targeted):
+        if _protected_from(body, card, targeted=clause.targeted, damage=clause.kind in ("damage", "fight")):
             continue
         if clause.kind in ("damage", "shrink"):
             if (

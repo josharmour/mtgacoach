@@ -25,7 +25,7 @@ from arenamcp.game_plan import decision_claim_notes
 
 US, THEM = 1, 2
 NO_TRIGGER = "{} is a creature spell: casting it triggers no noncreature-spell ability (prowess)"
-SICK = "{} is summoning sick: it can't attack, tap or make an attack trigger this turn"
+SICK = "{} is summoning sick: it can't attack or activate its own {{T}}/{{Q}} abilities this turn"
 
 
 def _card(iid: int, name: str, seat: int = US, **extra) -> dict:
@@ -143,4 +143,35 @@ def test_a_creature_already_sick_on_the_board_planned_to_attack_is_still_flagged
     board = _state([fresh, VALKYRIE], [])
     assert decision_claim_notes("Attack with Emberheart Challenger to force the block.", board) == [
         SICK.format("Emberheart Challenger")
+    ]
+
+
+@pytest.mark.parametrize("attack_owner", ["my", "my own", "our", "their"])
+def test_effect_on_another_attack_is_not_sick_creature_attacking(attack_owner):
+    fresh = _card(344, "Hired Claw", turn_entered_battlefield=10, keywords=[], oracle_text="")
+    fresh["name"] = "Kogla, the Titan Ape"
+    board = _state([fresh], [])
+    text = (
+        "Lethal is already on the board; Heroic Intervention answers nothing and "
+        f"Kogla's bounce only weakens {attack_owner} attack, so move to combat."
+    )
+    assert decision_claim_notes(text, board) == []
+    assert decision_claim_notes("Kogla attacks this turn.", board) == [SICK.format(fresh["name"])]
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Tap the summoning-sick Camera Launcher to crew Aetherhive, preserving Lagac as an attacker.",
+        "Camera Launcher crews Aetherhive this turn.",
+        "Camera Launcher: tap it to crew Aetherhive.",
+    ],
+)
+def test_sick_creature_can_pay_crew_cost(reason):
+    fresh = _card(344, "Hired Claw", turn_entered_battlefield=10, keywords=[], oracle_text="")
+    fresh["name"] = "Camera Launcher"
+    state = _state([fresh], [])
+    assert decision_claim_notes(reason, state) == []
+    assert decision_claim_notes("Camera Launcher attacks this turn.", state) == [
+        SICK.format("Camera Launcher")
     ]

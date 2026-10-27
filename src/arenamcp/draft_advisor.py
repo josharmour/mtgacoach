@@ -10,6 +10,7 @@ import re
 from collections import Counter
 from typing import Any
 
+from arenamcp.draft_autopick import opening_pick
 from arenamcp.draft_guidance import COLOR_LETTERS, FormatContext, analyze_pool, compute_lane, normalize_card
 from arenamcp.draft_plan import plan_colors
 from arenamcp.limited_rules import rules_profile, synergy_evidence, synergy_graph
@@ -60,7 +61,7 @@ Early picks should preserve flexibility. As the actual pool develops, settle on
 supported main colors and a specific game plan. Continue that plan unless card
 quality, real pool support, or mana justify changing it; explain a change.
 Lane discipline (how strong drafters commit): picks 1-4 of pack 1 take the best
-card and declare NO lane (lane = ""); describe a lean in plan if you like. From pick
+card and declare NO lane (lane = ""); keep plan open without prescribing a deck. From pick
 5 on, a lane may be declared only when the ACTUAL pool already casts at least two
 cards in it and no other pair casts clearly more; a single bomb is a lean, not a
 lane. color_signals (0-1 per color) say how strongly good cards of that color have
@@ -81,23 +82,37 @@ density, removal, mana requirements, and top-end saturation. Avoid a deck of fiv
 creatures and buffs with no early board. Off-color cards need realistic fixing.
 Do not spend picks on ordinary basic lands while useful spells remain in the pack.
 
-Draft the DECK, not the best card. In order of importance:
-1. Lane: stay castable in the deck we are building (deck_plan, previous_lane).
-2. The planned archetype: set_strategy is this set's pre-draft research (archetype
+Start with standalone card quality and castability, then weigh demonstrated deck fit.
+Opening picks (draft_stage = "opening") take standalone power and flexibility:
+an empty or tiny pool has no binding curve holes or synergy requirements. Do not
+prefer an ordinary role-player because it fits a speculative deck or future cards.
+Once a supported lane exists, compare the following factors together:
+1. Quality: quality_band (strong / good / average / below average / weak /
+   rarely played / unknown) summarizes 17lands results; "unknown" is not weak.
+   Quality is a baseline, not merely a tie-breaker. A narrow synergy link does not
+   by itself make a weak card better than a strong, playable standalone card.
+2. Castability: account for real fixing and costs (deck_plan, previous_lane).
+3. The planned archetype: set_strategy is this set's pre-draft research (archetype
    tiers, plans, engines, payoffs, enablers, synergy notes, traps). deck_plan lists
    the live archetypes for this pool, each with its engine and what the pool already
    holds (creatures, two-drops, removal, card advantage, finishers, engine enablers
    and payoffs). Fill what the deck lacks: a payoff when enablers are plentiful,
    enablers when payoffs wait for them, removal and early creatures when short.
-3. Rules-text synergy with cards ALREADY drafted (supported_synergies, card text).
-4. Card quality: quality_band (strong / good / average / below average / weak /
-   rarely played / unknown) summarizes 17lands results. It is about a quarter of the
-   decision: it breaks ties between cards that serve the deck about equally, and a
-   true bomb can still be worth a lane change early. "unknown" is not weak.
-heuristic_rankings is the deterministic ranking on exactly these terms (rank,
-deck_value, quality_band, why); pick from its top cards unless the card rules
-show it missed something. Never cite win-rate numbers; none are supplied. If card
+4. Rules-text synergy with cards ALREADY drafted (supported_synergies, card text).
+   A supported link is not necessarily profitable: weigh activation costs, lost
+   mana production, and leave-the-battlefield effects such as returning an exiled enemy.
+   Read edge cautions: source_id identifies the card whose sacrifice has the cost.
+heuristic_rankings is a fallible deterministic estimate (rank, deck_value,
+quality_band, why). With unknown ratings, inspect card rules rather than treating
+its order as measured card quality. Explain why the strongest plausible alternative
+loses, including any power sacrificed for fit. Never cite win-rate numbers; none are supplied. If card
 rules are missing, say so and avoid invented synergy.
+For Cube events, retail-set archetype tiers and ratings are not Cube evidence.
+Never invent a tier for a color pair. In Powered Cube explicitly compare fast mana,
+efficient card advantage and standalone engines against ordinary curve fillers,
+especially before a lane is established. Evaluate mana artifacts as acceleration,
+not just as future sacrifice fodder. Distinguish cards actually in our pool from
+support we might see later; possible future Moxes do not establish an artifact deck.
 
 Pick ONLY from pack_choices: every picks[].grp_id must appear in pickable_grp_ids.
 already_drafted_not_pickable lists cards we already own; they can never be picked again.
@@ -116,7 +131,13 @@ present in supported_synergies; it lists conservative rules-text enabler/payoff
 links, not guaranteed trigger frequency. Explain the
 actual condition and costs. For unmodeled interactions, explain card roles instead
 of claiming a verified synergy. Loyalty counters never substitute for +1/+1 counters.
-An alternative is optional. Keep each explanation under 40 words.
+When passing a higher quality_band card, alternative must identify the strongest
+higher-band card left in the pack. Explain the concrete trade-off: the actual pool's
+missing role (cite counts only if you counted them, or name the relevant owned cards),
+what this pick adds, and what power you give up. "In lane" or "synergy" alone is not
+an explanation. Distinguish a demonstrated shortage from a speculative preference;
+say when the choice is uncertain. Never claim that deck fit proves higher win rate.
+An alternative is optional only when no higher-band card is passed. Keep each explanation under 40 words.
 """
 
 
@@ -140,7 +161,7 @@ def _plan_lane(plan: str, stated: Any, archetypes: list[dict] | None) -> dict[st
             parsed.main,
             plan,
         )
-    return {"lane": parsed.main or stated, "splash": parsed.splash}
+    return {"lane": parsed.main or ("" if parsed.uncommitted else stated), "splash": parsed.splash}
 
 
 # 2026-10-10 FRA quick draft: the spoken lane went BG, RG, BG, UG, RG, UB, BG, BG
@@ -447,6 +468,10 @@ class DraftAdvisor:
         self._lane = ""  # the validated pair the current plan commits to, "" while open
         self._splash = ""
 
+    def set_plan_context(self, plan: str, lane: str, splash: str) -> None:
+        """Use the driver's accepted plan, not a recommendation it may veto."""
+        self._plan, self._lane, self._splash = plan, lane, splash
+
     def _complete(
         self,
         message: str,
@@ -530,6 +555,16 @@ class DraftAdvisor:
             self._splash = ""
         self._event_name = event_name
         self._pool_size = len(pool)
+        opening = opening_pick(
+            int(pack.get("pack_number") or 1),
+            pack.get("pick_number"),
+            len(pool),
+            int(pack.get("picks_per_pack") or 1),
+        )
+        if opening:
+            # A rejected color code is insufficient: its prose plan otherwise
+            # becomes the next pick's premise (Oct 25 Cube P1p1-4).
+            self._plan = self._lane = self._splash = ""
         if self._pending is not None and not self._pending.done():
             return fallback
         required = min(max(1, int(pack.get("picks_per_pack") or 1)), len(cards))
@@ -545,9 +580,21 @@ class DraftAdvisor:
                 details["pool_grp_id"] = details.pop("grp_id")
                 counted_pool[grp_id] = {**details, "copies": 0}
             counted_pool[grp_id]["copies"] += 1
-        graph = synergy_graph(cards + pool)
+        pack_ids = {card["grp_id"] for card in cards}
+        pool_ids = {card["grp_id"] for card in pool}
+        graph = [
+            edge
+            for edge in synergy_graph(cards + pool)
+            if (edge["source_id"] in pack_ids and edge["payoff_id"] in pool_ids)
+            or (edge["payoff_id"] in pack_ids and edge["source_id"] in pool_ids)
+            or (required > 1 and edge["source_id"] in pack_ids and edge["payoff_id"] in pack_ids)
+        ]
+        summary = pool_summary(pool)
+        if opening:
+            summary["main_colors"] = []
         request: dict[str, Any] = {
             "event": event_name,
+            "draft_stage": "opening" if opening else "established" if self._lane else "open",
             "pack_number": pack.get("pack_number"),
             "pick_number": pack.get("pick_number"),
             "picks_required": required,
@@ -565,10 +612,10 @@ class DraftAdvisor:
                 "previous_lane": self._lane,
                 "color_signals": pack.get("color_signals") or {},
                 "already_drafted_not_pickable": list(counted_pool.values()),
-                "pool_summary": pool_summary(pool),
+                "pool_summary": summary,
                 "heuristic_rankings": [_without_win_rates(row) for row in fallback.get("evaluations") or []],
                 "set_strategy": pack.get("set_strategy") or {},
-                "deck_plan": pack.get("deck_plan") or [],
+                "deck_plan": [] if opening else pack.get("deck_plan") or [],
             }
         )
         message = json.dumps(request, ensure_ascii=False)
@@ -617,6 +664,11 @@ class DraftAdvisor:
         if why:
             logger.info("Draft splash dropped: %s (%s)", why, result["plan"])
         result["splash"] = splash if lane else ""
+        if opening:
+            result.setdefault("rejected_plan", result["plan"])
+            result.update(
+                plan="Stay open; prioritize standalone power and flexibility.", lane="", splash="", needs=[]
+            )
         self._plan = result["plan"]
         self._lane = str(result.get("lane") or "")
         self._splash = str(result.get("splash") or "")
@@ -716,4 +768,37 @@ class DraftAdvisor:
             reason = _text(alternative.get("reason"))
             if type(grp_id) is int and available[grp_id] > 0 and reason:
                 result["alternative"] = {"grp_id": grp_id, "name": names[grp_id], "reason": reason}
+        # Preserve a reviewable comparison through the driver's reason channel.
+        # These are supplied 17Lands quality bands, never Untapped scores.
+        bands = {
+            name: rank
+            for rank, name in enumerate(
+                ("rarely played", "weak", "below average", "average", "good", "strong")
+            )
+        }
+        details = {card["grp_id"]: _card_details(card) for card in cards}
+        remaining = [
+            c for c in cards if available[c["grp_id"]] > 0 and details[c["grp_id"]]["quality_band"] in bands
+        ]
+        for pick in selected:
+            band = details[pick["grp_id"]]["quality_band"]
+            if band not in bands or not remaining:
+                continue
+            top_rank = max(bands[details[c["grp_id"]]["quality_band"]] for c in remaining)
+            if top_rank <= bands[band]:
+                continue
+            leaders = [c for c in remaining if bands[details[c["grp_id"]]["quality_band"]] == top_rank]
+            alt = result.get("alternative", {})
+            leader = next((c for c in leaders if c["grp_id"] == alt.get("grp_id")), leaders[0])
+            comparison = (
+                f"Rating trade-off: {pick['name']} is {band}; {leader['name']} is "
+                f"{details[leader['grp_id']]['quality_band']} in the supplied 17Lands bands. "
+            )
+            comparison += (
+                f"Coach's rationale: {alt['reason']} (judgment, not proven advantage)."
+                if alt.get("grp_id") == leader["grp_id"]
+                else "No comparison with this higher-rated alternative was supplied; this choice is unverified."
+            )
+            pick["rating_tradeoff"] = comparison
+            pick["reason"] += " " + comparison
         return result

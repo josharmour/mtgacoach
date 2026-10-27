@@ -4,8 +4,10 @@ import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from arenamcp.autopilot import AutopilotEngine
-from arenamcp.play_safety import affordable_x, exact_mana_total, unsafe_play_reason
+from arenamcp.play_safety import affordable_x, exact_mana_total, unsafe_play_reason, x_choice_reason
 
 
 def board():
@@ -158,3 +160,151 @@ def test_own_omen_is_not_mistaken_for_manual_play():
     assert engine._self_cancel_withheld(
         state, "ActionType_CastOmen", 345, name=engine._typed_play_name(state, option)
     )
+
+
+def test_fixed_multi_mana_source_restores_exact_x_limit():
+    state = board()
+    state["battlefield"][2] = {
+        "instance_id": 3,
+        "controller_seat_id": 2,
+        "type_line": "Artifact",
+        "name": "Sol Ring",
+        "oracle_text": "{oT}: Add {oC}{oC}.",
+    }
+    assert exact_mana_total(state) == 3
+    assert affordable_x(state, {"mana_cost": "{X}{G}"}) == 2
+    assert "largest affordable X is 2" in x_choice_reason(state, {"mana_cost": "{X}{G}"}, 3)
+    assert x_choice_reason(state, {"mana_cost": "{X}{G}"}, 2) == ""
+    assert affordable_x(state, {"mana_cost": "{X}{X}{G}"}) == 1
+    state["battlefield"][2]["is_tapped"] = True
+    assert exact_mana_total(state) == 1
+
+
+def test_fixed_multi_mana_does_not_override_other_unknown_sources():
+    state = board()
+    state["battlefield"].append(
+        {
+            "instance_id": 6,
+            "controller_seat_id": 2,
+            "type_line": "Artifact",
+            "name": "Sol Ring",
+            "oracle_text": "{T}: Add {C}{C}.",
+        }
+    )
+    state["battlefield"][2]["is_tapped"] = False  # variable Nykthos
+    assert exact_mana_total(state) is None
+
+
+def test_conditional_or_costly_multi_mana_remains_unknown():
+    for text in ("{1}, {T}: Add {G}{G}.", "{T}: Add {G}{G}. Activate only if you control a creature."):
+        state = board()
+        state["battlefield"].append(
+            {
+                "instance_id": 6,
+                "controller_seat_id": 2,
+                "type_line": "Artifact",
+                "oracle_text": text,
+            }
+        )
+        assert exact_mana_total(state) is None
+
+
+def test_paid_single_mana_filter_does_not_create_extra_mana():
+    state = board()
+    state["battlefield"].append(
+        {
+            "instance_id": 6,
+            "controller_seat_id": 2,
+            "type_line": "Artifact",
+            "name": "Mana filter",
+            "oracle_text": "{1}, {T}: Add {G}.",
+        }
+    )
+    assert exact_mana_total(state) == 1  # Forest's one mana only changes color
+    assert affordable_x(state, {"mana_cost": "{X}{G}"}) == 0
+    state["battlefield"][1]["is_tapped"] = True
+    assert exact_mana_total(state) == 0  # filter cannot start itself
+    state["battlefield"][-1]["is_tapped"] = True
+    assert exact_mana_total(state) == 0
+
+
+def test_fetch_land_does_not_pay_x_before_search_resolves():
+    state = {
+        "local_seat_id": 2,
+        "turn": {"turn_number": 4},
+        "battlefield": [
+            {
+                "instance_id": i,
+                "controller_seat_id": 2,
+                "name": "Forest",
+                "type_line": "Basic Land — Forest",
+                "oracle_text": "{T}: Add {G}.",
+            }
+            for i in (1, 2)
+        ],
+    }
+    fetch = {
+        "instance_id": 3,
+        "controller_seat_id": 2,
+        "name": "Misty Rainforest",
+        "type_line": "Land",
+        "oracle_text": "{oT}, Pay 1 life, Sacrifice this land: Search your library for a Forest or Island card, put it onto the battlefield, then shuffle.",
+    }
+    state["battlefield"].append(fetch)
+    assert exact_mana_total(state) == 2
+    assert affordable_x(state, {"mana_cost": "{X}{G}{G}"}) == 0
+    # A fetch utility alongside a real mana ability must retain its mana.
+    fetch["oracle_text"] = (
+        "{T}: Add {C}. {2}, {T}, Sacrifice this land: Search your library for a basic land card."
+    )
+    assert exact_mana_total(state) == 3
+    # Once the fetch resolves, the new untapped Forest can pay normally.
+    state["battlefield"][-1] = dict(state["battlefield"][0], instance_id=4)
+    assert exact_mana_total(state) == 3
+
+
+@pytest.mark.parametrize("tapped,expected", [(False, 2), (True, 1)])
+def test_channel_self_discount_does_not_disable_x_ceiling(tapped, expected):
+    state = {
+        "local_seat_id": 2,
+        "battlefield": [
+            {"controller_seat_id": 2, "type_line": "Land", "name": "Forest", "oracle_text": "{T}: Add {G}."},
+            {
+                "controller_seat_id": 2,
+                "type_line": "Legendary Land",
+                "name": "Boseiju, Who Endures",
+                "is_tapped": tapped,
+                "oracle_text": "{oT}: Add {oG}.\n<i>Channel</i> — {o1oG}, Discard this card: Destroy target artifact. This ability costs {o1} less to activate for each legendary creature you control.",
+            },
+        ],
+    }
+    assert exact_mana_total(state) == expected
+    state["battlefield"][1]["oracle_text"] += " Green spells you cast cost {1} less to cast."
+    assert exact_mana_total(state) is None
+
+
+def test_visible_subtype_mana_count_counts_each_ready_source_once():
+    state = {
+        "local_seat_id": 2,
+        "turn": {"turn_number": 12},
+        "battlefield": [
+            {
+                "instance_id": i,
+                "controller_seat_id": 2,
+                "type_line": "Creature — Halfling Advisor",
+                "name": "The Notary Hobbits",
+                "turn_entered_battlefield": 8,
+                "oracle_text": "When this enters, create two tokens.\n{T}: Add {C} for each Halfling you control.",
+            }
+            for i in (1, 2)
+        ],
+    }
+    assert exact_mana_total(state) == 4
+    state["battlefield"][1]["is_tapped"] = True
+    assert exact_mana_total(state) == 2  # tapped Halfling still contributes to the count
+    state["battlefield"].append({"controller_seat_id": 1, "type_line": "Creature — Halfling"})
+    assert exact_mana_total(state) == 2
+    state["battlefield"].append(
+        {"controller_seat_id": 2, "type_line": "Creature — Shapeshifter", "oracle_text": "Changeling"}
+    )
+    assert exact_mana_total(state) is None

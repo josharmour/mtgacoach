@@ -1011,6 +1011,14 @@ def start_watching() -> None:
     handler = create_game_state_handler(game_state)
     parser.register_handler("GreToClientEvent", handler)
 
+    # Keep semantic input evidence before a later bug click, including a
+    # request that has already cleared after the player manually recovered.
+    from arenamcp.recovery_trace import install_recovery_trace
+
+    install_recovery_trace(
+        parser, lambda: {"match_id": game_state.match_id, "game_number": game_state.game_number}
+    )
+
     # Wire up match creation handler to capture local seat ID
     parser.register_handler("MatchCreated", _handle_match_created)
     parser.register_handler("MatchGameRoomStateChangedEvent", _handle_match_created)
@@ -1424,6 +1432,11 @@ def _serialize_game_object(obj) -> dict[str, Any]:
     if source_card:
         result["source_card"] = source_card
 
+    serialized = obj.to_dict()
+    for key in ("chosen_player_links", "protection_from_players"):
+        if serialized.get(key):
+            result[key] = serialized[key]
+
     return result
 
 
@@ -1546,6 +1559,8 @@ def _serialize_snapshot_obj(obj: dict[str, Any]) -> dict[str, Any]:
         "granted_abilities",
         "keywords",
         "ability_grp_ids",
+        "chosen_player_links",
+        "protection_from_players",
         "removed_abilities",
         "damaged_this_turn",
         "damage",
@@ -1613,7 +1628,11 @@ def _serialize_bridge_card(
                 "face_down": face_down,
                 "face_down_reason": card.get("face_down_reason") or fallback.get("face_down_reason"),
                 "card_types": card.get("card_types") or fallback.get("card_types"),
-                "ability_grp_ids": card.get("ability_grp_ids") or fallback.get("ability_grp_ids"),
+                "ability_grp_ids": (
+                    card["ability_grp_ids"]
+                    if card.get("ability_grp_ids") is not None
+                    else fallback.get("ability_grp_ids")
+                ),
             }
         )
 
@@ -1672,6 +1691,8 @@ def _serialize_bridge_card(
         "granted_abilities",
         "keywords",
         "ability_grp_ids",
+        "chosen_player_links",
+        "protection_from_players",
         "removed_abilities",
         "damaged_this_turn",
         "crewed_this_turn",
@@ -1684,9 +1705,14 @@ def _serialize_bridge_card(
         "is_room",
         "door_token_seen",
     ):
-        fallback_value = fallback.get(key)
-        if fallback_value:
-            result[key] = copy.deepcopy(fallback_value)
+        # The live bridge wins when it reports a field, including empty
+        # collections/False/zero that clear an old log effect. Missing or
+        # unknown fields still use the log for older bridge versions.
+        value = card.get(key)
+        if value is None:
+            value = fallback.get(key)
+        if value is not None:
+            result[key] = copy.deepcopy(value)
 
     if card.get("loyalty") is not None:
         result["loyalty"] = _coerce_int(card.get("loyalty"))
@@ -1975,6 +2001,24 @@ def _get_bridge_overlay(
         overlay["_bridge_state_stale"] = True
         return overlay
 
+    # Mac reflection bounds VisibleCards, while TotalCardCount is read separately.
+    # Never replace the log's complete public board with a truncated bridge read:
+    # missing late objects can erase attackers and make legal blocks unverifiable.
+    public_zones = bridge_state.get("zones")
+    battlefield_zone = public_zones.get("battlefield") if isinstance(public_zones, dict) else None
+    if isinstance(battlefield_zone, dict):
+        total = battlefield_zone.get("total_count")
+        visible = battlefield_zone.get("cards")
+        visible_count = sum(isinstance(card, dict) for card in visible) if isinstance(visible, list) else 0
+        if type(total) is int and total > visible_count:
+            logger.debug(
+                "Bridge battlefield incomplete (%s/%s objects); keeping the log's board",
+                visible_count,
+                total,
+            )
+            overlay["_bridge_state_incomplete"] = True
+            return overlay
+
     snapshot_lookup = _build_snapshot_object_lookup(fallback_zones)
     overlay["bridge_connected"] = True
 
@@ -2153,6 +2197,15 @@ def get_game_state() -> dict[str, Any]:
     raw_gre_events = copy.deepcopy(snap.get("raw_gre_events", []))
 
     response = {
+        "pending_selection_objects": [
+            {
+                **obj,
+                **enrich_ability(obj.get("grp_id", 0), obj.get("selection_source_grp_id")),
+                "instance_id": obj.get("instance_id"),
+            }
+            for obj in snap.get("pending_selection_objects", [])
+            if obj.get("object_kind") == "ABILITY"
+        ],
         "match_id": snap.get("match_id"),
         # Best-of-three games share match_id; the Oops checks tell them apart.
         "game_number": snap.get("game_number"),
@@ -2237,7 +2290,7 @@ def get_game_state() -> dict[str, Any]:
         public_zones["opponent_library_count"] = zones.get("opponent_library_count")
     response["revealed_cards"] = _serialize_revealed_cards(snap.get("revealed_in_opponent_hand"))
     # Our library cards the GRE revealed to us (search candidates), by name.
-    response["library_visible"] = list(zones.get("library_visible") or [])
+    response["library_visible"] = [_serialize_snapshot_obj(obj) for obj in zones.get("library_visible") or []]
 
     effective_local_seat_id = response.get("local_seat_id")
     if decision_seat_id is None and snap.get("pending_decision"):

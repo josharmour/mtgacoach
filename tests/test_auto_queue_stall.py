@@ -319,9 +319,7 @@ def test_blocked_error_dialog_is_named_and_pauses_fast(clock, log):
     assert named and "Server connection error dialog" in named[0][2]
     assert not log.matching("Auto queue: Waiting for the next match")
     run(nav, state, clock, 60.0)
-    assert nav.paused_reason.startswith(
-        "Arena shows a blocked screen (Server connection error dialog)"
-    )
+    assert nav.paused_reason.startswith("Arena shows a blocked screen (Server connection error dialog)")
     warning = log.matching("screenshots answered wait for")
     assert warning and warning[0][1] == "WARNING"
     # Paused on the short blocked limit, not after the full 180 s screen wait.

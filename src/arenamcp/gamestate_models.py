@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from arenamcp.player_protection import active_player_protection
+
 
 class ZoneType(Enum):
     """Zone types in MTGA."""
@@ -120,6 +122,9 @@ class GameObject:
     # entry per instance (GameObjectInfo.uniqueAbilities). A Skyward Spider
     # wearing Sheltered by Ghosts lists ward {2} (141939) twice (2026-10-19).
     ability_grp_ids: list[int] = field(default_factory=list)
+    # Persistent LinkInfo choices, keyed by the choosing ability grpId. A
+    # control change does not change the chosen player; a zone change does.
+    chosen_player_links: dict[int, int] = field(default_factory=dict)
     # GameObjectInfo.isFacedown (Morph, Disguise, Manifest, Cloak; grpId 3 for the opponent's),
     # and why, from the FaceDown annotation's REASON (ReasonFaceDown: 6 = Disguise).
     face_down: bool = False
@@ -182,6 +187,11 @@ class GameObject:
             result["keywords"] = list(self.keywords)
         if self.ability_grp_ids:
             result["ability_grp_ids"] = list(self.ability_grp_ids)
+        if self.chosen_player_links:
+            result["chosen_player_links"] = dict(self.chosen_player_links)
+            protected = active_player_protection(self.chosen_player_links, self.ability_grp_ids)
+            if protected:
+                result["protection_from_players"] = protected
         if self.is_blocked is not None and self.is_attacking:
             result["is_blocked"] = self.is_blocked
         if self.removed_abilities:

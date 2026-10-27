@@ -59,3 +59,16 @@ def test_genuine_takeover_survives_flush(monkeypatch):
     other = GameAction(action_type=ActionType.CAST_SPELL, card_name="Talisman of Unity")
     eng._reclassify_matching_takeovers(other)
     assert eng.flush_fallback_bugs_for_match() == 1
+
+
+def test_expired_plan_does_not_claim_user_input_or_request_manual_control(monkeypatch):
+    from unittest.mock import Mock
+
+    eng = _engine(monkeypatch)
+    eng._notify = Mock()
+    action = GameAction(ActionType.DECLARE_ATTACKERS, card_name="Woodfall Primus")
+    eng._record_user_takeover(_Plan(action), {}, "plan_went_stale_after_llm")
+    reason, extra = eng._pending_fallback_bugs[0]
+    assert "plan expired" in reason
+    assert extra["auto_user_takeover"]["attribution"] == "unknown"
+    eng._notify.assert_not_called()

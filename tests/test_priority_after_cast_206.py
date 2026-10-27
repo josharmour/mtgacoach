@@ -67,7 +67,7 @@ def _engine(polls, planner_choices):
     """An engine on a scripted bridge; ``polls`` are handed out in order."""
     planner = MagicMock()
     planner.plan_decision_options.side_effect = planner_choices
-    engine = make_engine(planner=planner)
+    engine = make_engine(planner=planner, game_state={"local_seat_id": 1})
     bridge = MagicMock()
     bridge.connected = True
     queue = iter(polls)
@@ -310,3 +310,29 @@ def test_post_cast_yields_immediately_to_declaration_family():
     answered = build_pending_decision(_cast_poll(), resolve_instance=lambda _iid: "")
     engine._surface_post_cast_priority(answered, ["idx:0"], _cast_poll(), {}, "decision_required")
     assert engine._gre_bridge.get_pending_actions.call_count == 1
+
+
+@pytest.mark.parametrize("snapshot", [None, {}, "unavailable", RuntimeError("snapshot unavailable")])
+def test_followup_does_not_reuse_precast_board_when_fresh_snapshot_fails(snapshot):
+    from arenamcp.decisions import build_pending_decision
+
+    engine = _engine([_pass_poll()], [])
+
+    def get_state():
+        if isinstance(snapshot, Exception):
+            raise snapshot
+        return snapshot
+
+    engine._get_game_state = get_state
+    calls = []
+    engine._try_typed_decision_path = lambda *a, **k: calls.append(a)
+    decision = build_pending_decision(_cast_poll(), resolve_instance=lambda _: "")
+    engine._surface_post_cast_priority(
+        decision,
+        ["idx:0"],
+        _cast_poll(),
+        {"battlefield": [{"name": "old pre-cast board"}]},
+        "decision_required",
+    )
+    assert calls == []
+    engine._gre_bridge.submit_pass.assert_not_called()

@@ -140,6 +140,9 @@ class PipeAdapter:
             }
         )
 
+    def limited_deck_preview(self, payload: dict) -> None:
+        self._emit({"type": "limited_deck_preview", "data": payload})
+
     def turn_plan(self, payload: dict[str, Any] | None) -> None:
         """Emit the static turn-plan panel payload (or None to clear).
 
@@ -470,8 +473,12 @@ class PipeAdapter:
             elif action == "inspect_auto_quest":
                 coach.inspect_auto_quest()
             elif action == "set_auto_quest":
-                coach.set_auto_quest(cmd.get("enabled") is True, cmd.get("goal", "mastery"),
-                                     cmd.get("minutes", 60), cmd.get("deadline"))
+                coach.set_auto_quest(
+                    cmd.get("enabled") is True,
+                    cmd.get("goal", "mastery"),
+                    cmd.get("minutes", 60),
+                    cmd.get("deadline"),
+                )
             elif action == "set_auto_queue":
                 coach.set_auto_queue(cmd.get("enabled") is True)
             elif action == "set_autopilot":
@@ -614,7 +621,9 @@ class PipeAdapter:
             elif action == "list_decks":
                 self._handle_list_decks()
             elif action == "get_collection":
-                threading.Thread(target=self._handle_deck_bridge, args=("collection_async",), daemon=True).start()
+                threading.Thread(
+                    target=self._handle_deck_bridge, args=("collection_async",), daemon=True
+                ).start()
             elif action == "update_deck":
                 threading.Thread(
                     target=self._handle_deck_bridge,
@@ -624,7 +633,11 @@ class PipeAdapter:
             elif action == "create_deck":
                 threading.Thread(
                     target=self._handle_deck_bridge,
-                    args=("create_deck_async", str(cmd.get("source_deck_id") or ""), str(cmd.get("name") or "")),
+                    args=(
+                        "create_deck_async",
+                        str(cmd.get("source_deck_id") or ""),
+                        str(cmd.get("name") or ""),
+                    ),
                     daemon=True,
                 ).start()
             elif action == "craft":

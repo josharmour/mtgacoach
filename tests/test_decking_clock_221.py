@@ -30,13 +30,25 @@ MILL_ENGINE = {
 }
 
 
-def _state(*, library: int | None = 32, engine: bool = True, events: list | None = None, source: str = "log_zone_membership"):
+def _state(
+    *,
+    library: int | None = 32,
+    engine: bool = True,
+    events: list | None = None,
+    source: str = "log_zone_membership",
+):
     battlefield = [dict(MILL_ENGINE)] if engine else []
     return {
         "match_id": "221",
         "local_seat_id": 1,
         "opponent_seat_id": 2,
-        "turn": {"turn_number": 12, "active_player": 1, "priority_player": 1, "phase": "Phase_Main1", "step": ""},
+        "turn": {
+            "turn_number": 12,
+            "active_player": 1,
+            "priority_player": 1,
+            "phase": "Phase_Main1",
+            "step": "",
+        },
         "players": [
             {"seat_id": 1, "life_total": 20, "is_local": True, "lands_played": 0},
             {"seat_id": 2, "life_total": 9, "is_local": False, "lands_played": 0},
@@ -85,11 +97,16 @@ def test_mill_engine_detected_from_oracle_text():
     assert dc.mill_engines([dict(MILL_ENGINE)], 1) == []  # our own engine is no threat
     assert dc.mill_amount(MILL_ENGINE["oracle_text"]) == 16
     assert dc.mill_amount("Put the top eight cards of that player's library into their graveyard.") == 8
-    assert dc.mill_amount("Whenever this deals combat damage to a player, that player mills that many cards.") is None
+    assert (
+        dc.mill_amount("Whenever this deals combat damage to a player, that player mills that many cards.")
+        is None
+    )
 
 
 def test_observed_mill_reads_zone_transfers_of_our_cards():
-    events = [_mill_transfer(18, i) for i in range(430, 435)] + [_mill_transfer(19, i) for i in range(440, 456)]
+    events = [_mill_transfer(18, i) for i in range(430, 435)] + [
+        _mill_transfer(19, i) for i in range(440, 456)
+    ]
     per_turn = dc.observed_mill_per_turn(events, 1)
     assert per_turn == {18: 5, 19: 16}
     # Their own cards going to their graveyard are not mill against us.
@@ -98,7 +115,9 @@ def test_observed_mill_reads_zone_transfers_of_our_cards():
 
 
 def test_decking_threat_prefers_the_fastest_observed_turn():
-    events = [_mill_transfer(18, i) for i in range(430, 435)] + [_mill_transfer(19, i) for i in range(440, 456)]
+    events = [_mill_transfer(18, i) for i in range(430, 435)] + [
+        _mill_transfer(19, i) for i in range(440, 456)
+    ]
     threat = dc.decking_threat(_state(library=32, events=events))
     assert threat is not None
     assert threat.rate == 16 and threat.turns == 2 and threat.milled_recent == 21

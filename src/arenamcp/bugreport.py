@@ -32,6 +32,7 @@ def build_issue_payload(
     auto_fallback_bug = report_data.get("auto_fallback_bug", {}) or {}
     auto_user_takeover = report_data.get("auto_user_takeover", {}) or {}
     manual_recovery = report_data.get("manual_recovery", {}) or {}
+    recovery_trace = report_data.get("recovery_trace", {}) or {}
     replay = report_data.get("replay", {}) or {}
     install_id = reporter.get("install_id") or settings.get("install_id")
 
@@ -128,6 +129,17 @@ def build_issue_payload(
             lines.append(f"- Recorded state transitions: `{manual_recovery.get('event_count')}`")
         lines.append(
             "- The initial report preserves autopilot intent before pausing; recovery records contain observed Arena state and action history."
+        )
+
+    if recovery_trace:
+        lines.extend(["", "## Inputs Before Reporting", ""])
+        lines.append(
+            f"- Saved {len(recovery_trace.get('events') or [])} recent semantic Arena inputs/requests and "
+            f"{len(recovery_trace.get('incidents') or [])} rejected-input or bridge-failure incidents in the local JSON."
+        )
+        lines.append(
+            "- Responses retain their original request and ID domain after the prompt clears. "
+            "Client input origin is unknown; bridge attempts are listed separately."
         )
 
     lines.extend(

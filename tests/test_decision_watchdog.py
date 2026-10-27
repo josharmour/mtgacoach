@@ -505,3 +505,52 @@ def test_no_safe_default_alerts_loudly(monkeypatch, server_game_state, caplog):
     spoken = [text for text in coach.speak_advice_calls if text.startswith("MANUAL REQUIRED")]
     assert spoken and "Search Library" in spoken[0]
     assert any(text.startswith("MANUAL REQUIRED") for text, _ in coach.ui.advice_calls)
+
+
+@pytest.mark.parametrize("kind", ["DeclareAttackers", "DeclareBlockers"])
+def test_combat_request_id_churn_does_not_renew_unanswered_deadline(kind):
+    clock = Clock()
+    watchdog = DecisionWatchdog(monotonic=clock)
+    window = ("match", 1, 12, 2, "Combat", kind, ())
+    actions = []
+    for elapsed in range(32):
+        poll = {
+            "has_pending": True,
+            "request_type": kind,
+            "game_state_id": 320 + elapsed,
+            "msg_id": 400 + elapsed,
+        }
+        if elapsed == 12:
+            assert watchdog.may_act(poll, window=window)
+        step = watchdog.step(poll, window=window)
+        if step:
+            actions.append((elapsed, step.action))
+        clock.now += 1
+    assert actions == [(12, "replan"), (30, "safe_default")]
+
+
+def test_combat_watchdog_resets_for_a_new_turn_and_respects_manual_handoff():
+    clock = Clock()
+    watchdog = DecisionWatchdog(monotonic=clock)
+    poll = {"has_pending": True, "request_type": "DeclareBlockers", "game_state_id": 320}
+    window = ("match", 1, 12, 2, "Combat", "DeclareBlock", ())
+    assert watchdog.step(poll, window=window) is None
+    clock.now += 31
+    assert watchdog.may_act(dict(poll, game_state_id=323), window=window)
+    assert watchdog.step(poll, window=window, handed_to_user=True) is None
+    new_window = ("match", 1, 14, 2, "Combat", "DeclareBlock", ())
+    assert watchdog.step(poll, window=new_window) is None
+    clock.now += 11
+    assert watchdog.step(poll, window=new_window) is None
+
+
+def test_combat_answer_still_restarts_watchdog_budget_despite_recapture():
+    clock = Clock()
+    watchdog = DecisionWatchdog(monotonic=clock)
+    poll = {"has_pending": True, "request_type": "DeclareBlockers", "game_state_id": 320}
+    window = ("match", 1, 12, 2, "Combat", "DeclareBlock", ())
+    watchdog.step(poll, window=window)
+    clock.now += 11
+    answered = clock.now
+    clock.now += 2
+    assert watchdog.step(dict(poll, game_state_id=323), window=window, last_answer_at=answered) is None

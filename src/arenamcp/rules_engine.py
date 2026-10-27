@@ -187,9 +187,21 @@ class RulesEngine:
                     if basic in type_line:
                         has_mana_ability = True
                         break
+            # A fetch land must resolve its search before its replacement can
+            # pay for a spell. Do not count it as generic mana in a cast already
+            # in progress. Lands with their own mana ability remain sources.
+            if (
+                is_land
+                and not has_mana_ability
+                and "search your library" in oracle.lower()
+                and not re.search(r"\badd\b", oracle, re.IGNORECASE)
+            ):
+                continue
             entered = card.get("turn_entered_battlefield", -1)
             has_haste = card_has_haste(card)
-            is_sick = is_creature and (card.get("summoning_sickness") or entered == turn_num) and not has_haste
+            is_sick = (
+                is_creature and (card.get("summoning_sickness") or entered == turn_num) and not has_haste
+            )
             # Any permanent with a tap-for-mana ability is a source, not just
             # lands and mana creatures — Talismans, Signets, Sol Ring and the
             # rest were previously invisible, undercounting available mana.

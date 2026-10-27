@@ -31,3 +31,23 @@ def test_own_blink_is_kept():
     p = _planner()
     state = _state(own_ids=(645,), their_ids=(674,), oracle=ORACLE)
     assert p._gate_harmful_llm_target_picks(_decision([645, 674]), state, ["tgt:645"]) == ["tgt:645"]
+
+
+@pytest.mark.parametrize("highlight", ["", "Hot", "Cold"])
+def test_planar_incision_keeps_explicit_hei_bai_shrine_etb_plan(highlight):
+    # User's intended engine: Hei Bai's actual entry ability finds a Shrine.
+    # Removing false enemy-removal credit must not ban this friendly blink.
+    p = _planner()
+    state = _state(own_ids=(645,), their_ids=(674,), oracle=ORACLE)
+    state["stack"][0]["name"] = "Planar Incision"
+    state["battlefield"][0].update(
+        name="Hei Bai, Forest Guardian",
+        oracle_text="When Hei Bai enters, reveal cards from the top of your library until you reveal "
+        "a Shrine card. You may put that card onto the battlefield. Then shuffle.",
+    )
+    p._target_highlights = lambda *args: {645: highlight}
+    p._last_decision_target_controllers = {"tgt:645": "self"}
+    p._last_decision_unusual_targets = {
+        "tgt:645": "Blink our Hei Bai to trigger its entry ability and put another Shrine onto the battlefield."
+    }
+    assert p._gate_harmful_llm_target_picks(_decision([645, 674]), state, ["tgt:645"]) == ["tgt:645"]

@@ -410,6 +410,10 @@ def can_be_blocked_by(attacker: dict, blocker: dict) -> bool:
     greater", "... except by Spirits"). A restriction that can't be checked
     against this blocker allows the block.
     """
+    from arenamcp.player_protection import protected_from_player_source
+
+    if protected_from_player_source(attacker, blocker):
+        return False
     if attacker.get("cant_be_blocked"):
         return False
     whole, restrictions = _evasion(attacker)

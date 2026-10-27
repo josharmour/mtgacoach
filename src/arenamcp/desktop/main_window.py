@@ -89,6 +89,10 @@ class MainWindow(QMainWindow):
 
         self._build_central_widget()
         self._build_menus()
+        from .limited_preview import LimitedDeckPreview
+
+        self._limited_preview = LimitedDeckPreview(self)
+        self._session.limitedDeckPreviewChanged.connect(self._limited_preview.set_preview)
         self._build_access_badge()
         self._apply_window_geometry()
         self._setup_hotkeys()
@@ -141,6 +145,8 @@ class MainWindow(QMainWindow):
         # menus only *display* them (text after a tab lands in the shortcut
         # column) instead of registering a second, ambiguous QAction shortcut.
         tools_menu = menu_bar.addMenu("Tools")
+        preview_act = tools_menu.addAction("Draft deck recommendation…")
+        preview_act.triggered.connect(lambda: self._limited_preview.show())
         repair_act = tools_menu.addAction("Setup && Repair…")
         repair_act.triggered.connect(self._show_repair_view)
         perf_act = tools_menu.addAction("Match History…")

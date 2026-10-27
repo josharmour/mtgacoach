@@ -145,7 +145,11 @@ def test_life_gained_this_turn_counts_lifelink_not_death_drains():
         turn=10,
         life=20,
         their_life=20,
-        ours=[(11, "Dawnwing Marshal", False, 1), (12, "Grizzly Bears", False, 1), (16, "Mountain", False, 1)],
+        ours=[
+            (11, "Dawnwing Marshal", False, 1),
+            (12, "Grizzly Bears", False, 1),
+            (16, "Mountain", False, 1),
+        ],
         theirs=[(13, "Grizzly Bears", False, 1)],
         hand=[(15, "Grizzly Bears")],
         phase="Phase_Combat",
@@ -220,7 +224,9 @@ def test_big_board_hold_all_is_weighed_by_the_line_search(monkeypatch):
     from arenamcp.combat_targets import recipient_key
 
     local = next(p["seat_id"] for p in state["players"] if p.get("is_local"))
-    assert all(recipient_key(r)[0] == "player" and recipient_key(r)[1] != local for r in choice.assignments.values())
+    assert all(
+        recipient_key(r)[0] == "player" and recipient_key(r)[1] != local for r in choice.assignments.values()
+    )
     assert "#212" in choice.explanation and "hold all" in choice.explanation
 
 

@@ -899,9 +899,7 @@ def test_game_ending_during_farewell_does_not_send_concede():
 
 
 def test_game_ending_during_refused_concede_does_not_request_manual_concede():
-    harness = Harness(
-        bug_state(), result={"ok": False, "error": "Match state is MatchComplete"}
-    )
+    harness = Harness(bug_state(), result={"ok": False, "error": "Match state is MatchComplete"})
     harness.on_concede = lambda: setattr(harness, "game_over", True)
     harness.observe()
     harness.run_countdown()

@@ -8,6 +8,7 @@ while the validator had X-cost-stripped it (6 propose→drop cycles).
 
 from unittest.mock import MagicMock
 
+import pytest
 from tests.commander_return_states import (
     ASSIGN_DAMAGE_POLL,
     COMMANDER_RETURN_POLL,
@@ -229,3 +230,100 @@ def test_a_mac_plan_for_a_replaced_request_is_discarded_and_yields():
     bridge.submit_assign_damage.assert_not_called()
     engine._pause_for_manual.assert_not_called()
     assert engine._state == AutopilotState.IDLE
+
+
+@pytest.mark.parametrize("during_countdown", [False, True])
+def test_expired_plan_with_idle_bridge_yields_without_user_handoff(during_countdown):
+    from copy import deepcopy
+
+    bridge = MagicMock()
+    bridge.connected = True
+    bridge.get_pending_actions.return_value = ASSIGN_DAMAGE_POLL
+    initial = assign_damage_state()
+    fresh = deepcopy(initial)
+    fresh["turn"]["turn_number"] += 1
+    live = [initial if during_countdown else fresh]
+
+    class Planner(FakePlanner):
+        def plan_actions(self, *args, **kwargs):
+            self.plan_calls += 1
+            if not during_countdown:
+                bridge.get_pending_actions.return_value = {"ok": True, "has_pending": False}
+            return ActionPlan(actions=[GameAction(ActionType.ASSIGN_DAMAGE, card_name="Mossborn Hydra")])
+
+    engine = make_engine(bridge, Planner(), game_state=lambda: live[0])
+    if during_countdown:
+        engine._config.auto_execute_delay = 1.0
+
+        def countdown(_delay):
+            bridge.get_pending_actions.return_value = {"ok": True, "has_pending": False}
+            live[0] = fresh
+            return "execute"
+
+        engine._wait_for_cancel = countdown
+    engine._game_plan_mgr = None
+    engine._bug_report_fn = MagicMock()
+    engine._notify = MagicMock()
+    assert engine.process_trigger(initial, "stack_spell_yours") is True
+    bridge.submit_assign_damage.assert_not_called()
+    assert engine._state == AutopilotState.IDLE
+    assert not engine.is_window_given_up(fresh)
+    messages = " ".join(str(call) for call in engine._notify.call_args_list)
+    assert "your move" not in messages
+    assert "Plan discarded" in messages
+    assert engine._pending_fallback_bugs[0][1]["auto_user_takeover"]["attribution"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    "replacement", [COMMANDER_RETURN_POLL, {"ok": True, "has_pending": False}, ASSIGN_DAMAGE_POLL]
+)
+def test_empty_plan_for_expired_request_yields_before_safe_default_or_manual(replacement):
+    bridge = MagicMock()
+    bridge.connected = True
+    bridge.get_pending_actions.return_value = ASSIGN_DAMAGE_POLL
+
+    class Planner(FakePlanner):
+        def plan_actions(self, *args, **kwargs):
+            self.plan_calls += 1
+            bridge.get_pending_actions.return_value = replacement
+            return ActionPlan(actions=[])
+
+    engine = make_engine(bridge, Planner(), game_state=assign_damage_state)
+    engine._game_plan_mgr = None
+    engine._try_interactive_safe_default = MagicMock(return_value=False)
+    engine._pause_for_manual = MagicMock()
+    handled = engine.process_trigger(assign_damage_state(), "stack_spell_yours")
+    if replacement == ASSIGN_DAMAGE_POLL:
+        assert handled is False
+        engine._try_interactive_safe_default.assert_called_once()
+        engine._pause_for_manual.assert_called_once()
+        return
+    assert handled is True
+    engine._try_interactive_safe_default.assert_not_called()
+    engine._pause_for_manual.assert_not_called()
+    assert engine._state == AutopilotState.IDLE
+
+
+@pytest.mark.parametrize(
+    "after_id,after_gsid,expected",
+    [(843, 419, True), (745, 419, False), (843, 418, False), (None, 419, False)],
+)
+def test_damage_verification_recognizes_next_assigner(monkeypatch, after_id, after_gsid, expected):
+    eng = _engine(monkeypatch)
+    eng._config.post_action_delay = 0
+    eng._config.verification_timeout = 0.001
+
+    def snapshot(iid, gsid):
+        return {
+            "pending_decision": "Assign Damage",
+            "_log_game_state_id": gsid,
+            "decision_context": {"type": "assign_damage", "raw": {"damageAssigners": [{"instanceId": iid}]}},
+            "turn": {},
+            "battlefield": [],
+        }
+
+    eng._get_game_state = lambda: snapshot(after_id, after_gsid)
+    monkeypatch.setattr(autopilot_module.time, "sleep", lambda _: None)
+    assert (
+        eng._verify_action(GameAction(action_type=ActionType.ASSIGN_DAMAGE), snapshot(745, 418)) is expected
+    )

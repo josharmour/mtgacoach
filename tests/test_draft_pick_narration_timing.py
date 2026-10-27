@@ -218,11 +218,9 @@ def test_pick_two_line_names_both_cards_before_they_are_confirmed(primer):
     w = world(primer, replies={"get_draft_state": state(60, pick_num_cards_to_take=2)})
     w.driver._step()
     text = next(f["text"] for a, _t, f in w.events if a == "narrate")
-    # Both cards share a role: said once, in the plural, with their 17Lands standing.
-    assert text.startswith(
-        "Choosing Blue Ace and Red Ace: both key uncommons for Izzet, "
-        "and the two best cards in this pack on 17Lands data."
-    )
+    # P1P1 explains both cards' standalone standing without inventing a deck lane.
+    assert text.startswith("Choosing Blue Ace and Red Ace: the two best cards in this pack on 17Lands data.")
+    assert "Izzet" not in text
     confirm = next(f for a, _t, f in w.events if a == "confirm_draft_pick")
     assert {card["grp_id"] for card in confirm["cards"]} == {1, 3}
 

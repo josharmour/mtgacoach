@@ -29,8 +29,9 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import requests
 
@@ -38,8 +39,7 @@ logger = logging.getLogger(__name__)
 
 SEVENTEEN_LANDS_RATINGS_URL = "https://www.17lands.com/card_ratings/data"
 PUBLIC_GAME_DATA_URL = (
-    "https://17lands-public.s3.amazonaws.com/analysis_data/game_data/"
-    "game_data_public.{set}.{fmt}.csv.gz"
+    "https://17lands-public.s3.amazonaws.com/analysis_data/game_data/game_data_public.{set}.{fmt}.csv.gz"
 )
 
 CATALOG_WORK_SUBPATH = Path("public") / "work"
@@ -389,9 +389,7 @@ def schedule_fetch(expansion: str, cache_dir: Path | str) -> bool:
                 else:
                     _failure_count.pop(expansion, None)
 
-        thread = threading.Thread(
-            target=run, name=f"catalog-{expansion}", daemon=True
-        )
+        thread = threading.Thread(target=run, name=f"catalog-{expansion}", daemon=True)
         _threads.add(expansion)
         thread.start()
         return True

@@ -97,8 +97,14 @@ def test_walker_growth_reads_arena_style_text_without_brackets():
 def test_walker_growth_skips_an_x_it_cannot_read_and_nonwalkers():
     _plus, abilities = walker_growth(_garruk(text="+1: Create X 1/1 Soldier creature tokens."))
     assert abilities == ()
-    bear = _card(9, "Bear", THEM, type_line="Creature — Bear", card_types=["CardType_Creature"],
-                 oracle_text="Create a 2/2 token.")
+    bear = _card(
+        9,
+        "Bear",
+        THEM,
+        type_line="Creature — Bear",
+        card_types=["CardType_Creature"],
+        oracle_text="Create a 2/2 token.",
+    )
     assert walker_growth(bear) == (0, ())
     jace = _garruk(iid=9, text="+1: Draw a card.")
     assert walker_growth(jace) == (0, ())

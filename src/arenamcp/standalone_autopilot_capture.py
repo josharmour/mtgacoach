@@ -24,6 +24,9 @@ class _AutopilotCaptureMixin:
 
             state = server.game_state.get_published_snapshot()
         state = copy.deepcopy(state or {})
+        from arenamcp.recovery_trace import recovery_trace
+
+        state["recovery_trace"] = recovery_trace.snapshot()
         poller = getattr(self, "_bridge_poller", None)
         poll = getattr(poller, "_last_poll_result", None)
         if isinstance(poll, dict):
@@ -63,6 +66,9 @@ class _AutopilotCaptureMixin:
             if is_dataclass(plan):
                 initial["autopilot"]["committed_plan"] = asdict(plan)
             initial["game_state"] = self._capture_observed_state()
+            from arenamcp.recovery_trace import recovery_trace
+
+            initial["recovery_trace"] = recovery_trace.snapshot()
             initial["bridge"] = copy.deepcopy(self._collect_bridge_state())
             navigator = getattr(self, "_auto_queue_navigator", None)
             if navigator:

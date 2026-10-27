@@ -560,10 +560,11 @@ class CompactCoachPanel(QWidget):
         controls.addWidget(self.auto_queue_btn)
         self._grind_enabled = False
         self.auto_quest_btn = QPushButton("Grind: Off")
-        self.auto_quest_btn.setToolTip("Complete quests, then earn remaining daily and weekly mastery XP. Requires Autoplay and an initial match.")
+        self.auto_quest_btn.setToolTip(
+            "Complete quests, then earn remaining daily and weekly mastery XP. Requires Autoplay and an initial match."
+        )
         self.auto_quest_btn.clicked.connect(self._configure_auto_quest)
         controls.addWidget(self.auto_quest_btn)
-
 
         self.stop_speech_btn = QPushButton("■")
         self.stop_speech_btn.setObjectName("stopSpeechButton")

@@ -38,9 +38,7 @@ from typing import Any
 # older cards ("put the top three cards of target player's library into their
 # graveyard"). A word boundary keeps "millstone" out of our own names.
 _MILL_WORD = re.compile(r"\bmills?\b|\bmilled\b", re.IGNORECASE)
-_PUT_TOP = re.compile(
-    r"puts? the top [^.]*?\bcards? of [^.]*?library into [^.]*?graveyard", re.IGNORECASE
-)
+_PUT_TOP = re.compile(r"puts? the top [^.]*?\bcards? of [^.]*?library into [^.]*?graveyard", re.IGNORECASE)
 MILL_TEXT = re.compile(rf"(?:{_MILL_WORD.pattern})|(?:{_PUT_TOP.pattern})")
 
 # Per-activation amounts: "mills 16", "put the top eight cards", "mill half"
@@ -95,7 +93,11 @@ def _amount(token: str | None) -> int | None:
 
 
 def controller(card: dict) -> Any:
-    return card.get("controller_seat_id") if card.get("controller_seat_id") is not None else card.get("owner_seat_id")
+    return (
+        card.get("controller_seat_id")
+        if card.get("controller_seat_id") is not None
+        else card.get("owner_seat_id")
+    )
 
 
 def mill_amount(oracle_text: str) -> int | None:
@@ -194,7 +196,11 @@ def decking_threat(state: dict | None) -> DeckingThreat | None:
     if not isinstance(state, dict):
         return None
     zones = state.get("zones") if isinstance(state.get("zones"), dict) else {}
-    cards = _int(zones.get("library_count", state.get("library_count"))) if zones else _int(state.get("library_count"))
+    cards = (
+        _int(zones.get("library_count", state.get("library_count")))
+        if zones
+        else _int(state.get("library_count"))
+    )
     if str(zones.get("library_count_source") or state.get("library_count_source") or "") == "unknown":
         cards = None
     if cards is None:
@@ -203,7 +209,11 @@ def decking_threat(state: dict | None) -> DeckingThreat | None:
     local = state.get("local_seat_id")
     if local is None:
         local = next(
-            (p.get("seat_id") for p in state.get("players") or [] if isinstance(p, dict) and p.get("is_local")),
+            (
+                p.get("seat_id")
+                for p in state.get("players") or []
+                if isinstance(p, dict) and p.get("is_local")
+            ),
             None,
         )
     opponent = state.get("opponent_seat_id")

@@ -49,6 +49,8 @@ ENGINE_MIN_PAYOFFS = 2
 BROAD_MECHANICS = {
     "creature_entry": (4, 0.4),
     "artifact_entry": (3, 0.5),
+    "artifact_presence": (3, 0.5),
+    "artifact_tokens": (3, 0.5),
     "noncreature_spell": (4, 0.6),
     "instant_sorcery": (4, 0.6),
 }

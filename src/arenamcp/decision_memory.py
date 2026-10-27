@@ -22,6 +22,7 @@ ward, or kills together with other burn what no one spell kills
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -107,6 +108,8 @@ class DecisionRecord:
     window: int | None = None
     # What became of it when that differs from what was chosen ("cancelled — no effect").
     outcome: str = ""
+    # An outage fallback is history, not a model commitment to hold a card.
+    model_unavailable: bool = False
 
     def line(self) -> str:
         what = ", ".join(self.chosen_labels) or ", ".join(self.chosen) or "(nothing)"
@@ -140,7 +143,7 @@ def _local_seat(state: dict) -> int | None:
 def board_signature(state: dict | None) -> tuple:
     """What must be unchanged for a later choice to count as reversing an earlier one.
 
-    Turn, life totals, the nonland permanents on both sides and the stack.
+    Turn, life totals, nonland permanent identity/state and stack identity/state.
     A land drop or a mana float between two decisions does not change it;
     a creature entering, dying, or a spell on the stack does.
     """
@@ -151,12 +154,35 @@ def board_signature(state: dict | None) -> tuple:
         (player.get("seat_id"), player.get("life") if "life" in player else player.get("life_total"))
         for player in sorted(state.get("players") or [], key=lambda p: p.get("seat_id") or 0)
     )
-    permanents = tuple(
-        sorted(
-            int(card.get("instance_id") or 0) for card in state.get("battlefield") or [] if not _is_land(card)
+
+    def card_signature(card: dict) -> str:
+        # Snapshot scalar and collection values, rather than retaining mutable
+        # references. A buff, control change or replacement spell can justify
+        # a new choice even when permanent IDs and stack length stay constant.
+        fields = (
+            "instance_id",
+            "grp_id",
+            "name",
+            "controller_seat_id",
+            "owner_seat_id",
+            "power",
+            "toughness",
+            "loyalty",
+            "damage",
+            "counters",
+            "keywords",
+            "granted_abilities",
+            "ability_grp_ids",
+            "card_types",
+            "oracle_text",
         )
+        return json.dumps({key: card.get(key) for key in fields}, sort_keys=True, default=str)
+
+    permanents = tuple(
+        sorted(card_signature(card) for card in state.get("battlefield") or [] if not _is_land(card))
     )
-    return (turn, life, permanents, len(state.get("stack") or []))
+    stack = tuple(card_signature(card) for card in state.get("stack") or [])
+    return (turn, life, permanents, stack)
 
 
 class DecisionMemory:
@@ -179,7 +205,15 @@ class DecisionMemory:
             self._records = []
             self._countered_keys = set()
 
-    def record(self, state: dict, decision: Any, chosen: list[str], reasoning: str) -> DecisionRecord | None:
+    def record(
+        self,
+        state: dict,
+        decision: Any,
+        chosen: list[str],
+        reasoning: str,
+        *,
+        model_unavailable: bool = False,
+    ) -> DecisionRecord | None:
         if not isinstance(state, dict) or decision is None:
             return None
         self._sync_match(state)
@@ -196,6 +230,7 @@ class DecisionMemory:
             option_labels=labels,
             signature=board_signature(state),
             window=turn_window(state),
+            model_unavailable=model_unavailable,
         )
         self._records.append(record)
         del self._records[: -self._limit]
@@ -376,6 +411,8 @@ class DecisionMemory:
             return None
         signature = board_signature(state)
         for record in reversed(self.this_turn(state)):
+            if record.model_unavailable:
+                continue
             if record.request_type != "ActionsAvailable" or record.chosen != ["pass"]:
                 continue
             if record.signature != signature:

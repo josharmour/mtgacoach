@@ -1022,7 +1022,13 @@ class MacBridgeAdapter:
             if delta["added"] or delta["removed"]:
                 changes[pile_name] = delta
         if not changes:
-            return {"ok": True, "submitted_type": "DeckUpdate", "deck_id": deck_id, "changes": {}, "unchanged": True}
+            return {
+                "ok": True,
+                "submitted_type": "DeckUpdate",
+                "deck_id": deck_id,
+                "changes": {},
+                "unchanged": True,
+            }
         wrapper = ops.add("static", **{"class": "WrapperController"}, member="Instance", depth=0)
         manager = ops.get(wrapper, "DecksManager", optional=True)
         ops.call(manager, "UpdateDeck", H(target["handle"]), E("Updated"))
@@ -2030,6 +2036,7 @@ class MacBridgeAdapter:
 
     def _shape_SelectNRequest(self, request: dict, getters: dict, response: dict) -> None:
         response["select_n_ids"] = [num(i) for i in items(field(request, "Ids"))]
+        response["select_n_unfiltered_ids"] = [num(i) for i in items(field(request, "UnfilteredIds"))]
         listed = field(request, "Ids")
         if isinstance(listed, dict) and num(listed.get("$n"), 0) > len(response["select_n_ids"]):
             # The snapshot cut the list (SNAPSHOT_MAX_ITEMS): the log's SelectNReq has the rest.
@@ -2405,6 +2412,28 @@ class MacBridgeAdapter:
         if snapshot.request_class == "SelectNRequest":
             shape: dict[str, Any] = {}
             self._shape_SelectNRequest(snapshot.request, snapshot.getters, shape)
+            from arenamcp.card_name_choice import is_card_name_list, is_card_title_id
+
+            if is_card_name_list(shape["select_n_list_type"], shape["select_n_static_list"]):
+                minimum, maximum = shape["select_n_min"], max(1, shape["select_n_max"])
+                if (
+                    command.get("selection_id_type") != "card_name"
+                    or len(set(ids)) != len(ids)
+                    or not minimum <= len(ids) <= maximum
+                    or not all(is_card_title_id(value) for value in ids)
+                    or (
+                        shape["select_n_list_type"] == "StaticSubset"
+                        and not set(ids).issubset(shape["select_n_ids"])
+                    )
+                ):
+                    raise AdapterError(
+                        "Card-name selection requires valid TitleIds, not card or instance ids"
+                    )
+                selection = UINTS(ids)
+                self._submit(
+                    snapshot, lambda ops, request: ops.call(request, "SubmitSelection", selection), timeout
+                )
+                return {"ok": True, "submitted_type": "SelectN"}
             offered_colors = shape.get("select_n_color_options")
             if offered_colors is not None:
                 allowed = {option["id"] for option in offered_colors}

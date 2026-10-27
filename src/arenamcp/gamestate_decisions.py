@@ -886,6 +886,12 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
             try:
                 from arenamcp import server
 
+                # Trigger instances carry ability grpIds, whose numeric
+                # namespace can collide with unrelated printed cards (#313).
+                if obj and getattr(obj.object_kind, "name", "") == "ABILITY":
+                    info = server.enrich_ability(grp_id)
+                    option_cards.append((info or {}).get("name") or f"Ability (ID: {grp_id})")
+                    continue
                 info = server.get_card_info(grp_id)
                 name = info.get("name") if info else None
                 if name and not name.startswith("Card#"):
@@ -894,7 +900,10 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
                     resolved_name = game_state._resolve_card_name(grp_id)
                     option_cards.append(resolved_name if resolved_name else f"Card#{grp_id}")
             except Exception:
-                option_cards.append(f"Card#{grp_id}")
+                if obj and getattr(obj.object_kind, "name", "") == "ABILITY":
+                    option_cards.append(f"Ability (ID: {grp_id})")
+                else:
+                    option_cards.append(f"Card#{grp_id}")
 
     logger.info(
         f"Captured Decision: {decision_text} ({num_to_select} items, type={selection_type}, options={option_cards[:20] or option_ids[:5]})"
@@ -914,6 +923,9 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
         # IDs (e.g. milled-card pick from a library reveal) or grp IDs
         # (e.g. printing-based choice).
         "option_ids": option_ids,
+        # Static CardNames has no ids; these are the revealed hand's game
+        # objects, useful candidates whose names must be submitted as TitleId.
+        "unfiltered_ids": _ensure_int_list(req.get("unfilteredIds", [])),
         "id_type": id_type,
         "list_type": req.get("listType") or "",
         "static_list": req.get("staticList") or "",

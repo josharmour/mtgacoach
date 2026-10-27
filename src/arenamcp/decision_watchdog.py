@@ -23,7 +23,9 @@ This module decides, from the bridge's live request alone, when to step in:
 
 Any answer sent to Arena (``GREBridge.last_submission_at``) restarts the
 count; a different request (type, class, game state / message id, offered
-choices) starts a new one. The clock is injected, so tests need no waits.
+choices) starts a new one. Combat declarations with a known turn window keep
+their deadline across request-ID churn (#237); safe defaults still read the
+fresh request and board. The clock is injected, so tests need no waits.
 """
 
 from __future__ import annotations
@@ -34,12 +36,18 @@ from dataclasses import dataclass
 from typing import Any
 
 
-def request_key(resp: dict[str, Any] | None) -> tuple | None:
+def request_key(resp: dict[str, Any] | None, *, window: tuple | None = None) -> tuple | None:
     """Identity of a pending bridge request, or None when nothing is pending."""
     if not isinstance(resp, dict) or not resp.get("has_pending"):
         return None
     from arenamcp.gre_bridge import BridgeDecisionPoller
 
+    kind = str(resp.get("request_type") or "") + str(resp.get("request_class") or "")
+    if window is not None and ("DeclareAttack" in kind or "DeclareBlock" in kind):
+        # Re-capturing the same combat with a fresh gsid must not give a
+        # cancelled planner an endlessly renewed watchdog budget. This key
+        # only controls escalation; it never authorizes an old submission.
+        return (resp.get("request_type"), resp.get("request_class"), "combat", window)
     return (
         resp.get("request_type"),
         resp.get("request_class"),
@@ -106,11 +114,12 @@ class DecisionWatchdog:
         self,
         resp: dict[str, Any] | None,
         *,
+        window: tuple | None = None,
         last_answer_at: float = 0.0,
         clock_remaining_s: float | None = None,
     ) -> bool:
         """Whether ``step`` could ask for anything now (lets callers skip costly inputs)."""
-        if request_key(resp) != self._key or self._key is None:
+        if request_key(resp, window=window) != self._key or self._key is None:
             return False
         if self._defaulted_at is not None:
             return True
@@ -122,6 +131,7 @@ class DecisionWatchdog:
         self,
         resp: dict[str, Any] | None,
         *,
+        window: tuple | None = None,
         last_answer_at: float = 0.0,
         clock_remaining_s: float | None = None,
         handed_to_user: bool = False,
@@ -135,7 +145,7 @@ class DecisionWatchdog:
         player to act on this window.
         """
         now = self._now()
-        key = request_key(resp)
+        key = request_key(resp, window=window)
         if key is None:
             self.reset()
             return None

@@ -229,6 +229,40 @@ def blocker_id_assignments(assignments: dict[str, str], state: dict, blockers: l
     return dict(resolved[name] for name in assignments)
 
 
+def blocker_identity_menu(state: dict, context: dict, menu: list[str]) -> list[str]:
+    """Use request identities instead of conflicting board/menu copy ordinals."""
+    raw = context.get("raw_blockers") or []
+    entries = [entry for entry in menu if entry.lower().startswith("block with:")]
+    ids = [int(b.get("blockerInstanceId") or b.get("instanceId") or 0) for b in raw]
+    # Only rewrite a complete menu: filtered or incomplete data must not add options.
+    if not entries or len(entries) != len(ids) or not all(ids) or len(set(ids)) != len(ids):
+        return menu
+    cards = {int(c["instance_id"]): c for c in state.get("battlefield", []) if c.get("instance_id")}
+    if any(identity not in cards for identity in ids):
+        return menu
+    labels = iter(f"Block with: {cards[i].get('name') or 'Creature'} [id:{i}]" for i in ids)
+    return [next(labels) if entry.lower().startswith("block with:") else entry for entry in menu]
+
+
+def attacker_identity_menu(state: dict, context: dict, menu: list[str]) -> list[str]:
+    """Label a complete attacker menu with the request's unambiguous IDs (#246)."""
+    raw = context.get("raw_attackers") or []
+    entries = [entry for entry in menu if entry.lower().startswith("attack with:")]
+    ids = [int(a.get("attackerInstanceId") or 0) for a in raw]
+    if not entries or len(entries) != len(ids) or not all(ids) or len(set(ids)) != len(ids):
+        return menu
+    cards = {int(c["instance_id"]): c for c in state.get("battlefield", []) if c.get("instance_id")}
+    if any(identity not in cards for identity in ids):
+        return menu
+    copies: dict[str, list[dict]] = {}
+    for identity in ids:
+        copies.setdefault(str(cards[identity].get("name") or "").casefold(), []).append(cards[identity])
+    if not any(len(group) > 1 and not _interchangeable(group, state) for group in copies.values()):
+        return menu  # preserve compact menus for interchangeable token armies
+    labels = iter(f"Attack with: {cards[i].get('name') or 'Creature'} [id:{i}]" for i in ids)
+    return [next(labels) if entry.lower().startswith("attack with:") else entry for entry in menu]
+
+
 def combat_identity_prompt(state: dict, context: dict) -> str:
     from arenamcp.combat_solver import blocker_options
 

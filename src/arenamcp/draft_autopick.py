@@ -89,6 +89,10 @@ RARELY_PLAYED_LANE = 0.5
 # Arni 20% / 48.5%, Yargle 5%), so "unrated" means "assume below average".
 UNRATED_PRIOR = -1.0
 UNRATED_RARE_PRIOR = {"M": 0.2, "R": 0.0}
+# A scarce walker with its own creature-making mode has independent board
+# value even before we have a deck. This is a modest rules estimate, never a
+# substitute for measured results or the card's own pick-order evidence.
+UNRATED_WALKER_BODY_PRIOR = 0.4
 RARELY_PLAYED_PRIOR = -1.4
 RARELY_PLAYED_RATE = 0.35  # 17lands play rate; the median rated card is ~0.7
 RARELY_PLAYED_SHARE = 0.45  # games vs. the median rated card of the same rarity
@@ -180,7 +184,7 @@ def quality_band(z: float | None, note: str = "") -> str:
     """strong / good / average / below average / weak, or rarely played / unknown."""
     if "rarely played" in note:
         return "rarely played"
-    if z is None or note.startswith(("unrated; rarity prior", "not in the set data")):
+    if z is None or note.startswith(("unrated; rarity prior", "unrated; estimated ", "not in the set data")):
         return "unknown"
     for floor, word in QUALITY_BANDS:
         if z >= floor:
@@ -191,6 +195,18 @@ def quality_band(z: float | None, note: str = "") -> str:
 def is_ordinary_basic(name: str) -> bool:
     """These five basics can be added freely after drafting, even without ratings."""
     return name.strip().casefold() in {"plains", "island", "swamp", "mountain", "forest"}
+
+
+def opening_pick(
+    pack_number: int, pick_number: int | None, pool_size: int = 0, picks_per_pass: int = 1
+) -> bool:
+    """P1 pick windows 1–4 stay open, including events that take two per window.
+
+    An explicit position is authoritative. Older pure callers without a
+    position infer it from the pool rather than treating a large pool as P1P1.
+    """
+    pick = pick_number if pick_number is not None else pool_size // max(1, picks_per_pass) + 1
+    return pack_number == 1 and 1 <= pick <= 4
 
 
 @dataclass
@@ -352,6 +368,16 @@ def _unrated_prior(card: Any, stats: _SetStats) -> tuple[float, str]:
             z = max(UNRATED_ALSA_MIN, min(UNRATED_ALSA_MAX, intercept + slope * alsa))
             return round(z, 3), f"unrated; drafters take it around pick {alsa:.1f}"
         if card.rarity in UNRATED_RARE_PRIOR:
+            cmc = getattr(card, "cmc", None)
+            if (
+                not alsa
+                and getattr(card, "game_wr", None) is None
+                and "planeswalker" in str(card.types).lower()
+                and cmc is not None
+                and 0 < cmc <= 6
+                and rules_profile({"type_line": card.types, "oracle_text": card.oracle})["unconditional_body"]
+            ):
+                return UNRATED_WALKER_BODY_PRIOR, "unrated; estimated standalone planeswalker/body prior"
             return UNRATED_RARE_PRIOR[card.rarity], "unrated rare; rarity prior"
     return UNRATED_PRIOR, "unrated; assumed below average"
 
@@ -639,7 +665,7 @@ def deck_plan_for(
     primer: SetPrimer | None,
     *,
     pack_number: int = 1,
-    pick_number: int = 1,
+    pick_number: int | None = None,
     mana_costs: dict[int, str] | None = None,
     plan_lane: str = "",
     signals: dict[str, float] | None = None,
@@ -648,8 +674,9 @@ def deck_plan_for(
     """The live deck hypotheses the ranking uses for this pool (``draft_deck_plan``)."""
     from arenamcp.draft_deck_plan import build_deck_plan
 
-    if primer is None:
+    if primer is None or opening_pick(pack_number, pick_number, len(pool)):
         return None
+    pick_number = pick_number if pick_number is not None else len(pool) + 1
     mana_costs = mana_costs or {}
     lane = lane or pool_lane(pool, primer, mana_costs)
     return build_deck_plan(
@@ -673,7 +700,7 @@ def rank_pack(
     primer: SetPrimer | None,
     *,
     pack_number: int = 1,
-    pick_number: int = 1,
+    pick_number: int | None = None,
     names: dict[int, str] | None = None,
     mana_costs: dict[int, str] | None = None,
     plan_lane: str = "",
@@ -682,7 +709,8 @@ def rank_pack(
 ) -> list[PickScore]:
     """Best pick first; never returns cards outside the pack.
 
-    Each card's score is a weighted sum of named components (kept on
+    Opening pick windows 1–4 use standalone quality and castability flexibility.
+    After that, each card's score is a weighted sum of named components (kept on
     ``PickScore.components``): 17Lands quality, the deck we are drafting
     (lane, curve and removal needs, archetype fit, engine slots, rules-text
     links to the pool, the primer's synergy notes) and the table's signals.
@@ -697,8 +725,12 @@ def rank_pack(
     names = names or {}
     mana_costs = mana_costs or {}
     stats = _set_stats(primer)
+    opening = opening_pick(pack_number, pick_number, len(pool), picks_per_pass)
+    pick_number = pick_number if pick_number is not None else len(pool) // max(1, picks_per_pass) + 1
     lane = pool_lane(pool, primer, mana_costs)
-    committed_colors = normalize_colors(plan_lane)
+    if opening:
+        lane = Lane(colors="", weights=lane.weights, commitment=0.0, second_hold=0.0)
+    committed_colors = "" if opening else normalize_colors(plan_lane)
     if len(committed_colors) == 2:
         committed_main = max(committed_colors, key=lambda c: lane.weights.get(c, 0.0))
         lane = Lane(
@@ -884,7 +916,7 @@ def rank_pack(
 
         if primer is not None and card is not None:
             in_deck = share > 0 if castable is not None and len(deck_plan.hypotheses) > 1 else fits_lane(card)
-            if len(playable_pool) >= 4 and in_deck:
+            if not opening and len(playable_pool) >= 4 and in_deck:
                 if provides_body(card):
                     if bodies < len(playable_pool) * 0.6:
                         parts["needs"] += 0.45
@@ -970,7 +1002,7 @@ def rank_pack(
                 smaller = "engine" if parts["engine"] <= parts["edges"] else "edges"
                 parts[smaller] *= SYNERGY_OVERLAP
 
-            for note in primer.synergy_notes:
+            for note in () if opening else primer.synergy_notes:
                 members = [n.lower() for n in note.get("cards") or []]
                 if card.name.lower() in members:
                     paired = sum(pool_names[m] for m in members if m != card.name.lower())
@@ -978,8 +1010,8 @@ def rank_pack(
                         parts["notes"] += 0.2 * paired
                         reasons.append(f"synergy: {note.get('why', '')[:80]}")
             parts["notes"] = min(parts["notes"], 0.6)
-            # Picks 1-4 take the best card (2026-10-10 lane discipline): the
-            # deck we are drafting toward counts in full once the pool can show it.
+            # Opening picks have no deck hypothesis or need bonuses. After
+            # that window, keep the existing pool-size ramp for sparse pools.
             ramp = min(1.0, (len(pool) + 1) / DECK_RAMP_PICKS)
             for key in DECK_CREDIT:
                 parts[key] *= ramp
@@ -1017,7 +1049,7 @@ def rank_pack(
                     ]
                     linked = []
 
-            if pack_number <= 2 and 4 <= pick_number <= 10 and colors:
+            if not opening and pack_number <= 2 and 4 <= pick_number <= 10 and colors:
                 signal = 0.3 * max(openness[c] for c in colors)
                 if signal >= 0.15:
                     reasons.append(f"{colors} looks open")
@@ -1028,7 +1060,7 @@ def rank_pack(
                 reasons.append("primer trap")
 
             copies = pool_names[card.name.lower()]
-            if copies and not land and base < PREMIUM_BASELINE and not is_removal(card):
+            if not opening and copies and not land and base < PREMIUM_BASELINE and not is_removal(card):
                 # Each copy we hold already supplies this card's role and links:
                 # another adds less (2026-10-13 live P3p2: a third Tam's Resistance).
                 extra = copies if not provides_body(card) else copies - 1
@@ -1243,7 +1275,7 @@ def choose_picks(
                 ranked,
                 remaining,
                 primer,
-                pick_number=int(kwargs.get("pick_number") or 1),
+                pick_number=int(kwargs.get("pick_number") or len(pool) // max(1, picks_required) + 1),
                 players=players,
                 picks_per_pass=picks_required,
             )

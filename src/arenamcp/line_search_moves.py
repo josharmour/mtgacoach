@@ -2443,7 +2443,12 @@ class Moves:
             if reach is not None and reach is not card and not _types(reach).strip():
                 # A mode's or an enters trigger's text: its card's type and colours decide
                 # protection and "hexproof from instants" (``board_assessment._protected_from``).
-                reach = {**reach, "_source_types": _types(card), "_source_colors": colors}
+                reach = {
+                    **reach,
+                    "_source_types": _types(card),
+                    "_source_colors": colors,
+                    "_source_controller_seat_id": card.get("controller_seat_id"),
+                }
             return Variant(
                 hs.index, "cast", mode, text, body, gain, reach, bounce, rock, spell.mana_value, spell.pips,
                 bool(info.instant_speed), loss, face, aim, tokens=self._tokens([*base_specs, *specs]),

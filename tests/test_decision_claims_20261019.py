@@ -113,7 +113,7 @@ def test_a_claw_cast_now_makes_no_attack_trigger_this_turn():
         "toward burn-range lethal."
     )
     assert decision_claim_notes(text, board, cast_ids=[241]) == [
-        "Hired Claw is summoning sick: it can't attack, tap or make an attack trigger this turn"
+        "Hired Claw is summoning sick: it can't attack or activate its own {T}/{Q} abilities this turn"
     ]
     # A Claw that came down on an earlier turn pings; a later turn's attack is no claim about now.
     old_claw = state([SLICKSHOT, card(242, "Hired Claw", turn_entered_battlefield=7)], [])

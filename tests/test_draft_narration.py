@@ -267,7 +267,7 @@ def test_model_plan_without_colors_falls_back_to_the_pool_estimate():
     assert "We're leaning blue-black" in text
 
 
-def test_driver_passes_the_models_plan_to_the_narrator(primer):
+def test_driver_passes_an_established_models_plan_to_the_narrator(primer):
     driver = driver_for(FakeBridge({"get_draft_state": PICK_STATE}), primer)
     seen = {}
 
@@ -285,7 +285,7 @@ def test_driver_passes_the_models_plan_to_the_narrator(primer):
             pool=[],
             primer=primer,
             pack_number=1,
-            pick_number=2,
+            pick_number=5,
             model_reasons={},
         )
         == "spoken"

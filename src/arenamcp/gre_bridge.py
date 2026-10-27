@@ -586,6 +586,10 @@ class GREBridge:
                     entry[key] = outcome[key]
         with contextlib.suppress(Exception):
             self._recent_commands.append(entry)
+        with contextlib.suppress(Exception):
+            from arenamcp.recovery_trace import recovery_trace
+
+            recovery_trace.observe_bridge(cmd, outcome, error)
 
     def recent_commands(self) -> list[dict[str, Any]]:
         """The last bridge commands that changed something (or failed), oldest first."""
@@ -1254,10 +1258,12 @@ class GREBridge:
             logger.warning(f"GRE bridge submit_choose error: {e}")
         return False
 
-    def submit_selection(self, ids: list[int]) -> bool:
+    def submit_selection(self, ids: list[int], *, id_type: str | None = None) -> bool:
         """Submit selection for SelectN or Search requests."""
         try:
             command = {"action": "submit_selection", "ids": ids}
+            if id_type is not None:
+                command["selection_id_type"] = id_type
             if self._cost_selection_via_adapter and self._mac_adapter is not None:
                 resp = self._mac_adapter.handle(command)
             else:
@@ -1967,6 +1973,8 @@ class GREBridge:
 
         Replays are saved as .rply files (line-delimited JSON with timestamps).
         """
+        if self._adapter_plays:
+            return None  # native reflection adapter has no replay handlers
         try:
             cmd = {"action": "enable_replay", "replay_name": replay_name}
             resp = self._send_safe(cmd)
@@ -1982,6 +1990,8 @@ class GREBridge:
 
     def disable_replay(self) -> bool:
         """Disable replay recording."""
+        if self._adapter_plays:
+            return False
         try:
             resp = self._send_safe({"action": "disable_replay"})
             return resp.get("ok", False)
@@ -1990,6 +2000,8 @@ class GREBridge:
 
     def get_replay_status(self) -> dict[str, Any] | None:
         """Check if replay recording is active and get current status."""
+        if self._adapter_plays:
+            return None
         try:
             resp = self._send_safe({"action": "get_replay_status"})
             if resp.get("ok"):
@@ -2000,6 +2012,8 @@ class GREBridge:
 
     def list_replays(self) -> dict[str, Any] | None:
         """List available replay files (most recent first, max 50)."""
+        if self._adapter_plays:
+            return None
         try:
             resp = self._send_safe({"action": "list_replays"})
             if resp.get("ok"):

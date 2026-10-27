@@ -15,6 +15,7 @@ from arenamcp.gamestate_transforms import (
     _ensure_int_list,
     _ensure_list,
 )
+from arenamcp.player_protection import PLAYER_PROTECTION_ABILITIES
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +233,21 @@ class _GameStateAnnotationsMixin:
                                     "new_controller": new_controller,
                                 }
                             )
+
+                elif ann_type == "AnnotationType_LinkInfo":
+                    # 77a434ba gsid120: affector231, affected seat1, choice90240.
+                    # Other choose-player links do not imply protection.
+                    ability = _coerce_int(detail_map.get("sourceAbilityGRPID"), 0)
+                    source = self.game_objects.get(_coerce_int(ann.get("affectorId"), 0))
+                    if (
+                        source is not None
+                        and detail_map.get("ChooseLinkType") == "GamePlayer"
+                        and _coerce_int(detail_map.get("LinkType"), 0) == 3
+                        and ability in PLAYER_PROTECTION_ABILITIES
+                        and len(affected_ids) == 1
+                        and affected_ids[0] > 0
+                    ):
+                        source.chosen_player_links[ability] = affected_ids[0]
 
                 elif ann_type in (
                     "AnnotationType_CardRevealed",
@@ -842,7 +858,6 @@ class _GameStateAnnotationsMixin:
                     "AnnotationType_Haunt",
                     "AnnotationType_GroupedIds",
                     "AnnotationType_TurnPermanent",
-                    "AnnotationType_LinkInfo",
                     "AnnotationType_CopyException",
                     "AnnotationType_AbilityExhausted",
                     "AnnotationType_ManaDetails",

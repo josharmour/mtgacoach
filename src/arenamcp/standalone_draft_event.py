@@ -153,6 +153,7 @@ class _DraftEventMixin:
             card_db=card_db,
             in_match_fn=self._draft_event_in_match,
             status_fn=status,
+            deck_preview_fn=getattr(self.ui, "limited_deck_preview", None),
             speak_fn=lambda text: self.speak_advice(text, blocking=False),
             narrate_fn=self._narrate_draft_pick,
             narrate_first_fn=lambda: bool(

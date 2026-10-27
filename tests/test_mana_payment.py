@@ -151,3 +151,90 @@ def test_mac_adapter_submits_a_copy_holding_only_the_chosen_color():
     assert ops[4]["method"] == "Clear" and ops[5]["method"] == "Add" and ops[5]["args"] == [{"h": 32}]
     assert ops[6]["target"] == {"h": 10} and ops[6]["method"] == "SubmitAction"
     assert ops[6]["args"] == [{"ref": 2}, {"bool": False}]
+
+
+def test_payment_shortfall_repeated_white_is_not_paid_by_extra_red():
+    from arenamcp.mana_payment import payment_shortfall
+
+    ctx = context({"generic": 1, "W": 2}, [source(1, ["W"]), source(2, ["R"]), source(3, ["R"])])
+    assert payment_shortfall(ctx) == "1 mana offered for 2 required W mana"
+    ctx["payment_sources"][1]["colors"] = ["W"]
+    assert payment_shortfall(ctx) == ""
+
+
+def test_payment_shortfall_dual_cannot_pay_both_colors_at_once():
+    from arenamcp.mana_payment import payment_shortfall
+
+    ctx = context({"W": 1, "U": 1}, [source(1, ["W", "U"]), source(2, ["C"])])
+    assert payment_shortfall(ctx) == "1 mana offered for 2 required W/U mana"
+    ctx["payment_sources"].append(source(3, ["U"]))
+    assert payment_shortfall(ctx) == ""
+
+
+def test_color_shortfall_retains_unknown_pool_and_multi_mana_bounds():
+    from arenamcp.mana_payment import payment_shortfall
+
+    ctx = context({"W": 2}, [source(1, ["W"]), source(2, ["R"])])
+    ctx["pool_mana_count"] = 1
+    assert payment_shortfall(ctx) == ""  # Pool colors are not represented here.
+    ctx["pool_mana_count"] = 0
+    ctx["payment_sources"][0]["amount"] = 2
+    assert payment_shortfall(ctx) == ""
+    ctx["payment_sources"][0]["colors"] = []
+    assert payment_shortfall(ctx) == ""  # Unknown sources cannot prove impossibility.
+
+
+def test_shortfall_merges_alternative_abilities_without_hiding_colors():
+    from copy import deepcopy
+
+    from arenamcp.mana_payment import payment_shortfall
+
+    sources = [source(1, ["G"], ability=10), source(1, ["R"], ability=20)]
+    original = deepcopy(sources)
+    for alternatives in [sources, list(reversed(sources))]:
+        assert payment_shortfall(context({"G": 1}, alternatives)) == ""
+        assert payment_shortfall(context({"R": 1}, alternatives)) == ""
+        assert payment_shortfall(context({"G": 1, "R": 1}, alternatives)) == "1 mana offered for a cost of 2"
+    assert sources == original
+
+
+def test_shortfall_preserves_largest_alternative_output_not_sum():
+    from arenamcp.mana_payment import payment_shortfall
+
+    sources = [{**source(1, ["C"]), "amount": 2}, source(1, ["G"])]
+    for alternatives in [sources, list(reversed(sources))]:
+        assert payment_shortfall(context({"generic": 2}, alternatives)) == ""
+        assert payment_shortfall(context({"generic": 3}, alternatives)) == "2 mana offered for a cost of 3"
+
+
+def test_unknown_alternative_cannot_be_discarded_by_known_one():
+    from arenamcp.mana_payment import payment_shortfall
+
+    sources = [source(1, []), source(1, ["R"])]
+    for alternatives in [sources, list(reversed(sources))]:
+        assert payment_shortfall(context({"G": 1}, alternatives)) == ""
+
+
+def test_scarcity_counts_permanents_not_alternative_ability_rows():
+    sources = [
+        source(1, ["W"], ability=10),
+        source(1, ["U"], ability=20),
+        source(1, ["U"], ability=21),
+        source(1, ["U"], ability=22),
+        source(2, ["W"], ability=30),
+    ]
+    for offered in [sources, list(reversed(sources))]:
+        pick = choose_payment_source(context({"W": 1, "U": 1}, offered))
+        assert pick["instance_id"] == 1 and pick["color"] == "U"
+        assert pick["ability_grp_id"] in {20, 21, 22}
+        remaining = [s for s in offered if s["instance_id"] != pick["instance_id"]]
+        assert choose_payment_source(context({"W": 1}, remaining))["instance_id"] == 2
+
+
+def test_flexibility_counts_all_abilities_on_the_same_permanent():
+    sources = [source(1, ["W"], ability=10), source(1, ["U"], ability=20), source(2, ["W"], ability=30)]
+    assert choose_payment_source(context({"W": 1}, sources)) == {
+        "instance_id": 2,
+        "ability_grp_id": 30,
+        "color": "W",
+    }

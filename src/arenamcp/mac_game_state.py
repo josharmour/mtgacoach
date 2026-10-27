@@ -180,6 +180,16 @@ def fetch_game_state(send: Any, timeout: float | None) -> dict[str, Any]:
         return {"ok": False, "error": f"game state assembly failed: {exc}"}
     if not isinstance(response, dict) or not response.get("ok"):
         error = response.get("error") if isinstance(response, dict) else None
+        # At match transitions, a successful find/get can return null. The
+        # native batch then stops at a dependent non-optional read, retaining
+        # earlier results. Report the established missing-state condition;
+        # never assemble a partial live board or hide an unrelated failure.
+        partial = response.get("results") if isinstance(response, dict) else None
+        if error == "ref does not name an object result" and isinstance(partial, list):
+            if len(partial) > IDX_GAME_MANAGER and partial[IDX_GAME_MANAGER] is None:
+                return {"ok": False, "error": "GameManager not found"}
+            if len(partial) > IDX_STATE and partial[IDX_STATE] is None:
+                return {"ok": False, "error": "No active game state"}
         return {"ok": False, "error": error or "reflect_batch failed"}
     try:
         return assemble_state(response.get("results") or [], index)

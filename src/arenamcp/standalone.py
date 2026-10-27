@@ -1277,9 +1277,19 @@ class StandaloneCoach(
             self._get_local_seat_from_state(curr_state),
             not_before=watchdog.first_seen_wall - 3.0,
         )
+        from arenamcp.request_tracker import request_window
+
+        current_window = request_window(curr_state)
+        watchdog_window = (
+            (curr_state.get("match_id"), curr_state.get("game_number"), *current_window)
+            if current_window is not None
+            else None
+        )
         judged = curr_state
         handed = False
-        if watchdog.may_act(resp, last_answer_at=last_answer, clock_remaining_s=remaining):
+        if watchdog.may_act(
+            resp, window=watchdog_window, last_answer_at=last_answer, clock_remaining_s=remaining
+        ):
             judged = self._bridge_judged_state(curr_state, True)
             with contextlib.suppress(Exception):
                 cooling = getattr(engine, "in_manual_play_cooldown", None)
@@ -1290,7 +1300,11 @@ class StandaloneCoach(
                     or self._live_request_handed_to_user(resp)
                 )
         step = watchdog.step(
-            resp, last_answer_at=last_answer, clock_remaining_s=remaining, handed_to_user=handed
+            resp,
+            window=watchdog_window,
+            last_answer_at=last_answer,
+            clock_remaining_s=remaining,
+            handed_to_user=handed,
         )
         if step is None:
             return None
@@ -1321,7 +1335,11 @@ class StandaloneCoach(
                 return "submitted"
             logger.warning(f"[WATCHDOG] no safe default for {step.label}: {detail}")
             step = watchdog.step(
-                resp, last_answer_at=last_answer, clock_remaining_s=remaining, handed_to_user=handed
+                resp,
+                window=watchdog_window,
+                last_answer_at=last_answer,
+                clock_remaining_s=remaining,
+                handed_to_user=handed,
             )
             if step is None:
                 return None
@@ -3060,7 +3078,7 @@ class StandaloneCoach(
                                 else:
                                     last_priority_progress_note = f"autopilot fell through {trigger}"
                                     logger.info(
-                                        f"Autopilot failed for trigger '{trigger}' — "
+                                        f"Autopilot did not handle trigger '{trigger}' — "
                                         "falling through to coaching"
                                     )
                             except Exception as e:

@@ -21,6 +21,7 @@ EVENT_PATTERNS = [
     (re.compile(r"MatchCreated"), "MatchCreated"),
     (re.compile(r"MatchGameRoomStateChangedEvent"), "MatchGameRoomStateChangedEvent"),
     (re.compile(r"ClientToMatchServiceMessage"), "ClientToMatchServiceMessage"),
+    (re.compile(r"\bto Match:\s*ClientToGremessage\b", re.IGNORECASE), "ClientToMatchServiceMessage"),
     (re.compile(r"MulliganReq"), "MulliganReq"),
     (re.compile(r"MulliganResp"), "MulliganResp"),
     (re.compile(r"GameStateMessage"), "GameStateMessage"),

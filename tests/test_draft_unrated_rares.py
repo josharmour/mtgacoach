@@ -10,7 +10,9 @@ the 2.1-point spread between FRA cards.
 
 from __future__ import annotations
 
-from arenamcp.draft_autopick import _set_stats, card_value, rank_pack
+from dataclasses import replace
+
+from arenamcp.draft_autopick import _set_stats, card_value, quality_band, rank_pack
 from arenamcp.set_primer import SetCard, SetPrimer
 
 
@@ -90,3 +92,53 @@ def test_a_large_sample_still_moves_the_estimate():
     stats = _set_stats(_set(strong, weak))
     assert card_value(strong, stats)[0] >= 1.0  # late pick order, but 3000 games say it is great
     assert card_value(weak, stats)[0] < 0  # early pick order, but 3000 games say it is not
+
+
+def test_unrated_walker_body_keeps_standalone_value_without_pool_commitment():
+    walker = SetCard(
+        200,
+        "Unfamiliar Walker",
+        "G",
+        "M",
+        "Legendary Planeswalker",
+        cmc=5,
+        oracle="Create a 3/3 green Beast creature token.",
+    )
+    plain = replace(walker, grp_id=201, name="Unfamiliar Mythic", types="Creature", oracle="")
+    good = replace(plain, grp_id=202, name="Measured Good Card", baseline=0.6, gih_wr=0.57)
+    primer = _set(walker, plain, good)
+    stats = _set_stats(primer)
+    value, reason, rated = card_value(walker, stats)
+    assert card_value(plain, stats)[0] < value < card_value(good, stats)[0]
+    assert not rated and "estimated" in reason and quality_band(value, reason) == "unknown"
+    blank = rank_pack([200, 201, 202], [], primer, pack_number=1, pick_number=2)
+    stale = rank_pack([200, 201, 202], [1] * 10, primer, pack_number=1, pick_number=2, plan_lane="BR")
+    assert [(p.grp_id, p.score) for p in blank] == [(p.grp_id, p.score) for p in stale]
+    assert blank[1].grp_id == 200
+
+
+def test_walker_prior_does_not_override_measurements_pick_order_or_requirements():
+    body = SetCard(
+        200,
+        "Another Walker",
+        "G",
+        "M",
+        "Planeswalker",
+        cmc=5,
+        oracle="Create a 3/3 green Beast creature token.",
+    )
+    primer = _set(body)
+    stats = _set_stats(primer)
+    for evidence in ({"baseline": -0.7, "gih_wr": 0.50}, {"game_wr": 0.49, "games": 1000}, {"alsa": 8.5}):
+        walker = replace(body, **evidence)
+        plain = replace(walker, types="Creature", oracle="")
+        assert card_value(walker, stats) == card_value(plain, stats)
+    for unsupported in (
+        replace(body, cmc=9),
+        replace(
+            body, oracle="Whenever you cast an enchantment spell, create a 3/3 green Beast creature token."
+        ),
+        replace(body, oracle="If you control a Dragon, create a 3/3 green Beast creature token."),
+        replace(body, play_rate=0.1),
+    ):
+        assert "standalone" not in card_value(unsupported, stats)[1]

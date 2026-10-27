@@ -172,9 +172,13 @@ def test_fetch_catalog_builds_and_caches_from_mocked_http(tmp_path, monkeypatch)
     monkeypatch.setattr(slc, "MIN_RATED_CARDS", 2)
     meta_rows = [_meta("Alpha", 1), _meta("Beta", 2)]
     header = _header(["Alpha", "Beta"])
-    game_rows = [_row(header, {"Alpha": (1 if i % 2 == 0 else 0, i % 2, 1)}, won=i % 2 == 0) for i in range(3)]
+    game_rows = [
+        _row(header, {"Alpha": (1 if i % 2 == 0 else 0, i % 2, 1)}, won=i % 2 == 0) for i in range(3)
+    ]
     # Beta sits in every deck but only shows up in hand every third game.
-    game_rows += [_row(header, {"Beta": (1 if i % 3 == 0 else 0, 0, 1)}, won=(i // 3) % 2 == 0) for i in range(9)]
+    game_rows += [
+        _row(header, {"Beta": (1 if i % 3 == 0 else 0, 0, 1)}, won=(i // 3) % 2 == 0) for i in range(9)
+    ]
 
     meta_response = MagicMock()
     meta_response.raise_for_status.return_value = None

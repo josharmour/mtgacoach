@@ -12,6 +12,10 @@ MECHANIC_LABELS = {
     "lifegain": "life gain",
     "plus_counters": "+1/+1 counters",
     "artifact_entry": "artifacts entering",
+    "artifact_presence": "artifact permanents to count or sacrifice",
+    "artifact_tokens": "creating artifact tokens",
+    "equipment_card": "Equipment cards to tutor or put onto the battlefield",
+    "spell_recursion": "instant or sorcery cards to recur from the graveyard",
     "creature_entry": "creatures entering",
     "noncreature_spell": "noncreature spells",
     "instant_sorcery": "instants and sorceries",
@@ -84,9 +88,17 @@ _OFF_HAND_CAST = re.compile(
     r"\bfor as long as it remains exiled\b|\bflashback\b|\benters prepared\b"
     r"|\bcast (?:it|this card|that card|them) from (?:exile|your graveyard)\b"
 )
-_ARTIFACT_PAYOFF = re.compile(
+_ARTIFACT_PRESENCE_PAYOFF = re.compile(
     r"\bnumber of artifacts you control\b|\bfor each artifact you control\b"
-    r"|\bsacrifice another artifact\b|\bartifact tokens would be created\b"
+    r"|\bsacrifice another artifact\b"
+)
+_EQUIPMENT_CARD_PAYOFF = re.compile(
+    r"\bsearch your library for an equipment card(?=,|$)"
+    r"|\bput an equipment card from your hand onto the battlefield\b"
+)
+_SPELL_RECURSION_PAYOFF = re.compile(
+    r"\btarget instant or sorcery card in your graveyard gains flashback\b"
+    r"|\breturn (?:up to one )?target instant or sorcery card from your graveyard to your hand\b"
 )
 
 
@@ -94,12 +106,16 @@ def rules_profile(card: dict) -> dict:
     return _rules_profile(str(card.get("type_line") or ""), str(card.get("oracle_text") or ""))
 
 
+def _plain_rules(oracle_text: str) -> str:
+    text = html.unescape(re.sub(r"<[^>]*>", "", oracle_text)).lower().replace("’", "'")
+    return re.sub(r"\([^)]*\)", "", text)
+
+
 @lru_cache(maxsize=4096)
 def _rules_profile(type_line: str, oracle_text: str) -> dict:
-    text = html.unescape(re.sub(r"<[^>]*>", "", oracle_text)).lower()
     # Reminder text varies by source (Scryfall prints it, Arena does not);
     # keyword effects come from _KEYWORD_EFFECTS so both read the same.
-    text = re.sub(r"\([^)]*\)", "", text.replace("’", "'"))
+    text = _plain_rules(oracle_text)
     lines = list(dict.fromkeys(part.strip() for part in re.split(r"[.\n]", text) if part.strip()))
     enables, payoffs, indirect = set(), set(), set()
     kind = type_line.lower()
@@ -109,11 +125,13 @@ def _rules_profile(type_line: str, oracle_text: str) -> dict:
     if body:
         enables.add("creature_entry")
     if "artifact" in kind:
-        enables.add("artifact_entry")
+        enables.update({"artifact_entry", "artifact_presence"})
+    if "equipment" in front:
+        enables.add("equipment_card")
     if front.strip() and "creature" not in front and "land" not in front:
         enables.add("noncreature_spell")
     if "instant" in front or "sorcery" in front:
-        enables.add("instant_sorcery")
+        enables.update({"instant_sorcery", "spell_recursion"})
     if "planeswalker" in front:
         enables.update({"planeswalker", "loyalty"})
         if "jace" in front:
@@ -127,6 +145,7 @@ def _rules_profile(type_line: str, oracle_text: str) -> dict:
             ("surveil", r"^whenever you (?:surveil|scry or surveil)\b"),
             ("draw", r"^whenever you draw a card$"),
             ("lifegain", r"^whenever you gain life$"),
+            ("exhaust", r"^whenever you activate an exhaust ability$"),
             (
                 "plus_counters",
                 r"^whenever you put (?:one or more |a )?\+1/\+1 counters? on a creature(?: you control)?$",
@@ -170,8 +189,19 @@ def _rules_profile(type_line: str, oracle_text: str) -> dict:
             payoffs.add("dies")
         if _SAC_OUTLET.search(line):
             enables.add("dies")
-        if _ARTIFACT_PAYOFF.search(line):
-            payoffs.add("artifact_entry")
+        if re.match(r"^exhaust\s*[—–-]\s*[^:]+:", line):
+            enables.add("exhaust")
+        # Having artifacts available to sacrifice/count is not an entry
+        # trigger. Conflating these told the Cube advisor that Portable Hole
+        # triggered Legion Extruder, whose actual synergy is sacrifice fodder.
+        if _ARTIFACT_PRESENCE_PAYOFF.search(line):
+            payoffs.add("artifact_presence")
+        if re.search(r"\bartifact tokens would be created\b", line):
+            payoffs.add("artifact_tokens")
+        if _EQUIPMENT_CARD_PAYOFF.search(effect):
+            payoffs.add("equipment_card")
+        if _SPELL_RECURSION_PAYOFF.search(effect):
+            payoffs.add("spell_recursion")
         if _OFF_HAND_MANA.search(line):
             enables.add("off_hand")
         if _OFF_HAND_CAST.search(line):
@@ -206,7 +236,13 @@ def _rules_profile(type_line: str, oracle_text: str) -> dict:
                 enables.update(direct)
                 indirect.update(via_token)
         if re.search(r"\bcreate\b[^.]*?\b(?:artifact|treasure|food|clue|thopter|servo|heartwood)\b", effect):
-            enables.add("artifact_entry")
+            enables.update({"artifact_entry", "artifact_presence", "artifact_tokens"})
+        # Arena omits these keywords' reminder text. Each creates a creature
+        # token and attaches this Equipment to it, supplying a body without
+        # making the Equipment itself a creature or a creature spell.
+        if re.fullmatch(r"living weapon|for mirrodin!", line):
+            enables.add("creature_entry")
+            body = unconditional_body = True
         if re.search(r"\bcreate\b[^.]*?\bplaneswalker token\b", effect):
             enables.update({"planeswalker", "loyalty"})
         if re.search(r"\bcreate\b[^.]*?\bcreature tokens?\b", effect):
@@ -225,14 +261,60 @@ def _rules_profile(type_line: str, oracle_text: str) -> dict:
     }
 
 
+def _synergy_cautions(source: dict, payoff: dict, mechanic: str) -> list[dict]:
+    """Known costs of using this source for a supported link, not pick bans.
+
+    An artifact-count payoff does not consume its enabler. Nor does sacrificing
+    a token made by a nonartifact card sacrifice that card. Keep the facts tied
+    specifically to sacrificing the artifact card itself.
+    """
+    if mechanic != "artifact_presence":
+        return []
+    if "artifact" not in str(source.get("type_line") or "").lower().split("//")[0]:
+        return []
+    payoff_text = _plain_rules(str(payoff.get("oracle_text") or ""))
+    if not re.search(r"\bsacrifice another artifact\b", payoff_text):
+        return []
+    source_text = _plain_rules(str(source.get("oracle_text") or ""))
+    self_names = [r"this artifact", r"this permanent"]
+    if name := str(source.get("name") or "").strip():
+        self_names.append(re.escape(_plain_rules(name)))
+    cautions = []
+    if re.search(
+        r"\bexile\b[^.\n]*\buntil (?:" + "|".join(self_names) + r") leaves the battlefield\b",
+        source_text,
+    ):
+        cautions.append(
+            {
+                "code": "sacrifice_ends_exile_until_source_leaves",
+                "kind": "rules_fact",
+                "detail": "If this artifact itself is sacrificed while it still holds a permanent card "
+                "in exile, the until-this-leaves exile ends and that card returns. Evaluate the returned "
+                "permanent when weighing the sacrifice; exiled tokens do not return.",
+            }
+        )
+    if re.search(r"(?:^|\n)(?:\{[^}\n]+\}[^:\n.]*|sacrifice this artifact)\s*:\s*add\b", source_text):
+        cautions.append(
+            {
+                "code": "sacrifice_spends_mana_source",
+                "kind": "opportunity_cost",
+                "detail": "This artifact has an activated mana ability. Sacrificing it spends a mana "
+                "source; compare its remaining mana uses with the sacrifice payoff. This does not "
+                "make the sacrifice illegal or always incorrect.",
+            }
+        )
+    return cautions
+
+
 def synergy_evidence(first: dict, second: dict) -> list[dict]:
     evidence = []
     for source, payoff in ((first, second), (second, first)):
         source_roles, payoff_roles = rules_profile(source), rules_profile(payoff)
         for mechanic in set(source_roles["enables"]) & set(payoff_roles["payoffs"]):
-            evidence.append(
-                {"source_id": source["grp_id"], "payoff_id": payoff["grp_id"], "mechanic": mechanic}
-            )
+            edge = {"source_id": source["grp_id"], "payoff_id": payoff["grp_id"], "mechanic": mechanic}
+            if cautions := _synergy_cautions(source, payoff, mechanic):
+                edge["cautions"] = cautions
+            evidence.append(edge)
         for mechanic in set(source_roles.get("indirect") or []) & set(payoff_roles["payoffs"]):
             evidence.append(
                 {

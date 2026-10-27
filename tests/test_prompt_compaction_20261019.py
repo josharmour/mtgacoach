@@ -212,7 +212,8 @@ def test_the_real_prompts_shrink():
     assert typed["chars"] < 16_000  # 31,569 before
     state = _state(T23)
     planner.plan_actions(state, "decision_required", state["legal_actions"], state["decision_context"])
-    plan = backend.calls[-1]
+    # An invalid stub declaration can now trigger a bounded combat repair.
+    plan = next(call for call in backend.calls if call["class"] == "decision.plan")
     assert plan["class"] == "decision.plan"
     assert plan["chars"] < 30_000  # 60,277 before
     # The decision context is one compact JSON line, not ~100 indented ones.

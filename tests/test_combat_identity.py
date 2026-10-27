@@ -398,3 +398,166 @@ def test_bepinex_attack_groups_recipients_and_verifies_from_0_7_2(
     assert bool(result and result.success) is finalized
     if finalized:
         assert calls[2].args[0] == [] and not calls[2].kwargs
+
+
+def test_unequal_vendor_menu_uses_ids_and_roundtrips_without_ordinal_guessing():
+    from arenamcp.combat_identity import blocker_identity_menu
+
+    state = board()
+    state["battlefield"] = [
+        {
+            "name": "Spellbook Vendor",
+            "instance_id": 462,
+            "controller_seat_id": 1,
+            "type_line": "Creature",
+            "power": 2,
+            "toughness": 2,
+        },
+        {
+            "name": "Spellbook Vendor",
+            "instance_id": 435,
+            "controller_seat_id": 1,
+            "type_line": "Creature",
+            "power": 5,
+            "toughness": 5,
+        },
+        {
+            "name": "Zombie Rogue",
+            "instance_id": 432,
+            "controller_seat_id": 2,
+            "type_line": "Creature",
+            "power": 4,
+            "toughness": 4,
+        },
+    ]
+    context = {
+        "type": "declare_blockers",
+        "raw_blockers": [
+            {"blockerInstanceId": 435, "attackerInstanceIds": [432]},
+            {"blockerInstanceId": 462, "attackerInstanceIds": [432]},
+        ],
+    }
+    old = ["Block with: Spellbook Vendor #1", "Block with: Spellbook Vendor #2", "Done (confirm blockers)"]
+    menu = blocker_identity_menu(state, context, old)
+    assert menu == [
+        "Block with: Spellbook Vendor [id:435]",
+        "Block with: Spellbook Vendor [id:462]",
+        "Done (confirm blockers)",
+    ]
+    assignments = {entry.removeprefix("Block with: "): "Zombie Rogue [id:432]" for entry in menu[:2]}
+    plan = parse({"action_type": "declare_blockers", "blocker_assignments": assignments}, old, state, context)
+    assert plan.actions[0].blocker_instance_assignments == {435: 432, 462: 432}
+    # Keep the guard: the old ordinal is genuinely ambiguous for unequal bodies.
+    with pytest.raises(ValueError, match="ambiguous"):
+        resolve_combatant("Spellbook Vendor #1", state, [435, 462], local_side=True)
+    planner = ActionPlanner(Mock(), land_drop_first=False)
+    prompt = planner._build_action_prompt(state, "decision_required", old, context)
+    assert "Block with: Spellbook Vendor [id:435]" in prompt
+    assert "Block with: Spellbook Vendor #1" not in prompt
+    assert planner._last_menu == menu
+
+
+@pytest.mark.parametrize("incomplete", ["filtered", "missing_card", "duplicate"])
+def test_block_menu_does_not_invent_candidates_from_incomplete_data(incomplete):
+    from arenamcp.combat_identity import blocker_identity_menu
+
+    state = board()
+    raw = [{"blockerInstanceId": 955}, {"blockerInstanceId": 1162}]
+    menu = ["Block with: Hobbit #1", "Block with: Hobbit #2", "Done (confirm blockers)"]
+    if incomplete == "filtered":
+        menu.pop(0)
+    elif incomplete == "missing_card":
+        raw[0]["blockerInstanceId"] = 9999
+    else:
+        raw[1]["blockerInstanceId"] = 955
+    assert blocker_identity_menu(state, {"raw_blockers": raw}, menu) == menu
+
+
+def test_unequal_spiders_attack_menu_names_exact_copies():
+    from arenamcp.combat_identity import attacker_identity_menu
+
+    state = board()
+    state["battlefield"] = [
+        {
+            "name": "Skyward Spider",
+            "instance_id": i,
+            "controller_seat_id": 1,
+            "type_line": "Creature",
+            "power": p,
+            "toughness": t,
+        }
+        for i, p, t in [(10, 8, 7), (20, 3, 3)]
+    ]
+    context = {
+        "type": "declare_attackers",
+        "raw_attackers": [
+            {"attackerInstanceId": 20},
+            {"attackerInstanceId": 10},
+        ],
+    }
+    menu = ["Attack with: Skyward Spider #1 (8/7)", "Attack with: Skyward Spider #2 (3/3)", "Done"]
+    rewritten = attacker_identity_menu(state, context, menu)
+    assert rewritten[:2] == ["Attack with: Skyward Spider [id:20]", "Attack with: Skyward Spider [id:10]"]
+    assert resolve_combatant("Skyward Spider [id:10]", state, [20, 10], local_side=True) == 10
+    with pytest.raises(ValueError, match="ambiguous"):
+        resolve_combatant("Skyward Spider", state, [20, 10], local_side=True)
+    prompt = ActionPlanner(Mock(), land_drop_first=False)._build_action_prompt(
+        state, "decision_required", menu, context
+    )
+    assert "Attack with: Skyward Spider [id:10]" in prompt
+    assert "Attack with: Skyward Spider #1" not in prompt
+    assert attacker_identity_menu(state, context, menu[:1]) == menu[:1]
+
+
+def test_interchangeable_attackers_keep_compressible_menu():
+    from arenamcp.combat_identity import attacker_identity_menu
+
+    state = board()
+    # Identical same-name bodies without attachments; their compact labels
+    # must remain usable by the existing menu compressor.
+    state["battlefield"] = [dict(state["battlefield"][0], instance_id=i) for i in [10, 20]]
+    context = {"raw_attackers": [{"attackerInstanceId": 10}, {"attackerInstanceId": 20}]}
+    menu = [f"Attack with: {HOBBIT} #1", f"Attack with: {HOBBIT} #2"]
+    assert attacker_identity_menu(state, context, menu) == menu
+
+
+def test_ambiguous_attack_response_is_repaired_with_exact_ids():
+    state = board()
+    state["turn"] = {"turn_number": 3, "active_player": 1, "phase": "Phase_Combat"}
+    state["battlefield"] = [
+        {
+            "name": "Skyward Spider",
+            "instance_id": i,
+            "controller_seat_id": 1,
+            "type_line": "Creature",
+            "power": p,
+            "toughness": p,
+        }
+        for i, p in [(10, 8), (20, 3)]
+    ]
+    context = {
+        "type": "declare_attackers",
+        "raw_attackers": [{"attackerInstanceId": 10}, {"attackerInstanceId": 20}],
+    }
+    prompts = []
+
+    class Backend:
+        def complete(self, system, user, **kwargs):
+            prompts.append(user)
+            names = (
+                ["Skyward Spider"]
+                if len(prompts) == 1
+                else ["Skyward Spider [id:10]", "Skyward Spider [id:20]"]
+            )
+            return json.dumps({"action_type": "declare_attackers", "attacker_names": names})
+
+    planner = ActionPlanner(Backend(), timeout=1, land_drop_first=False)
+    plan = planner.plan_actions(
+        state,
+        "decision_required",
+        ["Attack with: Skyward Spider #1 (8/8)", "Attack with: Skyward Spider #2 (3/3)", "Done"],
+        context,
+    )
+    assert len(prompts) == 2
+    assert "previous response did not specify a valid attack" in prompts[1]
+    assert plan.actions[0].attacker_instance_ids == [10, 20]

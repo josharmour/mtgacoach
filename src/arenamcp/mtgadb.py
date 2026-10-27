@@ -729,6 +729,50 @@ class MTGADatabase:
             self._prompt_cache[prompt_id] = text or None
             return text or None
 
+    def get_card_title_id(self, grp_id: int) -> int:
+        """The name identifier for a printing (StaticList_CardNames uses TitleId)."""
+        with self._conn_lock:
+            if not self._available or not self._conn:
+                return 0
+            try:
+                row = self._conn.execute(
+                    "SELECT TitleId FROM Cards WHERE GrpId = ?", (int(grp_id),)
+                ).fetchone()
+                return int(row["TitleId"] or 0) if row else 0
+            except (sqlite3.Error, TypeError, ValueError):
+                return 0
+
+    def is_card_title_id(self, title_id: int) -> bool:
+        """Whether an id names a non-token card, rather than a printing or game object."""
+        with self._conn_lock:
+            if not self._available or not self._conn:
+                return False
+            try:
+                return (
+                    self._conn.execute(
+                        "SELECT 1 FROM Cards WHERE TitleId = ? AND IsToken = 0 LIMIT 1", (int(title_id),)
+                    ).fetchone()
+                    is not None
+                )
+            except (sqlite3.Error, TypeError, ValueError):
+                return False
+
+    def get_card_title_name(self, title_id: int) -> str:
+        """English name for a card-name response; empty for an unknown identifier."""
+        with self._conn_lock:
+            if not self._available or not self._conn:
+                return ""
+            try:
+                row = self._conn.execute(
+                    "SELECT l.Loc FROM Localizations_enUS l WHERE l.LocId = ? "
+                    "AND EXISTS (SELECT 1 FROM Cards c WHERE c.TitleId = l.LocId AND c.IsToken = 0) "
+                    "ORDER BY l.Formatted DESC LIMIT 1",
+                    (int(title_id),),
+                ).fetchone()
+                return re.sub(r"<[^>]*>", "", str(row["Loc"] or "")).strip() if row else ""
+            except (sqlite3.Error, TypeError, ValueError):
+                return ""
+
     def get_subtype_names(self) -> dict[int, str]:
         """{SubType enum value: English name} from the ``Enums`` table (1 Angel, 232 Rabbit).
 

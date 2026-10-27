@@ -28,6 +28,7 @@ from arenamcp.cast_notes import (
     turn_investments_note,
     unpayable_graveyard_flashback,
 )
+from arenamcp.channel_zones import battlefield_channel_note, channel_land_note
 from arenamcp.damage_assignment import fallback_plan as damage_fallback_plan
 from arenamcp.damage_assignment import is_assign_damage_window, spoken_split
 from arenamcp.decision_memory import DecisionMemory, burn_combo_note, critical_decision, lethal_reach
@@ -1125,9 +1126,10 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="planner-llm")
         deadline = time.monotonic() + float(self._timeout or 0.0)
+        cancels = [threading.Event(), threading.Event()]
         try:
-            high = pool.submit(complete, "decision.plan", "high")
-            low = pool.submit(complete, "decision.plan", None)
+            high = pool.submit(complete, "decision.plan", "high", cancel_event=cancels[0])
+            low = pool.submit(complete, "decision.plan", None, cancel_event=cancels[1])
             try:
                 return self._wait_for_model(high, deadline)
             except Exception as error:
@@ -1139,7 +1141,11 @@ class ActionPlanner(_ActionLegalityMixin):
                 logger.info("Declaration plan: the low-effort answer stands")
                 return answer
         finally:
-            pool.shutdown(wait=False)
+            # Stop outstanding network work after a winner, timeout or
+            # request change; shutdown(wait=False) alone only stops waiting.
+            for cancel in cancels:
+                cancel.set()
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def _llm_unavailable_plan(
         self, trigger: str, turn: int, diag: dict[str, Any], start: float, failure: str
@@ -1303,6 +1309,20 @@ class ActionPlanner(_ActionLegalityMixin):
                 return plan
 
         big = big_board_declaration(game_state, effective_legal_actions)
+        if big and any(a.lower().startswith("block with:") for a in effective_legal_actions):
+            from arenamcp.combat_strategy import safe_default_blocks
+
+            block_state = {
+                **game_state,
+                "decision_context": decision_context or game_state.get("decision_context") or {},
+            }
+            if safe_default_blocks(block_state) is None:
+                # A large board is not proof the solver can represent it.
+                # Do not suppress the model and then hand off immediately
+                # because the same solver cannot produce a declaration.
+                logger.warning("Big-board block solver unavailable; retaining bounded model planning")
+                diag["big_board_solver_unavailable"] = True
+                big = ""
         if big:
             # Ledger #155/#162 (match 2bb162d7, 14:27-14:29): 25-39 attackers and 41 creatures on
             # the battlefield; every attack answer was dropped and the block plans ran out the 15 s
@@ -1379,7 +1399,12 @@ class ActionPlanner(_ActionLegalityMixin):
         # passes, 2026-07-05). _call_llm raises on a sentinel as well.
         model_deadline = time.monotonic() + self._timeout
 
-        def _complete(call_class: str = "decision.plan", effort: str | None = None) -> str:
+        def _complete(
+            call_class: str = "decision.plan",
+            effort: str | None = None,
+            *,
+            cancel_event: threading.Event | None = None,
+        ) -> str:
             remaining = model_deadline - time.monotonic()
             if remaining <= 0:
                 raise concurrent.futures.TimeoutError()
@@ -1391,6 +1416,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 call_class=call_class,
                 first_token_timeout_s=self._plan_first_token_timeout(len(system_prompt) + len(user_message)),
                 reasoning_effort=effort,
+                cancel_event=cancel_event,
             )
 
         # Ledger #159 (be1a945f T10): declarations ran at low effort with 25 power against their
@@ -1457,18 +1483,31 @@ class ActionPlanner(_ActionLegalityMixin):
         plan.turn_number = game_state.get("turn", {}).get("turn_number", 0)
 
         blocking_window = any(entry.lower().startswith("block with:") for entry in effective_legal_actions)
+        attacking_window = any(entry.lower().startswith("attack with:") for entry in effective_legal_actions)
         repair_unavailable = False
-        if not plan.actions and blocking_window and not llm_circuit_open(self._backend):
-            user_message += (
+        if not plan.actions and (blocking_window or attacking_window) and not llm_circuit_open(self._backend):
+            repair_kind = "block" if blocking_window else "attack"
+            repair_instruction = (
                 "\n\nYour previous response did not specify a valid complete block: "
                 + str(response or "")[:1000]
                 + '\nReturn one action_type="declare_blockers" with blocker_assignments '
-                'as {"eligible blocker name": "attacking creature name"}. '
+                "using the exact COMBAT IDENTITIES labels, including [id:N], for both "
+                "blocker and attacker (never ambiguous #1/#2 copy ordinals). "
                 'A bare "pick" cannot specify the attacker. Use {} only to deliberately decline all blocks.'
             )
+            if attacking_window and not blocking_window:
+                repair_instruction = (
+                    "\n\nYour previous response did not specify a valid attack: "
+                    + str(response or "")[:1000]
+                    + '\nReturn one action_type="declare_attackers" with attacker_names '
+                    "using exact COMBAT IDENTITIES labels including [id:N]. "
+                    "Do not guess between unequal copies or omit intended attackers. "
+                    "Use [] only to deliberately decline all attacks."
+                )
+            user_message += repair_instruction
             try:
                 repair_response = self._bounded_call(
-                    lambda: _complete("decision.block_repair"),
+                    lambda: _complete(f"decision.{repair_kind}_repair"),
                     timeout_s=model_deadline - time.monotonic(),
                 )
                 plan = self._parse_response(
@@ -1480,10 +1519,10 @@ class ActionPlanner(_ActionLegalityMixin):
                 )
                 plan.trigger = trigger
                 plan.turn_number = current_turn
-                diag["block_repair_preview"] = (repair_response or "")[:300]
+                diag[f"{repair_kind}_repair_preview"] = (repair_response or "")[:300]
             except Exception as error:
                 repair_unavailable = is_llm_unavailable_error(error)
-                logger.warning("Block assignment repair failed: %s", error)
+                logger.warning("%s assignment repair failed: %s", repair_kind.capitalize(), error)
 
         if not plan.actions and is_assign_damage_window(
             game_state, decision_context, effective_legal_actions
@@ -2123,7 +2162,10 @@ class ActionPlanner(_ActionLegalityMixin):
                 or _has(card, "vigilance")
             ]
             result = evaluate_attack(attack_set, home, blockers, opp_life, our_life, theirs, state=state)
-            return our_life - int(result.worst_case_crackback)
+            # Lifelink from this attack is available before their crackback.
+            # 74ffd931 T14: a free 5-point lifelink hit from 4 life funds a
+            # surviving Vendor chump; ignoring it wrongly held the Spider.
+            return our_life + int(result.life_gained) - int(result.worst_case_crackback)
 
         try:
             after = life_after(attacking)
@@ -3254,7 +3296,7 @@ class ActionPlanner(_ActionLegalityMixin):
           - decision is a normal priority window (ActionsAvailable / unset)
           - it's our turn
           - active player has played 0 lands this turn
-          - a "Play Land: X" entry is in legal_actions
+          - legal land entries name one distinct land (copies allowed)
         """
         # A learned sequencing exception must reach strategic planning instead
         # of being preempted by the generic land-first shortcut.
@@ -3299,12 +3341,14 @@ class ActionPlanner(_ActionLegalityMixin):
                 if (player.get("lands_played") or 0) > 0:
                     return None
 
-        # Whenever MTGA GRE offers "Play Land: <Card>" in legal_actions during our turn,
-        # prioritize playing the land.
-        for legal in legal_actions:
-            if legal.lower().startswith("play land:"):
-                return legal
-        return None
+        # #303: menu order cannot choose between different colors, entry
+        # conditions, or hand-only abilities (e.g. channel). Let strategic
+        # planning compare distinct lands; retain the shortcut for copies.
+        lands = [legal for legal in legal_actions if legal.lower().startswith("play land:")]
+        names = {legal.split(":", 1)[1].strip().casefold() for legal in lands}
+        if len(names) != 1:
+            return None
+        return lands[0]
 
     def _build_preflight_plan(
         self,
@@ -3404,6 +3448,11 @@ class ActionPlanner(_ActionLegalityMixin):
                     menu = [f"Discard {c}" for c in option_cards]
             combat_menu = any(a.strip().lower().startswith(("attack with:", "block with:")) for a in menu)
             if combat_menu:
+                from arenamcp.combat_identity import attacker_identity_menu, blocker_identity_menu
+
+                menu = blocker_identity_menu(game_state, dec_ctx, menu)
+                if dec_type == "declare_attackers":
+                    menu = attacker_identity_menu(game_state, dec_ctx, menu)
                 # A swarm's identical tokens gathered and shown as one line each (ledger #162).
                 menu = group_menu(menu)
             self._last_menu = menu
@@ -3491,6 +3540,9 @@ class ActionPlanner(_ActionLegalityMixin):
         memory_block = self._memory().prompt_block(game_state)
         if memory_block:
             parts.append(memory_block)
+        channel_zones = battlefield_channel_note(game_state)
+        if channel_zones:
+            parts.append(channel_zones)
         investments = turn_investments_note(game_state)
         if investments:
             parts.append(investments)
@@ -3984,7 +4036,11 @@ class ActionPlanner(_ActionLegalityMixin):
         "You decide whether to PAY an optional cost in a Magic: The "
         "Gathering Arena game (a 'you may pay ...' trigger or ability). "
         "Paying commits you to the effect that follows, including choosing "
-        "targets for it. If the effect's targeting restriction means no "
+        "targets for it. Check the mana left after payment and recent decisions: "
+        "do not spend mana reserved for protection or a planned spell merely because "
+        "the trigger has a beneficial effect. Pay over a reservation only when the "
+        "current board makes that benefit more important, and explain the change. "
+        "If the effect's targeting restriction means no "
         "opponent permanent is a legal target (so it would be forced onto "
         "your own permanents), you MUST decline. Reply ONLY with JSON: "
         '{"pay": true, "reasoning": "<one short sentence>"} — no prose '
@@ -4011,6 +4067,7 @@ class ActionPlanner(_ActionLegalityMixin):
             "\n".join(
                 [
                     f"Optional cost from: {source_name or 'unknown source'}",
+                    self._memory().prompt_block(game_state),
                     f"Effect text: {oracle_text or 'unknown'}",
                     # The amount and, for a ward tax, whose ward and what it
                     # counters: without them Burst Lightning's {2} ward tax read
@@ -4204,6 +4261,7 @@ class ActionPlanner(_ActionLegalityMixin):
         planner's decision memory, which the next typed prompt of this turn
         and the background game-plan reform both read.
         """
+        self._bound_decision_evidence = None
         chosen = self._plan_decision_options(decision, game_state)
         # Bookkeeping that must survive a mid-planning request change: a
         # completed answer is exactly what an identical re-presented window
@@ -4229,7 +4287,13 @@ class ActionPlanner(_ActionLegalityMixin):
             # cast, was remembered with the model's "dealing 4 cripples Trostani".
             reasoning = getattr(self, "_decline_reason", "") or "no safe choice, the request was cancelled"
         try:
-            self._memory().record(game_state, decision, chosen, reasoning)
+            self._memory().record(
+                game_state,
+                decision,
+                chosen,
+                reasoning,
+                model_unavailable=self.last_llm_failure == "unavailable",
+            )
         except Exception as error:  # memory never blocks a decision
             logger.debug("decision memory skipped: %s", error)
         try:
@@ -4243,7 +4307,33 @@ class ActionPlanner(_ActionLegalityMixin):
             chosen,
             released=release.get("card", "") if chosen == [release.get("option_id")] else "",
         )
+        self._bound_decision_evidence = (
+            self._decision_evidence_key(decision, game_state, chosen),
+            {"reasoning": self.get_decision_reasoning(chosen), "trace": self.get_last_decision_trace()},
+        )
         return chosen
+
+    @staticmethod
+    def _decision_evidence_key(decision: Any, game_state: dict, chosen: list[str]) -> tuple:
+        return (
+            game_state.get("match_id"),
+            game_state.get("game_number"),
+            (game_state.get("turn") or {}).get("turn_number"),
+            decision.request_type,
+            tuple(decision.request_id),
+            tuple(chosen),
+        )
+
+    def get_decision_evidence(self, decision: Any, game_state: dict, chosen: list[str]) -> dict:
+        """Only reasoning produced for this exact submitted request (#268).
+
+        Deterministic declarations can bypass the typed planner entirely; its
+        last trace must not be attributed to those new blocks or attacks.
+        """
+        bound = getattr(self, "_bound_decision_evidence", None)
+        if not bound or bound[0] != self._decision_evidence_key(decision, game_state, chosen):
+            return {}
+        return dict(bound[1])
 
     def _hold_fates(self) -> Any:
         """The match's record of held burn and what became of it (``burn_timing.HoldFates``)."""
@@ -8048,6 +8138,13 @@ class ActionPlanner(_ActionLegalityMixin):
             justified = (
                 acknowledged == expected and isinstance(justification, str) and bool(justification.strip())
             )
+            if acknowledged == expected and self._is_graveyard_exile_target(game_state, iid, oracle):
+                # Oct 24 Veteran Survivor: Arena marks our graveyard Cold even
+                # when exiling it advances Survival. This is resource selection,
+                # not removal of our board. Keep the explicit controller-aware
+                # choice; a separate unusual_targets field is not needed merely
+                # because the consumed graveyard card belongs to us.
+                continue
             if ctrl != local_seat and effect_mentions_blink(oracle) and not justified:
                 # Blink may remove a token or a current attacker, but can also
                 # reset an opposing ETB/Saga. Never silently replace that plan
@@ -8116,6 +8213,30 @@ class ActionPlanner(_ActionLegalityMixin):
         return chosen
 
     @staticmethod
+    def _is_graveyard_exile_target(game_state: dict[str, Any], instance_id: int, oracle: str) -> bool:
+        """Known graveyard resource selection, not battlefield self-removal."""
+        zones = game_state.get("zones") or {}
+        graveyard = game_state.get("graveyard", zones.get("graveyard", [])) or []
+        if not any(
+            isinstance(card, dict) and _as_int(card.get("instance_id")) == instance_id for card in graveyard
+        ):
+            return False
+        # Do not let stale duplicate zone data exempt a live permanent.
+        if any(
+            isinstance(card, dict) and _as_int(card.get("instance_id")) == instance_id
+            for card in game_state.get("battlefield", zones.get("battlefield", [])) or []
+        ):
+            return False
+        return bool(
+            re.search(
+                r"\bexile (?:up to \w+ )?target (?:[a-z-]+ )*cards? from "
+                r"(?:a|any|your|an opponent's|target player's) graveyard\b",
+                oracle,
+                re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
     def _unclassified_pick_reason(
         decision: Any,
         instance_id: int,
@@ -8141,6 +8262,26 @@ class ActionPlanner(_ActionLegalityMixin):
             if forced and names_a_target_you_control(oracle):
                 return "the card aims this target at a permanent we control"
             return ""
+        # Mixed pump/bite effects help our first target and damage the
+        # opponent-only second slot. Do not attribute the friendly buff to
+        # that opponent merely because both clauses share a spell.
+        sentences = re.split(r"[.\n]", oracle.replace("’", "'"))
+        if (
+            forced
+            and any(
+                re.search(
+                    r"\bdeals? damage equal to its power to target creature you (?:don't|do not) control\b",
+                    sentence,
+                    re.IGNORECASE,
+                )
+                for sentence in sentences
+            )
+            and all(
+                not effect_mentions_benefit(sentence) or names_a_target_you_control(sentence)
+                for sentence in sentences
+            )
+        ):
+            return "the opponent-only target receives damage; the benefit targets our creature"
         if not effect_mentions_benefit(oracle):
             return "nothing in the effect can help the opponent's permanent"
         return ""
@@ -8538,6 +8679,9 @@ class ActionPlanner(_ActionLegalityMixin):
         agreement shortcut; without a high answer the low one stands.
         """
         outer = getattr(self, "_decision_cancel_event", None)
+        # Cancellation can preserve a completed leg before the normal
+        # winner path runs; its diagnostics must already be initialized.
+        trace = getattr(self, "_last_decision_trace", None)
         legs = {
             "high": ("high", high_budget or self._CRITICAL_DECISION_BUDGET_S),
             "low": (None, normal_budget),
@@ -8629,7 +8773,6 @@ class ActionPlanner(_ActionLegalityMixin):
                 wait_until(
                     min(high_deadline, time.monotonic() + self._HIGH_AFTER_LOW_S), lambda: "high" in results
                 )
-        trace = getattr(self, "_last_decision_trace", None)
         if ok("high"):
             cancels["low"].set()
             high, low = results["high"], results.get("low")
@@ -8640,7 +8783,17 @@ class ActionPlanner(_ActionLegalityMixin):
                 note = ""
             logger.info("typed-decision hedge: high won in %.0f ms%s", high[2], note)
             if isinstance(trace, dict):
-                trace["hedge"] = {"winner": "high", "high_ms": round(high[2])}
+                trace["hedge"] = {
+                    "winner": "high",
+                    "high_ms": round(high[2]),
+                    "patient": patient,
+                }
+                if low is not None and low[0] == "ok":
+                    trace["hedge"].update(
+                        low_ms=round(low[2]),
+                        same_choice=low[1][1] == high[1][1],
+                        wait_after_low_ms=round(max(0.0, high[2] - low[2])),
+                    )
             return high[1]
         cancels["high"].set()
         if not ok("low"):
@@ -8800,6 +8953,22 @@ class ActionPlanner(_ActionLegalityMixin):
             from arenamcp.optional_prompts import prompt_note
 
             lines.insert(1, prompt_note(decision, game_state))
+        if decision.request_type == "SelectN":
+            # #313: two triggers from the same source can share a name but
+            # have different effects. Retain exact offered ability text.
+            offered_ids = {option.option_id for option in decision.options}
+            ability_facts = [
+                {
+                    "option_id": f"sel:{ability.get('instance_id')}",
+                    "name": ability.get("name", ""),
+                    "ability_text": ability.get("oracle_text", ""),
+                }
+                for ability in game_state.get("pending_selection_objects", []) or []
+                if ability.get("object_kind") == "ABILITY"
+                and f"sel:{ability.get('instance_id')}" in offered_ids
+            ]
+            if ability_facts:
+                lines.append("OFFERED TRIGGER FACTS: " + json.dumps(ability_facts, ensure_ascii=False))
         commander_ids = {
             card.get("instance_id")
             for card in game_state.get("command", []) or []
@@ -8833,6 +9002,8 @@ class ActionPlanner(_ActionLegalityMixin):
                 note += "  [YOUR COMMANDER — command zone]"
             if "weight" in o.meta:
                 note += f"  [contribution: {o.meta['weight']}]"
+            if o.meta.get("actionType") == "ActionType_Play":
+                note += channel_land_note(find_source(game_state, o.meta) or {})
             if o.meta.get("actionType") == "ActionType_Cast":
                 source_card = find_source(game_state, o.meta) or {}
                 note += combat_cast_note(game_state, source_card)
@@ -9000,6 +9171,9 @@ class ActionPlanner(_ActionLegalityMixin):
         if reach:
             lines.append(reach)
         lines.append(self._decision_game_context(context_state, options_listed=True))
+        channel_zones = battlefield_channel_note(game_state)
+        if channel_zones:
+            lines.append(channel_zones)
         # The LINES line is shown once, above OPTIONS: not again in the plan block.
         grounded = self._grounded_plan_block(game_state, with_lines=not lines_text.startswith("LINES"))
         self._last_plan_block = grounded or ""

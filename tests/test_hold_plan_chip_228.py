@@ -199,9 +199,7 @@ def test_the_standing_hold_rationale_names_the_chip_it_gives_up():
     # their burn combo; holding them still forfeits real chip damage each
     # window (#228): the rationale says so (Hazard: 1 face + 1 on the troll,
     # Iroh's mode 1: 1 on the troll).
-    state = _f5169733_t11(
-        theirs=[_card(400, "Beast", THEM, **{**BEAST, "power": 6, "toughness": 6})]
-    )
+    state = _f5169733_t11(theirs=[_card(400, "Beast", THEM, **{**BEAST, "power": 6, "toughness": 6})])
     model = _Model(_reply("pass", "nothing to do"))
     planner = _planner(model)
     menu = _menu(state, (222, True), (223, True))

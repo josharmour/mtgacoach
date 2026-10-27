@@ -31,6 +31,8 @@ from pathlib import Path
 from typing import Any
 
 from arenamcp.draft_autopick import (
+    Lane,
+    PickScore,
     _set_stats,
     card_value,
     choose_picks,
@@ -39,6 +41,7 @@ from arenamcp.draft_autopick import (
     deck_plan_for,
     is_ordinary_basic,
     note_openness,
+    opening_pick,
     pool_lane,
     quality_band,
     rank_pack,
@@ -144,6 +147,7 @@ class DraftEventDriver:
         card_db: Any = None,
         in_match_fn: Callable[[], bool] = lambda: False,
         status_fn: Callable[[str], None] | None = None,
+        deck_preview_fn: Callable[[dict], None] | None = None,
         speak_fn: Callable[[str], None] | None = None,
         commentary_fn: Callable[[], bool] = lambda: True,
         queue_fn: Callable[[], bool] = lambda: True,
@@ -163,6 +167,7 @@ class DraftEventDriver:
         self._db = card_db
         self._in_match_fn = in_match_fn
         self._status_fn = status_fn
+        self._deck_preview_fn = deck_preview_fn
         self._speak_fn = speak_fn
         # Whether picks are explained aloud (setting draft_commentary).
         self._commentary_fn = commentary_fn
@@ -274,6 +279,10 @@ class DraftEventDriver:
         return getattr(card, "name", "") or f"Card {grp_id}"
 
     def _set_code_for(self, grp_ids: list[int]) -> str:
+        # Cube packs mix printings from many sets. A plurality such as DMU
+        # says nothing about this event's ratings or archetypes (#293).
+        if "cube" in self.run.event_name.casefold():
+            return ""
         codes = Counter()
         for grp_id in grp_ids:
             card = self._db.get_card(grp_id) if self._db is not None else None
@@ -283,7 +292,7 @@ class DraftEventDriver:
         return codes.most_common(1)[0][0] if codes else ""
 
     def _primer(self, set_code: str) -> SetPrimer | None:
-        if not set_code:
+        if not set_code or "cube" in self.run.event_name.casefold():
             return None
         primer = self._primers.get(set_code)
         if primer is None:
@@ -298,6 +307,64 @@ class DraftEventDriver:
         card = primer.by_name().get(self._card_name(grp_id).lower())
         return card.grp_id if card is not None else grp_id
 
+    def _unrated_ranking(
+        self, pack: list[int], pool: list[int], pack_number: int, pick_number: int
+    ) -> list[PickScore]:
+        """Use local card rules when no event-specific primer exists.
+
+        The primer ranker has no metadata without a primer: every nonbasic
+        receives the same score and the first pack position wins. Reuse the
+        overlay's unrated guidance instead, without borrowing printing-set
+        ratings. These estimates are a fallback, not a veto on model picks.
+        """
+        from arenamcp.draft_guidance import FormatContext, _base_score, evaluate_pack, normalize_card
+
+        def card(grp_id: int):
+            known = self._db.get_card(grp_id) if self._db is not None else None
+            return normalize_card(
+                {
+                    "grp_id": grp_id,
+                    "name": getattr(known, "name", "") or f"Card {grp_id}",
+                    "mana_cost": getattr(known, "mana_cost", ""),
+                    "type_line": getattr(known, "type_line", ""),
+                    "oracle_text": getattr(known, "oracle_text", ""),
+                    "rarity": getattr(known, "rarity", ""),
+                }
+            )
+
+        pack_cards = [card(g) for g in pack]
+        if opening_pick(pack_number, pick_number, len(pool)):
+            # With only a few picks, a curve quota or color lean is not an
+            # established deck. Keep the existing standalone rules estimate.
+            ranking = []
+            for candidate in pack_cards:
+                score, reason = _base_score(candidate, FormatContext())
+                ranking.append(
+                    PickScore(
+                        grp_id=candidate.grp_id,
+                        name=candidate.name,
+                        score=score,
+                        reasons=[reason] if reason else [],
+                        components={"rules": score},
+                        band="unknown",
+                    )
+                )
+            return sorted(ranking, key=lambda row: (is_ordinary_basic(row.name), -row.score))
+        ranking = [
+            PickScore(
+                grp_id=row.grp_id,
+                name=row.name,
+                score=row.score,
+                reasons=row.reasons,
+                components={"rules": row.score},
+                band="unknown",
+            )
+            for row in evaluate_pack(pack_cards, [card(g) for g in pool], pick_number, pack_number)
+        ]
+        # Ordinary basics remain freely available, including when type metadata
+        # is absent. Retain this guard from the primer ranker.
+        return sorted(ranking, key=lambda row: (is_ordinary_basic(row.name), -row.score))
+
     def _new_run_if_needed(self, event_name: str, pack_number: int, pick_number: int) -> None:
         run = self.run
         if (event_name and run.event_name and event_name != run.event_name) or (
@@ -308,6 +375,8 @@ class DraftEventDriver:
             self.run.event_name = event_name
             # Alchemy events ("PremierDraft_YFRA_...") rate and prime from 17lands' Y26FRA.
             use_event_expansion(event_name)
+        if "cube" in self.run.event_name.casefold():
+            self.run.set_code = ""  # also discard a previously inferred retail set
 
     # -- the step -------------------------------------------------------------
 
@@ -363,6 +432,8 @@ class DraftEventDriver:
         course = tracker.active_limited() if tracker else None
         self._new_run_if_needed(getattr(course, "event_name", ""), pack_number, pick_number)
         run = self.run
+        if opening_pick(pack_number, pick_number):
+            run.plan = run.plan_lane = run.plan_splash = ""
         key = (pack_number, pick_number, tuple(sorted(pack)))
         if key == run.last_pick_key and time.monotonic() - run.last_pick_at < 8.0:
             self._wait(1.0)  # our pick is still landing
@@ -398,6 +469,14 @@ class DraftEventDriver:
             plan_lane=run.plan_lane,
             signals=self._table_signals(pack, primer, pack_number or 1, pick_number or 1),
         )
+        if primer is None:
+            ranked = []
+            remaining, working_pool = list(pack), list(pool)
+            for _ in range(min(required, len(remaining))):
+                best = self._unrated_ranking(remaining, working_pool, pack_number, pick_number)[0]
+                ranked.append(best)
+                remaining.remove(best.grp_id)
+                working_pool.append(best.grp_id)
         to_actual = {}
         for actual, canon in canonical.items():
             to_actual.setdefault(canon, actual)
@@ -634,16 +713,19 @@ class DraftEventDriver:
                 plan_lane=self.run.plan_lane,
                 signals=color_signals(self.run.signals, pack_number),
             )
+            if primer is None:
+                ranking = self._unrated_ranking(pack, pool, pack_number, pick_number)
             by_id = {pick.grp_id: pick for pick in ranking}
             spoken = [(g, name) for g, name in zip(chosen, names, strict=False) if canon.get(g) in by_id]
             taken = [canon[g] for g in chosen if g in canon]
+            opening = opening_pick(pack_number, pick_number, len(pool), required)
             line = self._narrator.pick_line(
                 names=[name for _g, name in spoken],
                 chosen=[by_id[canon[g]] for g, _name in spoken],
                 ranking=ranking,
                 pool=pool + taken,
-                lane_before=pool_lane(pool, primer, mana),
-                lane_after=pool_lane(pool + taken, primer, mana),
+                lane_before=Lane("", {}, 0.0) if opening else pool_lane(pool, primer, mana),
+                lane_after=Lane("", {}, 0.0) if opening else pool_lane(pool + taken, primer, mana),
                 primer=primer,
                 pack_number=pack_number,
                 pick_number=pick_number,
@@ -652,11 +734,23 @@ class DraftEventDriver:
                 model_reasons=[model_reasons.get(g, "") for g, _name in spoken],
                 mana_costs=mana,
                 verb=verb,
-                model_plan=self.run.plan,
+                model_plan="" if opening else self.run.plan,
                 # The advisor's validated lane; None before any plan (narration reads the plan text).
-                model_lane=self.run.plan_lane if self.run.plan else None,
+                model_lane="" if opening else self.run.plan_lane if self.run.plan else None,
                 model_splash=self.run.plan_splash if self.run.plan else None,
             )
+            # The short narrator may truncate the model reason. Keep the
+            # rating comparison audible and visible rather than losing it.
+            comparisons = list(
+                dict.fromkeys(
+                    reason[reason.index("Rating trade-off:") :]
+                    for g in chosen
+                    if isinstance((reason := model_reasons.get(g)), str) and "Rating trade-off:" in reason
+                )
+            )
+            for comparison in comparisons:
+                if comparison not in line:
+                    line += " " + comparison
             logger.info("Draft commentary P%sp%s: %s", pack_number, pick_number, line)
             return line
         except Exception as exc:
@@ -725,6 +819,7 @@ class DraftEventDriver:
 
         Returns (picks, reasons, source, the picks that are the model's own).
         """
+        advisor = None
         try:
             details = self._pack_fn() or {}
             if sorted(int(c["grp_id"]) for c in details.get("cards") or []) != sorted(pack):
@@ -732,6 +827,9 @@ class DraftEventDriver:
             lane = pool_lane(pool, primer, self._mana_costs(self._drafted_pool(), primer))
             details = {**details, "picks_per_pack": required}
             pack_no, pick_no = int(details.get("pack_number") or 1), int(details.get("pick_number") or 1)
+            opening = opening_pick(pack_no, pick_no, len(pool), required)
+            if opening:
+                self.run.plan = self.run.plan_lane = self.run.plan_splash = ""
             details["color_signals"] = self._table_signals(pack, primer, pack_no, pick_no)
             if self._pool_cards_fn:
                 # The model and ranking must see the same pool after a takeover.
@@ -739,7 +837,7 @@ class DraftEventDriver:
             if primer is not None:
                 # The committed lane's archetypes lead; the pool estimate only while open.
                 details["set_strategy"] = primer.prompt_context(
-                    self.run.plan_lane or lane.colors, card_stats=False
+                    "" if opening else self.run.plan_lane or lane.colors, card_stats=False
                 )
                 # 2026-10-13: the model sees the deck we are drafting toward and
                 # 17Lands only as a quality band, never as win rates.
@@ -758,6 +856,8 @@ class DraftEventDriver:
                 details["cards"] = self._with_bands(details.get("cards") or [], primer)
                 if details.get("picked_cards"):
                     details["picked_cards"] = self._with_bands(details["picked_cards"], primer)
+            if opening:
+                details.pop("deck_plan", None)
             ranking = rank_pack(
                 [self._canonical(g, primer) for g in pack],
                 pool,
@@ -778,8 +878,14 @@ class DraftEventDriver:
                 players=self._pod_size(),
                 picks_per_pass=required,
             )
+            if primer is None:
+                ranking = self._unrated_ranking(pack, pool, pack_no, pick_no)
             evaluations = [pick.as_plan_evaluation(rank) for rank, pick in enumerate(ranking[:10], 1)]
-            result = self._pick_advisor_fn().recommend(details, {"evaluations": evaluations})
+            advisor = self._pick_advisor_fn()
+            sync_plan = getattr(advisor, "set_plan_context", None)
+            if callable(sync_plan):
+                sync_plan(self.run.plan, self.run.plan_lane, self.run.plan_splash)
+            result = advisor.recommend(details, {"evaluations": evaluations})
             if result.get("reasoning_source") != "card_rules":
                 return None
             picks = [int(rec["grp_id"]) for rec in result.get("recommendations") or []]
@@ -805,7 +911,7 @@ class DraftEventDriver:
                 index = position.get(canon, len(ranking))
                 score = ranking[index].score if index < len(ranking) else float("-inf")
                 top_few_floor = floor - (MODEL_PICK_TOP_FEW_SLACK - 1.0) * MODEL_PICK_TOLERANCE
-                if score < floor and (index >= required + 2 or score < top_few_floor):
+                if primer is not None and score < floor and (index >= required + 2 or score < top_few_floor):
                     logger.warning(
                         "Model pick %s ranks #%d (%.2f) vs ranking floor %.2f; %s",
                         self._card_name(grp_id),
@@ -868,13 +974,22 @@ class DraftEventDriver:
                 "; ".join(result.get("needs") or []),
             )
             source = "model" if len(from_model) == required else "model+ranking"
-            self.run.plan = str(result.get("plan") or "")
-            self.run.plan_lane = str(result.get("lane") or "")
-            self.run.plan_splash = str(result.get("splash") or "")
+            # A Pick-Two plan may depend on the rejected member of the pair.
+            # Only a wholly accepted recommendation can establish that plan.
+            if len(from_model) == required:
+                self.run.plan = "" if opening else str(result.get("plan") or "")
+                self.run.plan_lane = "" if opening else str(result.get("lane") or "")
+                self.run.plan_splash = "" if opening else str(result.get("splash") or "")
             return kept, reasons, source, from_model
         except Exception as exc:
             logger.info("Draft pick refinement unavailable: %s", exc)
             return None
+        finally:
+            # recommend() has its own continuation state. Roll it back on a
+            # veto/error, or synchronize it with the accepted plan on success.
+            sync_plan = getattr(advisor, "set_plan_context", None)
+            if callable(sync_plan):
+                sync_plan(self.run.plan, self.run.plan_lane, self.run.plan_splash)
 
     # -- deck -----------------------------------------------------------------
 
@@ -982,6 +1097,13 @@ class DraftEventDriver:
             if plan is None:
                 return
             run.deck_plan = {**plan, "pool": pool_signature}
+            if self._deck_preview_fn is not None:
+                try:
+                    from arenamcp.limited_preview import deck_preview
+
+                    self._deck_preview_fn(deck_preview(plan, run.event_name))
+                except Exception as exc:
+                    logger.warning("Deck preview unavailable: %s", exc)
         build, source, cards = plan["build"], plan["source"], plan["cards"]
         target = deck_entries(build, basics, pool_view)
         if target is None:

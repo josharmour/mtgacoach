@@ -28,12 +28,20 @@ def payment_shortfall(context: dict[str, Any]) -> str:
         requirements = context.get("mana_requirements") or {}
         needs = {color: int(count) for color, count in requirements.items() if count}
         pool = int(context.get("pool_mana_count") or 0)
-        sources = {
-            source["instance_id"]: source
-            for source in context.get("payment_sources") or []
-            if isinstance(source, dict) and source.get("instance_id")
-        }
-        supply = sum(int(source.get("amount") or 1) for source in sources.values()) + pool
+        sources = {}
+        for source in context.get("payment_sources") or []:
+            if not isinstance(source, dict) or not source.get("instance_id"):
+                continue
+            # Arena may offer several mana abilities on one permanent. Last
+            # entry wins would hide earlier colors/output; adding entries
+            # would count the same permanent twice. Use an optimistic bound.
+            if not source.get("colors"):
+                return ""  # An unknown alternative could pay the cost.
+            iid = source["instance_id"]
+            combined = sources.setdefault(iid, {"colors": set(), "amount": 0})
+            combined["colors"].update(source["colors"])
+            combined["amount"] = max(combined["amount"], int(source.get("amount") or 1))
+        supply = sum(source["amount"] for source in sources.values()) + pool
     except (TypeError, ValueError):
         return ""
     if not sources or any(not source.get("colors") for source in sources.values()):
@@ -45,6 +53,22 @@ def payment_shortfall(context: dict[str, Any]) -> str:
         for color in COLORED:
             if needs.get(color) and not any(color in (s.get("colors") or ()) for s in sources.values()):
                 return f"nothing offered makes {color}"
+        # Every subset of required colors needs enough distinct source
+        # capacity. Checking each color alone counts a W/U dual twice for WU.
+        # Amount is an optimistic capacity (multi-color output may be more
+        # restricted), so only reject when even that upper bound is too small.
+        colors = [color for color in COLORED if needs.get(color, 0) > 0]
+        for mask in range(1, 1 << len(colors)):
+            subset = {color for index, color in enumerate(colors) if mask & (1 << index)}
+            required = sum(needs[color] for color in subset)
+            capacity = sum(
+                int(source.get("amount") or 1)
+                for source in sources.values()
+                if subset.intersection(source.get("colors") or ())
+            )
+            if capacity < required:
+                label = "/".join(color for color in COLORED if color in subset)
+                return f"{capacity} mana offered for {required} required {label} mana"
     return ""
 
 
@@ -64,15 +88,28 @@ def choose_payment_source(context: dict[str, Any]) -> dict[str, Any] | None:
     if needs.get("Any"):
         return None  # "mana of any one color" choices are not modeled
 
+    # Alternative abilities share the same permanent. Its flexibility and
+    # each color's scarcity must be counted by permanent, not ability rows.
+    source_colors: dict[int, set[str]] = {}
+    for source in sources:
+        source_colors.setdefault(source["instance_id"], set()).update(source["colors"])
+
     def rank(source: dict[str, Any]) -> tuple:
-        return (bool(source.get("treasure")), len(source["colors"]), source["instance_id"])
+        return (
+            bool(source.get("treasure")),
+            len(source_colors[source["instance_id"]]),
+            source["instance_id"],
+        )
 
     colored = [color for color in COLORED if needs.get(color)]
     if colored:
         candidates = {color: [s for s in sources if color in s["colors"]] for color in colored}
         if any(not found for found in candidates.values()):
             return None  # a colored requirement nothing here can pay
-        color = min(colored, key=lambda c: (len(candidates[c]), COLORED.index(c)))
+        color = min(
+            colored,
+            key=lambda c: (len({s["instance_id"] for s in candidates[c]}), COLORED.index(c)),
+        )
         source = min(candidates[color], key=rank)
         return {
             "instance_id": source["instance_id"],

@@ -219,10 +219,11 @@ def test_real_picks_are_explained_card_by_card():
     p1p3 = commentary(d, "P1p3", (1, 3), ["Fblthp, Impossibly Lost", "Recursive Recruitment"])
     # Live: "Taking Fblthp, Impossibly Lost and Recursive Recruitment: the best card in this pack ..."
     assert p1p3.startswith(
-        "Choosing Fblthp — highest-rated card here and a strong blue body; "
-        "and Recursive Recruitment — a payoff for Dimir Threshold Mill."
+        "Choosing Fblthp — highest-rated card here and a strong blue body; and Recursive Recruitment — "
     )
-    assert "the deck is Dimir Threshold Mill" in p1p3
+    # Opening narration no longer converts a speculative pair into our deck.
+    assert "Dimir Threshold Mill" not in p1p3
+    assert "the deck is" not in p1p3
     p2p1 = commentary(d, "P2p1", (2, 1), ["Tam's Resistance", "Haunted Ridge"], model=False)
     # Live: "Taking Tam's Resistance and Haunted Ridge: a solid card for our blue-black deck."
     assert "Haunted Ridge — only a black source for our blue-black deck" in p2p1

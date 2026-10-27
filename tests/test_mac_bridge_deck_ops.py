@@ -119,7 +119,10 @@ class FakeArena:
                 elif kind == "call":
                     target = self._resolve(op["target"], objects)
                     method = op["method"]
-                    args = [self._resolve(a, objects) if isinstance(a, dict) and ("ref" in a or "h" in a) else a for a in op.get("args") or []]
+                    args = [
+                        self._resolve(a, objects) if isinstance(a, dict) and ("ref" in a or "h" in a) else a
+                        for a in op.get("args") or []
+                    ]
                     value = self._invoke(target, method, args)
                     results.append(value)
                     objects.append(value if isinstance(value, dict) else None)
@@ -183,7 +186,10 @@ class FakeArena:
         if method in ("Remove", "Add") and isinstance(target, dict) and "$items" in target:
             entry = args[0]
             first, second = entry["_args"][0], entry["_args"][1]
-            card = {"Id": first.get("uint", first.get("int")), "Quantity": second.get("uint", second.get("int"))}
+            card = {
+                "Id": first.get("uint", first.get("int")),
+                "Quantity": second.get("uint", second.get("int")),
+            }
             if method == "Remove":
                 target["$items"].remove(card)
             else:
@@ -253,7 +259,11 @@ def test_update_deck_refuses_an_empty_main_pile(adapter: MacBridgeAdapter):
 
 def test_update_deck_reports_an_unknown_deck(adapter: MacBridgeAdapter):
     response = adapter.handle(
-        {"action": "update_deck", "deck_id": "00000000-0000-0000-0000-000000000000", "piles": {"main": [[1, 1]]}},
+        {
+            "action": "update_deck",
+            "deck_id": "00000000-0000-0000-0000-000000000000",
+            "piles": {"main": [[1, 1]]},
+        },
         timeout=5.0,
     )
     assert response["ok"] is False and "No cached deck" in response["error"]
@@ -274,7 +284,11 @@ def test_create_deck_clones_renames_and_calls_created(adapter: MacBridgeAdapter,
 
 def test_craft_builds_the_bulk_request_and_starts_the_coroutine(adapter: MacBridgeAdapter, arena: FakeArena):
     response = adapter.handle(
-        {"action": "craft", "cards": [{"grp_id": 70999, "count": 2}, {"grp_id": 70888, "count": 1}], "confirm": True},
+        {
+            "action": "craft",
+            "cards": [{"grp_id": 70999, "count": 2}, {"grp_id": 70888, "count": 1}],
+            "confirm": True,
+        },
         timeout=5.0,
     )
     assert response["ok"] is True and response["submitted_type"] == "WildcardRedeem"
@@ -306,8 +320,12 @@ def test_pipe_commands_reach_the_deck_library_and_emit_results():
     def settled() -> bool:
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
-            if coach.collection_async.called and coach.update_deck_async.called and \
-               coach.create_deck_async.called and coach.craft_async.called:
+            if (
+                coach.collection_async.called
+                and coach.update_deck_async.called
+                and coach.create_deck_async.called
+                and coach.craft_async.called
+            ):
                 return True
             time.sleep(0.02)
         return False

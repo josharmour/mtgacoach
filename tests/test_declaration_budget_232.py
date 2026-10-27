@@ -59,7 +59,8 @@ def test_expired_budget_does_not_send_another_request():
     call.assert_not_called()
 
 
-def test_block_repair_receives_only_the_initial_calls_remaining_budget(monkeypatch):
+@pytest.mark.parametrize("kind", ["block", "attack"])
+def test_combat_repair_receives_only_the_initial_calls_remaining_budget(monkeypatch, kind):
     budgets = []
 
     class Backend:
@@ -74,8 +75,47 @@ def test_block_repair_receives_only_the_initial_calls_remaining_budget(monkeypat
     planner.plan_actions(
         {"turn": {"turn_number": 2}, "battlefield": [], "players": []},
         "decision_required",
-        ["Block with: Spider", "Done (no blocks)"],
-        {"type": "declare_blockers"},
+        [f"{kind.title()} with: Spider", "Done"],
+        {"type": f"declare_{kind}ers"},
     )
     assert len(budgets) == 2
     assert budgets[1] < budgets[0] - 0.04
+
+
+@pytest.mark.parametrize("outcome", ["winner", "timeout", "request_change"])
+def test_declaration_hedge_cancels_outstanding_calls(outcome):
+    planner = ActionPlanner(Mock(), timeout=0.15)
+    outer = threading.Event()
+    planner.set_decision_cancel_event(outer)
+    both_started = threading.Barrier(2)
+    stopped = {"high": threading.Event(), None: threading.Event()}
+    cancels = {}
+
+    def complete(call_class, effort, *, cancel_event):
+        cancels[effort] = cancel_event
+        both_started.wait(timeout=2)
+        if outcome == "winner" and effort == "high":
+            return "high answer"
+        if outcome == "request_change":
+            outer.set()
+        try:
+            assert cancel_event.wait(2), "outstanding model call was not cancelled"
+            raise LLMUnavailableError("cancelled")
+        finally:
+            stopped[effort].set()
+
+    try:
+        if outcome == "winner":
+            assert planner._hedged_declaration(complete) == "high answer"
+        else:
+            expected = concurrent.futures.TimeoutError if outcome == "timeout" else LLMUnavailableError
+            with pytest.raises(expected):
+                planner._hedged_declaration(complete)
+        assert stopped[None].wait(1)
+        assert all(event.is_set() for event in cancels.values())
+        if outcome != "winner":
+            assert stopped["high"].wait(1)
+        assert outer.is_set() == (outcome == "request_change")
+    finally:
+        for event in cancels.values():
+            event.set()

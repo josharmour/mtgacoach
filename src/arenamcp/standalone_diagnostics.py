@@ -484,6 +484,9 @@ class _DiagnosticsMixin:
         report["enrichment_failures"] = self._get_enrichment_failures()
         report["autopilot"] = self._collect_autopilot_info()
         report["bridge_state"] = self._collect_bridge_state()
+        from arenamcp.recovery_trace import recovery_trace
+
+        report["recovery_trace"] = recovery_trace.snapshot()
         report["errors"] = list(self._recent_errors) if hasattr(self, "_recent_errors") else []
         # The in-memory error list only sees errors explicitly recorded via
         # _record_error — on 2026-07-16 it read [] while standalone.log held

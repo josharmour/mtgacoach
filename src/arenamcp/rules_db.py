@@ -122,6 +122,18 @@ class RulesDB:
                 )
                 if cursor.fetchone() is None:
                     self._build_db()
+                else:
+                    # A persistent cache must not keep obsolete rules after a
+                    # source update, including edits with unchanged row count.
+                    from arenamcp.rules_data import RULES
+
+                    expected = sorted((r["number"], r["section"], r["category"], r["text"]) for r in RULES)
+                    cached = sorted(
+                        tuple(row)
+                        for row in self._conn.execute("SELECT number, section, category, text FROM rules")
+                    )
+                    if cached != expected:
+                        self._build_db()
 
             return self._conn
 

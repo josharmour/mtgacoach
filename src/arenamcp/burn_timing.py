@@ -110,9 +110,7 @@ def is_sweeper(card: dict) -> bool:
     return bool(_SWEEP_RE.search(_text(card)))
 
 
-_SWEEP_AMOUNT_RE = re.compile(
-    r"deals? (\d+) damage to (?:each opponent and )?each creature", re.IGNORECASE
-)
+_SWEEP_AMOUNT_RE = re.compile(r"deals? (\d+) damage to (?:each opponent and )?each creature", re.IGNORECASE)
 
 
 def sweep_chip(card: dict, creatures: int) -> int:
@@ -382,9 +380,7 @@ def hold_overrides(decision: Any, state: dict, held: list[tuple[Any, dict]]) -> 
 # hold kept Tectonic Hazard (and both Iroh's Demonstrations) off the menu three turns running —
 # the frozen rationale never faced the plan.
 _CHIP_WORD_RE = re.compile(r"\bchip(?:s|ping|ped)?\b", re.IGNORECASE)
-_CHIP_TEMPORAL_RE = re.compile(
-    r"\b(?:now|this turn|each turn|every turn|main phase|main)\b", re.IGNORECASE
-)
+_CHIP_TEMPORAL_RE = re.compile(r"\b(?:now|this turn|each turn|every turn|main phase|main)\b", re.IGNORECASE)
 _CONDITIONAL_LINE_RE = re.compile(r"^(?:if|when|unless|switch|otherwise)\b", re.IGNORECASE)
 _NAME_TOKEN_RE = re.compile(r"[a-z]{4,}")
 

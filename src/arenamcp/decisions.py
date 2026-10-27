@@ -87,6 +87,10 @@ class PendingDecision:
     # Arena's own text for the request (its prompt id in the card DB's Prompts
     # table, e.g. "Exile a card."); '' when unknown. SelectN/Search only.
     prompt_text: str = ""
+    # A prompt's CardId may name the permanent while sourceId names a
+    # transient ability object (Peacekeeper: CardId226, sourceId9005).
+    source_instance_id: int = 0
+    source_oracle_text: str = ""
 
     def option_ids(self) -> set[str]:
         return {o.option_id for o in self.options}
@@ -1098,6 +1102,11 @@ def _build_select_n(
     ids = poll.get("select_n_ids") or poll.get("search_candidates") or []
     is_search = "Search" in rtype or "Search" in str(poll.get("request_class") or "")
     if not is_search:
+        name_decision = _build_card_name_choice(
+            poll, request_id, can_cancel, source_label, resolve_instance, resolve_card
+        )
+        if name_decision is not None:
+            return name_decision
         color_decision = _build_color_choice(poll, request_id, can_cancel, source_label, resolve_instance)
         if color_decision is not None:
             return color_decision
@@ -1162,6 +1171,20 @@ def _build_select_n(
         if min_weight == -(2**31) and max_weight == 2**31 - 1:
             min_weight, max_weight = min_select, max_select
             min_select, max_select = 0, len(options)
+    payload = poll.get("request_payload") or {}
+    selection_context = poll.get("select_n_context") or payload.get("context")
+    option_context = poll.get("select_n_option_context") or payload.get("optionContext")
+    stacking_prompt = ""
+    if (
+        not is_search
+        and selection_context == "SelectionContext_TriggeredAbility"
+        and option_context == "OptionContext_Stacking"
+    ):
+        stacking_prompt = (
+            "Choose triggered abilities to put on the stack, following the selection limits. "
+            "These are already-triggered abilities, not new spells or optional card plays. "
+            "An unresolved option ID does not identify its effect; do not invent its benefits."
+        )
     return PendingDecision(
         request_id=request_id,
         request_type="Search" if is_search else "SelectN",
@@ -1172,6 +1195,7 @@ def _build_select_n(
         source_label=source_label,
         min_weight=min_weight,
         max_weight=max_weight,
+        prompt_text=stacking_prompt,
     )
 
 
@@ -1477,6 +1501,124 @@ def _prompt_card_instance(poll: dict[str, Any]) -> int:
             except (TypeError, ValueError):
                 return 0
     return 0
+
+
+def _build_card_name_choice(
+    poll: dict[str, Any],
+    request_id: tuple[int, int],
+    can_cancel: bool,
+    source_label: str,
+    resolve_instance: Callable[[int], str] | None,
+    resolve_card: Callable[[int], dict[str, Any]] | None,
+) -> PendingDecision | None:
+    """Name known cards using TitleIds, never game ids; preserve explicit subsets."""
+    from arenamcp.card_name_choice import card_title_id, card_title_name, is_card_name_list, is_card_title_id
+    from arenamcp.color_choice import enum_short
+
+    context = getattr(_live_game_state(), "decision_context", None) or {}
+    same_request = list(context.get("request_id") or []) == list(request_id) and any(request_id)
+    context = context if same_request else {}
+    payload = poll.get("request_payload") or {}
+    list_type = poll.get("select_n_list_type") or payload.get("listType") or context.get("list_type")
+    static_list = poll.get("select_n_static_list") or payload.get("staticList") or context.get("static_list")
+    if not is_card_name_list(list_type, static_list):
+        return None
+    candidates = (
+        poll.get("select_n_unfiltered_ids")
+        or payload.get("unfilteredIds")
+        or context.get("unfiltered_ids")
+        or []
+    )
+    resolve = resolve_card or _default_instance_card
+    options: dict[int, DecisionOption] = {}
+    restricted = enum_short(list_type) == "StaticSubset"
+    allowed = poll.get("select_n_ids") or payload.get("ids") or context.get("option_ids") or []
+    if restricted:
+        for raw in allowed:
+            try:
+                title_id = int(raw)
+            except (TypeError, ValueError):
+                continue
+            name = card_title_name(title_id)
+            if name:
+                options[title_id] = DecisionOption(
+                    option_id=f"sel:{title_id}",
+                    label=name,
+                    meta={"choice": "card_name", "title_id": title_id, "identity_known": True},
+                )
+    known_cards = []
+    for raw in candidates:
+        try:
+            instance_id = int(raw)
+            card = resolve(instance_id) or {}
+        except (TypeError, ValueError):
+            continue
+        if not card.get("name") and resolve_instance:
+            card = {**card, "name": resolve_instance(instance_id)}
+        known_cards.append(card)
+    if not restricted:
+        # "Any card name" is not limited to the currently revealed hand.
+        # Public board/graveyard cards remain candidates (e.g. an opposing Ugin).
+        live = _live_game_state()
+        snapshot = live.get_published_snapshot() if hasattr(live, "get_published_snapshot") else {}
+        local = snapshot.get("local_seat_id", getattr(live, "local_seat_id", None))
+        for zone in ("battlefield", "graveyard", "exile", "command", "revealed_cards"):
+            for card in snapshot.get(zone) or []:
+                if not isinstance(card, dict) or card.get("is_face_down") or card.get("is_facedown"):
+                    continue
+                owner = card.get("owner_seat_id", card.get("controller_seat_id"))
+                if local is not None and owner == local:
+                    continue
+                known_cards.append(card)
+    for card in known_cards:
+        try:
+            grp_id = int(card.get("grp_id") or card.get("grpId") or 0)
+        except (TypeError, ValueError):
+            continue
+        title_id = card_title_id(grp_id) if grp_id else 0
+        name = str(card.get("name") or "") or (card_title_name(title_id) if title_id else "")
+        if not title_id or not is_card_title_id(title_id) or not name or is_unknown_card_name(name):
+            continue
+        if restricted and title_id not in options:
+            continue
+        options.setdefault(
+            title_id,
+            DecisionOption(
+                option_id=f"sel:{title_id}",
+                label=name,
+                meta={
+                    "choice": "card_name",
+                    "title_id": title_id,
+                    "grpId": grp_id,
+                    "identity_known": True,
+                    "card": card,
+                },
+            ),
+        )
+    if not options:
+        return None
+    asking = next(iter(_prompt_card_ids(poll) or context.get("prompt_card_ids") or []), 0)
+    source = (resolve(asking) or {}) if asking else {}
+    if asking:
+        source_label = (
+            str(source.get("name") or "")
+            or (resolve_instance(asking) if resolve_instance else "")
+            or source_label
+        )
+    source_rules = str(source.get("oracle_text") or "")
+    if not source_rules and source.get("grp_id"):
+        source_rules = str((_default_card_resolver(int(source["grp_id"])) or {}).get("oracle_text") or "")
+    return PendingDecision(
+        request_id=request_id,
+        request_type="SelectN",
+        options=tuple(options.values()),
+        min_select=int(poll.get("select_n_min", context.get("min", 1))),
+        max_select=max(1, int(poll.get("select_n_max", context.get("max", 1)))),
+        can_cancel=can_cancel,
+        source_label=source_label,
+        source_instance_id=asking,
+        source_oracle_text=source_rules,
+    )
 
 
 def _build_color_choice(
@@ -2542,6 +2684,8 @@ def submit_option(
         if not decision.selection_is_valid(chosen):
             return False
         ids = [int(o.split(":", 1)[1]) for o in chosen if o.startswith("sel:")]
+        if all(decision.find(o).meta.get("choice") == "card_name" for o in chosen):
+            return bool(bridge.submit_selection(ids, id_type="card_name"))
         return bool(bridge.submit_selection(ids))
     if first.startswith("sfg:"):
         # SelectFromGroups (bug #203): one Group per request group, carrying
@@ -2759,7 +2903,7 @@ def asking_card(decision: Any, state: dict[str, Any]) -> tuple[str, str]:
     source card plus the ability's text), else the log context's resolved
     source for that id, else the decision's source label.
     """
-    source_id = _request_source_id(state)
+    source_id = _int_or_zero(getattr(decision, "source_instance_id", 0)) or _request_source_id(state)
     if source_id:
         for zone in ("stack", "battlefield", "graveyard", "exile", "hand", "command"):
             for card in state.get(zone) or []:
@@ -2770,6 +2914,9 @@ def asking_card(decision: Any, state: dict[str, Any]) -> tuple[str, str]:
                 text = str(card.get("oracle_text") or "")
                 if parent.get("oracle_text") and str(parent["oracle_text"]) not in text:
                     text = f"{text}\n{parent['oracle_text']}".strip()
+                known_rules = str(getattr(decision, "source_oracle_text", "") or "")
+                if source_id == getattr(decision, "source_instance_id", 0) and known_rules not in text:
+                    text = f"{text}\n{known_rules}".strip()
                 if name and not is_unknown_card_name(name):
                     return name, text
     context = state.get("decision_context") or {}
@@ -2778,7 +2925,9 @@ def asking_card(decision: Any, state: dict[str, Any]) -> tuple[str, str]:
         return str(context["source_card"]), str(
             context.get("source_oracle_text") or context.get("source_card_oracle_text") or ""
         )
-    return str(getattr(decision, "source_label", "") or ""), ""
+    return str(getattr(decision, "source_label", "") or ""), str(
+        getattr(decision, "source_oracle_text", "") or ""
+    )
 
 
 def decision_prompt_text(decision: Any, state: dict[str, Any]) -> str:
@@ -2955,6 +3104,11 @@ def select_n_note(decision: Any, state: dict[str, Any]) -> str:
     """
     if getattr(decision, "request_type", "") not in ("SelectN", "Search"):
         return ""
+    if decision.options and all(option.meta.get("choice") == "card_name" for option in decision.options):
+        name, rules = asking_card(decision, state)
+        rules = clean_rules_text(rules, name)
+        note = "CARD NAME CHOICE: choose a name from these known-card candidates; this does not cast or discard it."
+        return note + (f" {name}: {rules[:400]}" if name and rules else "")
     choice_note = prompt_choice_note(decision, state)
     if choice_note:
         return choice_note
@@ -2987,6 +3141,26 @@ def select_n_note(decision: Any, state: dict[str, Any]) -> str:
             + (f"{name}'s" if name else "this effect's")
             + " question."
         )
+        if re.search(
+            r"\bput\b[^.]*\bfrom your hand onto the battlefield\b", rules, re.IGNORECASE
+        ) or re.search(r"\bput\b[^.]*\bonto the battlefield\b", prompt, re.IGNORECASE):
+            # Ghalta, Oct 25: selecting the optional X-creature was described
+            # as free even though it immediately died and consumed the card.
+            if decision.min_select < decision.max_select:
+                lines.append(
+                    f"This selection allows {decision.min_select} to {decision.max_select} cards; "
+                    "you do not have to fill every slot. Unselected cards stay in your hand."
+                )
+            x_cards = [str(hand[i].get("name") or i) for i in ids if "{X}" in str(hand[i].get("mana_cost"))]
+            if x_cards:
+                lines.append(
+                    "PUT ONTO THE BATTLEFIELD, WITHOUT CASTING: "
+                    + ", ".join(x_cards)
+                    + " has X=0 for its own X cost/entry counters. Check actual entering toughness and "
+                    "other effects: a creature with toughness 0 or less dies to state-based actions. "
+                    "That spends the card; it is not free value. For an optional selection, keep it in hand "
+                    "unless a concrete entry/death payoff or another effect makes putting it in worthwhile."
+                )
     return "\n".join(lines)
 
 

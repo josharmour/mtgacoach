@@ -381,3 +381,76 @@ def test_a_current_bridge_state_still_overlays(monkeypatch):
     assert overlay["turn"]["turn_number"] == 7 and overlay["turn"]["active_player"] == 1
     # The Mac id is compared, not published: autopilot window checks read _bridge_game_state_id.
     assert "_bridge_game_state_id" not in overlay
+
+
+@pytest.mark.parametrize(
+    "live",
+    [
+        {"keywords": ["flying", "vigilance", "double strike"], "ability_grp_ids": [42]},
+        {"keywords": [], "ability_grp_ids": [], "modified_power": 0, "is_phased_out": False},
+    ],
+)
+def test_live_bridge_effects_replace_stale_log_effects(monkeypatch, live):
+    monkeypatch.setattr(
+        server_module,
+        "card_object_info",
+        lambda card: {"name": "Rabbit", "type_line": "Creature", "oracle_text": ""},
+    )
+    fallback = {"keywords": ["reach"], "ability_grp_ids": [99], "modified_power": 8, "is_phased_out": True}
+    actual = server_module._serialize_bridge_card({"instance_id": 1, "grp_id": 1001, **live}, {1: fallback})
+    for key, value in live.items():
+        assert actual[key] == value
+    if live["keywords"]:
+        actual["keywords"].append("trample")
+        assert "trample" not in live["keywords"]
+
+
+def test_missing_bridge_effect_fields_retain_log_fallback(monkeypatch):
+    monkeypatch.setattr(
+        server_module,
+        "card_object_info",
+        lambda card: {"name": "Rabbit", "type_line": "Creature", "oracle_text": ""},
+    )
+    actual = server_module._serialize_bridge_card(
+        {"instance_id": 1, "grp_id": 1001}, {1: {"keywords": ["flying"], "ability_grp_ids": [42]}}
+    )
+    assert actual["keywords"] == ["flying"]
+    assert actual["ability_grp_ids"] == [42]
+
+
+def test_explicit_empty_bridge_abilities_do_not_enrich_from_stale_abilities(monkeypatch):
+    seen = []
+
+    def info(card):
+        seen.append(card)
+        return {"name": "Rabbit", "type_line": "Creature", "oracle_text": ""}
+
+    monkeypatch.setattr(server_module, "card_object_info", info)
+    server_module._serialize_bridge_card(
+        {"instance_id": 1, "grp_id": 1001, "ability_grp_ids": []}, {1: {"ability_grp_ids": [42]}}
+    )
+    assert seen[0]["ability_grp_ids"] == []
+
+
+@pytest.mark.parametrize(
+    "cards_count,total_count,incomplete",
+    [(128, 333, True), (0, 1, True), (1, 1, False), (0, 0, False), (1, None, False), (0, True, False)],
+)
+def test_partial_public_battlefield_does_not_replace_log_board(
+    monkeypatch, cards_count, total_count, incomplete
+):
+    board = [{"instance_id": i + 1, "grp_id": 1001} for i in range(333)]
+    bridge_state = {"zones": {"battlefield": {"total_count": total_count, "cards": board[:cards_count]}}}
+    monkeypatch.setattr(gre_bridge_module, "get_bridge", lambda: _DummyBridge(bridge_state))
+    monkeypatch.setattr(server_module, "enrich_with_oracle_text", _fake_enrich_with_oracle_text)
+    overlay = server_module._get_bridge_overlay({}, [], {"battlefield": board}, 1, 2)
+    response = {"zones": {"battlefield": board}}
+    response.update(overlay)
+    assert bool(overlay.get("_bridge_state_incomplete")) is incomplete
+    assert overlay["bridge_connected"] is True
+    if incomplete:
+        assert response["zones"]["battlefield"] == board
+        assert response["zones"]["battlefield"][-1]["instance_id"] == 333
+        assert "players" not in overlay
+    else:
+        assert len(response["zones"]["battlefield"]) == cards_count

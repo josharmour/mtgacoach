@@ -34,6 +34,7 @@ class CoachSession(QObject):
     adviceReceived = Signal(str, str)  # text, label
     deckListChanged = Signal(list, str)  # decks, note
     deckAnalysisChanged = Signal(dict)
+    limitedDeckPreviewChanged = Signal(dict)
     collectionChanged = Signal(dict)  # owned cards + wildcard balances (#204)
     deckOpResult = Signal(dict)  # update_deck / create_deck / craft result (#204)
     bugReportSaved = Signal(str, str)  # path, error
@@ -262,9 +263,18 @@ class CoachSession(QObject):
     def inspect_auto_quest(self) -> None:
         self._process.send_payload({"cmd": "inspect_auto_quest"})
 
-    def set_auto_quest(self, enabled: bool, goal: str = "mastery", minutes: int = 60, deadline: float | None = None) -> None:
-        self._process.send_payload({"cmd": "set_auto_quest", "enabled": enabled,
-                                    "goal": goal, "minutes": minutes, "deadline": deadline})
+    def set_auto_quest(
+        self, enabled: bool, goal: str = "mastery", minutes: int = 60, deadline: float | None = None
+    ) -> None:
+        self._process.send_payload(
+            {
+                "cmd": "set_auto_quest",
+                "enabled": enabled,
+                "goal": goal,
+                "minutes": minutes,
+                "deadline": deadline,
+            }
+        )
 
     def set_auto_queue(self, enabled: bool) -> None:
         """Choose whether autoplay may repeat the recent queue after a match."""
@@ -606,6 +616,10 @@ class CoachSession(QObject):
             self.deckListChanged.emit(
                 list(decks) if isinstance(decks, list) else [], str(event.get("error") or "")
             )
+
+        elif ev_type == "limited_deck_preview":
+            if isinstance(event.get("data"), dict):
+                self.limitedDeckPreviewChanged.emit(event["data"])
 
         elif ev_type == "deck_analysis":
             self.deckAnalysisChanged.emit({k: v for k, v in event.items() if k != "type"})

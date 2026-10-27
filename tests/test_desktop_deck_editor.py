@@ -95,7 +95,9 @@ def test_wildcard_cost_checks_the_balance_per_rarity():
 
 
 def test_pile_counts_merges_duplicates_and_drops_zeroes():
-    counts = pile_counts({"main": [{"grp_id": 1, "count": 2}, {"grp_id": 1, "count": 2}, {"grp_id": 0, "count": 9}]})
+    counts = pile_counts(
+        {"main": [{"grp_id": 1, "count": 2}, {"grp_id": 1, "count": 2}, {"grp_id": 0, "count": 9}]}
+    )
     assert counts["main"] == {1: 4}
 
 
@@ -135,7 +137,9 @@ def session() -> FakeSession:
 
 @pytest.fixture
 def editor(qapp, session):
-    dialog = DeckEditorDialog(session, DECK, collection=COLLECTION, wildcards={"common": 4, "uncommon": 4, "rare": 1, "mythic": 0})
+    dialog = DeckEditorDialog(
+        session, DECK, collection=COLLECTION, wildcards={"common": 4, "uncommon": 4, "rare": 1, "mythic": 0}
+    )
     yield dialog
     dialog.close()
 
@@ -200,7 +204,13 @@ def test_craft_confirmation_gates_the_spend(editor, session, monkeypatch):
 def test_craft_is_blocked_without_enough_wildcards(session):
     dialog = DeckEditorDialog(
         session,
-        {"deck_id": DECK["deck_id"], "name": "Burn", "format": "", "main": [{"grp_id": 300, "count": 2}], "sideboard": []},
+        {
+            "deck_id": DECK["deck_id"],
+            "name": "Burn",
+            "format": "",
+            "main": [{"grp_id": 300, "count": 2}],
+            "sideboard": [],
+        },
         collection={},
         wildcards={"mythic": 1},
     )
@@ -226,12 +236,11 @@ def test_tab_requests_the_collection_and_shows_balances(qapp):
     tab = DecksTab(session=TabSession())
     tab.refresh_collection()
     assert tab._session.requests[-1] == ("collection",)
-    tab.on_collection(
-        {"ok": True, "cards": {"100": 5}, "wildcards": {"common": 3}, "gold": 10, "gems": 20}
-    )
+    tab.on_collection({"ok": True, "cards": {"100": 5}, "wildcards": {"common": 3}, "gold": 10, "gems": 20})
     assert tab._collection == {100: 5}
     assert tab._wildcards == {"common": 3}
-    
+
+
 def test_tab_forwards_deck_ops_and_refreshes_after_create(qapp):
     session = TabSession()
     tab = DecksTab(session=session)

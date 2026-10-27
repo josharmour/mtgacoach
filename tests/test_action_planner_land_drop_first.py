@@ -89,3 +89,36 @@ def test_preflight_skipped_and_the_model_decides(state_kwargs, land_drop_first, 
     plan = p.plan_actions(_state(**state_kwargs), "decision_required", legal, context)
     assert len(calls) == 1
     assert plan.actions[0].action_type != ActionType.PLAY_LAND
+
+
+@pytest.mark.parametrize("first", ["Mountain", "Eiganjo, Seat of the Empire"])
+def test_distinct_lands_reach_planning_instead_of_menu_order(first):
+    state = _state()
+    state["battlefield"] = [
+        {"name": "Mountain", "type_line": "Basic Land — Mountain", "controller_seat_id": 1}
+    ]
+    state["hand"] = [
+        {"name": "Adeline, Resplendent Cathar", "mana_cost": "{1}{W}{W}", "type_line": "Creature"},
+        {"name": first, "type_line": "Land"},
+        {"name": "Plains", "type_line": "Basic Land — Plains"},
+    ]
+    calls = []
+    backend = _FakeBackend()
+    backend.complete = lambda *a, **k: calls.append(a) or '{"pick": 2}'
+    planner = ActionPlanner(backend, timeout=1, land_drop_first=True)
+    plan = planner.plan_actions(
+        state, "decision_required", [f"Play Land: {first}", "Play Land: Plains", "Pass"], _ACTIONS
+    )
+    assert len(calls) == 1
+    assert plan.actions[0].action_type == ActionType.PLAY_LAND
+    assert plan.actions[0].card_name == "Plains"
+    assert "land-drop-first" not in plan.overall_strategy
+
+
+def test_duplicate_basic_land_copies_keep_fast_preflight():
+    planner = _planner()
+    plan = planner.plan_actions(
+        _state(), "decision_required", ["Play Land: Plains", "Play Land: Plains", "Pass"], _ACTIONS
+    )
+    assert plan.actions[0].card_name == "Plains"
+    assert "land-drop-first" in plan.overall_strategy

@@ -210,7 +210,10 @@ class _AutopilotTelemetryMixin:
         game_state: dict[str, Any],
         reason: str,
     ) -> None:
-        """Record a user-takeover event for end-of-match telemetry."""
+        """Record an expired plan; expiration alone does not prove manual input.
+
+        Keep the legacy telemetry key for existing report readers.
+        """
         if self._bug_report_fn is None:
             return
 
@@ -237,6 +240,7 @@ class _AutopilotTelemetryMixin:
         extra = {
             "auto_user_takeover": {
                 "reason_tag": reason,
+                "attribution": "unknown",
                 "planned_action": action_type_str,
                 "planned_card": card_name,
                 "planned_strategy": getattr(plan, "overall_strategy", ""),
@@ -251,9 +255,7 @@ class _AutopilotTelemetryMixin:
                 "timestamp": time.time(),
             }
         }
-        reason_str = (
-            f"auto: user took over from autopilot ({reason}) — planned {action_type_str} {card_name}".strip()
-        )
+        reason_str = f"auto: plan expired ({reason}) — planned {action_type_str} {card_name}".strip()
         self._pending_fallback_bugs.append((reason_str, extra))
         self._recent_takeovers.append(
             {
@@ -264,10 +266,6 @@ class _AutopilotTelemetryMixin:
             }
         )
         del self._recent_takeovers[:-10]
-        self._notify(
-            "AUTOPILOT",
-            f"Standing down — your move (it wanted: {action_type_str} {card_name})".strip(),
-        )
 
     def _reclassify_matching_takeovers(self, action: GameAction) -> None:
         """Relabel provisional takeovers this verified execution disproves."""

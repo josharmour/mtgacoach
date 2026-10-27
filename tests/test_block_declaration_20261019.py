@@ -533,7 +533,9 @@ def test_a_rejected_declaration_is_retried_with_one_blocker_per_attacker():
     assert bridge.blocker_calls[0] == [select(484, SHARK), select(485, SHARK), select(490, SHARK)]
     assert bridge.committed is not None
     committed_on_shark = [b for b, a in bridge.committed.items() if a == {SHARK}]
-    assert len(committed_on_shark) <= 1  # the retry went through the guards (a lone chump at 20 life is dropped)
+    assert (
+        len(committed_on_shark) <= 1
+    )  # the retry went through the guards (a lone chump at 20 life is dropped)
 
 
 @pytest.mark.usefixtures("instant_combat_acks")

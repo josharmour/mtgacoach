@@ -9,9 +9,6 @@ same answer.
 
 from __future__ import annotations
 
-import json
-
-from tests.race_boards_20261019 import CARDS
 from tests.test_burn_timing_20261019 import _board, _card, _menu, _option
 from tests.test_decision_layer_20261019 import _Model, _planner, _reply
 

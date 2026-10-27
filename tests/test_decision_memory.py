@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from arenamcp.decision_memory import DecisionMemory, board_signature, critical_decision
 from arenamcp.decisions import DecisionOption, PendingDecision
 from arenamcp.game_plan import GamePlan, plan_card_losses
@@ -340,3 +342,46 @@ def test_a_pass_that_kept_the_card_for_later_is_carried_out_not_reversed():
     main1 = turn_window({"turn": {"phase": "Phase_Main1", "step": ""}})
     assert main2 > damage > main1
     assert turn_window({"turn": {}}) is None
+
+
+@pytest.mark.parametrize("failure", ["unavailable", "bad_answer", ""])
+def test_outage_pass_is_remembered_without_becoming_a_strategic_commitment(monkeypatch, failure):
+    from arenamcp.action_planner import ActionPlanner
+
+    planner = ActionPlanner(None)
+    board = state(hand=[PROFT], battlefield=[card(1, "Ghoul", owner=2)])
+    window = actions(PROFT_ACTIVATE)
+
+    def choose(decision, game_state):
+        planner.last_llm_failure = failure
+        planner._last_decision_reasoning = "Holding Proft"
+        return ["pass"]
+
+    monkeypatch.setattr(planner, "_plan_decision_options", choose)
+    assert planner.plan_decision_options(window, board) == ["pass"]
+    record = planner._memory().this_turn(board)[-1]
+    assert record.chosen == ["pass"]
+    assert record.model_unavailable == (failure == "unavailable")
+    reversal = planner._memory().reversal(board, window, ["idx:2"])
+    assert (reversal is None) == (failure == "unavailable")
+
+
+@pytest.mark.parametrize("change", ["power", "controller_seat_id", "keywords", "stack"])
+def test_changed_permanent_or_stack_is_not_an_unchanged_board_reversal(change):
+    from copy import deepcopy
+
+    memory = DecisionMemory()
+    board = state(battlefield=[dict(PROFT, power=2, toughness=3, keywords=[])], stack=[card(90, "Spell A")])
+    window = actions(PROFT_ACTIVATE)
+    memory.record(board, window, ["pass"], "Hold Proft on this board")
+    changed = deepcopy(board)
+    if change == "stack":
+        changed["stack"] = [card(91, "Spell B")]
+    else:
+        changed["battlefield"][0][change] = {
+            "power": 5,
+            "controller_seat_id": 2,
+            "keywords": ["Indestructible"],
+        }[change]
+    assert memory.reversal(changed, window, ["idx:2"]) is None
+    assert memory.reversal(board, window, ["idx:2"]) is not None

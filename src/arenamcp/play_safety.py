@@ -54,8 +54,10 @@ def aura_waits_for_creature(state: dict, card: dict) -> bool:
     ):
         return False
     stack = state.get("stack") or []
-    return bool(stack) and all(obj.get("controller_seat_id") == local for obj in stack) and any(
-        creature(obj) and obj.get("object_kind") != "ABILITY" for obj in stack
+    return (
+        bool(stack)
+        and all(obj.get("controller_seat_id") == local for obj in stack)
+        and any(creature(obj) and obj.get("object_kind") != "ABILITY" for obj in stack)
     )
 
 
@@ -166,9 +168,10 @@ def pending_x_source(state: dict) -> dict:
 # cast / X=1 / cancel loop ran until the turn ended. At X=0 the 0/0 just dies.
 #
 # Our mana count is one per untapped source, so it is exact only without these:
-# multi-mana or variable sources (Sol Ring, Rofellos, Notary Hobbits, Kami of
+# variable/complex multi-mana sources (Rofellos, Notary Hobbits, Kami of
 # Whispered Hopes), extra-mana auras (Utopia Sprawl) and cost reducers (Emerald
 # Medallion). With any of them the X cap is unknown and the choice stays open.
+# Unconditional tap abilities with explicit fixed symbols are counted below.
 _INEXACT_MANA = re.compile(
     r"\badd (?:\{[^}]+\}){2,}"
     r"|\badd (?:two|three|four|five|x\b|that much|an amount|mana equal)"
@@ -189,11 +192,19 @@ def exact_mana_total(state: dict) -> int | None:
     local = _local_seat(state)
     if local is None:
         return None
+    fixed_extra = 0
     for card in state.get("battlefield") or []:
         if (card.get("controller_seat_id") or card.get("owner_seat_id")) != local:
             continue
         text = _plain_text(card)
-        if not _INEXACT_MANA.search(text):
+        # A Channel ability's self-discount does not reduce the cost of a
+        # spell being cast. In particular, battlefield Boseiju must not make
+        # an otherwise exact X budget unknown because its discard ability
+        # costs less. Keep other sentences (including global reducers).
+        if re.search(r"\bchannel\s*[—–-]", text):
+            text = re.sub(r"\bthis ability costs?[^.]*\bless\b[^.]*\.", "", text)
+        paid_filter = re.fullmatch(r"\s*\{([0-9]+)\},\s*\{t\}:\s*add\s*\{[wubrgc]\}\.?\s*", text)
+        if not _INEXACT_MANA.search(text) and paid_filter is None:
             continue
         # A tapped producer or a sick mana creature cannot enlarge this turn's
         # budget. Static reducers/multipliers remain relevant even when tapped.
@@ -209,12 +220,55 @@ def exact_mana_total(state: dict) -> int | None:
             )
             if card.get("is_tapped") or sick:
                 continue
+        if paid_filter is not None:
+            # Paying one or more mana to produce one changes colors but
+            # cannot enlarge the total. The base pool counts this source
+            # once, so remove that phantom extra mana (only when ready).
+            if int(paid_filter[1]) > 0:
+                fixed_extra -= 1
+            continue
+        # A single tap ability with output tied to a visible subtype count
+        # is exact when every controlled object's current type is known.
+        # Other variable/conditional or multiple mana abilities stay unknown.
+        counted = re.search(
+            r"(?:^|\n)\{t\}: add \{([wubrgc])\} for each ([a-z]+) you control\.(?:$|\n)", text
+        )
+        if counted and counted[2] == "halfling" and len(re.findall(r"\badd\b", text)) == 1:
+            subtype = counted[2]
+            controlled = [
+                obj
+                for obj in state.get("battlefield") or []
+                if (obj.get("controller_seat_id") or obj.get("owner_seat_id")) == local
+            ]
+            if any(not obj.get("type_line") for obj in controlled):
+                return None
+            count = sum(
+                bool(re.search(rf"\b{re.escape(subtype)}\b", str(obj["type_line"]).lower()))
+                for obj in controlled
+            )
+            # Changeling / type-changing effects need richer subtype evidence
+            # than this narrow counter; do not silently undercount them.
+            if any(
+                "creature" in str(obj["type_line"]).lower()
+                and ("changeling" in _plain_text(obj) or "all creature types" in _plain_text(obj))
+                for obj in controlled
+            ):
+                return None
+            fixed_extra += count - 1
+            continue
         if "enchanted" in text and "tapped for mana" in text:
             attached = find_source(state, {"instanceId": card.get("attached_to_id")})
             if attached.get("is_tapped"):
                 continue
+        # The base pool counts each ready producer once. An entire Oracle
+        # text consisting of this unconditional tap ability has a known
+        # output; do not generalize to costly/conditional/restricted abilities.
+        fixed = re.fullmatch(r"\s*\{t\}:\s*add\s*((?:\{[wubrgc]\}){2,})\.?\s*", text)
+        if fixed:
+            fixed_extra += len(re.findall(r"\{[wubrgc]\}", fixed[1])) - 1
+            continue
         return None
-    return int(RulesEngine._get_mana_pool(state, local).get("total") or 0)
+    return int(RulesEngine._get_mana_pool(state, local).get("total") or 0) + fixed_extra
 
 
 def affordable_x(state: dict, card: dict) -> int | None:

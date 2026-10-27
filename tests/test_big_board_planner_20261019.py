@@ -194,6 +194,31 @@ def test_a_failed_high_effort_declaration_falls_back_to_the_low_answer():
     backend = _Backend({"high": TimeoutError("budget"), None: '{"actions": []}'})
     planner._backend = backend
     answer = planner._hedged_declaration(
-        lambda call_class, effort=None: backend.complete("", "", reasoning_effort=effort)
+        lambda call_class, effort=None, **kwargs: backend.complete("", "", reasoning_effort=effort)
     )
     assert answer == '{"actions": []}' and sorted(map(str, backend.calls)) == ["None", "high"]
+
+
+def test_big_board_with_unverifiable_bodies_still_asks_model():
+    state = {
+        "local_seat_id": 1,
+        "players": [{"seat_id": 1, "is_local": True, "life_total": 20}],
+        "turn": {"turn_number": 8, "active_player": 2},
+        "battlefield": [
+            {
+                "instance_id": i,
+                "name": f"Creature {i}",
+                "type_line": "Creature",
+                "controller_seat_id": 2 if i else 1,
+            }
+            for i in range(1, 46)
+        ],
+    }
+    context = {
+        "type": "declare_blockers",
+        "raw_blockers": [{"blockerInstanceId": 1, "attackerInstanceIds": [2]}],
+    }
+    backend = _Backend({None: '{"action_type":"declare_blockers","blocker_assignments":{}}'})
+    planner = ActionPlanner(backend, timeout=1, land_drop_first=False)
+    planner.plan_actions(state, "decision_required", ["Block with: Creature 1", "Done"], context)
+    assert backend.calls

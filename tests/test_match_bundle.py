@@ -1042,3 +1042,48 @@ def test_bug_reports_saved_during_a_match_are_attached_to_its_context(tmp_path, 
     engine._match_bundle_ctx = mb.begin_match(MATCH_ID, coach_log_path=tmp_path / "none.log")
     path = engine.save_bug_report("test", announce=False)
     assert path and engine._match_bundle_ctx.bug_reports == [path]
+
+
+def test_saved_bundle_upload_retry_does_not_block_engine_reload(world, monkeypatch):
+    import threading
+
+    from arenamcp.standalone_auto_reload import _busy_thread
+
+    writing = threading.Event()
+    allow_save = threading.Event()
+    uploading = threading.Event()
+    allow_upload = threading.Event()
+    original_save = mb.save_bundle
+
+    def save(*args, **kwargs):
+        writing.set()
+        assert allow_save.wait(10)
+        return original_save(*args, **kwargs)
+
+    def opener(*args, **kwargs):
+        uploading.set()
+        assert allow_upload.wait(10)
+        return 429, "rate limited"
+
+    monkeypatch.setattr(mb, "save_bundle", save)
+    worker = mb.schedule_upload(
+        world["ctx"],
+        settings=_settings(),
+        result="win",
+        packet_path=world["packet_path"],
+        bundle_dir=world["bundle_dir"],
+        opener=opener,
+        sleep=lambda _: None,
+    )
+    try:
+        assert writing.wait(10)
+        assert _busy_thread([worker]) == "the match bundle is still being written"
+        allow_save.set()
+        assert uploading.wait(10)
+        assert list(world["bundle_dir"].glob("*.json.gz"))
+        assert _busy_thread([worker]) == ""
+    finally:
+        allow_save.set()
+        allow_upload.set()
+        worker.join(10)
+    assert not worker.is_alive()
