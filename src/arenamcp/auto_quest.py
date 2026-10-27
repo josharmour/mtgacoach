@@ -11,7 +11,7 @@ import re
 import sqlite3
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 FREE_EVENTS = frozenset({"Play", "Ladder", "Play_Brawl_Historic", "Brawl_Ladder"})
@@ -42,7 +42,9 @@ def read_snapshot(path: Path) -> QuestSnapshot:
     for line in lines:
         match = STAMP.search(line)
         if match:
-            stamp = datetime.strptime(match[1], "%m/%d/%Y %I:%M:%S %p").timestamp()
+            stamp = (
+                datetime.strptime(match[1], "%m/%d/%Y %I:%M:%S %p").replace(tzinfo=timezone.utc).timestamp()
+            )
         match = REPLY.search(line)
         if match:
             pending = match[1]
@@ -201,7 +203,7 @@ def plan(
     if not active and not wins_left:
         return QuestPlan(
             "complete",
-            "Available mastery XP earned—come back after the next reset."
+            "Mastery XP exhausted for now—your mastery track may still be unfinished. Come back after the next reset."
             if goal == "mastery"
             else "Detected quests and selected reward goal are complete.",
         )

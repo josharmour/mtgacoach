@@ -6,6 +6,12 @@ from arenamcp.auto_quest import QuestSnapshot, objective, plan, read_snapshot
 from arenamcp.deck_library import DeckRecord
 
 
+@pytest.fixture(autouse=True)
+def no_live_account_reads(monkeypatch):
+    monkeypatch.setattr("arenamcp.standalone_auto_quest.read_snapshot", lambda path: QuestSnapshot())
+    monkeypatch.setattr("arenamcp.standalone_auto_quest.quest_descriptions", lambda: {})
+
+
 @pytest.fixture
 def inputs():
     return dict(
@@ -266,3 +272,42 @@ def test_default_grind_and_manual_queue_override_emit_toggle_state():
     runtime.set_auto_queue(True)
     assert runtime._auto_quest is None
     runtime.ui.status.assert_any_call("GRIND", "OFF")
+
+
+def test_arena_log_timestamps_are_utc(tmp_path):
+    from datetime import datetime, timezone
+
+    path = tmp_path / "Player.log"
+    path.write_text('[UnityCrossThreadLogger]10/27/2026 5:31:20 AM\n<== QuestGetQuests(id)\n{"quests":[]}\n')
+    assert (
+        read_snapshot(path).observed_at == datetime(2026, 10, 27, 5, 31, 20, tzinfo=timezone.utc).timestamp()
+    )
+
+
+def test_exhausted_xp_stops_on_enable_without_match_or_autoplay(monkeypatch):
+    import time
+    from datetime import datetime, timezone
+
+    from tests.test_standalone_auto_queue import Runtime
+
+    now = time.time()
+    reset = datetime.fromtimestamp(now + 3600, timezone.utc).isoformat()
+    snap = QuestSnapshot(
+        [],
+        now - 1,
+        {
+            "_dailyRewardSequenceId": 15,
+            "_weeklyRewardSequenceId": 15,
+            "_dailyRewardResetTimestamp": reset,
+            "_weeklyRewardResetTimestamp": reset,
+        },
+        now - 1,
+    )
+    monkeypatch.setattr("arenamcp.standalone_auto_quest.read_snapshot", lambda path: snap)
+    runtime = Runtime()
+    runtime.ap_status = "AP:OFF"
+    runtime.set_auto_quest(True)
+    assert runtime._auto_quest is None
+    assert not runtime._auto_queue_enabled
+    runtime.ui.status.assert_any_call("GRIND", "OFF")
+    assert "mastery track may still be unfinished" in runtime.ui.status.call_args.args[1]
