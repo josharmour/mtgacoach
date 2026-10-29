@@ -404,6 +404,11 @@ class CompactCoachPanel(QWidget):
         for chip in (self.model_chip, self.source_chip):
             chips.addWidget(chip)
         root.addWidget(self.status_row)
+        self.commentary_label = QLabel()
+        self.commentary_label.setTextFormat(Qt.PlainText)
+        self.commentary_label.setWordWrap(True)
+        self.commentary_label.hide()
+        root.addWidget(self.commentary_label)
 
         # Keep startup visible even when a model name or game state has arrived.
         # Neither of those means the coaching request path is ready yet.
@@ -766,11 +771,20 @@ class CompactCoachPanel(QWidget):
     # ------------------------------------------------------------------
     # Session wiring
     # ------------------------------------------------------------------
+    def _on_commentary_status(self, status: dict) -> None:
+        state = status.get("state", "waiting")
+        labels = {"ready": "Ready", "deterministic": "Grounded event calls", "silent": "Waiting for a fresh moment",
+                  "dropped": "Waiting for spare capacity or fresh facts", "waiting": "Waiting for a game",
+                  "unavailable": "Runtime unavailable — check Arena On Air & Voice settings"}
+        self.commentary_label.setText(str(status.get("message")) if state == "voice" else "Arena On Air: " + labels.get(state, "Waiting for a grounded, fresh moment"))
+        self.commentary_label.setVisible(state != "disabled")
+
     def _wire_session(self) -> None:
         self._session.gameStateChanged.connect(self._on_game_state_changed)
         self._session.turnPlanChanged.connect(self._on_turn_plan_changed)
         self._session.gamePlanChanged.connect(self._on_game_plan_changed)
         self._session.statusChanged.connect(self._on_status_changed)
+        self._session.commentaryStatusChanged.connect(self._on_commentary_status)
         self._session.spokenLine.connect(self._on_spoken_line)
         self._session.adviceReceived.connect(self._on_advice_received)
         self._session.logEmitted.connect(self._on_log_emitted)

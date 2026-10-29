@@ -86,6 +86,7 @@ class PipeAdapter:
 
         # Desktop acknowledgments for speech the engine must wait on.
         self.speech_completion = SpeechCompletion()
+        self._commentary = None
 
     def bind_coach(self, coach: StandaloneCoach) -> None:
         """Bind to a coach instance for command dispatch."""
@@ -118,11 +119,13 @@ class PipeAdapter:
         if coach is not None:
             ap_on = getattr(coach, "_autopilot_enabled", False)
             self.status("AUTOPILOT", "AP:ON" if ap_on else "AP:OFF")
-            self.status("MUTE", "ON" if getattr(coach, "_muted", False) else "OFF")
+            self.status("MUTE", "ON" if bool(getattr(getattr(coach, "_voice_output", None), "muted", False) or getattr(coach, "_muted", False)) else "OFF")
             self.status("STYLE", getattr(coach, "_style", "Quick").title())
 
     def stop(self) -> None:
         self._running = False
+        if self._commentary is not None:
+            self._commentary.close()
 
     # ── UIAdapter interface ──────────────────────────────────────────
 
@@ -210,6 +213,7 @@ class PipeAdapter:
         voice_name: str,
         speed: float,
         speech_id: str | None = None,
+        category: str | None = None,
     ) -> None:
         payload: dict[str, Any] = {
             "type": "speak_request",
@@ -218,6 +222,8 @@ class PipeAdapter:
             "voice_name": voice_name,
             "speed": speed,
         }
+        if category:
+            payload["speech_category"] = category
         if speech_id:
             # The desktop answers with speech_status commands for this id.
             payload["speech_id"] = speech_id
@@ -236,6 +242,16 @@ class PipeAdapter:
     def emit_game_state(self, snapshot: dict[str, Any]) -> None:
         """Emit a game state snapshot to the GUI."""
         self._emit({"type": "game_state", "data": snapshot})
+        if self._coach is not None:
+            if self._commentary is None:
+                from arenamcp.commentary.service import CommentaryService
+                self._commentary = CommentaryService(
+                    settings=lambda: getattr(self._coach, "settings", {}),
+                    backend=lambda: getattr(getattr(self._coach, "_coach", None), "_backend", None),
+                    emit=self._emit,
+                    muted=lambda: bool(getattr(getattr(self._coach, "_voice_output", None), "muted", False) or getattr(self._coach, "_muted", False)),
+                )
+            self._commentary.offer(snapshot)
 
     def emit_mcts_tree(self, tree_data: dict[str, Any]) -> None:
         """Emit a structured MCTS search tree evaluation to the GUI."""
@@ -537,6 +553,8 @@ class PipeAdapter:
             elif action == "toggle_mute":
                 if coach._voice_output:
                     muted = coach._voice_output.toggle_mute()
+                    if self._commentary is not None and muted:
+                        self._commentary.cancelled.set()
                     self.status("MUTE", "Muted" if muted else "Unmuted")
                     self.log(f"Voice {'muted' if muted else 'unmuted'}")
             elif action == "sync_voice_preferences":
@@ -731,6 +749,22 @@ class PipeAdapter:
                     logger.info("Autopilot guards: %s", describe_guard_modes())
                 else:
                     logger.warning("set_guard_mode: unknown guard %r or mode %r", kind, mode)
+            elif action == "configure_commentary":
+                from arenamcp.commentary.config import CommentaryConfig
+                config = CommentaryConfig.from_wire(cmd.get("config") or {})
+                coach.settings.set("autoplay_speech", config.mode)
+                for key, value in config.to_wire().items():
+                    if key != "mode":
+                        coach.settings.set("commentary_" + key, value)
+                autopilot = getattr(coach, "_autopilot", None)
+                if autopilot is not None:
+                    autopilot._config.autoplay_speech = config.mode
+                if self._commentary is not None:
+                    self._commentary.configure()
+                self._emit({"type": "commentary_config", "config": config.to_wire()})
+            elif action == "commentary_delivery":
+                if self._commentary is not None:
+                    self._commentary.delivery(str(cmd.get("utterance_id") or ""), str(cmd.get("state") or ""))
             elif action == "speech_status":
                 self.speech_completion.update(str(cmd.get("speech_id") or ""), str(cmd.get("state") or ""))
             elif action == "stop_speech":

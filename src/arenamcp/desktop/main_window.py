@@ -218,6 +218,8 @@ class MainWindow(QMainWindow):
         )
         share_logs_act.toggled.connect(self._set_share_match_logs)
         self._build_guard_menu(tools_menu)
+        aoa_act = tools_menu.addAction("Arena On Air & Voice…")
+        aoa_act.triggered.connect(self._configure_commentary)
         voice_engine_act = tools_menu.addAction("Voice Engine…")
         voice_engine_act.triggered.connect(self._configure_voice_engine)
         tts_server_act = tools_menu.addAction("Remote TTS Server…")
@@ -368,6 +370,10 @@ class MainWindow(QMainWindow):
         """Upload a redacted record of each finished match, or keep it local; applies to the running engine."""
         self._settings.set("share_match_logs", bool(enabled))
         self._session.set_share_match_logs(bool(enabled))
+
+    def _configure_commentary(self) -> None:
+        from .commentary_settings import CommentarySettingsDialog
+        CommentarySettingsDialog(self._settings, self._session, self).exec()
 
     def _configure_voice_engine(self) -> None:
         from arenamcp.chatterbox_remote import ChatterboxError, read_speech_key, speech_endpoint

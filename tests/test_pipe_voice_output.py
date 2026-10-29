@@ -42,6 +42,7 @@ def test_speech_goes_to_the_desktop_cleaned_with_the_saved_voice(store) -> None:
             "voice_id": "bm_george",
             "voice_name": "George (UK Male)",
             "speed": 1.4,
+            "category": "workflow",
         }
     ]
     voice.stop()
@@ -69,3 +70,13 @@ def test_starts_from_the_saved_voice_and_saves_changes(store) -> None:
     assert voice.set_speed(9.0) == 2.0 and store["voice_speed"] == 2.0
     assert voice.cycle_speed() == 1.0 and store["voice_speed"] == 1.0  # off-preset speed restarts at 1.0
     assert voice.cycle_speed() == 1.2
+
+
+def test_saved_global_mute_survives_voice_initialization(store):
+    store["muted"] = True
+    ui = _DummyUI()
+    voice = _PipeVoiceOutput(ui)
+    voice.speak("Do not speak while muted")
+    assert voice.muted and not ui.requests
+    assert voice.toggle_mute() is False
+    assert store["muted"] is False

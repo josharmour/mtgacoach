@@ -6,6 +6,8 @@ block_cipher = None
 REPO_ROOT = Path(SPECPATH)
 
 datas = [
+    (str(REPO_ROOT / "src" / "arenamcp" / "commentary"), "arenamcp/commentary"),
+    (str(REPO_ROOT / "src" / "arenamcp" / "assets" / "chatterbox"), "arenamcp/assets/chatterbox"),
     (str(REPO_ROOT / "assets"), "assets"),
     (str(REPO_ROOT / "src" / "arenamcp" / "resources"), "arenamcp/resources"),
     (str(REPO_ROOT / "src" / "arenamcp" / "resources"), "src/arenamcp/resources"),

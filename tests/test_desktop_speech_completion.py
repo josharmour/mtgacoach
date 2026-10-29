@@ -127,6 +127,7 @@ def test_session_acknowledges_and_reports_back_to_the_engine(qapp, monkeypatch):
         assert requested["speech_id"] == "x1"
         assert sent == [{"cmd": "speech_status", "speech_id": "x1", "state": "accepted"}]
 
+        session._tts.speechStatus.emit("x1", "started")
         session._tts.speechStatus.emit("x1", "finished")
         assert sent[-1] == {"cmd": "speech_status", "speech_id": "x1", "state": "finished"}
 

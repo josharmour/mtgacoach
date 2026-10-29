@@ -1,0 +1,3 @@
+# Optional Python 3.11 worker only. Never install this into Coach's environment.
+chatterbox-tts==0.1.7
+av==16.0.1

@@ -1,13 +1,13 @@
-"""Versioned, JSON-safe boundaries for a future headless Arena On Air worker.
+"""Versioned, JSON-safe boundaries for the local headless Arena On Air worker.
 
-Monotonic timestamps belong to the Coach process. A worker must echo the
-observation/epoch identifiers, not compare its own clock to these timestamps.
+Local workers use the same operating-system monotonic clock as Coach (Python
+3.10+). They echo observation/epoch identifiers; this is not a remote protocol.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -19,6 +19,7 @@ class SpeechCategory(str, Enum):
     ESSENTIAL = "essential"
     WORKFLOW = "workflow"
     COMMENTARY = "commentary"
+    ROUTINE = "routine"
     AMBIENT = "ambient"
 
 
@@ -43,9 +44,22 @@ class Evidence:
     source_sequence: int
     snapshot_id: str
     visibility: str = "public"
+    payload: dict[str, Any] = field(default_factory=dict)
+    seat: int | None = None
+    received_at: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.kind not in {"action_submitted", "action_observed", "spell_resolved", "combat", "game_end"}:
+        if self.kind not in {
+            "action_submitted",
+            "action_observed",
+            "spell_resolved",
+            "combat",
+            "game_end",
+            "game_start",
+            "turn_start",
+            "life_change",
+            "land_drop",
+        }:
             raise ValueError("Unknown evidence kind")
         if (
             not self.event_id
@@ -66,6 +80,7 @@ class Observation:
     arrived_at: float
     public_state: dict[str, Any]
     events: tuple[Evidence, ...] = ()
+    private_state: dict[str, Any] = field(default_factory=dict)
     protocol_version: int = PROTOCOL_VERSION
 
     def __post_init__(self) -> None:
@@ -78,6 +93,15 @@ class Observation:
 
     def to_wire(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_wire(cls, value):
+        if value.get("protocol_version") != PROTOCOL_VERSION:
+            raise ValueError("Unsupported commentary protocol")
+        data = dict(value)
+        data["epoch"] = Epoch(**data["epoch"])
+        data["events"] = tuple(Evidence(**event) for event in data.get("events", ()))
+        return cls(**data)
 
 
 @dataclass(frozen=True)
@@ -92,12 +116,20 @@ class Utterance:
     interruptible: bool = True
     anchor_id: str | None = None
     evidence_ids: tuple[str, ...] = ()
+    snapshot_id: str = ""
+    role: str = "play_by_play"
+    speed: float = 1.0
     protocol_version: int = PROTOCOL_VERSION
 
     def __post_init__(self) -> None:
         if self.protocol_version != PROTOCOL_VERSION:
             raise ValueError("Unsupported commentary protocol")
-        if not self.utterance_id or not self.text.strip() or len(self.text) > 600:
+        if (
+            not self.utterance_id
+            or not self.text.strip()
+            or len(self.text)
+            > (600 if self.category in {SpeechCategory.COMMENTARY, SpeechCategory.AMBIENT} else 16000)
+        ):
             raise ValueError("Utterance requires an ID and 1–600 characters")
         if not isinstance(self.category, SpeechCategory):
             raise ValueError("Unknown speech category")

@@ -19,6 +19,7 @@ class CoachSession(QObject):
 
     # Core state & advice signals
     gameStateChanged = Signal(dict)
+    commentaryStatusChanged = Signal(dict)
     turnPlanChanged = Signal(object)
     gamePlanChanged = Signal(object)
     # Auto-concede countdown: {"state": offering|armed|conceding|sent|conceded|cancelled|aborted|failed|unconfirmed, "id", ...}
@@ -59,7 +60,11 @@ class CoachSession(QObject):
         self._process.exited.connect(self._handle_exited)
 
         self._tts = TtsManager(self)
-        self._tts.speechStatus.connect(self._report_speech_status)
+        from .commentary_controller import CommentaryController
+        self._speech = CommentaryController(self._tts, lambda payload: self._process.send_payload(payload), self.spokenLine.emit, self)
+        self._speech.statusChanged.connect(self.commentaryStatusChanged)
+        self._tts.status_line.connect(lambda message: self.commentaryStatusChanged.emit({"state": "voice", "message": message}))
+        self._tts.error_line.connect(lambda message: self.commentaryStatusChanged.emit({"state": "voice", "message": message}))
         # Lazy-start: TtsManager.request_speech() starts the Kokoro worker on
         # demand (and start() re-arms it). Eagerly spawning a worker per
         # CoachSession means every Constructed test panel owns a live Kokoro
@@ -70,7 +75,7 @@ class CoachSession(QObject):
         self._last_game_state: dict[str, Any] = {}
         self._statuses: dict[str, str] = {}
         self._autopilot_active = False
-        self._muted = False
+        self._muted = self._speech.arbiter.muted
         self._last_startup_status: dict[str, Any] = {}
         self._last_backend_health: dict[str, Any] = {}
         self._last_autopilot_bug_status: dict[str, Any] = {}
@@ -172,7 +177,7 @@ class CoachSession(QObject):
             if value is not None:
                 options[key] = value
         self._pending_restart = options
-        self._tts.stop_speech()
+        self._speech.stop()
         self._set_startup_status(
             {
                 "phase": "reloading",
@@ -227,6 +232,15 @@ class CoachSession(QObject):
 
     def toggle_autopilot(self) -> None:
         self.send_command("toggle_autopilot")
+
+    def configure_commentary(self, config: dict) -> None:
+        self._speech.configure(config)
+        self._process.send_payload({"cmd": "configure_commentary", "config": config})
+
+    def preview_voice(self) -> None:
+        if not self._tts._chatterbox_lock.locked():
+            self._tts._local_chatterbox.failed = False
+        self._speech.speech({"text": "The booth is ready. Voice preview.", "speech_category": "workflow"}, muted=self._muted)
 
     def set_voice(self, voice_id: str) -> None:
         """Select a Kokoro voice by id in the running engine (saved there too)."""
@@ -294,7 +308,7 @@ class CoachSession(QObject):
 
     def stop_speaking(self) -> None:
         """Stop current TTS playback and tell the engine (``stop_speech``)."""
-        self._tts.stop_speech()
+        self._speech.stop()
         self.send_command("stop_speech")
 
     def capture_screenshots(self) -> dict[str, str]:
@@ -359,7 +373,7 @@ class CoachSession(QObject):
             return
         clicked_at = datetime.now(timezone.utc)
         capture_id = clicked_at.strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid4().hex[:8]
-        self._tts.stop_speech()
+        self._speech.stop()
         self._set_autopilot_bug_status(
             {
                 "phase": "capturing",
@@ -526,6 +540,7 @@ class CoachSession(QObject):
             state = event.get("data") if "data" in event else event.get("game_state", {})
             if isinstance(state, dict):
                 self._last_game_state = state
+                self._speech.observe(state)
                 self.gameStateChanged.emit(state)
 
         elif ev_type in ("turn_plan", "emit_turn_plan"):
@@ -550,41 +565,27 @@ class CoachSession(QObject):
                 if key == "AUTOPILOT":
                     self._autopilot_active = "ON" in val or "PAUSED" in val
                 elif key == "MUTE":
-                    self._muted = "ON" in val
+                    self._muted = val.strip().lower() in {"on", "muted", "true"}
+                    self._speech.arbiter.set_muted(self._muted)
                 self.statusChanged.emit(key, val)
 
         elif ev_type == "speak_stop":
             # The engine stopped its voice output (stop command, urgent-topic
             # preemption, shutdown), so desktop audio must halt too.
             # stop_speech() is idempotent.
-            self._tts.stop_speech()
+            self._speech.stop()
 
         elif ev_type in ("speak_request", "speak", "speak_audio"):
-            text = str(event.get("text") or event.get("data") or "")
-            # The engine waits on utterances that carry a speech_id (deck
-            # review narration); every path must acknowledge them.
-            speech_id = str(event.get("speech_id") or "")
-            if not text and speech_id:
-                self._report_speech_status(speech_id, "failed")
-            if text:
-                self.spokenLine.emit(text)
-                if self._muted and speech_id:
-                    self._report_speech_status(speech_id, "muted")
-                if not self._muted:
-                    speed = float(event.get("speed") or 1.0)
-                    voice_id = str(event.get("voice_id") or "af_heart")
-                    voice_name = str(event.get("voice_name") or "Auto")
-                    extra_kwargs: dict[str, Any] = {}
-                    if speech_id:
-                        extra_kwargs["speech_id"] = speech_id
-                        self._report_speech_status(speech_id, "accepted")
-                    self._tts.request_speech(
-                        text=text,
-                        voice_id=voice_id,
-                        voice_name=voice_name,
-                        speed=speed,
-                        **extra_kwargs,
-                    )
+            self._speech.speech(event, muted=self._muted)
+
+        elif ev_type == "commentary_proposal":
+            self._speech.proposal(event.get("utterance") or {})
+        elif ev_type == "commentary_clear":
+            self._speech.arbiter.disable_commentary()
+        elif ev_type == "commentary_config":
+            self._speech.configure(event.get("config") or {})
+        elif ev_type == "commentary_status":
+            self.commentaryStatusChanged.emit(event.get("data") or {})
 
         elif ev_type in ("advice", "emit_advice"):
             text = str(event.get("text") or event.get("advice") or "")
@@ -684,6 +685,7 @@ class CoachSession(QObject):
         """Cleanly terminate subprocess and TTS manager."""
         self._shutting_down = True
         self._pending_restart = None
+        self._speech.close()
         if self._tts is not None:
             self._tts.shutdown()
         self.stop()

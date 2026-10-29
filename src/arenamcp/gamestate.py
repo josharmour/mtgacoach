@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from arenamcp.card_db import is_unknown_card_name
 from arenamcp.combat_keywords import ability_keywords
+from arenamcp.commentary.events import journal_event
 from arenamcp.decision_clock import event_wall_time, timeout_entry, timer_entry
 from arenamcp.gamestate_annotations import _GameStateAnnotationsMixin
 from arenamcp.gamestate_decisions import (
@@ -365,6 +366,8 @@ class GameState(_GameStateAnnotationsMixin):
         self._max_raw_gre_events: int = 40
         self._max_snapshot_raw_gre_events: int = 20
         self._raw_gre_sequence: int = 0
+        self._commentary_journal: list[dict] = []
+        self._commentary_event_number = 0
 
         # Persists across reset() so the coaching loop can read it after
         # match ends.  Cleared by take_game_end(), and when another game
@@ -426,6 +429,8 @@ class GameState(_GameStateAnnotationsMixin):
         self.log_summarized_at_gsid = -1
         self.turn_info = TurnInfo()
         self._raw_gre_sequence = 0
+        self._commentary_journal = []
+        self._commentary_event_number = 0
         self.publish_snapshot()
 
     def capture_connection_deck(self) -> None:
@@ -1717,6 +1722,8 @@ class GameState(_GameStateAnnotationsMixin):
             "recent_events": list(self.recent_events),
             "raw_gre_events": copy.deepcopy(self.raw_gre_events[-self._max_snapshot_raw_gre_events :]),
             "raw_gre_event_count": len(self.raw_gre_events),
+            "commentary_events": list(self._commentary_journal),
+            "commentary_source_sequence": self._raw_gre_sequence,
             "damage_taken": dict(self.damage_taken),
             "revealed_cards": revealed,
             # [{instance_id, grp_id, name, zone}] still in the opponent's hand;
@@ -2882,6 +2889,7 @@ class GameState(_GameStateAnnotationsMixin):
         """
         event["turn"] = self.turn_info.turn_number
         event["phase"] = self.turn_info.phase
+        journal_event(self, event)
         self.recent_events.append(event)
         while len(self.recent_events) > self._max_recent_events:
             cur_turn = self.turn_info.turn_number

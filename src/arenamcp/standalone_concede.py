@@ -225,7 +225,7 @@ class _ConcedeMixin:
 
     def _concede_advise(self, text: str, state: dict | None = None) -> None:
         self.ui.advice(text, "CONCEDE")
-        self.speak_advice(text, blocking=False)
+        self.speak_advice(text, blocking=False, speech_category="essential")
         self._concede_record(text, state)
 
     def _concede_announce(self, text: str, state: dict | None, cancelled: Callable[[], bool]) -> bool:
@@ -244,7 +244,7 @@ class _ConcedeMixin:
             return True
         logger.info("SPEAK (concede offer): %r", text[:160])
         try:
-            self.speak_advice(text, blocking=False)
+            self.speak_advice(text, blocking=False, speech_category="essential")
         except Exception as error:
             logger.debug("[CONCEDE] offer not spoken: %s", error)
         return not cancelled()

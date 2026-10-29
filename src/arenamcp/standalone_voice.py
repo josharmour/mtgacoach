@@ -27,15 +27,17 @@ class _PipeVoiceOutput:
         self._ui = ui
         # Start from the saved voice and speed, not a fixed default.
         saved_voice, saved_speed = None, 1.0
+        saved_muted = False
         with contextlib.suppress(Exception):
             from arenamcp.settings import get_settings
 
             settings = get_settings()
+            saved_muted = bool(settings.get("muted", False))
             saved_voice = settings.get("voice")
             saved_speed = float(settings.get("voice_speed", 1.0) or 1.0)
         self._voice_index = voice_index(saved_voice)
         self._speed = saved_speed
-        self._muted = False
+        self._muted = saved_muted
 
     @property
     def current_voice(self) -> tuple[str, str]:
@@ -87,9 +89,10 @@ class _PipeVoiceOutput:
 
     def toggle_mute(self) -> bool:
         self._muted = not self._muted
+        self._save("muted", self._muted)
         return self._muted
 
-    def speak(self, text: str, blocking: bool = False) -> None:
+    def speak(self, text: str, blocking: bool = False, *, category: str | None = None) -> None:
         if not text or not text.strip() or self.muted:
             return
         text = text.replace("**", "").replace("*", "").replace("#", "")
@@ -102,7 +105,8 @@ class _PipeVoiceOutput:
         if not callable(emit_request):
             return
         voice_id, voice_name = self.current_voice
-        emit_request(text=text, voice_id=voice_id, voice_name=voice_name, speed=self._speed)
+        extra = {"category": category or "workflow"}
+        emit_request(text=text, voice_id=voice_id, voice_name=voice_name, speed=self._speed, **extra)
 
     def stop(self) -> None:
         emit_stop = getattr(self._ui, "emit_speech_stop", None)

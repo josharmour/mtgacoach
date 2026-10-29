@@ -502,6 +502,7 @@ CALL_CLASSES: dict[str, str] = {
     "coach.postmatch": "post-match analysis and rating calls",
     "draft.pick": "draft pick advice",
     "draft.build": "draft/sealed deck build",
+    "background.commentary": "optional AOA generation/audit, non-waiting and preemptible",
     "background.game_plan": "GamePlanManager reform",
     "background.deck_playbook": "deck playbook discovery + compile",
     "background.win_plan": "automatic win-in-N worker",
@@ -964,11 +965,30 @@ class _BackgroundLane:
         self._cond = threading.Condition()
         self._holder: _CallHandle | None = None
         self._waiting: list[_CallHandle] = []
+        self._protected: set[_CallHandle] = set()
+
+    def protect(self, handle: _CallHandle) -> None:
+        """Gameplay/strategy never waits behind optional commentary."""
+        with self._cond:
+            self._protected.add(handle)
+            holder = self._holder
+        if holder is not None and holder.call_class == "background.commentary":
+            holder.cancel("superseded")
+        with self._cond:
+            self._cond.notify_all()
+
+    def unprotect(self, handle: _CallHandle) -> None:
+        with self._cond:
+            self._protected.discard(handle)
+            self._cond.notify_all()
 
     def acquire(self, handle: _CallHandle, wait_s: float) -> str:
         """Return "acquired", "dropped", "superseded" or "cancelled"."""
-        end = time.monotonic() + max(0.0, wait_s)
+        commentary = handle.call_class == "background.commentary"
+        end = time.monotonic() + (0.0 if commentary else max(0.0, wait_s))
         with self._cond:
+            if commentary and (self._protected or self._holder is not None or self._waiting):
+                return "dropped"
             to_cancel = [
                 other
                 for other in ([self._holder] if self._holder is not None else []) + self._waiting
@@ -985,6 +1005,8 @@ class _BackgroundLane:
                     reason = handle.cancelled()
                     if reason:
                         return reason
+                    if commentary and self._protected:
+                        return "dropped"
                     if self._holder is None or self._holder.is_cancelled:
                         # A cancelled holder's connection is already shut
                         # down; its thread releases a lane it no longer holds.
@@ -1291,6 +1313,9 @@ class ProxyBackend:
             first_token_timeout_s=_positive_or_none(first_token_timeout_s),
             background=is_background,
         )
+        is_commentary = resolved_class == "background.commentary"
+        if not is_commentary:
+            _BACKGROUND_LANE.protect(call.handle)
         lane_held = False
         watch_done: threading.Event | None = None
         try:
@@ -1328,7 +1353,7 @@ class ProxyBackend:
                     daemon=True,
                 ).start()
 
-            if is_background and background_lane_enabled():
+            if is_background and (background_lane_enabled() or is_commentary):
                 outcome = _BACKGROUND_LANE.acquire(call.handle, _lane_wait_s(lane_wait_s, deadline))
                 if outcome != "acquired":
                     return self._finish_cancelled(
@@ -1393,7 +1418,7 @@ class ProxyBackend:
                         raise_on_error=raise_on_error,
                     )
                 except Exception as e:
-                    if not priority_dropped and _sent_priority(params) is not None and _rejects_priority(e):
+                    if not is_commentary and not priority_dropped and _sent_priority(params) is not None and _rejects_priority(e):
                         # Retry once at once without the field; never again
                         # this session (vLLM without priority scheduling).
                         priority_dropped = True
@@ -1403,7 +1428,8 @@ class ProxyBackend:
                         continue
                     err = self._classify_call_error(e, call)
                     if (
-                        not retried
+                        not is_commentary
+                        and not retried
                         and err.retryable
                         and err.kind != "first_token_timeout"
                         and (err.retry_after_s is None or err.retry_after_s <= 5.0)
@@ -1461,6 +1487,8 @@ class ProxyBackend:
                 raise _classify_api_error(e) from e
             return f"{BACKEND_ERROR_PREFIX} {e}"
         finally:
+            if not is_commentary:
+                _BACKGROUND_LANE.unprotect(call.handle)
             if watch_done is not None:
                 watch_done.set()
             if lane_held:

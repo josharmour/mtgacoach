@@ -504,6 +504,7 @@ def test_no_safe_default_alerts_loudly(monkeypatch, server_game_state, caplog):
         run(monkeypatch, coach)
     spoken = [text for text in coach.speak_advice_calls if text.startswith("MANUAL REQUIRED")]
     assert spoken and "Search Library" in spoken[0]
+    assert "essential" in coach.speech_categories
     assert any(text.startswith("MANUAL REQUIRED") for text, _ in coach.ui.advice_calls)
 
 

@@ -2,7 +2,7 @@
 
 The desktop integration supplies start/stop/status callbacks and calls tick()
 regularly. start() renders through its sole TtsManager; only playback callbacks
-may report started/finished. This scheduler is not yet enabled by CoachSession.
+may report started/finished. CoachSession routes all desktop speech through this scheduler.
 """
 
 from __future__ import annotations
@@ -139,6 +139,14 @@ class SpeechArbiter:
             if pending:
                 self._emit(pending, "muted")
             self._cancel_active("muted")
+
+    def disable_routine(self) -> None:
+        if self.pending and self.pending.category == SpeechCategory.ROUTINE:
+            pending, self.pending = self.pending, None
+            self._emit(pending, "stopped")
+        if self.active and self.active.category == SpeechCategory.ROUTINE:
+            self._cancel_active("stopped")
+        self.tick()
 
     def disable_commentary(self) -> None:
         if self.pending and self.pending.category in _OPTIONAL:

@@ -28,7 +28,7 @@ _CARD_FIELDS = (
     "attack_target_id",
     "damage",
 )
-_IDENTITY_FIELDS = ("grp_id", "name")
+_IDENTITY_FIELDS = ("grp_id", "name", "type_line", "mana_cost", "oracle_text")
 
 
 def _scalars(value: Mapping[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
@@ -50,6 +50,8 @@ def _public_card(card: Mapping[str, Any]) -> dict[str, Any]:
         result.pop("toughness", None)
     else:
         result.update(_scalars(card, _IDENTITY_FIELDS))
+        if isinstance(card.get("card_types"), list):
+            result["card_types"] = [t for t in card["card_types"][:12] if isinstance(t, str)]
     return result
 
 
@@ -62,7 +64,7 @@ def observation_from_snapshot(
     events: Iterable[Evidence] = (),
 ) -> Observation:
     epoch = Epoch(snapshot.get("match_id"), snapshot.get("game_number"))
-    turn = snapshot.get("turn_info") or {}
+    turn = snapshot.get("turn_info") or snapshot.get("turn") or {}
     zones = snapshot.get("zones") or {}
     public = {
         "turn_info": _scalars(turn, ("turn_number", "active_player", "priority_player", "phase", "step")),

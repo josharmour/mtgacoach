@@ -36,6 +36,9 @@ class TtsManager(QObject):
         self._chatterbox_lock = threading.Lock()
         self._remote_cancel: threading.Event | None = None
         self._remote_generation: int | None = None
+        self._speech_valid = lambda: True
+        from arenamcp.local_chatterbox import LocalChatterboxClient
+        self._local_chatterbox = LocalChatterboxClient()
         self._process: QProcess | None = None
         self._stdout_buffer = ""
         self._stderr_buffer = ""
@@ -129,12 +132,20 @@ class TtsManager(QObject):
         voice_name: str,
         speed: float,
         speech_id: str | None = None,
+        provider: str | None = None,
+        category: str = "",
+        valid=None,
     ) -> None:
         if self._closing or not text or not text.strip():
             if speech_id:
                 self.speechStatus.emit(speech_id, "failed")
             return
 
+        self._speech_valid = valid or (lambda: True)
+        if not self._speech_valid():
+            if speech_id:
+                self.speechStatus.emit(speech_id, "superseded")
+            return
         if self._remote_cancel is not None:
             self._remote_cancel.set()
         self._pending_request = None
@@ -146,21 +157,35 @@ class TtsManager(QObject):
         from arenamcp.settings import get_settings
 
         settings = get_settings()
-        if settings.get("tts_provider") == "chatterbox_remote":
+        selected = provider or str(settings.get("tts_provider") or "kokoro")
+        if category == "essential" and (not self.is_running or not self._ready or self._busy):
+            self._resolve_tracked("superseded")
+            self._generation += 1
+            self._last_text_generation = self._generation
+            self._stop_playback()
+            self._speak_fallback(text, speed)
+            self._track_fallback(speech_id)
+            return
+        if selected in {"chatterbox_remote", "chatterbox_local"}:
             self._resolve_tracked("superseded")
             self._request_chatterbox_speech(
                 text=text,
-                voice_id=voice_id,
-                voice_name=voice_name,
+                voice_id=str(settings.get("voice") or "am_adam") if voice_id in {"atlas", "mira", "default"} else voice_id,
+                voice_name=str(settings.get("voice") or "am_adam") if voice_id in {"atlas", "mira", "default"} else voice_name,
                 speed=float(speed),
                 endpoint=str(settings.get("chatterbox_server_url") or ""),
                 key_file=str(settings.get("chatterbox_key_file") or ""),
-                chatterbox_voice=str(settings.get("chatterbox_voice") or "atlas"),
+                chatterbox_voice=voice_id if voice_id in {"atlas", "mira", "default"} else str(settings.get("chatterbox_voice") or "atlas"),
                 speech_id=speech_id,
+                local_config={"python": str(settings.get("chatterbox_local_python") or ""),
+                    "aoa_source": str(settings.get("commentary_aoa_source") or ""),
+                    "model_dir": str(settings.get("chatterbox_model_dir") or ""),
+                    "revision": str(settings.get("chatterbox_model_revision") or ""),
+                    "device": str(settings.get("chatterbox_device") or "cpu")} if selected == "chatterbox_local" else None,
             )
             return
 
-        if self._should_offload_to_remote():
+        if provider is None and self._should_offload_to_remote():
             self._resolve_tracked("superseded")
             self._request_remote_speech(
                 text=text,
@@ -274,6 +299,15 @@ class TtsManager(QObject):
             self._speak_via_say(text, speed)
         elif sys.platform == "win32":
             self._speak_via_windows(text, speed)
+        else:
+            import shutil
+            player = shutil.which("espeak-ng") or shutil.which("espeak")
+            self._stop_say()
+            if player:
+                self._say_process = subprocess.Popen([player, "-s", str(int(175 * speed)), "--", text],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self._playing_generation = self._generation
+                self._playback_watch.start()
 
     def _speak_via_windows(self, text: str, speed: float) -> None:
         """Windows built-in SAPI speech fallback."""
@@ -319,6 +353,8 @@ class TtsManager(QObject):
                 proc.terminate()
 
     def shutdown(self) -> None:
+        if not self._chatterbox_lock.locked():
+            self._local_chatterbox.close()
         if self._remote_cancel is not None:
             self._remote_cancel.set()
         self._resolve_tracked("stopped")
@@ -405,6 +441,7 @@ class TtsManager(QObject):
         key_file: str,
         chatterbox_voice: str,
         speech_id: str | None,
+        local_config: dict | None = None,
     ) -> None:
         self._generation += 1
         generation = self._generation
@@ -419,11 +456,11 @@ class TtsManager(QObject):
         # The server cannot abort synthesis: don't queue or pile up requests
         # while a cancelled request is still occupying it.
         if not self._chatterbox_lock.acquire(blocking=False):
-            self._on_remote_failed(generation, text, voice_id, voice_name, speed, "Speech server still busy")
+            self._on_remote_failed(generation, text, voice_id, voice_name, speed, "Speech renderer still busy")
             return
         self._busy = True
         self._busy_timer.start()
-        self.status_line.emit("Generating speech with Chatterbox…")
+        self.status_line.emit("Loading local Chatterbox…" if local_config and not self._local_chatterbox.ready else "Generating speech with Chatterbox…")
 
         def worker() -> None:
             import tempfile
@@ -433,14 +470,18 @@ class TtsManager(QObject):
             path = None
             try:
                 started = time.monotonic()
-                audio = render_remote(
-                    endpoint=endpoint,
-                    key_file=key_file,
-                    text=text,
-                    voice=chatterbox_voice,
-                    speed=speed,
-                    cancelled=cancelled,
-                )
+                if local_config is not None:
+                    audio = self._local_chatterbox.render(config=local_config, text=text, voice=chatterbox_voice,
+                        speed=speed, cancelled=cancelled)
+                else:
+                    audio = render_remote(
+                        endpoint=endpoint,
+                        key_file=key_file,
+                        text=text,
+                        voice=chatterbox_voice,
+                        speed=speed,
+                        cancelled=cancelled,
+                    )
                 if cancelled.is_set():
                     return
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as stream:
@@ -546,11 +587,15 @@ class TtsManager(QObject):
         self._busy = False
         self._busy_timer.stop()
         if not self._closing and generation == self._generation and path:
+            if not self._speech_valid():
+                self._cleanup_path(Path(path))
+                self._complete(generation, "superseded")
+                return
             self._stop_say()
             if AudioPlayback.play_file(path):
                 self._current_audio_path = Path(path)
                 self._playback_started(generation)
-                self.status_line.emit(f"Speech ready ({elapsed:.2f}s remote)")
+                self.status_line.emit(f"Speech ready ({elapsed:.2f}s synthesis)")
             else:
                 self.error_line.emit(f"Remote audio playback failed: {path}")
                 self._cleanup_path(Path(path))
@@ -572,7 +617,10 @@ class TtsManager(QObject):
         self._busy = False
         self._busy_timer.stop()
         self._remote_generation = None
-        self.error_line.emit(f"Remote TTS failed: {err_msg} — falling back to local")
+        if not self._speech_valid():
+            self._complete(generation, "superseded")
+            return
+        self.error_line.emit(f"Speech synthesis failed: {err_msg} — falling back to Kokoro/system voice")
         if not self._worker_failed and not self.is_running:
             try:
                 self.start()
@@ -673,6 +721,11 @@ class TtsManager(QObject):
             generation = int(payload.get("generation", 0))
             path = str(payload.get("path", "")).strip()
             if not self._closing and generation == self._generation and path:
+                if not self._speech_valid():
+                    self._cleanup_path(Path(path))
+                    self._complete(generation, "superseded")
+                    self._dispatch_pending()
+                    return
                 self._stop_say()
                 if AudioPlayback.play_file(path):
                     self._current_audio_path = Path(path)
@@ -717,6 +770,7 @@ class TtsManager(QObject):
                     sys.platform == "darwin"
                     and self._last_text
                     and self._last_text_generation == self._generation
+                    and self._speech_valid()
                 ):
                     self.status_line.emit("Kokoro unavailable — using macOS voice.")
                     self._speak_via_say(self._last_text, self._last_speed)
@@ -727,6 +781,7 @@ class TtsManager(QObject):
                 sys.platform == "darwin"
                 and self._last_text
                 and self._last_text_generation == self._generation
+                    and self._speech_valid()
             ):
                 # Transient render failure: keep Kokoro for next time, but
                 # don't lose this utterance.
@@ -765,6 +820,7 @@ class TtsManager(QObject):
                     sys.platform == "darwin"
                     and self._last_text
                     and self._last_text_generation == self._generation
+                    and self._speech_valid()
                 ):
                     self.status_line.emit("Kokoro unavailable — using macOS voice.")
                     self._speak_via_say(self._last_text, self._last_speed)

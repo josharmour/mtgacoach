@@ -436,7 +436,8 @@ class AutopilotEngine(
         self._last_plan_advice = (self._priority_window_signature(game_state), advice, time.time())
         self._notify("AUTOPILOT", advice)
         if (
-            not self._config.enable_tts_preview
+            getattr(self._config, "autoplay_speech", "actions") != "actions"
+            or not self._config.enable_tts_preview
             or not self._speak_fn
             or (
                 action.action_type == ActionType.PASS_PRIORITY
@@ -5587,6 +5588,7 @@ class AutopilotEngine(
                 reasoning
                 and decision.request_type == "ActionsAvailable"
                 and self._config.enable_tts_preview
+                and getattr(self._config, "autoplay_speech", "actions") == "actions"
                 and self._speak_fn
                 and (option_ids != ["pass"] or self._should_speak_pass_plan(game_state))
             ):

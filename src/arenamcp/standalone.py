@@ -411,7 +411,7 @@ class StandaloneCoach(
         """Return the local seat id from a serialized snapshot, if known."""
         return get_local_seat_id(game_state)
 
-    def speak_advice(self, text: str, blocking: bool = True) -> None:
+    def speak_advice(self, text: str, blocking: bool = True, *, speech_category: str | None = None) -> None:
         """Speak advice using local Kokoro TTS."""
         if not text:
             return
@@ -442,7 +442,8 @@ class StandaloneCoach(
         # Use local Kokoro TTS
         if self._voice_output:
             try:
-                self._voice_output.speak(text, blocking=blocking)
+                extra = {"category": speech_category or "workflow"} if hasattr(self.ui, "emit_speech_request") else {}
+                self._voice_output.speak(text, blocking=blocking, **extra)
             except Exception as e:
                 logger.error(f"Kokoro TTS error: {e}")
                 # Kokoro ONNX sometimes raises access violations on the first
@@ -452,7 +453,7 @@ class StandaloneCoach(
                     import time as _time
 
                     _time.sleep(0.1)
-                    self._voice_output.speak(text, blocking=blocking)
+                    self._voice_output.speak(text, blocking=blocking, **extra)
                     logger.info("Kokoro speak retry succeeded")
                 except Exception as e2:
                     logger.error(f"Kokoro speak retry also failed: {e2}")
@@ -1114,11 +1115,12 @@ class StandaloneCoach(
                 separate_strategy_planning=bool(self.settings.get("separate_strategy_planning", False)),
             )
 
+            config.autoplay_speech = self.settings.get("autoplay_speech", "actions")
             self._autopilot = AutopilotEngine(
                 planner=planner,
                 get_game_state=self._mcp.get_game_state,
                 config=config,
-                speak_fn=self.speak_advice,
+                speak_fn=lambda text, blocking: self.speak_advice(text, blocking, speech_category="routine"),
                 ui_advice_fn=self.ui.advice if self.ui else None,
                 bug_report_fn=self._auto_bug_report_bridge_fallback,
                 ui_turn_plan_fn=(self.ui.turn_plan if self.ui and hasattr(self.ui, "turn_plan") else None),
@@ -1335,7 +1337,7 @@ class StandaloneCoach(
                 text = f"Autoplay took too long on {step.label}, so it {detail}."
                 with contextlib.suppress(Exception):
                     self.ui.advice(text, "AUTOPILOT")
-                self.speak_advice(text, blocking=False)
+                self.speak_advice(text, blocking=False, speech_category="essential")
                 return "submitted"
             logger.warning(f"[WATCHDOG] no safe default for {step.label}: {detail}")
             step = watchdog.step(
@@ -1355,7 +1357,7 @@ class StandaloneCoach(
         with contextlib.suppress(Exception):
             self.ui.advice(text, "AUTOPILOT")
             self.ui.log(f"[WATCHDOG] {text}")
-        self.speak_advice(text, blocking=False)
+        self.speak_advice(text, blocking=False, speech_category="essential")
         return "alerted"
 
     def _autopilot_control_status(self) -> str:
