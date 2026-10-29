@@ -25,6 +25,7 @@ def test_second_opinion_only_receives_remaining_budget(monkeypatch):
     class Backend:
         def complete(self, *args, **kwargs):
             budgets.append(kwargs["request_timeout_s"])
+            assert kwargs["response_format"] == {"type": "json_object"}
             if len(budgets) == 1:
                 time.sleep(0.04)
             return '{"option_ids": ["tgt:812"]}'
@@ -58,3 +59,19 @@ def test_slow_legacy_typed_backend_is_bounded(monkeypatch):
         assert time.monotonic() - started < 1.0
     finally:
         release.set()
+
+
+def test_json_mode_does_not_break_backend_without_structured_output():
+    calls = []
+
+    class Backend:
+        def complete(self, system, message, max_tokens, *, temperature, request_timeout_s, raise_on_error):
+            calls.append((request_timeout_s, raise_on_error))
+            return '{"option_ids": ["pass"], "reasoning": "Let our spell resolve."}'
+
+    planner = ActionPlanner(Backend())
+    answer = planner._call_llm(
+        "Return JSON", "Choose", 100, timeout_s=2, call_class="decision.typed", yield_background=False
+    )
+    assert '"pass"' in answer
+    assert calls == [(2, True)]

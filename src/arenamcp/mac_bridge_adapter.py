@@ -94,10 +94,11 @@ PASSTHROUGH = {"ping", "reflect_batch"}
 # plugin's reply ({"scenes": ...}) lacks the pack fields the draft driver reads.
 BEPINEX_RUNTIME = "bepinex"
 BEPINEX_REFLECT_COMMANDS = frozenset(
-    {"confirm_draft_pick", "dismiss_survey", "event_play", "finish_sealed_open", "get_deck_editor",
-     "get_decks", "get_draft_state", "get_event_page", "get_limited_pool", "get_match_end", "get_screen",
+    {"confirm_draft_pick", "create_deck", "dismiss_survey", "event_play", "finish_sealed_open",
+     "get_collection", "get_deck_editor", "get_decks", "get_draft_state", "get_event_page",
+     "get_limited_pool", "get_match_end", "get_screen",
      "get_survey", "go_to_event", "leave_match", "preview_draft_pick", "set_limited_deck",
-     "submit_draft_pick", "submit_limited_deck"}
+     "submit_draft_pick", "submit_limited_deck", "update_deck"}
 )  # fmt: skip
 
 DECISION_TYPES = {
@@ -399,7 +400,12 @@ class MacBridgeAdapter:
                 raise RequestAlreadyAnswered(
                     "the request was already answered (its OnSubmit is spent): the player acted first"
                 )
-            raise AdapterError(error)
+            failure = AdapterError(error)
+            # Preserve the exact failed operation for callers that can prove
+            # a persistent mutation was never reached. Missing indices remain
+            # ambiguous; timeouts never imply that a write did not happen.
+            failure.failed_op = response.get("failed_op")
+            raise failure
         return response.get("results") or []
 
     def snapshot(self, depth: int = SNAPSHOT_DEPTH, timeout: float | None = None) -> Snapshot:
@@ -887,6 +893,164 @@ class MacBridgeAdapter:
             )
         return {"ok": True, "decks": decks}
 
+    @staticmethod
+    def _queue_deck_validation_ops(ops: _Ops, deck_handle: int) -> tuple[dict, dict]:
+        # DeckViewInfo caches by format, so always construct a fresh view. This
+        # only binds a temporary view to the cached deck; it does not edit it.
+        # Verified in Core/Wizards.Mtga.Decks/DeckViewInfo.cs and DeckDisplayInfo.cs.
+        view = ops.new("Wizards.Mtga.Decks.DeckViewInfo")
+        ops.set(view, "deck", H(deck_handle))
+        display = ops.call(view, "GetValidationForFormat", {"str": "Standard"})
+        validation = ops.get(display, "ValidationResult", depth=1)
+        return validation, ops.get(validation, "IsValid")
+
+    def _validate_queue_deck(self, deck_handle: int, timeout: float | None) -> None:
+        ops = _Ops()
+        validation, valid = self._queue_deck_validation_ops(ops, deck_handle)
+        try:
+            values = self._run(ops, timeout)
+        except (AdapterError, OSError) as exc:
+            reason = " ".join(str(exc).split())[:240]
+            raise AdapterError(
+                f"Native Standard deck validation unavailable; queue submission stopped: {reason}"
+            ) from exc
+        if not isinstance(values, list) or len(values) != len(ops.ops):
+            raise AdapterError("Native Standard deck validation incomplete; queue submission stopped")
+        if values[valid["ref"]] is True:
+            return
+        if values[valid["ref"]] is not False:
+            raise AdapterError(
+                "Native Standard deck validation unknown (IsValid is not true); queue submission stopped"
+            )
+
+        # Diagnostics come only from known raw result fields. Missing fields
+        # never imply validity, and no localized text or object dump is emitted.
+        result = values[validation["ref"]]
+        reasons = []
+        if field(result, "HasUnOwnedCards") is True:
+            reasons.append("HasUnOwnedCards=true (unowned cards)")
+        for member in (
+            "NumberOfUnownedUncraftableCards",
+            "NumberOfInvalidCards",
+            "NumberBannedCards",
+            "NumberEmergencyBannedCards",
+            "NumberBannedAsCommanderCards",
+            "NumberNonFormatCard",
+            "NumberUnknownCards",
+            "NumberLessThanRequiredInMain",
+            "NumberMoreThanRequiredInMain",
+            "NumberMoreThanXInSideboard",
+            "NumberTooManyCardsByTitle",
+        ):
+            count = field(result, member)
+            if type(count) is int and count > 0:
+                reasons.append(f"{member}={min(count, 999999)}")
+        detail = "; ".join(reasons[:6]) or "IsValid=false (no readable reasons)"
+        raise AdapterError(
+            f"Native Standard deck validation rejected selected deck; queue submission stopped: {detail}"
+        )
+
+    def _cmd_queue_match(self, command: dict, timeout: float | None) -> dict:
+        """Submit one explicitly selected cached Standard deck to free Play.
+
+        This is the same private client method used by HandleQueueBotMatch
+        (Core/HomePageContentController.cs ~1008). It starts asynchronous work,
+        so success is submission only; the caller must verify the actual deck
+        and event from Arena's subsequent state/logs. The planner checks persisted
+        contents; a fresh native validation result must also positively approve
+        the selected deck's ownership and legality before submission.
+
+        Requires a probe retaining boxed value-type get results. Older probes
+        discard them: the Guid REF then fails closed, without constructing a
+        replacement Guid or choosing a fallback deck.
+        """
+        deck_id = command.get("deck_id")
+        if not isinstance(deck_id, str) or not deck_id:
+            raise AdapterError("queue_match requires an explicit cached deck_id")
+        try:
+            identifier = uuid.UUID(deck_id)
+        except ValueError as exc:
+            raise AdapterError("queue_match requires an exact cached deck GUID") from exc
+        if not identifier.int or str(identifier) != deck_id:
+            raise AdapterError("queue_match requires an exact non-empty cached deck GUID")
+        if command.get("event") != "Play":
+            raise AdapterError("Native queue_match only supports free Standard Play (event=Play)")
+        if command.get("format", "Standard") != "Standard":
+            raise AdapterError("Native queue_match only supports Standard decks")
+        matches = [r for r in self._cached_deck_records(timeout) if r["deck_id"] == deck_id]
+        if len(matches) != 1:
+            raise AdapterError(f"Expected exactly one cached deck {deck_id}; found {len(matches)}")
+        target = matches[0]
+        if target["format"] != "Standard":
+            raise AdapterError("The selected cached deck is not Standard")
+        if not target["piles"].get("main", {}).get("cards"):
+            raise AdapterError("The selected cached deck has no readable main pile")
+
+        # Required finds distinguish an absent scene from an unsupported class.
+        # The editor object can persist inactive while Home is visible.
+        ops = _Ops()
+        screens = (*self._SCREENS, ("game", "GameManager"))
+        refs = {key: ops.add("find", **{"class": cls}, depth=0) for key, cls in screens}
+        values = self._run(ops, timeout)
+        if len(values) != len(ops.ops):
+            raise AdapterError("Incomplete Home screen verification")
+        found = {key: handle(values[ref["ref"]]) for key, ref in refs.items()}
+        if not found["home"]:
+            raise AdapterError("Arena is not on the Home screen")
+        blocked = [key for key, value in found.items() if value and key not in {"home", "deck_builder"}]
+        if blocked:
+            raise AdapterError(f"Cannot queue from Home while {', '.join(blocked)} is open")
+        if found["deck_builder"]:
+            ops = _Ops()
+            active = ops.get(H(found["deck_builder"]), "_isActive")
+            if self._run(ops, timeout)[active["ref"]] is not False:
+                raise AdapterError("Cannot queue while the deck editor is active or unknown")
+
+        self._validate_queue_deck(target["handle"], timeout)
+
+        ops = _Ops()
+        # Re-find Home and check its activity in the submission frame.
+        home = ops.add("find", **{"class": "HomePageContentController"}, depth=0)
+        game_object = ops.get(home, "gameObject")
+        ops.expect_member(game_object, "activeInHierarchy", True)
+        summary = ops.get(H(target["handle"]), "Summary")
+        ops.expect_member(summary, "Format", "Standard")
+        deck_guid = ops.add("get", target=summary, member="DeckId", depth=0, retain_value=True)
+        ops.expect_class(deck_guid, "Guid")
+        # Guard the same boxed value passed to JoinMatchMaking against a stale
+        # cached identity. System.Guid stores its first three fields signed.
+        parts = (identifier.time_low, identifier.time_mid, identifier.time_hi_version, *identifier.bytes[8:])
+        for name, value, width in zip(
+            "abcdefghijk", parts, (32, 16, 16, 0, 0, 0, 0, 0, 0, 0, 0), strict=True
+        ):
+            if width and value >= 1 << (width - 1):
+                value -= 1 << width
+            ops.expect_member(deck_guid, "_" + name, value)
+        # Recalculate in the submission frame as well, so a changed deck or
+        # inventory cannot bypass the earlier read-only validation gate.
+        validation_start = len(ops.ops)
+        validation, _ = self._queue_deck_validation_ops(ops, target["handle"])
+        ops.expect_member(validation, "IsValid", True)
+        validation_end = len(ops.ops)
+        ops.call(home, "JoinMatchMaking", {"str": "Play"}, deck_guid)
+        try:
+            self._run(ops, timeout)
+        except AdapterError as exc:
+            failed = getattr(exc, "failed_op", None)
+            if type(failed) is int and validation_start <= failed < validation_end:
+                reason = " ".join(str(exc).split())[:240]
+                raise AdapterError(
+                    "Native Standard deck validation changed or is unknown; "
+                    f"queue submission stopped: {reason}"
+                ) from exc
+            if "ref does not name an object" in str(exc):
+                raise AdapterError(
+                    "Queue submission stopped: rebuild and restart the native probe with retain_value support "
+                    "for the deck Guid; no fallback deck was selected"
+                ) from exc
+            raise
+        return {"ok": True, "submitted_type": "QueueMatch", "event": "Play", "deck_id": deck_id}
+
     # -- deck editing and crafting (feature #204) -----------------------------
     # Classes verified in the re-output: Client_DeckCard is a struct of two
     # readonly uints (Wizards.Mtga.Decks/Client_DeckCard.cs), so an edit removes
@@ -1002,6 +1166,10 @@ class MacBridgeAdapter:
             pile = target["piles"].get(pile_name) or {}
             list_handle = pile.get("handle")
             if not list_handle:
+                # Constructed clones may omit empty command/companion piles.
+                # Clearing an absent empty pile needs no mutation or new list.
+                if not edits[pile_name] and not pile.get("cards"):
+                    continue
                 return {"ok": False, "error": f"Deck {deck_id} has no readable {pile_name} pile"}
             listing = H(list_handle)
             current = self._normalize_pile_cards(pile.get("cards"))
@@ -1060,8 +1228,17 @@ class MacBridgeAdapter:
         copy = ops.new(self.CLIENT_DECK_CLASS, H(target["handle"]))
         summary = ops.get(copy, "Summary")
         ops.set(summary, "Name", {"str": name})
-        ops.call(manager, "CreateDeck", REF(copy["ref"]), {"str": "Cloned"}, B(True))
-        self._run(ops, timeout)
+        ops.expect_member(summary, "Name", name)
+        submit = ops.call(manager, "CreateDeck", REF(copy["ref"]), {"str": "Cloned"}, B(True))
+        try:
+            self._run(ops, timeout)
+        except AdapterError as exc:
+            failed = getattr(exc, "failed_op", None)
+            return {
+                "ok": False,
+                "error": str(exc),
+                "not_submitted": type(failed) is int and 0 <= failed < submit["ref"],
+            }
         return {"ok": True, "submitted_type": "DeckCreate", "name": name}
 
     def _cmd_craft(self, command: dict, timeout: float | None) -> dict:

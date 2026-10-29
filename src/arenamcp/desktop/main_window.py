@@ -169,6 +169,16 @@ class MainWindow(QMainWindow):
             stop_autoplay_act = tools_menu.addAction("Stop Autoplay\tF11")
             stop_autoplay_act.triggered.connect(lambda: self._session.send_command("force_stop"))
         tools_menu.addSeparator()
+        strategy_act = tools_menu.addAction("Separate Strategy Planning (Experimental)")
+        strategy_act.setCheckable(True)
+        strategy_act.setChecked(bool(self._settings.get("separate_strategy_planning", False)))
+        strategy_act.setToolTip(
+            "Low-effort actions use the latest completed high-effort background plan. "
+            "Takes effect after Reload Coaching Engine; turn off to compare the existing mode."
+        )
+        strategy_act.toggled.connect(
+            lambda enabled: self._settings.set("separate_strategy_planning", bool(enabled))
+        )
         commentary_act = tools_menu.addAction("Draft Pick Commentary")
         commentary_act.setCheckable(True)
         commentary_act.setChecked(bool(self._settings.get("draft_commentary", True)))

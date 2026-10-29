@@ -1,4 +1,4 @@
-"""Opt-in post-match navigation, isolated from strategic match decisions."""
+"""Opt-in post-match navigation and explicit idle Grind initiation."""
 
 from __future__ import annotations
 
@@ -26,6 +26,11 @@ class _AutoQueueMixin(AutoQuestMixin):
         self._auto_queue_observed_match = None
         self._auto_queue_faulted = False
         self._suspend_auto_queue()
+        # An idle Grind arm belongs to that explicit session, never ordinary
+        # auto-queue or a later Grind session.
+        navigator = getattr(self, "_auto_queue_navigator", None)
+        if navigator is not None and getattr(navigator, "_idle_grind", False) is True:
+            self._auto_queue_navigator = None
         self.ui.status("AUTO_QUEUE", "ON" if enabled else "OFF")
         self.ui.status(
             "AUTO_QUEUE_DETAIL",
@@ -164,7 +169,7 @@ class _AutoQueueMixin(AutoQuestMixin):
         return True
 
     def _poll_auto_queue(self, state: dict) -> bool:
-        """Only an explicit match-completion event can hand UI control to navigation."""
+        """Navigate after completion, or a separately prepared explicit idle Grind."""
         if not self._check_grind_availability():
             self._suspend_auto_queue()
             return False
@@ -195,7 +200,19 @@ class _AutoQueueMixin(AutoQuestMixin):
             # Draft autoplay owns navigation between its event's matches.
             self._suspend_auto_queue()
             return False
+        quest_before_prepare = getattr(self, "_auto_quest", None)
         if not self._prepare_auto_quest(state):
+            self._suspend_auto_queue()
+            return False
+        # Preparation reads the bridge and can take seconds. A user disabling
+        # either control while it runs must cancel the prospective navigation.
+        if (
+            not getattr(self, "_auto_queue_enabled", False)
+            or self._autopilot_control_status() != "AP:ON"
+            or getattr(self, "_autopilot_dry_run", False)
+            or getattr(self, "_autopilot_afk", False)
+            or quest_before_prepare is not getattr(self, "_auto_quest", None)
+        ):
             self._suspend_auto_queue()
             return False
         try:
@@ -207,6 +224,26 @@ class _AutoQueueMixin(AutoQuestMixin):
             if inhibitor is None:
                 inhibitor = self._auto_queue_sleep_inhibitor = SleepInhibitor()
             navigator = getattr(self, "_auto_queue_navigator", None)
+            quest = getattr(self, "_auto_quest", None)
+            idle_ready = bool(quest and quest.get("idle_ready") and not quest.get("idle_started"))
+            if idle_ready:
+                completed = get_completed_match_for_navigation()
+                current_id = state.get("match_id")
+                if (
+                    quest.get("observed")
+                    or state.get("pending_decision")
+                    or (current_id and current_id != completed.get("match_id"))
+                    or time.time() >= min(quest.get("valid_until", 0), quest["deadline"])
+                ):
+                    self._suspend_auto_queue()
+                    return False
+                # The new session must not resume an older target retained by
+                # ordinary auto-queue when Grind was explicitly enabled.
+                if navigator is not None:
+                    navigator.set_enabled(False)
+                    if navigator.step_running:
+                        return False
+                    navigator = self._auto_queue_navigator = None
             if navigator is None:
                 backend = getattr(self, "_autopilot_backend", None) or getattr(self._coach, "_backend", None)
                 if backend is None:
@@ -220,8 +257,20 @@ class _AutoQueueMixin(AutoQuestMixin):
                     bridge=bridge,
                     status_fn=lambda detail: self.ui.status("AUTO_QUEUE_DETAIL", detail),
                     queue_selection=get_last_queue_selection,
+                    action_allowed=(lambda: self._quest_navigation_allowed(quest)) if quest else None,
                 )
+            # Existing navigators may predate a Grind session started mid-match.
+            # Refresh the worker gate even when no new navigator was constructed.
+            navigator._action_allowed = (lambda: self._quest_navigation_allowed(quest)) if quest else None
             navigator.set_enabled(True)
+            if idle_ready:
+                if not navigator.start_idle_grind(quest.get("target") or {}, state):
+                    self._suspend_auto_queue()
+                    return False
+                quest["idle_started"] = True
+                quest["idle_ready"] = False
+                self._auto_queue_restart_pending = False
+                self._auto_queue_resume = None
             # A pause that retries by itself still needs the Mac awake.
             if not navigator.paused_reason or navigator.retry_scheduled:
                 inhibitor.start()

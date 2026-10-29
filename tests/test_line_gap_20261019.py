@@ -363,7 +363,7 @@ def test_a_low_target_on_the_line_does_not_wait_for_high(fast_hedge, monkeypatch
     assert hedge["why"].endswith("the searched line aims Burst Lightning at Helpful Hunter")
 
 
-def test_a_low_target_off_the_line_still_waits(fast_hedge, monkeypatch):
+def test_a_low_target_without_a_concrete_concern_does_not_wait(fast_hedge, monkeypatch):
     monkeypatch.setattr(ActionPlanner, "_CRITICAL_DECISION_BUDGET_S", 8.0)
     monkeypatch.setattr(
         planner_module, "critical_decision", lambda *a, **k: "removal target: Burst Lightning"
@@ -373,7 +373,8 @@ def test_a_low_target_off_the_line_still_waits(fast_hedge, monkeypatch):
     planner = _planner(model)
     _intent(planner)
     assert planner._llm_decision_options(decision, state) == ["tgt:299"]
-    assert planner.get_last_decision_trace()["hedge"]["why"].startswith("high: no answer")
+    assert planner.get_last_decision_trace()["hedge"]["why"] == "usable low answer; high not waited for"
+    assert planner.get_last_decision_trace()["hedge"]["wait_after_low_ms"] == 0
 
 
 def test_the_line_gap_guard_is_on_by_default(monkeypatch):

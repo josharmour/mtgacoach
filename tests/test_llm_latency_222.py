@@ -115,22 +115,44 @@ def test_doubted_low_answer_hands_over_after_a_bounded_wait():
     assert 5.0 < elapsed < 9.5, elapsed
 
 
-def test_patient_window_still_waits_out_the_high_leg():
-    """Within lethal reach (#100) the full high budget stays."""
+def test_patient_window_does_not_extend_the_doubt_budget(monkeypatch):
     planner = _planner(_Model("{}"))
-    started = time.monotonic()
+    monkeypatch.setattr(planner, "_DOUBT_AFTER_LOW_S", 0.05)
+    cancelled = threading.Event()
 
     def ask(message, *, effort, budget, cancel_event=None):
         if effort == "high":
-            time.sleep(7.5)
-            return _reply("idx:1", "the kill")
+            assert cancel_event.wait(2)
+            cancelled.set()
+            raise TimeoutError("cancelled")
         return _reply("idx:0", "chip")
 
-    data, chosen = planner._hedged_decision(
-        ask, _parse, "msg", 5.0, None, lambda ids, data: "face_burn: doubt", patient=True
-    )
-    assert chosen == ["idx:1"]
-    assert time.monotonic() - started >= 7.0
+    with pytest.raises(SecondLookError):
+        planner._hedged_decision(
+            ask, _parse, "msg", 5.0, None, lambda ids, data: "face_burn: doubt", patient=True
+        )
+    assert cancelled.wait(1)
+
+
+@pytest.mark.parametrize("patient", [False, True])
+def test_usable_low_answer_never_waits_for_high(monkeypatch, patient):
+    planner = _planner(_Model("{}"))
+    planner._last_decision_trace = {}
+    # A large legacy grace must have no effect, including within lethal reach.
+    monkeypatch.setattr(planner, "_HIGH_AFTER_LOW_S", 60)
+    cancelled = threading.Event()
+
+    def ask(message, *, effort, budget, cancel_event=None):
+        if effort == "high":
+            assert cancel_event.wait(2), "usable low answer was held for high"
+            cancelled.set()
+            raise TimeoutError("cancelled")
+        return _reply("idx:0", "Play the land first.")
+
+    data, chosen = planner._hedged_decision(ask, _parse, "msg", 5.0, patient=patient)
+    assert chosen == ["idx:0"]
+    assert cancelled.wait(1)
+    assert planner._last_decision_trace["hedge"]["wait_after_low_ms"] == 0
 
 
 # --- the hedge: a request change keeps a completed answer ------------------------------------------

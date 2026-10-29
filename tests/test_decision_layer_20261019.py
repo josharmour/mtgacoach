@@ -1016,7 +1016,7 @@ def test_their_life_within_our_reach_makes_the_window_critical():
     assert critical_decision(LETHAL_MENU, _lethal_window(active_player=THEM), "") == ""
 
 
-def test_a_lethal_reach_window_waits_for_high_effort_and_says_why(monkeypatch):
+def test_a_lethal_reach_window_accepts_usable_low_without_waiting(monkeypatch):
     monkeypatch.setattr(ActionPlanner, "_HIGH_AFTER_LOW_S", 0.05)
     model = _Model(
         _reply("idx:0", "Casting Fleeting Effigy adds a third hasty attacker per the best line."),
@@ -1024,7 +1024,7 @@ def test_a_lethal_reach_window_waits_for_high_effort_and_says_why(monkeypatch):
         high_delay=0.4,
     )
     planner = _planner(model)
-    assert planner._llm_decision_options(LETHAL_MENU, _lethal_window()) == ["idx:1"]
+    assert planner._llm_decision_options(LETHAL_MENU, _lethal_window()) == ["idx:0"]
     assert "high" in model.efforts
     assert "LETHAL REACH: up to 10 damage this turn" in model.prompts[0]
-    assert planner.get_last_decision_trace()["hedge"]["winner"] == "high"
+    assert planner.get_last_decision_trace()["hedge"]["winner"] == "low"

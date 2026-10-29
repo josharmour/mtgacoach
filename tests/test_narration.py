@@ -10,6 +10,47 @@ from arenamcp.coach import CoachEngine
 from arenamcp.narration import action_narration, narration_policy, submission_narration
 
 
+def test_attack_speech_counts_copies_without_changing_assignments():
+    names = [f"Hare Apparent [id:{i}]" for i in range(4)]
+    names += ["Welcoming Vampire [id:10]"]
+    names += [f"*Rabbit [id:{i}]" for i in range(20, 30)]
+    assignments = dict.fromkeys(names, "Ugin, Eye of the Storms [id:99]")
+    action = GameAction(
+        action_type=ActionType.DECLARE_ATTACKERS,
+        attacker_names=names[:],
+        attacker_targets=assignments.copy(),
+    )
+    spoken = action_narration(ActionPlan(actions=[action]).spoken_actions())
+    assert "4 Hare Apparent, Welcoming Vampire, and 10 Rabbit tokens at Ugin, Eye of the Storms" in spoken
+    assert "[id:" not in spoken
+    assert action.attacker_names == names
+    assert action.attacker_targets == assignments
+
+
+def test_attack_speech_keeps_counts_separate_by_target():
+    from arenamcp.narration import combat_declaration
+
+    spoken = combat_declaration(
+        "Attack",
+        {
+            "*Rabbit [id:1]": "Ugin [id:8]",
+            "*Rabbit [id:2]": "Ugin [id:8]",
+            "*Rabbit [id:3]": "Opponent",
+            "Rabbit [id:4]": "Opponent",
+        },
+    )
+    assert spoken == "Attack with 2 Rabbit tokens at Ugin, and Rabbit token and Rabbit at the opponent"
+
+
+def test_attack_speech_counts_copies_without_explicit_target_assignments():
+    action = GameAction(
+        action_type=ActionType.DECLARE_ATTACKERS,
+        attacker_names=["Hare Apparent [id:1]", "Hare Apparent [id:2]"],
+        target_names=["Opponent"],
+    )
+    assert ActionPlan(actions=[action]).spoken_actions() == "Attack with 2 Hare Apparent at the opponent."
+
+
 @pytest.mark.parametrize(
     ("action", "expected"),
     [

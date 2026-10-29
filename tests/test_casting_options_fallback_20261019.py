@@ -172,6 +172,25 @@ def test_unaffordable_kicker_is_never_taken_even_when_lethal():
     assert planner.plan_decision_options(_decision(), _state(mountains=4, their_life=4)) == ["idx:0"]
 
 
+def test_model_kicker_with_one_mana_finishes_base_cast(monkeypatch):
+    """20:52:56 regression: a successful model answer kicked a one-mana Burst."""
+    planner = ActionPlanner(backend=_Backend(), timeout=15.0)
+    monkeypatch.setattr(planner, "_llm_decision_options", lambda *_: ["idx:1"])
+    picked = planner.plan_decision_options(_decision(), _state(mountains=1))
+    assert picked == ["idx:0"]
+    assert "unkicked" in planner.get_decision_reasoning(picked)
+    assert planner._last_decision_trace["kicker_affordability"]["model_choice"] == ["idx:1"]
+
+
+def test_model_affordable_or_unknown_kicker_is_preserved(monkeypatch):
+    planner = ActionPlanner(backend=_Backend(), timeout=15.0)
+    monkeypatch.setattr(planner, "_llm_decision_options", lambda *_: ["idx:1"])
+    assert planner.plan_decision_options(_decision(), _state(mountains=5)) == ["idx:1"]
+    state = _state(mountains=1)
+    state["battlefield"][0]["oracle_text"] = "{T}: Add {R} for each creature you control."
+    assert planner.plan_decision_options(_decision(), state) == ["idx:1"]
+
+
 def test_affordable_kicker_is_taken_when_the_line_needs_it_for_lethal():
     planner, _ = _down_planner()
     _intend(planner, "opponent")

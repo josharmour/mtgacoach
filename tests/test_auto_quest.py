@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from arenamcp.auto_quest import QuestSnapshot, objective, plan, read_snapshot
+from arenamcp.auto_quest import QuestSnapshot, build_quest_deck, objective, plan, read_snapshot
 from arenamcp.deck_library import DeckRecord
 
 
@@ -116,6 +116,329 @@ def test_color_or_counts_multicolor_once():
         == 1
     )
     assert objective("Win {quantity} games with a white-green deck.")[0] == "unknown"
+
+
+@pytest.fixture
+def red_pool():
+    cards = {
+        gid: {
+            "name": f"Red Spell {gid}",
+            "type_line": "Creature — Goblin",
+            "colors": ["R"],
+            "mana_cost": "{1}{R}",
+            "cmc": 2,
+            "legalities": {"standard": "Legal"},
+        }
+        for gid in range(1, 10)
+    }
+    cards[99] = {
+        "name": "Mountain",
+        "type_line": "Basic Land — Mountain",
+        "colors": [],
+        "mana_cost": "",
+        "free_basic": True,
+        "legalities": {"standard": "Legal"},
+    }
+    return {gid: 4 for gid in range(1, 10)}, cards
+
+
+def test_builds_owned_color_quest_deck_without_crafting(red_pool):
+    collection, cards = red_pool
+    collection[99] = 24
+    result = build_quest_deck("Cast {quantity} red spells.", collection, cards)
+    assert result is not None
+    assert result.spell_count == 36
+    assert sum(count for _gid, count in result.main) == 60
+    assert result.main[-1] == (99, 24)
+    assert result.colors == {"R"}
+    assert (result.event_id, result.format, result.legality_format) == ("Play", "Standard", "standard")
+
+
+def test_build_quest_deck_uses_existing_basic_lands_when_collection_omits_them(red_pool):
+    collection, cards = red_pool
+    result = build_quest_deck("Cast {quantity} red spells.", collection, cards, fallback_lands=[(99, 20)])
+    assert result is not None
+    assert result.main[-1] == (99, 24)
+    # No fallback deck is needed when the metadata itself verifies a free basic.
+    assert build_quest_deck("Cast {quantity} red spells.", collection, cards) == result
+
+
+def test_native_basic_requires_unlocked_printing_but_not_24_inventory_copies(red_pool):
+    collection, cards = red_pool
+    cards[99]["basic_requires_unlock"] = True
+    assert build_quest_deck("Cast red spells.", collection, cards) is None
+    cards[100] = {**cards[99]}
+    collection[100] = 1
+    result = build_quest_deck("Cast red spells.", collection, cards)
+    assert result is not None and result.main[-1] == (100, 24)
+
+
+@pytest.mark.parametrize(
+    "legality",
+    [None, {}, {"historic": "legal"}, {"standard": "banned"}, {"standard": "restricted"}, {"standard": True}],
+)
+def test_builder_requires_positive_legality_for_every_card(red_pool, legality):
+    collection, cards = red_pool
+    for gid in (1, 99):
+        old = cards[gid].get("legalities")
+        cards[gid]["legalities"] = legality
+        assert build_quest_deck("Cast {quantity} red spells.", collection, cards) is None
+        cards[gid]["legalities"] = old
+
+
+@pytest.mark.parametrize("count", [0, 3, -1, True, "4", 4.5, None])
+def test_builder_needs_36_actual_owned_spells(red_pool, count):
+    collection, cards = red_pool
+    collection[1] = count
+    assert build_quest_deck("Cast {quantity} red spells.", collection, cards) is None
+
+
+def test_builder_understands_native_colors_and_raw_mana(red_pool):
+    collection, cards = red_pool
+    for gid in collection:
+        cards[gid]["colors"] = "4"
+        cards[gid].pop("mana_cost")
+        cards[gid]["OldSchoolManaText"] = "o1oR"
+        cards[gid]["cmc"] = 0  # Native MTGACard has no cmc; do not trust this default.
+    assert build_quest_deck("Cast {quantity} red spells.", collection, cards) is not None
+    cards[1]["OldSchoolManaText"] = "o1o(R/G)"
+    assert build_quest_deck("Cast {quantity} red spells.", collection, cards) is None
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"colors": ["R", "U"]},
+        {"colors": "3,4"},
+        {"colors": ["4", "bogus"]},
+        {"colors": None},
+        {"mana_cost": "{U}"},
+        {"mana_cost": "{1}{C}{R}"},
+        {"mana_cost": "{S}{R}"},
+        {"mana_cost": "{X}{R}"},
+        {"mana_cost": "{R/P}"},
+        {"mana_cost": "{R/G}"},
+        {"mana_cost": "{1}{R}unknown"},
+        {"mana_cost": ""},
+        {"mana_cost": None},
+        {"mana_cost": "{8}{R}"},
+        {"name": ""},
+        {"name": "Front // Back"},
+        {"type_line": ""},
+        {"type_line": "2"},
+        {"type_line": "Land"},
+        {"is_token": True},
+        {"is_primary_card": False},
+        {"layout": "transform"},
+        {"related_faces": [{"name": "Back"}]},
+    ],
+)
+def test_builder_rejects_off_color_unpayable_or_unverified_spells(red_pool, update):
+    collection, cards = red_pool
+    cards[1].update(update)
+    assert build_quest_deck("Cast {quantity} red spells.", collection, cards) is None
+
+
+def test_builder_caps_copies_by_name_across_printings_and_id_aliases(red_pool):
+    collection, cards = red_pool
+    cards[2]["name"] = "  RED SPELL 1  "
+    cards["1"] = dict(cards[1])
+    collection["1"] = 4
+    assert build_quest_deck("Cast {quantity} red spells.", collection, cards) is None
+    cards[10] = {**cards[1], "name": "Extra Spell"}
+    collection[10] = 4
+    result = build_quest_deck("Cast {quantity} red spells.", collection, cards)
+    assert result is not None
+    assert sum(count for gid, count in result.main if gid in {1, 2}) == 4
+    assert dict(result.main)[10] == 4
+
+
+def test_builder_can_combine_owned_printings_without_exceeding_copy_limit(red_pool):
+    collection, cards = red_pool
+    collection[1] = 2
+    collection[10] = 3
+    cards[10] = dict(cards[1])
+    result = build_quest_deck("Cast {quantity} red spells.", collection, cards)
+    assert result is not None
+    assert dict(result.main)[1] == 2
+    assert dict(result.main)[10] == 2
+
+
+@pytest.mark.parametrize(
+    "land",
+    [
+        {},
+        {"name": "Island", "type_line": "Basic Land — Island"},
+        {"name": "Mountain Valley", "type_line": "Land"},
+        {"name": "Mountain", "type_line": "Land"},
+        {"name": "Snow-Covered Mountain", "type_line": "Basic Snow Land — Mountain"},
+        {"name": "Wastes", "type_line": "Basic Land"},
+        {"name": "Mountain", "type_line": "Basic Land — Mountain", "is_token": True},
+    ],
+)
+def test_fallback_never_invents_or_repeats_unknown_wrong_or_nonbasic_lands(red_pool, land):
+    collection, cards = red_pool
+    cards[99] = {**land, "legalities": {"standard": "legal"}}
+    assert (
+        build_quest_deck(
+            "Cast {quantity} red spells.", collection, cards, fallback_lands=[(99, 24), (999, 100)]
+        )
+        is None
+    )
+
+
+def test_or_color_quest_uses_one_supported_color_and_deterministic_cheap_curve(red_pool):
+    collection, cards = red_pool
+    cards[100] = {**cards[99], "name": "Forest", "type_line": "Basic Land — Forest"}
+    for gid in range(11, 20):
+        collection[gid] = 4
+        cards[gid] = {**cards[1], "name": f"Green {gid}", "colors": ["G"], "mana_cost": "{G}"}
+    result = build_quest_deck("Cast {quantity} red or green spells.", collection, cards)
+    assert result is not None
+    assert result.colors == {"G"}
+    assert result.main[-1] == (100, 24)
+    assert {gid for gid, _ in result.main[:-1]} == set(range(11, 20))
+    assert (
+        build_quest_deck(
+            "Cast {quantity} red or green spells.",
+            dict(reversed(list(collection.items()))),
+            dict(reversed(list(cards.items()))),
+        )
+        == result
+    )
+
+
+def test_builder_orders_by_real_cost_not_missing_native_cmc(red_pool):
+    collection, cards = red_pool
+    cards[1]["mana_cost"] = "{4}{R}"
+    cards[1]["cmc"] = 0
+    cards[10] = {**cards[1], "name": "Cheaper", "mana_cost": "{R}", "cmc": 100}
+    collection[10] = 4
+    result = build_quest_deck("Cast {quantity} red spells.", collection, cards)
+    assert result is not None
+    assert 1 not in dict(result.main)
+    assert result.main[0] == (10, 4)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Destroy {quantity} creatures.",
+        "Win {quantity} games.",
+        "Play {quantity} lands.",
+        "Cast {quantity} creature spells.",
+    ],
+)
+def test_builder_returns_none_for_unsupported_objectives(red_pool, text):
+    assert build_quest_deck(text, *red_pool) is None
+
+
+def test_plan_accepts_free_ordinary_basics_but_requires_ownership_of_other_lands(inputs):
+    inputs["decks"]["a"].main.append((99, 24))
+    inputs["cards"][99] = {
+        "name": "Forest",
+        "type_line": "Basic Land — Forest",
+        "colors": [],
+        "free_basic": True,
+    }
+    assert plan(snapshot(), **inputs).status == "ready"
+    for name, types in [
+        ("Snow-Covered Forest", "Basic Snow Land — Forest"),
+        ("Forest Lookout", "Land"),
+        ("Wastes", "Basic Land"),
+    ]:
+        inputs["cards"][99].update(name=name, type_line=types)
+        assert plan(snapshot(), **inputs).status == "blocked"
+
+
+def test_plan_aggregates_duplicate_sideboard_rows_for_ownership(inputs):
+    inputs["collection"][3] = 1
+    inputs["decks"]["a"].sideboard = [(3, 1), (3, 1)]
+    assert plan(snapshot(), **inputs).status == "blocked"
+
+
+def generated_plan_inputs(red_pool, inputs):
+    collection, cards = red_pool
+    spec = build_quest_deck("Cast {quantity} red spells.", collection, cards)
+    assert spec is not None
+    inputs.update(
+        cards=cards,
+        collection=collection,
+        decks={"new": DeckRecord("new", "Quest red", format=spec.format, main=list(spec.main))},
+        descriptions={"q_Text": "Cast {quantity} red spells."},
+    )
+    snap = snapshot()
+    snap.pairs = {}
+    return spec, snap
+
+
+def test_generated_deck_is_explicitly_eligible_without_fabricated_snapshot_pairs(red_pool, inputs):
+    spec, snap = generated_plan_inputs(red_pool, inputs)
+    assert plan(snap, **inputs).status == "blocked"
+    result = plan(snap, verified_decks={"new": spec}, **inputs)
+    assert result.status == "ready"
+    assert (result.deck_id, result.event_id) == ("new", "Play")
+    assert snap.pairs == {}
+
+
+def test_generated_deck_rechecks_native_basic_unlock(red_pool, inputs):
+    spec, snap = generated_plan_inputs(red_pool, inputs)
+    inputs["cards"][99]["basic_requires_unlock"] = True
+    assert plan(snap, verified_decks={"new": spec}, **inputs).status == "blocked"
+    inputs["collection"][99] = 1
+    assert plan(snap, verified_decks={"new": spec}, **inputs).status == "ready"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "main",
+        "sideboard",
+        "command_zone",
+        "companion",
+        "format",
+        "snapshot",
+        "unowned",
+        "illegal",
+        "unknown_basic",
+        "spec_event",
+        "spec_format",
+        "spec_spells",
+        "spec_colors",
+    ],
+)
+def test_generated_eligibility_is_rechecked_against_saved_deck_and_current_metadata(red_pool, inputs, change):
+    spec, snap = generated_plan_inputs(red_pool, inputs)
+    deck = inputs["decks"]["new"]
+    if change == "main":
+        deck.main[0] = (1, 3)
+    elif change == "sideboard":
+        deck.sideboard = [(1, 1)]
+    elif change == "command_zone":
+        deck.command_zone = [1]
+    elif change == "companion":
+        deck.companions = [1]
+    elif change == "format":
+        deck.format = "HistoricBrawl"
+    elif change == "snapshot":
+        deck.snapshot = True
+    elif change == "unowned":
+        inputs["collection"][1] = 3
+    elif change == "illegal":
+        inputs["cards"][1]["legalities"] = {"standard": "banned"}
+    elif change == "unknown_basic":
+        del inputs["cards"][99]
+    elif change == "spec_event":
+        spec.event_id = "PremierDraft"
+    elif change == "spec_format":
+        spec.format = "Alchemy"
+    elif change == "spec_spells":
+        spec.spell_count = 12
+    else:
+        spec.colors = {"U"}
+    # An old observed pair cannot override a now-invalid generated-deck check.
+    snap.pairs["new"] = "Play"
+    assert plan(snap, verified_decks={"new": spec}, **inputs).status == "blocked"
 
 
 def test_session_does_not_persist_or_restore_quest_autoplay():

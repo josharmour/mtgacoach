@@ -1111,6 +1111,7 @@ class StandaloneCoach(
                 land_drop_first=config.land_drop_first,
                 deck_strategy_fn=self.get_deck_strategy,
                 deck_playbook_fn=self.get_deck_playbook,
+                separate_strategy_planning=bool(self.settings.get("separate_strategy_planning", False)),
             )
 
             self._autopilot = AutopilotEngine(
@@ -1138,6 +1139,9 @@ class StandaloneCoach(
             if self._coach:
                 self._autopilot._game_plan_mgr = self._coach._ensure_game_plan_mgr()
                 if self._autopilot._game_plan_mgr:
+                    self._autopilot._game_plan_mgr.separate_strategy_planning = (
+                        planner.separate_strategy_planning
+                    )
                     # #205: wait only briefly for a deck analysis (the coach's
                     # bounded gate). Suspending on _deck_strategy_pending for
                     # the whole multi-minute playbook build left the first

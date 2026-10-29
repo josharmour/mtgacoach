@@ -68,7 +68,7 @@ def _run(backend):
 
 
 def test_high_in_time_is_used_and_low_is_cancelled(critical, caplog):
-    backend = _Legs()
+    backend = _Legs(high=(0.01, HIGH), low=(0.2, LOW))
     engine, bridge, _ = _run(backend)
     assert sorted(backend.calls, key=str) == sorted(["high", None], key=str)
     assert engine._planner._last_decision_reasoning.startswith("high:")
@@ -111,6 +111,10 @@ def test_no_game_plan_reform_starts_while_a_critical_call_is_in_flight(critical)
     backend = _Legs()
     _run(backend)
     assert backend.inflight_seen == [True]
+    # A usable low answer now returns before the cancelled high worker exits.
+    deadline = time.monotonic() + 1.0
+    while critical_decision_call_inflight() and time.monotonic() < deadline:
+        time.sleep(0.005)
     assert not critical_decision_call_inflight()
 
     class _Backend:
@@ -229,19 +233,12 @@ def test_a_valid_low_answer_waits_only_a_short_grace_for_high(monkeypatch, caplo
     assert trace["hedge"]["winner"] == "low"
 
 
-def test_a_high_answer_inside_the_grace_still_wins_and_the_log_compares_them(caplog):
-    data, chosen, _, cancels, trace = _hedge(high=(0, OTHER), low=(0, LOW), high_after_low=True)
-    assert data["reasoning"].startswith("high:") and chosen == ["idx:1"]
-    assert cancels[None].is_set() and not cancels["high"].is_set()
-    assert "typed-decision hedge: high won in" in caplog.text
-    assert "(low: ['idx:2'] at" in caplog.text
-    assert trace["hedge"]["winner"] == "high"
-    _, _, _, _, trace = _hedge(high=(0, HIGH), low=(0, LOW), high_after_low=True)
-    assert "(low: the same at" in caplog.text
-    assert trace["hedge"]["same_choice"] is True
-    assert trace["hedge"]["low_ms"] >= 0
-    assert trace["hedge"]["wait_after_low_ms"] >= 0
-    assert trace["hedge"]["patient"] is False
+def test_high_is_cancelled_as_soon_as_low_is_usable_even_if_it_disagrees(caplog):
+    data, chosen, _, cancels, trace = _hedge(high=(0.2, OTHER), low=(0, LOW), high_after_low=True)
+    assert data["reasoning"].startswith("low:") and chosen == ["idx:2"]
+    assert cancels["high"].is_set()
+    assert trace["hedge"]["winner"] == "low"
+    assert trace["hedge"]["wait_after_low_ms"] == 0
 
 
 def test_a_low_answer_that_is_the_board_math_play_does_not_wait_for_high(caplog):
@@ -254,9 +251,9 @@ def test_a_low_answer_that_is_the_board_math_play_does_not_wait_for_high(caplog)
     assert elapsed < 0.5
     assert cancels["high"].is_set()
     assert "high not awaited: the low answer is the board-math play" in caplog.text
-    # A low answer the board math does not share waits for the high one as before.
+    # No explicit agreement is required when the safety checks raise no concern.
     data, _, _, _, _ = _hedge(high=(0.1, OTHER), low=(0.01, LOW), low_agrees=lambda ids, data: "")
-    assert data["reasoning"].startswith("high:")
+    assert data["reasoning"].startswith("low:")
 
 
 def test_a_failed_low_leg_still_waits_for_high():

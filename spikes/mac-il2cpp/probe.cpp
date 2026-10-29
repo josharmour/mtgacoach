@@ -340,6 +340,7 @@ class JsonParser {
     X(const char*, il2cpp_class_get_namespace, (void*))                        \
     X(void*, il2cpp_class_get_type, (void*))                                   \
     X(const char*, il2cpp_method_get_name, (void*))                            \
+    X(void*, il2cpp_method_get_class, (void*))                                 \
     X(uint32_t, il2cpp_method_get_param_count, (void*))                        \
     X(void*, il2cpp_method_get_param, (void*, uint32_t))                       \
     X(void*, il2cpp_method_get_return_type, (void*))                           \
@@ -530,6 +531,8 @@ enum : int {
     kTypeI8 = 0x0a, kTypeU8 = 0x0b, kTypeValueType = 0x11,
 };
 static const int kFieldStatic = 0x0010;
+static const int kFieldInitOnly = 0x0020;
+static const int kFieldLiteral = 0x0040;
 
 // ---------------------------------------------------------------------------
 // Reflection helpers (callable from the attached server thread or main thread)
@@ -602,6 +605,16 @@ static void* find_field(void* klass, const char* name) {
 // Returns the result object (boxed for value types). Managed exceptions are
 // caught by il2cpp and reported through `error`; a void method returns null.
 static void* invoke(void* method, void* instance, void** args, std::string* error) {
+    // Callers keep boxed objects for identity, fields and REF results. The
+    // runtime forwards its receiver unchanged to the generated invoker, so a
+    // method declared on a value type needs the unboxed payload as `this`.
+    // Inspect the declaring class, not the object's class: inherited Object /
+    // ValueType methods still take the box, and static methods have no receiver.
+    if (instance && il2cpp_method_is_instance(method)) {
+        void* declaring_class = il2cpp_method_get_class(method);
+        if (declaring_class && il2cpp_class_is_valuetype(declaring_class))
+            instance = il2cpp_object_unbox(instance);
+    }
     void* exception = nullptr;
     void* result = il2cpp_runtime_invoke(method, instance, args, &exception);
     if (exception) {
@@ -2006,7 +2019,14 @@ static std::string run_batch(const Json& request) {
                 if (void* getter = find_method(klass, ("get_" + member).c_str(), 0)) {
                     object = invoke(getter, target, nullptr, &error);
                     result = guarded_encode([&] { return encoder.object(object, depth); }, "getter encode");
-                    if (object && il2cpp_class_is_valuetype(il2cpp_object_get_class(object))) object = nullptr;
+                    if (object && il2cpp_class_is_valuetype(il2cpp_object_get_class(object))) {
+                        if (json_flag(op.get("retain_value"), false)) {
+                            // REF values must remain rooted across later managed calls.
+                            if (!handle_for(object)) error = "cannot root retained getter value";
+                        }
+                        else
+                            object = nullptr;
+                    }
                 } else if (void* field = find_field(klass, member.c_str())) {
                     void* type = il2cpp_field_get_type(field);
                     std::vector<uint8_t> buffer(std::max<size_t>(16, value_size(type)), 0);
@@ -2014,6 +2034,14 @@ static std::string run_batch(const Json& request) {
                     result = guarded_encode([&] { return encoder.value(buffer.data(), type, depth); }, "field encode");
                     if (!il2cpp_class_is_valuetype(il2cpp_class_from_type(type)))
                         object = *reinterpret_cast<void**>(buffer.data());
+                    else if (json_flag(op.get("retain_value"), false)) {
+                        // DeckSummary.DeckId is a Guid field. Keep the actual
+                        // value boxed for JoinMatchMaking(string, Guid), rather
+                        // than reconstructing an identity from serialized text.
+                        object = il2cpp_value_box(il2cpp_class_from_type(type), buffer.data());
+                        if (!object) error = "could not retain boxed field " + member;
+                        else if (!handle_for(object)) error = "cannot root retained field value";
+                    }
                 } else {
                     error = "no member " + member + " on " + class_fullname(klass);
                 }
@@ -2029,17 +2057,49 @@ static std::string run_batch(const Json& request) {
             } else if (target && kind == "set") {
                 std::string member = json_text(op.get("member"));
                 const Json* value = op.get("value");
+                void* klass = il2cpp_object_get_class(target);
                 Json args;
                 args.kind = Json::Array;
                 if (value) args.items.push_back(*value);
-                void* setter = value ? select_method(il2cpp_object_get_class(target), "set_" + member, &args,
-                                                     nullptr, batch, &error)
-                                     : nullptr;
-                if (setter) {
-                    error.clear();
-                    call_with_args(setter, target, &args, batch, &error);
-                } else if (error.empty()) {
+                std::string setter_name = "set_" + member;
+                if (!value) {
                     error = "set needs a value";
+                } else if (find_method(klass, setter_name.c_str(), 1)) {
+                    // A setter owns the write, including validation and failures.
+                    // Never bypass it via a field after overload/coercion errors
+                    // or a managed exception (which may already have side effects).
+                    void* setter = select_method(klass, setter_name, &args, nullptr, batch, &error);
+                    if (setter) call_with_args(setter, target, &args, batch, &error);
+                } else if (void* field = find_field(klass, member.c_str())) {
+                    int flags = il2cpp_field_get_flags(field);
+                    void* type = il2cpp_field_get_type(field);
+                    void* field_class = type ? il2cpp_class_from_type(type) : nullptr;
+                    if (flags & kFieldStatic) {
+                        error = "cannot set static field " + member;
+                    } else if (flags & (kFieldInitOnly | kFieldLiteral)) {
+                        error = "cannot set readonly field " + member;
+                    } else if (!field_class || !argument_fits(*value, type, batch)) {
+                        error = "value does not fit field " + member;
+                    } else {
+                        void* slot = nullptr;
+                        if (coerce(*value, type, batch, &slot, &error)) {
+                            bool is_value = il2cpp_class_is_valuetype(field_class);
+                            // Collection coercion can create a concrete reference
+                            // type; check that result as well before storing it.
+                            if (!is_value && slot && !il2cpp_class_is_assignable_from(
+                                    field_class, il2cpp_object_get_class(slot))) {
+                                error = "coerced value does not fit field " + member;
+                            } else {
+                                // IL2CPP SetValue passes deref=false to SetValueRaw:
+                                // references are the object pointer itself; value
+                                // types point at raw data. Passing &slot stores a
+                                // dangling stack address in a managed field.
+                                il2cpp_field_set_value(target, field, slot);
+                            }
+                        }
+                    }
+                } else {
+                    error = "no writable member " + member + " on " + class_fullname(klass);
                 }
             }
         } else if (kind == "new") {
@@ -2048,8 +2108,16 @@ static std::string run_batch(const Json& request) {
                 error = "class not found: " + json_text(op.get("class"));
             } else {
                 object = il2cpp_object_new(klass);
-                void* constructor = select_method(klass, ".ctor", op.get("args"), op.get("sig"), batch, &error);
-                if (constructor) call_with_args(constructor, object, op.get("args"), batch, &error);
+                if (!object) error = "could not allocate " + class_fullname(klass);
+                // Unlike reference objects, struct encoding does not create a
+                // handle. Root the original box before managed calls so later
+                // REF arguments keep the same constructed value alive.
+                else if (il2cpp_class_is_valuetype(klass) && !handle_for(object))
+                    error = "cannot root new value";
+                if (error.empty()) {
+                    void* constructor = select_method(klass, ".ctor", op.get("args"), op.get("sig"), batch, &error);
+                    if (constructor) call_with_args(constructor, object, op.get("args"), batch, &error);
+                }
                 if (error.empty())
                     result = guarded_encode([&] { return encoder.object(object, std::max(depth, 0)); }, "new encode");
             }
@@ -2426,6 +2494,7 @@ static void* startup(void*) {
     return nullptr;
 }
 
+#if !defined(MTGACOACH_PROBE_TEST)
 __attribute__((constructor)) static void probe_constructor() {
 #if defined(__ANDROID__)
     unsetenv("LD_PRELOAD");
@@ -2457,3 +2526,4 @@ __attribute__((constructor)) static void probe_constructor() {
     pthread_t thread;
     if (pthread_create(&thread, nullptr, startup, nullptr) == 0) pthread_detach(thread);
 }
+#endif

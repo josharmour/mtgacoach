@@ -8,6 +8,7 @@ remain intact. A planned action is never announced as an observed outcome.
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 
 def narration_policy(mode: str) -> str:
@@ -99,12 +100,22 @@ def combat_declaration(verb: str, assignments: dict[str, str]) -> str:
         by_target.setdefault(target, []).append(spoken_name(creature))
     preposition = "at" if verb.casefold() == "attack" else "against"
     clauses = [
-        f"{spoken_list(creatures)} {preposition} {spoken_name(target)}"
+        f"{counted_creatures(creatures)} {preposition} {spoken_name(target)}"
         for target, creatures in by_target.items()
     ]
     if len(clauses) < 2:
         return f"{verb} with {''.join(clauses)}"
     return f"{verb} with " + ", ".join(clauses[:-1]) + ", and " + clauses[-1]
+
+
+def counted_creatures(names: list[str]) -> str:
+    """Count repeated spoken names; execution identities stay in the action."""
+    return spoken_list(
+        [
+            name if count == 1 else f"{count} {name}{'s' if name.endswith(' token') else ''}"
+            for name, count in Counter(names).items()
+        ]
+    )
 
 
 def _driver_possessives(text: str) -> str:
