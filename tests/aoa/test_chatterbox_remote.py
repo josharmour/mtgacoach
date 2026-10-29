@@ -131,3 +131,25 @@ def test_private_key_required_and_invalid_input_never_requests(config):
     with pytest.raises(cb.ChatterboxError):
         cb.render_remote(**config, opener=opener)
     opener.open.assert_not_called()
+
+
+def test_server_default_omits_voice_while_original_is_an_explicit_override(config):
+    opener = Mock(open=Mock(return_value=Response()))
+    cb.render_remote(**config, opener=opener)
+    assert "voice" not in json.loads(opener.open.call_args.args[0].data)
+    opener.open.return_value = Response()
+    cb.render_remote(**config, voice="default", opener=opener)
+    assert json.loads(opener.open.call_args.args[0].data)["voice"] == "default"
+
+
+def test_long_advice_splits_without_losing_words_and_joins_pcm(config):
+    text = "Hold up two mana for the counterspell. " * 40
+    chunks = cb.speech_chunks(text)
+    assert " ".join(chunks) == text.strip()
+    assert all(0 < len(chunk) <= 500 for chunk in chunks)
+    parts = [
+        cb.render_remote(**dict(config, text=chunk), opener=Mock(open=Mock(return_value=Response())))
+        for chunk in chunks
+    ]
+    with wave.open(io.BytesIO(cb.join_speech_audio(parts))) as audio:
+        assert audio.getnframes() == len(chunks) * 24

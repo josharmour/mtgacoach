@@ -396,6 +396,8 @@ class VoiceOutput:
         self,
         voice: str | None = None,
         speed: float | None = None,
+        *,
+        render_only: bool = False,
     ) -> None:
         """Initialize VoiceOutput.
 
@@ -403,6 +405,8 @@ class VoiceOutput:
             voice: Kokoro voice ID. If None, loads from settings
                   (default: 'am_adam' - American Male Adam).
             speed: Speech speed multiplier. If None, loads from settings
+            render_only: Render files for a parent that owns mute/playback. Do not
+                inherit playback mute or persist per-utterance voice/speed choices.
                   (default: 1.0).
         """
         # Load from settings if not specified
@@ -414,8 +418,8 @@ class VoiceOutput:
         self._speed = speed if speed is not None else settings.get("voice_speed", 1.0)
         self._device_index = settings.get("device_index", None)
         self._voice_index = 0  # Index into VOICES list
-        self._muted = settings.get("muted", False)
-        self._settings = settings
+        self._muted = False if render_only else settings.get("muted", False)
+        self._settings = None if render_only else settings
 
         # Language: map short codes to Kokoro lang IDs
         lang_code = settings.get("language", "en")
@@ -571,7 +575,8 @@ class VoiceOutput:
             self.stop()  # Stop any current playback
 
         # Persist setting
-        self._settings.set("muted", self._muted)
+        if self._settings is not None:
+            self._settings.set("muted", self._muted)
         return self._muted
 
     def next_voice(self, step: int = 1) -> tuple[str, str]:
@@ -594,7 +599,8 @@ class VoiceOutput:
             self._ensure_tts()
 
         # Persist setting
-        self._settings.set("voice", voice_id)
+        if self._settings is not None:
+            self._settings.set("voice", voice_id)
         return (voice_id, description)
 
     # Speed presets for cycling
@@ -620,7 +626,8 @@ class VoiceOutput:
             self._ensure_tts()
 
         # Persist setting
-        self._settings.set("voice_speed", self._speed)
+        if self._settings is not None:
+            self._settings.set("voice_speed", self._speed)
         return self._speed
 
     def set_speed(self, speed: float) -> float:
@@ -647,7 +654,8 @@ class VoiceOutput:
         if changed and self._tts_engine is not None:
             self._tts_engine = None
 
-        self._settings.set("voice_speed", self._speed)
+        if self._settings is not None:
+            self._settings.set("voice_speed", self._speed)
         return self._speed
 
     def set_voice(self, voice_id: str) -> str:
@@ -682,7 +690,8 @@ class VoiceOutput:
             self._tts_engine = None
             self._ensure_tts()
 
-        self._settings.set("voice", voice_id)
+        if self._settings is not None:
+            self._settings.set("voice", voice_id)
         return self._voice
 
     def render_to_wav_file(self, text: str) -> tuple[str, float] | None:

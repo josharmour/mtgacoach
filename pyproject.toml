@@ -30,6 +30,7 @@ dependencies = [
     "mcp>=1.0.0,<2",
     "watchdog>=3.0.0",
     "requests>=2.28.0",
+    "tomli>=2.0; python_version < '3.11'",
     "sounddevice>=0.4.6",
     "numpy>=1.24.0",
     "keyboard>=0.13.5",

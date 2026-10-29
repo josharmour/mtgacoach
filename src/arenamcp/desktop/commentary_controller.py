@@ -31,6 +31,7 @@ class CommentaryController(QObject):
         self.adapter = ObservationAdapter()
         self.timings = {}
         self.voice_names = {}
+        self.preview_settings = {}
         self.engine_ids = set()
         self.commentary_ids = set()
         self.arbiter = SpeechArbiter(
@@ -49,7 +50,7 @@ class CommentaryController(QObject):
         self.arbiter.disable_commentary()
         self.observation = None
         if self.config.mode != "actions":
-            self.arbiter.disable_routine()
+            self.arbiter.tick()
         self.statusChanged.emit({"state": "waiting" if self.config.enabled else "disabled"})
 
     def observe(self, snapshot):
@@ -66,8 +67,10 @@ class CommentaryController(QObject):
             self.arbiter.tick()
 
     def _valid(self, item):
-        if item.category != SpeechCategory.COMMENTARY:
+        if item.utterance_id in self.preview_settings:
             return True
+        if item.category != SpeechCategory.COMMENTARY:
+            return item.category == SpeechCategory.ESSENTIAL or self.config.mode == "actions"
         return bool(
             self.config.enabled
             and self.observation
@@ -91,12 +94,7 @@ class CommentaryController(QObject):
                 or ("am_onyx" if item.role == "color_analyst" else "am_adam")
             )
         else:
-            voice = str(
-                settings.get(
-                    "commentary_chatterbox_analyst" if item.role == "color_analyst" else "chatterbox_voice"
-                )
-                or ("mira" if item.role == "color_analyst" else "atlas")
-            )
+            voice = self._chatterbox_voice(settings, provider)
         item = replace(
             item,
             provider=provider,
@@ -128,16 +126,12 @@ class CommentaryController(QObject):
             )
         except ValueError:
             category = SpeechCategory.ESSENTIAL  # Unknown messages must not silently lose urgent speech.
-        if category == SpeechCategory.ROUTINE and self.config.mode != "actions":
+        if category != SpeechCategory.ESSENTIAL and self.config.mode != "actions":
             self._status(uid, "superseded")
             return
         self.arbiter.set_muted(muted)
         settings = get_settings()
-        provider = (
-            "kokoro"
-            if category == SpeechCategory.ESSENTIAL
-            else str(settings.get("tts_provider") or "kokoro")
-        )
+        provider = str(settings.get("tts_provider") or "kokoro")
         try:
             speed = (
                 float(settings.get("chatterbox_speed") or 1)
@@ -156,12 +150,41 @@ class CommentaryController(QObject):
             self.arbiter.epoch or Epoch("desktop", 1),
             time.monotonic() + 300,
             provider=provider,
-            voice=str(event.get("voice_id") or "af_heart"),
+            voice=str(event.get("voice_id") or "af_heart")
+            if provider == "kokoro"
+            else self._chatterbox_voice(settings, provider),
             interruptible=category != SpeechCategory.WORKFLOW,
             speed=speed,
         )
         self.voice_names[uid] = str(event.get("voice_name") or item.voice)
         if not self.arbiter.submit(item):
+            self._status(uid, "failed")
+
+    @staticmethod
+    def _chatterbox_voice(settings, provider):
+        return str(
+            settings.get("chatterbox_voice_override")
+            or ("server_default" if provider == "chatterbox_remote" else "default")
+        )
+
+    def preview(self, options):
+        self.stop()
+        uid = "preview:" + uuid.uuid4().hex
+        provider = str(options.get("tts_provider") or "kokoro")
+        self.preview_settings[uid] = dict(options)
+        item = Utterance(
+            uid,
+            "The booth is ready. Welcome to the game.",
+            SpeechCategory.WORKFLOW,
+            self.arbiter.epoch or Epoch("desktop", 1),
+            time.monotonic() + 90,
+            provider=provider,
+            voice=str(options.get("voice") or "am_adam")
+            if provider == "kokoro"
+            else self._chatterbox_voice(options, provider),
+            speed=float(options.get("voice_speed" if provider == "kokoro" else "chatterbox_speed") or 1),
+        )
+        if not self.arbiter.submit(item, allow_muted=True):
             self._status(uid, "failed")
 
     def _start(self, item):
@@ -176,14 +199,22 @@ class CommentaryController(QObject):
         )
         if item.category == SpeechCategory.COMMENTARY:
             self.spoken(item.text)
+        overrides = (
+            {"settings_override": self.preview_settings[item.utterance_id]}
+            if item.utterance_id in self.preview_settings
+            else {}
+        )
         self.tts.request_speech(
+            **overrides,
             text=item.text,
             voice_id=item.voice,
             voice_name=self.voice_names.get(item.utterance_id, item.voice),
             speed=item.speed,
             speech_id=item.utterance_id,
             provider=None
-            if item.provider == "kokoro" and item.category != SpeechCategory.ESSENTIAL
+            if item.provider == "kokoro"
+            and item.category != SpeechCategory.ESSENTIAL
+            and item.utterance_id not in self.preview_settings
             else item.provider,
             category=item.category.value,
             valid=lambda: (
@@ -217,6 +248,7 @@ class CommentaryController(QObject):
         if state in TERMINAL_STATES:
             self.timings.pop(uid, None)
             self.voice_names.pop(uid, None)
+            self.preview_settings.pop(uid, None)
             self.engine_ids.discard(uid)
             self.commentary_ids.discard(uid)
 

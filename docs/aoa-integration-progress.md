@@ -3,8 +3,9 @@
 Worktree: `/Users/joshu/repos/mtgacoach-aoa` (`/Volumes/repos/mtgacoach-aoa`).
 Branch: `codex/aoa-integration`. Baseline: `7619a50fd5864352da8838e118a6471702bd41ae`.
 The initial contracts/remote-provider commit was `2632102944c6ac2fad2efd6e26b4a1e53933f2d0`.
-No push, merge, deployment, model installation, or changes to master's checkout,
-index, running sessions, game data, or settings were made for this integration.
+The original integration was merged and rolled out. The speech repair below supersedes
+the original configuration UI and voice-routing choices; live settings and history
+are preserved during rollout.
 
 ## Implementation checklist
 
@@ -14,17 +15,17 @@ index, running sessions, game data, or settings were made for this integration.
 | Observed outcomes, not submitted intentions | GRE `CastSpell`, `Resolve`, `PlayLand` annotations remain separate; no inference of resolution from a missing stack object | Provenance tests; deterministic lines only use observed facts |
 | Authoritative Coach ingestion | PipeAdapter hands published state to one background service; no second watcher, database reader, app or history writer | Real JSON worker tests and mocked service tests; worker bootstrap bypasses Coach's application initializer |
 | Headless AOA logic and personas | `commentary/headless.py` wraps the independently installed/source AOA `GenerativeBooth`, `StoryModel`, personas, native validation and factual audit | All four personas and two-caster anchor/heard behavior tested against sibling AOA source; separate standalone test suite also exercised |
-| Initial deterministic path and generative opt-in | Grounded event calls need no AOA package/model. Generative mode uses Coach's existing backend and the actual AOA booth; short compact prompts retain native validators | Generation+audit, rejected audit, unsupported resolution and disabled repairs tested. Grounded mode deliberately speaks at most one event call; cast/style primarily affect the generative booth |
-| One playback owner and speech priority | CoachSession routes speech through `CommentaryController` and `SpeechArbiter`: essential, ordered workflow, commentary, routine/ambient | Tests cover Grind protection, essential preemption, one active/one pending, expiry, duplicate IDs, exactly one terminal result, stale callbacks and dependent replies |
+| Deterministic path and audited announcers | Grounded event calls need no AOA package/model. Generative mode uses Coach's existing backend and the actual AOA booth; short compact prompts retain native validators | Generation+audit, rejected audit, unsupported resolution and disabled repairs tested. Grounded mode deliberately speaks at most one event call; cast/style primarily affect the generative booth |
+| One playback owner and speech priority | CoachSession routes speech through `CommentaryController` and `SpeechArbiter`: essential, ordered workflow, commentary, routine/ambient | Tests cover exclusive advice/announcer routing, terminal acknowledgments for suppressed workflows, essential preemption, one active/one pending, expiry, duplicate IDs, stale callbacks and dependent replies |
 | Playback is the delivery boundary | Accepted/rendered does not count as heard; only started→finished updates the AOA ledger | Mocked TTS lifecycle and native AOA delivery tests |
 | Freshness at every expensive boundary | Match/game and snapshot checks before generation/audit, after result, after synthesis and before playback; eight-second calls/fifteen-second analysis; mode changes clear optional work | Fact-change, mode-change, epoch, stale-render and mute tests. Invalidation is conservative: a changed public snapshot can choose silence |
-| Source-only action suppression | Only the two routine autoplay submission speech paths honor `autoplay_speech`; UI/log explanations remain; generic `speak_advice` is not filtered | Existing submission and strategy tests plus explicit mode tests; workflow/error speech remains eligible |
-| Immediate mute/mode controls | Commentary mute is independent; global mute stops playback and optional inference; ownership can be assigned explicitly to standalone AOA | Controller/service tests. The choice does not stop another process; turn standalone playback off yourself before assigning Coach ownership |
-| Remote Chatterbox independent of commentary | Dedicated speech key file, no LLM/license credential fallback, bounded reads, redirect rejection, mono 24 kHz PCM→WAV, cancellation, no retries, Kokoro/system fallback | Provider transport/error/cancellation and desktop completion tests. Live speech server/device tests remain pending |
+| Exclusive speech content | Announcer mode suppresses normal Coach workflow/routine/ambient audio while preserving UI text and completion acknowledgments; essential alerts remain eligible with the selected engine | Mode-switch, suppression, provider and workflow-completion tests |
+| Immediate mute/mode controls | One visible speech switch controls desktop playback; choosing announcers assigns Coach ownership; older internal configuration remains supported | Controller/service tests. The choice does not stop another process; turn standalone playback off yourself before assigning Coach ownership |
+| Remote Chatterbox independent of commentary | Dedicated speech key file, no LLM/license credential fallback, bounded reads, redirect rejection, mono 24 kHz PCM→WAV, cancellation, no retries, explicit failure without switching engines; long advice is chunked and joined | Real server-default, Atlas and Mira audio rendered; transport/cancellation and desktop completion tests. Audible device acceptance remains pending |
 | Optional local Turbo | Separate interpreter/process, hash-locked dependencies, immutable model revision, offline local load, cached Atlas/Mira conditioning, default voice, licensed assets, CPU/MPS/CUDA selection, failure containment | Mocked PCM/protocol validation; published wheel API inspected. No Torch/model loaded or downloaded. Actual speed, OOM/device behavior and audio are pending |
 | Inference protection | One exchange/no backlog, default two/max four per minute, two calls, six-second total deadline, 6,000 input-token conservative bound/call, 512/256 output, 48,000/3,072 aggregate, twelve request-seconds/minute including cancelled calls | Budget tests, proxy nonwaiting/preemption tests, socket cancellation tests. Local scheduling cannot prove cross-application gateway enforcement |
 | Gameplay and strategy remain independent | Proxy protects foreground/strategy calls, cancels commentary and rejects optional admission while protected; no strategy refresh or decision dependency introduced | Separate strategy, proxy and existing gameplay narration regressions |
-| Controls and readiness | Tools → Arena On Air & Voice: mode, four personas, cast, focus, frequency, deterministic/audited generation, privacy, separate mute/ownership, three providers, separate voices/speeds, preview, runtime/endpoint/key/device; visible status | Offscreen dialog/controller/main-window tests and rendered dialog review |
+| Controls and readiness | Speech on/off; Kokoro/Chatterbox; Coach advice/Announcers; Server Chatterbox; discovered Voice catalog and Preview. Existing ArenaOnAir setup is reused; runtime internals are hidden | Offscreen UI tests and visual review; actual server schema checked. Server default omits voice, ignoring old troubleshooting pairs. Preview never saves or unmutes normal speech |
 | Telemetry | Proxy supplies first-token/request/token metrics; service logs observation age/admission/budget/drop reasons; controller logs queue/render/playback lifecycle timings; voice failure status is visible | No private text in added service/controller metrics. Native AOA logging stays on worker stderr, not standalone history |
 | Packaging | Worker source and licensed assets included in PyInstaller spec; bootstrap works with an external Python interpreter, without requiring Coach's dependencies in the voice environment | Source/bootstrap smoke tests. Windows Python 3.11 runtime + 3.12 executable builds and OS playback require platform qualification |
 | Controlled acceptance | `commentary/qualification.py` evaluates matched OFF/ON JSON measurements; explicit local benchmark under `runtime/chatterbox/` | Evaluator tests reject missing measurements or any failed gate. No fabricated performance results |
@@ -37,47 +38,56 @@ integrated path works with a compatible AOA source checkout today.
 
 ## Safe end-to-end test sequence
 
-After the ranked matches finish, close the old Coach instance yourself before
-launching this worktree; both instances otherwise share the normal runtime data.
-Do not run both against the same game. No merge or push is needed for testing.
+After ranked matches finish, close the old Coach instance before launching an
+updated checkout. Never run two instances against the same game. After rollout,
+use the existing **MTGA Coach.app** launcher as usual.
 
-```sh
-cd /Users/joshu/repos/mtgacoach-aoa
-MTGACOACH_APP_ROOT="$PWD" PYTHONPATH="$PWD/src" \
-  /Users/joshu/repos/mtgacoach/.venv_mac_311/bin/python -m arenamcp.desktop
-```
+1. Open **Speech & voices** from the compact panel or Tools menu.
+2. Choose **Kokoro** or **Chatterbox**. For the existing speech server, keep
+   **Server Chatterbox** checked. Coach reads the existing ArenaOnAir configuration;
+   no URL, key, command, or model entry is required in this dialog.
+3. Leave **Voice → Server default** to let the server decide. This is different
+   from the explicit **Chatterbox original voice**. Atlas and Mira are offered
+   only after the server advertises them. **Preview** auditions the current
+   unsaved choice, even while Speech is off, without changing saved preferences.
+4. Choose **Coach advice** or **Announcers narrate the game**, turn **Speech on**,
+   and Save. Announcers replace normal spoken advice; essential alerts still use
+   the selected voice engine. A Chatterbox failure does not silently switch to
+   Kokoro. Try Preview again or explicitly choose Kokoro.
+5. In a nonranked test, check mute/stop, a mode switch mid-line, game boundaries,
+   and dependent analyst replies. UI explanations remain available in either mode.
+6. Local Chatterbox requires a separate installed runtime and model; it is not
+   installed on the current Mac. The dialog explains this and offers Server
+   Chatterbox/Kokoro. Developer setup remains in `runtime/chatterbox/README.md`.
 
-1. Open **Tools → Arena On Air & Voice**. Keep Kokoro and choose commentary,
-   grounded event calls, public information, and Coach audio ownership. Turn any
-   standalone AOA playback off yourself. Save; replay a game or use a nonranked
-   session. Verify only observed events are spoken, and routine execution text
-   still appears on screen.
-2. Confirm global mute, commentary mute, Essential messages only, switching modes
-   mid-line, new-game boundaries, manual intervention and ordered deck/Grind
-   narration. An analyst must not speak after its cancelled opening line.
-3. Point **Arena On Air source folder** at `~/repos/arenaonair` (or install AOA in
-   the selected commentary Python ≥3.11). Enable audited generation. Test all four
-   personas, one/two cast, focus and frequency. Budget/freshness rejection means
-   silence, not an unaudited substitute. Private hand/deck remains opt-in.
-4. Select Chatterbox server, its speech URL and a **separate speech credential file**.
-   Preview Atlas/Mira/default and speed. Test server busy/offline recovery, Stop,
-   essential preemption, and commentary-off ordinary speech. Kokoro voices should
-   remain unchanged after switching providers.
-5. Only after local installation and idle-machine benchmarking, select Chatterbox
-   on this computer. Follow `runtime/chatterbox/README.md`. Exercise cold/warm,
-   both voices, longer lines and device failure; confirm essential messages still
-   start promptly. Speculative synthesis and hybrid model residency remain off.
+![Simplified speech controls](images/aoa-simple-speech.png)
+
+### Speech repair verification (2026-10-29)
+
+- Root cause: the Kokoro rendering worker inherited saved mute, so its warmup
+  probe returned no audio and exited with status 1. It now renders independently
+  of playback mute and does not persist per-utterance voice or speed changes.
+- Actual installed Python 3.12 runtime, real Qt QProcess startup, real Kokoro
+  synthesis and real server-default Chatterbox synthesis passed with a temporary
+  muted profile. Audio was inspected as WAV (24 kHz), not played audibly.
+- Server health reported hybrid ready; its actual OpenAPI schema advertises
+  Atlas, Mira and original voice, with Atlas as the omitted-voice default.
+  Explicit Atlas/Mira and omitted-voice requests generated valid PCM/WAV.
+- UI review uses synthetic preferences; no game screenshots or credentials are
+  included. Live settings/history and the shared speech service are unchanged.
+- Local Chatterbox installation/hardware qualification, Windows runtime and
+  audible playback remain unverified. No new service or model was installed.
 
 ## Performance and deployment gates still to qualify
 
 Code and isolated tests do not establish hardware or cross-application capacity.
 Required live qualification remains: Windows/macOS/Linux playback and device
 failures; Windows packaged runtimes; local CUDA/MPS/CPU (and ROCm if deployed),
-memory/frame-time impact; actual dedicated speech-server availability; gateway
+memory/frame-time impact; speech-server performance under shared load; gateway
 priority/admission across Coach, Sobriety Copilot, coding/Hermes and other clients;
 and proof that upstream cancellation actually frees shared resources. No gateway
-configuration, credentials or other application was changed. Generative and local
-Chatterbox remain explicit opt-ins; sparse deterministic Kokoro is the pilot default.
+configuration, credentials or other application was changed. Announcers enable the audited booth. Local Chatterbox remains optional; choosing
+a voice engine never changes the shared server default.
 
 For each platform and shared-load condition, capture the same replay with
 commentary off/on and strategy off/on. JSON input for the evaluator must include:

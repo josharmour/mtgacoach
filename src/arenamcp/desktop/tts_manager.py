@@ -136,6 +136,7 @@ class TtsManager(QObject):
         provider: str | None = None,
         category: str = "",
         valid=None,
+        settings_override=None,
     ) -> None:
         if self._closing or not text or not text.strip():
             if speech_id:
@@ -157,9 +158,14 @@ class TtsManager(QObject):
 
         from arenamcp.settings import get_settings
 
-        settings = get_settings()
+        settings = settings_override if settings_override is not None else get_settings()
         selected = provider or str(settings.get("tts_provider") or "kokoro")
-        if category == "essential" and (not self.is_running or not self._ready or self._busy):
+        self._selected_provider = selected
+        if (
+            selected == "kokoro"
+            and category == "essential"
+            and (not self.is_running or not self._ready or self._busy)
+        ):
             self._resolve_tracked("superseded")
             self._generation += 1
             self._last_text_generation = self._generation
@@ -172,17 +178,20 @@ class TtsManager(QObject):
             self._request_chatterbox_speech(
                 text=text,
                 voice_id=str(settings.get("voice") or "am_adam")
-                if voice_id in {"atlas", "mira", "default"}
+                if voice_id in {"atlas", "mira", "default", "server_default"}
                 else voice_id,
                 voice_name=str(settings.get("voice") or "am_adam")
-                if voice_id in {"atlas", "mira", "default"}
+                if voice_id in {"atlas", "mira", "default", "server_default"}
                 else voice_name,
                 speed=float(speed),
                 endpoint=str(settings.get("chatterbox_server_url") or ""),
                 key_file=str(settings.get("chatterbox_key_file") or ""),
                 chatterbox_voice=voice_id
-                if voice_id in {"atlas", "mira", "default"}
-                else str(settings.get("chatterbox_voice") or "atlas"),
+                if voice_id in {"atlas", "mira", "default", "server_default"}
+                else str(
+                    settings.get("chatterbox_voice_override")
+                    or ("server_default" if selected == "chatterbox_remote" else "default")
+                ),
                 speech_id=speech_id,
                 local_config={
                     "python": str(settings.get("chatterbox_local_python") or ""),
@@ -486,28 +495,41 @@ class TtsManager(QObject):
         def worker() -> None:
             import tempfile
 
-            from arenamcp.chatterbox_remote import SpeechCancelled, render_remote
+            from arenamcp.chatterbox_remote import (
+                SpeechCancelled,
+                join_speech_audio,
+                render_remote,
+                speech_chunks,
+            )
 
             path = None
             try:
                 started = time.monotonic()
-                if local_config is not None:
-                    audio = self._local_chatterbox.render(
-                        config=local_config,
-                        text=text,
-                        voice=chatterbox_voice,
-                        speed=speed,
-                        cancelled=cancelled,
-                    )
-                else:
-                    audio = render_remote(
-                        endpoint=endpoint,
-                        key_file=key_file,
-                        text=text,
-                        voice=chatterbox_voice,
-                        speed=speed,
-                        cancelled=cancelled,
-                    )
+                parts = []
+                for chunk in speech_chunks(text):
+                    if cancelled.is_set():
+                        return
+                    if time.monotonic() - started > 60:
+                        raise RuntimeError("Speech render deadline")
+                    if local_config is not None:
+                        audio = self._local_chatterbox.render(
+                            config=local_config,
+                            text=chunk,
+                            voice=chatterbox_voice,
+                            speed=speed,
+                            cancelled=cancelled,
+                        )
+                    else:
+                        audio = render_remote(
+                            endpoint=endpoint,
+                            key_file=key_file,
+                            text=chunk,
+                            voice=chatterbox_voice,
+                            speed=speed,
+                            cancelled=cancelled,
+                        )
+                    parts.append(audio)
+                audio = join_speech_audio(parts)
                 if cancelled.is_set():
                     return
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as stream:
@@ -646,6 +668,12 @@ class TtsManager(QObject):
         if not self._speech_valid():
             self._complete(generation, "superseded")
             return
+        if getattr(self, "_selected_provider", "kokoro").startswith("chatterbox"):
+            self.error_line.emit(
+                f"Chatterbox unavailable: {err_msg} Try Preview again or choose Kokoro in Speech & voices."
+            )
+            self._complete(generation, "failed")
+            return
         self.error_line.emit(f"Speech synthesis failed: {err_msg} — falling back to Kokoro/system voice")
         if not self._worker_failed and not self.is_running:
             try:
@@ -672,7 +700,7 @@ class TtsManager(QObject):
     def _on_busy_timeout(self) -> None:
         if not self._busy:
             return
-        self.status_line.emit("Kokoro is taking longer than expected; waiting for speech.")
+        self.status_line.emit("Speech is taking longer than expected; waiting for audio.")
 
     def _on_stdout_ready(self) -> None:
         if self._process is None:
@@ -694,6 +722,7 @@ class TtsManager(QObject):
             line, self._stderr_buffer = self._stderr_buffer.split("\n", 1)
             line = line.rstrip("\r")
             if line:
+                logger.info("Speech worker: %s", line)
                 self.log_line.emit(f"[tts] {line}")
 
     def _handle_stdout_line(self, line: str) -> None:

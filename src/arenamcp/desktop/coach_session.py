@@ -241,15 +241,40 @@ class CoachSession(QObject):
         self.send_command("toggle_autopilot")
 
     def configure_commentary(self, config: dict) -> None:
+        self._speech.stop()
         self._speech.configure(config)
         self._process.send_payload({"cmd": "configure_commentary", "config": config})
 
-    def preview_voice(self) -> None:
+    def set_speech_enabled(self, enabled: bool) -> None:
+        self._muted = not enabled
+        self._speech.arbiter.set_muted(self._muted)
+        self._process.send_payload({"cmd": "sync_voice_preferences", "muted": self._muted})
+
+    def preview_voice(self, options: dict | None = None) -> None:
         if not self._tts._chatterbox_lock.locked():
             self._tts._local_chatterbox.failed = False
-        self._speech.speech(
-            {"text": "The booth is ready. Voice preview.", "speech_category": "workflow"}, muted=self._muted
-        )
+        if options is None:
+            from arenamcp.settings import get_settings
+
+            settings = get_settings()
+            options = {
+                key: settings.get(key)
+                for key in (
+                    "tts_provider",
+                    "voice",
+                    "voice_speed",
+                    "chatterbox_voice_override",
+                    "chatterbox_speed",
+                    "chatterbox_server_url",
+                    "chatterbox_key_file",
+                    "chatterbox_local_python",
+                    "chatterbox_model_dir",
+                    "chatterbox_model_revision",
+                    "chatterbox_device",
+                    "commentary_aoa_source",
+                )
+            }
+        self._speech.preview(options)
 
     def set_voice(self, voice_id: str) -> None:
         """Select a Kokoro voice by id in the running engine (saved there too)."""

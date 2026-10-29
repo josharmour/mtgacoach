@@ -8,7 +8,6 @@ from arenamcp.commentary.config import CommentaryConfig
 from arenamcp.commentary.headless import deterministic
 from arenamcp.desktop import commentary_controller
 from arenamcp.desktop.commentary_controller import CommentaryController
-from arenamcp.desktop.commentary_settings import CommentarySettingsDialog
 
 
 class Tts(QObject):
@@ -49,7 +48,7 @@ def test_ordered_workflow_protected_and_essential_preempts(controller):
     c.speech({"text": "Manual intervention needed."})
     assert tts.stop_speech.call_count == 1
     assert tts.request_speech.call_args.kwargs["category"] == "essential"
-    assert {e["state"] for e in sent if e.get("speech_id") == "workflow"} == {"accepted", "superseded"}
+    assert {e["state"] for e in sent if e.get("speech_id") == "workflow"} == {"superseded"}
 
 
 def test_reply_requires_finished_anchor_and_duplicate_is_not_reacknowledged(controller):
@@ -105,26 +104,52 @@ def test_mode_change_clears_routine_but_preserves_essential(controller):
 
 def test_finished_without_start_is_failed(controller):
     c, tts, sent, state = controller
+    c.configure(CommentaryConfig(mode="actions").to_wire())
     c.speech({"text": "Review.", "speech_id": "w"})
     tts.speechStatus.emit("w", "finished")
     assert sent[-1]["state"] == "failed"
 
 
-def test_settings_dialog_preserves_kokoro_and_applies_all_controls(qapp):
-    class Settings(dict):
-        def set(self, key, value):
-            self[key] = value
+def test_preview_bypasses_mute_without_enabling_normal_speech_or_saving(controller):
+    c, tts, sent, state = controller
+    c.arbiter.set_muted(True)
+    options = {"tts_provider": "chatterbox_remote", "chatterbox_voice_override": ""}
+    c.preview(options)
+    call = tts.request_speech.call_args.kwargs
+    assert call["voice_id"] == "server_default"
+    assert call["settings_override"] == options
+    assert c.arbiter.muted
+    uid = call["speech_id"]
+    tts.speechStatus.emit(uid, "started")
+    tts.speechStatus.emit(uid, "finished")
+    assert not c.preview_settings and c.arbiter.muted
+    c.proposal(line(c).to_wire())
+    assert tts.request_speech.call_count == 1
 
-    settings = Settings(voice="af_bella", voice_speed=1.1)
-    session = Mock()
-    dialog = CommentarySettingsDialog(settings, session)
-    dialog.mode.setCurrentIndex(dialog.mode.findData("commentary"))
-    dialog.persona.setCurrentIndex(dialog.persona.findData("pro_tour"))
-    dialog.private.setChecked(True)
-    assert dialog._apply()
-    assert settings["voice"] == "af_bella" and settings["voice_speed"] == 1.1
-    assert settings["commentary_persona"] == "pro_tour"
-    assert settings["commentary_private_information"] is True
-    assert settings["autoplay_speech"] == "commentary"
-    session.configure_commentary.assert_called_once()
-    dialog.close()
+
+def test_server_default_ignores_old_pair_and_alerts_use_selected_engine(controller, monkeypatch):
+    c, tts, sent, state = controller
+    monkeypatch.setattr(
+        commentary_controller,
+        "get_settings",
+        lambda: {
+            "tts_provider": "chatterbox_remote",
+            "chatterbox_voice": "mira",
+            "commentary_chatterbox_analyst": "atlas",
+        },
+    )
+    c.proposal(line(c).to_wire())
+    assert tts.request_speech.call_args.kwargs["voice_id"] == "server_default"
+    c.speech({"text": "Please intervene.", "speech_category": "essential"})
+    assert tts.request_speech.call_args.kwargs["provider"] == "chatterbox_remote"
+
+
+def test_mode_switch_cancels_advice_and_acknowledges_suppressed_workflow(controller):
+    c, tts, sent, state = controller
+    c.configure(CommentaryConfig(mode="actions").to_wire())
+    c.speech({"text": "Advice", "speech_id": "one"})
+    c.configure(CommentaryConfig(mode="commentary").to_wire())
+    assert c.arbiter.active is None
+    c.speech({"text": "More advice", "speech_id": "two"})
+    assert sent[-1] == {"cmd": "speech_status", "speech_id": "two", "state": "superseded"}
+    assert tts.request_speech.call_count == 1

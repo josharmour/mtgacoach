@@ -579,9 +579,9 @@ class CompactCoachPanel(QWidget):
         self.stop_speech_btn.clicked.connect(self._session.stop_speaking)
         controls.addWidget(self.stop_speech_btn)
 
-        self.more_btn = QPushButton("Voice && style")
+        self.more_btn = QPushButton("Speech && voices")
         self.more_btn.setObjectName("moreButton")
-        self.more_btn.setToolTip("Voice, speed, advice length, and mute")
+        self.more_btn.setToolTip("Speech on/off, voice engine, advice or announcers, and voice preview")
         self.more_btn.clicked.connect(self._show_voice_style)
         controls.addWidget(self.more_btn)
         root.addLayout(controls)
@@ -707,7 +707,13 @@ class CompactCoachPanel(QWidget):
         return chip
 
     def _show_voice_style(self) -> None:
-        self.voice_style_popover.popup_from(self.more_btn)
+        from arenamcp.desktop.commentary_settings import CommentarySettingsDialog
+        from arenamcp.settings import get_settings
+
+        if getattr(self, "_speech_dialog", None) is None or not self._speech_dialog.isVisible():
+            self._speech_dialog = CommentarySettingsDialog(get_settings(), self._session, self)
+        self._speech_dialog.show()
+        self._speech_dialog.raise_()
 
     def _on_bug_report_clicked(self) -> None:
         self.voice_style_popover.hide()
@@ -779,7 +785,7 @@ class CompactCoachPanel(QWidget):
             "silent": "Waiting for a fresh moment",
             "dropped": "Waiting for spare capacity or fresh facts",
             "waiting": "Waiting for a game",
-            "unavailable": "Runtime unavailable — check Arena On Air & Voice settings",
+            "unavailable": "Announcers unavailable — check Speech & voices",
         }
         self.commentary_label.setText(
             str(status.get("message"))

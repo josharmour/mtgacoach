@@ -1,30 +1,26 @@
-"""Opt-in commentary/voice controls; saving applies without an engine restart."""
+"""One speech control surface, backed by automatic discovery of existing setup."""
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
+import threading
+from dataclasses import replace
 
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFormLayout,
     QLabel,
-    QLineEdit,
-    QMessageBox,
     QPushButton,
-    QSpinBox,
-    QTabWidget,
     QVBoxLayout,
-    QWidget,
 )
 
-from arenamcp.chatterbox_remote import ChatterboxError, read_speech_key, speech_endpoint
-from arenamcp.commentary.config import PERSONAS, CommentaryConfig
-from arenamcp.commentary.local_voice_worker import validate_model
+from arenamcp.chatterbox_remote import ChatterboxError
+from arenamcp.commentary.config import CommentaryConfig
+from arenamcp.commentary.setup import VOICE_LABELS, discover, server_voices
+from arenamcp.kokoro_voices import KOKORO_VOICES
 
 
 def combo(options, value):
@@ -35,253 +31,199 @@ def combo(options, value):
     return widget
 
 
+class _CatalogSignals(QObject):
+    finished = Signal(object)
+
+
 class CommentarySettingsDialog(QDialog):
     def __init__(self, settings, session, parent=None):
         super().__init__(parent)
         self.settings, self.session = settings, session
-        self.setWindowTitle("Arena On Air & Voice")
-        self.resize(570, 640)
-        root = QVBoxLayout(self)
-        tabs = QTabWidget()
-        self.tabs = tabs
-        root.addWidget(tabs)
-        basic, advanced = QWidget(), QWidget()
-        self.runtime_tab = advanced
-        form, runtime = QFormLayout(basic), QFormLayout(advanced)
-        tabs.addTab(basic, "Commentary & voice")
-        tabs.addTab(advanced, "Runtime & connections")
-        config = CommentaryConfig.from_settings(settings)
-        self.mode = combo(
-            [
-                ("actions", "Action narration"),
-                ("commentary", "Arena On Air commentary"),
-                ("essential", "Essential messages only"),
-            ],
-            config.mode,
-        )
-        self.persona = combo(list(PERSONAS.items()), config.persona)
-        self.cast = combo([(1, "One commentator"), (2, "Two commentators")], config.speakers)
-        self.focus = combo([(v, v.title()) for v in ("calls", "balanced", "analysis")], config.focus)
-        self.rate = QSpinBox()
-        self.rate.setRange(1, 4)
-        self.rate.setValue(config.exchanges_per_minute)
-        self.generation = combo(
-            [(False, "Grounded event calls"), (True, "Audited generative booth")], config.generative
-        )
-        self.muted = QCheckBox("Mute commentary only")
-        self.muted.setChecked(config.muted)
-        self.private = QCheckBox("Allow my hand and deck in commentary/model context")
-        self.private.setChecked(config.private_information)
-        self.owner = combo(
-            [
-                ("coach", "Coach owns commentary audio"),
-                ("standalone", "Standalone Arena On Air owns commentary audio"),
-            ],
-            config.output_owner,
-        )
+        self.setup = discover(settings)
+        self.config = CommentaryConfig.from_settings(settings)
+        self.catalog = None
+        self.catalog_pending = False
+        self.catalog_error = ""
+        self.setWindowTitle("Speech & voices")
+        self.resize(470, 340)
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        layout.addLayout(form)
+        self.enabled = QCheckBox("Speech on")
+        self.enabled.setChecked(not bool(settings.get("muted", False)))
         self.provider = combo(
-            [
-                ("kokoro", "Kokoro"),
-                ("chatterbox_remote", "Chatterbox server"),
-                ("chatterbox_local", "Chatterbox on this computer"),
-            ],
-            settings.get("tts_provider", "kokoro"),
+            [("kokoro", "Kokoro"), ("chatterbox", "Chatterbox")],
+            "chatterbox"
+            if str(settings.get("tts_provider", "kokoro")).startswith("chatterbox")
+            else "kokoro",
         )
-        self.voice = combo(
-            [(v, v.title()) for v in ("atlas", "mira", "default")], settings.get("chatterbox_voice", "atlas")
+        self.mode = combo(
+            [("actions", "Coach advice"), ("commentary", "Announcers narrate the game")], self.config.mode
         )
-        self.analyst = combo(
-            [(v, v.title()) for v in ("atlas", "mira", "default")],
-            settings.get("commentary_chatterbox_analyst", "mira"),
-        )
-        self.speed = QDoubleSpinBox()
-        self.speed.setRange(0.5, 2)
-        self.speed.setSingleStep(0.1)
-        self.speed.setValue(float(settings.get("chatterbox_speed", 1)))
-        for label, widget in (
-            ("Autoplay speech", self.mode),
-            ("Style", self.persona),
-            ("Cast", self.cast),
-            ("Balance", self.focus),
-            ("Exchanges per minute", self.rate),
-            ("Commentary", self.generation),
-            ("", self.muted),
-            ("", self.private),
-            ("Audio ownership", self.owner),
+        self.server = QCheckBox("Server Chatterbox")
+        self.server.setChecked(settings.get("speech_server_chatterbox", self.setup.prefer_server))
+        self.voice = QComboBox()
+        # Older per-role Chatterbox values were troubleshooting state. Only the
+        # new explicit selector is a preference; otherwise the server decides.
+        self.override = str(settings.get("chatterbox_voice_override") or "")
+        self.kokoro_voice = str(settings.get("voice") or "am_adam")
+        for label, control in (
+            ("", self.enabled),
             ("Voice engine", self.provider),
-            ("Chatterbox lead voice", self.voice),
-            ("Chatterbox analyst voice", self.analyst),
-            ("Chatterbox speed", self.speed),
+            ("Hear", self.mode),
+            ("", self.server),
+            ("Voice", self.voice),
         ):
-            form.addRow(label, widget)
-        self.mode_note = QLabel()
-        self.mode_note.setWordWrap(True)
-        form.addRow(self.mode_note)
-        self.provider_note = QLabel()
-        self.provider_note.setWordWrap(True)
-        form.addRow(self.provider_note)
-        note = QLabel(
-            "Kokoro keeps its existing voice and speed settings. Choose Coach ownership only when standalone Arena On Air playback is off. This control never stops another application."
-        )
-        note.setWordWrap(True)
-        form.addRow(note)
-        self.fields = {}
-        auto_source = Path(__file__).resolve().parents[4] / "arenaonair"
-        definitions = [
-            ("commentary_python", "Commentary Python (blank: Coach runtime)", ""),
-            (
-                "commentary_aoa_source",
-                "Arena On Air source folder (or installed package)",
-                str(auto_source) if auto_source.is_dir() else "",
-            ),
-            ("chatterbox_server_url", "Speech server URL", ""),
-            ("chatterbox_key_file", "Speech-only key file", ""),
-            ("chatterbox_local_python", "Local voice Python (separate environment)", ""),
-            ("chatterbox_model_dir", "Turbo model snapshot folder", ""),
-            (
-                "chatterbox_model_revision",
-                "Pinned model revision",
-                "749d1c1a46eb10492095d68fbcf55691ccf137cd",
-            ),
-            ("commentary_kokoro_analyst", "Kokoro analyst voice ID", "am_onyx"),
-        ]
-        for key, label, default in definitions:
-            field = QLineEdit(str(settings.get(key) or default))
-            self.fields[key] = field
-            runtime.addRow(label, field)
-        self.device = combo(
-            [(v, v.upper()) for v in ("cpu", "mps", "cuda", "auto")], settings.get("chatterbox_device", "cpu")
-        )
-        runtime.addRow("Local inference device", self.device)
-        limits = QLabel(
-            "Generative commentary uses Coach's backend: 1 exchange at a time, 2 calls, 6 seconds, 6,000 input tokens per call, 512/256 output tokens, and 12 request-seconds per minute. Strategy and gameplay preempt it. Local Turbo requires the separate locked runtime and a downloaded pinned snapshot; nothing is downloaded here. Speculative synthesis stays off until hardware qualification."
-        )
-        limits.setWordWrap(True)
-        runtime.addRow(limits)
-        preview = QPushButton("Apply and preview voice")
-        preview.clicked.connect(self._preview)
-        root.addWidget(preview)
+            form.addRow(label, control)
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        self.preview = QPushButton("Preview")
+        self.preview.clicked.connect(self._preview)
+        layout.addWidget(self.preview)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
-        for control in (self.mode, self.generation, self.provider):
-            control.currentIndexChanged.connect(self._update_controls)
+        layout.addWidget(buttons)
+        self.catalog_signals = _CatalogSignals(self)
+        self.catalog_signals.finished.connect(self._catalog_ready)
+        self.provider.currentIndexChanged.connect(self._update_controls)
+        self.server.toggled.connect(self._update_controls)
+        self.voice.currentIndexChanged.connect(self._voice_changed)
+        self.enabled.toggled.connect(self._update_status)
+        self.mode.currentIndexChanged.connect(self._update_status)
         self._update_controls()
 
-    def _update_controls(self):
-        commentary = self.mode.currentData() == "commentary"
-        generative = self.generation.currentData() is True
-        self.generation.setEnabled(commentary)
-        for control in (self.persona, self.cast, self.focus):
-            control.setEnabled(commentary and generative)
-        self.mode_note.setText(
-            "Action narration is selected. Choose Arena On Air commentary above to enable the booth."
-            if self.mode.currentData() == "actions"
-            else "Essential messages only is selected. The commentary booth is off."
-            if not commentary
-            else "Grounded event calls use one voice. Styles and two-commentator exchanges require Audited generative booth."
-            if not generative
-            else "Audited generative booth uses Arena On Air and Coach's model backend. Unsupported or late lines are dropped."
-        )
-        provider = self.provider.currentData()
-        remote, local = provider == "chatterbox_remote", provider == "chatterbox_local"
-        self.provider_note.setText(
-            "Kokoro uses your existing voice setup; no Chatterbox server or key is needed."
-            if provider == "kokoro"
-            else "Chatterbox server requires a speech server URL and a separate speech-key file under Runtime & connections."
-            if remote
-            else "Local Chatterbox requires a separate Python environment and pinned model snapshot under Runtime & connections."
-        )
-        for control in (self.voice, self.analyst, self.speed):
-            control.setEnabled(remote or local)
-        for key in ("chatterbox_server_url", "chatterbox_key_file"):
-            self.fields[key].setEnabled(remote)
-        for key in ("chatterbox_local_python", "chatterbox_model_dir", "chatterbox_model_revision"):
-            self.fields[key].setEnabled(local)
-        self.device.setEnabled(local)
-        self.fields["commentary_kokoro_analyst"].setEnabled(provider == "kokoro")
+    def _voice_changed(self):
+        if self.provider.currentData() == "kokoro":
+            self.kokoro_voice = str(self.voice.currentData() or "am_adam")
+        else:
+            self.override = str(self.voice.currentData() or "")
 
-    @staticmethod
-    def _is_executable(value):
-        path = Path(value).expanduser()
-        return bool(value) and path.is_file() and os.access(path, os.X_OK)
+    def _update_controls(self):
+        chatterbox = self.provider.currentData() == "chatterbox"
+        self.server.setVisible(chatterbox)
+        self.voice.blockSignals(True)
+        self.voice.clear()
+        if not chatterbox:
+            options, selected = KOKORO_VOICES, self.kokoro_voice
+        elif self.server.isChecked():
+            default = (self.catalog or {}).get("default")
+            label = "Server default" + (f" ({default.title()})" if default else "")
+            options = [("", label)] + [
+                (key, VOICE_LABELS[key]) for key in (self.catalog or {}).get("voices", [])
+            ]
+            selected = self.override
+        else:
+            options = [("", "Chatterbox original voice")] + [
+                (key, VOICE_LABELS[key]) for key in ("atlas", "mira")
+            ]
+            selected = self.override
+        for key, label in options:
+            self.voice.addItem(label, key)
+        self.voice.setCurrentIndex(max(0, self.voice.findData(selected)))
+        self.voice.blockSignals(False)
+        if (
+            chatterbox
+            and self.server.isChecked()
+            and self.setup.server_configured
+            and self.catalog is None
+            and not self.catalog_pending
+            and not self.catalog_error
+        ):
+            self.catalog_pending = True
+            signals, endpoint = self.catalog_signals, self.setup.values["chatterbox_server_url"]
+
+            def read():
+                try:
+                    value = server_voices(endpoint)
+                except ChatterboxError as error:
+                    value = {"error": str(error)}
+                try:
+                    signals.finished.emit(value)
+                except RuntimeError:
+                    pass  # The dialog was closed during the bounded read.
+
+            threading.Thread(target=read, daemon=True, name="speech-voice-list").start()
+        self._update_status()
+
+    def _catalog_ready(self, result):
+        self.catalog_pending = False
+        if "error" in result:
+            self.catalog_error = result["error"]
+        else:
+            self.catalog = result
+        self._update_controls()
+
+    def _problem(self, *, provider_only=False):
+        if self.provider.currentData() == "chatterbox":
+            if self.server.isChecked() and not self.setup.server_configured:
+                return "Server Chatterbox isn't configured. Connect your speech server in ArenaOnAir; Coach will reuse that setup automatically."
+            if not self.server.isChecked() and not self.setup.local_configured:
+                return "Local Chatterbox isn't installed on this computer. Turn on Server Chatterbox to use your existing server, or choose Kokoro."
+        if (
+            not provider_only
+            and self.mode.currentData() == "commentary"
+            and not self.setup.announcers_available
+        ):
+            return "Announcers need ArenaOnAir installed on this computer. Coach advice is available now."
+        return ""
+
+    def _update_status(self):
+        problem = self._problem()
+        self.preview.setEnabled(not self._problem(provider_only=True))
+        self.status.setText(
+            problem
+            or self.catalog_error
+            or (
+                "Loading voices from your speech server…"
+                if self.catalog_pending
+                else "Preview auditions this voice without saving or turning speech on. Save applies your choices. Announcers replace spoken Coach advice; essential alerts still get through."
+            )
+        )
+
+    def _values(self):
+        values = dict(self.setup.values)
+        chatterbox = self.provider.currentData() == "chatterbox"
+        values.update(
+            tts_provider=("chatterbox_remote" if self.server.isChecked() else "chatterbox_local")
+            if chatterbox
+            else "kokoro",
+            speech_server_chatterbox=self.server.isChecked(),
+            chatterbox_voice_override=str(self.voice.currentData() or "") if chatterbox else self.override,
+            voice=str(self.voice.currentData()) if not chatterbox else self.kokoro_voice,
+        )
+        values["chatterbox_voice"] = values["chatterbox_voice_override"] or (
+            "server_default" if self.server.isChecked() else "default"
+        )
+        values["commentary_chatterbox_analyst"] = values["chatterbox_voice"]
+        values["chatterbox_speed"] = self.settings.get("chatterbox_speed", 1.0)
+        values["voice_speed"] = self.settings.get("voice_speed", 1.0)
+        return values
 
     def _apply(self):
-        provider = self.provider.currentData()
-        values = {key: field.text().strip() for key, field in self.fields.items()}
-        focus_key = None
-        try:
-            if self.mode.currentData() == "commentary":
-                focus_key = "commentary_python"
-                if values[focus_key] and not self._is_executable(values[focus_key]):
-                    raise ValueError(
-                        "Choose an executable Commentary Python, or leave it blank to use Coach's runtime."
-                    )
-                focus_key = "commentary_aoa_source"
-                if self.generation.currentData() and values[focus_key]:
-                    source = Path(values[focus_key]).expanduser()
-                    if not any(
-                        (root / "arenaonair" / "llm_booth.py").is_file() for root in (source, source / "src")
-                    ):
-                        raise ValueError(
-                            "Choose the Arena On Air source folder containing arenaonair/llm_booth.py, or leave it blank to use an installed package."
-                        )
-            if provider == "chatterbox_remote":
-                focus_key = "chatterbox_server_url"
-                if not values[focus_key]:
-                    raise ChatterboxError(
-                        "Chatterbox server is selected, but its speech server URL is empty. "
-                        "Configure the server URL and separate speech-key file under Runtime & connections, "
-                        "or choose Kokoro under Commentary & voice to use your existing voice without a server."
-                    )
-                values["chatterbox_server_url"] = speech_endpoint(values["chatterbox_server_url"])
-                focus_key = "chatterbox_key_file"
-                if not values[focus_key]:
-                    raise ChatterboxError(
-                        "Chatterbox server requires a separate speech-key file. "
-                        "Choose that file under Runtime & connections, or select Kokoro to use your existing voice."
-                    )
-                read_speech_key(values[focus_key])
-            if provider == "chatterbox_local":
-                focus_key = "chatterbox_local_python"
-                if not self._is_executable(values["chatterbox_local_python"]):
-                    raise ValueError("Choose the separate Chatterbox Python executable.")
-                focus_key = "chatterbox_model_dir"
-                validate_model(values["chatterbox_model_dir"], values["chatterbox_model_revision"])
-        except (ChatterboxError, ValueError) as error:
-            if focus_key:
-                self.tabs.setCurrentWidget(self.runtime_tab)
-                self.fields[focus_key].setFocus()
-            QMessageBox.warning(self, "Voice configuration", str(error))
+        if self.enabled.isChecked() and self._problem():
+            self._update_status()
             return False
-        config = CommentaryConfig(
+        values = self._values()
+        config = replace(
+            self.config,
             mode=self.mode.currentData(),
-            persona=self.persona.currentData(),
-            speakers=self.cast.currentData(),
-            focus=self.focus.currentData(),
-            exchanges_per_minute=self.rate.value(),
-            generative=self.generation.currentData(),
-            private_information=self.private.isChecked(),
-            muted=self.muted.isChecked(),
-            output_owner=self.owner.currentData(),
+            generative=True,
+            muted=False,
+            output_owner="coach",
             python=values["commentary_python"],
             aoa_source=values["commentary_aoa_source"],
         )
-        values.update(
-            tts_provider=provider,
-            chatterbox_voice=self.voice.currentData(),
-            commentary_chatterbox_analyst=self.analyst.currentData(),
-            chatterbox_speed=self.speed.value(),
-            chatterbox_device=self.device.currentData(),
-            autoplay_speech=config.mode,
-        )
+        values.update(autoplay_speech=config.mode, muted=not self.enabled.isChecked())
         values.update(
             {"commentary_" + key: value for key, value in config.to_wire().items() if key != "mode"}
         )
         for key, value in values.items():
             self.settings.set(key, value)
         self.session.configure_commentary(config.to_wire())
+        self.session.set_speech_enabled(self.enabled.isChecked())
+        self.session.set_voice(values["voice"])
         return True
 
     def _save(self):
@@ -289,5 +231,5 @@ class CommentarySettingsDialog(QDialog):
             self.accept()
 
     def _preview(self):
-        if self._apply():
-            self.session.preview_voice()
+        if not self._problem(provider_only=True):
+            self.session.preview_voice(self._values())

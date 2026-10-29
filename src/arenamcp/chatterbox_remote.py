@@ -20,7 +20,7 @@ import urllib.request
 import wave
 from pathlib import Path
 
-VOICES = ("atlas", "mira", "default")
+VOICES = ("atlas", "mira", "default", "server_default")
 MAX_AUDIO_BYTES = 20_000_000
 
 
@@ -82,7 +82,7 @@ def render_remote(
     endpoint: str,
     key_file: str,
     text: str,
-    voice: str = "atlas",
+    voice: str = "server_default",
     speed: float = 1.0,
     timeout: float = 4.0,
     cancelled: threading.Event | None = None,
@@ -114,9 +114,12 @@ def render_remote(
     check()
     url = speech_endpoint(endpoint)
     key = read_speech_key(key_file)
+    payload = {"input": text, "speed": speed, "energy": 0.5}
+    if voice != "server_default":
+        payload["voice"] = voice
     request = urllib.request.Request(
         url,
-        data=json.dumps({"input": text, "voice": voice, "speed": speed, "energy": 0.5}).encode(),
+        data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json", "Authorization": "Bearer " + key},
         method="POST",
     )
@@ -157,11 +160,45 @@ def render_remote(
         raise
     except urllib.error.HTTPError as error:
         if error.code == 503:
-            raise ChatterboxError("Speech server is busy; using the fallback voice.") from None
+            raise ChatterboxError("Speech server is busy. Try again shortly.") from None
         raise ChatterboxError(
             "Speech server rejected the request; check its endpoint and speech key."
         ) from None
     except Exception:
-        raise ChatterboxError(
-            "Speech server unavailable or invalid audio; using the fallback voice."
-        ) from None
+        raise ChatterboxError("Speech server unavailable or returned invalid audio.") from None
+
+
+def speech_chunks(text: str, limit: int = 500) -> list[str]:
+    """Split Coach advice at whitespace to fit the server's per-request limit."""
+    remaining, chunks = text.strip(), []
+    while len(remaining) > limit:
+        boundary = remaining.rfind(" ", 0, limit + 1)
+        if boundary < limit // 2:
+            boundary = limit
+        chunks.append(remaining[:boundary])
+        remaining = remaining[boundary:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+def join_speech_audio(parts: list[bytes]) -> bytes:
+    """Join validated mono PCM WAV chunks into one desktop-owned playback."""
+    if len(parts) == 1:
+        return parts[0]
+    output = io.BytesIO()
+    size = 0
+    with wave.open(output, "wb") as destination:
+        destination.setnchannels(1)
+        destination.setsampwidth(2)
+        destination.setframerate(24000)
+        for part in parts:
+            with wave.open(io.BytesIO(part)) as source:
+                if (source.getnchannels(), source.getsampwidth(), source.getframerate()) != (1, 2, 24000):
+                    raise ChatterboxError("Speech renderer returned an unsupported audio format.")
+                frames = source.readframes(source.getnframes())
+            size += len(frames)
+            if size > MAX_AUDIO_BYTES:
+                raise ChatterboxError("Speech renderer returned too much audio.")
+            destination.writeframes(frames)
+    return output.getvalue()

@@ -62,21 +62,23 @@ def test_selection_uses_separate_voice_and_qt_thread_delivery(manager, monkeypat
     assert manager.statuses == []  # worker emitted; GUI has not processed it
     manager.test_app.processEvents()
     assert manager.statuses == [("u1", "started")]
-    assert calls[0]["voice"] == "mira"
+    assert calls[0]["voice"] == "server_default"
     assert calls[0]["key_file"] == "/unused/test.key"
     manager._check_playback()
     assert manager.statuses[-1] == ("u1", "finished")
 
 
-def test_busy_provider_does_not_start_another_request_and_falls_back(manager, monkeypatch):
+def test_busy_chatterbox_does_not_start_another_request_or_switch_provider(manager, monkeypatch):
     render = Mock()
     monkeypatch.setattr(chatterbox_remote, "render_remote", render)
     manager._chatterbox_lock.acquire()
     try:
         speak(manager)
         render.assert_not_called()
-        assert manager._pending_request["voice_id"] == "am_adam"
-        manager._dispatch_pending.assert_called_once()
+        assert manager._pending_request is None
+        manager._dispatch_pending.assert_not_called()
+        manager._speak_fallback.assert_not_called()
+        assert manager.statuses == [("u1", "failed")]
     finally:
         manager._chatterbox_lock.release()
 

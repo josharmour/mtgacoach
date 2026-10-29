@@ -47,13 +47,13 @@ class SpeechArbiter:
             utterance.epoch == self.epoch and self._clock() < utterance.expires_at and self._valid(utterance)
         )
 
-    def submit(self, utterance: Utterance) -> bool:
+    def submit(self, utterance: Utterance, *, allow_muted: bool = False) -> bool:
         if utterance.utterance_id in self._states:
             return False
         if len(self._states) >= 4096:
             return False  # Caller must treat False as not admitted.
         self._emit(utterance, "accepted")
-        if self.muted or not self._eligible(utterance):
+        if (self.muted and not allow_muted) or not self._eligible(utterance):
             self._emit(utterance, "muted" if self.muted else "superseded")
             return True
         if utterance.anchor_id and self._states.get(utterance.anchor_id) in TERMINAL_STATES - {"finished"}:

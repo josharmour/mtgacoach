@@ -168,9 +168,9 @@ def test_voice_style_settings_live_in_popover(panel, qapp):
         assert not button.isVisible()
     panel.more_btn.click()
     qapp.processEvents()
-    assert panel.voice_style_popover.isVisible()
-    assert panel.voice_btn.isVisible()
-    panel.voice_style_popover.hide()
+    assert panel._speech_dialog.isVisible()
+    assert panel._speech_dialog.windowTitle() == "Speech & voices"
+    panel._speech_dialog.close()
 
 
 def test_compact_coach_debug_report_triggers(panel, monkeypatch):

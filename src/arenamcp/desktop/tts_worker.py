@@ -56,7 +56,9 @@ def main() -> int:
     try:
         from arenamcp.tts import VoiceOutput
 
-        voice = VoiceOutput()
+        # The desktop owns mute and playback. A muted launch must still be
+        # able to render after unmuting, without rewriting saved preferences.
+        voice = VoiceOutput(render_only=True)
         logger.info("warming Kokoro worker")
         voice.warmup()
         probe = voice.render_to_wav_file("Ready")

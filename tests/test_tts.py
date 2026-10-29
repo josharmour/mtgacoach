@@ -126,3 +126,37 @@ def test_direct_playback_uses_the_same_lead_in(voice, monkeypatch):
     lead = int(24000 * 0.1)
     assert len(samples) == lead + 2400
     assert np.all(samples[:lead] == 0) and np.all(samples[lead:] == 0.5)
+
+
+def test_muted_worker_renders_without_changing_saved_voice_or_speed(monkeypatch):
+    import io
+    import json
+
+    from arenamcp.desktop import tts_worker
+
+    store = {"muted": True, "voice": "am_fenrir", "voice_speed": 1.6}
+    original = dict(store)
+    fake = SimpleNamespace(get=lambda k, d=None: store.get(k, d), set=lambda k, v: store.__setitem__(k, v))
+    monkeypatch.setattr("arenamcp.settings.get_settings", lambda: fake)
+
+    def warmup(self):
+        self._tts_engine = _FakeEngine()
+
+    monkeypatch.setattr(VoiceOutput, "warmup", warmup)
+    monkeypatch.setattr(tts_worker, "_lower_priority", lambda: None)
+    monkeypatch.setattr(tts_worker, "_configure_logging", lambda: None)
+    events = []
+    monkeypatch.setattr(tts_worker, "_emit", events.append)
+    monkeypatch.setattr(
+        tts_worker.sys,
+        "stdin",
+        io.StringIO(
+            json.dumps({"cmd": "render", "text": "Ready", "voice_id": "af_heart", "speed": 1.1})
+            + '\n{"cmd":"shutdown"}\n'
+        ),
+    )
+    assert tts_worker.main() == 0
+    assert [e["type"] for e in events] == ["ready", "rendered"]
+    assert store == original
+    Path(events[-1]["path"]).unlink()
+    assert VoiceOutput().render_to_wav_file("Muted") is None
