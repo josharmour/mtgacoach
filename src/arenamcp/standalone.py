@@ -442,7 +442,11 @@ class StandaloneCoach(
         # Use local Kokoro TTS
         if self._voice_output:
             try:
-                extra = {"category": speech_category or "workflow"} if hasattr(self.ui, "emit_speech_request") else {}
+                extra = (
+                    {"category": speech_category or "workflow"}
+                    if hasattr(self.ui, "emit_speech_request")
+                    else {}
+                )
                 self._voice_output.speak(text, blocking=blocking, **extra)
             except Exception as e:
                 logger.error(f"Kokoro TTS error: {e}")

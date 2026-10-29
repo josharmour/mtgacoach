@@ -373,6 +373,7 @@ class MainWindow(QMainWindow):
 
     def _configure_commentary(self) -> None:
         from .commentary_settings import CommentarySettingsDialog
+
         CommentarySettingsDialog(self._settings, self._session, self).exec()
 
     def _configure_voice_engine(self) -> None:

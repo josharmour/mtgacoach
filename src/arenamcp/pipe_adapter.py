@@ -119,7 +119,15 @@ class PipeAdapter:
         if coach is not None:
             ap_on = getattr(coach, "_autopilot_enabled", False)
             self.status("AUTOPILOT", "AP:ON" if ap_on else "AP:OFF")
-            self.status("MUTE", "ON" if bool(getattr(getattr(coach, "_voice_output", None), "muted", False) or getattr(coach, "_muted", False)) else "OFF")
+            self.status(
+                "MUTE",
+                "ON"
+                if bool(
+                    getattr(getattr(coach, "_voice_output", None), "muted", False)
+                    or getattr(coach, "_muted", False)
+                )
+                else "OFF",
+            )
             self.status("STYLE", getattr(coach, "_style", "Quick").title())
 
     def stop(self) -> None:
@@ -245,11 +253,15 @@ class PipeAdapter:
         if self._coach is not None:
             if self._commentary is None:
                 from arenamcp.commentary.service import CommentaryService
+
                 self._commentary = CommentaryService(
                     settings=lambda: getattr(self._coach, "settings", {}),
                     backend=lambda: getattr(getattr(self._coach, "_coach", None), "_backend", None),
                     emit=self._emit,
-                    muted=lambda: bool(getattr(getattr(self._coach, "_voice_output", None), "muted", False) or getattr(self._coach, "_muted", False)),
+                    muted=lambda: bool(
+                        getattr(getattr(self._coach, "_voice_output", None), "muted", False)
+                        or getattr(self._coach, "_muted", False)
+                    ),
                 )
             self._commentary.offer(snapshot)
 
@@ -751,6 +763,7 @@ class PipeAdapter:
                     logger.warning("set_guard_mode: unknown guard %r or mode %r", kind, mode)
             elif action == "configure_commentary":
                 from arenamcp.commentary.config import CommentaryConfig
+
                 config = CommentaryConfig.from_wire(cmd.get("config") or {})
                 coach.settings.set("autoplay_speech", config.mode)
                 for key, value in config.to_wire().items():

@@ -225,9 +225,11 @@ def make_loop_coach(
     coach._original_model = None
     coach.speak_advice_calls: list[str] = []
     coach.speech_categories = []
+
     def speak(text, blocking=True, *, speech_category=None):
         coach.speak_advice_calls.append(text)
         coach.speech_categories.append(speech_category)
+
     coach.speak_advice = speak  # type: ignore[method-assign]
     coach._record_advice = lambda *args, **kwargs: None  # type: ignore[method-assign]
     coach._inject_library_summary_if_needed = lambda s: None  # type: ignore[method-assign]

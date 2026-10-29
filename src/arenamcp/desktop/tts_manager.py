@@ -38,6 +38,7 @@ class TtsManager(QObject):
         self._remote_generation: int | None = None
         self._speech_valid = lambda: True
         from arenamcp.local_chatterbox import LocalChatterboxClient
+
         self._local_chatterbox = LocalChatterboxClient()
         self._process: QProcess | None = None
         self._stdout_buffer = ""
@@ -170,18 +171,28 @@ class TtsManager(QObject):
             self._resolve_tracked("superseded")
             self._request_chatterbox_speech(
                 text=text,
-                voice_id=str(settings.get("voice") or "am_adam") if voice_id in {"atlas", "mira", "default"} else voice_id,
-                voice_name=str(settings.get("voice") or "am_adam") if voice_id in {"atlas", "mira", "default"} else voice_name,
+                voice_id=str(settings.get("voice") or "am_adam")
+                if voice_id in {"atlas", "mira", "default"}
+                else voice_id,
+                voice_name=str(settings.get("voice") or "am_adam")
+                if voice_id in {"atlas", "mira", "default"}
+                else voice_name,
                 speed=float(speed),
                 endpoint=str(settings.get("chatterbox_server_url") or ""),
                 key_file=str(settings.get("chatterbox_key_file") or ""),
-                chatterbox_voice=voice_id if voice_id in {"atlas", "mira", "default"} else str(settings.get("chatterbox_voice") or "atlas"),
+                chatterbox_voice=voice_id
+                if voice_id in {"atlas", "mira", "default"}
+                else str(settings.get("chatterbox_voice") or "atlas"),
                 speech_id=speech_id,
-                local_config={"python": str(settings.get("chatterbox_local_python") or ""),
+                local_config={
+                    "python": str(settings.get("chatterbox_local_python") or ""),
                     "aoa_source": str(settings.get("commentary_aoa_source") or ""),
                     "model_dir": str(settings.get("chatterbox_model_dir") or ""),
                     "revision": str(settings.get("chatterbox_model_revision") or ""),
-                    "device": str(settings.get("chatterbox_device") or "cpu")} if selected == "chatterbox_local" else None,
+                    "device": str(settings.get("chatterbox_device") or "cpu"),
+                }
+                if selected == "chatterbox_local"
+                else None,
             )
             return
 
@@ -301,11 +312,15 @@ class TtsManager(QObject):
             self._speak_via_windows(text, speed)
         else:
             import shutil
+
             player = shutil.which("espeak-ng") or shutil.which("espeak")
             self._stop_say()
             if player:
-                self._say_process = subprocess.Popen([player, "-s", str(int(175 * speed)), "--", text],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self._say_process = subprocess.Popen(
+                    [player, "-s", str(int(175 * speed)), "--", text],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
                 self._playing_generation = self._generation
                 self._playback_watch.start()
 
@@ -456,11 +471,17 @@ class TtsManager(QObject):
         # The server cannot abort synthesis: don't queue or pile up requests
         # while a cancelled request is still occupying it.
         if not self._chatterbox_lock.acquire(blocking=False):
-            self._on_remote_failed(generation, text, voice_id, voice_name, speed, "Speech renderer still busy")
+            self._on_remote_failed(
+                generation, text, voice_id, voice_name, speed, "Speech renderer still busy"
+            )
             return
         self._busy = True
         self._busy_timer.start()
-        self.status_line.emit("Loading local Chatterbox…" if local_config and not self._local_chatterbox.ready else "Generating speech with Chatterbox…")
+        self.status_line.emit(
+            "Loading local Chatterbox…"
+            if local_config and not self._local_chatterbox.ready
+            else "Generating speech with Chatterbox…"
+        )
 
         def worker() -> None:
             import tempfile
@@ -471,8 +492,13 @@ class TtsManager(QObject):
             try:
                 started = time.monotonic()
                 if local_config is not None:
-                    audio = self._local_chatterbox.render(config=local_config, text=text, voice=chatterbox_voice,
-                        speed=speed, cancelled=cancelled)
+                    audio = self._local_chatterbox.render(
+                        config=local_config,
+                        text=text,
+                        voice=chatterbox_voice,
+                        speed=speed,
+                        cancelled=cancelled,
+                    )
                 else:
                     audio = render_remote(
                         endpoint=endpoint,
@@ -781,7 +807,7 @@ class TtsManager(QObject):
                 sys.platform == "darwin"
                 and self._last_text
                 and self._last_text_generation == self._generation
-                    and self._speech_valid()
+                and self._speech_valid()
             ):
                 # Transient render failure: keep Kokoro for next time, but
                 # don't lose this utterance.

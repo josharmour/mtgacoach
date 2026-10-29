@@ -1418,7 +1418,12 @@ class ProxyBackend:
                         raise_on_error=raise_on_error,
                     )
                 except Exception as e:
-                    if not is_commentary and not priority_dropped and _sent_priority(params) is not None and _rejects_priority(e):
+                    if (
+                        not is_commentary
+                        and not priority_dropped
+                        and _sent_priority(params) is not None
+                        and _rejects_priority(e)
+                    ):
                         # Retry once at once without the field; never again
                         # this session (vLLM without priority scheduling).
                         priority_dropped = True

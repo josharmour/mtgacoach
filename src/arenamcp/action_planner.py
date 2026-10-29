@@ -1092,15 +1092,34 @@ class ActionPlanner(_ActionLegalityMixin):
             extras["cancel_event"] = cancel_event
         extras = _accepted_extras(complete, extras)
         try:
-            response = complete(
-                system_prompt,
-                user_message,
-                max_tokens,
-                temperature=0.0,
-                request_timeout_s=timeout_s,
-                raise_on_error=True,
-                **extras,
-            )
+            try:
+                response = complete(
+                    system_prompt,
+                    user_message,
+                    max_tokens,
+                    temperature=0.0,
+                    request_timeout_s=timeout_s,
+                    raise_on_error=True,
+                    **extras,
+                )
+            except TypeError as error:
+                # A **kwargs wrapper may forward to an older backend. Remove
+                # only the unsupported JSON option, retaining budgets and cancellation.
+                if (
+                    "response_format" not in extras
+                    or "unexpected keyword argument 'response_format'" not in str(error)
+                ):
+                    raise
+                extras.pop("response_format")
+                response = complete(
+                    system_prompt,
+                    user_message,
+                    max_tokens,
+                    temperature=0.0,
+                    request_timeout_s=timeout_s,
+                    raise_on_error=True,
+                    **extras,
+                )
         except TypeError:
             # Older backends: no raise_on_error / request budget / temperature.
             try:

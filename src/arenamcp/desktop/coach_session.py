@@ -61,10 +61,17 @@ class CoachSession(QObject):
 
         self._tts = TtsManager(self)
         from .commentary_controller import CommentaryController
-        self._speech = CommentaryController(self._tts, lambda payload: self._process.send_payload(payload), self.spokenLine.emit, self)
+
+        self._speech = CommentaryController(
+            self._tts, lambda payload: self._process.send_payload(payload), self.spokenLine.emit, self
+        )
         self._speech.statusChanged.connect(self.commentaryStatusChanged)
-        self._tts.status_line.connect(lambda message: self.commentaryStatusChanged.emit({"state": "voice", "message": message}))
-        self._tts.error_line.connect(lambda message: self.commentaryStatusChanged.emit({"state": "voice", "message": message}))
+        self._tts.status_line.connect(
+            lambda message: self.commentaryStatusChanged.emit({"state": "voice", "message": message})
+        )
+        self._tts.error_line.connect(
+            lambda message: self.commentaryStatusChanged.emit({"state": "voice", "message": message})
+        )
         # Lazy-start: TtsManager.request_speech() starts the Kokoro worker on
         # demand (and start() re-arms it). Eagerly spawning a worker per
         # CoachSession means every Constructed test panel owns a live Kokoro
@@ -240,7 +247,9 @@ class CoachSession(QObject):
     def preview_voice(self) -> None:
         if not self._tts._chatterbox_lock.locked():
             self._tts._local_chatterbox.failed = False
-        self._speech.speech({"text": "The booth is ready. Voice preview.", "speech_category": "workflow"}, muted=self._muted)
+        self._speech.speech(
+            {"text": "The booth is ready. Voice preview.", "speech_category": "workflow"}, muted=self._muted
+        )
 
     def set_voice(self, voice_id: str) -> None:
         """Select a Kokoro voice by id in the running engine (saved there too)."""

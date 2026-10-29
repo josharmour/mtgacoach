@@ -773,10 +773,19 @@ class CompactCoachPanel(QWidget):
     # ------------------------------------------------------------------
     def _on_commentary_status(self, status: dict) -> None:
         state = status.get("state", "waiting")
-        labels = {"ready": "Ready", "deterministic": "Grounded event calls", "silent": "Waiting for a fresh moment",
-                  "dropped": "Waiting for spare capacity or fresh facts", "waiting": "Waiting for a game",
-                  "unavailable": "Runtime unavailable — check Arena On Air & Voice settings"}
-        self.commentary_label.setText(str(status.get("message")) if state == "voice" else "Arena On Air: " + labels.get(state, "Waiting for a grounded, fresh moment"))
+        labels = {
+            "ready": "Ready",
+            "deterministic": "Grounded event calls",
+            "silent": "Waiting for a fresh moment",
+            "dropped": "Waiting for spare capacity or fresh facts",
+            "waiting": "Waiting for a game",
+            "unavailable": "Runtime unavailable — check Arena On Air & Voice settings",
+        }
+        self.commentary_label.setText(
+            str(status.get("message"))
+            if state == "voice"
+            else "Arena On Air: " + labels.get(state, "Waiting for a grounded, fresh moment")
+        )
         self.commentary_label.setVisible(state != "disabled")
 
     def _wire_session(self) -> None:
