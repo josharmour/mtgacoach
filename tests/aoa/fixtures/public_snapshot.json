@@ -1,0 +1,13 @@
+{
+  "match_id": "fixture-match", "game_number": 1,
+  "turn_info": {"turn_number": 4, "active_player": 1, "phase": "Combat"},
+  "players": [{"seat_id": 1, "life_total": 12, "is_local": true, "name": "PRIVATE_PLAYER"}],
+  "zones": {
+    "battlefield": [{"instance_id": 10, "name": "Bear", "power": 2, "toughness": 2},
+      {"instance_id": 11, "face_down": true, "name": "PRIVATE_FACE", "grp_id": 12345, "power": 8}],
+    "stack": [{"instance_id": 12, "name": "Lightning Bolt"}],
+    "my_hand": [{"name": "PRIVATE_HAND"}], "library_visible": [{"name": "PRIVATE_LIBRARY"}]
+  },
+  "deck_cards": ["PRIVATE_DECK"], "raw_gre_events": ["PRIVATE_RAW"],
+  "recent_events": ["Private freeform narration"], "pending_decision": {"text": "PRIVATE_CHOICE"}
+}

@@ -77,6 +77,11 @@ DEFAULTS = {
     "share_match_logs": True,
     "tts_server_url": "",
     "tts_mode": "auto",
+    # Independent provider selection; Kokoro settings/voice remain intact.
+    "tts_provider": "kokoro",
+    "chatterbox_server_url": "",
+    "chatterbox_key_file": "",
+    "chatterbox_voice": "atlas",
     "tts_lag_threshold_ms": 1000,
     # Language for TTS and STT (e.g., "en", "nl", "es", "fr", "de", "ja")
     "language": "en",
