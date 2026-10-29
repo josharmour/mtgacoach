@@ -146,7 +146,7 @@ def test_long_advice_splits_without_losing_words_and_joins_pcm(config):
     text = "Hold up two mana for the counterspell. " * 40
     chunks = cb.speech_chunks(text)
     assert " ".join(chunks) == text.strip()
-    assert all(0 < len(chunk) <= 500 for chunk in chunks)
+    assert all(0 < len(chunk) <= 100 for chunk in chunks)
     parts = [
         cb.render_remote(**dict(config, text=chunk), opener=Mock(open=Mock(return_value=Response())))
         for chunk in chunks

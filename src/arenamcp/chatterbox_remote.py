@@ -168,8 +168,8 @@ def render_remote(
         raise ChatterboxError("Speech server unavailable or returned invalid audio.") from None
 
 
-def speech_chunks(text: str, limit: int = 500) -> list[str]:
-    """Split Coach advice at whitespace to fit the server's per-request limit."""
+def speech_chunks(text: str, limit: int = 100) -> list[str]:
+    """Split advice at whitespace into short requests that fit the speech deadline."""
     remaining, chunks = text.strip(), []
     while len(remaining) > limit:
         boundary = remaining.rfind(" ", 0, limit + 1)

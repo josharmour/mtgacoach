@@ -73,6 +73,10 @@ use the existing **MTGA Coach.app** launcher as usual.
 - Server health reported hybrid ready; its actual OpenAPI schema advertises
   Atlas, Mira and original voice, with Atlas as the omitted-voice default.
   Explicit Atlas/Mira and omitted-voice requests generated valid PCM/WAV.
+- Real long-advice qualification exposed four-second request timeouts with
+  large chunks. Requests now contain at most 100 characters; a 464-character
+  natural advice sample rendered in five requests (1.19–1.88 seconds each),
+  producing 688,320 frames at 24 kHz in 8.52 seconds without playback.
 - UI review uses synthetic preferences; no game screenshots or credentials are
   included. Live settings/history and the shared speech service are unchanged.
 - Local Chatterbox installation/hardware qualification, Windows runtime and
