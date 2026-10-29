@@ -16,7 +16,8 @@ def session(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr("arenamcp.logging_config.LOG_DIR", tmp_path)
     session = CoachSession()
     session._process = Mock(is_running=True)
-    session._tts = Mock()
+    # Keep the shared TTS instance held by the speech arbiter; mock its effect.
+    monkeypatch.setattr(session._tts, "stop_speech", Mock())
     yield session
     session.shutdown()
 

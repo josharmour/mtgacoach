@@ -30,6 +30,7 @@ class CommentaryController(QObject):
         self.observation = None
         self.adapter = ObservationAdapter()
         self.timings = {}
+        self.voice_names = {}
         self.engine_ids = set()
         self.commentary_ids = set()
         self.arbiter = SpeechArbiter(
@@ -159,6 +160,7 @@ class CommentaryController(QObject):
             interruptible=category != SpeechCategory.WORKFLOW,
             speed=speed,
         )
+        self.voice_names[uid] = str(event.get("voice_name") or item.voice)
         if not self.arbiter.submit(item):
             self._status(uid, "failed")
 
@@ -177,7 +179,7 @@ class CommentaryController(QObject):
         self.tts.request_speech(
             text=item.text,
             voice_id=item.voice,
-            voice_name=item.voice,
+            voice_name=self.voice_names.get(item.utterance_id, item.voice),
             speed=item.speed,
             speech_id=item.utterance_id,
             provider=None
@@ -214,6 +216,7 @@ class CommentaryController(QObject):
             self.send({"cmd": "commentary_delivery", "utterance_id": uid, "state": state})
         if state in TERMINAL_STATES:
             self.timings.pop(uid, None)
+            self.voice_names.pop(uid, None)
             self.engine_ids.discard(uid)
             self.commentary_ids.discard(uid)
 
