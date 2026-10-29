@@ -131,3 +131,35 @@ zero stale/overlapping utterances, and both gateway checks. Missing data fails.
 - Final saved-mute follow-up: **21 passed** for pipe voice, desktop completion,
   and controller tests (13.21 seconds); includes a new persisted-mute regression.
   Affected files passed Ruff and the wheel was rebuilt.
+
+## Settings validation follow-up (2026-10-29)
+
+The screenshot's generic HTTP(S) endpoint warning is reproducible when the
+unsaved provider selection is Chatterbox server and its URL is empty. The
+persisted provider may still be Kokoro because validation precedes every write.
+Kokoro does not validate an inactive Chatterbox endpoint. Save and Apply/Preview
+share the same validation; selecting remote Chatterbox requires a URL and its
+separate speech-key file even when autoplay speech is Action narration.
+
+The dialog now explains missing remote configuration, selects the Runtime tab
+and focuses the relevant field. Provider-specific fields and generative style/
+cast controls are disabled when inactive, with visible setup guidance. Invalid
+explicit commentary runtime/source paths and non-executable local Python files
+are rejected before settings are written. Cancel remains side-effect free;
+Save does not trigger voice preview. New offscreen tests cover these paths,
+persisted choices on reopening, and a mocked worktree engine launch that pins
+PYTHONPATH while retaining the normal shared runtime/single-instance location.
+
+No running Coach, game, settings, models, or services were changed or launched.
+These GUI source changes require a future full desktop launch to load; an engine
+reload alone does not replace the dialog code. Live audio, remote speech service,
+and generative backend behavior remain unverified. The ordinary and worktree
+launches still share the user profile; do not run them concurrently.
+
+Updated offscreen preview: [settings guidance](aoa-settings-validation.png).
+
+Validation: the expanded selection completed with 99 passing tests, one Windows-
+only skip, and one launch-fixture failure (missing repository marker). After
+correcting that fixture, its targeted rerun passed: **100 selected tests passed
+in total, one skipped**. Ruff and whitespace checks passed. The UI was rendered
+and visually inspected offscreen; all controls and guidance fit at 570×640.
