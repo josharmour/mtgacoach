@@ -94,6 +94,33 @@ def _cost_total(costs: Any) -> int:
     return sum(_int(cost.get("count")) for cost in costs or () if isinstance(cost, dict))
 
 
+def unaffordable_kicker_choice(
+    decision: Any, state: dict[str, Any], chosen: list[str]
+) -> tuple[list[str], str]:
+    """Replace a provably unaffordable kicker with Done, preserving the base cast."""
+    from arenamcp.play_safety import exact_mana_total
+
+    if decision.request_type != "CastingTimeOptions" or len(chosen) != 1:
+        return chosen, ""
+    option = decision.find(chosen[0])
+    if option is None or (option.meta or {}).get("choiceKind") != "kicker":
+        return chosen, ""
+    if option.payable is True:  # Prefer Arena's solver to local arithmetic.
+        return chosen, ""
+    card = casting_spell(decision, state)
+    needed = kicked_cost(option, card)
+    mana = exact_mana_total(state)
+    if needed is None or mana is None or mana >= needed:
+        return chosen, ""
+    for done in decision.options:
+        if (done.meta or {}).get("choiceKind") == "done" and decision.selection_is_valid([done.option_id]):
+            name = card.get("name") or "the spell"
+            return [
+                done.option_id
+            ], f"Cast {name} unkicked: {mana} mana available cannot pay the kicked cost of {needed}."
+    return chosen, ""
+
+
 def kicked_cost(option: Any, card: dict[str, Any]) -> int | None:
     """Mana the kicked cast needs in all, or None when neither the request nor the card says.
 

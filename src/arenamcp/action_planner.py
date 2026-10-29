@@ -376,7 +376,7 @@ class ActionPlan:
 
     def spoken_actions(self) -> str:
         """Describe validated actions, never a separate model-generated recommendation."""
-        from arenamcp.narration import combat_declaration, spoken_list, spoken_name
+        from arenamcp.narration import combat_declaration, counted_creatures, spoken_list, spoken_name
 
         lines = []
         for action in self.actions:
@@ -391,7 +391,7 @@ class ActionPlan:
                 line = f"Target {', '.join(action.target_names)}"
             elif kind == ActionType.DECLARE_ATTACKERS:
                 line = (
-                    f"Attack with {spoken_list([spoken_name(name) for name in action.attacker_names])}"
+                    f"Attack with {counted_creatures([spoken_name(name) for name in action.attacker_names])}"
                     if action.attacker_names
                     else "Don't attack"
                 )
@@ -677,6 +677,8 @@ class ActionPlanner(_ActionLegalityMixin):
     # Ring buffer size for recent planning diagnostics (kept for debug reports)
     _DIAG_BUFFER_SIZE = 10
 
+    separate_strategy_planning = False
+
     def __init__(
         self,
         backend: Any,
@@ -684,6 +686,7 @@ class ActionPlanner(_ActionLegalityMixin):
         land_drop_first: bool = True,
         deck_strategy_fn: Callable[[], str | None] | None = None,
         deck_playbook_fn: Callable[[], Any] | None = None,
+        separate_strategy_planning: bool = False,
     ):
         """Initialize the action planner.
 
@@ -697,6 +700,13 @@ class ActionPlanner(_ActionLegalityMixin):
                 results that arrive asynchronously after the planner is created.
         """
         self._backend = backend
+        self.separate_strategy_planning = separate_strategy_planning
+        logger.info(
+            "Planner mode: %s",
+            "separate strategy (low-effort actions, concurrent background plans)"
+            if separate_strategy_planning
+            else "existing decision policy",
+        )
         self._timeout = timeout
         self._land_drop_first = land_drop_first
         self._deck_strategy_fn = deck_strategy_fn
@@ -759,6 +769,8 @@ class ActionPlanner(_ActionLegalityMixin):
 
     def _yield_background(self) -> bool:
         """Ask background work to step aside for a decision; False when a reform stays in flight."""
+        if self.separate_strategy_planning:
+            return True  # Separate strategy may continue; actions never wait for it.
         yield_fn = getattr(self, "_background_yield", None)
         if not callable(yield_fn):
             return True
@@ -1063,6 +1075,13 @@ class ActionPlanner(_ActionLegalityMixin):
             self._yield_background()
         complete = self._backend.complete
         extras: dict[str, Any] = {"call_class": call_class}
+        if self.separate_strategy_planning and call_class.startswith("decision."):
+            reasoning_effort = "low"
+        if call_class in {"decision.typed", "decision.mulligan"}:
+            # bug_20261028_192726: a fast answer chose pass but left its
+            # reasoning unquoted. Request JSON generation, not just prose
+            # instructions; option IDs still pass the normal legality checks.
+            extras["response_format"] = {"type": "json_object"}
         if first_token_timeout_s is not None:
             extras["first_token_timeout_s"] = min(first_token_timeout_s, timeout_s)
         if reasoning_effort:
@@ -1073,15 +1092,34 @@ class ActionPlanner(_ActionLegalityMixin):
             extras["cancel_event"] = cancel_event
         extras = _accepted_extras(complete, extras)
         try:
-            response = complete(
-                system_prompt,
-                user_message,
-                max_tokens,
-                temperature=0.0,
-                request_timeout_s=timeout_s,
-                raise_on_error=True,
-                **extras,
-            )
+            try:
+                response = complete(
+                    system_prompt,
+                    user_message,
+                    max_tokens,
+                    temperature=0.0,
+                    request_timeout_s=timeout_s,
+                    raise_on_error=True,
+                    **extras,
+                )
+            except TypeError as error:
+                # A **kwargs wrapper may forward to an older backend. Remove
+                # only the unsupported JSON option, retaining budgets and cancellation.
+                if (
+                    "response_format" not in extras
+                    or "unexpected keyword argument 'response_format'" not in str(error)
+                ):
+                    raise
+                extras.pop("response_format")
+                response = complete(
+                    system_prompt,
+                    user_message,
+                    max_tokens,
+                    temperature=0.0,
+                    request_timeout_s=timeout_s,
+                    raise_on_error=True,
+                    **extras,
+                )
         except TypeError:
             # Older backends: no raise_on_error / request budget / temperature.
             try:
@@ -1427,6 +1465,8 @@ class ActionPlanner(_ActionLegalityMixin):
         # 12 life. Within lethal reach or in danger they think at high effort, a low-effort
         # answer racing alongside as the hedge (``_hedged_declaration``).
         effort, effort_why = declaration_effort(game_state, effective_legal_actions)
+        if self.separate_strategy_planning:
+            effort = None
         if effort:
             logger.info("Declaration plan: high reasoning effort (%s)", effort_why)
             diag["effort"] = effort_why
@@ -4928,6 +4968,18 @@ class ActionPlanner(_ActionLegalityMixin):
                     if chosen == picked:
                         # Ledger #142 (970d9b41 T12): "mode 1 kills Ravenhill Flock", a 1/2.
                         chosen = self._correct_mode_kill_claim(decision, game_state, chosen)
+                    from arenamcp.casting_options import unaffordable_kicker_choice
+
+                    chosen, correction = unaffordable_kicker_choice(decision, game_state, chosen)
+                    if correction:
+                        self._last_decision_trace["kicker_affordability"] = {
+                            "model_choice": picked,
+                            "selected_ids": chosen,
+                            "reason": correction,
+                        }
+                        self._last_decision_option_ids = chosen
+                        self._last_decision_reasoning = correction
+                        logger.warning("Kicker affordability guard: %s", correction)
                     self._remember_chosen_x(decision, chosen)
                 return chosen
             chosen = [c for c in chosen if c in valid]
@@ -8631,12 +8683,9 @@ class ActionPlanner(_ActionLegalityMixin):
     _CRITICAL_DECISION_BUDGET_S = 15.0
     # A hedge leg still running this long past its budget is abandoned.
     _HEDGE_GRACE_S = 2.0
-    # Once a valid low answer is in, the high leg gets at most this much longer.
-    # 2026-10-19 Mono-Red Burn, 07:15-09:08: 137 hedges with a valid low answer
-    # waited a mean 3.1 s more for the high one (29 over 5 s); at 08:25:31 the
-    # low answer was ready at 4.9 s and the action left at 15.0 s, when the
-    # high leg ran out of budget with nothing.
-    _HIGH_AFTER_LOW_S = 3.0
+    # Legacy tuning hook, no longer consulted. A usable answer never waits
+    # for a second opinion, even when the opponent is within lethal reach.
+    _HIGH_AFTER_LOW_S = 0.0
     # A DOUBTED low answer used to wait out the whole high budget (15 s + 2 s
     # grace) and was then set aside to the board-math fallback anyway — the
     # 20:23/20:41 stalls of ledger #222 burned exactly that on windows whose
@@ -8663,24 +8712,21 @@ class ActionPlanner(_ActionLegalityMixin):
         2026-10-18 14:31-14:33 (shared-GPU load): 4 of 5 high-effort calls ran
         out their 15 s with no content and board math played the turn's key
         spells, while low-effort calls in the same window finished in ~6 s
-        (p50 2.5 s; high p50 9.5 s when it finishes). The high answer is used
-        when it parses within its budget; otherwise the low answer; only when
-        both fail does the caller fall back. The loser is cancelled (its socket
+        (p50 2.5 s; high p50 9.5 s when it finishes). The first usable answer
+        wins; a failed or specifically doubted answer leaves the other leg a
+        chance. The loser is cancelled (its socket
         shut down). The autopilot's request-changed cancel event stops both legs.
 
-        A valid low answer waits at most ``_HIGH_AFTER_LOW_S`` for the high one,
-        and not at all when ``low_agrees`` (the board-math line's own play,
-        :func:`board_math_agreement`; at a target step the line's own target,
-        :meth:`_line_target_agreement`) names it: two independent ways to the
-        same play leave the high leg nothing to add. A low answer that
+        A usable low answer returns immediately, including within lethal reach.
+        ``low_agrees`` can confirm the board-math line's own play or target.
+        Two independent ways to the same play leave the high leg nothing to add. A low answer that
         ``low_doubt`` questions (face burn the line search rates below its best
         line, a false lethal claim: :meth:`_second_look_concerns`) waits for
-        the high leg to its deadline instead, and without a high answer the
+        the high leg for the bounded doubt allowance instead, and without a high answer the
         decision fails over to the caller's board-math fallback
-        (:class:`SecondLookError`) rather than firing it. ``patient`` (a window
-        within lethal reach, ledger #100: the line search the agreement trusts
-        missed that kill) waits for the high leg to its deadline with no
-        agreement shortcut; without a high answer the low one stands.
+        (:class:`SecondLookError`) rather than firing it. ``patient`` is retained
+        for diagnostic compatibility; it never extends a wait. Lethal proximity
+        alone is not evidence that a completed answer needs another opinion.
         """
         outer = getattr(self, "_decision_cancel_event", None)
         # Cancellation can preserve a completed leg before the normal
@@ -8743,7 +8789,7 @@ class ActionPlanner(_ActionLegalityMixin):
         if ok("low") and not ok("high"):
             low_data, low_ids = results["low"][1]
             high_pending = "high" not in results
-            if low_agrees is not None and high_pending and not patient:
+            if low_agrees is not None and high_pending:
                 try:
                     agreed = low_agrees(low_ids, low_data) or ""
                 except Exception as error:  # never block a decision on the check
@@ -8760,23 +8806,25 @@ class ActionPlanner(_ActionLegalityMixin):
                 # Ledger #222: bounded, not the whole high budget — past this
                 # the second look hands over to the board-math fallback at
                 # once instead of stalling the window and discarding anyway.
-                # A patient window (lethal reach, ledger #100) keeps the full
-                # high budget: there the high answer is worth waiting for.
-                doubt_deadline = (
-                    high_deadline
-                    if patient
-                    else min(high_deadline, time.monotonic() + self._DOUBT_AFTER_LOW_S)
-                )
+                doubt_deadline = min(high_deadline, time.monotonic() + self._DOUBT_AFTER_LOW_S)
                 wait_until(doubt_deadline, lambda: "high" in results)
-            elif patient and high_pending:
-                logger.info(
-                    "typed-decision hedge: within lethal reach; the low answer %s waits for high", low_ids
+            elif not doubt:
+                cancels["high"].set()
+                why = (
+                    f"high not awaited: the low answer is the board-math play, {agreed}"
+                    if agreed
+                    else "usable low answer; high not waited for"
                 )
-                wait_until(high_deadline, lambda: "high" in results)
-            elif not agreed and high_pending:
-                wait_until(
-                    min(high_deadline, time.monotonic() + self._HIGH_AFTER_LOW_S), lambda: "high" in results
-                )
+                logger.info("typed-decision hedge: low won in %.0f ms (%s)", results["low"][2], why)
+                if isinstance(trace, dict):
+                    trace["hedge"] = {
+                        "winner": "low",
+                        "low_ms": round(results["low"][2]),
+                        "wait_after_low_ms": 0,
+                        "patient": patient,
+                        "why": why[:160],
+                    }
+                return low_data, low_ids
         if ok("high"):
             cancels["low"].set()
             high, low = results["high"], results.get("low")
@@ -9200,6 +9248,8 @@ class ActionPlanner(_ActionLegalityMixin):
         critical = critical_decision(
             decision, game_state, getattr(self, "_game_plan", ""), skipped=passed_over
         )
+        if self.separate_strategy_planning:
+            critical = ""
         # On the opponent's turn the windows close fast (2026-10-11 turn 9: 13
         # windows each answered within 3 s while one high-effort call ran its
         # full 15 s and timed out), so every decision there runs at low effort.
@@ -9221,6 +9271,7 @@ class ActionPlanner(_ActionLegalityMixin):
         elif passed_over and not opponent_turn:
             logger.info("typed-decision: low effort, burn only goes face (%s)", "; ".join(passed_over))
         self._last_decision_trace = {
+            "planning_mode": "separate_strategy" if self.separate_strategy_planning else "existing",
             "request_type": decision.request_type,
             "request_id": list(decision.request_id),
             "source": decision.source_label,
@@ -9275,6 +9326,9 @@ class ActionPlanner(_ActionLegalityMixin):
             message: str, *, effort: str | None, budget: float, cancel_event: threading.Event | None = None
         ) -> str:
             from arenamcp.game_plan import critical_decision_call
+
+            if self.separate_strategy_planning:
+                effort = "low"
 
             # A high-effort decision holds new game-plan reforms back: vLLM
             # runs several sequences at once, so the reform's priority only

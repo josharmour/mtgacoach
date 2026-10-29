@@ -106,3 +106,19 @@ def test_control_status_reports_off_paused_and_on():
     assert coach._autopilot_control_status() == "AP:ON"
     coach._autopilot.state = AutopilotState.PAUSED
     assert coach._autopilot_control_status() == "AP:PAUSED"
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_shared_coach_strategy_manager_receives_planning_mode(
+    monkeypatch, native_mac_without_bridge, enabled
+):
+    from arenamcp.game_plan import GamePlanManager
+
+    coach, _, _ = _coach(monkeypatch)
+    manager = GamePlanManager(Mock())
+    coach._coach = SimpleNamespace(_ensure_game_plan_mgr=lambda: manager)
+    coach.settings["separate_strategy_planning"] = enabled
+    coach._init_autopilot()
+    assert coach._autopilot._game_plan_mgr is manager
+    assert manager.separate_strategy_planning is enabled
+    assert coach._autopilot._planner.separate_strategy_planning is enabled

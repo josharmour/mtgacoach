@@ -155,6 +155,11 @@ class FakeArena:
                     target[op["member"]] = op["value"]["str"]
                     results.append(None)
                     objects.append(None)
+                elif kind == "expect":
+                    target = self._resolve(op["target"], objects)
+                    assert target.get(op["member"]) == op["equals"], "identity mismatch"
+                    results.append(None)
+                    objects.append(None)
                 else:
                     raise AssertionError(f"unexpected op {kind}")
             except AssertionError as error:
@@ -250,6 +255,20 @@ def test_update_deck_without_changes_skips_the_save(adapter: MacBridgeAdapter, a
     assert not [call for call in arena.calls if call[0] == "UpdateDeck"]
 
 
+def test_constructed_update_can_clear_absent_empty_piles(adapter: MacBridgeAdapter, arena: FakeArena):
+    response = adapter.handle(
+        {
+            "action": "update_deck",
+            "deck_id": DECK_A_GUID,
+            "piles": {"main": [[70103, 4]], "sideboard": [], "command_zone": [], "companions": []},
+        },
+        timeout=5.0,
+    )
+    assert response["ok"] is True
+    assert arena.side_list["$items"] == []
+    assert [call for call in arena.calls if call[0] == "UpdateDeck"]
+
+
 def test_update_deck_refuses_an_empty_main_pile(adapter: MacBridgeAdapter):
     response = adapter.handle(
         {"action": "update_deck", "deck_id": DECK_A_GUID, "piles": {"main": []}}, timeout=5.0
@@ -280,6 +299,43 @@ def test_create_deck_clones_renames_and_calls_created(adapter: MacBridgeAdapter,
     assert copy["Summary"]["DeckId"] == arena.deck_a["Summary"]["DeckId"]  # cloned from the source
     assert action == {"str": "Cloned"} and force_copy == {"bool": True}
     assert arena.deck_a["Summary"]["Name"] == "Burn"  # the source keeps its name
+
+
+def test_clone_checks_name_readback_before_submission(arena: FakeArena):
+    def send(command, timeout):
+        for op in command["ops"]:
+            if op["op"] == "set" and op["member"] == "Name":
+                op["value"] = {"str": "wrong name"}
+        return arena.send(command, timeout)
+
+    result = MacBridgeAdapter(send).handle(
+        {"action": "create_deck", "source_deck_id": DECK_A_GUID, "name": "Quest"}
+    )
+    assert not result["ok"]
+    assert not any(call[0] == "CreateDeck" for call in arena.calls)
+
+
+@pytest.mark.parametrize("failure", ["name_field", "submit", "unknown", "invalid"])
+def test_clone_failure_reports_only_proven_pre_submission_errors(arena: FakeArena, failure):
+    def send(command, timeout):
+        ops = command["ops"]
+        if any(op.get("method") == "CreateDeck" for op in ops):
+            reply = {"ok": False, "error": "clone failure"}
+            if failure == "name_field":
+                reply["failed_op"] = next(i for i, op in enumerate(ops) if op["op"] == "set")
+            elif failure == "submit":
+                reply["failed_op"] = len(ops) - 1
+            elif failure == "invalid":
+                reply["failed_op"] = -1
+            return reply
+        return arena.send(command, timeout)
+
+    result = MacBridgeAdapter(send).handle(
+        {"action": "create_deck", "source_deck_id": DECK_A_GUID, "name": "Quest"}
+    )
+    assert result["ok"] is False
+    assert result["not_submitted"] is (failure == "name_field")
+    assert not arena.calls
 
 
 def test_craft_builds_the_bulk_request_and_starts_the_coroutine(adapter: MacBridgeAdapter, arena: FakeArena):

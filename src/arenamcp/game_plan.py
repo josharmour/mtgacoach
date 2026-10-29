@@ -3476,6 +3476,8 @@ class GamePlanManager:
         with self._lock:
             if not self._inflight or self._inflight_cancel is None or self._inflight_cancel.is_set():
                 return True
+            if self.separate_strategy_planning:
+                return False  # Keep bounded strategy work running alongside low-effort actions.
             # 2026-10-10 Brawl game: decisions came every few seconds on our turn
             # and every reform was cancelled before finishing (no plan by turn
             # 10). The first plan of a game is never cancelled: a plan is worth
@@ -3619,8 +3621,11 @@ class GamePlanManager:
 
     _CALL_CLASS = "background.game_plan"
 
-    def __init__(self, backend: Any, timeout: float | None = None):
+    def __init__(
+        self, backend: Any, timeout: float | None = None, *, separate_strategy_planning: bool = False
+    ):
         self._backend = backend
+        self.separate_strategy_planning = separate_strategy_planning
         self._timeout = self._PLAN_TIMEOUT_S if timeout is None else timeout
         self._plan: GamePlan | None = None
         self._seed: str | None = None  # deck archetype summary, if available
@@ -4023,7 +4028,7 @@ class GamePlanManager:
             suspended = getattr(self, "background_suspended_fn", None)
             if callable(suspended) and suspended():
                 return False
-            if critical_decision_call_inflight():
+            if not self.separate_strategy_planning and critical_decision_call_inflight():
                 # Re-requested at the next window: nothing was attempted.
                 logger.debug("Game plan reform waits: a critical decision call is in flight")
                 return False
@@ -4067,7 +4072,11 @@ class GamePlanManager:
                 # for the opponent's turn could cost the game.
                 logger.debug("Game plan reform (%s) deferred to the opponent's turn", reason)
                 return False
-            if reason in self._ROUTINE_REASONS and _decision_pending(game_state):
+            if (
+                not self.separate_strategy_planning
+                and reason in self._ROUTINE_REASONS
+                and _decision_pending(game_state)
+            ):
                 return False
             if not background_llm_allowed(self._backend):
                 logger.debug("Game plan reform (%s) skipped: model server unavailable", reason)
@@ -4693,7 +4702,11 @@ class GamePlanManager:
             # at high effort on a 21k-token prompt. With no plan at all, a quick
             # low-effort plan comes first; the next reform (their turn, a role
             # flip, staleness) runs at high effort as usual.
-            effort = "low" if self._low_effort_reform(game_state, turn_num) else self._PLAN_REASONING_EFFORT
+            effort = (
+                "low"
+                if not self.separate_strategy_planning and self._low_effort_reform(game_state, turn_num)
+                else self._PLAN_REASONING_EFFORT
+            )
             if effort == "low":
                 logger.info("Game plan: reform at low effort for speed")
             response = self._complete(GAME_PLAN_PROMPT, user_message, cancel=cancel, effort=effort)

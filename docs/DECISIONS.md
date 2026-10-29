@@ -7,6 +7,26 @@ records *why* and *how we know*). Newest entries first.
 
 ---
 
+## 2026-10-28 — Optional separation of strategy and action calls
+
+`separate_strategy_planning` is opt-in (Tools → Separate Strategy Planning,
+then Reload Coaching Engine). Off preserves the existing policy for comparison.
+On uses one low-effort call for typed actions and combat declarations rather than
+parallel low/high opinions. Corrective calls retain the original deadline and
+also use low effort. Existing legality, combat, targeting and fallback guards stay.
+
+High effort belongs to background game-plan refreshes. One bounded refresh may
+run alongside decisions without being cancelled merely because a decision starts.
+Actions consume the latest completed plan and current board facts; they never
+wait for a pending plan, including the initial one. The existing strategic lane,
+cooldowns, lower scheduling priority, 75-second/6000-token per-call limits,
+failure retention and stale-result rejection remain. A malformed plan can still
+receive the existing single low-effort JSON repair attempt.
+
+This removes application-level waiting, not shared GPU costs. Compare the logged
+planning mode, `decision.typed` latency/fallback rate and `background.game_plan`
+duration alongside match reviews before changing the default for other users.
+
 ## 2026-10-20 — Auto-queue leaves the result screen through the Mac bridge
 
 - **Report:** "auto-queue doesn't seem to progress the matches … stuck at the
@@ -182,7 +202,12 @@ records *why* and *how we know*). Newest entries first.
   coaching loop and 50 ms bridge prefetch; stale model calls cancelled on request
   change; engine-busy gate and fixed sleeps replaced by condition polls; replanning
   deferred to the opponent's turn; ms log timestamps. Critical decisions are hedged:
-  high and low effort in parallel, high used if on time (live 14:31-14:33: 4/5
+  high and low effort in parallel. Updated 2026-10-28: a usable low answer returns
+  immediately and cancels high, including possible-lethal windows. Only a concrete
+  safety concern allows a bounded second-opinion wait (at most six additional
+  seconds, within the original deadline); malformed/failed answers can still use
+  the other leg. Legal-action and second-look checks remain in place. Previously,
+  high was used if on time (live 14:31-14:33: 4/5
   high-effort calls hit the 15 s budget under shared-GPU load; server delivers
   ~125-165 tok/s, low-effort decisions p50 2.5 s). Background planning effort unchanged.
 - **Bridge restart:** stdin EOF now releases 127.0.0.1:44222 first (live 14:54: the old

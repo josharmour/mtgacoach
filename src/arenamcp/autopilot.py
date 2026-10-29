@@ -250,7 +250,11 @@ class AutopilotEngine(
         try:
             from arenamcp.game_plan import GamePlanManager
 
-            self._game_plan_mgr: Any | None = GamePlanManager(self._planner._backend)
+            self._game_plan_mgr: Any | None = GamePlanManager(
+                self._planner._backend,
+                separate_strategy_planning=getattr(self._planner, "separate_strategy_planning", False)
+                is True,
+            )
         except Exception as e:  # never block construction on the strategic layer
             logger.debug("GamePlanManager unavailable: %s", e)
             self._game_plan_mgr = None
