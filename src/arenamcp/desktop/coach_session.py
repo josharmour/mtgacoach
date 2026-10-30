@@ -261,6 +261,10 @@ class CoachSession(QObject):
                 key: settings.get(key)
                 for key in (
                     "tts_provider",
+                    "autoplay_speech",
+                    "commentary_persona",
+                    "commentary_kokoro_pair",
+                    "commentary_chatterbox_pair",
                     "voice",
                     "voice_speed",
                     "speech_speed",

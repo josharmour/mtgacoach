@@ -26,6 +26,9 @@ def controller(qapp, monkeypatch):
     tts = Tts()
     sent = []
     control = CommentaryController(tts, sent.append, lambda text: None)
+    monkeypatch.setattr(
+        control, "_catalog", lambda _: {"voices": ["atlas", "mira", "default"], "default": "atlas"}
+    )
     control.configure(CommentaryConfig(mode="commentary").to_wire())
     state = {"match_id": "m", "game_number": 1, "turn_info": {}, "zones": {}, "players": []}
     control.observe(state)
@@ -63,7 +66,7 @@ def test_reply_requires_finished_anchor_and_duplicate_is_not_reacknowledged(cont
     tts.speechStatus.emit(first.utterance_id, "started")
     tts.speechStatus.emit(first.utterance_id, "finished")
     assert tts.request_speech.call_count == 2
-    assert tts.request_speech.call_args.kwargs["voice_id"] == "am_onyx"
+    assert tts.request_speech.call_args.kwargs["voice_id"] == "am_adam"
     tts.speechStatus.emit(reply.utterance_id, "started")
     tts.speechStatus.emit(reply.utterance_id, "finished")
     tts.speechStatus.emit(first.utterance_id, "finished")

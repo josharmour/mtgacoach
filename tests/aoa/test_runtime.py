@@ -380,7 +380,7 @@ def test_service_narrates_observed_cast_without_optional_analysis(blocker, monke
         service.offer(state)
         assert ready.wait(3)
         proposal = next(e["utterance"] for e in events if e["type"] == "commentary_proposal")
-        assert proposal["text"] == "Player 1 casts Bear."
+        assert proposal["text"] == "There's the cast: Bear."
         assert proposal["event_bound"] is True and proposal["evidence_ids"]
     finally:
         _BACKGROUND_LANE.unprotect(handle)

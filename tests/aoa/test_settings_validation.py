@@ -100,7 +100,8 @@ def test_actual_catalog_default_and_explicit_selection(dialog):
     assert settings["commentary_persona"] == "esports"
     reopened = ui.CommentarySettingsDialog(settings, session)
     reopened._catalog_ready(widget.catalog)
-    assert reopened.voice.currentData() == "mira"
+    assert reopened.voice.currentData() == ""  # automatic pair, separate from advice voice
+    assert settings["chatterbox_voice_override"] == "mira"
     reopened.close()
 
 
@@ -124,4 +125,29 @@ def test_speed_default_preview_save_and_reopen(dialog):
     session.set_speech_speed.assert_called_once_with(1.75)
     reopened = ui.CommentarySettingsDialog(settings, session)
     assert reopened.speed.currentData() == 1.75
+    reopened.close()
+
+
+@pytest.mark.parametrize("style", ui.PERSONAS)
+def test_two_role_style_pair_preview_and_save(dialog, style):
+    widget, settings, session = dialog
+    widget.catalog = {"voices": ["atlas", "mira", "default"], "default": "atlas"}
+    widget.setup.server_configured = True
+    widget.provider.setCurrentIndex(1)
+    widget.mode.setCurrentIndex(1)
+    widget.style.setCurrentIndex(widget.style.findData(style))
+    widget.voice.setCurrentIndex(widget.voice.findData("mira|atlas"))
+    before = dict(settings)
+    widget._preview()
+    options = session.preview_voice.call_args.args[0]
+    assert options["commentary_chatterbox_pair"] == "mira|atlas"
+    assert options["commentary_persona"] == style and options["commentary_speakers"] == 2
+    assert options["_commentary_voice_catalog"] == widget.catalog
+    assert settings == before
+    assert widget._apply()
+    assert "_commentary_voice_catalog" not in settings
+    assert settings["commentary_speakers"] == 2
+    reopened = ui.CommentarySettingsDialog(settings, session)
+    reopened._catalog_ready(widget.catalog)
+    assert reopened.voice.currentData() == "mira|atlas" and reopened.style.currentData() == style
     reopened.close()

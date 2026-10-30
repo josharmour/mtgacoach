@@ -77,6 +77,10 @@ def test_native_personas_audit_anchor_and_heard_ledger(source, persona):
 
     def rpc(system, context, audit):
         requests.append(audit)
+        if not audit:
+            from arenaonair.personas import get
+
+            assert context["style"] == get(persona).style
         assert len(system.encode()) + len(json.dumps(context).encode()) + 256 <= 6000
         return response(context, audit)
 

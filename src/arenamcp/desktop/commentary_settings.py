@@ -18,8 +18,9 @@ from PySide6.QtWidgets import (
 )
 
 from arenamcp.chatterbox_remote import ChatterboxError
-from arenamcp.commentary.config import CommentaryConfig, speech_rate
+from arenamcp.commentary.config import PERSONAS, CommentaryConfig, speech_rate
 from arenamcp.commentary.setup import VOICE_LABELS, discover, server_voices
+from arenamcp.commentary.voices import VoicePairUnavailable, pair_options, voice_pair
 from arenamcp.kokoro_voices import KOKORO_VOICES
 
 
@@ -70,6 +71,14 @@ class CommentarySettingsDialog(QDialog):
         self.server = QCheckBox("Server Chatterbox")
         self.server.setChecked(settings.get("speech_server_chatterbox", self.setup.prefer_server))
         self.voice = QComboBox()
+        self.voice_label = QLabel("Voice")
+        self.style_label = QLabel("Style")
+        self.style = combo(list(PERSONAS.items()), self.config.persona)
+        self.pairs = {
+            "kokoro": str(settings.get("commentary_kokoro_pair") or ""),
+            "chatterbox": str(settings.get("commentary_chatterbox_pair") or ""),
+        }
+        self.pair_error = ""
         # Older per-role Chatterbox values were troubleshooting state. Only the
         # new explicit selector is a preference; otherwise the server decides.
         self.override = str(settings.get("chatterbox_voice_override") or "")
@@ -79,7 +88,8 @@ class CommentarySettingsDialog(QDialog):
             ("Voice engine", self.provider),
             ("Hear", self.mode),
             ("", self.server),
-            ("Voice", self.voice),
+            (self.style_label, self.style),
+            (self.voice_label, self.voice),
             ("Speed", self.speed),
         ):
             form.addRow(label, control)
@@ -99,11 +109,13 @@ class CommentarySettingsDialog(QDialog):
         self.server.toggled.connect(self._update_controls)
         self.voice.currentIndexChanged.connect(self._voice_changed)
         self.enabled.toggled.connect(self._update_status)
-        self.mode.currentIndexChanged.connect(self._update_status)
+        self.mode.currentIndexChanged.connect(self._update_controls)
         self._update_controls()
 
     def _voice_changed(self):
-        if self.provider.currentData() == "kokoro":
+        if self.mode.currentData() == "commentary":
+            self.pairs[self.provider.currentData()] = str(self.voice.currentData() or "")
+        elif self.provider.currentData() == "kokoro":
             self.kokoro_voice = str(self.voice.currentData() or "am_adam")
         else:
             self.override = str(self.voice.currentData() or "")
@@ -113,7 +125,25 @@ class CommentarySettingsDialog(QDialog):
         self.server.setVisible(chatterbox)
         self.voice.blockSignals(True)
         self.voice.clear()
-        if not chatterbox:
+        duo = self.mode.currentData() == "commentary"
+        self.voice_label.setText("Voices" if duo else "Voice")
+        self.style.setVisible(duo)
+        self.style_label.setVisible(duo)
+        self.pair_error = ""
+        if duo:
+            provider = (
+                ("chatterbox_remote" if self.server.isChecked() else "chatterbox_local")
+                if chatterbox
+                else "kokoro"
+            )
+            try:
+                pairs = pair_options({"tts_provider": provider, "voice": self.kokoro_voice}, self.catalog)
+                options = [(key, label) for key, label, _voices in pairs]
+            except VoicePairUnavailable as error:
+                options = [("", "Waiting for server voice pair")]
+                self.pair_error = str(error)
+            selected = self.pairs[self.provider.currentData()]
+        elif not chatterbox:
             options, selected = KOKORO_VOICES, self.kokoro_voice
         elif self.server.isChecked():
             default = (self.catalog or {}).get("default")
@@ -169,6 +199,8 @@ class CommentarySettingsDialog(QDialog):
                 return "Server Chatterbox isn't configured. Connect your speech server in ArenaOnAir; Coach will reuse that setup automatically."
             if not self.server.isChecked() and not self.setup.local_configured:
                 return "Local Chatterbox isn't installed on this computer. Turn on Server Chatterbox to use your existing server, or choose Kokoro."
+        if self.mode.currentData() == "commentary" and self.pair_error:
+            return self.catalog_error or self.pair_error
         if (
             not provider_only
             and self.mode.currentData() == "commentary"
@@ -186,37 +218,51 @@ class CommentarySettingsDialog(QDialog):
             or (
                 "Loading voices from your speech server…"
                 if self.catalog_pending
-                else "Preview auditions this voice without saving or turning speech on. Save applies your choices. Announcers replace spoken Coach advice; essential alerts still get through."
+                else "Preview auditions the selected voice or both announcers without saving. Announcers use play-by-play then analyst; advice stays silent. Server default + partner keeps the server lead and adds a distinct available voice."
             )
         )
 
     def _values(self):
         values = dict(self.setup.values)
         chatterbox = self.provider.currentData() == "chatterbox"
+        duo = self.mode.currentData() == "commentary"
         values.update(
             tts_provider=("chatterbox_remote" if self.server.isChecked() else "chatterbox_local")
             if chatterbox
             else "kokoro",
             speech_server_chatterbox=self.server.isChecked(),
-            chatterbox_voice_override=str(self.voice.currentData() or "") if chatterbox else self.override,
-            voice=str(self.voice.currentData()) if not chatterbox else self.kokoro_voice,
+            autoplay_speech=self.mode.currentData(),
+            commentary_persona=self.style.currentData(),
+            commentary_speakers=2,
+            commentary_kokoro_pair=self.pairs["kokoro"],
+            commentary_chatterbox_pair=self.pairs["chatterbox"],
+            chatterbox_voice_override=str(self.voice.currentData() or "")
+            if chatterbox and not duo
+            else self.override,
+            voice=str(self.voice.currentData()) if not chatterbox and not duo else self.kokoro_voice,
         )
         values["chatterbox_voice"] = values["chatterbox_voice_override"] or (
             "server_default" if self.server.isChecked() else "default"
         )
-        values["commentary_chatterbox_analyst"] = values["chatterbox_voice"]
+        if duo:
+            key = "commentary_chatterbox_pair" if chatterbox else "commentary_kokoro_pair"
+            values[key] = str(self.voice.currentData() or "")
+            # Validation uses the current catalog; never manufacture a pair.
+            voice_pair(values, self.catalog)
         values["speech_speed"] = float(self.speed.currentData())
         values["chatterbox_speed"] = values["voice_speed"] = values["speech_speed"]
         return values
 
     def _apply(self):
-        if self.enabled.isChecked() and self._problem():
+        if (self.enabled.isChecked() or self.mode.currentData() == "commentary") and self._problem():
             self._update_status()
             return False
         values = self._values()
         config = replace(
             self.config,
             mode=self.mode.currentData(),
+            speakers=2,
+            persona=self.style.currentData(),
             generative=True,
             muted=False,
             output_owner="coach",
@@ -241,4 +287,7 @@ class CommentarySettingsDialog(QDialog):
 
     def _preview(self):
         if not self._problem(provider_only=True):
-            self.session.preview_voice(self._values())
+            options = self._values()
+            if self.catalog is not None:
+                options["_commentary_voice_catalog"] = self.catalog
+            self.session.preview_voice(options)

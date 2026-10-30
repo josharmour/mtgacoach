@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import uuid
 from dataclasses import replace
@@ -12,6 +13,8 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from arenamcp.commentary.config import CommentaryConfig, speech_rate
 from arenamcp.commentary.contracts import TERMINAL_STATES, Epoch, SpeechCategory, Utterance
 from arenamcp.commentary.events import ObservationAdapter
+from arenamcp.commentary.setup import server_voices
+from arenamcp.commentary.voices import VoicePairUnavailable, voice_pair
 from arenamcp.settings import get_settings
 
 from .speech_arbiter import SpeechArbiter
@@ -21,10 +24,13 @@ logger = logging.getLogger(__name__)
 
 class CommentaryController(QObject):
     statusChanged = Signal(dict)
+    catalogReady = Signal(str, object)
 
     def __init__(self, tts, send, spoken, parent=None):
         super().__init__(parent)
         self.tts, self.send, self.spoken = tts, send, spoken
+        self.catalogs, self.catalog_pending, self.catalog_retry = {}, set(), {}
+        self.catalogReady.connect(self._catalog_ready)
         settings = get_settings()
         self.config = CommentaryConfig.from_settings(settings)
         self.observation = None
@@ -44,6 +50,7 @@ class CommentaryController(QObject):
         self.timer.setInterval(100)
         self.timer.timeout.connect(self.arbiter.tick)
         self.timer.start()
+        self._catalog(settings)
 
     def configure(self, config):
         self.config = CommentaryConfig.from_wire(config)
@@ -87,14 +94,14 @@ class CommentaryController(QObject):
             return
         settings = get_settings()
         provider = str(settings.get("tts_provider") or "kokoro")
-        # AOA voices are provider-specific; no Atlas name is sent to Kokoro.
-        if provider == "kokoro":
-            voice = str(
-                settings.get("commentary_kokoro_analyst" if item.role == "color_analyst" else "voice")
-                or ("am_onyx" if item.role == "color_analyst" else "am_adam")
-            )
-        else:
-            voice = self._chatterbox_voice(settings, provider)
+        try:
+            pair = voice_pair(settings, self._catalog(settings))
+            voice = pair[1 if item.role == "color_analyst" else 0]
+        except VoicePairUnavailable as error:
+            self.commentary_ids.add(item.utterance_id)
+            self._status(item.utterance_id, "failed")
+            self.statusChanged.emit({"state": "voice", "message": str(error)})
+            return
         item = replace(
             item,
             provider=provider,
@@ -161,25 +168,106 @@ class CommentaryController(QObject):
             or ("server_default" if provider == "chatterbox_remote" else "default")
         )
 
+    def _catalog(self, settings):
+        if settings.get("tts_provider") != "chatterbox_remote":
+            return None
+        supplied = settings.get("_commentary_voice_catalog")
+        if isinstance(supplied, dict):
+            return supplied
+        endpoint = str(settings.get("chatterbox_server_url") or "")
+        if endpoint in self.catalogs:
+            return self.catalogs[endpoint]
+        if (
+            endpoint
+            and endpoint not in self.catalog_pending
+            and time.monotonic() >= self.catalog_retry.get(endpoint, 0)
+        ):
+            self.catalog_pending.add(endpoint)
+
+            def read():
+                try:
+                    value = server_voices(endpoint)
+                except Exception:
+                    value = None
+                try:
+                    self.catalogReady.emit(endpoint, value)
+                except RuntimeError:
+                    pass
+
+            threading.Thread(target=read, daemon=True, name="announcer-voices").start()
+        return None
+
+    def _catalog_ready(self, endpoint, value):
+        self.catalog_pending.discard(endpoint)
+        if value is None:
+            self.catalog_retry[endpoint] = time.monotonic() + 30
+            self.statusChanged.emit(
+                {
+                    "state": "voice",
+                    "message": "Can't load announcer voices. Check the speech server connection or choose Kokoro.",
+                }
+            )
+        else:
+            self.catalogs[endpoint] = value
+
     def preview(self, options):
         self.stop()
         uid = "preview:" + uuid.uuid4().hex
         provider = str(options.get("tts_provider") or "kokoro")
-        self.preview_settings[uid] = dict(options)
-        item = Utterance(
-            uid,
-            "The booth is ready. Welcome to the game.",
-            SpeechCategory.WORKFLOW,
-            self.arbiter.epoch or Epoch("desktop", 1),
-            time.monotonic() + 90,
-            provider=provider,
-            voice=str(options.get("voice") or "am_adam")
-            if provider == "kokoro"
-            else self._chatterbox_voice(options, provider),
-            speed=speech_rate(options),
+        duo = options.get("autoplay_speech") == "commentary"
+        try:
+            voices = (
+                voice_pair(options, self._catalog(options))
+                if duo
+                else (
+                    str(options.get("voice") or "am_adam")
+                    if provider == "kokoro"
+                    else self._chatterbox_voice(options, provider),
+                )
+            )
+        except VoicePairUnavailable as error:
+            self.statusChanged.emit({"state": "voice", "message": str(error)})
+            return
+        preview_lines = {
+            "classic": (
+                "Welcome to the booth. I'll call the action.",
+                "And I'll add the details. Good to have you with us.",
+            ),
+            "esports": (
+                "I'm calling the action. Welcome to the booth!",
+                "And I'm here for the big moments. Let's get into it!",
+            ),
+            "test_match": (
+                "Well, here we are. I'll call the play.",
+                "And I'll offer the occasional observation. Steady on.",
+            ),
+            "pro_tour": (
+                "I'm on play-by-play. We'll keep the card language precise.",
+                "I'll add the technical details supported by the game.",
+            ),
+        }
+        texts = (
+            preview_lines.get(options.get("commentary_persona"), preview_lines["classic"])
+            if duo
+            else ("The booth is ready. Welcome to the game.",)
         )
-        if not self.arbiter.submit(item, allow_muted=True):
-            self._status(uid, "failed")
+        for index, (voice, text) in enumerate(zip(voices, texts, strict=True)):
+            item_id = uid if index == 0 else uid + ":analyst"
+            self.preview_settings[item_id] = dict(options)
+            item = Utterance(
+                item_id,
+                text,
+                SpeechCategory.WORKFLOW,
+                self.arbiter.epoch or Epoch("desktop", 1),
+                time.monotonic() + 90,
+                provider=provider,
+                voice=voice,
+                speed=speech_rate(options),
+                role="color_analyst" if index else "play_by_play",
+                anchor_id=uid if index else None,
+            )
+            if not self.arbiter.submit(item, allow_muted=True):
+                self._status(item_id, "failed")
 
     def _start(self, item):
         times = self.timings.setdefault(item.utterance_id, {"accepted": time.monotonic()})

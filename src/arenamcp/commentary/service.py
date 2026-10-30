@@ -138,14 +138,18 @@ class CommentaryService:
         if not lines:
             self.status("waiting_events", reason="no_eligible_public_event")
             return
-        item = lines[0]
-        if now >= item.expires_at or (not item.event_bound and fresh.snapshot_id != item.snapshot_id):
+        if any(
+            now >= item.expires_at or (not item.event_bound and fresh.snapshot_id != item.snapshot_id)
+            for item in lines
+        ):
             self.status("dropped", reason="facts_changed")
             return
         with self._lock:
-            self.inflight[item.utterance_id] = item.expires_at + 30
+            for item in lines:
+                self.inflight[item.utterance_id] = item.expires_at + 30
         self.last_grounded = (observation.epoch, now)
-        self.emit({"type": "commentary_proposal", "utterance": item.to_wire()})
+        for item in lines:
+            self.emit({"type": "commentary_proposal", "utterance": item.to_wire()})
         self.status("grounded", reason=reason)
 
     def _run(self):

@@ -6,10 +6,10 @@ from dataclasses import asdict, dataclass
 
 MODES = {"actions", "commentary", "essential"}
 PERSONAS = {
-    "classic": "Classic",
+    "classic": "Classic radio booth",
     "esports": "Esports hype desk",
-    "test_match": "Test-match",
-    "pro_tour": "Pro Tour",
+    "test_match": "Test-match understatement",
+    "pro_tour": "Pro Tour analysts (technical)",
 }
 FOCUSES = {"calls", "balanced", "analysis"}
 

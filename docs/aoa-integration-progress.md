@@ -234,3 +234,54 @@ selected voice without changing mute or saving settings. Save applies choices.
 Validation for this repair: **398 affected-path tests passed** (395 combined
 gateway/desktop/typed-decision tests plus three final regressions). Repository
 Ruff checks and formatting passed for 802 Python files; whitespace checks passed.
+
+
+## Two announcers and original styles (2026-10-30)
+
+Announcers now routes play-by-play and color analysis to two distinct voices.
+The simple dialog includes Style, Voices and a sequential two-voice Preview;
+Coach advice keeps its independent single-voice choice. The four styles come
+from ArenaOnAir's `personas.py`: Classic radio booth, Esports hype desk,
+Test-match understatement and Pro Tour analysts (technical). Each supplies its
+native generation instructions; the fast grounded path and Preview also use
+style-specific wording. Style changes do not change the explicit 1.5× speed.
+[Updated dialog](images/aoa-two-announcers.png).
+
+Server automatic pairing omits the lead voice override, following the server's
+advertised default, and selects a different advertised partner. The current
+service advertises Atlas (default), Mira and original Chatterbox; it exposes no
+pair-default API. Automatic currently means Server default (Atlas) + Mira.
+Explicit Atlas + Mira and Mira + Atlas choices are available. Old troubleshooting
+single-voice values do not silently become announcer-pair preferences. A server
+without a usable default and distinct partner produces an actionable status.
+Kokoro pairs the selected advice voice with a different supported voice.
+
+Grounded casts, land plays and resolutions can produce a linked short exchange,
+with the second speaker adding actor or recorded destination evidence. Sparse
+evidence can still produce one line or silence; it cannot justify invented
+analysis. Both utterances register as in flight, and the reply waits for actual
+successful delivery of its anchor. Failed/cancelled speech, mode/mute changes,
+game boundaries and expiry suppress dependent replies. The grounded path keeps
+the existing ten-second admission interval and makes no model requests. Audited
+generation retains the same two-call budget and gameplay protection.
+
+The installed Python runtime and real Kokoro worker rendered both voices at
+1.5× (24 kHz, 1.818/2.138 seconds). The existing Chatterbox server rendered both
+Preview voices (1.762/2.083 seconds), protected-gameplay grounded exchanges, and
+both outputs from the real audited worker with deterministic model responses.
+All eight nonzero WAVs completed the desktop delivery lifecycle in order. Audio
+was intercepted for silent inspection, so these checks do not establish human
+audibility or perceptual voice quality. Live model output quality and local
+Chatterbox hardware remain separate qualifications; no new model load was sent
+to the gameplay gateway. The offscreen dialog was rendered and inspected; no
+user settings, game state, mute or output device were changed.
+
+Build boundary: the previous installed regular Coach was `ac60736`.
+This change requires a full Coach quit after a match before activation; an engine
+reload alone cannot replace the desktop dialog/controller. After activation,
+select Announcers → Style → Voices → Preview, then Save. Preview auditions both
+speakers without saving. The existing server choice and 1.5× speed persist.
+
+Validation: **188 affected-path tests passed**, including native style context,
+real worker protocol, pair sequencing/cancellation, settings persistence and
+current-gateway reasoning regressions. Ruff lint/format passed for 804 files.
