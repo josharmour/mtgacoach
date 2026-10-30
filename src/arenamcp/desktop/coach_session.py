@@ -241,7 +241,7 @@ class CoachSession(QObject):
         self.send_command("toggle_autopilot")
 
     def configure_commentary(self, config: dict) -> None:
-        self._speech.stop()
+        self._speech.stop("mode_changed")
         self._speech.configure(config)
         self._process.send_payload({"cmd": "configure_commentary", "config": config})
 
@@ -282,7 +282,7 @@ class CoachSession(QObject):
         self._speech.preview(options)
 
     def set_speech_speed(self, speed: float) -> None:
-        self._speech.stop()
+        self._speech.stop("speed_changed")
         self._process.send_payload(
             {"cmd": "sync_voice_preferences", "voice_speed": speed, "speech_speed": speed}
         )
@@ -617,8 +617,8 @@ class CoachSession(QObject):
         elif ev_type == "speak_stop":
             # The engine stopped its voice output (stop command, urgent-topic
             # preemption, shutdown), so desktop audio must halt too.
-            # stop_speech() is idempotent.
-            self._speech.stop()
+            # Explicit Stop also suppresses opening retries in the engine command handler.
+            self._speech.stop("engine_stop")
 
         elif ev_type in ("speak_request", "speak", "speak_audio"):
             self._speech.speech(event, muted=self._muted)

@@ -256,6 +256,10 @@ class PipeAdapter:
             overview = deck_overview(self._coach, snapshot)
             if overview:
                 snapshot = {**snapshot, "commentary_deck_overview": overview}
+        if self._coach is not None:
+            explanations = getattr(getattr(self._coach, "_autopilot", None), "_commentary_explanations", ())
+            if explanations:
+                snapshot = {**snapshot, "commentary_action_explanations": explanations}
         self._emit({"type": "game_state", "data": snapshot})
         if self._coach is not None:
             if self._commentary is None:
@@ -784,12 +788,18 @@ class PipeAdapter:
                 self._emit({"type": "commentary_config", "config": config.to_wire()})
             elif action == "commentary_delivery":
                 if self._commentary is not None:
-                    self._commentary.delivery(str(cmd.get("utterance_id") or ""), str(cmd.get("state") or ""))
+                    self._commentary.delivery(
+                        str(cmd.get("utterance_id") or ""),
+                        str(cmd.get("state") or ""),
+                        str(cmd.get("reason") or "")[:80],
+                    )
             elif action == "speech_status":
                 self.speech_completion.update(str(cmd.get("speech_id") or ""), str(cmd.get("state") or ""))
             elif action == "stop_speech":
                 # The stop button is also "keep playing" during a concede countdown.
                 self._cancel_concede(coach, "stop_speech")
+                if self._commentary is not None:
+                    self._commentary.suppress_opening("user_stop")
                 voice_output = getattr(coach, "_voice_output", None)
                 if voice_output is not None and hasattr(voice_output, "stop"):
                     with contextlib.suppress(Exception):

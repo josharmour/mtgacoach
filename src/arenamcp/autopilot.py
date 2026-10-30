@@ -5584,6 +5584,9 @@ class AutopilotEngine(
                 "AUTOPILOT",
                 explanation,
             )
+            from arenamcp.commentary.rationale import remember_explanation
+
+            remember_explanation(self, decision, option_ids, explanation, game_state)
             if (
                 reasoning
                 and decision.request_type == "ActionsAvailable"

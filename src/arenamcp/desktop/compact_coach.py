@@ -778,25 +778,10 @@ class CompactCoachPanel(QWidget):
     # Session wiring
     # ------------------------------------------------------------------
     def _on_commentary_status(self, status: dict) -> None:
-        state = status.get("state", "waiting")
-        labels = {
-            "ready": "Ready",
-            "deterministic": "Grounded event calls",
-            "grounded": "Narrating observed events; analysis waits for spare capacity",
-            "waiting_events": "Waiting for a new observed game event",
-            "waiting_delivery": "Narration queued or playing",
-            "waiting_capacity": "Waiting for the next fresh event call",
-            "silent": "Waiting for a fresh moment",
-            "dropped": "Waiting for spare capacity or fresh facts",
-            "waiting": "Waiting for a game",
-            "unavailable": "Announcers unavailable — check Speech & voices",
-        }
-        self.commentary_label.setText(
-            str(status.get("message"))
-            if state == "voice"
-            else "Arena On Air: " + labels.get(state, "Waiting for a grounded, fresh moment")
-        )
-        self.commentary_label.setVisible(state != "disabled")
+        from arenamcp.commentary.status import status_label
+
+        self.commentary_label.setText(status_label(status))
+        self.commentary_label.setVisible(status.get("state") != "disabled")
 
     def _wire_session(self) -> None:
         self._session.gameStateChanged.connect(self._on_game_state_changed)

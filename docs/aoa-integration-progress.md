@@ -408,3 +408,41 @@ Named historical calls cite the event's captured actor identity rather than a
 current player-state fact containing life totals. Current-life references still
 prevent historical classification; name handling never exempts mutable facts
 from freshness validation.
+
+
+## Opening delivery and reused action explanations (2026-10-30)
+
+The introduction remains pending until both speech roles finish. Interrupted
+roles may retry at most three attempts within the original 90-second opening
+window, separated by at least two seconds; a completed first voice is not
+repeated when only the analyst was interrupted. Explicit Stop, mute, a changed
+mode, shutdown or a new game suppress retries. Pacing starts on actual playback
+acknowledgment, not proposal enqueue. An unchanged settings echo does not stop
+the booth. Invalid candidates no longer prevent a different valid event call.
+
+A bounded cache of already displayed, successfully submitted cast explanations
+is matched to public GRE casts by match/game, seat, turn, card identity, source
+sequence and time. Ambiguous, old, opponent and unobserved actions do not qualify.
+With own-hand/deck consent enabled, a conservative local extractor reuses the
+stated tactical purpose for the second speaker, optionally naming a public
+synergy supported by printed rules. It does not copy hidden model traces,
+predicted power/damage totals, guaranteed outcomes or repetitive pass advice,
+and makes no additional model request. Unrecognized purposes remain silent;
+this is deliberately not unrestricted verbatim playback of every explanation.
+
+Past intentions and observed outcomes survive unrelated phase/hand changes.
+Current remaining-creature analysis depends on the battlefield, and low-life
+analysis on player life facts. Timing-sensitive predictions retain snapshot
+freshness. Playback still requires the first speaker to finish before the
+analyst starts. Waiting labels distinguish local pacing, urgent-gameplay
+preemption, model rate/time budgets and rejected evidence; stop reasons travel
+back to the engine delivery log. They do not imply a GPU-capacity diagnosis.
+
+Local regression coverage includes both-role completion after interruption,
+second-role-only retry, explicit-stop/mute/expiry limits, settings-echo delivery,
+identity/privacy gates, actual desktop arbitration, and continued cancellation
+of obsolete predictions. A 259-event captured match was replayed locally to
+match the Boltwave and Giant Cindermaw casts with their displayed explanations
+and complete both speech roles after unrelated state changes. No private replay
+was sent externally and no live audio was played. Hardware playback, perceived
+quality and shared-server contention remain live qualification items.

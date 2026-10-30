@@ -129,6 +129,7 @@ class Utterance:
     speed: float = 1.0
     event_bound: bool = False
     position_id: str = ""
+    position_scope: str = ""
     protocol_version: int = PROTOCOL_VERSION
 
     def __post_init__(self) -> None:
@@ -158,6 +159,10 @@ class Utterance:
             raise ValueError("Invalid position fingerprint")
         if self.anchor_id == self.utterance_id:
             raise ValueError("An utterance cannot depend on itself")
+        if self.position_scope not in {"", "battlefield", "players", "stack"} or (
+            self.position_scope and not self.position_id
+        ):
+            raise ValueError("Invalid freshness scope")
 
     def to_wire(self) -> dict[str, Any]:
         result = asdict(self)

@@ -367,7 +367,7 @@ def deterministic(observation, config):
             "Our deck plan: " + sentences[0],
             SpeechCategory.COMMENTARY,
             observation.epoch,
-            observation.arrived_at + 90,
+            overview.received_at + 90,
             evidence_ids=(overview.event_id,),
             event_bound=True,
             snapshot_id=observation.snapshot_id,

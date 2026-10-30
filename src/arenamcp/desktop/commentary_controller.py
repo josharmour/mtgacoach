@@ -55,7 +55,10 @@ class CommentaryController(QObject):
         self._catalog(settings)
 
     def configure(self, config):
-        self.config = CommentaryConfig.from_wire(config)
+        updated = CommentaryConfig.from_wire(config)
+        if updated == self.config:
+            return  # The engine echoes settings; an acknowledgment is not Stop.
+        self.config = updated
         self.arbiter.disable_commentary()
         self.observation = None
         if self.config.mode != "actions":
@@ -311,22 +314,24 @@ class CommentaryController(QObject):
 
     def _status(self, uid, state):
         now = time.monotonic()
+        reason = self.arbiter.reasons.get(uid, state)
         if state == "accepted":
             self.timings[uid] = {"accepted": now}
         times = self.timings.get(uid, {})
         if state == "started":
             times["started"] = now
         logger.info(
-            "Speech lifecycle uid=%s state=%s since_accept_seconds=%.3f render_seconds=%.3f",
+            "Speech lifecycle uid=%s state=%s reason=%s since_accept_seconds=%.3f render_seconds=%.3f",
             uid,
             state,
+            reason,
             now - times.get("accepted", now),
             now - times.get("render_start", now),
         )
         if uid in self.engine_ids:
             self.send({"cmd": "speech_status", "speech_id": uid, "state": state})
         if uid in self.commentary_ids:
-            self.send({"cmd": "commentary_delivery", "utterance_id": uid, "state": state})
+            self.send({"cmd": "commentary_delivery", "utterance_id": uid, "state": state, "reason": reason})
         if state in TERMINAL_STATES:
             self.timings.pop(uid, None)
             self.voice_names.pop(uid, None)
@@ -334,12 +339,12 @@ class CommentaryController(QObject):
             self.engine_ids.discard(uid)
             self.commentary_ids.discard(uid)
 
-    def stop(self):
+    def stop(self, reason="user_stop"):
         had_active = self.arbiter.active is not None
-        self.arbiter.clear()
+        self.arbiter.clear(reason)
         if not had_active:
             self.tts.stop_speech()
 
     def close(self):
         self.timer.stop()
-        self.stop()
+        self.stop("shutdown")

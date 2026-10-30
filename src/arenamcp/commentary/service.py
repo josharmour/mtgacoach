@@ -45,6 +45,9 @@ class CommentaryService:
         self.fallback_events = set()
         self.proposals = {}
         self.heard = deque(maxlen=4)
+        self.openings = {}
+        self.grounded_ids = set()
+        self.suppressed_opening_epoch = None
         self._lock = threading.Lock()
 
     def configure(self):
@@ -58,6 +61,7 @@ class CommentaryService:
                 self.inflight.clear()
                 self.proposals.clear()
                 self.heard.clear()
+                self.grounded_ids.clear()
             self.emit({"type": "commentary_clear"})
         self.wake.set()
 
@@ -73,24 +77,61 @@ class CommentaryService:
             self.cancelled.set()
         if self.muted():
             self.cancelled.set()
+            self.suppress_opening("muted")
         if self.config.enabled and not self.muted() and self.thread is None:
             self.thread = threading.Thread(target=self._run, daemon=True, name="coach-commentary")
             self.thread.start()
         self.wake.set()
 
-    def delivery(self, uid, state):
+    def suppress_opening(self, reason):
+        """Explicit Stop/mute never causes an interrupted introduction to retry."""
+        snapshot = self.latest or {}
+        with self._lock:
+            epoch = (snapshot.get("match_id"), snapshot.get("game_number"))
+            changed = self.suppressed_opening_epoch != epoch
+            self.suppressed_opening_epoch = epoch
+            for opening in self.openings.values():
+                opening["blocked"] = True
+        if changed:
+            logger.info("Commentary opening suppressed reason=%s", reason)
+
+    def delivery(self, uid, state, reason=""):
+        if state == "started":
+            with self._lock:
+                item = self.proposals.get(uid)
+                if item and uid in self.grounded_ids:
+                    self.last_grounded = (item.epoch, time.monotonic())
+                if item:
+                    logger.info("Commentary delivery uid=%s role=%s state=started", uid, item.role)
         if state in TERMINAL_STATES:
             with self._lock:
                 self.inflight.pop(uid, None)
                 item = self.proposals.pop(uid, None)
                 if item and state == "finished":
                     self.heard.append(item.text)
+                    if uid in self.grounded_ids:
+                        self.last_grounded = (item.epoch, time.monotonic())
+                self.grounded_ids.discard(uid)
                 if item:
+                    for eid in item.evidence_ids:
+                        opening = self.openings.get(eid)
+                        if opening:
+                            if state == "finished":
+                                opening["finished"].add(item.role)
+                            elif state == "muted" or reason in {
+                                "user_stop",
+                                "mode_changed",
+                                "shutdown",
+                                "epoch_changed",
+                            }:
+                                opening["blocked"] = True
+                            opening["retry_at"] = time.monotonic() + 2
                     logger.info(
-                        "Commentary delivery uid=%s role=%s state=%s evidence=%s",
+                        "Commentary delivery uid=%s role=%s state=%s reason=%s evidence=%s",
                         uid,
                         item.role,
                         state,
+                        reason or "unspecified",
                         list(item.evidence_ids),
                     )
             try:
@@ -98,6 +139,25 @@ class CommentaryService:
             except queue.Full:
                 self.cancelled.set()
             self.wake.set()
+
+    def _opening_available(self, event, epoch, now):
+        if event.kind == "game_start" and (
+            self.openings
+            or (self.latest or {}).get("commentary_deck_overview")
+            or self.suppressed_opening_epoch == (epoch.match_id, epoch.game_number)
+        ):
+            return False  # Don't follow an introduction (or Stop) with boilerplate.
+        if event.kind != "deck_overview":
+            return True
+        if self.suppressed_opening_epoch == (epoch.match_id, epoch.game_number):
+            return False
+        item = self.openings.get(event.event_id)
+        return not item or (
+            not item["blocked"]
+            and item["attempts"] < 3
+            and not item["roles"].issubset(item["finished"])
+            and now >= item["retry_at"]
+        )
 
     def status(self, state, **details):
         signature = (state, details.get("reason"))
@@ -176,19 +236,51 @@ class CommentaryService:
         if not opening and self.last_grounded[0] == observation.epoch and now - self.last_grounded[1] < 10:
             self.status("waiting_capacity", reason="grounded_call_spacing")
             return
-        available = tuple(e for e in observation.events if e.event_id not in self.fallback_events)
-        lines = deterministic(replace(observation, events=available), config)
+        available = tuple(
+            e
+            for e in observation.events
+            if e.event_id not in self.fallback_events and self._opening_available(e, observation.epoch, now)
+        )
+        # A stale low-value candidate must not poison every other event in the burst.
+        lines = []
+        while available:
+            candidates = deterministic(replace(observation, events=available), config)
+            if not candidates:
+                break
+            if now < candidates[0].expires_at and valid_for(candidates[0], fresh):
+                lines = [u for u in candidates if now < u.expires_at and valid_for(u, fresh)]
+                break
+            rejected = {eid for u in candidates for eid in u.evidence_ids}
+            self.status("dropped", reason="facts_changed")
+            available = tuple(e for e in available if e.event_id not in rejected)
         if not lines:
             self.status("waiting_events", reason="no_eligible_public_event")
             return
-        if any(now >= item.expires_at or not valid_for(item, fresh) for item in lines):
-            self.status("dropped", reason="facts_changed")
-            return
         with self._lock:
+            overview = next((e for e in available if e.kind == "deck_overview"), None)
+            if overview and overview.event_id in lines[0].evidence_ids:
+                opening = self.openings.setdefault(
+                    overview.event_id,
+                    {
+                        "attempts": 0,
+                        "finished": set(),
+                        "blocked": False,
+                        "roles": {u.role for u in lines},
+                        "retry_at": 0,
+                    },
+                )
+                opening["attempts"] += 1
+                suffix = f":retry{opening['attempts']}" if opening["attempts"] > 1 else ""
+                lines = [u for u in lines if u.role not in opening["finished"]]
+                ids = {u.utterance_id: u.utterance_id + suffix for u in lines}
+                lines = [
+                    replace(u, utterance_id=ids[u.utterance_id], anchor_id=ids.get(u.anchor_id))
+                    for u in lines
+                ]
             for item in lines:
                 self.inflight[item.utterance_id] = item.expires_at + 30
                 self.proposals[item.utterance_id] = item
-        self.last_grounded = (observation.epoch, now)
+                self.grounded_ids.add(item.utterance_id)
         for item in lines:
             self.emit({"type": "commentary_proposal", "utterance": item.to_wire()})
         self.status("grounded", reason=reason)
@@ -197,6 +289,8 @@ class CommentaryService:
     def _fallback(self, observation, config, reason):
         consumed = self._grounded(observation, config, reason)
         if consumed:
+            # An opening is consumed only by successful delivery of every role.
+            consumed -= {e.event_id for e in observation.events if e.kind == "deck_overview"}
             self.fallback_events.update(consumed)
             if not config.generative or any(e.kind == "deck_overview" for e in observation.events):
                 self.pending_events = {
@@ -231,6 +325,8 @@ class CommentaryService:
                     self.fallback_events = set()
                     self.heard.clear()
                     self.proposals.clear()
+                    self.openings.clear()
+                    self.grounded_ids.clear()
                 for event in observation.events:
                     if event.kind == "hand_changed":
                         self.pending_events = {
@@ -250,9 +346,17 @@ class CommentaryService:
                     )
                 }
                 self.fallback_events.intersection_update(self.pending_events)
+                from .rationale import attach_rationales
+
+                candidates = attach_rationales(
+                    self.pending_events.values(), snapshot, config.private_information, now
+                )
                 observation = replace(
                     observation,
-                    events=select_events(self.pending_events.values(), observation),
+                    events=select_events(
+                        (e for e in candidates if self._opening_available(e, observation.epoch, now)),
+                        observation,
+                    ),
                     recent_commentary=tuple(self.heard),
                 )
                 # Expire missing delivery acknowledgments; no unbounded speech backlog.
@@ -274,6 +378,13 @@ class CommentaryService:
                 try:
                     if any(e.kind == "deck_overview" for e in observation.events):
                         self._fallback(observation, config, "opening_deck_overview")
+                        continue
+                    if any(
+                        e.payload.get("coach_intent")
+                        for e in observation.events
+                        if e.event_id not in self.fallback_events
+                    ):
+                        self._fallback(observation, config, "confirmed_action_explanation")
                         continue
                     # Worker setup is not inference occupancy; no model loads here.
                     from arenamcp.backends.proxy import _BACKGROUND_LANE
@@ -309,7 +420,10 @@ class CommentaryService:
                     if any(
                         u.epoch != observation.epoch
                         or u.snapshot_id != observation.snapshot_id
-                        or (u.position_id and u.position_id != position_fingerprint(observation))
+                        or (
+                            u.position_id
+                            and u.position_id != position_fingerprint(observation, u.position_scope)
+                        )
                         for u in utterances
                     ):
                         raise ValueError("invalid worker provenance")

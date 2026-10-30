@@ -5,7 +5,7 @@ import json
 import re
 
 
-def position_fingerprint(observation):
+def position_fingerprint(observation, scope=""):
     public = {
         **observation.public_state,
         "turn_info": {
@@ -14,9 +14,13 @@ def position_fingerprint(observation):
             if k not in {"phase", "step", "priority_player"}
         },
     }
+    private = observation.private_state
+    if scope:
+        public = public.get("players", []) if scope == "players" else public.get("zones", {}).get(scope, [])
+        private = {}
     return hashlib.sha256(
         json.dumps(
-            [observation.epoch.match_id, observation.epoch.game_number, public, observation.private_state],
+            [observation.epoch.match_id, observation.epoch.game_number, public, private],
             sort_keys=True,
             separators=(",", ":"),
         ).encode()
@@ -29,7 +33,7 @@ def valid_for(item, observation):
         and (
             item.event_bound
             or (
-                item.position_id == position_fingerprint(observation)
+                item.position_id == position_fingerprint(observation, item.position_scope)
                 if item.position_id
                 else item.snapshot_id == observation.snapshot_id
             )
