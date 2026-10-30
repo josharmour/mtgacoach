@@ -55,7 +55,10 @@ def main():
             if response.get("type") != "llm_result" or response.get("job_id") != current_job:
                 raise ValueError("unexpected broker response")
             if "error" in response:
-                raise RuntimeError("broker_declined")
+                from .budget import BROKER_REASONS, BudgetExceeded
+
+                reason = response["error"]
+                raise BudgetExceeded(reason if reason in BROKER_REASONS else "admission_or_request_failed")
             return response["result"]
 
     emit({"type": "ready", "capabilities": ["deterministic", "audited_booth", "delivery"]})
@@ -91,7 +94,7 @@ def main():
                     facade = HeadlessBooth(config, rpc, time.monotonic)
                     configuration = config
                 native, status = facade.generate(observation)
-                from .timeline import historical_scope, position_fingerprint
+                from .timeline import event_lifetime, historical_scope, position_fingerprint
 
                 lines = []
                 for item in native:
@@ -116,7 +119,12 @@ def main():
                             item.text,
                             SpeechCategory.COMMENTARY,
                             observation.epoch,
-                            (evidence_time + 30)
+                            (
+                                min(
+                                    (e.received_at or observation.arrived_at) + event_lifetime(e.kind)
+                                    for e in cited
+                                )
+                            )
                             if historical
                             else observation.arrived_at + (15 if position else 8),
                             voice=item.voice or "atlas",

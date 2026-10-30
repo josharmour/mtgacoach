@@ -356,3 +356,50 @@ checkpoint restore/reset, generated facts and audit, fallback calls, exact-only
 speech replacements, both TTS routes, public-state propagation and anonymization.
 No current match data is sent to a model for these checks, and no live settings
 or active Coach source is changed during isolated validation.
+
+
+## Protection windows and meaningful outcome commentary (2026-10-30)
+
+The shield recognizer now includes group grants such as Heroic Intervention.
+Hexproof defeats opposing targeting, including targeted exile; indestructible
+only covers supported destruction/damage cases and never promises protection
+from exile or planeswalker loyalty loss. Before accepting a typed pass, a narrow
+guard checks the current priority window, opponent's top stack object, actual
+target, and Arena's offered/payable cast options. It only substitutes an
+unconditional group-protection instant with no extra mode/target/cost decision.
+Other selected actions are unchanged. Local captured-window replay changed the
+erroneous pass against Abstruse Appropriation into the offered Heroic cast.
+This is not a general rules engine or a guarantee of the match outcome.
+
+Long background game-plan calls no longer monopolize commentary admission.
+One optional commentary request may overlap that background replan, but urgent
+decisions and other protected work immediately cancel its socket. No gameplay
+thread waits for the booth. Two useful exchanges per minute remain the default;
+failed attempts retain their token/time charges, with at most four attempts,
+12 request-seconds per minute and six seconds per exchange. Empty no-call polls
+back off without spending model airtime. No server-wide limits were changed.
+
+The journal now retains explicit public milling, counterspell and battlefield
+exit outcomes, coalescing same-message/same-cause bursts. It keeps at most 12
+public card identities per burst, with no hidden-card names. Significant outcomes
+can be recapped for 60 seconds; ordinary events retain 30 seconds. Predictions
+still require the original snapshot, and current-board analysis requires the
+position fingerprint. Game endings outrank recaps. Published event records are
+not mutated when a burst grows.
+
+Grounded fallback can give the analyst a distinct factual contribution: public
+cards milled, the creature spell a counter stopped, or the creatures remaining
+after removal. Relevant pending-spell analysis is conditional and expires with
+its snapshot. Generic land/resolution filler remains suppressed. Empty/rejected
+worker results, bounded admission reasons and terminal speech delivery states
+are recorded without copying model prompts or secret-bearing exception strings.
+
+Verification includes the captured Ugin protection window, a local replay of 20
+captured milling events into two per-player outcomes, real worker generation/audit
+protocol with synthetic responses, and actual localhost socket preemption.
+The report's bounded raw-GRE tail did not include the milling introduction; the
+outcome replay uses its retained parsed events and captured public card identities.
+Separate synthetic GRE annotation tests exercise the real parser path. No report
+was sent to an external model and no audio or game was started. Real shared-GPU
+latency and perceived narration quality still need observation after safe activation;
+local mock-server timing does not qualify upstream cancellation or performance.

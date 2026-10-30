@@ -18,6 +18,13 @@ def journal_event(game, event):
     kind = {"CastSpell": "action_observed", "Resolve": "spell_resolved", "PlayLand": "land_drop"}.get(
         event.get("category")
     )
+    category = str(event.get("category") or "")
+    source_zone = game.zones.get(event.get("from_zone"))
+    origin = (
+        str(getattr(getattr(source_zone, "zone_type", None), "value", "")).replace("ZoneType_", "").lower()
+    )
+    if kind is None and (category in {"Mill", "Countered", "Counterspell"} or origin == "battlefield"):
+        kind = "outcome"
     if kind is None:
         return
     obj = game.game_objects.get(event.get("instance_id")) or game.game_objects.get(
@@ -41,6 +48,47 @@ def journal_event(game, event):
             payload["name"] = name[:200]
         if type(obj.grp_id) is int:
             payload["grp_id"] = obj.grp_id
+    if kind == "outcome":
+        # Only known public destinations. A face-down exile never reveals a name.
+        if zone_type not in {"graveyard", "exile", "hand", "library", "command"}:
+            return
+        if category in {"Countered", "Counterspell"} and origin != "stack":
+            return
+        if category == "Mill" and (origin != "library" or zone_type != "graveyard"):
+            return
+        payload.update(
+            category=category, from_zone=origin, count=1, source_id=event.get("source_id", 0), cards=[]
+        )
+        if payload.get("name") and zone_type in {"graveyard", "exile"}:
+            # Parser objects carry ids/types, not database-enriched names/rules.
+            # The existing public annotation supplies the observed card name.
+            card = {k: visible[k] for k in ("grp_id", "type_line", "mana_cost") if k in visible}
+            card["name"] = payload["name"]
+            card.setdefault("type_line", " ".join(visible.get("card_types", ())))
+            payload["cards"] = [card]
+        # Same GRE message/seat/cause is one burst: do not narrate twenty mills separately.
+        previous = game._commentary_journal[-1] if game._commentary_journal else None
+        if (
+            previous
+            and previous["kind"] == kind
+            and previous["seq"] == game._raw_gre_sequence
+            and previous["seat"] == (obj.controller_seat_id or obj.owner_seat_id)
+            and all(
+                previous["payload"].get(k) == payload.get(k)
+                for k in ("category", "from_zone", "to_zone", "source_id")
+            )
+        ):
+            # Published snapshots may still reference the previous record.
+            # Replace it rather than mutating their already-published facts.
+            game._commentary_journal[-1] = {
+                **previous,
+                "payload": {
+                    **previous["payload"],
+                    "count": previous["payload"]["count"] + 1,
+                    "cards": (previous["payload"]["cards"] + payload["cards"])[:12],
+                },
+            }
+            return
     game._commentary_event_number += 1
     game._commentary_journal.append(
         {
@@ -182,15 +230,38 @@ class ObservationAdapter:
             ):
                 continue
             received = record.get("received_at", 0)
-            if not isinstance(received, (float, int)) or self.clock() - received > 30:
+            from .timeline import event_lifetime
+
+            if not isinstance(received, (float, int)) or self.clock() - received > event_lifetime(
+                record["kind"]
+            ):
                 continue
+            payload = dict(record["payload"])
+            if record["kind"] == "outcome":
+                public_cards = {
+                    c.get("grp_id"): c
+                    for rows in current.public_state["zones"].values()
+                    for c in rows
+                    if c.get("grp_id") and not c.get("face_down") and c.get("name") != "Unknown card"
+                }
+                payload["cards"] = [
+                    {
+                        **c,
+                        **{
+                            k: public_cards[c["grp_id"]][k]
+                            for k in ("mana_cost", "type_line")
+                            if k in public_cards.get(c.get("grp_id"), {})
+                        },
+                    }
+                    for c in payload.get("cards", ())[:12]
+                ]
             events.append(
                 Evidence(
                     f"gre:{current.epoch.match_id}:{current.epoch.game_number}:{record['id']}",
                     record["kind"],
                     int(record["seq"]),
                     str(record["snapshot_id"]),
-                    payload=dict(record["payload"]),
+                    payload=payload,
                     seat=record.get("seat"),
                     received_at=received,
                     turn_number=record.get("turn_number"),

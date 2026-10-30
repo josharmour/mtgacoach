@@ -4307,6 +4307,20 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         self._bound_decision_evidence = None
         chosen = self._plan_decision_options(decision, game_state)
+        from arenamcp.stack_responses import protective_pass
+
+        protection = protective_pass(decision, game_state, chosen)
+        if protection:
+            option_id, reason = protection
+            chosen = [option_id]
+            self._last_decision_reasoning = reason
+            self._last_decision_option_ids = chosen
+            self._last_decision_trace.update(
+                protection_guard={"replaced": "pass", "with": option_id, "reason": reason},
+                selected_ids=chosen,
+                reasoning=reason,
+            )
+            logger.info("Protection guard: %s", reason)
         # Bookkeeping that must survive a mid-planning request change: a
         # completed answer is exactly what an identical re-presented window
         # reuses (#226(b)), and our resolved burn's damage is board fact

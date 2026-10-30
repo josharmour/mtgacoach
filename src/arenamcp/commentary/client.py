@@ -131,8 +131,10 @@ class CommentaryClient:
                 try:
                     result = rpc(event["system"], event["context"], event["audit"] is True)
                     self.send({"type": "llm_result", "job_id": job, "result": result})
-                except Exception:
-                    self.send({"type": "llm_result", "job_id": job, "error": "admission_or_request_failed"})
+                except Exception as error:
+                    from .budget import broker_failure_code
+
+                    self.send({"type": "llm_result", "job_id": job, "error": broker_failure_code(error)})
         self.close()
         raise WorkerUnavailable("cancelled_or_deadline")
 

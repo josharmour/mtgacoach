@@ -29,7 +29,10 @@ _SHIELD = re.compile(
     r"(?: or (?:planeswalker|creature))? you control (?:gains?|has|have|gets?[^.]*?and gains?) "
     r"(?P<grant>[^.]*)"
 )
-_TARGET_PROOF = re.compile(r"\b(?:hexproof|shroud|protection from)\b")
+_GROUP_SHIELD = re.compile(
+    r"^(?P<what>permanents|creatures|artifacts|planeswalkers) you control "
+    r"(?:gain|have) (?P<grant>[^.]*)"
+)
 _INDESTRUCTIBLE = re.compile(r"\bindestructible\b")
 # An effect indestructible does not stop: exile, -N/-N, bounce, tuck, base 0/0.
 _NOT_DESTROY = re.compile(
@@ -103,24 +106,45 @@ def _effect_text(card: dict) -> str:
     return cleaned.lower()
 
 
-def _protects(card: dict, target: dict, threat_text: str) -> bool:
-    """``card``'s effect can shield ``target`` from a spell whose text is ``threat_text``."""
+def _shield_kind(card: dict, target: dict, threat_text: str) -> str:
+    """Return the supported mechanism, not a blanket promise of protection."""
     target_types = str(target.get("type_line") or "").lower()
-    for match in _SHIELD.finditer(_effect_text(card)):
+    text = _effect_text(card)
+    matches = [*_SHIELD.finditer(text), *_GROUP_SHIELD.finditer(text)]
+    for match in matches:
         what = match.group(0).split(" you control")[0]
-        if "permanent" not in what:
-            kinds = [t for t in ("creature", "planeswalker", "artifact") if t in what]
-            if not any(kind in target_types for kind in kinds):
-                continue  # "target creature you control" can't shield a planeswalker
+        if "permanent" not in what and not any(
+            kind in target_types and kind in what for kind in ("creature", "planeswalker", "artifact")
+        ):
+            continue
         grant = match.group("grant")
-        if _TARGET_PROOF.search(grant):
-            return True
+        targeted = match.re is _SHIELD
+        keywords = str(target.get("oracle_text") or "").lower()
+        if targeted and ("shroud" in keywords or "shroud" in target.get("keywords", ())):
+            continue
+        # Unqualified hexproof/shroud stops opposing targeting regardless of color.
+        if re.search(r"\b(?:hexproof(?! from)|shroud)\b", grant):
+            return "targeting"
+        if "protection from the color of your choice" in grant:
+            # Do not promise protection from colorless sources or unknown colors.
+            continue
         if _INDESTRUCTIBLE.search(grant) and not _NOT_DESTROY.search(threat_text):
-            return True
-    return False
+            if re.search(r"\bdestroy\b", threat_text):
+                return "destruction"
+            if (
+                "creature" in target_types
+                and "planeswalker" not in target_types
+                and re.search(r"\bdeals?\b.*\bdamage\b", threat_text)
+            ):
+                return "destruction"
+    return ""
 
 
-def shield_responses(state: dict[str, Any]) -> list[ShieldResponse]:
+def _protects(card: dict, target: dict, threat_text: str) -> bool:
+    return bool(_shield_kind(card, target, threat_text))
+
+
+def shield_responses(state: dict[str, Any], *, payable_ids=None) -> list[ShieldResponse]:
     """Each opponent stack object targeting our permanent that a castable card in hand can protect."""
     seat = _local_seat(state)
     stack = state.get("stack") or []
@@ -133,7 +157,15 @@ def shield_responses(state: dict[str, Any]) -> list[ShieldResponse]:
         if isinstance(card, dict) and (card.get("controller_seat_id") or card.get("owner_seat_id")) == seat
     }
     sources = untapped_sources(state, seat)
-    castable = [c for c in hand if affordable_at_instant_speed(c, sources)]
+    castable = [
+        c
+        for c in hand
+        if (
+            affordable_at_instant_speed(c, sources)
+            if payable_ids is None
+            else c.get("instance_id") in payable_ids
+        )
+    ]
     if not castable:
         return []
     found: list[ShieldResponse] = []
@@ -163,7 +195,12 @@ def shield_responses(state: dict[str, Any]) -> list[ShieldResponse]:
                         threat=str(obj.get("name") or "an opponent's spell"),
                         target=str(target.get("name") or "your permanent"),
                         answers=answers,
-                        fizzles=len(set(targets)) == 1,
+                        fizzles=len(set(targets)) == 1
+                        and all(
+                            _shield_kind(c, target, threat_text) == "targeting"
+                            for c in castable
+                            if str(c.get("name") or "?") in answers
+                        ),
                     )
                 )
     return found
@@ -176,7 +213,7 @@ def shield_response_note(state: dict[str, Any]) -> str:
         outcome = (
             "it then has no legal target and does nothing"
             if response.fizzles
-            else "your permanent is no longer affected"
+            else "the supported protection applies to your permanent; other effects may still resolve"
         )
         lines.append(
             f"RESPOND NOW: OPP {response.threat} targets your {response.target}. "
@@ -184,3 +221,61 @@ def shield_response_note(state: dict[str, Any]) -> str:
             "Once it resolves the window is gone."
         )
     return "\n".join(lines)
+
+
+def protective_pass(decision, state, chosen):
+    """Narrow pass correction: a payable, unconditional group shield vs targeted removal.
+
+    Never guesses a legal action, targets, payment, optional costs or spell mode.
+    Other choices remain the planner's; this only prevents throwing away an
+    established protection window with a pure group-protection instant in hand.
+    """
+    if chosen != ["pass"] or decision.request_type != "ActionsAvailable" or not decision.can_pass:
+        return None
+    local = _local_seat(state)
+    turn = state.get("turn") or state.get("turn_info") or {}
+    if local is None or turn.get("priority_player") != local:
+        return None
+    stack = state.get("stack") or []
+    if not stack or (stack[0].get("controller_seat_id") or stack[0].get("owner_seat_id")) in (None, local):
+        return None
+    threat = stack[0]
+    text = _clean(str(threat.get("oracle_text") or ""))
+    # Only an explicit detrimental effect; no inference from a name or mere targeting.
+    if not re.search(
+        r"\b(?:exile|destroy) target|\bdeals?\b.*\bdamage to|\btarget.*gets? -\d+/-\d+|\breturn target.*hand",
+        text,
+    ):
+        return None
+    options = {
+        o.meta.get("instanceId"): o
+        for o in decision.options
+        if o.payable is True and o.meta.get("actionType") == "ActionType_Cast"
+    }
+    hand = []
+    for card in state.get("hand") or []:
+        effect = _effect_text(card)
+        # Exact full effect keeps conditional, modal, extra-cost and delayed shields out.
+        if (
+            card.get("instance_id") in options
+            and "instant" in str(card.get("type_line") or "").lower()
+            and re.fullmatch(
+                r"(?:permanents|creatures|artifacts|planeswalkers) you control gain (?:hexproof|indestructible)(?: and (?:hexproof|indestructible))? until end of turn\.?",
+                effect,
+            )
+        ):
+            hand.append(card)
+    for card in hand:
+        responses = shield_responses({**state, "stack": [threat], "hand": [card]}, payable_ids=options)
+        if not responses:
+            continue
+        option = options[card["instance_id"]]
+        if not decision.selection_is_valid([option.option_id]):
+            continue
+        response = responses[0]
+        mechanism = "make its target illegal" if response.fizzles else "protect against destruction"
+        return (
+            option.option_id,
+            f"Cast {card['name']} before {response.threat} resolves to {mechanism} and save {response.target}.",
+        )
+    return None

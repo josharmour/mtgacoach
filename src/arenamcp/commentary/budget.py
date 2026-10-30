@@ -11,6 +11,44 @@ class BudgetExceeded(RuntimeError):
     pass
 
 
+# Transport only bounded reason codes, never exception messages with URLs or data.
+BROKER_REASONS = frozenset(
+    {
+        "cancelled",
+        "superseded",
+        "dropped",
+        "facts_changed",
+        "cancelled_or_late",
+        "backend_has_no_commentary_admission",
+        "obsolete_exchange",
+        "call_count_or_deadline",
+        "context_budget",
+        "input_budget",
+        "output_budget",
+        "first_token_timeout",
+        "request_timeout",
+        "invalid_json",
+        "backend_unavailable",
+        "admission_or_request_failed",
+    }
+)
+
+
+def broker_failure_code(error):
+    candidate = str(error) if isinstance(error, BudgetExceeded) else getattr(error, "reason", None)
+    if candidate in BROKER_REASONS:
+        return candidate
+    if type(error).__name__ == "FirstTokenTimeout":
+        return "first_token_timeout"
+    if isinstance(error, TimeoutError):
+        return "request_timeout"
+    if type(error).__name__ == "JSONDecodeError":
+        return "invalid_json"
+    if type(error).__name__ == "BackendUnavailable":
+        return "backend_unavailable"
+    return "admission_or_request_failed"
+
+
 @dataclass
 class Exchange:
     started: float
@@ -21,6 +59,7 @@ class Exchange:
     request_seconds: float = 0.0
     call_started: float | None = None
     closed: bool = False
+    usable: bool = True
 
 
 class CommentaryBudget:
@@ -33,7 +72,11 @@ class CommentaryBudget:
         now = self.clock()
         while self.history and now - self.history[0].started >= 60:
             self.history.popleft()
-        if self.active is not None or len(self.history) >= min(4, max(1, rate)):
+        if (
+            self.active is not None
+            or sum(item.usable for item in self.history) >= min(4, max(1, rate))
+            or len(self.history) >= 4
+        ):
             raise BudgetExceeded("exchange_rate_or_busy")
         # Reserve the full deadline so concurrent/unfinished calls cannot oversubscribe occupancy.
         if sum(item.request_seconds for item in self.history) + 6 > 12:
@@ -70,8 +113,13 @@ class CommentaryBudget:
             exchange.request_seconds += max(0, self.clock() - exchange.call_started)
             exchange.call_started = None
 
-    def finish(self, exchange):
+    def finish(self, exchange, *, usable=True):
         self.after_call(exchange)
         exchange.closed = True
+        exchange.usable = usable
+        # Native no-call/empty polls cost no inference capacity. The service
+        # separately backs them off, so they cannot spin or exhaust airtime.
+        if not usable and exchange.calls == 0 and exchange in self.history:
+            self.history.remove(exchange)
         if self.active is exchange:
             self.active = None

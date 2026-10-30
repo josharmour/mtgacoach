@@ -37,10 +37,15 @@ def valid_for(item, observation):
     )
 
 
+def event_lifetime(kind):
+    return {"deck_overview": 90, "hand_changed": 8, "outcome": 60}.get(kind, 30)
+
+
 def event_priority(event, observation):
     base = {
         "deck_overview": 100,
         "game_end": 20,
+        "outcome": 15,
         "combat": 10,
         "action_observed": 6,
         "spell_resolved": 5,

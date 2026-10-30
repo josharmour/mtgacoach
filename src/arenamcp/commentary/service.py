@@ -16,7 +16,7 @@ from .config import CommentaryConfig
 from .contracts import TERMINAL_STATES, Utterance
 from .events import ObservationAdapter
 from .headless import deterministic
-from .timeline import position_fingerprint, select_events, valid_for
+from .timeline import event_lifetime, position_fingerprint, select_events, valid_for
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,8 @@ class CommentaryService:
         self.deliveries = queue.Queue(maxsize=64)
         self.inflight = {}
         self.last_state = None
+        self.analysis_diagnostics = {}
+        self.next_analysis_at = 0.0
         self.last_grounded = (None, -float("inf"))
         self.pending_events = {}
         self.pending_epoch = None
@@ -83,6 +85,14 @@ class CommentaryService:
                 item = self.proposals.pop(uid, None)
                 if item and state == "finished":
                     self.heard.append(item.text)
+                if item:
+                    logger.info(
+                        "Commentary delivery uid=%s role=%s state=%s evidence=%s",
+                        uid,
+                        item.role,
+                        state,
+                        list(item.evidence_ids),
+                    )
             try:
                 self.deliveries.put_nowait((uid, state))
             except queue.Full:
@@ -91,6 +101,13 @@ class CommentaryService:
 
     def status(self, state, **details):
         signature = (state, details.get("reason"))
+        if state in {"analysis_empty", "analysis_deferred", "analysis_backoff"}:
+            key = (state, details.get("reason"), details.get("worker_state"))
+            now = time.monotonic()
+            if now - self.analysis_diagnostics.get(key, -float("inf")) < 10:
+                return
+            self.analysis_diagnostics = {k: t for k, t in self.analysis_diagnostics.items() if now - t < 60}
+            self.analysis_diagnostics[key] = now
         if (
             state in {"waiting_events", "waiting_delivery", "waiting_capacity"}
             and signature == self.last_state
@@ -226,8 +243,7 @@ class CommentaryService:
                         (e.event_id, e)
                         for e in select_events(self.pending_events.values(), observation, limit=32)
                     )
-                    if now - event.received_at
-                    < (90 if event.kind == "deck_overview" else 8 if event.kind == "hand_changed" else 30)
+                    if now - event.received_at < event_lifetime(event.kind)
                     and (
                         event.kind != "hand_changed"
                         or (config.private_information and observation.private_state.get("hand"))
@@ -254,6 +270,7 @@ class CommentaryService:
                     continue
                 self.cancelled.clear()
                 exchange = None
+                usable = False
                 try:
                     if any(e.kind == "deck_overview" for e in observation.events):
                         self._fallback(observation, config, "opening_deck_overview")
@@ -263,6 +280,9 @@ class CommentaryService:
 
                     if config.generative and not _BACKGROUND_LANE.commentary_available():
                         self._fallback(observation, config, "analysis_waits_for_gameplay")
+                        continue
+                    if config.generative and now < self.next_analysis_at:
+                        self._fallback(observation, config, "analysis_retry_spacing")
                         continue
                     self.client.start(config)
                     exchange = self.budget.begin(config.exchanges_per_minute)
@@ -294,6 +314,12 @@ class CommentaryService:
                     ):
                         raise ValueError("invalid worker provenance")
                     if not utterances:
+                        self.status(
+                            "analysis_empty",
+                            worker_state=result.get("status", {}).get("state"),
+                            reason=result.get("status", {}).get("reason")
+                            or result.get("status", {}).get("state", "empty"),
+                        )
                         self._fallback(
                             observation,
                             config,
@@ -312,12 +338,16 @@ class CommentaryService:
                             prefix_valid and time.monotonic() < item.expires_at and valid_for(item, fresh)
                         )
                         if not prefix_valid:
+                            self.status(
+                                "not_delivered", reason="expired_or_changed", utterance_id=item.utterance_id
+                            )
                             self.client.delivered(item.utterance_id, "superseded")
                             continue
                         with self._lock:
                             self.inflight[item.utterance_id] = item.expires_at + 30
                             self.proposals[item.utterance_id] = item
                         self.emit({"type": "commentary_proposal", "utterance": item.to_wire()})
+                        usable = True
                     self.status(
                         result.get("status", {}).get("state", "ready"),
                         observation_age=round(time.monotonic() - observation.arrived_at, 3),
@@ -327,6 +357,7 @@ class CommentaryService:
                         request_seconds=round(exchange.request_seconds, 3),
                     )
                 except BudgetExceeded as error:
+                    self.status("analysis_deferred", reason=str(error))
                     self._fallback(observation, config, str(error))
                 except Exception as error:
                     self.status("unavailable", reason=type(error).__name__)
@@ -334,7 +365,9 @@ class CommentaryService:
                     self._fallback(observation, config, "analysis_unavailable")
                 finally:
                     if exchange:
-                        self.budget.finish(exchange)
+                        self.budget.finish(exchange, usable=usable)
+                        if not usable:
+                            self.next_analysis_at = time.monotonic() + 5
         finally:
             self.client.close()
 

@@ -67,6 +67,7 @@ def compact_context(system, context):
     # Preserve the meaningful play in a burst even when a routine land came last.
     weights = {
         "game_end": 20,
+        "outcome": 18,
         "attack_declared": 12,
         "life_change": 8,
         "spell_cast": 10,

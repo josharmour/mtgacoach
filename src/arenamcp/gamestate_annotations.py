@@ -157,6 +157,7 @@ class _GameStateAnnotationsMixin:
                                 "from_zone": zone_src,
                                 "to_zone": zone_dest,
                                 "category": category,
+                                "source_id": _coerce_int(ann.get("affectorId", 0), 0),
                                 "owner_seat_id": obj.owner_seat_id,
                                 "controller_seat_id": obj.controller_seat_id,
                             }

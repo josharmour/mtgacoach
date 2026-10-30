@@ -948,7 +948,7 @@ def background_lane_enabled() -> bool:
 
 
 class _BackgroundLane:
-    """At most one background call in flight across every ProxyBackend.
+    """One main background call plus a bounded, preemptible commentary slot.
 
     2026-10-06: decision calls overlapping one other call ran p50 3.1 s vs
     1.8 s alone (p90 5.6 vs 3.2), and background calls overlapped each other
@@ -959,6 +959,8 @@ class _BackgroundLane:
     one: it is cancelled (its socket shut down) and the newer call takes the
     lane at once, without waiting for the old request thread to unwind. A
     call of a different class waits up to its lane wait, then is dropped.
+    Commentary alone can overlap background.game_plan; all other protected
+    work cancels it immediately. Its own budget limits occupancy and retries.
     """
 
     def __init__(self) -> None:
@@ -966,16 +968,22 @@ class _BackgroundLane:
         self._holder: _CallHandle | None = None
         self._waiting: list[_CallHandle] = []
         self._protected: set[_CallHandle] = set()
+        self._commentary_holder: _CallHandle | None = None
 
     def commentary_available(self) -> bool:
         with self._cond:
-            return not (self._protected or self._holder is not None or self._waiting)
+            return not (
+                self._protected
+                or (self._commentary_holder is not None and not self._commentary_holder.is_cancelled)
+            )
 
     def protect(self, handle: _CallHandle) -> None:
-        """Gameplay/strategy never waits behind optional commentary."""
+        """Urgent gameplay never waits behind commentary; background replanning may overlap."""
+        if handle.call_class == "background.game_plan":
+            return
         with self._cond:
             self._protected.add(handle)
-            holder = self._holder
+            holder = self._commentary_holder
         if holder is not None and holder.call_class == "background.commentary":
             holder.cancel("superseded")
         with self._cond:
@@ -991,8 +999,15 @@ class _BackgroundLane:
         commentary = handle.call_class == "background.commentary"
         end = time.monotonic() + (0.0 if commentary else max(0.0, wait_s))
         with self._cond:
-            if commentary and (self._protected or self._holder is not None or self._waiting):
-                return "dropped"
+            if commentary:
+                if self._protected or (
+                    self._commentary_holder is not None and not self._commentary_holder.is_cancelled
+                ):
+                    return "dropped"
+                if handle.cancelled():
+                    return handle.cancelled()
+                self._commentary_holder = handle
+                return "acquired"
             to_cancel = [
                 other
                 for other in ([self._holder] if self._holder is not None else []) + self._waiting
@@ -1026,6 +1041,9 @@ class _BackgroundLane:
 
     def release(self, handle: _CallHandle) -> None:
         with self._cond:
+            if self._commentary_holder is handle:
+                self._commentary_holder = None
+                self._cond.notify_all()
             if self._holder is handle:
                 self._holder = None
                 self._cond.notify_all()
@@ -1035,7 +1053,9 @@ class _BackgroundLane:
         with self._cond:
             handles = [
                 other
-                for other in ([self._holder] if self._holder is not None else []) + self._waiting
+                for other in ([self._holder] if self._holder is not None else [])
+                + ([self._commentary_holder] if self._commentary_holder is not None else [])
+                + self._waiting
                 if other is not keep and not other.is_cancelled
             ]
         for other in handles:

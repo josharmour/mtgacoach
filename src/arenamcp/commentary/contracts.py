@@ -64,6 +64,7 @@ class Evidence:
             "land_drop",
             "hand_changed",
             "deck_overview",
+            "outcome",
         }:
             raise ValueError("Unknown evidence kind")
         if (

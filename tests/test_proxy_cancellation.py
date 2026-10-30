@@ -226,3 +226,52 @@ def test_lane_passes_to_the_newer_call_even_if_the_old_thread_is_slow_to_unwind(
     assert lane.acquire(other, 0) == "dropped", "the newer call still holds the lane"
     lane.release(newer)
     assert lane.holder_class() is None
+
+
+def test_commentary_overlaps_replanning_but_urgent_call_aborts_its_real_socket(server_factory):
+    plan_server = server_factory(["stall_stream"])
+    talk_server = server_factory(["stall_stream"])
+    urgent_server = server_factory(["urgent answer"])
+    plan_cancel = threading.Event()
+    plan, plan_result = _start(
+        _backend(plan_server.url).complete,
+        "s",
+        "u",
+        call_class="background.game_plan",
+        cancel_event=plan_cancel,
+        request_timeout_s=30,
+        raise_on_error=True,
+    )
+    talk = None
+    try:
+        assert plan_server.stalled.wait(5)
+        talk, talk_result = _start(
+            _backend(talk_server.url).complete,
+            "s",
+            "u",
+            call_class="background.commentary",
+            background=True,
+            request_timeout_s=6,
+            lane_wait_s=0,
+            raise_on_error=True,
+        )
+        assert talk_server.stalled.wait(5), talk_result
+        started = time.monotonic()
+        answer = _backend(urgent_server.url).complete(
+            "s",
+            "u",
+            call_class="decision.typed",
+            request_timeout_s=5,
+            raise_on_error=True,
+        )
+        assert answer == "urgent answer" and time.monotonic() - started < 3
+        talk.join(3)
+        assert not talk.is_alive() and isinstance(talk_result.get("error"), BackendCallCancelled)
+        assert talk_result["error"].reason == "superseded"
+        assert talk_server.disconnected.wait(1)
+        assert plan.is_alive(), plan_result
+    finally:
+        plan_cancel.set()
+        plan.join(3)
+        if talk is not None:
+            talk.join(7)

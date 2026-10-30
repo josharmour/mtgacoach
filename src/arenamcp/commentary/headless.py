@@ -158,8 +158,8 @@ class HeadlessBooth:
             broadcast_mode="dual" if config.speakers == 2 else "solo",
             commentary_focus=config.focus,
             llm_coalesce=0,
-            llm_max_age=30,
-            llm_call_max_age=25,
+            llm_max_age=60,
+            llm_call_max_age=55,
             llm_timeout=6,
             coaching=False,
         )
@@ -267,21 +267,27 @@ class HeadlessBooth:
         self.booth.observe(snapshot)
         mapping = {"action_observed": "cast", "spell_resolved": "resolve", "combat": "attack_declared"}
         for evidence in observation.events:
-            if evidence.kind == "hand_changed" and self.settings.private_information:
-                # Native AOA has no detector event for Coach's private hand delta.
-                # Enqueue a factual observation, not a fabricated draw or turn.
+            if evidence.kind == "outcome" or (
+                evidence.kind == "hand_changed" and self.settings.private_information
+            ):
+                # These factual observations have no native AOA detector type.
+                # Keep their original time and public/private provenance.
                 with self.booth.lock:
                     self.booth.seq += 1
                     record = {
                         "id": f"event:{self.booth.epoch}:{self.booth.seq}",
-                        "kind": "hand_changed",
+                        "kind": evidence.kind,
                         "seat": evidence.seat,
                         "player": actor_name(observation.public_state, evidence.seat),
                         "data": dict(evidence.payload),
-                        "turn": snapshot.turn_info.turn_number,
+                        "turn": evidence.turn_number,
+                        "phase": evidence.phase,
+                        "temporal_context": "Observed event; may precede the current phase.",
                         "play_id": None,
-                        "source": "visible_owner_GRE",
-                        "salience": 1,
+                        "source": "public_GRE_annotation"
+                        if evidence.kind == "outcome"
+                        else "visible_owner_GRE",
+                        "salience": 3 if evidence.kind == "outcome" else 1,
                         "received": evidence.received_at or observation.arrived_at,
                     }
                     self.booth.pending.append(record)
@@ -378,6 +384,11 @@ def deterministic(observation, config):
                 ),
             ]
         return [replace(first, text="Our deck plan: " + summary)]
+    from .grounded_analysis import add_analyst, outcome_exchange
+
+    outcomes = outcome_exchange(observation, config)
+    if outcomes:
+        return outcomes
     candidates = []
     for event in observation.events:
         # Routine bookkeeping is context for analysis, not filler to read aloud.
@@ -449,4 +460,4 @@ def deterministic(observation, config):
             snapshot_id=observation.snapshot_id,
         )
     ]
-    return lines
+    return add_analyst(lines[0], event, observation, config)
