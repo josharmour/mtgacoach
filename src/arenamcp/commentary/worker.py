@@ -116,7 +116,9 @@ def main():
                             item.text,
                             SpeechCategory.COMMENTARY,
                             observation.epoch,
-                            evidence_time + (30 if historical else 15 if position else 8),
+                            (evidence_time + 30)
+                            if historical
+                            else observation.arrived_at + (15 if position else 8),
                             voice=item.voice or "atlas",
                             anchor_id=item.anchor_uid,
                             evidence_ids=tuple(e.event_id for e in cited),

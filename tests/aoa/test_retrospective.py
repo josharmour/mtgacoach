@@ -94,7 +94,8 @@ def test_delayed_journal_keeps_source_turn_and_expires_after_recap_window():
 
 
 @pytest.mark.usefixtures("source")
-def test_real_worker_produces_historical_recaps_with_original_evidence():
+@pytest.mark.parametrize("scope", ["historical", "position", "snapshot"])
+def test_real_worker_scopes_recent_recaps_and_fresh_analysis(scope):
     obs = observation()
     event = replace(
         obs.events[0], received_at=time.monotonic() - 18, turn_number=1, phase="Main1", active_player=1
@@ -111,7 +112,7 @@ def test_real_worker_produces_historical_recaps_with_original_evidence():
         if audit:
             return {
                 "checks": [
-                    {"index": i, "supported": True, "unsupported_claim": "", "scope": "historical"}
+                    {"index": i, "supported": True, "unsupported_claim": "", "scope": scope}
                     for i in range(len(context["lines"]))
                 ]
             }
@@ -129,12 +130,16 @@ def test_real_worker_produces_historical_recaps_with_original_evidence():
         result = client.generate(obs, config, rpc, threading.Event())
         assert len(result["utterances"]) == 2, result["status"]
         lines = [Utterance.from_wire(u) for u in result["utterances"]]
-        assert all(line.event_bound and line.evidence_ids == (event.event_id,) for line in lines)
-        assert 5 < lines[0].expires_at - time.monotonic() <= 12
+        assert all(
+            line.event_bound == (scope == "historical") and line.evidence_ids == (event.event_id,)
+            for line in lines
+        )
+        ceiling = {"historical": 12, "position": 15, "snapshot": 8}[scope]
+        assert ceiling - 5 < lines[0].expires_at - time.monotonic() <= ceiling
         moved = copy.deepcopy(obs.public_state)
         moved["turn_info"]["phase"] = "Combat"
         fresh = replace(obs, public_state=moved, snapshot_id="changed")
-        assert all(valid_for(line, fresh) for line in lines)
+        assert all(valid_for(line, fresh) == (scope != "snapshot") for line in lines)
     finally:
         client.close()
 
