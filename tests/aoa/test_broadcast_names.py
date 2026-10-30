@@ -140,7 +140,10 @@ def test_real_worker_transports_names_and_keeps_heard_identity(request):
 
     obs = named_observation()
     config = CommentaryConfig(
-        mode="commentary", generative=True, python=sys.executable, aoa_source=os.environ["AOA_SOURCE"]
+        mode="commentary",
+        generative=True,
+        python=sys.executable,
+        aoa_source=request.getfixturevalue("source"),
     )
 
     def rpc(system, context, audit):
