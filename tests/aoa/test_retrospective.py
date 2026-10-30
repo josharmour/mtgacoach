@@ -51,6 +51,7 @@ def test_historical_classification_cannot_relax_current_dependencies():
     assert not historical_scope("historical", {"private:hand:1": {}}, "Opt was cast.")
     assert not historical_scope("historical", {}, "They might respond next.")
     assert not historical_scope("snapshot", {}, "Opt was cast.")
+    assert not historical_scope("historical", {"state:player:1": {"life": 20}}, "Hero is at twenty life.")
 
 
 def test_fast_burst_prioritizes_impact_over_newer_routine_events():

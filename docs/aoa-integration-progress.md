@@ -403,3 +403,8 @@ Separate synthetic GRE annotation tests exercise the real parser path. No report
 was sent to an external model and no audio or game was started. Real shared-GPU
 latency and perceived narration quality still need observation after safe activation;
 local mock-server timing does not qualify upstream cancellation or performance.
+
+Named historical calls cite the event's captured actor identity rather than a
+current player-state fact containing life totals. Current-life references still
+prevent historical classification; name handling never exempts mutable facts
+from freshness validation.

@@ -249,9 +249,10 @@ def test_actual_worker_keeps_outcome_evidence_audit_duo_and_recap_window():
         key = next(k for k in context["new_events"] if context["facts"][k].get("kind") == "outcome")
         fact = context["facts"][key]
         assert fact["data"]["count"] == 20 and fact["turn"] == 14
+        assert fact["player"] == "Hero" and "cite that event for a historical call" in system
         return {
             "turns": [
-                {"role": "play_by_play", "text": "Twenty cards went into the graveyard.", "refs": [key]},
+                {"role": "play_by_play", "text": "Hero milled twenty cards.", "refs": [key]},
                 {"role": "color_analyst", "text": "Known card 0 was among the cards milled.", "refs": [key]},
             ]
         }
