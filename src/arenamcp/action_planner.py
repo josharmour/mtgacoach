@@ -9392,7 +9392,20 @@ class ActionPlanner(_ActionLegalityMixin):
             ids = data["option_ids"]
             if any(type(option_id) not in (str, int) for option_id in ids):
                 raise ValueError("typed-decision option_ids must contain only ids")
-            return data, [str(option_id) for option_id in ids]
+            ids = [str(option_id) for option_id in ids]
+            if decision.request_type == "ActionsAvailable":
+                # 2026-10-29: valid answers 4 / "3" lost their idx: prefix,
+                # so the executor fell back despite a usable model choice.
+                # Repair only an exact advertised action index, never a menu
+                # position, target instance, missing ID, or existing literal ID.
+                available = decision.option_ids()
+                ids = [
+                    f"idx:{oid}"
+                    if oid not in available and oid.isdecimal() and f"idx:{oid}" in available
+                    else oid
+                    for oid in ids
+                ]
+            return data, ids
 
         # Ledger #182 (15:48:58): a 38K-character prompt got no first token from either leg within
         # 8.0 s. A big prompt's first token may come later, and each leg keeps its answer time.
