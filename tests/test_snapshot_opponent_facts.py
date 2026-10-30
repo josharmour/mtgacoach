@@ -493,3 +493,12 @@ def test_coach_formatter_renders_a_known_empty_opponent_hand_as_zero():
     assert "Opp hand: 0 card(s)" in formatter._format_game_context(state)
     del state["players"][1]["hand_size"]
     assert "Opp hand: UNKNOWN" in formatter._format_game_context(state)
+
+
+def test_get_game_state_carries_player_names_to_commentary(published):
+    _feed(published, GAME_START, OPENING_HANDS, BOUNCED_TO_HAND)
+    published.record_player_names(
+        published.match_id,
+        [{"systemSeatId": 1, "playerName": "Local Hero"}, {"systemSeatId": 2, "playerName": "Rival802"}],
+    )
+    assert server.get_game_state()["player_names"] == {1: "Local Hero", 2: "Rival802"}

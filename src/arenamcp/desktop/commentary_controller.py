@@ -16,6 +16,7 @@ from arenamcp.commentary.events import ObservationAdapter
 from arenamcp.commentary.setup import server_voices
 from arenamcp.commentary.timeline import valid_for
 from arenamcp.commentary.voices import VoicePairUnavailable, voice_pair
+from arenamcp.player_names import pronounce_players
 from arenamcp.settings import get_settings
 
 from .speech_arbiter import SpeechArbiter
@@ -282,9 +283,12 @@ class CommentaryController(QObject):
             if item.utterance_id in self.preview_settings
             else {}
         )
+        speech_text = item.text
+        if item.category == SpeechCategory.COMMENTARY and self.observation is not None:
+            speech_text = pronounce_players(speech_text, self.observation.public_state.get("player_names"))
         self.tts.request_speech(
             **overrides,
-            text=item.text,
+            text=speech_text,
             voice_id=item.voice,
             voice_name=self.voice_names.get(item.utterance_id, item.voice),
             speed=item.speed,

@@ -328,3 +328,31 @@ roles, length violations and unsupported derived numbers; the repair constrains
 roles and supplies explicitly hypothetical, checked arithmetic only for printed
 fixed player damage and recorded life. This does not establish a target or outcome.
 Captured report replay remains local and uses deterministic model responses.
+
+
+## Player names and natural handle pronunciation (2026-10-30)
+
+Announcers now receive both players' public display names from room metadata,
+keyed by seat and persisted in the match checkpoint. Snapshots and the desktop
+pipe carry the mapping; new matches clear it. Old checkpoints can use an already
+known opponent name but never invent the local player's name. Both native booth
+facts and grounded fallback calls use the observed names. The Coach adapter
+replaces AOA's policy of suppressing digit-bearing handles: names remain exact
+through factual validation, and the desktop handles their speech pronunciation.
+Coach advice retains its existing second-person wording.
+
+Speech formatting is local, bounded and cached, and applies to known handles
+only. It expands titles, separates CamelCase/underscores, reads numeric suffixes
+as individual digits (zero as “oh”), and gives opaque consonant tags a word-like
+approximation. It preserves readable syllables rather than reciting the alphabet.
+For example, `mrpickle802` is spoken “Mister pickle eight oh two.” Written narration
+retains the actual handle. Kokoro and Chatterbox share this formatting before
+rendering; voice pairs, style, speed and queue arbitration remain unchanged.
+Exact pronunciation of unfamiliar handles remains a best-effort reading.
+
+New names are also scrubbed from anonymized match bundles when the original room
+log is absent. Regression coverage includes both seat orders, late metadata,
+checkpoint restore/reset, generated facts and audit, fallback calls, exact-only
+speech replacements, both TTS routes, public-state propagation and anonymization.
+No current match data is sent to a model for these checks, and no live settings
+or active Coach source is changed during isolated validation.

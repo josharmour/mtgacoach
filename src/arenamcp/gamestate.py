@@ -71,6 +71,7 @@ from arenamcp.gamestate_transforms import (
     _parse_attacker_block_state,
     _parse_block_state,
 )
+from arenamcp.player_names import clean_name, clean_names
 
 if TYPE_CHECKING:
     from arenamcp.match_validator import MatchRecording
@@ -290,6 +291,8 @@ class GameState(_GameStateAnnotationsMixin):
         # gameInfo.gameNumber: 1, 2, 3 in a best-of-three (they share match_id)
         "game_number": None,
         "opponent_name": "",
+        "player_names": dict,
+        "_player_names_match_id": None,
         "format_name": "",
         "event_id": "",
         # Deck list
@@ -722,6 +725,28 @@ class GameState(_GameStateAnnotationsMixin):
             self.game_ended_event.set()
         return outcome
 
+    def record_player_names(self, match_id, participants):
+        """Bind public room names to seats, including the local player."""
+        if not match_id or match_id != self.match_id:
+            return
+        with self._state_lock:
+            if self._player_names_match_id != match_id:
+                self.player_names = {}
+                self._player_names_match_id = match_id
+            for participant in participants:
+                if not isinstance(participant, dict):
+                    continue
+                seat = participant.get("systemSeatId")
+                raw = (
+                    participant.get("playerName")
+                    or participant.get("screenName")
+                    or participant.get("userName")
+                )
+                self.player_names.update(
+                    clean_names({seat: clean_name(raw)}) if isinstance(seat, (int, str)) else {}
+                )
+            self.publish_snapshot()
+
     def note_game_identity(self, match_id: str | None, game_number: int | None = None) -> None:
         """A game was seen starting (a new match room): forget other games' results and ends."""
         with self._state_lock:
@@ -729,6 +754,9 @@ class GameState(_GameStateAnnotationsMixin):
 
     def _note_game_identity_locked(self, match_id: str | None, game_number: int | None) -> None:
         identity = (match_id, game_number)
+        if match_id and self._player_names_match_id not in (None, match_id):
+            self.player_names = {}
+            self._player_names_match_id = None
         if self.last_game_result and not _same_game(self._result_game, identity):
             logger.info(
                 "Cleared the previous game's result %s (game %s): game %s is in play",
@@ -768,6 +796,9 @@ class GameState(_GameStateAnnotationsMixin):
                 # Named by the same room event (2026-10-19 match 115944ce: the
                 # 11:14:23 restart saved its packet with opponent_name None).
                 "opponent_name": self.opponent_name,
+                "player_names": dict(self.player_names)
+                if self._player_names_match_id == self.match_id
+                else {},
                 "local_seat_id": self.local_seat_id,
                 "seat_source": self._seat_source,
                 "turn_info": self.turn_info.to_dict(),
@@ -855,6 +886,8 @@ class GameState(_GameStateAnnotationsMixin):
                 self.event_id = str(checkpoint.get("event_id") or "")
                 self.format_name = str(checkpoint.get("format_name") or "")
                 self.opponent_name = str(checkpoint.get("opponent_name") or "")
+                self.player_names = clean_names(checkpoint.get("player_names"))
+                self._player_names_match_id = self.match_id if self.player_names else None
                 self.local_seat_id = _coerce_optional_int(checkpoint.get("local_seat_id"))
                 self._seat_source = _coerce_int(checkpoint.get("seat_source", 0), 0)
 
@@ -1654,6 +1687,7 @@ class GameState(_GameStateAnnotationsMixin):
             "match_id": self.match_id,
             "game_number": self.game_number,
             "opponent_name": self.opponent_name,
+            "player_names": dict(self.player_names) if self._player_names_match_id == self.match_id else {},
             "format_name": self.format_name,
             "event_id": self.event_id,
             "local_seat_id": self.local_seat_id,

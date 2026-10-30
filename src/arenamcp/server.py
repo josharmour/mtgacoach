@@ -878,6 +878,8 @@ def _handle_match_created(payload: dict) -> None:
 
     # ── Opponent name tracking ──
     for participant in participants:
+        if not isinstance(participant, dict):
+            continue
         p_seat = participant.get("systemSeatId")
         p_user = participant.get("userId")
         p_name = participant.get("playerName") or participant.get("screenName") or participant.get("userName")
@@ -886,6 +888,8 @@ def _handle_match_created(payload: dict) -> None:
         ):
             game_state.opponent_name = str(p_name)
             break
+
+    game_state.record_player_names(match_id or game_state.match_id, participants)
 
     # ── Match result detection (from finalMatchResult) ──
     # MTGA sends this in MatchGameRoomStateChangedEvent when the match ends.
@@ -2210,6 +2214,7 @@ def get_game_state() -> dict[str, Any]:
         # Best-of-three games share match_id; the Oops checks tell them apart.
         "game_number": snap.get("game_number"),
         "opponent_name": snap.get("opponent_name", ""),
+        "player_names": dict(snap.get("player_names", {})),
         "format_name": snap.get("format_name", ""),
         "event_id": snap.get("event_id", ""),
         "turn": turn,

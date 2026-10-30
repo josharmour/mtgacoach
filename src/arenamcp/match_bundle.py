@@ -647,6 +647,17 @@ def build_bundle(
         if isinstance(opp, str) and opp.strip():
             names.setdefault(opp, "opponent")
 
+    from arenamcp.player_names import clean_names
+
+    report_states = [
+        entry["report"].get("game_state") for entry in report_entries if isinstance(entry.get("report"), dict)
+    ]
+    for source in [state, *report_states]:
+        if not isinstance(source, dict):
+            continue
+        for seat, name in clean_names(source.get("player_names")).items():
+            names.setdefault(name, "you" if seat == source.get("local_seat_id") else "opponent")
+
     bundle = {
         "schema": SCHEMA_VERSION,
         "install_id": str(install_id or ""),

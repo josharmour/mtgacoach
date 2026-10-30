@@ -1087,3 +1087,12 @@ def test_saved_bundle_upload_retry_does_not_block_engine_reload(world, monkeypat
         allow_upload.set()
         worker.join(10)
     assert not worker.is_alive()
+
+
+def test_names_in_snapshot_are_scrubbed_even_without_matching_room_names(world):
+    state = _final_state()
+    state["player_names"] = {"1": "FreshLocalName", "2": "FreshRivalName"}
+    bundle = _build(world, final_state=state)
+    raw = json.dumps(bundle)
+    assert "FreshLocalName" not in raw and "FreshRivalName" not in raw
+    assert bundle["final_state"]["player_names"] == {"1": "you", "2": "opponent"}

@@ -11,6 +11,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from arenamcp.player_names import snapshot_names
+
 from .contracts import Epoch, Evidence, Observation
 
 _PUBLIC_ZONES = ("battlefield", "stack", "graveyard", "exile", "command")
@@ -67,6 +69,7 @@ def observation_from_snapshot(
     turn = snapshot.get("turn_info") or snapshot.get("turn") or {}
     zones = snapshot.get("zones") or {}
     public = {
+        "player_names": snapshot_names(snapshot),
         "turn_info": _scalars(turn, ("turn_number", "active_player", "priority_player", "phase", "step")),
         "players": [
             _scalars(player, ("seat_id", "life_total", "is_local"))
