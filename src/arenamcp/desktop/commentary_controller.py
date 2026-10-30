@@ -14,6 +14,7 @@ from arenamcp.commentary.config import CommentaryConfig, speech_rate
 from arenamcp.commentary.contracts import TERMINAL_STATES, Epoch, SpeechCategory, Utterance
 from arenamcp.commentary.events import ObservationAdapter
 from arenamcp.commentary.setup import server_voices
+from arenamcp.commentary.timeline import valid_for
 from arenamcp.commentary.voices import VoicePairUnavailable, voice_pair
 from arenamcp.settings import get_settings
 
@@ -78,12 +79,7 @@ class CommentaryController(QObject):
             return True
         if item.category != SpeechCategory.COMMENTARY:
             return item.category == SpeechCategory.ESSENTIAL or self.config.mode == "actions"
-        return bool(
-            self.config.enabled
-            and self.observation
-            and item.epoch == self.observation.epoch
-            and (item.event_bound or item.snapshot_id == self.observation.snapshot_id)
-        )
+        return bool(self.config.enabled and self.observation and valid_for(item, self.observation))
 
     def proposal(self, payload):
         try:

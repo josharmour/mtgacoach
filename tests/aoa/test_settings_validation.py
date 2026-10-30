@@ -151,3 +151,15 @@ def test_two_role_style_pair_preview_and_save(dialog, style):
     reopened._catalog_ready(widget.catalog)
     assert reopened.voice.currentData() == "mira|atlas" and reopened.style.currentData() == style
     reopened.close()
+
+
+def test_own_hand_and_deck_preference_is_visible_and_persists(dialog):
+    widget, settings, session = dialog
+    widget.mode.setCurrentIndex(widget.mode.findData("commentary"))
+    assert not widget.private.isHidden()
+    widget.private.setChecked(True)
+    assert widget._apply()
+    assert settings["commentary_private_information"] is True
+    assert session.configure_commentary.call_args.args[0]["private_information"] is True
+    widget.mode.setCurrentIndex(widget.mode.findData("actions"))
+    assert widget.private.isHidden()

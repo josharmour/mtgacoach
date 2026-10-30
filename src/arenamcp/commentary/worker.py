@@ -91,29 +91,44 @@ def main():
                     facade = HeadlessBooth(config, rpc, time.monotonic)
                     configuration = config
                 native, status = facade.generate(observation)
-                evidence_time = min(
-                    (e.received_at or observation.arrived_at for e in observation.events),
-                    default=observation.arrived_at,
-                )
-                lines = [
-                    Utterance(
-                        item.uid,
-                        item.text,
-                        SpeechCategory.COMMENTARY,
-                        observation.epoch,
-                        min(
-                            item.expires_ts or observation.arrived_at + 15,
-                            evidence_time + (8 if item.role == "play_by_play" else 15),
-                        ),
-                        voice=item.voice or "atlas",
-                        anchor_id=item.anchor_uid,
-                        evidence_ids=tuple(e.event_id for e in observation.events),
-                        snapshot_id=observation.snapshot_id,
-                        role=item.role,
-                        speed=item.rate,
+                from .timeline import historical_scope, position_fingerprint
+
+                lines = []
+                for item in native:
+                    tracked = facade.booth.tracked.get(item.uid, {})
+                    dependencies = tracked.get("deps", {})
+                    scope = facade.audit_scopes.get(item.text, "snapshot")
+                    historical = historical_scope(scope, dependencies, item.text)
+                    position = scope == "position" and "state:turn" not in dependencies
+                    cited = [
+                        facade.event_sources[ref]
+                        for ref in tracked.get("refs", ())
+                        if ref in facade.event_sources
+                    ]
+                    cited = cited or list(observation.events)
+                    evidence_time = min(
+                        (e.received_at or observation.arrived_at for e in cited),
+                        default=observation.arrived_at,
                     )
-                    for item in native
-                ]
+                    lines.append(
+                        Utterance(
+                            item.uid,
+                            item.text,
+                            SpeechCategory.COMMENTARY,
+                            observation.epoch,
+                            evidence_time + (30 if historical else 15 if position else 8),
+                            voice=item.voice or "atlas",
+                            anchor_id=item.anchor_uid,
+                            evidence_ids=tuple(e.event_id for e in cited),
+                            snapshot_id=observation.snapshot_id,
+                            role=item.role,
+                            speed=item.rate,
+                            event_bound=historical,
+                            position_id=position_fingerprint(observation)
+                            if position and not historical
+                            else "",
+                        )
+                    )
             else:
                 lines = deterministic(observation, config)
                 status = {"state": "deterministic"}

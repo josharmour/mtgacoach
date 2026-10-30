@@ -250,6 +250,12 @@ class PipeAdapter:
 
     def emit_game_state(self, snapshot: dict[str, Any]) -> None:
         """Emit a game state snapshot to the GUI."""
+        if self._coach is not None:
+            from arenamcp.commentary.context import deck_overview
+
+            overview = deck_overview(self._coach, snapshot)
+            if overview:
+                snapshot = {**snapshot, "commentary_deck_overview": overview}
         self._emit({"type": "game_state", "data": snapshot})
         if self._coach is not None:
             if self._commentary is None:

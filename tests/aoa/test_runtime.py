@@ -96,6 +96,7 @@ def test_server_shape_private_opt_in_and_fingerprint_stability():
     assert first.snapshot_id == second.snapshot_id
     assert first.public_state["turn_info"]["turn_number"] == 4
     assert "PRIVATE_HAND" not in json.dumps(first.to_wire())
+    state["local_seat_id"] = 1
     opted = a.project(state, private=True)
     assert opted.private_state["hand"][0]["name"] == "PRIVATE_HAND"
     assert "PRIVATE_FACE" not in json.dumps(opted.to_wire())
@@ -122,8 +123,8 @@ def test_transient_cast_and_resolution_keep_distinct_provenance():
     ]
     a = ObservationAdapter(lambda: 10)
     obs = a.observe(state)
-    assert [e.kind for e in obs.events] == ["game_start", "action_observed", "spell_resolved"]
-    assert obs.events[-1].snapshot_id == "source-10"
+    assert [e.kind for e in obs.events] == ["action_observed", "spell_resolved", "game_start"]
+    assert all(e.snapshot_id == "source-10" for e in obs.events[:2])
     assert not a.observe(state).events
     state["zones"]["stack"] = []
     assert not a.observe(state).events  # disappearance alone never invents resolution
@@ -175,7 +176,7 @@ def test_replay_boundaries_combat_life_and_end_have_evidence():
     assert {e.kind for e in obs.events} == {"turn_start", "life_change", "combat"}
     lines = deterministic(obs, CommentaryConfig(mode="commentary"))
     assert "attacks with 1" in lines[0].text
-    assert lines[0].expires_at == 28 and lines[0].evidence_ids
+    assert lines[0].expires_at == 50 and lines[0].event_bound and lines[0].evidence_ids
     state["last_game_result"] = "win"
     assert a.observe(state).events[-1].kind == "game_end"
 
@@ -380,7 +381,7 @@ def test_service_narrates_observed_cast_without_optional_analysis(blocker, monke
         service.offer(state)
         assert ready.wait(3)
         proposal = next(e["utterance"] for e in events if e["type"] == "commentary_proposal")
-        assert proposal["text"] == "There's the cast: Bear."
+        assert proposal["text"] == "A player casts Bear."
         assert proposal["event_bound"] is True and proposal["evidence_ids"]
     finally:
         _BACKGROUND_LANE.unprotect(handle)

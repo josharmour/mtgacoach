@@ -47,6 +47,9 @@ class Evidence:
     payload: dict[str, Any] = field(default_factory=dict)
     seat: int | None = None
     received_at: float = 0.0
+    turn_number: int | None = None
+    phase: str | None = None
+    active_player: int | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in {
@@ -59,6 +62,8 @@ class Evidence:
             "turn_start",
             "life_change",
             "land_drop",
+            "hand_changed",
+            "deck_overview",
         }:
             raise ValueError("Unknown evidence kind")
         if (
@@ -81,6 +86,7 @@ class Observation:
     public_state: dict[str, Any]
     events: tuple[Evidence, ...] = ()
     private_state: dict[str, Any] = field(default_factory=dict)
+    recent_commentary: tuple[str, ...] = ()
     protocol_version: int = PROTOCOL_VERSION
 
     def __post_init__(self) -> None:
@@ -101,6 +107,7 @@ class Observation:
         data = dict(value)
         data["epoch"] = Epoch(**data["epoch"])
         data["events"] = tuple(Evidence(**event) for event in data.get("events", ()))
+        data["recent_commentary"] = tuple(data.get("recent_commentary", ()))
         return cls(**data)
 
 
@@ -120,6 +127,7 @@ class Utterance:
     role: str = "play_by_play"
     speed: float = 1.0
     event_bound: bool = False
+    position_id: str = ""
     protocol_version: int = PROTOCOL_VERSION
 
     def __post_init__(self) -> None:
@@ -138,6 +146,15 @@ class Utterance:
             raise ValueError("Invalid expiry")
         if type(self.event_bound) is not bool or (self.event_bound and not self.evidence_ids):
             raise ValueError("Event-bound speech requires evidence")
+        if not isinstance(self.position_id, str) or (
+            self.position_id
+            and (
+                len(self.position_id) != 24
+                or any(c not in "0123456789abcdef" for c in self.position_id)
+                or self.event_bound
+            )
+        ):
+            raise ValueError("Invalid position fingerprint")
         if self.anchor_id == self.utterance_id:
             raise ValueError("An utterance cannot depend on itself")
 

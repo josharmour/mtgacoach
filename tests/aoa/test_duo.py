@@ -69,31 +69,34 @@ def test_pair_selection_must_be_supported_by_current_catalog():
 
 
 @pytest.mark.parametrize("kind", ["action_observed", "spell_resolved", "land_drop"])
-def test_grounded_exchange_has_two_distinct_facts_and_style_specific_wording(kind):
+def test_routine_fallback_is_one_natural_call_without_filler(kind):
     state, observation = observed(kind)
-    all_texts = set()
     for style in PERSONAS:
         lines = deterministic(observation, CommentaryConfig(mode="commentary", persona=style))
-        assert len(lines) == 2
-        first, second = lines
-        assert first.role == "play_by_play" and second.role == "color_analyst"
-        assert second.anchor_id == first.utterance_id
-        assert first.evidence_ids == second.evidence_ids == ("public-cast",)
-        assert first.event_bound and second.event_bound
-        assert "Bear" in first.text and first.text != second.text
-        assert "Player 1" in second.text or "battlefield" in second.text
-        all_texts.add(tuple(line.text for line in lines))
-    assert len(all_texts) == 4
-    assert len(deterministic(observation, CommentaryConfig(mode="commentary", speakers=1))) == 1
-    unknown = replace(observation, events=(replace(observation.events[0], seat=None),))
-    assert len(deterministic(unknown, CommentaryConfig(mode="commentary"))) == 1
+        if kind in {"spell_resolved", "land_drop"}:
+            assert not lines  # Wait for useful analysis instead of reading routine logs.
+            continue
+        assert len(lines) == 1
+        assert "Bear" in lines[0].text
+        assert "Resolution confirmed" not in lines[0].text
+        assert "played as a land" not in lines[0].text
+        assert "casting player" not in lines[0].text
+        assert "Player 1" not in lines[0].text
 
 
-@pytest.mark.parametrize("source", ["grounded", "generated"])
+def paired(observation, config):
+    first = replace(deterministic(observation, config)[0], event_bound=False)
+    return first, replace(
+        first,
+        utterance_id=first.utterance_id + ":analyst",
+        role="color_analyst",
+        text="Its outcome is still unknown.",
+        anchor_id=first.utterance_id,
+    )
+
+
 @pytest.mark.parametrize("end", ["finished", "failed", "mode", "mute", "game", "expired"])
-def test_both_proposal_paths_use_distinct_voices_and_depend_on_actual_delivery(
-    qapp, monkeypatch, source, end
-):
+def test_generated_exchange_uses_distinct_voices_and_depends_on_delivery(qapp, monkeypatch, end):
     settings = {
         "tts_provider": "chatterbox_remote",
         "autoplay_speech": "commentary",
@@ -105,9 +108,7 @@ def test_both_proposal_paths_use_distinct_voices_and_depend_on_actual_delivery(
     c = CommentaryController(tts, sent.append, lambda _: None)
     state, obs = observed()
     c.observe(state)
-    first, second = deterministic(obs, c.config)
-    if source == "generated":
-        first, second = replace(first, event_bound=False), replace(second, event_bound=False)
+    first, second = paired(obs, c.config)
     if end == "expired":
         second = replace(second, expires_at=time.monotonic() - 1)
     c.proposal(first.to_wire())
@@ -162,7 +163,7 @@ def test_missing_catalog_recovers_without_silently_using_one_voice(qapp, monkeyp
     c = CommentaryController(tts, sent.append, Mock())
     state, obs = observed()
     c.observe(state)
-    first, second = deterministic(obs, c.config)
+    first, second = paired(obs, c.config)
     c.proposal(first.to_wire())
     assert not tts.request_speech.called
     assert sent[-1]["state"] == "failed"

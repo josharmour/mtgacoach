@@ -53,6 +53,9 @@ def journal_event(game, event):
             "game_number": game.game_number,
             "snapshot_id": str(getattr(game, "log_game_state_id", 0)),
             "received_at": time.monotonic(),
+            "turn_number": getattr(getattr(game, "turn_info", None), "turn_number", None),
+            "phase": getattr(getattr(game, "turn_info", None), "phase", None),
+            "active_player": getattr(getattr(game, "turn_info", None), "active_player", None),
         }
     )
     del game._commentary_journal[:-128]
@@ -91,9 +94,20 @@ class ObservationAdapter:
             local = snapshot.get("local_seat_id")
             cards = [_public_card({**c, "visibility": "public"}) for c in hand[:100] if isinstance(c, dict)]
             deck = [v for v in snapshot.get("deck_cards", [])[:250] if type(v) is int]
-            observation = replace(
-                observation, private_state={"local_seat": local, "hand": cards, "deck": deck}
-            )
+            cards = [card for card in cards if local and card.get("owner_seat_id") in (None, local)]
+            private_state = {"local_seat": local, "hand": cards, "deck": deck}
+            overview = snapshot.get("commentary_deck_overview")
+            if (
+                isinstance(overview, dict)
+                and isinstance(overview.get("identity"), str)
+                and isinstance(overview.get("summary"), str)
+                and 0 < len(overview["summary"]) <= 500
+            ):
+                private_state["deck_overview"] = {
+                    "identity": overview["identity"],
+                    "summary": overview["summary"],
+                }
+            observation = replace(observation, private_state=private_state)
         return replace(observation, snapshot_id=state_fingerprint(observation))
 
     def observe(self, snapshot, private=False):
@@ -104,7 +118,7 @@ class ObservationAdapter:
             self.seen_event = 0
         events = []
 
-        def add(kind, data=None, seat=None, suffix="state"):
+        def add(kind, data=None, seat=None, suffix="state", visibility="public"):
             events.append(
                 Evidence(
                     f"{current.epoch.match_id}:{current.epoch.game_number}:{current.source_sequence}:{suffix}:{kind}",
@@ -113,12 +127,24 @@ class ObservationAdapter:
                     current.snapshot_id,
                     payload=data or {},
                     seat=seat,
+                    visibility=visibility,
                     received_at=current.arrived_at,
+                    turn_number=current.public_state["turn_info"].get("turn_number"),
+                    phase=current.public_state["turn_info"].get("phase"),
+                    active_player=current.public_state["turn_info"].get("active_player"),
                 )
             )
 
         if boundary:
             add("game_start")
+        if private:
+            prior = previous.private_state if not boundary else {}
+            own = current.private_state
+            if own.get("hand") != prior.get("hand") and own.get("hand"):
+                add("hand_changed", {"count": len(own["hand"])}, own.get("local_seat"), visibility="private")
+            overview = own.get("deck_overview")
+            if overview and overview != prior.get("deck_overview"):
+                add("deck_overview", overview, own.get("local_seat"), visibility="private")
         old = previous.public_state if not boundary else {}
         turn = current.public_state["turn_info"]
         if old and turn.get("turn_number") != old.get("turn_info", {}).get("turn_number"):
@@ -156,7 +182,7 @@ class ObservationAdapter:
             ):
                 continue
             received = record.get("received_at", 0)
-            if not isinstance(received, (float, int)) or self.clock() - received > 8:
+            if not isinstance(received, (float, int)) or self.clock() - received > 30:
                 continue
             events.append(
                 Evidence(
@@ -167,7 +193,12 @@ class ObservationAdapter:
                     payload=dict(record["payload"]),
                     seat=record.get("seat"),
                     received_at=received,
+                    turn_number=record.get("turn_number"),
+                    phase=record.get("phase"),
+                    active_player=record.get("active_player"),
                 )
             )
         self.previous = current
-        return replace(current, events=tuple(events[-32:]))
+        from .timeline import select_events
+
+        return replace(current, events=select_events(events, current, limit=32))

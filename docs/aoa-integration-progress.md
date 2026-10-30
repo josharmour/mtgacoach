@@ -285,3 +285,46 @@ speakers without saving. The existing server choice and 1.5× speed persist.
 Validation: **188 affected-path tests passed**, including native style context,
 real worker protocol, pair sequencing/cancellation, settings persistence and
 current-gateway reasoning regressions. Ruff lint/format passed for 804 files.
+
+
+## Useful narration and fast-event recaps (2026-10-30)
+
+Dense snapshots could exceed the commentary input budget before making a model
+request. The bridge now selects complete relevant facts, prioritizes important
+plays over routine recent events, and includes permitted hand information and
+its card rules. The model uses a constrained two-role response format; schema
+size counts against the unchanged 6,000-byte conservative input bound. Generation
+and audit still share the same six-second exchange deadline and gameplay admission.
+
+A bounded pool retains up to 32 recent events and coalesces four per exchange.
+Audited historical recaps remain eligible for 30 seconds across phase changes;
+current-position lines depend on the board/hand fingerprint, and timing-sensitive
+predictions keep strict snapshot checks. Delayed events retain their original
+turn and phase. Actually delivered fallback calls enter the heard ledger, allowing
+later analysis without repeating the play call. Mode, privacy and game changes
+clear the relevant queues and context. Backlog and inference limits stay bounded.
+
+Routine land drops and generic resolution confirmations no longer generate
+filler exchanges. A fallback call can be one natural sentence; a second voice
+must add something useful. Generated analysis permits clearly labeled, grounded
+possibilities about future plays, responses and risks. Unsupported hidden-card
+claims and fabricated outcomes remain rejected. The existing Coach deck overview
+can introduce the deck without another model request. The Announcers-only
+**Discuss my hand and deck** checkbox controls the existing explicit privacy
+setting; it never reveals the opponent's hidden hand. [Dialog](images/aoa-hand-and-deck.png).
+
+Verification includes captured-state replay with deterministic model responses,
+real worker protocol, fast-event and phase-transition regressions, delivery and
+consent tests, offscreen dialog inspection, and bounded synthetic requests through
+the real configured model gateway. Private captured reports were not transmitted.
+No game, autoplay or audible preview was started. Real match narration quality
+and audible delivery remain user qualifications after safe activation.
+
+Local validation: 187 affected-path tests passed, followed by the final focused
+**53-test regression selection passed** after the final prompt/schema changes. Lint and formatting cover 808
+Python files. The real installed-runtime worker completed a synthetic two-voice
+generation plus audit in 3.3 seconds. Earlier synthetic attempts exposed invalid
+roles, length violations and unsupported derived numbers; the repair constrains
+roles and supplies explicitly hypothetical, checked arithmetic only for printed
+fixed player damage and recorded life. This does not establish a target or outcome.
+Captured report replay remains local and uses deterministic model responses.

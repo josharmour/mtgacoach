@@ -70,6 +70,8 @@ class CommentarySettingsDialog(QDialog):
         )
         self.server = QCheckBox("Server Chatterbox")
         self.server.setChecked(settings.get("speech_server_chatterbox", self.setup.prefer_server))
+        self.private = QCheckBox("Discuss my hand and deck")
+        self.private.setChecked(self.config.private_information)
         self.voice = QComboBox()
         self.voice_label = QLabel("Voice")
         self.style_label = QLabel("Style")
@@ -89,6 +91,7 @@ class CommentarySettingsDialog(QDialog):
             ("Hear", self.mode),
             ("", self.server),
             (self.style_label, self.style),
+            ("", self.private),
             (self.voice_label, self.voice),
             ("Speed", self.speed),
         ):
@@ -127,6 +130,7 @@ class CommentarySettingsDialog(QDialog):
         self.voice.clear()
         duo = self.mode.currentData() == "commentary"
         self.voice_label.setText("Voices" if duo else "Voice")
+        self.private.setVisible(duo)
         self.style.setVisible(duo)
         self.style_label.setVisible(duo)
         self.pair_error = ""
@@ -263,6 +267,7 @@ class CommentarySettingsDialog(QDialog):
             mode=self.mode.currentData(),
             speakers=2,
             persona=self.style.currentData(),
+            private_information=self.private.isChecked(),
             generative=True,
             muted=False,
             output_owner="coach",

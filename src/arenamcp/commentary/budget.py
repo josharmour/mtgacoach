@@ -43,7 +43,7 @@ class CommentaryBudget:
         self.active = exchange
         return exchange
 
-    def before_call(self, exchange, system, user, *, audit):
+    def before_call(self, exchange, system, user, *, audit, schema=""):
         now = self.clock()
         if exchange is not self.active or exchange.closed or exchange.call_started is not None:
             raise BudgetExceeded("obsolete_exchange")
@@ -51,7 +51,7 @@ class CommentaryBudget:
             raise BudgetExceeded("call_count_or_deadline")
         # UTF-8 bytes plus message framing are a conservative token upper bound;
         # no gateway-specific tokenizer guess can undercount a dense Unicode prompt.
-        tokens = len(system.encode("utf-8")) + len(user.encode("utf-8")) + 256
+        tokens = len(system.encode("utf-8")) + len(user.encode("utf-8")) + len(schema.encode("utf-8")) + 256
         output = 256 if audit else 512
         if tokens > 6000:
             raise BudgetExceeded("context_budget")

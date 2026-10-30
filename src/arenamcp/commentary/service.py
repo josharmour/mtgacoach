@@ -7,6 +7,8 @@ import logging
 import queue
 import threading
 import time
+from collections import deque
+from dataclasses import replace
 
 from .budget import BudgetExceeded, CommentaryBudget
 from .client import CommentaryClient
@@ -14,6 +16,7 @@ from .config import CommentaryConfig
 from .contracts import TERMINAL_STATES, Utterance
 from .events import ObservationAdapter
 from .headless import deterministic
+from .timeline import position_fingerprint, select_events, valid_for
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,11 @@ class CommentaryService:
         self.inflight = {}
         self.last_state = None
         self.last_grounded = (None, -float("inf"))
+        self.pending_events = {}
+        self.pending_epoch = None
+        self.fallback_events = set()
+        self.proposals = {}
+        self.heard = deque(maxlen=4)
         self._lock = threading.Lock()
 
     def configure(self):
@@ -42,8 +50,12 @@ class CommentaryService:
         if config != self.config:
             self.config = config
             self.cancelled.set()
+            self.pending_events = {}
+            self.fallback_events.clear()
             with self._lock:
                 self.inflight.clear()
+                self.proposals.clear()
+                self.heard.clear()
             self.emit({"type": "commentary_clear"})
         self.wake.set()
 
@@ -68,6 +80,9 @@ class CommentaryService:
         if state in TERMINAL_STATES:
             with self._lock:
                 self.inflight.pop(uid, None)
+                item = self.proposals.pop(uid, None)
+                if item and state == "finished":
+                    self.heard.append(item.text)
             try:
                 self.deliveries.put_nowait((uid, state))
             except queue.Full:
@@ -90,10 +105,19 @@ class CommentaryService:
             raise BudgetExceeded("cancelled")
         if expected is not None:
             fresh = self.adapter.project(self.latest, self.config.private_information)
-            if fresh.epoch != expected.epoch or fresh.snapshot_id != expected.snapshot_id:
+            if fresh.epoch != expected.epoch:
                 raise BudgetExceeded("facts_changed")
         user = json.dumps(context, ensure_ascii=False, separators=(",", ":"))
-        output, timeout = self.budget.before_call(exchange, system, user, audit=audit)
+        from .context import generation_format
+
+        response_format = {"type": "json_object"} if audit else generation_format()
+        output, timeout = self.budget.before_call(
+            exchange,
+            system,
+            user,
+            audit=audit,
+            schema=json.dumps(response_format, separators=(",", ":")),
+        )
         try:
             backend = self.backend()
             # An older/custom backend must not silently ignore admission/cancellation.
@@ -109,7 +133,7 @@ class CommentaryService:
                 enable_thinking=False,
                 request_timeout_s=timeout,
                 raise_on_error=True,
-                response_format={"type": "json_object"},
+                response_format=response_format,
                 background=True,
                 call_class="background.commentary",
                 priority=30,
@@ -131,26 +155,36 @@ class CommentaryService:
         fresh = self.adapter.project(self.latest, config.private_information)
         if fresh.epoch != observation.epoch:
             return
-        if self.last_grounded[0] == observation.epoch and now - self.last_grounded[1] < 10:
+        opening = any(e.kind == "deck_overview" for e in observation.events)
+        if not opening and self.last_grounded[0] == observation.epoch and now - self.last_grounded[1] < 10:
             self.status("waiting_capacity", reason="grounded_call_spacing")
             return
-        lines = deterministic(observation, config)
+        available = tuple(e for e in observation.events if e.event_id not in self.fallback_events)
+        lines = deterministic(replace(observation, events=available), config)
         if not lines:
             self.status("waiting_events", reason="no_eligible_public_event")
             return
-        if any(
-            now >= item.expires_at or (not item.event_bound and fresh.snapshot_id != item.snapshot_id)
-            for item in lines
-        ):
+        if any(now >= item.expires_at or not valid_for(item, fresh) for item in lines):
             self.status("dropped", reason="facts_changed")
             return
         with self._lock:
             for item in lines:
                 self.inflight[item.utterance_id] = item.expires_at + 30
+                self.proposals[item.utterance_id] = item
         self.last_grounded = (observation.epoch, now)
         for item in lines:
             self.emit({"type": "commentary_proposal", "utterance": item.to_wire()})
         self.status("grounded", reason=reason)
+        return {eid for item in lines for eid in item.evidence_ids}
+
+    def _fallback(self, observation, config, reason):
+        consumed = self._grounded(observation, config, reason)
+        if consumed:
+            self.fallback_events.update(consumed)
+            if not config.generative or any(e.kind == "deck_overview" for e in observation.events):
+                self.pending_events = {
+                    key: event for key, event in self.pending_events.items() if key not in consumed
+                }
 
     def _run(self):
         try:
@@ -171,10 +205,46 @@ class CommentaryService:
                     observation = self.adapter.observe(snapshot, config.private_information)
                 except (TypeError, ValueError, KeyError):
                     continue
-                # Expire missing delivery acknowledgments; no unbounded speech backlog.
+                # Keep a bounded fresh candidate while speech or gameplay owns
+                # capacity; observing the same snapshot must not erase it.
                 now = time.monotonic()
+                if self.pending_epoch != observation.epoch:
+                    self.pending_events = {}
+                    self.pending_epoch = observation.epoch
+                    self.fallback_events = set()
+                    self.heard.clear()
+                    self.proposals.clear()
+                for event in observation.events:
+                    if event.kind == "hand_changed":
+                        self.pending_events = {
+                            key: old for key, old in self.pending_events.items() if old.kind != "hand_changed"
+                        }
+                    self.pending_events[event.event_id] = event
+                self.pending_events = {
+                    key: event
+                    for key, event in (
+                        (e.event_id, e)
+                        for e in select_events(self.pending_events.values(), observation, limit=32)
+                    )
+                    if now - event.received_at
+                    < (90 if event.kind == "deck_overview" else 8 if event.kind == "hand_changed" else 30)
+                    and (
+                        event.kind != "hand_changed"
+                        or (config.private_information and observation.private_state.get("hand"))
+                    )
+                }
+                self.fallback_events.intersection_update(self.pending_events)
+                observation = replace(
+                    observation,
+                    events=select_events(self.pending_events.values(), observation),
+                    recent_commentary=tuple(self.heard),
+                )
+                # Expire missing delivery acknowledgments; no unbounded speech backlog.
                 with self._lock:
                     self.inflight = {uid: expiry for uid, expiry in self.inflight.items() if expiry > now}
+                    self.proposals = {
+                        uid: item for uid, item in self.proposals.items() if uid in self.inflight
+                    }
                     speaking = bool(self.inflight)
                 if not observation.events or speaking:
                     self.status(
@@ -185,11 +255,14 @@ class CommentaryService:
                 self.cancelled.clear()
                 exchange = None
                 try:
+                    if any(e.kind == "deck_overview" for e in observation.events):
+                        self._fallback(observation, config, "opening_deck_overview")
+                        continue
                     # Worker setup is not inference occupancy; no model loads here.
                     from arenamcp.backends.proxy import _BACKGROUND_LANE
 
                     if config.generative and not _BACKGROUND_LANE.commentary_available():
-                        self._grounded(observation, config, "analysis_waits_for_gameplay")
+                        self._fallback(observation, config, "analysis_waits_for_gameplay")
                         continue
                     self.client.start(config)
                     exchange = self.budget.begin(config.exchanges_per_minute)
@@ -207,31 +280,43 @@ class CommentaryService:
                         or self.muted()
                         or config != self.config
                         or fresh.epoch != observation.epoch
-                        or fresh.snapshot_id != observation.snapshot_id
                     ):
                         self.status("dropped", reason="facts_or_mode_changed")
                         self.client.close()
-                        self._grounded(observation, config, "analysis_facts_changed")
+                        self._fallback(observation, config, "analysis_facts_changed")
                         continue
                     utterances = [Utterance.from_wire(value) for value in result.get("utterances", [])[:2]]
                     if any(
                         u.epoch != observation.epoch
                         or u.snapshot_id != observation.snapshot_id
-                        or (config.generative and u.event_bound)
+                        or (u.position_id and u.position_id != position_fingerprint(observation))
                         for u in utterances
                     ):
                         raise ValueError("invalid worker provenance")
                     if not utterances:
-                        self._grounded(
-                            observation, config, result.get("status", {}).get("state", "analysis_unavailable")
+                        self._fallback(
+                            observation,
+                            config,
+                            result.get("status", {}).get("reason")
+                            or result.get("status", {}).get("state", "analysis_unavailable"),
                         )
                         continue
+                    self.pending_events = {
+                        key: event
+                        for key, event in self.pending_events.items()
+                        if key not in {e.event_id for e in observation.events}
+                    }
+                    prefix_valid = True
                     for item in utterances:
-                        if time.monotonic() >= item.expires_at:
+                        prefix_valid = (
+                            prefix_valid and time.monotonic() < item.expires_at and valid_for(item, fresh)
+                        )
+                        if not prefix_valid:
                             self.client.delivered(item.utterance_id, "superseded")
                             continue
                         with self._lock:
                             self.inflight[item.utterance_id] = item.expires_at + 30
+                            self.proposals[item.utterance_id] = item
                         self.emit({"type": "commentary_proposal", "utterance": item.to_wire()})
                     self.status(
                         result.get("status", {}).get("state", "ready"),
@@ -242,11 +327,11 @@ class CommentaryService:
                         request_seconds=round(exchange.request_seconds, 3),
                     )
                 except BudgetExceeded as error:
-                    self._grounded(observation, config, str(error))
+                    self._fallback(observation, config, str(error))
                 except Exception as error:
                     self.status("unavailable", reason=type(error).__name__)
                     self.client.close()
-                    self._grounded(observation, config, "analysis_unavailable")
+                    self._fallback(observation, config, "analysis_unavailable")
                 finally:
                     if exchange:
                         self.budget.finish(exchange)
