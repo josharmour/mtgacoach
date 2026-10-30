@@ -263,6 +263,7 @@ class CoachSession(QObject):
                     "tts_provider",
                     "voice",
                     "voice_speed",
+                    "speech_speed",
                     "chatterbox_voice_override",
                     "chatterbox_speed",
                     "chatterbox_server_url",
@@ -275,6 +276,12 @@ class CoachSession(QObject):
                 )
             }
         self._speech.preview(options)
+
+    def set_speech_speed(self, speed: float) -> None:
+        self._speech.stop()
+        self._process.send_payload(
+            {"cmd": "sync_voice_preferences", "voice_speed": speed, "speech_speed": speed}
+        )
 
     def set_voice(self, voice_id: str) -> None:
         """Select a Kokoro voice by id in the running engine (saved there too)."""

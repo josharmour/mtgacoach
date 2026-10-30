@@ -85,7 +85,10 @@ class _PipeVoiceOutput:
         with contextlib.suppress(Exception):
             from arenamcp.settings import get_settings
 
-            get_settings().set(key, value)
+            settings = get_settings()
+            settings.set(key, value)
+            if key == "voice_speed":
+                settings.set("speech_speed", value)
 
     def toggle_mute(self) -> bool:
         self._muted = not self._muted

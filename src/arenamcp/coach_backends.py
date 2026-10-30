@@ -18,39 +18,21 @@ def get_models_for_mode(mode: str) -> list[tuple[str, str | None]]:
     ``None`` means "use the server-assigned default model".
 
     Only "online" exists (local mode was removed 2026-06-11): it queries
-    api.mtgacoach.com's /v1/models and falls back to glm-5.3-flash.
+    api.mtgacoach.com's /v1/models and uses the stable current alias when discovery is temporarily unavailable.
     """
-    import urllib.request as _urlreq
+    if mode.lower() == "online":
+        from arenamcp.backends.proxy import resolve_online_base_url
+        from arenamcp.client_metadata import get_client_headers
+        from arenamcp.gateway_models import current_models
+        from arenamcp.settings import get_settings
 
-    mode = mode.lower()
-
-    if mode == "online":
-        try:
-            from arenamcp.backends.proxy import resolve_online_base_url
-            from arenamcp.settings import get_settings
-
-            license_key = get_settings().get("license_key", "")
-            headers = {"User-Agent": "mtgacoach-client/1.0"}
-            if license_key:
-                headers["Authorization"] = f"Bearer {license_key}"
-            req = _urlreq.Request(f"{resolve_online_base_url()}/models", headers=headers)
-            with _urlreq.urlopen(req, timeout=3) as resp:
-                data = json.loads(resp.read())
-            models: list[tuple[str, str | None]] = []
-            for m in data.get("data", []):
-                mid = m["id"]
-                if mid == "glm-5.3-flash":
-                    models.append(("GLM 5.3", mid))
-            if models:
-                return models
-        except Exception:
-            pass
-        return [("GLM 5.3", "glm-5.3-flash")]
-
+        return current_models(
+            resolve_online_base_url(), get_settings().get("license_key", ""), get_client_headers()
+        )
     return [("Default", None)]
 
 
-THINKING_MODEL_PREFERENCE = ["glm-5.3-flash"]
+THINKING_MODEL_PREFERENCE = ["current"]
 
 
 def pick_thinking_model() -> str | None:
@@ -102,7 +84,7 @@ def create_backend(
 
     Args:
         mode: "online" (local and auto modes were removed)
-        model: Optional model override; the gateway pins glm-5.3-flash
+        model: Optional model override; the gateway pins current
         progress_callback: Unused; kept for call compatibility
 
     Raises:

@@ -42,13 +42,14 @@ def line(control):
 
 def test_ordered_workflow_protected_and_essential_preempts(controller):
     c, tts, sent, state = controller
+    c.configure(CommentaryConfig(mode="actions").to_wire())
     c.speech({"text": "Deck review.", "speech_id": "workflow"})
     c.proposal(line(c).to_wire())
     assert tts.request_speech.call_count == 1
-    c.speech({"text": "Manual intervention needed."})
+    c.speech({"text": "Manual intervention needed.", "speech_category": "essential"})
     assert tts.stop_speech.call_count == 1
     assert tts.request_speech.call_args.kwargs["category"] == "essential"
-    assert {e["state"] for e in sent if e.get("speech_id") == "workflow"} == {"superseded"}
+    assert {e["state"] for e in sent if e.get("speech_id") == "workflow"} == {"accepted", "superseded"}
 
 
 def test_reply_requires_finished_anchor_and_duplicate_is_not_reacknowledged(controller):
@@ -97,7 +98,7 @@ def test_mode_change_clears_routine_but_preserves_essential(controller):
     assert c.arbiter.active is None
     c.speech({"text": "Playing a card.", "speech_category": "routine"})
     assert tts.request_speech.call_count == 1
-    c.speech({"text": "Manual intervention needed."})
+    c.speech({"text": "Manual intervention needed.", "speech_category": "essential"})
     c.configure(CommentaryConfig(mode="commentary").to_wire())
     assert c.arbiter.active.category.value == "essential"
 
@@ -153,3 +154,38 @@ def test_mode_switch_cancels_advice_and_acknowledges_suppressed_workflow(control
     c.speech({"text": "More advice", "speech_id": "two"})
     assert sent[-1] == {"cmd": "speech_status", "speech_id": "two", "state": "superseded"}
     assert tts.request_speech.call_count == 1
+
+
+@pytest.mark.parametrize("provider", ["kokoro", "chatterbox_local", "chatterbox_remote"])
+def test_shared_speed_applies_to_advice_narration_and_preview(controller, monkeypatch, provider):
+    c, tts, sent, state = controller
+    settings = {"tts_provider": provider, "speech_speed": 1.5, "voice_speed": 1.0, "chatterbox_speed": 0.8}
+    monkeypatch.setattr(commentary_controller, "get_settings", lambda: settings)
+    c.proposal(line(c).to_wire())
+    assert tts.request_speech.call_args.kwargs["speed"] == 1.5
+    c.configure(CommentaryConfig(mode="actions").to_wire())
+    c.speech({"text": "Play Forest.", "speed": 0.8})
+    assert tts.request_speech.call_args.kwargs["speed"] == 1.5
+    c.preview(dict(settings, speech_speed=1.75))
+    assert tts.request_speech.call_args.kwargs["speed"] == 1.75
+    assert settings["speech_speed"] == 1.5
+
+
+def test_uncategorized_guidance_cannot_bypass_announcers(controller):
+    c, tts, sent, state = controller
+    c.speech({"text": "Play Forest."})
+    c.speech({"text": "Play Forest.", "speech_category": "unknown"})
+    tts.request_speech.assert_not_called()
+
+
+def test_event_call_survives_board_change_but_not_new_game(controller):
+    c, tts, sent, state = controller
+    first = replace(line(c), event_bound=True)
+    c.proposal(first.to_wire())
+    valid = tts.request_speech.call_args.kwargs["valid"]
+    state["turn_info"] = {"turn_number": 2}
+    c.observe(state)
+    assert valid()
+    state["game_number"] = 2
+    c.observe(state)
+    assert not valid() and c.arbiter.active is None

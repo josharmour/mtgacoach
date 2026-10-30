@@ -82,7 +82,7 @@ def test_online_backend_authenticates_to_the_gateway_with_the_license_key(monkey
     monkeypatch.setattr("arenamcp.settings.get_settings", lambda: {"license_key": "sk-customer-key"})
     constructor, client = install_client(monkeypatch)
     backend = create_backend("online")
-    assert backend.model == "glm-5.3-flash"
+    assert backend.model == "current"
     backend.prepare_client()
     constructor.assert_called_once()
     kwargs = constructor.call_args.kwargs

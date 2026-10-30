@@ -62,3 +62,14 @@ class CommentaryConfig:
 
     def to_wire(self):
         return asdict(self)
+
+
+def speech_rate(settings):
+    """One explicit desktop speed for all voice engines; legacy speeds stay private."""
+    import math
+
+    try:
+        value = float(settings.get("speech_speed", 1.5))
+        return value if math.isfinite(value) and 0.5 <= value <= 2 else 1.5
+    except (ValueError, TypeError):
+        return 1.5

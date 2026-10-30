@@ -1,23 +1,4 @@
-"""The real-time coach path must control GLM-5.3's thinking explicitly.
-
-The gateway's one model is glm-5.3-flash (serve-glm53-blackwell.sh),
-launched with ``--default-chat-template-kwargs.thinking=true`` and
-``.reasoning_effort=high``. GLM ALWAYS deliberates: with ``thinking:false``
-the reasoning is NOT separated into ``reasoning_content`` and leaks inline
-into the spoken advice (observed live 2026-08-28/29 as the model echoing the
-QUICK-mode prompt instructions into the TTS text). With
-``thinking=true, reasoning_effort=low`` the glm45 reasoning parser separates
-the deliberation and the content is a clean short command.
-
-Interleaved bench through the gateway (2026-08-29, ~25k-char prompts):
-high-effort default 3-11s; thinking=false fragmented/junk content;
-thinking=true + effort=low ~0.2-0.9s clean (one in four calls returned empty
-content, which coach-side salvage covers).
-
-CAVEAT: if a real DeepSeek-dialect dsv4 container returns to :8002 the
-low-effort kwargs would slow it (thinking=true was the 2026-07-29 p50 6134ms
-bug — see test file history); re-gate on the served engine then.
-"""
+"""Current/DeepSeek respects disabled thinking; explicit GLM retains its parser workaround."""
 
 from __future__ import annotations
 
@@ -109,9 +90,9 @@ def test_glm_vision_uses_low_effort_separated_reasoning(json_mode):
 @pytest.mark.parametrize(
     "saved_model", [None, "dsv4", "deepseek-v4-flash", "gemma-4-12b-it", "glm-5.3-flash"]
 )
-def test_hosted_model_is_current_glm_regardless_of_saved_alias(saved_model):
+def test_hosted_model_is_current_regardless_of_saved_alias(saved_model):
     backend = ProxyBackend.create_online(model=saved_model, license_key="test-key")
-    assert backend.model == "glm-5.3-flash"
+    assert backend.model == "current"
 
 
 def test_per_request_reasoning_override_does_not_change_the_backend_default(captured):
@@ -120,7 +101,7 @@ def test_per_request_reasoning_override_does_not_change_the_backend_default(capt
     assert "reasoning_effort" not in captured["extra_body"]["chat_template_kwargs"]
     assert backend.enable_thinking is False
     backend.complete("Choose", "Board")
-    assert captured["extra_body"]["chat_template_kwargs"]["reasoning_effort"] == "low"
+    assert captured["extra_body"]["chat_template_kwargs"] == {"thinking": False, "reasoning_effort": "none"}
 
 
 def test_per_request_reasoning_effort_overrides_the_default(captured):
@@ -131,3 +112,27 @@ def test_per_request_reasoning_effort_overrides_the_default(captured):
     be.complete("sys", "user", max_tokens=256, reasoning_effort="low")
     ctk = (captured.get("extra_body") or {})["chat_template_kwargs"]
     assert ctk == {"thinking": True, "reasoning_effort": "low"}
+
+
+@pytest.mark.parametrize("model", ["current", "deepseek-v4.1-flash-local"])
+@pytest.mark.parametrize("call_class", ["decision.typed", "decision.fast", "background.commentary", "probe"])
+def test_current_deadline_sensitive_calls_disable_reasoning(captured, model, call_class):
+    backend = ProxyBackend(model=model, base_url="http://127.0.0.1:9/v1", api_key="test")
+    backend.complete("Choose", "Board", call_class=call_class, reasoning_effort="low")
+    assert captured["extra_body"]["chat_template_kwargs"] == {"thinking": False, "reasoning_effort": "none"}
+    assert "priority" not in captured["extra_body"]
+
+
+def test_current_game_plan_bounds_reasoning_without_changing_defaults(captured):
+    backend = ProxyBackend(base_url="http://127.0.0.1:9/v1", api_key="test")
+    backend.complete("Plan", "Board", call_class="background.game_plan", reasoning_effort="high")
+    assert captured["extra_body"]["chat_template_kwargs"] == {"thinking": True, "reasoning_effort": "low"}
+    assert backend.enable_thinking is False
+
+
+@pytest.mark.parametrize(
+    "model,capability,expected",
+    [("current", None, False), ("current", True, True), ("glm-5.3-flash", False, False)],
+)
+def test_priority_requires_endpoint_capability_for_moving_alias(model, capability, expected):
+    assert ProxyBackend(model=model, supports_priority=capability)._priority_supported() is expected

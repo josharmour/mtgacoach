@@ -191,7 +191,8 @@ class PipeAdapter:
         # Forward to voice output if available
         if self._coach and self._coach._voice_output:
             self._coach._voice_output.speak(text, blocking=False)
-        self._emit({"type": "speak", "text": strip_markup(text)})
+            return
+        self._emit({"type": "speak", "text": strip_markup(text), "speech_category": "workflow"})
 
     def emit_speech_audio(
         self,
@@ -938,6 +939,7 @@ class PipeAdapter:
         if speed_value is not None:
             with contextlib.suppress(TypeError, ValueError):
                 coach.settings.set("voice_speed", float(speed_value))
+                coach.settings.set("speech_speed", float(speed_value))
         if muted_value is not None:
             coach.settings.set("muted", bool(muted_value))
 

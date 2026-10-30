@@ -97,9 +97,9 @@ def test_speak_request_reaches_the_desktop_voice(qapp, monkeypatch):
         "text": "Play a land.",
         "voice_id": "am_adam",
         "voice_name": "Adam",
-        "speed": 1.2,
+        "speed": 1.5,
     }
-    assert captured["category"] == "essential" and captured["provider"] == "kokoro"
+    assert captured["category"] == "workflow" and captured["provider"] is None
     assert captured["speech_id"].startswith("desktop:") and captured["valid"]()
     session._tts.speechStatus.emit(captured["speech_id"], "started")
     session._tts.speechStatus.emit(captured["speech_id"], "finished")

@@ -110,3 +110,18 @@ def test_catalog_failure_does_not_offer_invented_voices(dialog):
     widget._catalog_ready({"error": "Server unavailable"})
     assert widget.voice.count() == 1
     assert widget.voice.currentData() == ""
+
+
+def test_speed_default_preview_save_and_reopen(dialog):
+    widget, settings, session = dialog
+    assert widget.speed.currentData() == 1.5
+    before = dict(settings)
+    widget.speed.setCurrentIndex(widget.speed.findData(1.75))
+    widget._preview()
+    assert session.preview_voice.call_args.args[0]["speech_speed"] == 1.75
+    assert settings == before
+    assert widget._apply()
+    session.set_speech_speed.assert_called_once_with(1.75)
+    reopened = ui.CommentarySettingsDialog(settings, session)
+    assert reopened.speed.currentData() == 1.75
+    reopened.close()

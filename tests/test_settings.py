@@ -60,3 +60,16 @@ def test_stripped_keys_do_not_come_back_from_disk(caplog):
         second = Settings()
     assert "Migrated settings" not in caplog.text
     assert second.get("voice") == "am_adam" and second.get("license_key") == "sk-kept"
+
+
+def test_other_process_voice_save_does_not_restore_old_speech_mode():
+    engine = Settings()
+    engine.set("autoplay_speech", "actions")
+    desktop = Settings()
+    desktop.set("autoplay_speech", "commentary")
+    desktop.set("speech_speed", 1.5)
+    engine.set("voice", "am_onyx")
+    reloaded = Settings()
+    assert reloaded.get("autoplay_speech") == "commentary"
+    assert reloaded.get("speech_speed") == 1.5
+    assert reloaded.get("voice") == "am_onyx"

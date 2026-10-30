@@ -9,7 +9,7 @@ from dataclasses import replace
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from arenamcp.commentary.config import CommentaryConfig
+from arenamcp.commentary.config import CommentaryConfig, speech_rate
 from arenamcp.commentary.contracts import TERMINAL_STATES, Epoch, SpeechCategory, Utterance
 from arenamcp.commentary.events import ObservationAdapter
 from arenamcp.settings import get_settings
@@ -75,7 +75,7 @@ class CommentaryController(QObject):
             self.config.enabled
             and self.observation
             and item.epoch == self.observation.epoch
-            and item.snapshot_id == self.observation.snapshot_id
+            and (item.event_bound or item.snapshot_id == self.observation.snapshot_id)
         )
 
     def proposal(self, payload):
@@ -99,7 +99,7 @@ class CommentaryController(QObject):
             item,
             provider=provider,
             voice=voice,
-            speed=float(settings.get("chatterbox_speed" if provider != "kokoro" else "voice_speed") or 1),
+            speed=speech_rate(settings),
         )
         if item.utterance_id in self.arbiter._states:
             return
@@ -121,11 +121,9 @@ class CommentaryController(QObject):
         if engine_id:
             self.engine_ids.add(uid)
         try:
-            category = SpeechCategory(
-                event.get("speech_category") or ("workflow" if engine_id else "essential")
-            )
+            category = SpeechCategory(event.get("speech_category") or "workflow")
         except ValueError:
-            category = SpeechCategory.ESSENTIAL  # Unknown messages must not silently lose urgent speech.
+            category = SpeechCategory.WORKFLOW  # Urgent alerts must be explicitly categorized.
         if category != SpeechCategory.ESSENTIAL and self.config.mode != "actions":
             self._status(uid, "superseded")
             return
@@ -133,11 +131,7 @@ class CommentaryController(QObject):
         settings = get_settings()
         provider = str(settings.get("tts_provider") or "kokoro")
         try:
-            speed = (
-                float(settings.get("chatterbox_speed") or 1)
-                if provider != "kokoro"
-                else float(event.get("speed") or 1)
-            )
+            speed = speech_rate(settings)
             if not 0.5 <= speed <= 2:
                 raise ValueError()
         except (TypeError, ValueError):
@@ -182,7 +176,7 @@ class CommentaryController(QObject):
             voice=str(options.get("voice") or "am_adam")
             if provider == "kokoro"
             else self._chatterbox_voice(options, provider),
-            speed=float(options.get("voice_speed" if provider == "kokoro" else "chatterbox_speed") or 1),
+            speed=speech_rate(options),
         )
         if not self.arbiter.submit(item, allow_muted=True):
             self._status(uid, "failed")

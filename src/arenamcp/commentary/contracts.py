@@ -119,6 +119,7 @@ class Utterance:
     snapshot_id: str = ""
     role: str = "play_by_play"
     speed: float = 1.0
+    event_bound: bool = False
     protocol_version: int = PROTOCOL_VERSION
 
     def __post_init__(self) -> None:
@@ -135,6 +136,8 @@ class Utterance:
             raise ValueError("Unknown speech category")
         if not math.isfinite(self.expires_at) or self.expires_at < 0:
             raise ValueError("Invalid expiry")
+        if type(self.event_bound) is not bool or (self.event_bound and not self.evidence_ids):
+            raise ValueError("Event-bound speech requires evidence")
         if self.anchor_id == self.utterance_id:
             raise ValueError("An utterance cannot depend on itself")
 

@@ -782,6 +782,10 @@ class CompactCoachPanel(QWidget):
         labels = {
             "ready": "Ready",
             "deterministic": "Grounded event calls",
+            "grounded": "Narrating observed events; analysis waits for spare capacity",
+            "waiting_events": "Waiting for a new observed game event",
+            "waiting_delivery": "Narration queued or playing",
+            "waiting_capacity": "Waiting for the next fresh event call",
             "silent": "Waiting for a fresh moment",
             "dropped": "Waiting for spare capacity or fresh facts",
             "waiting": "Waiting for a game",

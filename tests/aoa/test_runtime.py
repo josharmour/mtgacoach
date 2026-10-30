@@ -317,3 +317,134 @@ def test_routine_submission_muted_at_source_but_ui_explanation_remains(mode):
     engine._notify = lambda *args: notices.append(args)
     engine._announce_submitted_action(GameAction(action_type=ActionType.CAST_SPELL, card_name="Bear"), {})
     assert not spoken and notices and "Bear" in notices[-1][1]
+
+
+@pytest.mark.parametrize("blocker", ["protected", "budget", "stale_analysis"])
+def test_service_narrates_observed_cast_without_optional_analysis(blocker, monkeypatch):
+    import time
+
+    from arenamcp.backends.proxy import _BACKGROUND_LANE, _CallHandle
+
+    settings = {"autoplay_speech": "commentary", "commentary_generative": True}
+    events, ready = [], threading.Event()
+    state = snapshot()
+    state["commentary_events"] = [
+        {
+            "match_id": "fixture-match",
+            "game_number": 1,
+            "id": 1,
+            "seq": 1,
+            "snapshot_id": "cast",
+            "received_at": time.monotonic(),
+            "kind": "action_observed",
+            "seat": 1,
+            "payload": {"name": "Bear"},
+        }
+    ]
+
+    class Client:
+        def start(self, config):
+            assert blocker != "protected"
+
+        def close(self):
+            pass
+
+        def delivered(self, *args):
+            pass
+
+        def generate(self, observation, config, rpc, cancelled):
+            assert blocker == "stale_analysis"
+            changed = copy.deepcopy(state)
+            changed["players"][0]["life_total"] -= 1
+            service.latest = changed
+            return {"utterances": []}
+
+    def emit(event):
+        events.append(event)
+        if event["type"] == "commentary_proposal":
+            ready.set()
+
+    service = CommentaryService(
+        settings=lambda: settings, backend=lambda: None, emit=emit, client_factory=Client
+    )
+    handle = _CallHandle("decision.typed")
+    if blocker == "protected":
+        _BACKGROUND_LANE.protect(handle)
+    if blocker == "budget":
+        monkeypatch.setattr(
+            service.budget,
+            "begin",
+            lambda *args: (_ for _ in ()).throw(BudgetExceeded("exchange_rate_or_busy")),
+        )
+    try:
+        service.offer(state)
+        assert ready.wait(3)
+        proposal = next(e["utterance"] for e in events if e["type"] == "commentary_proposal")
+        assert proposal["text"] == "Player 1 casts Bear."
+        assert proposal["event_bound"] is True and proposal["evidence_ids"]
+    finally:
+        _BACKGROUND_LANE.unprotect(handle)
+        service.close()
+        service.thread.join(2)
+
+
+@pytest.mark.parametrize("change", ["mute", "mode", "game", "expiry"])
+def test_grounded_fallback_keeps_safety_cancellation(change, monkeypatch):
+    import time
+
+    settings = {"autoplay_speech": "commentary"}
+    events = []
+    service = CommentaryService(settings=lambda: settings, backend=lambda: None, emit=events.append)
+    state = snapshot()
+    service.latest = state
+    obs = service.adapter.observe(state)
+    if change == "mute":
+        service.muted = lambda: True
+    elif change == "mode":
+        settings["autoplay_speech"] = "actions"
+        service.configure()
+    elif change == "game":
+        service.latest = dict(state, game_number=2)
+    else:
+        obs = replace(
+            obs,
+            arrived_at=time.monotonic() - 30,
+            events=tuple(replace(e, received_at=time.monotonic() - 30) for e in obs.events),
+        )
+    service._grounded(obs, CommentaryConfig(mode="commentary"), "test")
+    assert not any(e["type"] == "commentary_proposal" for e in events)
+
+
+def test_grounded_calls_have_no_unbounded_backlog_or_inference_budget_cost():
+    import time
+
+    events = []
+    service = CommentaryService(
+        settings=lambda: {"autoplay_speech": "commentary"}, backend=lambda: None, emit=events.append
+    )
+    service.latest = snapshot()
+    obs = service.adapter.observe(service.latest)
+    service.last_grounded = (obs.epoch, time.monotonic())
+    service._grounded(obs, service.config, "busy")
+    assert not any(e["type"] == "commentary_proposal" for e in events)
+    assert events[-1]["data"]["reason"] == "grounded_call_spacing"
+    service.last_grounded = (None, -float("inf"))
+    service._grounded(replace(obs, events=()), service.config, "busy")
+    assert events[-1]["data"]["reason"] == "no_eligible_public_event"
+
+
+def test_pipe_speech_is_forwarded_once_and_never_implicitly_urgent():
+    from unittest.mock import Mock
+
+    from arenamcp.pipe_adapter import PipeAdapter
+
+    ui = object.__new__(PipeAdapter)
+    ui._emit = Mock()
+    voice = Mock()
+    ui._coach = SimpleNamespace(_voice_output=voice)
+    ui.speak("Play Forest.")
+    voice.speak.assert_called_once_with("Play Forest.", blocking=False)
+    ui._emit.assert_not_called()
+    ui._coach = None
+    ui.speak("Play Forest.")
+    assert ui._emit.call_args.args[0]["speech_category"] == "workflow"

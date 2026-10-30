@@ -13,6 +13,7 @@ from .client import CommentaryClient
 from .config import CommentaryConfig
 from .contracts import TERMINAL_STATES, Utterance
 from .events import ObservationAdapter
+from .headless import deterministic
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class CommentaryService:
         self.deliveries = queue.Queue(maxsize=64)
         self.inflight = {}
         self.last_state = None
+        self.last_grounded = (None, -float("inf"))
         self._lock = threading.Lock()
 
     def configure(self):
@@ -73,6 +75,13 @@ class CommentaryService:
             self.wake.set()
 
     def status(self, state, **details):
+        signature = (state, details.get("reason"))
+        if (
+            state in {"waiting_events", "waiting_delivery", "waiting_capacity"}
+            and signature == self.last_state
+        ):
+            return
+        self.last_state = signature
         self.emit({"type": "commentary_status", "data": {"state": state, **details}})
         logger.info("Commentary %s %s", state, details)
 
@@ -114,6 +123,31 @@ class CommentaryService:
         finally:
             self.budget.after_call(exchange)
 
+    def _grounded(self, observation, config, reason):
+        """Narrate observed public facts when optional analysis cannot run."""
+        now = time.monotonic()
+        if self.cancelled.is_set() or self.muted() or config != self.config or not config.enabled:
+            return
+        fresh = self.adapter.project(self.latest, config.private_information)
+        if fresh.epoch != observation.epoch:
+            return
+        if self.last_grounded[0] == observation.epoch and now - self.last_grounded[1] < 10:
+            self.status("waiting_capacity", reason="grounded_call_spacing")
+            return
+        lines = deterministic(observation, config)
+        if not lines:
+            self.status("waiting_events", reason="no_eligible_public_event")
+            return
+        item = lines[0]
+        if now >= item.expires_at or (not item.event_bound and fresh.snapshot_id != item.snapshot_id):
+            self.status("dropped", reason="facts_changed")
+            return
+        with self._lock:
+            self.inflight[item.utterance_id] = item.expires_at + 30
+        self.last_grounded = (observation.epoch, now)
+        self.emit({"type": "commentary_proposal", "utterance": item.to_wire()})
+        self.status("grounded", reason=reason)
+
     def _run(self):
         try:
             while not self.closed.is_set():
@@ -139,11 +173,20 @@ class CommentaryService:
                     self.inflight = {uid: expiry for uid, expiry in self.inflight.items() if expiry > now}
                     speaking = bool(self.inflight)
                 if not observation.events or speaking:
+                    self.status(
+                        "waiting_delivery" if speaking else "waiting_events",
+                        reason="speech_inflight" if speaking else "no_fresh_public_event",
+                    )
                     continue
                 self.cancelled.clear()
                 exchange = None
                 try:
                     # Worker setup is not inference occupancy; no model loads here.
+                    from arenamcp.backends.proxy import _BACKGROUND_LANE
+
+                    if config.generative and not _BACKGROUND_LANE.commentary_available():
+                        self._grounded(observation, config, "analysis_waits_for_gameplay")
+                        continue
                     self.client.start(config)
                     exchange = self.budget.begin(config.exchanges_per_minute)
                     result = self.client.generate(
@@ -164,13 +207,21 @@ class CommentaryService:
                     ):
                         self.status("dropped", reason="facts_or_mode_changed")
                         self.client.close()
+                        self._grounded(observation, config, "analysis_facts_changed")
                         continue
                     utterances = [Utterance.from_wire(value) for value in result.get("utterances", [])[:2]]
                     if any(
-                        u.epoch != observation.epoch or u.snapshot_id != observation.snapshot_id
+                        u.epoch != observation.epoch
+                        or u.snapshot_id != observation.snapshot_id
+                        or (config.generative and u.event_bound)
                         for u in utterances
                     ):
                         raise ValueError("invalid worker provenance")
+                    if not utterances:
+                        self._grounded(
+                            observation, config, result.get("status", {}).get("state", "analysis_unavailable")
+                        )
+                        continue
                     for item in utterances:
                         if time.monotonic() >= item.expires_at:
                             self.client.delivered(item.utterance_id, "superseded")
@@ -187,10 +238,11 @@ class CommentaryService:
                         request_seconds=round(exchange.request_seconds, 3),
                     )
                 except BudgetExceeded as error:
-                    self.status("dropped", reason=str(error))
+                    self._grounded(observation, config, str(error))
                 except Exception as error:
                     self.status("unavailable", reason=type(error).__name__)
                     self.client.close()
+                    self._grounded(observation, config, "analysis_unavailable")
                 finally:
                     if exchange:
                         self.budget.finish(exchange)

@@ -34,7 +34,8 @@ SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 # Default settings
 DEFAULTS = {
     "voice": "am_adam",  # American Male - Adam
-    "voice_speed": 1.0,
+    "voice_speed": 1.5,
+    "speech_speed": 1.5,
     "muted": False,
     "auto_speak": True,
     # Generate + inject a per-deck strategy brief at match start (one LLM
@@ -258,6 +259,7 @@ class Settings:
                 f.flush()
                 os.fsync(f.fileno())
             tmp.replace(SETTINGS_FILE)
+            self._dirty.clear()
             logger.debug(f"Saved settings to {SETTINGS_FILE}")
         except Exception as e:
             logger.warning(f"Failed to save settings: {e}")

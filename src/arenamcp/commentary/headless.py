@@ -269,14 +269,19 @@ def deterministic(observation, config):
     elif config.persona == "test_match" and event.kind == "turn_start":
         text = "On to " + text[0].lower() + text[1:]
     uid = "aoa:" + event.event_id
+    event_bound = event.kind in {"action_observed", "spell_resolved", "land_drop"}
+    # A verified historical play survives unrelated board changes; never carry
+    # current-state analysis past its original, shorter freshness window.
+    lifetime = 15 if event_bound else 8
     return [
         Utterance(
             uid,
             text,
             SpeechCategory.COMMENTARY,
             observation.epoch,
-            event.received_at + 8 if event.received_at else observation.arrived_at + 8,
+            (event.received_at or observation.arrived_at) + lifetime,
             evidence_ids=(event.event_id,),
+            event_bound=event_bound,
             snapshot_id=observation.snapshot_id,
         )
     ]

@@ -177,3 +177,60 @@ only skip, and one launch-fixture failure (missing repository marker). After
 correcting that fixture, its targeted rerun passed: **100 selected tests passed
 in total, one skipped**. Ruff and whitespace checks passed. The UI was rendered
 and visually inspected offscreen; all controls and guidance fit at 570×640.
+
+
+## Speech and current-gateway repair (2026-10-30)
+
+Speech & voices now has one Speed choice, default **1.5×**, shared by advice,
+announcers, and unsaved previews. Kokoro applies its synthesis speed and
+Chatterbox applies its native tempo once; playback does not resample either.
+The server default voice remains the default; old troubleshooting voice pairs
+are not restored. Updated surface: [Speech & voices](images/aoa-simple-speech.png).
+
+The silent-announcer regression occurred before TTS: analysis finished after a
+snapshot changed, was discarded, and consumed the inference allowance. Protected
+strategy work could also prevent every optional call. When optional analysis is
+busy, unavailable, stale, or out of budget, the service can emit one short template
+from observed public evidence, at most once per ten seconds. Verified cast,
+resolution, and land-play facts survive unrelated board updates within a fifteen
+second window; current-state analysis still requires its original snapshot.
+Mode, mute, game boundaries, expiry, and delivery cancellation remain enforced.
+Templates do not invent actions or send another model request. Audit remains
+mandatory for generative commentary. Status distinguishes waiting for events,
+queued speech, and grounded calls while analysis waits for capacity.
+
+Uncategorized legacy speech is workflow advice, so it cannot bypass Announcers.
+The pipe no longer emits a duplicate speech event after forwarding to its voice
+adapter. A settings instance clears successfully saved dirty keys, preventing a
+later voice save from restoring an obsolete advice/announcer selection written
+by another process.
+
+The authenticated hosted catalog exposes only `current`. Deadline-sensitive
+current/DeepSeek decision and commentary requests disable reasoning explicitly;
+background game-plan requests cap high effort to low. Explicit GLM models retain
+their separated-reasoning workaround. Existing timeouts, cancellation and action
+fallbacks remain. Server priority is sent only for an explicit capability or a
+known legacy GLM endpoint; a moving alias alone does not establish support.
+
+Local verification used the regular installed Python 3.12 runtime with temporary
+settings, the real Kokoro QProcess worker, and the existing Chatterbox server.
+Kokoro preview WAV duration changed from 2.597 s at 1× to 1.637 s at 1.5×;
+server Chatterbox from 2.600 s to 1.784 s. A protected-gameplay replay produced
+“Player 1 casts Bear”, reached server Chatterbox, survived an unrelated board
+update, and completed the desktop delivery lifecycle. WAVs were inspected
+silently: this does not establish audible output through the user's speakers.
+Two bounded synthetic gateway requests produced valid expected JSON in 1.004 s
+(decision) and 1.077 s (plan); these are smoke checks, not game-quality or p95
+latency qualification. Local Chatterbox synthesis is unavailable on this machine;
+its native-rate transport is tested with a fake engine. No large runtime/model
+installation, shared-server changes, or live game actions were performed.
+
+Activation requires closing the regular desktop Coach after the current match;
+engine reload alone does not update the desktop controller or dialog. Preserve
+normal launcher and profile, then use Speech & voices → Chatterbox → Server
+Chatterbox → Announcers narrate the game → Speed 1.5×. Preview auditions the
+selected voice without changing mute or saving settings. Save applies choices.
+
+Validation for this repair: **398 affected-path tests passed** (395 combined
+gateway/desktop/typed-decision tests plus three final regressions). Repository
+Ruff checks and formatting passed for 802 Python files; whitespace checks passed.

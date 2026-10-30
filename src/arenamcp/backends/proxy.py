@@ -967,6 +967,10 @@ class _BackgroundLane:
         self._waiting: list[_CallHandle] = []
         self._protected: set[_CallHandle] = set()
 
+    def commentary_available(self) -> bool:
+        with self._cond:
+            return not (self._protected or self._holder is not None or self._waiting)
+
     def protect(self, handle: _CallHandle) -> None:
         """Gameplay/strategy never waits behind optional commentary."""
         with self._cond:
@@ -1118,11 +1122,13 @@ class ProxyBackend:
 
     def __init__(
         self,
-        model: str = "glm-5.3-flash",
+        model: str = "current",
         enable_thinking: bool = False,
         base_url: str | None = None,
         api_key: str | None = None,
+        supports_priority: bool | None = None,
     ):
+        self._priority_capability = supports_priority
         self.model = model
         self.enable_thinking = enable_thinking
         self._base_url = base_url
@@ -1146,7 +1152,7 @@ class ProxyBackend:
         """Create a backend configured for online mode (mtgacoach.com or gateway_url override)."""
         # Hosted service currently runs one model. Migrate saved selections from
         # retired aliases; custom providers still keep their explicit model.
-        resolved_model = "glm-5.3-flash"
+        resolved_model = "current"
         resolved_url = resolve_online_base_url(base_url)
         instance = cls(
             model=resolved_model,
@@ -1332,6 +1338,16 @@ class ProxyBackend:
             admitted_failures = breaker.failure_seq()
 
             client = self._get_client()
+            if self.model.lower() == "current" or any(
+                name in self.model.lower() for name in ("deepseek", "dsv4")
+            ):
+                if call.call_class.startswith("decision.") or call.call_class in {
+                    "background.commentary",
+                    "probe",
+                }:
+                    reasoning_effort = "none"
+                elif call.call_class == "background.game_plan" and reasoning_effort in {"high", "max"}:
+                    reasoning_effort = "low"
             params = self._build_params(
                 system_prompt,
                 user_message,
@@ -1523,35 +1539,29 @@ class ProxyBackend:
         if response_format is not None:
             params["response_format"] = response_format
 
-        # The gateway serves one model, glm-5.3-flash, to every customer.
-        # GLM-5.3 (the engine now behind the dsv4/deepseek-v4-flash
-        # aliases via serve-glm53-blackwell.sh) ALWAYS deliberates: with
-        # `thinking:false` the reasoning is not separated into
-        # reasoning_content and leaks inline into the spoken advice —
-        # observed live 2026-08-28/29 as the model echoing the QUICK-mode
-        # prompt instructions ("One sentence under 15 words") into the
-        # TTS text, plus fragmented content. With thinking=true +
-        # reasoning_effort=low the glm45 reasoning parser separates the
-        # deliberation (the coach never reads reasoning_content) and the
-        # visible content is a clean short command; interleaved bench
-        # through the gateway (2026-08-29): ~0.2-0.4s warm, ~2.9s cold
-        # 25k-char prompt, vs 3-11s on high-effort defaults.
-        # enable_thinking=True keeps plain {"thinking": true} like before.
-        # CAVEAT: if a real DeepSeek-dialect dsv4 container returns to
-        # :8002, the low-effort kwargs hurt it (dsv4 slowed with
-        # thinking=true — the 2026-07-29 p50 6134ms bug); re-gate on the
-        # served engine then.
-        if reasoning_effort:
-            ctk = {"thinking": True, "reasoning_effort": reasoning_effort}
-        elif thinking_enabled:
+        # GLM's separated-reasoning workaround is model-specific. The stable
+        # current alias must honor thinking=False when its engine changes.
+        if "glm" in self.model.lower():
             ctk = {"thinking": True}
+            if reasoning_effort or not thinking_enabled:
+                ctk["reasoning_effort"] = reasoning_effort or "low"
+        elif reasoning_effort == "none" or (not thinking_enabled and not reasoning_effort):
+            ctk = {"thinking": False, "reasoning_effort": "none"}
         else:
-            ctk = {"thinking": True, "reasoning_effort": "low"}
+            ctk = {"thinking": True}
+            if reasoning_effort:
+                ctk["reasoning_effort"] = reasoning_effort
         params["extra_body"] = {"chat_template_kwargs": ctk}
         return params
 
     def _priority_supported(self) -> bool:
-        """Only the gateway's GLM path runs vLLM with priority scheduling."""
+        """An explicit endpoint capability overrides legacy GLM knowledge.
+
+        A moving alias alone does not establish server scheduler support.
+        """
+        capability = getattr(self, "_priority_capability", None)
+        if capability is not None:
+            return capability is True
         return "glm" in str(getattr(self, "model", "") or "").lower()
 
     def _resolve_priority(self, priority, is_background: bool) -> int | None:
@@ -2124,8 +2134,13 @@ class ProxyBackend:
             if json_mode:
                 params["response_format"] = {"type": "json_object"}
 
-            if "glm" in self.model.lower():
-                params["extra_body"] = {"chat_template_kwargs": {"thinking": True, "reasoning_effort": "low"}}
+            params["extra_body"] = {
+                "chat_template_kwargs": (
+                    {"thinking": True, "reasoning_effort": "low"}
+                    if "glm" in self.model.lower()
+                    else {"thinking": False, "reasoning_effort": "none"}
+                )
+            }
 
             request_start = time.perf_counter()
             response = client.chat.completions.create(**params)

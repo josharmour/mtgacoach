@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from arenamcp.chatterbox_remote import ChatterboxError
-from arenamcp.commentary.config import CommentaryConfig
+from arenamcp.commentary.config import CommentaryConfig, speech_rate
 from arenamcp.commentary.setup import VOICE_LABELS, discover, server_voices
 from arenamcp.kokoro_voices import KOKORO_VOICES
 
@@ -60,6 +60,13 @@ class CommentarySettingsDialog(QDialog):
         self.mode = combo(
             [("actions", "Coach advice"), ("commentary", "Announcers narrate the game")], self.config.mode
         )
+        self.speed = combo(
+            [
+                (value, f"{value:g}×" + (" (default)" if value == 1.5 else ""))
+                for value in (0.75, 1.0, 1.25, 1.5, 1.75, 2.0)
+            ],
+            speech_rate(settings),
+        )
         self.server = QCheckBox("Server Chatterbox")
         self.server.setChecked(settings.get("speech_server_chatterbox", self.setup.prefer_server))
         self.voice = QComboBox()
@@ -73,6 +80,7 @@ class CommentarySettingsDialog(QDialog):
             ("Hear", self.mode),
             ("", self.server),
             ("Voice", self.voice),
+            ("Speed", self.speed),
         ):
             form.addRow(label, control)
         self.status = QLabel()
@@ -197,8 +205,8 @@ class CommentarySettingsDialog(QDialog):
             "server_default" if self.server.isChecked() else "default"
         )
         values["commentary_chatterbox_analyst"] = values["chatterbox_voice"]
-        values["chatterbox_speed"] = self.settings.get("chatterbox_speed", 1.0)
-        values["voice_speed"] = self.settings.get("voice_speed", 1.0)
+        values["speech_speed"] = float(self.speed.currentData())
+        values["chatterbox_speed"] = values["voice_speed"] = values["speech_speed"]
         return values
 
     def _apply(self):
@@ -224,6 +232,7 @@ class CommentarySettingsDialog(QDialog):
         self.session.configure_commentary(config.to_wire())
         self.session.set_speech_enabled(self.enabled.isChecked())
         self.session.set_voice(values["voice"])
+        self.session.set_speech_speed(values["speech_speed"])
         return True
 
     def _save(self):

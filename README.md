@@ -10,7 +10,7 @@ Real-time AI coaching for Magic: The Gathering Arena. MTGA Coach tracks your liv
 - **In-Game HUD Overlay**: Transparent, click-through overlay sits directly on top of MTGA showing coach advice, draft ratings, and target highlights.
 - **Draft Assistance**: Live 17Lands-powered card ratings, composite tier badges, and optimal color-pair recommendations during drafts.
 - **Voice Coaching**: Spoken advice with neural Text-to-Speech (TTS).
-- **Online AI Backend**: Hosted coaching uses **GLM 5.3** (`glm-5.3-flash`) through `api.mtgacoach.com`. Get your Patreon key at [mtgacoach.com/subscribe](https://mtgacoach.com/subscribe); the same key also works with [ArenaOnAir](https://arenaonair.com). Retired model names are migrated to GLM 5.3.
+- **Online AI Backend**: Hosted coaching uses the active backend via **`current`** through `api.mtgacoach.com`. Get your Patreon key at [mtgacoach.com/subscribe](https://mtgacoach.com/subscribe); the same key also works with [ArenaOnAir](https://arenaonair.com). Hosted clients discover `current` through authenticated `/v1/models`; LiteLLM selects the active backend. The gateway exposes only `current`; saved legacy aliases are migrated to it.
 
 ---
 
