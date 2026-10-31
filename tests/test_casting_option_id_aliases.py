@@ -110,6 +110,29 @@ def test_iroh_mode_two_reaches_executor_without_cancelling(modal_poll, answer):
     assert planner._last_decision_trace["selected_ids"] == ["idx:1"]
 
 
+@pytest.mark.parametrize("answer", ["1", "idx:1"])
+def test_8021c5be_numeric_mode_still_reaches_the_no_kill_guard(modal_poll, answer):
+    """T13 13:13:26: the same ID defect accompanied a false four-kills-five claim.
+
+    Normalizing the ID must preserve the existing untargeted-mode safety
+    behavior, not force the claimed removal or imply that this cast wins.
+    """
+    state = modal_state()
+    state["battlefield"][0].update(name="Craterclaw Colossus", power=5, toughness=5, oracle_text="")
+    reason = (
+        "Mode 2 kills the tapped 5/5 Craterclaw Colossus, removing their only threat and clock; "
+        "the sweeper mode kills nothing."
+    )
+    bridge = CastingBridge(modal_poll)
+    planner = planner_with(json.dumps({"option_ids": [answer], "reasoning": reason}))
+    engine = make_engine(bridge, planner)
+    engine._game_plan_mgr = None
+    assert engine._try_typed_decision_path(state, "decision_required")
+    expected = {**modal_poll["actions"][0], "gameStateId": 337, "msgId": 474}
+    assert bridge.submitted == [("action", 0, expected)]
+    assert planner._last_decision_trace["selected_ids"] == ["idx:1"]
+
+
 @pytest.mark.parametrize(
     ("options", "answer", "expected"),
     [
