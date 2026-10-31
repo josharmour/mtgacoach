@@ -1076,7 +1076,7 @@ static std::string command_call_request(const char* expected_class, const char* 
 // Bridge protocol (same commands and fields as the BepInEx plugin; main thread)
 // ---------------------------------------------------------------------------
 
-static const char* kBridgeVersion = "mac-il2cpp-0.3.1";  // 0.3.1: probe threads no longer stay attached (quit hang)
+static const char* kBridgeVersion = "mac-il2cpp-0.3.2";  // Process identity in the automation handshake
 static const int kMainThreadBudgetMs = 3500;  // under gre_bridge.py's 5 s default read timeout
 static std::atomic<bool> g_bridge_connected{false};
 
@@ -2148,7 +2148,7 @@ static std::string dispatch_bridge(const std::string& line) {
     if (action == "ping") {
         if (!g_hooked) return error_json("main-thread hook not installed: " + g_hook_error);
         return "{\"ok\":true,\"version\":" + q(kBridgeVersion) + ",\"runtime\":" + q(kRuntime) + ",\"protocols\":[\"reflect-1\"]" +
-               ",\"arch\":" + q(kArch) + ",\"ticks\":" + std::to_string(g_ticks.load()) + "}";
+               ",\"arch\":" + q(kArch) + ",\"ticks\":" + std::to_string(g_ticks.load()) + ",\"pid\":" + std::to_string(getpid()) + "}";
     }
     if (action == "reflect_batch") return run_on_main([command] { return run_batch(command); }, kMainThreadBudgetMs);
     if (action == "get_pending_actions") return run_on_main(bridge_get_pending, kMainThreadBudgetMs);

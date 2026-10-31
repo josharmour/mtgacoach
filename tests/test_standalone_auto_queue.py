@@ -19,6 +19,7 @@ class Runtime(_AutoQueueMixin):
         self._auto_queue_enabled = True
         self._auto_queue_since = time.time() - 1
         self.ap_status = "AP:ON"
+        self._autopilot = SimpleNamespace(_gre_bridge=SimpleNamespace(connected=True))
 
     def _autopilot_control_status(self):
         return self.ap_status

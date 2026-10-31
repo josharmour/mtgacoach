@@ -199,7 +199,7 @@ def test_the_prefetch_thread_notices_a_new_request_within_a_few_ticks():
         assert wake.wait(1.0)
         wake.clear()
         assert wake.wait(1.0)  # IDLE -> ATTACK after ~3 ticks of 50 ms
-        assert poller._prefetch_fp[1] == "DeclareAttackers"
+        assert poller._prefetch_fp[1][1] == "DeclareAttackers"
     finally:
         poller.stop_prefetch()
     assert poller._prefetch_thread is None

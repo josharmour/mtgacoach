@@ -173,6 +173,11 @@ class _AutoQueueMixin(AutoQuestMixin):
         if not self._check_grind_availability():
             self._suspend_auto_queue()
             return False
+        # Readiness pauses recover on a fresh connection even between matches,
+        # where no gameplay trigger would otherwise restart the engine.
+        refresh = getattr(getattr(self, "_autopilot", None), "refresh_automation_readiness", None)
+        if callable(refresh):
+            refresh(state)
         enabled = getattr(self, "_auto_queue_enabled", False)
         active = (
             enabled
@@ -182,6 +187,17 @@ class _AutoQueueMixin(AutoQuestMixin):
         )
         if not active:
             self._suspend_auto_queue()
+            return False
+        from arenamcp.bridge_readiness import automation_blocker
+        from arenamcp.gre_bridge import get_bridge
+
+        bridge = getattr(getattr(self, "_autopilot", None), "_gre_bridge", None)
+        if bridge is None:
+            bridge = get_bridge()
+        blocked = automation_blocker(bridge)
+        if blocked:
+            self._suspend_auto_queue()
+            self.ui.status("AUTO_QUEUE_DETAIL", blocked)
             return False
         if getattr(self, "_auto_queue_faulted", False):
             return False
@@ -250,7 +266,6 @@ class _AutoQueueMixin(AutoQuestMixin):
                     return False
                 from arenamcp.gre_bridge import get_bridge
 
-                bridge = get_bridge()
                 navigator = self._auto_queue_navigator = AutoQueueNavigator(
                     backend=backend,
                     get_game_state=self._mcp.get_game_state,

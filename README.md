@@ -54,7 +54,18 @@ Alternatively, each [release](https://github.com/josharmour/mtgacoach/releases/l
 On native macOS Steam installs the coach works from `Player.log` alone. Autoplay
 acts only through the experimental native macOS bridge library (no Wine or BepInEx):
 open MTGA through the coach, or set MTGA's Steam launch option to load the library.
-Without the bridge, autoplay hands every decision back to you and the coach keeps advising.
+Autoplay waits for a fresh bridge handshake and a complete hand refresh before
+planning or acting. Missing hand data is shown as incomplete, not an empty or
+one-card hand. Log-only manual coaching remains available with Autoplay off.
+
+The native bridge must be updated together with Coach: `mac-il2cpp-0.3.2` adds
+process identity to the handshake. An older library is reported as needing an
+update and cannot drive automation. If Steam relaunches Arena without the bridge,
+finish any active match manually, then close Arena and reopen it through Coach.
+Coach does not reinject into a running game or change Steam launch settings.
+Readiness pauses recover after a valid connection/state refresh; an explicit Stop
+or manual pause is retained. Commands with an uncertain result are never replayed
+onto a reconnected process.
 
 ---
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -150,7 +151,7 @@ def navigator(arena: FakeArena, model: Answers, state: dict) -> AutoQueueNavigat
         backend=model,
         get_game_state=lambda: state,
         controller=arena,
-        bridge=False,  # no GRE bridge: the screenshot path, as on native macOS
+        bridge=SimpleNamespace(connected=True),  # ready bridge; no native menu helpers
         refine_target=lambda frame, data, action: action,
     )
     nav.set_enabled(True)

@@ -39,6 +39,7 @@ def navigator():
     statuses = []
     nav = AutoQueueNavigator(
         backend=backend,
+        bridge=SimpleNamespace(connected=True),
         controller=controller,
         get_game_state=lambda: state,
         status_fn=statuses.append,
@@ -866,7 +867,8 @@ def test_bridge_without_survey_support_or_connection_is_ignored(monkeypatch):
     arm(nav)
     step(nav)
     offline.get_survey.assert_not_called()
-    controller.execute.assert_called_once()
+    controller.capture.assert_not_called()
+    controller.execute.assert_not_called()
 
 
 def test_survey_skip_click_is_verified_like_other_clicks():

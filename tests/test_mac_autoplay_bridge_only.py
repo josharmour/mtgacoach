@@ -87,11 +87,8 @@ def test_native_mac_without_bridge_hands_the_window_back_and_keeps_coaching(
     result = engine._execute_action(GameAction(action_type=ActionType.PLAY_LAND, card_name="Forest"), state)
 
     assert not result.success
-    manual = [notice for notice in notices if "MANUAL REQUIRED" in notice]
-    assert manual, notices
-    assert "Bridge offline." in manual[-1]
-    assert "quit MTGA and reopen the coach" in manual[-1]
-    assert "DYLD_INSERT_LIBRARIES" in manual[-1]
+    assert any("Bridge disconnected" in notice for notice in notices), notices
+    assert not any("MANUAL REQUIRED" in notice for notice in notices)
     assert engine.state == AutopilotState.PAUSED
     # The window is the player's, so the coach advises it with the model.
     assert coach._autopilot_drives(state) is False

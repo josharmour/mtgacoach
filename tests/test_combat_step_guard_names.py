@@ -123,7 +123,9 @@ def _engine(
     engine = AutopilotEngine(
         planner=planner,
         get_game_state=lambda: copy.deepcopy(state),
-        config=AutopilotConfig(dry_run=False, verify_after_action=False, post_action_delay=0.0),
+        config=AutopilotConfig(
+            dry_run=not bridge.connected, verify_after_action=False, post_action_delay=0.0
+        ),
     )
     engine._game_plan_mgr = None
     engine._MAX_CONTINUATION_DEPTH = 0
@@ -137,6 +139,9 @@ def _engine(
         return ClickResult(True)
 
     monkeypatch.setattr(engine, "_execute_action", execute)
+    # Record the guard's selected action at the dispatch boundary, including
+    # dry-run replay boards. Execution readiness is tested separately.
+    monkeypatch.setattr(engine, "_run_bridge_action", lambda action, game: execute(action, game).success)
     return engine, planner, executed
 
 

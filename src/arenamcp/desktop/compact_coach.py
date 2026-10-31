@@ -32,6 +32,7 @@ from arenamcp import settings as settings
 from . import theme
 from .coach_session import CoachSession
 from .flow_layout import FlowLayout
+from .plan_text import plan_steps_text
 from .theme import block, span
 
 logger = logging.getLogger(__name__)
@@ -1076,7 +1077,7 @@ class CompactCoachPanel(QWidget):
         if best_branch:
             steps = best_branch.get("sequence_steps") or []
             if steps:
-                action_text = " → ".join(str(s) for s in steps[:3])
+                action_text = plan_steps_text(steps, 3)
             else:
                 action_text = str(best_branch.get("action") or best_action)
         else:
@@ -1124,7 +1125,7 @@ class CompactCoachPanel(QWidget):
             if goal:
                 items.append(label + span(goal))
             if steps:
-                items.append(span(" → ".join(str(s) for s in steps[:4]), "muted"))
+                items.append(span(plan_steps_text(steps), "muted"))
             text = block("<br>".join(items), size="caption") if items else ""
         elif isinstance(plan, str) and plan.strip():
             text = block(label + span(plan), size="caption")
@@ -1618,7 +1619,16 @@ class CompactCoachPanel(QWidget):
             + "&nbsp;&nbsp;"
             + span(f"♥ {you_life}", "you", size="emphasis", weight=700)
             + "&nbsp;&nbsp; "
-            + span(f"{_plural(len(hand), 'card')} in hand · board {len(your_bf)}", "muted", size="caption"),
+            + span(
+                (
+                    f"{_plural(len(hand), 'known card')} · hand incomplete"
+                    if state.get("hand_complete") is False
+                    else f"{_plural(len(hand), 'card')} in hand"
+                )
+                + f" · board {len(your_bf)}",
+                "muted",
+                size="caption",
+            ),
             gap=3,
         )
 

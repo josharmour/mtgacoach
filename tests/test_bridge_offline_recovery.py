@@ -100,7 +100,7 @@ def test_wait_disabled_in_dry_run():
     assert bridge.connect_calls == 0
 
 
-def test_execute_action_retries_bridge_after_reconnect(monkeypatch):
+def test_execute_action_waits_for_a_fresh_plan_when_bridge_is_offline(monkeypatch):
     bridge = _FlippingBridge(succeed_after=10_000)
     engine = _make_engine(bridge)
 
@@ -117,8 +117,9 @@ def test_execute_action_retries_bridge_after_reconnect(monkeypatch):
 
     action = GameAction(action_type=ActionType.PASS_PRIORITY)
     result = engine._execute_action(action, {})
-    assert result.success
-    assert len(attempts) == 2
+    assert not result.success
+    assert "disconnected" in result.error
+    assert attempts == []
 
 
 def test_no_plugin_warning_fires_once(caplog, monkeypatch):

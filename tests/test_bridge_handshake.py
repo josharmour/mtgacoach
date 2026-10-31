@@ -80,6 +80,44 @@ def _dial(bridge: GREBridge, ping_reply: dict, *more: dict) -> tuple[bool, FakeP
 PING = {"ok": True, "version": "0.6.5"}
 
 
+def test_native_handshake_binds_process_and_rejects_old_adapter_after_reconnect(bridge, monkeypatch):
+    monkeypatch.setattr("arenamcp.bridge_readiness.native_arena_identity", lambda pid: f"Arena:{pid}")
+    ping = {**PING, "runtime": "il2cpp-macos", "protocols": ["reflect-1"], "pid": 123}
+    ok, first = _dial(bridge, ping)
+    try:
+        assert ok and bridge.automation_blocker() is None
+        old_adapter = bridge._mac_adapter
+        epoch = bridge.connection_generation
+        bridge.disconnect()
+        ok, second = _dial(bridge, {**ping, "pid": 456})
+        try:
+            assert ok and bridge.automation_blocker() is None
+            assert bridge._native_pid == 456
+            assert bridge.connection_generation > epoch
+            # An in-flight reflection operation retains its old send closure.
+            # It must not submit old object handles on the new process socket.
+            from arenamcp.gre_bridge import GREBridgeError
+
+            with pytest.raises(GREBridgeError, match="previous connection"):
+                old_adapter._send({"action": "reflect_batch", "ops": []})
+            assert second.received == [{"action": "ping"}]
+        finally:
+            second.close()
+    finally:
+        first.close()
+
+
+def test_native_handshake_rejects_unverifiable_process(bridge, monkeypatch):
+    monkeypatch.setattr("arenamcp.bridge_readiness.native_arena_identity", lambda pid: None)
+    ok, plugin = _dial(bridge, {**PING, "runtime": "il2cpp-macos", "pid": 123})
+    try:
+        assert not ok
+        assert not bridge.connected
+        assert bridge.automation_blocker()
+    finally:
+        plugin.close()
+
+
 @pytest.mark.parametrize(
     ("device", "reply", "connected", "runtime", "adapter"),
     [

@@ -1037,7 +1037,7 @@ def test_submission_failure_is_a_command_error():
 def test_bridge_routes_plugin_commands_through_the_adapter(action_name):
     bridge = GREBridge()
     calls: list[str] = []
-    bridge._send_command_raw = lambda cmd, timeout=None: calls.append(cmd["action"]) or {"ok": True}  # type: ignore[method-assign]
+    bridge._send_command_raw = lambda cmd, timeout=None, **kwargs: calls.append(cmd["action"]) or {"ok": True}  # type: ignore[method-assign]
     game = FakeGame(None)
     bridge._mac_adapter = MacBridgeAdapter(game.send)
     assert bridge._send_command({"action": action_name}) == {"ok": True}

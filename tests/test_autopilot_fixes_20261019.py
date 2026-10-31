@@ -1303,6 +1303,7 @@ def test_auto_queue_treats_blocked_after_queue_started_as_bounded_matchmaking_wa
     )
     statuses = []
     nav = AutoQueueNavigator(
+        bridge=SimpleNamespace(connected=True),
         backend=backend,
         controller=controller,
         get_game_state=lambda: state,

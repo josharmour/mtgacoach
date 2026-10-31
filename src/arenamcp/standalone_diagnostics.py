@@ -597,6 +597,12 @@ class _DiagnosticsMixin:
                 "consecutive_errors": bp._consecutive_errors,
                 "match_boundary_age_s": round(time.time() - getattr(self, "_match_boundary_ts", 0), 1),
             }
+            from arenamcp.bridge_readiness import automation_blocker
+
+            info["automation_wait_reason"] = automation_blocker(bp._bridge)
+            info["automation_ready"] = info["automation_wait_reason"] is None
+            info["connection_generation"] = getattr(bp._bridge, "connection_generation", None)
+            info["arena_process_id"] = getattr(bp._bridge, "_native_pid", None)
             # Include last poll result summary (actions count, request type)
             poll = bp._last_poll_result
             if poll:
@@ -738,9 +744,9 @@ class _DiagnosticsMixin:
         cached = getattr(self, "_bridge_capable_cache", None)
         if cached is None:
             try:
-                from arenamcp.platform_integration import bridge_capable
+                from arenamcp.platform_integration import bridge_capable, mac_bridge_installed
 
-                cached = bridge_capable()
+                cached = bridge_capable() or mac_bridge_installed()
             except Exception:
                 cached = True  # fail toward the normal Disconnected message
             self._bridge_capable_cache = cached

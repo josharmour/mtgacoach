@@ -541,6 +541,14 @@ void new_struct_failures() {
 int main() {
     try {
         mock::install();
+        g_hooked = true;  // Test ping metadata only; no real hook or socket.
+        Json reply;
+        CHECK(JsonParser(dispatch_bridge("{\"action\":\"ping\"}")).parse(&reply));
+        CHECK(json_flag(reply.get("ok"), false));
+        CHECK(json_int(reply.get("pid"), -1) == getpid());
+        CHECK(json_text(reply.get("version")) == "mac-il2cpp-0.3.2");
+        g_hooked = false;
+        std::cout << "PASS bridge handshake identifies its process\n";
         mock::string_field_round_trip();
         std::cout << "PASS string field set/get, reference, null and inherited field\n";
         mock::primitive_field_round_trip();

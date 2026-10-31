@@ -186,6 +186,12 @@ class GREBridge:
 
     def __init__(self, port: int | None = None):
         self._connected = False
+        self.connection_generation = 0
+        self._native_pid: int | None = None
+        self._native_identity: str | None = None
+        self._handshake_complete = False
+        self._handshake_pending = False
+        self._identity_checked_at = 0.0
         # Listening port: None = BRIDGE_PORT, read at bind time (0 = ephemeral).
         self._port = None if port is None else int(port)
         # Keepalive thread — proactively reconnects after disconnect and
@@ -236,7 +242,26 @@ class GREBridge:
 
     @property
     def connected(self) -> bool:
-        return self._connected
+        return self._connected and not getattr(self, "_handshake_pending", False)
+
+    def automation_blocker(self, *, fresh: bool = True) -> str | None:
+        """Require a completed handshake for this Arena process lifetime."""
+        if not self._connected or not self._handshake_complete:
+            return "Bridge disconnected — automation paused; reconnect Arena through Coach after the match."
+        if self.client_runtime == "il2cpp-macos":
+            from arenamcp.bridge_readiness import native_arena_identity
+
+            if self._native_pid is None or self._native_identity is None:
+                return "Bridge needs a process-aware update; restart Arena through Coach after updating the bridge."
+            # Polling can run at 20 Hz; identity discovery is bounded, while
+            # planning/execution explicitly request a fresh process check.
+            if not fresh and time.monotonic() - self._identity_checked_at < 0.5:
+                return None
+            self._identity_checked_at = time.monotonic()
+            if native_arena_identity(self._native_pid) != self._native_identity:
+                self.disconnect()
+                return "Arena process changed or cannot be verified — waiting for a fresh bridge handshake."
+        return None
 
     @property
     def limited_hands(self) -> bool:
@@ -252,7 +277,7 @@ class GREBridge:
     def connect(self) -> bool:
         """Create a TCP server socket and wait for the BepInEx plugin to connect."""
         if self._connected:
-            return True
+            return not self._handshake_pending
         if self._shut_down:
             return False
 
@@ -293,6 +318,7 @@ class GREBridge:
             with self._pipe_lock:
                 self._client_socket = client_sock
                 self._pipe_file = client_sock.makefile("rwb", buffering=0)
+                self._handshake_pending = True
                 self._connected = True
                 self._ever_connected = True
 
@@ -321,18 +347,39 @@ class GREBridge:
                         self.disconnect()
                         return False
                     self.client_runtime = runtime or "bepinex"
+                    self._native_pid = None
+                    self._native_identity = None
+                    if runtime == "il2cpp-macos":
+                        from arenamcp.bridge_readiness import native_arena_identity
+
+                        pid = resp.get("pid")
+                        if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+                            self._native_pid = pid
+                            self._native_identity = native_arena_identity(pid)
+                            if self._native_identity is None:
+                                logger.warning("Bridge handshake is not from a verified live Arena process")
+                                self.disconnect()
+                                return False
+                    self.connection_generation = getattr(self, "connection_generation", 0) + 1
                     if runtime in ("il2cpp-macos", ANDROID_RUNTIME, "bepinex") and "reflect-1" in (
                         resp.get("protocols") or []
                     ):
                         from arenamcp.mac_bridge_adapter import MacBridgeAdapter
 
-                        self._mac_adapter = MacBridgeAdapter(self._send_command_raw, runtime)
+                        generation = self.connection_generation
+
+                        def send_current(cmd, timeout=None):
+                            return self._send_command_raw(cmd, timeout, expected_generation=generation)
+
+                        self._mac_adapter = MacBridgeAdapter(send_current, runtime)
                         if runtime == "bepinex":
                             logger.info(
                                 "GRE bridge: BepInEx client; limited-event commands run via reflection"
                             )
                         else:
                             logger.info(f"GRE bridge: {runtime} client; plugin commands run via reflection")
+                    self._handshake_complete = True
+                    self._handshake_pending = False
                     return True
                 else:
                     logger.warning(f"GRE bridge ping failed: {resp}")
@@ -383,6 +430,14 @@ class GREBridge:
         daemon reader thread spawned by ``_send_command``.
         """
         self._connected = False
+        self._handshake_complete = False
+        self._handshake_pending = False
+        self._native_pid = None
+        self._native_identity = None
+        self._mac_adapter = None
+        self._cached_game_state = None
+        self._cached_game_state_time = 0.0
+        self.connection_generation = getattr(self, "connection_generation", 0) + 1
         self.client_runtime = None
         self.plugin_version = None
         try:
@@ -545,15 +600,25 @@ class GREBridge:
         not say what the bridge had asked Arena to do between two games.
         """
         started = time.monotonic()
+        generation = getattr(self, "connection_generation", 0)
         action = str(cmd.get("action") or "")
         outcome: dict[str, Any] | None = None
         error: str | None = None
         try:
-            adapter = self._mac_adapter
+            if getattr(self, "client_runtime", None) == "il2cpp-macos" and action != "ping":
+                # All reflection commands share this gate, including navigation
+                # and direct submissions outside AutopilotEngine.
+                reason = self.automation_blocker(fresh=action not in self._QUIET_COMMANDS)
+                if reason:
+                    raise GREBridgeError(reason)
+            with self._pipe_lock:
+                if generation != getattr(self, "connection_generation", 0):
+                    raise GREBridgeError("Bridge reconnected; refresh before sending another command")
+                adapter = self._mac_adapter
             if adapter is not None and adapter.handles(cmd):
                 outcome = adapter.handle(cmd, timeout)
             else:
-                outcome = self._send_command_raw(cmd, timeout)
+                outcome = self._send_command_raw(cmd, timeout, expected_generation=generation)
             return outcome
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"[:200]
@@ -599,6 +664,8 @@ class GREBridge:
         self,
         cmd: dict[str, Any],
         timeout: float | None = None,
+        *,
+        expected_generation: int | None = None,
     ) -> dict[str, Any]:
         """Send a JSON command and read the JSON response.
 
@@ -616,6 +683,10 @@ class GREBridge:
             timeout = self._DEFAULT_READ_TIMEOUT_S
 
         with self._pipe_lock:
+            if expected_generation is not None and expected_generation != getattr(
+                self, "connection_generation", 0
+            ):
+                raise GREBridgeError("Bridge reconnected; discard commands from the previous connection")
             if not self._connected or not self._pipe_file:
                 raise GREBridgeError("Not connected")
 
@@ -704,19 +775,22 @@ class GREBridge:
         cmd: dict[str, Any],
         timeout: float | None = None,
     ) -> dict[str, Any]:
-        """Send command with auto-reconnect on failure."""
-        if not self._connected and not self.connect():
-            raise GREBridgeError("Not connected to GRE bridge")
-
+        """Reconnect read-only queries; never replay an uncertain game/UI action."""
         action_name = str(cmd.get("action") or "")
+        read_only = action_name == "ping" or action_name.startswith("get_")
+        if not self.connected:
+            if not read_only or not self.connect():
+                raise GREBridgeError("Bridge disconnected; wait for a fresh handshake and state")
+
         answers = action_name.startswith("submit_") or action_name in ("cancel_action", "auto_respond")
         if answers:
             self.last_submission_at = time.monotonic()
         try:
             resp = self._send_command(cmd, timeout=timeout)
         except GREBridgeError:
-            # One retry after reconnect
-            if self.connect():
+            # A timeout can occur after Arena accepted a submission. Repeating
+            # it, especially on a new process, is unsafe. Refresh state instead.
+            if read_only and self.connect():
                 resp = self._send_command(cmd, timeout=timeout)
             else:
                 raise
@@ -1829,12 +1903,15 @@ class GREBridge:
         Returns None if not connected or game not active.
         """
         now = time.monotonic()
-        if not force and self._cached_game_state is not None:
+        if self._connected and not force and self._cached_game_state is not None:
             if now - self._cached_game_state_time < self._GAME_STATE_CACHE_TTL:
                 return self._cached_game_state
 
+        generation = getattr(self, "connection_generation", 0)
         try:
             resp = self._send_safe({"action": "get_game_state"})
+            if generation != getattr(self, "connection_generation", 0):
+                return None
             if resp.get("ok"):
                 self._cached_game_state = resp
                 self._cached_game_state_time = now
@@ -2971,12 +3048,14 @@ class BridgeDecisionPoller:
         """One fetch; True when the pending request changed. Prefetch thread only."""
         if self._fallback_mode or not self._bridge.connected:
             return False
+        generation = getattr(self._bridge, "connection_generation", 0)
         resp = self._bridge.get_pending_actions()
-        if not isinstance(resp, dict):
+        if not isinstance(resp, dict) or generation != getattr(self._bridge, "connection_generation", 0):
             return False
-        fp = self._response_fingerprint(resp)
+        fp = (generation, self._response_fingerprint(resp))
         with self._prefetch_lock:
             self._prefetched = (time.monotonic(), resp)
+            self._prefetched_generation = generation
             changed = fp != self._prefetch_fp
             self._prefetch_fp = fp
             listeners = list(self._request_listeners) if changed else []
@@ -3007,13 +3086,21 @@ class BridgeDecisionPoller:
         """The prefetched response when it is recent enough to stand in for a fetch."""
         with self._prefetch_lock:
             entry = self._prefetched
-        if entry is None or time.monotonic() - entry[0] > self._PREFETCH_MAX_AGE_S:
+        if (
+            not self.connected
+            or getattr(self, "_prefetched_generation", 0) != getattr(self._bridge, "connection_generation", 0)
+            or entry is None
+            or time.monotonic() - entry[0] > self._PREFETCH_MAX_AGE_S
+        ):
             return None
         return entry[1]
 
     @property
     def connected(self) -> bool:
         """Whether bridge polling is active (connected and not in fallback)."""
+        if isinstance(self._bridge, GREBridge) and self._bridge.client_runtime == "il2cpp-macos":
+            if self._bridge.automation_blocker(fresh=False):
+                return False
         return self._bridge.connected and not self._fallback_mode
 
     def poll(self) -> dict[str, Any] | None:
@@ -3064,7 +3151,11 @@ class BridgeDecisionPoller:
             logger.debug(f"dynamic card resolve failed: {e}")
 
         # Poll (the prefetch thread's answer when it is fresh)
+        generation = getattr(self._bridge, "connection_generation", 0)
         resp = self._fresh_prefetched() or self._bridge.get_pending_actions()
+        if generation != getattr(self._bridge, "connection_generation", 0):
+            self.reset()
+            return None
         if resp is None:
             self._consecutive_errors += 1
             # Only enter fallback if we WERE connected and lost the connection.
@@ -3079,6 +3170,9 @@ class BridgeDecisionPoller:
             return None
 
         self._consecutive_errors = 0
+        if getattr(self, "_last_poll_generation", 0) != generation:
+            self.reset()
+        self._last_poll_generation = getattr(self._bridge, "connection_generation", 0)
         self._last_poll_result = resp
         self._last_poll_at = time.monotonic()
 
@@ -3166,6 +3260,8 @@ class BridgeDecisionPoller:
         snapshot["_bridge_connected"] = self.connected
 
         poll = self._last_poll_result
+        if getattr(self, "_last_poll_generation", 0) != getattr(self._bridge, "connection_generation", 0):
+            poll = None
         enrich_snapshot_from_pending_response(
             snapshot,
             poll,
@@ -3225,6 +3321,8 @@ class BridgeDecisionPoller:
         50-object limit), the log never saw the SearchReq, and the autopilot
         backstop — keyed on the log's pending_decision — never fired.
         """
+        if getattr(self, "_last_poll_generation", 0) != getattr(self._bridge, "connection_generation", 0):
+            return None
         resp = self._last_poll_result
         if not isinstance(resp, dict) or not resp.get("has_pending") or not self.connected:
             return None

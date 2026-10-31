@@ -31,6 +31,23 @@ class _ActionExecMixin:
             logger.info(f"Autopilot: skipping {action.action_type.value} — bridge in intermission")
             return ClickResult(True, 0, 0, action.action_type.value, "intermission_noop")
 
+        if not self._config.dry_run:
+            from arenamcp.bridge_readiness import automation_blocker, incomplete_hand_blocker
+
+            blocked = automation_blocker(self._gre_bridge) or incomplete_hand_blocker(game_state)
+            planned_generation = getattr(self, "_planning_bridge_generation", None)
+            if planned_generation is not None and planned_generation != getattr(
+                self._gre_bridge, "connection_generation", None
+            ):
+                blocked = "Bridge reconnected during planning — discard the old plan and refresh."
+            if blocked:
+                from arenamcp.autopilot_models import AutopilotState
+
+                self._state = AutopilotState.PAUSED
+                self._automation_wait_reason = blocked
+                self._notify("AUTOPILOT", blocked)
+                return ClickResult(False, 0, 0, action.action_type.value, blocked)
+
         # Try GRE bridge first (direct action submission, zero pixel/coordinate dependency)
         if not self._config.dry_run:
             gre_result = self._try_gre_bridge(action, game_state)
@@ -39,7 +56,12 @@ class _ActionExecMixin:
                 and not getattr(self._gre_bridge, "connected", False)
                 and self._wait_for_bridge_reconnect()
             ):
-                gre_result = self._try_gre_bridge(action, game_state)
+                from arenamcp.autopilot_models import AutopilotState
+
+                self._state = AutopilotState.PAUSED
+                self._automation_wait_reason = "Bridge reconnected — refresh state and replan before acting."
+                self._notify("AUTOPILOT", self._automation_wait_reason)
+                return ClickResult(False, 0, 0, action.action_type.value, self._automation_wait_reason)
             if self._abort_event.is_set():
                 return ClickResult(False, 0, 0, action.action_type.value, "aborted")
             if gre_result is not None:

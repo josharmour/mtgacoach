@@ -203,7 +203,7 @@ def test_auto_queue_opts_in(monkeypatch):
     nav = auto_queue.AutoQueueNavigator(
         backend=SimpleNamespace(complete_with_image=Mock()),
         get_game_state=lambda: {"match_id": "ended"},
-        bridge=SimpleNamespace(connected=False),
+        bridge=SimpleNamespace(connected=True),
     )
     nav.set_enabled(True)
     assert nav.note_match_end({"match_id": "ended", "event_id": "Ladder"}, confirmed_match_end=True)

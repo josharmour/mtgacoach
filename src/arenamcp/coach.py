@@ -2892,7 +2892,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         uncastable_card_names: set[str] = set()
         hand = game_state.get("hand", [])
         lines.append("")
-        lines.append("HAND:")
+        lines.append(
+            "HAND (incomplete; these are only known cards, do not infer missing cards or no options):"
+            if game_state.get("hand_complete") is False
+            else "HAND:"
+        )
 
         opp_creatures = [
             c for c in opp_cards if "creature" in c.get("type_line", "").lower() and not self._is_impending(c)

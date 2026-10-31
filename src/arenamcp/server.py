@@ -1974,6 +1974,9 @@ def _get_bridge_overlay(
 
     bridge = get_bridge()
     bridge_state = bridge.get_game_state()
+    # A cached board from a disconnected/replaced process is never authoritative.
+    if not getattr(bridge, "connected", False):
+        return {"bridge_connected": False, "_bridge_connected": False}
 
     overlay = {
         "bridge_connected": bool(getattr(bridge, "connected", False)),
@@ -2052,6 +2055,8 @@ def _get_bridge_overlay(
 
     battlefield = [card for card in _bridge_zone_cards("battlefield") if card.get("object_kind") != "ABILITY"]
     hand = _bridge_zone_cards("local_hand")
+    hand_zone = bridge_zones.get("local_hand")
+    hand_count = hand_zone.get("total_count") if isinstance(hand_zone, dict) else None
     local_graveyard = _bridge_zone_cards("local_graveyard")
     opponent_graveyard = _bridge_zone_cards("opponent_graveyard")
     graveyard = local_graveyard + opponent_graveyard
@@ -2101,6 +2106,12 @@ def _get_bridge_overlay(
             "players": normalized_players or fallback_players,
             "battlefield": battlefield,
             "hand": hand,
+            "hand_complete": (
+                type(hand_count) is int
+                and hand_count == len(hand)
+                and all(card.get("grp_id") for card in hand)
+            ),
+            "hand_count": hand_count,
             "graveyard": graveyard,
             "stack": stack,
             "exile": exile,
@@ -2277,6 +2288,8 @@ def get_game_state() -> dict[str, Any]:
         "_bridge_game_state_id": snap.get("_bridge_game_state_id", 0),
         "_log_game_state_id": snap.get("_log_game_state_id", 0),
         "_log_summarized_at_gsid": snap.get("_log_summarized_at_gsid", -1),
+        "hand_complete": (snap.get("hand_coverage") or {}).get("complete", False),
+        "hand_count": (snap.get("hand_coverage") or {}).get("total_count"),
     }
 
     bridge_overlay = _get_bridge_overlay(

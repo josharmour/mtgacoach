@@ -146,7 +146,8 @@ def test_no_result_screen_or_no_bridge_support_uses_screenshots(mac):
     arm(nav)
     step(nav)
     offline.get_match_end.assert_not_called()
-    controller.execute.assert_called_once()
+    controller.capture.assert_not_called()
+    controller.execute.assert_not_called()
 
 
 def test_a_new_match_before_leaving_hands_off_instead(mac):

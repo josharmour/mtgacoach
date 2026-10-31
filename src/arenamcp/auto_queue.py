@@ -1159,6 +1159,13 @@ class AutoQueueNavigator:
             # The post-match survey blocks every result-screen control, so it
             # goes first; the client's own Skip handler beats a screenshot click.
             self._step_phase = "bridge survey check"
+            from arenamcp.bridge_readiness import automation_blocker
+
+            blocked = automation_blocker(bridge)
+            if blocked:
+                self._status(blocked)
+                return
+            bridge_generation = getattr(bridge, "connection_generation", None)
             if self._skip_survey_via_bridge(bridge, generation, aborted):
                 return
 
@@ -1460,6 +1467,10 @@ class AutoQueueNavigator:
                 self._handoff(generation, aborted)
                 return
             self._step_phase = "click"
+            blocked = automation_blocker(bridge)
+            if blocked or bridge_generation != getattr(bridge, "connection_generation", None):
+                self._status(blocked or "Arena reconnected during navigation; checking the new screen first")
+                return
             if self._controller.execute(fresh, action, aborted):
                 # Statuses are deduplicated; log every click so a miss is diagnosable.
                 logger.info(

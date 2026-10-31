@@ -210,8 +210,8 @@ def _make_bridge_only_engine(monkeypatch, bridge: FakeBridge):
     return engine, notifications, bug_calls
 
 
-def test_unavailable_bridge_is_manual_required_with_a_bug_report(monkeypatch):
-    """Bridge disconnected → MANUAL REQUIRED and an auto-filed bridge bug."""
+def test_unavailable_bridge_waits_without_filing_repeated_action_bugs(monkeypatch):
+    """A missing connection is a readiness issue, not a failed game action."""
     bridge = FakeBridge(connected=False)
     engine, notifications, bug_calls = _make_bridge_only_engine(monkeypatch, bridge)
 
@@ -228,12 +228,8 @@ def test_unavailable_bridge_is_manual_required_with_a_bug_report(monkeypatch):
     result = engine._execute_action(action, state)
 
     assert result.success is False
-    assert any("MANUAL REQUIRED" in n for n in notifications)
-    assert len(bug_calls) == 1
-    reason, extra = bug_calls[0]
-    assert "bridge_unavailable" in reason
-    assert extra["auto_fallback_bug"]["reason_tag"] == "bridge_unavailable"
-    assert extra["auto_fallback_bug"]["card_name"] == "Forest"
+    assert any("Bridge disconnected" in n for n in notifications)
+    assert not bug_calls
 
 
 def test_failed_bridge_submit_is_manual_required_with_a_bug_report(monkeypatch):

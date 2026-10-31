@@ -49,6 +49,7 @@ def _navigator(backend):
     statuses: list[str] = []
     nav = AutoQueueNavigator(
         backend=backend,
+        bridge=Mock(connected=True, client_runtime="test", get_survey=None, get_match_end=None),
         controller=controller,
         get_game_state=lambda: {"match_id": "ended"},
         status_fn=statuses.append,

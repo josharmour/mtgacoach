@@ -40,7 +40,8 @@ def test_native_probe_run_batch(tmp_path):
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.count("PASS ") == 10, result.stdout
+    assert result.stdout.count("PASS ") == 11, result.stdout
+    assert "PASS bridge handshake identifies its process" in result.stdout
     assert (
         "PASS new readonly struct ctor then Add(REF): payload, header identity and rooting" in result.stdout
     )

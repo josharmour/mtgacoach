@@ -3003,6 +3003,26 @@ class AutopilotEngine(
             if timeout <= 0:
                 return "skip"
 
+    def refresh_automation_readiness(self, game_state: dict) -> bool:
+        """Resume only our temporary readiness pause, never a user/manual stop."""
+        from arenamcp.bridge_readiness import automation_blocker, incomplete_hand_blocker
+
+        if not getattr(self, "_automation_wait_reason", None) or self._abort_event.is_set():
+            return False
+        if automation_blocker(self._gre_bridge):
+            return False
+        if (
+            game_state.get("match_id")
+            and not game_state.get("match_ended")
+            and incomplete_hand_blocker(game_state)
+        ):
+            return False
+        if self._state != AutopilotState.PAUSED:
+            return False
+        self._state = AutopilotState.IDLE
+        self._automation_wait_reason = None
+        return True
+
     def process_trigger(
         self,
         game_state: dict[str, Any],
@@ -3033,6 +3053,32 @@ class AutopilotEngine(
             if self._abort_event.is_set():
                 self._state = AutopilotState.IDLE
                 return False
+            if not self._config.dry_run:
+                from arenamcp.bridge_readiness import automation_blocker, incomplete_hand_blocker
+
+                blocked = automation_blocker(self._gre_bridge) or incomplete_hand_blocker(game_state)
+                if blocked:
+                    self._state = AutopilotState.PAUSED
+                    self._current_plan = None
+                    if getattr(self, "_automation_wait_reason", None) != blocked:
+                        self._automation_wait_reason = blocked
+                        self._notify("AUTOPILOT", blocked)
+                        if getattr(self, "_ui_turn_plan_fn", None):
+                            self._notify_turn_plan(None)
+                    return True  # handled by waiting: do not start another automatic plan
+            self._automation_wait_reason = None
+            generation = getattr(self._gre_bridge, "connection_generation", None)
+            previous_generation = getattr(self, "_planning_bridge_generation", None)
+            if previous_generation is not None and generation != previous_generation:
+                self._current_plan = None
+                self._given_up_semantics = self._given_up_window_sig = None
+                self._bridge_preloaded_actions = None
+                self._planner._turn_memo = self._planner._turn_intent = None
+                for tracker_name in ("_progress_guard", "_request_tracker"):
+                    tracker = getattr(self, tracker_name, None)
+                    if tracker is not None:
+                        tracker.reset()
+            self._planning_bridge_generation = generation
             if game_state.get("game_engine_busy") and not bridge_shows_pending(game_state):
                 logger.info("Autopilot: engine busy; waiting without starting another plan")
                 self._state = AutopilotState.IDLE

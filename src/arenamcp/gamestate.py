@@ -1662,6 +1662,12 @@ class GameState(_GameStateAnnotationsMixin):
             revealed = revealed[len(revealed) - hand_count :]
         return revealed
 
+    def _hand_coverage_locked(self) -> dict:
+        count = self.get_zone_card_count(ZoneType.HAND, self.local_seat_id) if self.local_seat_id else None
+        known = [obj for obj in self.hand if obj.grp_id and obj.instance_id]
+        complete = count is not None and len(known) == count
+        return {"complete": complete, "known_count": len(known), "total_count": count}
+
     def _build_raw_snapshot_locked(self) -> dict:
         """Build a complete serializable snapshot from mutable state.
 
@@ -1727,6 +1733,7 @@ class GameState(_GameStateAnnotationsMixin):
                     else []
                 ),
             },
+            "hand_coverage": self._hand_coverage_locked(),
             "pending_decision": self.pending_decision,
             "_log_game_state_id": getattr(self, "log_game_state_id", 0),
             "_log_summarized_at_gsid": getattr(self, "log_summarized_at_gsid", -1),
@@ -3445,6 +3452,12 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                     # it carried will never arrive in detail. Readers waiting for the log to
                     # reach the bridge's gameStateId stop waiting (autopilot catch-up gate).
                     game_state.log_summarized_at_gsid = int(getattr(game_state, "log_game_state_id", 0) or 0)
+                    # Missing GRE details may contain draws/discards/zone changes.
+                    # Keep known objects, but don't call their subset the whole hand.
+                    for zone in game_state.zones.values():
+                        if zone.zone_type == ZoneType.HAND:
+                            zone.object_ids_known = False
+                    snapshot_dirty = True
                 msg_type = msg.get("type", "")
                 seat_hint = _coerce_optional_int(msg.get("systemSeatId"))
                 if seat_hint is None:
