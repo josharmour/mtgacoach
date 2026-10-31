@@ -46,7 +46,7 @@ def public_rules_notes(state):
             and "dies" in text
         ):
             notes.append(
-                f"{name} returns as an enchantment after dying. Killing the creature removes its body, not its persistent engine; the search does not fully price this return."
+                f"{name} returns as an enchantment after dying. Killing the creature removes its body, not its persistent engine; the returned enchantment retains its abilities."
             )
         if board and "whenever" in text and "counter" in text and state.get("stack"):
             notes.append(
@@ -76,17 +76,29 @@ def claim_notes(text, state):
         if (
             "death trigger:" in fact
             and name.lower() in lower
-            and re.search(r"\b(?:deny|denies|prevent|prevents|stop|stops)\b[^.]{0,65}\btoken", lower)
+            and re.search(
+                r"\b(?:deny|denies|denying|prevent|prevents|preventing|stop|stops)\b[^.]{0,85}\btoken|\bbefore it can[^.]{0,50}\bleave[^.]{0,30}\btoken",
+                lower,
+            )
         ):
-            if not re.search(r"\b(?:doesn't|does not|cannot|can't|won't|not)\b", lower):
+            if "exile" not in lower and not re.search(
+                r"\b(?:doesn't|does not|cannot|can't|won't|not)\b", lower
+            ):
                 found.append(fact)
         elif (
             "leaves at your end step" in fact
             and name.lower() in lower
             and re.search(r"\b(?:blocker|block|blocks|blocking|defense|defensive)\b", lower)
         ):
-            if not re.search(r"\b(?:no|not|can't|cannot|leaves|returns)\b", lower):
+            if not re.search(
+                r"\b(?:no|not|can't|cannot)\b[^.;,]{0,25}\bblock|\b(?:leaves|returns)\b[^.;,]{0,35}\b(?:end step|hand)\b",
+                lower,
+            ):
                 found.append(fact)
+        elif "has reach and is untapped" in fact and re.search(
+            r"\b(?:no reach|no (?:flying |flyer |untapped )?blockers|unblockable flyers?)\b", lower
+        ):
+            found.append(fact)
         elif (
             "returns as an enchantment" in fact
             and name.lower() in lower
@@ -101,3 +113,9 @@ def claim_notes(text, state):
             ):
                 found.append(fact)
     return found
+
+
+def corrected_reasoning(text, state):
+    """Replace proven rules contradictions; preserve raw text separately in diagnostics."""
+    notes = claim_notes(text, state)
+    return "Rules correction: " + " ".join(notes) if notes else str(text or "")

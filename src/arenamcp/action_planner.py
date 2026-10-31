@@ -9721,6 +9721,14 @@ class ActionPlanner(_ActionLegalityMixin):
             "; ".join(notes),
             self._last_decision_reasoning,
         )
+        # Never feed a proven false session claim back as the accepted explanation.
+        from arenamcp.session_facts import corrected_reasoning
+
+        original = self._last_decision_reasoning
+        self._last_decision_reasoning = corrected_reasoning(original, game_state)
+        trace = getattr(self, "_last_decision_trace", None)
+        if isinstance(trace, dict) and original != self._last_decision_reasoning:
+            trace["uncorrected_reasoning"] = original
         # After a full stop: reasoning_choice_conflict reads only the lead sentence.
         stop = "" if self._last_decision_reasoning.rstrip().endswith((".", "!", "?")) else "."
         self._last_decision_reasoning = (

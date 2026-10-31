@@ -456,6 +456,7 @@ class BoardModel:
     # The line search resolves them at its root; the assessment's own facts do not.
     our_stack_doomed: frozenset[int] = frozenset()
     our_stack_face: int = 0
+    our_stack_returns: tuple[dict, ...] = ()
     # Each player's starting life total (``starting_life``): 25 in Brawl, else 20 (ledger #177:
     # "at least 7 life more than your starting life total").
     starting_life: int = 20
@@ -768,6 +769,19 @@ def build_board_model(state: dict) -> BoardModel | None:
         pending = our_stack_damage(state) if state.get("stack") else None
     except Exception:  # a reading aid: the board facts never fail on it
         pending = None
+    from arenamcp.death_bodies import death_is_suppressed
+    from arenamcp.persistent_returns import returned_enchantment
+
+    pending_returns = ()
+    if pending and pending.doomed and not death_is_suppressed(battlefield):
+        # Do not infer a death return through an exile replacement on pending damage.
+        exiling = any("exile" in str(c.get("oracle_text") or "").lower() for c in state.get("stack") or [])
+        if not exiling:
+            pending_returns = tuple(
+                result
+                for c in battlefield
+                if c.get("instance_id") in pending.doomed and (result := returned_enchantment(c)) is not None
+            )
     return BoardModel(
         local=local, opponent=opponent, turn=turn, our_turn=our_turn, phase=phase, step=step,
         our_life=_life(state, local), opp_life=_life(state, opponent),
@@ -798,6 +812,7 @@ def build_board_model(state: dict) -> BoardModel | None:
         their_lands_played=max(0, their_lands_played),
         our_stack_doomed=pending.doomed if pending else frozenset(),
         our_stack_face=pending.face if pending else 0,
+        our_stack_returns=pending_returns,
         starting_life=starting_life(state),
         engines=engines,
         our_engines=our_engines,

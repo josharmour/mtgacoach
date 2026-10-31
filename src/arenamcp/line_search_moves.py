@@ -1547,6 +1547,7 @@ class Node:
     rolled: bool = False  # finished by greedy rollout (deadline or beam overflow)
     # Their planeswalkers: ((instance id, name, loyalty), ...) (ledger #42, 2026-10-19 a51dea64).
     walkers: tuple = ()
+    persistent: tuple = ()  # returned noncreature engines; never attack/block/creature targets
 
     @property
     def terminal(self) -> bool:
@@ -1560,7 +1561,7 @@ class Mid:
         "node", "land", "casts", "sources", "base_sources", "used_mv", "used_pips", "our_life", "opp_life",
         "ours", "theirs", "our_tapped", "entered", "hand", "lands", "played", "rocks", "returning",
         "attack_first", "applied", "modes", "targets", "cycles", "cast_names", "keys", "gained", "walkers",
-        "pumps",
+        "pumps", "persistent",
     )  # fmt: skip
 
     def copy(self) -> Mid:
@@ -2397,6 +2398,14 @@ class Moves:
                 chips.append(dataclasses.replace(var, chip=amount))
         return tuple(chips)
 
+    def return_engines(self, bodies):
+        from arenamcp.death_bodies import death_is_suppressed
+        from arenamcp.persistent_returns import returned_enchantment
+
+        if death_is_suppressed(self.model.battlefield):
+            return []
+        return [engine for body in bodies if (engine := returned_enchantment(body)) is not None]
+
     def death_bodies(self, bodies) -> list[dict]:
         from arenamcp.death_bodies import death_is_suppressed, token_specs_on_death
 
@@ -2706,15 +2715,24 @@ class Moves:
         (``engine_role``: what one of theirs drains and grows each turn)."""
         found = self._m_memo.get(id(body))
         if found is None:
+            from arenamcp.persistent_returns import engine_value, returned_enchantment
+
             evasive = _flying(body) or body["_unblockable"]
+            engine = returned_enchantment(body)
+            residual = engine_value(engine) if engine is not None else 0.0
             found = self._m_memo[id(body)] = (
-                body["power"] + 0.5 * body["toughness"] + (1.0 if evasive else 0.0) + engine_role(body)
+                body["power"]
+                + 0.5 * body["toughness"]
+                + (1.0 if evasive else 0.0)
+                + max(engine_role(body), residual)
             )
         return found
 
-    def value(self, life, opp_life, ours, theirs, hand, walkers=()) -> float:
+    def value(self, life, opp_life, ours, theirs, hand, walkers=(), persistent=()) -> float:
         """V = u(life) - 0.6 opp life + our material - theirs + 0.3 hand (hand-tuned), less each
         planeswalker of theirs (``combat_solver.walker_value``: 9 + its loyalty up to 6)."""
+        from arenamcp.persistent_returns import engine_value
+
         u = life + min(life, 10) + 2 * min(life, 5)
         return (
             u
@@ -2723,6 +2741,7 @@ class Moves:
             - sum(self.material(b) for b in theirs)
             + 0.3 * sum(self.spells[i].hand_value for i in hand)
             - sum(walker_value(loyal) for _iid, _name, loyal in walkers)
+            - sum(engine_value(c) for c in persistent)
         )
 
     def score(self, node: Node) -> tuple:
@@ -2735,7 +2754,13 @@ class Moves:
             ALIVE,
             0,
             self.value(
-                node.our_life, node.opp_life, node.ours, node.theirs + node.returning, node.hand, node.walkers
+                node.our_life,
+                node.opp_life,
+                node.ours,
+                node.theirs + node.returning,
+                node.hand,
+                node.walkers,
+                node.persistent,
             ),
         )
 
@@ -3443,6 +3468,7 @@ class Moves:
         mid.played = list(node.played) + ([land.source] if land is not None else [])
         mid.rocks = list(node.rocks)
         mid.returning = list(node.returning)
+        mid.persistent = list(node.persistent)
         mid.attack_first = node.k == 0 and self.our_turn and self.model.t_casts_post_combat
         mid.applied = False
         mid.modes, mid.targets, mid.cycles, mid.cast_names = [], [], [], []
@@ -3539,9 +3565,9 @@ class Moves:
 
             if removal_causes_death(var.reach, var.bounce):
                 remaining = {b["instance_id"] for b in mid.theirs}
-                mid.theirs.extend(
-                    self.death_bodies([b for b in before_spell if b["instance_id"] not in remaining])
-                )
+                died = [b for b in before_spell if b["instance_id"] not in remaining]
+                mid.theirs.extend(self.death_bodies(died))
+                mid.persistent.extend(self.return_engines(died))
             mid.our_life += var.gain
             mid.gained += var.gain
             if var.rock:
@@ -3782,7 +3808,9 @@ class Moves:
             mid.gained += ll_gain
             opp_after = mid.opp_life
             mid.ours = self.rescale([b for b in mid.ours if b["instance_id"] not in dead_ours])
-            replacement = self.death_bodies([b for b in mid.theirs if b["instance_id"] in dead_theirs])
+            died = [b for b in mid.theirs if b["instance_id"] in dead_theirs]
+            replacement = self.death_bodies(died)
+            mid.persistent.extend(self.return_engines(died))
             mid.theirs = [b for b in mid.theirs if b["instance_id"] not in dead_theirs] + replacement
             # Non-vigilance attackers stay tapped through their turn.
             mid.our_tapped |= {b["instance_id"] for b in attackers if not has_combat_keyword(b, "vigilance")}
@@ -3830,6 +3858,7 @@ class Moves:
             "lands": tuple(mid.lands),
             "played": tuple(mid.played),
             "rocks": tuple(mid.rocks),
+            "persistent": tuple(mid.persistent),
             "walkers": tuple((iid, name, loyal) for iid, (name, loyal) in sorted(mid.walkers.items())),
         }
         if mid.opp_life <= 0:
@@ -3859,6 +3888,7 @@ class Moves:
             next_abs=node.abs_turn + 2,
             landfall=True,
             gains=gains,
+            persistent=tuple(mid.persistent),
         )
         after = Step(
             **step,
@@ -3887,6 +3917,7 @@ class Moves:
         carry.update(
             our_life=hit["life"], opp_life=hit["opp_life"], ours=tuple(self.rescale(list(hit["ours"]))),
             theirs=tuple([*hit["theirs"], *spawned]), hand=hit["hand"], walkers=walkers,
+            persistent=tuple(hit["persistent"]),
         )  # fmt: skip
         return dataclasses.replace(
             node,
@@ -4199,7 +4230,7 @@ class Moves:
         index, turn, next_k, next_abs, fixed=None, variant="best", crack_exclude=frozenset(), tag="",
         blocks_locked=False, landfall=False, drops=None, crack_sources=None, spells=True, gains=0, drain_now=True,
         combat_counters=True,
-        after_upkeep=False,
+        after_upkeep=False, persistent=(),
     ) -> dict:  # fmt: skip
         """Their attack: any lethal policy kills us; else the non-suicidal one worst for us, and
         their most damaging one when every policy leaves them dead to our next turn anyway.
@@ -4270,7 +4301,9 @@ class Moves:
         for name, attackers in policies:
             if ids_of(attackers) not in seen:
                 seen.add(ids_of(attackers))
-                outcomes.append(self._policy(name, attackers, hand_left, *context, drain=drain))
+                outcomes.append(
+                    self._policy(name, attackers, hand_left, *context, drain=drain, persistent=persistent)
+                )
         held = tuple(sorted(self.spells[v.spell].name for v in flash))
         lethal = [o for o in outcomes if o["dead"]]
         if lethal:  # paranoid: a lethal attack is never filtered out
@@ -4278,7 +4311,7 @@ class Moves:
             return {**worst, "held": held + worst["used"]}
         safe = [o for o in outcomes if not o["suicidal"]]
         if not safe and fixed is None and () not in seen:
-            none = self._policy("none", (), hand_left, *context, drain=drain)
+            none = self._policy("none", (), hand_left, *context, drain=drain, persistent=persistent)
             outcomes.append(none)
             safe = [] if none["suicidal"] else [none]
         if safe:
@@ -4291,8 +4324,9 @@ class Moves:
 
     def _policy(
         self, name, attackers, hand, life, opp_life, ours, theirs, defenders, removal, entered, keep_tapped,
-        returning, index, next_k, next_abs, tag, left=0, landfall=0, crack_sources=(), *, drain=0,
+        returning, index, next_k, next_abs, tag, left=0, landfall=0, crack_sources=(), *, drain=0, persistent=(),
     ) -> dict:  # fmt: skip
+        persistent = list(persistent)
         declared = sorted(attackers, key=lambda b: b["instance_id"])
         removed: set[int] = set()
         bounced: list[dict] = []
@@ -4306,6 +4340,10 @@ class Moves:
             declared = [a for a in declared if a is not target]
             removed.add(target["instance_id"])
             bounced += [target] if var.bounce else []
+            from arenamcp.death_bodies import removal_causes_death
+
+            if removal_causes_death(var.reach, var.bounce):
+                persistent.extend(self.return_engines([target]))
             hand = tuple(i for i in hand if i != var.spell)
             used.append(self.spells[var.spell].name)
         fighting = declared
@@ -4335,7 +4373,20 @@ class Moves:
         # triggers' pings hit us too (unless the attack was declared before the snapshot), and
         # so do their drain engines this turn (``their_drain``, ledger #133).
         after = life - damage + healed - (self.pinged(theirs, attackers) if name != "declared" else 0) - drain
+        from arenamcp.persistent_returns import gain_drain
+
+        if not annotated(fighting) and not (self.engines and self.engines.no_gain):
+            # Pure lifelink amount excludes net death-trigger life swings.
+            ll_gain = self.combat_detail(fighting, defenders, life, first=index == 1, tag=round_tag)[7]
+            engines = [
+                c
+                for c in self.model.battlefield
+                if not _is_creature(c) and _controller(c) == self.model.opponent
+            ]
+            engines += [b for b in theirs if b["instance_id"] not in removed] + persistent
+            after -= gain_drain(engines, ll_gain, after)
         opp_life += gained
+        persistent.extend(self.return_engines([b for b in theirs if b["instance_id"] in dead_att]))
         # Their token engines' tokens of this turn (#172): sick now, they block our next attack.
         made = (
             self.their_tokens(
@@ -4400,7 +4451,7 @@ class Moves:
         # Worst for us means after our reply too: their attackers can't block on our
         # turn, so a policy is valued at the better of our holding and our crackback
         # (bug_20261007_182945: all-out 1/4 fliers every turn "took" 24 life to 5).
-        v = self.value(after, opp_life, ours_after, theirs_after, hand)
+        v = self.value(after, opp_life, ours_after, theirs_after, hand, persistent=persistent)
         if crack:
             v = max(
                 v,
@@ -4408,7 +4459,7 @@ class Moves:
                     after + crack_gained, opp_life - crack_net,
                     [b for b in ours_after if b["instance_id"] not in crack_dead_ours],
                     [b for b in theirs_after if b["instance_id"] not in crack_dead_theirs],
-                    hand,
+                    hand, persistent=persistent,
                 ),
             )  # fmt: skip
         return {
@@ -4424,6 +4475,7 @@ class Moves:
             "their_tapped": their_tapped,
             "hand": hand,
             "entered": entered,
+            "persistent": tuple(persistent),
         }
 
     # -- the root ---------------------------------------------------------------------------
@@ -4455,6 +4507,14 @@ class Moves:
         if effect.get("sweep"):  # a mode's damage to each of their creatures (#87)
             theirs = [b for b in theirs if not swept_now(b, int(effect["sweep"]), effect.get("source"))]
         ours = self.rescale(ours)  # creatures entering before T grow Leonardo-style bodies (#157)
+        from arenamcp.death_bodies import removal_causes_death
+
+        persistent = []
+        if removal_causes_death(effect.get("source"), effect.get("bounce", False)):
+            alive_ids = {b["instance_id"] for b in theirs}
+            died = [b for b in model.theirs if b["instance_id"] not in alive_ids]
+            persistent = self.return_engines(died)
+            theirs += self.death_bodies(died)
         return Node(
             k=0,
             abs_turn=self.first_turn,
@@ -4473,6 +4533,7 @@ class Moves:
             rocks=(),
             returning=tuple(returning),
             walkers=self.walkers0,
+            persistent=tuple(persistent),
         )
 
     def roots(self) -> list[tuple[str, Node]]:
@@ -4524,6 +4585,7 @@ class Moves:
                 keep_tapped=node.their_tapped,
                 spare=(list(model.sources_now), 0, ()),
                 returning=node.returning,
+                persistent=node.persistent,
                 index=1,
                 turn=model.turn,
                 next_k=0,
@@ -4562,6 +4624,7 @@ class Moves:
                         opp_life=hit["opp_life"],
                         ours=tuple(hit["ours"]),
                         theirs=tuple(hit["theirs"]),
+                        persistent=tuple(hit["persistent"]),
                         our_tapped=frozenset(),
                         their_tapped=hit["their_tapped"],
                         entered=tuple(sorted(hit["entered"].items())),

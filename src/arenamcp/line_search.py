@@ -446,12 +446,14 @@ def _after_our_pending(model: BoardModel) -> BoardModel:
     return dataclasses.replace(
         model,
         opp_life=model.opp_life - face,
-        battlefield=tuple(c for c in model.battlefield if _int(c.get("instance_id")) not in doomed),
+        battlefield=tuple(c for c in model.battlefield if _int(c.get("instance_id")) not in doomed)
+        + model.our_stack_returns,
         theirs=alive(model.theirs),
         untapped_theirs=alive(model.untapped_theirs),
         first_their_attackers=alive(model.first_their_attackers),
         our_stack_doomed=frozenset(),
         our_stack_face=0,
+        our_stack_returns=(),
     )
 
 
@@ -570,7 +572,13 @@ class _Search(Moves):
             return None  # (not distant: T itself kills)
         alive = dataclasses.replace(node, opp_life=opp_now, win_at=None, win_turn=None, overkill=0)
         value = self.value(
-            alive.our_life, opp_now, alive.ours, alive.theirs + alive.returning, alive.hand, alive.walkers
+            alive.our_life,
+            opp_now,
+            alive.ours,
+            alive.theirs + alive.returning,
+            alive.hand,
+            alive.walkers,
+            alive.persistent,
         )
         race = 0.0 if self.past_soft() or self.truncated else self.race(alive)
         return float(value + race)
@@ -675,6 +683,7 @@ class _Search(Moves):
         return (
             node.k, node.our_life, node.opp_life, ids_of(node.ours), ids_of(node.theirs), node.our_tapped,
             node.their_tapped, node.entered, node.hand, tuple(x.iid for x in node.lands),
+            tuple(c.get("instance_id") for c in node.persistent),
             tuple(sorted(s.name for s in node.played)), len(node.rocks), ids_of(node.returning),
             node.dead_at, node.win_at, node.overkill, node.block, node.walkers,
         )  # fmt: skip

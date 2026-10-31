@@ -192,6 +192,15 @@ def card_removes(card: dict, piece: dict, state: dict) -> bool:
         return False
     opponent = _opponent_seat(state, local)
     for sentence in _removal_sentences(card):
+        from arenamcp.death_bodies import death_is_suppressed
+        from arenamcp.persistent_returns import returned_enchantment
+
+        if (
+            "destroy" in sentence.lower()
+            and returned_enchantment(piece) is not None
+            and not death_is_suppressed(state.get("battlefield") or [])
+        ):
+            continue  # destroying the body does not break its returning engine
         req = RulesEngine._infer_target_requirements(sentence)
         if req["player_target"] or req["must_control"] == "you":
             continue
@@ -227,7 +236,9 @@ def warning_line(state: dict, loop: DrainLoop) -> str:
         card, piece = answers[0]
         line += f" Answer it now: {card.get('name')} can remove {piece.get('name')}."
     else:
-        line += " Remove either piece the moment you can."
+        line += (
+            " Remove a piece permanently; a creature that returns with its engine must be exiled or bounced."
+        )
     return line
 
 
@@ -240,7 +251,7 @@ def facts_flag(state: dict) -> str:
     answer = f"; {answers[0][0].get('name')} removes {answers[0][1].get('name')}" if answers else ""
     return (
         f"OPPONENT DRAIN LOOP ASSEMBLED ({loop.names()}): any life gain or loss chains until we are dead "
-        f"— removing either piece outranks every other play{answer}"
+        f"— permanently removing a piece outranks every other play; destruction is insufficient if it returns with its engine{answer}"
     )
 
 
