@@ -5,7 +5,7 @@ import re
 from collections import Counter
 from typing import Any
 
-from arenamcp.combat_keywords import has_combat_keyword
+from arenamcp.combat_keywords import has_combat_keyword, is_creature_now
 from arenamcp.mana import has_autotap_solution, mana_cost_to_cmc
 from arenamcp.rules_engine import RulesEngine, _normalize_mana_symbols
 
@@ -737,12 +737,19 @@ _ONLY_EACH_OPPONENT = re.compile(r"[^.]*\bdeals \d+ damage to each opponent\.?")
 class StackDamage:
     """What our own spells on the stack deal when they resolve (:func:`our_stack_damage`)."""
 
-    __slots__ = ("doomed", "face", "settled")
+    __slots__ = ("doomed", "face", "settled", "by_target")
 
-    def __init__(self, doomed: frozenset = frozenset(), face: int = 0, settled: frozenset = frozenset()):
+    def __init__(
+        self,
+        doomed: frozenset = frozenset(),
+        face: int = 0,
+        settled: frozenset = frozenset(),
+        by_target: dict | None = None,
+    ):
         self.doomed = doomed  # instance ids of their creatures the damage kills
         self.face = face  # damage to the opponent
         self.settled = settled  # our stack objects whose whole effect the two above count
+        self.by_target = dict(by_target or {})  # pending, not already marked damage (#335)
 
 
 def our_stack_damage(state: dict, *, exclude: Any = None) -> StackDamage:
@@ -765,7 +772,11 @@ def our_stack_damage(state: dict, *, exclude: Any = None) -> StackDamage:
     """
     local = _local_seat(state)
     stack = [entry for entry in state.get("stack") or [] if isinstance(entry, dict)]
-    if local is None or not stack:
+    if (
+        local is None
+        or not stack
+        or (state.get("_bridge_request_type") == "ActionsAvailable" and menu_proves_empty_stack(state))
+    ):
         return StackDamage()
     opponents = {
         player.get("seat_id")
@@ -791,8 +802,8 @@ def our_stack_damage(state: dict, *, exclude: Any = None) -> StackDamage:
         if (entry.get("controller_seat_id") or entry.get("owner_seat_id")) != local:
             continue
         iid = entry.get("instance_id")
-        if exclude is not None and iid == exclude:
-            continue
+        if (exclude is not None and iid == exclude) or iid in contested:
+            continue  # a counter/answer aimed at this spell makes its damage uncertain
         lines = [line.lower() for line in _rules_lines(entry.get("oracle_text")) if ":" not in line]
         each_opponent = sum(int(m.group(1)) for line in lines for m in _EACH_OPPONENT_DAMAGE.finditer(line))
         parsed = damage_effect(entry, kicked=False)
@@ -805,12 +816,23 @@ def our_stack_damage(state: dict, *, exclude: Any = None) -> StackDamage:
         exact = damage_effect(entry, kicked=True) == parsed  # no kicker that could have added damage
         face += each_opponent
         if scope == "each":
-            for target in theirs:
+            hit = [
+                target
+                for target, card in theirs.items()
+                if target not in contested and not _damage_protected(card, targeted=False)
+            ]
+            for target in hit:
                 damage[target] += amount
-            effects.append((iid, scope, list(theirs), exact))
+            effects.append((iid, scope, hit, exact and len(hit) == len(theirs)))
             continue
         targets = [target for target in entry.get("targeting") or [] if target is not None]
-        hit = [target for target in targets if target in theirs and target not in contested]
+        hit = [
+            target
+            for target in targets
+            if target in theirs
+            and target not in contested
+            and not _damage_protected(theirs[target], targeted=True)
+        ]
         for target in hit:
             damage[target] += amount
         at_face = [target for target in targets if target in opponents]
@@ -824,7 +846,21 @@ def our_stack_damage(state: dict, *, exclude: Any = None) -> StackDamage:
     settled = frozenset(
         iid for iid, _scope, hit, whole in effects if whole and all(target in doomed for target in hit)
     )
-    return StackDamage(doomed, face, settled)
+    return StackDamage(doomed, face, settled, dict(damage))
+
+
+def _damage_protected(card: dict, *, targeted: bool) -> bool:
+    """Conservatively omit damage whose visible protection we cannot resolve.
+
+    Protection can prevent damage as well as targeting. Without a complete
+    source/color model, do not credit even conditional protection as a kill.
+    Untargeted damage still gets through hexproof/shroud.
+    """
+    text = _plain_text(card).lower()
+    keywords = " ".join(str(k).lower() for k in card.get("keywords") or ())
+    return "protection" in text + keywords or bool(
+        targeted and any(has_combat_keyword(card, k) for k in ("hexproof", "shroud"))
+    )
 
 
 def doomed_by_our_stack(state: dict, *, exclude: Any = None) -> frozenset:
@@ -1215,7 +1251,7 @@ def _opposing_creatures(state: dict) -> list[dict]:
         for permanent in state.get("battlefield", []) or []
         if local_seat is not None
         and (permanent.get("controller_seat_id") or permanent.get("owner_seat_id")) != local_seat
-        and "creature" in str(permanent.get("type_line") or "").lower()
+        and is_creature_now(permanent)
     ]
 
 

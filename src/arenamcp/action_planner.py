@@ -7217,10 +7217,12 @@ class ActionPlanner(_ActionLegalityMixin):
         "Any target" burn goes to :meth:`_aim_any_target_damage` (``fallback``:
         the pick is ours, not the model's).
         """
+        from arenamcp.combat_keywords import is_creature_now
         from arenamcp.play_safety import (
             damage_effect,
             damage_would_kill,
             fixed_damage_removal,
+            our_stack_damage,
             x_damage_removal,
         )
 
@@ -7244,6 +7246,13 @@ class ActionPlanner(_ActionLegalityMixin):
         cards = {card.get("instance_id"): card for card in game_state.get("battlefield", []) or []}
         local_seat, controllers = self._battlefield_controllers(game_state)
 
+        projection = our_stack_damage(game_state, exclude=self._decision_source_instance(game_state))
+        # A partial pending hit can complete this kill; an already doomed
+        # creature is not a reason to spend another spell on it (#122/#335).
+        pending = {
+            iid: amount for iid, amount in projection.by_target.items() if iid not in projection.doomed
+        }
+
         def killable(iid: int) -> bool | None:
             card = cards.get(iid)
             if card is None or controllers.get(iid) == local_seat:
@@ -7252,9 +7261,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 # #130: a walker the damage doesn't finish keeps a pick but is no kill to retarget to.
                 remaining = _walker_loyalty(card)
                 return True if remaining is None or damage >= remaining else None
-            if "creature" not in str(card.get("type_line") or "").lower():
+            if not is_creature_now(card):
                 return None
-            return damage_would_kill(card, damage)
+            return damage_would_kill(card, damage + pending.get(iid, 0))
 
         picked = int(str(targets[0])[4:])
         if killable(picked) is not False:
@@ -7314,7 +7323,8 @@ class ActionPlanner(_ActionLegalityMixin):
         most power that ``sure_damage`` kills, else the opponent's face. Our
         own pick also goes face when that damage is lethal.
         """
-        from arenamcp.play_safety import damage_would_kill, named_burn_damage
+        from arenamcp.combat_keywords import is_creature_now
+        from arenamcp.play_safety import damage_would_kill, named_burn_damage, our_stack_damage
 
         targets = [oid for oid in chosen if str(oid).startswith("tgt:")]
         if len(targets) != 1:
@@ -7339,11 +7349,17 @@ class ActionPlanner(_ActionLegalityMixin):
                 self._note_target_choice([face], reason)
                 return [face]
         card = cards.get(picked)
+        projection = our_stack_damage(game_state, exclude=self._decision_source_instance(game_state))
+        # A partial pending hit can complete this kill; an already doomed
+        # creature is not a reason to spend another spell on it (#122/#335).
+        pending = {
+            iid: amount for iid, amount in projection.by_target.items() if iid not in projection.doomed
+        }
         if (
             card is None
             or controllers.get(picked) in (None, local_seat)
-            or "creature" not in str(card.get("type_line") or "").lower()
-            or damage_would_kill(card, damage) is not False
+            or not is_creature_now(card)
+            or damage_would_kill(card, damage + pending.get(picked, 0)) is not False
         ):
             return chosen
         intent = self._cast_intent_for(decision)
@@ -7378,8 +7394,8 @@ class ActionPlanner(_ActionLegalityMixin):
                 if remaining is None or sure_damage >= remaining:
                     alternatives.append((0, 0, oid, other.get("name")))
             elif (
-                "creature" in type_line
-                and damage_would_kill(other, sure_damage) is True
+                is_creature_now(other)
+                and damage_would_kill(other, sure_damage + pending.get(iid, 0)) is True
                 # A vanilla 0-power body is no better use than their face.
                 and ((_as_int(other.get("power")) or 0) > 0 or str(other.get("oracle_text") or "").strip())
             ):
@@ -8983,6 +8999,14 @@ class ActionPlanner(_ActionLegalityMixin):
         local_seat, controllers = self._battlefield_controllers(game_state)
         target_objects = self._target_objects(game_state)
         target_trace = []
+        from arenamcp.combat_keywords import is_creature_now
+        from arenamcp.play_safety import our_stack_damage
+
+        pending_target_damage = (
+            our_stack_damage(game_state, exclude=self._decision_source_instance(game_state)).by_target
+            if decision.request_type == "SelectTargets"
+            else {}
+        )
         if decision.request_type in ("SelectN", "Search"):
             # Arena's prompt text, the card asking with its rules, and a hand
             # loss framed as one (ledger #79: an exile read as a cast).
@@ -9119,13 +9143,16 @@ class ActionPlanner(_ActionLegalityMixin):
                 }
                 # 2026-10-19 08:08:10: two "Virulent Emissary" targets, one tapped
                 # from attacking; the strike "clearing the ground blocker" hit it.
-                if _as_int(o.option_id[4:]) in battlefield_ids and (
-                    "creature" in str(card.get("type_line") or "").lower()
-                    or "CardType_Creature" in (card.get("card_types") or [])
-                ):
+                if _as_int(o.option_id[4:]) in battlefield_ids and is_creature_now(card):
                     from arenamcp.play_safety import creature_state_facts
 
                     facts.update(creature_state_facts(card, mine=ctrl is not None and ctrl == local_seat))
+                    pending_damage = pending_target_damage.get(card.get("instance_id"), 0)
+                    if pending_damage:
+                        facts["pending_damage_if_resolves"] = pending_damage
+                        remaining = facts.get("dies_to_damage")
+                        if type(remaining) is int:
+                            facts["additional_damage_after_pending"] = max(0, remaining - pending_damage)
                 # #130 (2026-10-19, match 3e545401): Ajani Resolute at loyalty 1 was a bare name.
                 if _as_int(o.option_id[4:]) in battlefield_ids and (
                     "planeswalker" in str(card.get("type_line") or "").lower()

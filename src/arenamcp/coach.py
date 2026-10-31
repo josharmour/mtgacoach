@@ -2836,7 +2836,24 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         elif minus_match:
             removal_info = f" [RM:<={abs(int(minus_match.group(2)))}T]"
 
-        if is_bounce_creature:
+        # Creature-removal value is not target legality (#330). Player burn,
+        # untargeted damage, optional targets and modal spells cannot be
+        # declared uncastable from an empty opposing-creature pool. Arena's
+        # current menu remains authoritative (including player protection).
+        if damage_match and (
+            not re.search(r"\btarget\b", oracle_lower)
+            or re.search(r"\b(?:any target|target (?:player|opponent)|planeswalker|battle)\b", oracle_lower)
+            or any(text in oracle_lower for text in ("choose ", "up to", "you may"))
+        ):
+            return removal_info
+
+        if damage_match:
+            # Unrestricted creature damage can also target our own creatures;
+            # lack of an opposing victim alone does not prove NO TARGETS.
+            if "target creature" not in oracle_lower:
+                return removal_info  # unsupported restrictions: do not invent legality
+            target_pool = opp_creatures if "opponent controls" in oracle_lower else all_creatures
+        elif is_bounce_creature:
             target_pool = all_creatures
         elif is_bounce_permanent:
             target_pool = [c for c in battlefield if "land" not in c.get("type_line", "").lower()]
@@ -2898,15 +2915,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             else "HAND:"
         )
 
-        opp_creatures = [
-            c for c in opp_cards if "creature" in c.get("type_line", "").lower() and not self._is_impending(c)
-        ]
+        from arenamcp.combat_keywords import is_creature_now
+
+        opp_creatures = [c for c in opp_cards if is_creature_now(c) and not self._is_impending(c)]
         opp_nonland = [c for c in opp_cards if "land" not in c.get("type_line", "").lower()]
-        all_creatures = [
-            c
-            for c in battlefield
-            if c.get("power") is not None and "land" not in c.get("type_line", "").lower()
-        ]
+        all_creatures = [c for c in battlefield if is_creature_now(c) and not self._is_impending(c)]
 
         if not hand:
             lines.append("  (empty)")

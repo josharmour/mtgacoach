@@ -162,7 +162,8 @@ def untargeted_mode_instead(decision: Any, chosen: list[str], state: dict) -> tu
     mode that kills no opposing creature on the board gives way, and only to
     a mode that targets nothing and spares our side.
     """
-    from arenamcp.play_safety import damage_would_kill, fixed_damage_removal
+    from arenamcp.combat_keywords import is_creature_now
+    from arenamcp.play_safety import damage_would_kill, fixed_damage_removal, our_stack_damage
 
     if getattr(decision, "request_type", "") != "CastingTimeOptions" or len(chosen) != 1:
         return None
@@ -178,14 +179,36 @@ def untargeted_mode_instead(decision: Any, chosen: list[str], state: dict) -> tu
     local = _local_seat(state)
     if local is None:
         return None
+    # With incomplete type facts we cannot prove that the chosen mode kills
+    # nothing. Keep the explicit choice until Arena supplies its target menu.
+    if "battlefield" not in state or any(
+        isinstance(card, dict)
+        and (card.get("controller_seat_id") or card.get("owner_seat_id")) not in (None, local)
+        and not any(str(t).startswith("CardType_") for t in card.get("card_types") or [])
+        and (
+            not card.get("type_line")
+            or (
+                not is_creature_now(card)
+                and card.get("power") is not None
+                and card.get("toughness") is not None
+            )
+        )
+        for card in state.get("battlefield") or []
+    ):
+        return None
     theirs = [
         card
         for card in state.get("battlefield") or []
         if isinstance(card, dict)
         and (card.get("controller_seat_id") or card.get("owner_seat_id")) not in (None, local)
-        and "creature" in str(card.get("type_line") or "").lower()
+        and is_creature_now(card)
     ]
-    if any(damage_would_kill(card, damage) is not False for card in theirs):
+    projection = our_stack_damage(state)
+    pending = {iid: amount for iid, amount in projection.by_target.items() if iid not in projection.doomed}
+    if any(
+        damage_would_kill(card, damage + pending.get(card.get("instance_id"), 0)) is not False
+        for card in theirs
+    ):
         return None  # it kills something (or might): the targeted mode stands
     for option in modal:
         text = _mode_text(option)
