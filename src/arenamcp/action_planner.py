@@ -9434,11 +9434,15 @@ class ActionPlanner(_ActionLegalityMixin):
             if any(type(option_id) not in (str, int) for option_id in ids):
                 raise ValueError("typed-decision option_ids must contain only ids")
             ids = [str(option_id) for option_id in ids]
-            if decision.request_type == "ActionsAvailable":
+            if decision.request_type in {"ActionsAvailable", "CastingTimeOptions"}:
                 # 2026-10-29: valid answers 4 / "3" lost their idx: prefix,
                 # so the executor fell back despite a usable model choice.
-                # Repair only an exact advertised action index, never a menu
-                # position, target instance, missing ID, or existing literal ID.
+                # Ledger #121 recurrence (2026-10-31): Iroh's bare "1" also
+                # means idx:1; rejecting it cancelled the intended Mode 2.
+                # Repair only an exact advertised index, never a menu position,
+                # child/mode number, X value, target instance, or missing ID.
+                # Existing literal IDs keep their meaning; validation below
+                # still enforces modal counts and membership in one child.
                 available = decision.option_ids()
                 ids = [
                     f"idx:{oid}"
