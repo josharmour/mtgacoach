@@ -407,7 +407,7 @@ _ATTACKER_PAYOFF = re.compile(
     r"\battack(?:s|ing|ed|ers?)?\b|\bblock(?:s|ed|ing|ers?)?\b"
     r"|\bdies\b|\bdie\b|leaves the battlefield|put into (?:a|your|its owner's|their owner's) graveyard"
     r"|\bis dealt (?:combat )?damage\b|\bdeals? (?:combat )?damage to (?:a|another|that|target|each) creature\b"
-    r"|\b(?:exert|exalted|annihilator|battle cry|myriad|melee|afflict|bushido|rampage|flanking|provoke"
+    r"|\b(?:mobilize|exert|exalted|annihilator|battle cry|myriad|melee|afflict|bushido|rampage|flanking|provoke"
     r"|dethrone|mentor|training|renown|ninjutsu|undying|persist|skulk|shadow|horsemanship|fear|intimidate"
     r"|protection|daunt|[a-z]+walk)\b"
 )

@@ -57,6 +57,7 @@ from arenamcp.combat_strategy import (
     _pump_only,
     _rules_text,
     _types,
+    loyalty,
 )
 
 _NUMBER_WORDS = {
@@ -216,9 +217,17 @@ class _Side:
     """One side's sacrifice fodder, mana and team sacrifice pumps, read once per board."""
 
     def __init__(
-        self, battlefield: list[dict], seat: Any, *, mana: int, untapped_only: bool, treasures: int = 0
+        self,
+        battlefield: list[dict],
+        seat: Any,
+        *,
+        mana: int,
+        untapped_only: bool,
+        treasures: int = 0,
+        hand_size: int | None = None,
     ) -> None:
         self.seat = seat
+        self.hand_size = hand_size
         self.cards = [c for c in battlefield if isinstance(c, dict) and _controller(c) == seat]
         self.mana = mana
         self.untapped_only = untapped_only
@@ -260,6 +269,92 @@ class _Side:
                 count += self.treasures
         self._counts[kind] = count
         return count
+
+
+def counter_growth_pump(card: dict, side: _Side) -> list[Pump]:
+    """Affordable public counter doubling and a ready hand-size ultimate.
+
+    Shared team activations grow every affected body for the same payment.
+    Current counters/P/T are already resolved; only additional legal capacity
+    is projected. No mana remains after the observed five-Forest activation.
+    """
+    from arenamcp.land_mana import mana_source
+    from arenamcp.mulligan_policy import _pip_matching, _pips
+
+    counters = card.get("counters") or {}
+    count = (
+        sum(
+            v
+            for k, v in counters.items()
+            if str(k).lower().removeprefix("countertype_") in {"p1p1", "+1/+1"} and type(v) is int and v > 0
+        )
+        if isinstance(counters, dict)
+        else 0
+    )
+    replacements = sum(
+        bool(
+            re.search(
+                r"if one or more \+1/\+1 counters would be put on a creature you control, that many plus one \+1/\+1 counters",
+                _rules_text(c),
+            )
+        )
+        for c in side.cards
+        if not c.get("is_phased_out")
+    )
+    sources = [
+        mana_source(c, side.cards)
+        for c in side.cards
+        if "land" in _types(c)
+        and not c.get("is_phased_out")
+        and (not side.untapped_only or not c.get("is_tapped"))
+    ]
+    best = 0
+    reason = ""
+    for source in side.cards:
+        if source.get("is_phased_out"):
+            continue
+        text = _rules_text(source)
+        for match in re.finditer(
+            r"((?:\{[^}]+\}\s*)+):\s*(double the number of \+1/\+1 counters on each creature you control\.)",
+            text,
+        ):
+            cost, effect = match.groups()
+            if not re.fullmatch(
+                r"double the number of \+1/\+1 counters on each creature you control\.?", effect.strip()
+            ):
+                continue
+            if re.sub(r"\{[^}]*\}|\s", "", cost) or any(t in _mana_symbols(cost) for t in ("t", "q")):
+                continue
+            value = _mana_value(cost)
+            if value <= 0 or count <= 0:
+                continue
+            repeats = min(8, len(sources) // value)
+            while repeats and not _pip_matching(_pips(cost) * repeats, sources):
+                repeats -= 1
+            grown = count
+            for _ in range(repeats):
+                grown = grown * 2 + replacements
+            if grown - count > best:
+                best, reason = (
+                    grown - count,
+                    f"{source.get('name') or 'counter ability'}: affordable counter doubling",
+                )
+        # This projects their upcoming turn, not a second loyalty activation
+        # during a turn already underway. One normal draw plus the printed draw.
+        if not side.untapped_only and type(side.hand_size) is int:
+            match = re.search(
+                r"[−-](\d+): draw (one|two|three|\d+) cards?\. then put x \+1/\+1 counters on each creature you control, where x is the number of cards in your hand",
+                text,
+            )
+            if match and (loyalty(source) or 0) >= int(match[1]):
+                drawn = _NUMBER_WORDS.get(match[2], int(match[2]) if match[2].isdigit() else 0)
+                growth = side.hand_size + 1 + drawn + replacements
+                if growth > best:
+                    best, reason = (
+                        growth,
+                        f"{source.get('name') or 'planeswalker'}: ready counter ultimate after draw",
+                    )
+    return [Pump(best, best, 1, reason)] if best else []
 
 
 def instant_pumps(card: dict, side: _Side) -> tuple[list[Pump], list[str]]:
@@ -308,6 +403,7 @@ def instant_pumps(card: dict, side: _Side) -> tuple[list[Pump], list[str]]:
             unpriced.append(f"{name}: '{cost}: {effect}'")
         elif value <= side.mana:
             pumps.append(Pump(pump[0], pump[1], times, f"{times}x {cost.strip()}"))
+    pumps.extend(counter_growth_pump(card, side))
     return pumps, unpriced
 
 
@@ -629,7 +725,13 @@ def extra_combats_now(state: dict, attackers: list[dict]) -> ExtraCombat | None:
 
 
 def annotate(
-    bodies: list[dict], battlefield: list[dict], seat: Any, *, untapped_only: bool, declared: bool
+    bodies: list[dict],
+    battlefield: list[dict],
+    seat: Any,
+    *,
+    untapped_only: bool,
+    declared: bool,
+    hand_size: int | None = None,
 ) -> list[str]:
     """Mark ``seat``'s solver bodies with what their attack adds; returns 'Name (why)' notes.
 
@@ -650,7 +752,7 @@ def annotate(
         )
     side = _Side(
         battlefield, seat, mana=side_mana(battlefield, seat, untapped_only=untapped_only),
-        untapped_only=untapped_only, treasures=made,
+        untapped_only=untapped_only, treasures=made, hand_size=hand_size,
     )  # fmt: skip
     grants: list[Grant] = []
     for card in side.cards:

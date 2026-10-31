@@ -117,6 +117,11 @@ def outcome_exchange(observation, config):
 
 
 def add_analyst(first, event, observation, config):
+    from .strategy import strategic_observation
+
+    insight = strategic_observation(observation, event)
+    if insight:
+        return _pair(first, insight[0], observation, config, position=True, scope=insight[1])
     text, position, snapshot = "", False, False
     if event.kind == "life_change":
         after = event.payload.get("to")

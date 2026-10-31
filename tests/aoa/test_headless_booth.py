@@ -166,3 +166,75 @@ def test_local_voice_render_uses_packaged_assets_without_loading_torch(source):
     with pytest.raises(SpeechCancelled):
         client._wait(cancelled, 0.1)
     assert not client.failed
+
+
+def test_worker_public_strategic_tail_survives_unrelated_private_draw(source):
+    import copy
+
+    from test_opening_delivery import finish
+
+    from arenamcp.commentary.contracts import Utterance
+    from arenamcp.commentary.timeline import valid_for
+    from arenamcp.desktop.speech_arbiter import SpeechArbiter
+
+    obs = observation()
+    public = copy.deepcopy(obs.public_state)
+    public["zones"]["battlefield"] = [
+        dict(
+            instance_id=20,
+            grp_id=120,
+            name="Emberheart Challenger",
+            type_line="Creature",
+            oracle_text="Haste\nProwess",
+            power=2,
+            toughness=2,
+            controller_seat_id=1,
+        )
+    ]
+    obs = replace(obs, public_state=public)
+    client = CommentaryClient()
+    config = CommentaryConfig(mode="commentary", generative=True, python=sys.executable, aoa_source=source)
+
+    def rpc(system, context, audit):
+        if audit:
+            return {
+                "checks": [
+                    {"index": 0, "supported": True, "unsupported_claim": "", "scope": "historical"},
+                    {"index": 1, "supported": True, "unsupported_claim": "", "scope": "position"},
+                ]
+            }
+        assert "state:board" in context["facts"] and "card:120" in context["facts"]
+        return {
+            "turns": [
+                {"role": "play_by_play", "text": "Opt goes onto the stack.", "refs": context["new_events"]},
+                {
+                    "role": "color_analyst",
+                    "text": "Emberheart Challenger benefits from noncreature spells before combat; that timing can turn cards into attacking pressure.",
+                    "refs": [context["new_events"][0], "state:board", "card:120"],
+                },
+            ]
+        }
+
+    try:
+        result = client.generate(obs, config, rpc, threading.Event())
+        lines = [Utterance.from_wire(u) for u in result["utterances"]]
+        assert len(lines) == 2 and lines[1].position_scope == "public"
+        current = [obs]
+        played = []
+        a = SpeechArbiter(
+            start=played.append,
+            stop=lambda: None,
+            status=lambda *a: None,
+            valid=lambda u: valid_for(u, current[0]),
+        )
+        a.reset(obs.epoch)
+        for u in lines:
+            a.submit(u)
+        current[0] = replace(
+            obs, snapshot_id="draw", private_state={"local_seat": 1, "hand": [{"name": "New private card"}]}
+        )
+        finish(a)
+        finish(a)
+        assert len(played) == 2 and played[-1].role == "color_analyst"
+    finally:
+        client.close()

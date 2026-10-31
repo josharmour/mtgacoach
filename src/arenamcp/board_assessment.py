@@ -1113,7 +1113,7 @@ def _spendable_mana(text: str) -> bool:
     return any(_MANA_ABILITY.search(line) and not _RESTRICTED_MANA.search(line) for line in text.splitlines())
 
 
-def _mana_source(card: dict, turn: int) -> SimpleNamespace | None:
+def _mana_source(card: dict, turn: int, permanents=()) -> SimpleNamespace | None:
     """A permanent that taps for mana, with its colours (C for colourless).
 
     A nonland source whose mana can't cast spells from hand (Heartwood
@@ -1127,12 +1127,18 @@ def _mana_source(card: dict, turn: int) -> SimpleNamespace | None:
         entered = _int(card.get("turn_entered_battlefield"))
         if entered is not None and entered >= turn and not has_combat_keyword(card, "haste"):
             return None  # summoning-sick mana creature
+    if is_land:
+        from arenamcp.land_mana import mana_source
+
+        return mana_source(card, permanents)
     colors = set(_land_colors(card)) or {"C"}
     return SimpleNamespace(produces=frozenset(colors), name=_name(card))
 
 
-def _enters_tapped(card: dict) -> bool:
-    return bool(re.search(r"enters (?:the battlefield )?tapped", _text(card)))
+def _enters_tapped(card: dict, permanents=()) -> bool:
+    from arenamcp.land_mana import enters_tapped
+
+    return enters_tapped(card, permanents)
 
 
 @dataclass
@@ -2764,28 +2770,33 @@ def _budget_turns(
     mana from the following turn. Rocks cast on a turn are added by
     ``_schedule`` for later turns.
     """
-    lands = sorted(hand_lands, key=lambda c: (_enters_tapped(c), _name(c)))
+    from arenamcp.land_mana import land_colors, mana_source, refresh_sources
+
+    lands = list(hand_lands)
     played: list[SimpleNamespace] = []
     plan = []
     first_turn = turn if our_turn else turn + 1
     for k in range(_LOOKAHEAD_TURNS):
         base = list(sources_now if (k == 0 and our_turn) else sources_all)
+        board = [s.land_card for s in [*sources_all, *played] if getattr(s, "land_card", None)]
         land_name = ""
         new_land = None
+        tapped = False
         can_drop = land_drop_now if k == 0 else True
         if can_drop and lands:
-            # Untapped first, then the land adding the most colours no source
-            # (board or an earlier drop) makes yet: a Mountain over a fifth Forest
-            # (bug 2026-10-09 07:58 stranded a {U/R} spell).
-            have = {c for s in [*sources_all, *played] for c in s.produces} - {"C"}
-            lands.sort(key=lambda c: (_enters_tapped(c), -len(set(_land_colors(c)) - have), _name(c)))
+            have = {
+                c for source in refresh_sources([*sources_all, *played], board) for c in source.produces
+            } - {"C"}
+            lands.sort(
+                key=lambda c: (_enters_tapped(c, board), -len(set(land_colors(c, board)) - have), _name(c))
+            )
             card = lands.pop(0)
             land_name = _name(card)
-            new_land = SimpleNamespace(produces=frozenset(set(_land_colors(card)) or {"C"}), name=land_name)
-        current = base + [s for s in played]
-        if new_land is not None and not _enters_tapped(
-            next((c for c in hand_lands if _name(c) == land_name), {})
-        ):
+            tapped = _enters_tapped(card, board)
+            board.append(card)
+            new_land = mana_source(card, board)
+        current = refresh_sources(base + played, board)
+        if new_land is not None and not tapped:
             current.append(new_land)
         plan.append(
             {
@@ -3600,18 +3611,22 @@ def _enabled_by_land(
 
     The play is a hand card or our commander in the command zone (its cost now, tax included).
     """
-    if not land or _enters_tapped(land):
-        return None
     local, _opponent = _seats(state)
+    board = [c for c in state.get("battlefield") or [] if isinstance(c, dict) and _controller(c) == local]
+    if not land or _enters_tapped(land, board):
+        return None
+    from arenamcp.land_mana import mana_source
+
+    board = [*board, land]
     sources = [
         s
         for c in state.get("battlefield") or []
         if isinstance(c, dict)
         and _controller(c) == local
         and not c.get("is_tapped")
-        and (s := _mana_source(c, turn))
+        and (s := _mana_source(c, turn, board))
     ]
-    sources.append(SimpleNamespace(produces=frozenset(set(_land_colors(land)) or {"C"}), name=_name(land)))
+    sources.append(mana_source(land, board))
     best: tuple[int, str] | None = None
     cards: list[tuple[Any, str | None]] = [(card, None) for card in state.get("hand") or []]
     if state.get("command"):

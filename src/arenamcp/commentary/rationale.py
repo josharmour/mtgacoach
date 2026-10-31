@@ -47,7 +47,11 @@ def purpose(explanation, public_cards=()):
     text = explanation.lower()
     # The action label alone contributes nothing; use only the displayed rationale.
     text = re.sub(r"^casting [^.]+\.\s*", "", text)
-    if not text or re.search(r"\b(?:do not|don't|should not|shouldn't|mistake|misplay)\b", text):
+    if (
+        not text
+        or "[checked:" in text
+        or re.search(r"\b(?:do not|don't|should not|shouldn't|mistake|misplay)\b", text)
+    ):
         return ""
     purposes = []
     if re.search(r"\b(?:prowess|pumps?|pump spell)\b", text):

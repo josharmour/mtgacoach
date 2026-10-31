@@ -108,12 +108,14 @@ from arenamcp.board_assessment import (
     ward_cost,
 )
 from arenamcp.board_model import BoardModel, _regular_damage_part, cast_bans, spell_banned
+from arenamcp.cast_growth_risk import grown, per_cast_growth
 from arenamcp.cast_triggers import cast_pumps, spell_kinds
 from arenamcp.combat_keywords import has_combat_keyword
 from arenamcp.combat_solver import walker_value
 from arenamcp.combat_strategy import loyalty
 from arenamcp.cost_reduction import parse_cost_reduction, reduced_mana_value, reduction_amount
-from arenamcp.mulligan_policy import _land_colors, _mana_value, _pip_matching, hand_card
+from arenamcp.land_mana import land_colors, mana_source, refresh_sources
+from arenamcp.mulligan_policy import _mana_value, _pip_matching, hand_card
 
 # Outcome classes, compared before timing and value.
 WIN, ALIVE, DEAD = 2, 1, 0
@@ -2318,10 +2320,16 @@ class Moves:
         self.any_named = any(var.named_tokens for hs in self.spells for var in hs.variants)
         lands = []
         for card in model.hand_lands:
-            colors = frozenset(_land_colors(card))
-            source = SimpleNamespace(produces=colors or frozenset({"C"}), name=_name(card))
+            colors = land_colors(card, model.our_permanents)
+            source = mana_source(card, model.our_permanents)
             lands.append(
-                Land(_int(card.get("instance_id")) or 0, _name(card), colors, _enters_tapped(card), source)
+                Land(
+                    _int(card.get("instance_id")) or 0,
+                    _name(card),
+                    colors,
+                    _enters_tapped(card, model.our_permanents),
+                    source,
+                )
             )
         self.lands0 = tuple(sorted(lands, key=lambda land: (land.tapped, land.name, land.iid)))
         # Our "whenever you cast a noncreature spell, ~ gets +2/+0" creatures and prowess (ledger
@@ -2388,6 +2396,20 @@ class Moves:
                 seen.add((var.mode, amount))
                 chips.append(dataclasses.replace(var, chip=amount))
         return tuple(chips)
+
+    def death_bodies(self, bodies) -> list[dict]:
+        from arenamcp.death_bodies import death_is_suppressed, token_specs_on_death
+
+        if death_is_suppressed(self.model.battlefield):
+            return []
+        result = []
+        for body in bodies:
+            specs = token_specs_on_death(body)
+            # Stable ids per dead source avoid changing the search memo key on
+            # replaying the same branch. A real source cannot die twice.
+            first_id = 600_000_000 + abs(body["instance_id"]) * 16
+            result.extend(make_tokens(specs, self.model.turn, self.model.their_rules, first_id))
+        return result
 
     def _tokens(self, specs) -> tuple[dict, ...]:
         """Token bodies for ``token_specs`` output, each with a fresh id (unique within the search)."""
@@ -2727,10 +2749,24 @@ class Moves:
 
     def sources(self, node: Node, land: Land | None) -> tuple[list, list]:
         """(sources before this line's rocks, all sources) on our turn ``node.k``."""
+        if land is not None and getattr(land.source, "land_card", None):
+            board = list(self.model.our_permanents) + [
+                s.land_card for s in node.played if getattr(s, "land_card", None)
+            ]
+            card = land.source.land_card
+            land = dataclasses.replace(
+                land, tapped=_enters_tapped(card, board), source=mana_source(card, board)
+            )
         base = self.model.sources_now if (node.k == 0 and self.our_turn) else self.model.sources_all
         before_rocks = list(base) + list(node.played)
         if land is not None and not land.tapped:
             before_rocks.append(land.source)
+        board = list(self.model.our_permanents) + [
+            s.land_card for s in node.played if getattr(s, "land_card", None)
+        ]
+        if land is not None and getattr(land.source, "land_card", None):
+            board.append(land.source.land_card)
+        before_rocks = refresh_sources(before_rocks, board)
         return before_rocks, before_rocks + list(node.rocks)
 
     def land_options(self, node: Node) -> list:
@@ -2753,7 +2789,18 @@ class Moves:
             have |= set(source.produces)
         have.discard("C")
         by_key: dict = {}
+        board = list(self.model.our_permanents) + [
+            s.land_card for s in node.played if getattr(s, "land_card", None)
+        ]
         for land in node.lands:
+            card = getattr(land.source, "land_card", None)
+            if card:
+                land = dataclasses.replace(
+                    land,
+                    colors=land_colors(card, board),
+                    tapped=_enters_tapped(card, board),
+                    source=mana_source(card, board),
+                )
             by_key.setdefault(land.key, land)
         ranked = sorted(
             by_key.values(),
@@ -3321,7 +3368,10 @@ class Moves:
         sweeps = [v for v, _ in choice if v.sweep]
         for iid, (target, damage) in aimed.items():
             total = sum(damage) + sum(v.sweep for v in sweeps if self.swept(v, target))
-            if total < need.get(iid, 10**6) or total - min(damage) >= need.get(iid, 10**6):
+            required = need.get(iid, 10**6) + per_cast_growth(target) * sum(
+                v.kind == "cast" for v, _ in choice
+            )
+            if total < required or total - min(damage) >= required:
                 return None
         return list(aimed)
 
@@ -3345,6 +3395,17 @@ class Moves:
 
     def begin(self, node: Node, land: Land | None, casts: tuple) -> Mid:
         """Our turn ``node.k`` with this land and these casts (cast now unless we attack first)."""
+        if land is not None and getattr(land.source, "land_card", None):
+            board = list(self.model.our_permanents) + [
+                s.land_card for s in node.played if getattr(s, "land_card", None)
+            ]
+            card = land.source.land_card
+            land = dataclasses.replace(
+                land,
+                colors=land_colors(card, board),
+                tapped=_enters_tapped(card, board),
+                source=mana_source(card, board),
+            )
         mid = Mid.__new__(Mid)
         if self.pumps_possible and len(casts) > 1:
             # Creature spells first, then the noncreature spells whose casts pump them (ledger #94:
@@ -3378,7 +3439,7 @@ class Moves:
         mid.our_tapped = set(node.our_tapped)
         mid.entered = dict(node.entered)
         mid.hand = list(node.hand)
-        mid.lands = [x for x in node.lands if x is not land]
+        mid.lands = [x for x in node.lands if land is None or x.iid != land.iid]
         mid.played = list(node.played) + ([land.source] if land is not None else [])
         mid.rocks = list(node.rocks)
         mid.returning = list(node.returning)
@@ -3408,7 +3469,12 @@ class Moves:
                 colors = frozenset({color}) - {"C"}
                 mid.lands.append(Land(-hs.iid - 1_000_000, _BASICS[color], colors, False, source))
                 continue
+            before_spell = list(mid.theirs)
             mid.cast_names.append(hs.name)
+            # Opponent-controlled cast triggers resolve above this spell.
+            mid.theirs = [grown(b) for b in mid.theirs]
+            if target is not None and not var.walker:
+                target = next((b for b in mid.theirs if b["instance_id"] == target["instance_id"]), target)
             if self.pumps_possible:  # its cast triggers resolve first: the bodies already in play
                 self._cast_triggers(mid, var.spell)
             if var.mode_text:
@@ -3453,7 +3519,11 @@ class Moves:
                 mid.targets.append((hs.name, target["name"]))
                 if chipped[iid] >= target["toughness"]:  # the last piece: it dies
                     mid.theirs = [b for b in mid.theirs if b is not target]
-            elif target is not None and any(b is target for b in mid.theirs):
+            elif (
+                target is not None
+                and any(b is target for b in mid.theirs)
+                and (not per_cast_growth(target) or _kills(var.reach, target, ours=mid.ours, ward_mana=10**6))
+            ):
                 mid.theirs = [b for b in mid.theirs if b is not target]
                 mid.targets.append((hs.name, target["name"]))
                 if var.bounce:
@@ -3465,6 +3535,13 @@ class Moves:
                         chipped[iid] = chipped.get(iid, self.marked(body, mid.node)) + var.sweep
                         if chipped[iid] >= body["toughness"]:
                             mid.theirs = [b for b in mid.theirs if b is not body]
+            from arenamcp.death_bodies import removal_causes_death
+
+            if removal_causes_death(var.reach, var.bounce):
+                remaining = {b["instance_id"] for b in mid.theirs}
+                mid.theirs.extend(
+                    self.death_bodies([b for b in before_spell if b["instance_id"] not in remaining])
+                )
             mid.our_life += var.gain
             mid.gained += var.gain
             if var.rock:
@@ -3705,7 +3782,8 @@ class Moves:
             mid.gained += ll_gain
             opp_after = mid.opp_life
             mid.ours = self.rescale([b for b in mid.ours if b["instance_id"] not in dead_ours])
-            mid.theirs = [b for b in mid.theirs if b["instance_id"] not in dead_theirs]
+            replacement = self.death_bodies([b for b in mid.theirs if b["instance_id"] in dead_theirs])
+            mid.theirs = [b for b in mid.theirs if b["instance_id"] not in dead_theirs] + replacement
             # Non-vigilance attackers stay tapped through their turn.
             mid.our_tapped |= {b["instance_id"] for b in attackers if not has_combat_keyword(b, "vigilance")}
         post_combat: tuple[str, ...] = ()
@@ -4287,7 +4365,7 @@ class Moves:
         theirs_after = (
             [b for b in theirs if b["instance_id"] not in dead_att | removed] + list(returning) + bounced
         )
-        theirs_after += made
+        theirs_after += made + self.death_bodies([b for b in theirs if b["instance_id"] in dead_att])
         alive = {b["instance_id"] for b in theirs_after}
         # Their non-vigilance attackers stay tapped through our next turn.
         their_tapped = (

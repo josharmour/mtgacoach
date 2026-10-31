@@ -4307,8 +4307,18 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         self._bound_decision_evidence = None
         chosen = self._plan_decision_options(decision, game_state)
+        from arenamcp.decision_consistency import consistent_action
         from arenamcp.stack_responses import protective_pass
 
+        consistency = consistent_action(decision, game_state, chosen, self._last_decision_reasoning)
+        if consistency:
+            option_id, reason = consistency
+            chosen = [option_id]
+            self._last_decision_reasoning = reason
+            self._last_decision_option_ids = chosen
+            self._last_decision_trace.update(
+                consistency_guard={"with": option_id, "reason": reason}, selected_ids=chosen
+            )
         protection = protective_pass(decision, game_state, chosen)
         if protection:
             option_id, reason = protection
@@ -7248,6 +7258,12 @@ class ActionPlanner(_ActionLegalityMixin):
             return chosen
         damage = parsed[0]
         cards = {card.get("instance_id"): card for card in game_state.get("battlefield", []) or []}
+        from arenamcp.cast_growth_risk import before_targeting_cast
+
+        cards = {
+            iid: before_targeting_cast(game_state, self._decision_source_instance(game_state), card)
+            for iid, card in cards.items()
+        }
         local_seat, controllers = self._battlefield_controllers(game_state)
 
         projection = our_stack_damage(game_state, exclude=self._decision_source_instance(game_state))
@@ -7335,6 +7351,12 @@ class ActionPlanner(_ActionLegalityMixin):
             return chosen
         picked = _as_int(targets[0][4:])
         cards = {_as_int(card.get("instance_id")): card for card in game_state.get("battlefield", []) or []}
+        from arenamcp.cast_growth_risk import before_targeting_cast
+
+        cards = {
+            iid: before_targeting_cast(game_state, self._decision_source_instance(game_state), card)
+            for iid, card in cards.items()
+        }
         local_seat, controllers = self._battlefield_controllers(game_state)
         face = self._opponent_face_option(decision, game_state)
         source = str(getattr(decision, "source_label", "") or "") or "the burn"

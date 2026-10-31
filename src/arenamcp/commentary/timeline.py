@@ -15,7 +15,19 @@ def position_fingerprint(observation, scope=""):
         },
     }
     private = observation.private_state
-    if scope:
+    if scope.startswith("cards:"):
+        ids = {int(i) for i in scope.removeprefix("cards:").split(",")}
+        public = {
+            zone: [c for c in cards if c.get("instance_id") in ids]
+            for zone, cards in public.get("zones", {}).items()
+        }
+        private = {"hand": [c for c in private.get("hand", []) if c.get("instance_id") in ids]}
+    elif scope == "public":
+        # Audit excludes turn-dependent claims for this scope. A phase/turn
+        # transition alone does not erase an unchanged public engine.
+        public.pop("turn_info", None)
+        private = {}
+    elif scope:
         public = public.get("players", []) if scope == "players" else public.get("zones", {}).get(scope, [])
         private = {}
     return hashlib.sha256(

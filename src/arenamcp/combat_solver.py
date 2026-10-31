@@ -580,6 +580,24 @@ def attacking_trick_exposure(state: dict | None, attacking_seat: Any = None) -> 
         )
     if attacking_seat is None or attacking_seat == local:
         return None
+    # This estimate prices unknown spells in hand, not activated abilities.
+    # Voice of Victory (#339) forbids those spells on its controller's turn.
+    # Match the unconditional static sentence, not a trigger/conditional effect.
+    active = (state.get("turn") or {}).get("active_player")
+    for card in state.get("battlefield") or []:
+        if not isinstance(card, dict) or card.get("is_phased_out"):
+            continue
+        controller = source_controller(card)
+        text = re.sub(r"<[^>]*>", "", str(card.get("oracle_text") or "")).lower().replace("’", "'")
+        if (
+            controller is not None
+            and controller == active
+            and controller != attacking_seat
+            and re.search(
+                r"(?:^|[.\n])\s*your opponents can't cast spells during your turn\s*(?:[.]|$)", text
+            )
+        ):
+            return TrickExposure(open_mana=0, hand_size=0)
     zones = state.get("zones") if isinstance(state.get("zones"), dict) else {}
     hand = next(
         (

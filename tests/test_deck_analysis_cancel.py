@@ -87,3 +87,53 @@ def test_autopilot_init_wires_the_bounded_game_plan_gate():
     source = inspect.getsource(StandaloneCoach._init_autopilot)
     assert "_game_plan_background_suspended" in source
     assert "background_suspended_fn = lambda" not in source
+
+
+def test_retry_preserves_plan_and_original_deadline():
+    import threading
+
+    coach = CoachEngine(backend=Mock())
+    coach._game_plan_mgr = Mock()
+    coach._game_plan_mgr._plan = None
+    coach.begin_deck_analysis("abc")
+    coach._deck_strategy_pending_since = time.monotonic() - 60
+    old_since = coach._deck_strategy_pending_since
+    coach._game_plan_mgr.reset.reset_mock()
+    cancel = threading.Event()
+    coach._playbook_cancels["abc"] = cancel
+    assert not coach._deck_analysis_blocks_plan()
+    assert cancel.is_set()  # occupied lane will be released by the worker's finally
+    coach.begin_deck_analysis("abc")
+    assert coach._deck_strategy_pending_since == old_since
+    coach._game_plan_mgr.reset.assert_not_called()
+    coach._game_plan_mgr._plan = object()
+    cancel = threading.Event()
+    coach._playbook_cancels["abc"] = cancel
+    assert not coach._deck_analysis_blocks_plan()
+    assert not cancel.is_set()  # an existing plan may coexist with bounded deck work
+
+
+def test_first_plan_cancellation_also_interrupts_model_outage_wait(monkeypatch):
+    import threading
+
+    monkeypatch.setattr("arenamcp.coach.background_llm_allowed", lambda backend: False)
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(ValueError, match="yielded"):
+        CoachEngine._await_model(Mock(), lambda: True, time.monotonic() + 300, cancel=cancel)
+
+
+def test_yield_once_does_not_starve_later_playbook_retry_without_coach_plan_manager():
+    import threading
+
+    coach = CoachEngine(backend=Mock())
+    coach._game_plan_mgr = None
+    coach.begin_deck_analysis("same")
+    coach._deck_strategy_pending_since = time.monotonic() - 60
+    first = threading.Event()
+    coach._playbook_cancels["same"] = first
+    assert not coach._deck_analysis_blocks_plan() and first.is_set()
+    coach.begin_deck_analysis("same")
+    retry = threading.Event()
+    coach._playbook_cancels["same"] = retry
+    assert not coach._deck_analysis_blocks_plan() and not retry.is_set()

@@ -7,6 +7,7 @@ Local workers use the same operating-system monotonic clock as Coach (Python
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
@@ -159,9 +160,10 @@ class Utterance:
             raise ValueError("Invalid position fingerprint")
         if self.anchor_id == self.utterance_id:
             raise ValueError("An utterance cannot depend on itself")
-        if self.position_scope not in {"", "battlefield", "players", "stack"} or (
-            self.position_scope and not self.position_id
-        ):
+        if (
+            self.position_scope not in {"", "battlefield", "players", "stack", "public"}
+            and not re.fullmatch(r"cards:[0-9]+(?:,[0-9]+){0,15}", self.position_scope)
+        ) or (self.position_scope and not self.position_id):
             raise ValueError("Invalid freshness scope")
 
     def to_wire(self) -> dict[str, Any]:

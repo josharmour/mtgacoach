@@ -103,6 +103,11 @@ def main():
                     scope = facade.audit_scopes.get(item.text, "snapshot")
                     historical = historical_scope(scope, dependencies, item.text)
                     position = scope == "position" and "state:turn" not in dependencies
+                    position_scope = (
+                        "public"
+                        if position and not any(k.startswith("private:") for k in dependencies)
+                        else ""
+                    )
                     cited = [
                         facade.event_sources[ref]
                         for ref in tracked.get("refs", ())
@@ -134,9 +139,10 @@ def main():
                             role=item.role,
                             speed=item.rate,
                             event_bound=historical,
-                            position_id=position_fingerprint(observation)
+                            position_id=position_fingerprint(observation, position_scope)
                             if position and not historical
                             else "",
+                            position_scope=position_scope if position and not historical else "",
                         )
                     )
             else:

@@ -220,7 +220,11 @@ def _default_instance_card(instance_id: int) -> dict[str, Any]:
     card: dict[str, Any] = {"grp_id": grp_id}
     if not info.get("error"):
         card.update(
-            {k: info[k] for k in ("name", "type_line", "mana_cost", "cmc") if info.get(k) not in (None, "")}
+            {
+                k: info[k]
+                for k in ("name", "type_line", "mana_cost", "cmc", "oracle_text")
+                if info.get(k) not in (None, "")
+            }
         )
     return card
 
@@ -1138,6 +1142,21 @@ def _build_select_n(
         if not oid:
             continue
         card_info = _default_card_resolver(grp_id) if is_search and grp_id else {}
+        if not is_search and resolve_card:
+            obj = _live_object(oid) if resolve_card is _default_instance_card else None
+            state = _live_game_state() if obj is not None else None
+            # Only the current request's explicitly public object or our own
+            # visible card can enrich an opaque instance-ID selection (#332).
+            permitted = resolve_card is not _default_instance_card or (
+                obj is not None
+                and (
+                    getattr(obj, "visibility", None) == "Visibility_Public"
+                    or getattr(obj, "owner_seat_id", None) == getattr(state, "local_seat_id", -1)
+                )
+            )
+            if permitted:
+                card_info = resolve_card(oid) or {}
+                grp_id = int(card_info.get("grp_id") or card_info.get("grpId") or grp_id)
         if is_search and isinstance(raw, dict):
             card_info = {**card_info, **raw}
         name = str(card_info.get("name") or "") or (resolve_name(grp_id) if grp_id else "")
@@ -1148,7 +1167,7 @@ def _build_select_n(
         # discard); the log can trail the bridge by the card just drawn, so an
         # unnamed "Option N" is a transient the typed path waits out.
         metadata["identity_known"] = bool(name) and not is_unknown_card_name(name)
-        if is_search:
+        if card_info:
             metadata["card"] = {
                 key: card_info[key]
                 for key in ("name", "oracle_text", "type_line", "mana_cost", "cmc", "power", "toughness")

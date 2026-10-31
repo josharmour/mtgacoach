@@ -113,7 +113,7 @@ from arenamcp.line_search_moves import (
     token_specs,
     unmodelled_effect,
 )
-from arenamcp.mulligan_policy import _land_colors, _pip_matching
+from arenamcp.mulligan_policy import _pip_matching
 
 logger = logging.getLogger(__name__)
 
@@ -1038,7 +1038,17 @@ def action_key(option: Any, state: dict) -> ActionKey | None:
     if not source:
         return None
     if action in ("play", "playland"):
-        return ("land", (frozenset(_land_colors(source)), _enters_tapped(source)))
+        from arenamcp.land_mana import land_colors
+
+        local = state.get("local_seat_id") or next(
+            (p.get("seat_id") for p in state.get("players") or [] if p.get("is_local")), None
+        )
+        board = [
+            c
+            for c in state.get("battlefield") or []
+            if c.get("controller_seat_id", c.get("owner_seat_id")) == local
+        ]
+        return ("land", (land_colors(source, board), _enters_tapped(source, board)))
     if action == "cast" and str(meta.get("alternative") or "").lower() == "sneak":
         # The Sneak cast after blocks (ledger #156): not the card's ordinary cast.
         if zone == "command":

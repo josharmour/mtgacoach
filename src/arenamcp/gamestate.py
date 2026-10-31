@@ -320,6 +320,7 @@ class GameState(_GameStateAnnotationsMixin):
         "action_history": list,
         # ModifiedLife annotation ids already counted into life gained
         "_life_annotation_ids": set,
+        "_terminal_life_annotation_ids": set,
         # Timer state from GRE
         "timer_state": dict,
         # Latest report of each GRE timer, timerId -> (timer, wall time, turn),
@@ -1751,9 +1752,18 @@ class GameState(_GameStateAnnotationsMixin):
                     ),
                 }
                 for iid in (self.decision_context or {}).get("option_ids", [])
-                if (self.decision_context or {}).get("context_raw") == "SelectionContext_TriggeredAbility"
-                and (obj := self.game_objects.get(iid)) is not None
-                and obj.object_kind == GameObjectKind.ABILITY
+                if (obj := self.game_objects.get(iid)) is not None
+                and (
+                    (
+                        (self.decision_context or {}).get("context_raw")
+                        == "SelectionContext_TriggeredAbility"
+                        and obj.object_kind == GameObjectKind.ABILITY
+                    )
+                    or (
+                        (self.decision_context or {}).get("id_type") == "IdType_InstanceId"
+                        and obj.visibility == "Visibility_Public"
+                    )
+                )
             ],
             "decision_context": self.decision_context,
             "last_cleared_decision": self.last_cleared_decision,
@@ -2053,6 +2063,7 @@ class GameState(_GameStateAnnotationsMixin):
 
             # Update players
             players = _ensure_dict_list(message.get("players", []))
+            players = self._reconcile_terminal_life(players, message.get("annotations", []))
             for player_data in players:
                 self._update_player(player_data)
 
@@ -2762,6 +2773,48 @@ class GameState(_GameStateAnnotationsMixin):
                         f"Inferring local player as seat {owner_seat_id} from hand zone with visible grp_ids"
                     )
                     self.set_local_seat_id(owner_seat_id, source=1)
+
+    def _reconcile_terminal_life(self, players: list[dict], annotations) -> list[dict]:
+        """Recover omitted terminal totals only from fresh signed life evidence.
+
+        Ordinary sparse updates and concessions at positive life keep their total.
+        Explicit lifeTotal wins; damage annotations are not also counted as loss.
+        """
+        deltas: dict[int, int] = {}
+        seen = self._terminal_life_annotation_ids
+        for ann in _ensure_dict_list(annotations):
+            if "AnnotationType_ModifiedLife" not in _ensure_list(ann.get("type", [])):
+                continue
+            ann_id = ann.get("id")
+            if type(ann_id) is not int or ann_id in seen:
+                continue
+            seen.add(ann_id)
+            for detail in _ensure_dict_list(ann.get("details", [])):
+                values = detail.get("valueInt32")
+                if (
+                    detail.get("key") != "life"
+                    or not isinstance(values, list)
+                    or len(values) != 1
+                    or type(values[0]) is not int
+                ):
+                    continue
+                for seat in _ensure_int_list(ann.get("affectedIds", [])):
+                    deltas[seat] = deltas.get(seat, 0) + values[0]
+        result = []
+        for data in players:
+            seat = data.get("seatId") or data.get("systemSeatNumber")
+            old = self.players.get(seat)
+            if (
+                "lifeTotal" not in data
+                and old is not None
+                and data.get("status") in {"PlayerStatus_PendingLoss", "PlayerStatus_Lost"}
+                and seat in deltas
+                and deltas[seat] < 0
+                and old.life_total + deltas[seat] <= 0
+            ):
+                data = {**data, "lifeTotal": old.life_total + deltas[seat]}
+            result.append(data)
+        return result
 
     def _update_player(self, player_data: dict) -> None:
         """Update or create a player from message data.

@@ -379,7 +379,7 @@ class CommentaryService:
                     if any(e.kind == "deck_overview" for e in observation.events):
                         self._fallback(observation, config, "opening_deck_overview")
                         continue
-                    if any(
+                    if not config.generative and any(
                         e.payload.get("coach_intent")
                         for e in observation.events
                         if e.event_id not in self.fallback_events
@@ -441,11 +441,6 @@ class CommentaryService:
                             or result.get("status", {}).get("state", "analysis_unavailable"),
                         )
                         continue
-                    self.pending_events = {
-                        key: event
-                        for key, event in self.pending_events.items()
-                        if key not in {e.event_id for e in observation.events}
-                    }
                     prefix_valid = True
                     for item in utterances:
                         prefix_valid = (
@@ -462,6 +457,16 @@ class CommentaryService:
                             self.proposals[item.utterance_id] = item
                         self.emit({"type": "commentary_proposal", "utterance": item.to_wire()})
                         usable = True
+                    if prefix_valid:
+                        consumed = {eid for item in utterances for eid in item.evidence_ids}
+                        self.pending_events = {
+                            key: event for key, event in self.pending_events.items() if key not in consumed
+                        }
+                    else:
+                        # Keep the missed analyst opportunity inside existing
+                        # expiry and request limits. Already-heard lines stop
+                        # its follow-up from repeating the original call.
+                        self.next_analysis_at = time.monotonic() + 5
                     self.status(
                         result.get("status", {}).get("state", "ready"),
                         observation_age=round(time.monotonic() - observation.arrived_at, 3),

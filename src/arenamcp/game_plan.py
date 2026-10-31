@@ -1703,7 +1703,9 @@ def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[
     turn_info = state.get("turn") or {}
     turn = _round(turn_info.get("turn_number"))
     our_turn = turn_info.get("active_player") == local
-    notes: list[str] = []
+    from arenamcp.session_facts import claim_notes
+
+    notes: list[str] = claim_notes(text, state)
 
     # Keyword and blocking claims, as in the plan (#23).
     _corrected, found = _claim_corrections(
@@ -2946,6 +2948,9 @@ def compose_strategy_block(
     block = assessment.prompt_block(
         this_turn=this_turn, next_turns=next_turns, role_note=role_note, with_lines=with_lines
     )
+    from arenamcp.session_facts import rules_block
+
+    block += rules_block(state)
     if extra:
         at = block.find("\n  Priority:")
         block = f"{block[:at]}\n{extra}{block[at:]}" if at >= 0 else f"{block}\n{extra}"
@@ -2979,7 +2984,9 @@ def grounded_facts_block(game_state: dict | None, *, with_lines: bool = True) ->
     except Exception as error:  # never break a prompt on the strategic layer
         logger.debug("board assessment unavailable: %s", error)
         return ""
-    return assessment.prompt_block(with_lines=with_lines) if assessment else ""
+    from arenamcp.session_facts import rules_block
+
+    return (assessment.prompt_block(with_lines=with_lines) + rules_block(game_state)) if assessment else ""
 
 
 # --- opponent interaction (opponent_tricks, advisory) -------------------------------------

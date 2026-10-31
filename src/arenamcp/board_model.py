@@ -656,7 +656,12 @@ def build_board_model(state: dict) -> BoardModel | None:
         from arenamcp.attack_potential import annotate as annotate_attack
 
         annotate_attack(
-            theirs, battlefield, opponent, untapped_only=not our_turn, declared=any_theirs_attacking
+            theirs,
+            battlefield,
+            opponent,
+            untapped_only=not our_turn,
+            declared=any_theirs_attacking,
+            hand_size=state.get("opponent_hand_count", (state.get("zones") or {}).get("opponent_hand_count")),
         )
     except Exception:  # a reading aid: the board facts never fail on it
         import logging
@@ -682,8 +687,10 @@ def build_board_model(state: dict) -> BoardModel | None:
     our_first_blockers = untapped_ours if (our_turn or their_attack_pending) else list(ours)
 
     our_permanents = [c for c in battlefield if _controller(c) == local]
-    sources_all = [s for c in our_permanents if (s := _mana_source(c, turn + 1))]
-    sources_now = [s for c in our_permanents if not c.get("is_tapped") and (s := _mana_source(c, turn))]
+    sources_all = [s for c in our_permanents if (s := _mana_source(c, turn + 1, our_permanents))]
+    sources_now = [
+        s for c in our_permanents if not c.get("is_tapped") and (s := _mana_source(c, turn, our_permanents))
+    ]
     hand_lands = [c for c in hand if _is_land(c) and not _is_creature(c)]
     lands_played = _int(_player(state, local).get("lands_played")) or 0
     life_gained_turn = _int(_player(state, local).get("life_gained_this_turn")) or 0

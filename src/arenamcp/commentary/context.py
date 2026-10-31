@@ -75,7 +75,7 @@ def compact_context(system, context):
         "hand_changed": 6,
     }
     ranked = sorted(new, key=lambda k: weights.get(facts.get(k, {}).get("kind"), 0), reverse=True)
-    order = ranked[:2] + [k for k in facts if k.startswith("private:hand:")]
+    order = ranked[:2]
     order += ["state:turn", "state:local_seat"] + [k for k in facts if k.startswith("state:player:")]
     related = []
     for key in ranked[:2]:
@@ -86,7 +86,12 @@ def compact_context(system, context):
     for key, fact in facts.items():
         if key.startswith("private:hand:"):
             related.extend(f"card:{c['grp_id']}" for c in fact.get("cards", ()) if c.get("grp_id"))
-    order += related + ["state:game_read"] + ranked[2:] + ["state:board"]
+    order += ["state:game_read", "state:board"] + related
+    order += [
+        f"card:{c['grp_id']}" for c in facts.get("state:board", {}).get("objects", []) if c.get("grp_id")
+    ]
+    order += [k for k in facts if k.startswith("private:hand:")]
+    order += ranked[2:]
     order += [k for k in facts if k.startswith("card:")]
     for key in dict.fromkeys(order):
         if key not in facts:

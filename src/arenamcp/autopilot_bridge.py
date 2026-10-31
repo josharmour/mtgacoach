@@ -3201,6 +3201,8 @@ class _BridgeSubmitMixin:
             "hand",
             "library_top_revealed",
             "library_visible",
+            "pending_selection_objects",
+            "revealed_cards",
             "stack",
         ):
             for c in game_state.get(zone_key) or []:

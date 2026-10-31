@@ -650,6 +650,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             self._deck_playbook = None
             self._deck_strategy_pending = False
             self._deck_analysis_identity = ""
+            self._deck_strategy_pending_since = None
+            self._deck_yielded_for_first_plan = False
             self._deck_analysis_error = ""
             self._last_advised_plan_intro = ""
             if self._game_plan_mgr is not None:
@@ -662,7 +664,30 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if not self._deck_strategy_pending:
             return False
         since = getattr(self, "_deck_strategy_pending_since", None)
-        return since is not None and time.monotonic() - since < self._PLAN_WAITS_FOR_DECK_ANALYSIS_S
+        if since is None:
+            return False
+        if time.monotonic() - since < self._PLAN_WAITS_FOR_DECK_ANALYSIS_S:
+            return True
+        # The logical gate alone did not help: the deck request still held
+        # STRATEGIC_LANE for its entire discovery/compile sequence. Cancel
+        # that bounded attempt so a first game plan can actually acquire it.
+        # The worker releases its lane in finally; never release another
+        # worker's live token here or admit concurrent unbounded work.
+        manager = self._game_plan_mgr
+        if manager is None or getattr(manager, "_plan", None) is None:
+            cancel = self._playbook_cancels.get(self._deck_analysis_identity)
+            if (
+                cancel is not None
+                and not cancel.is_set()
+                and not getattr(self, "_deck_yielded_for_first_plan", False)
+            ):
+                self._deck_yielded_for_first_plan = True
+                logger.info(
+                    "Deck playbook yields its occupied lane: first game plan has waited %.0fs",
+                    time.monotonic() - since,
+                )
+                cancel.set()
+        return False
 
     def begin_deck_analysis(self, identity: str) -> int:
         """Reserve this analysis before starting its worker, not after enrichment.
@@ -679,10 +704,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                         identity[:8],
                     )
                     cancel.set()
-            self.clear_deck_strategy()
+            if self._deck_analysis_identity != identity:
+                self.clear_deck_strategy()
+                self._deck_strategy_pending_since = time.monotonic()
+            else:
+                # A retry is not a deck change: retain the current plan and
+                # original grace deadline instead of cancelling/resetting both.
+                self._deck_analysis_generation += 1
             self._deck_analysis_identity = identity
             self._deck_strategy_pending = True
-            self._deck_strategy_pending_since = time.monotonic()
             return self._deck_analysis_generation
 
     def analyze_deck(
@@ -705,6 +735,10 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         identity = deck_identity(game_state)
         generation = analysis_generation
         if generation is None:
+            if refresh:
+                # An explicit refresh invalidates the old published policy;
+                # an automatic same-deck retry must not reset the game plan.
+                self.clear_deck_strategy()
             generation = self.begin_deck_analysis(identity)
         be = backend or self._backend
         start = time.perf_counter()
@@ -841,9 +875,11 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 if not discovery:
                     options["response_format"] = playbook_response_format(catalog, commanders)
                 while True:
+                    if cancel.is_set():
+                        raise ValueError("Deck analysis yielded or was superseded")
                     if not wanted():
                         raise ValueError("Deck changed during analysis")
-                    self._await_model(be, wanted, deadline)
+                    self._await_model(be, wanted, deadline, cancel=cancel)
                     try:
                         response = be.complete(system, message, **options)
                     except TypeError:
@@ -907,10 +943,12 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             STRATEGIC_LANE.release(lane)
 
     @staticmethod
-    def _await_model(backend: Any, wanted, deadline: float) -> None:
+    def _await_model(backend: Any, wanted, deadline: float, *, cancel=None) -> None:
         """Wait (on the analysis worker thread) while the model server is down."""
         announced = False
         while not background_llm_allowed(backend):
+            if cancel is not None and cancel.is_set():
+                raise ValueError("Deck analysis yielded or was superseded")
             if not wanted():
                 raise ValueError("Deck changed during analysis")
             remaining = deadline - time.monotonic()
