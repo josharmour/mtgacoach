@@ -24,6 +24,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from arenamcp.basic_land_choice import basic_land_ids, basic_land_options
 from arenamcp.color_choice import color_options, color_selection_ids
 from arenamcp.decisions import TargetSlot, assign_target_slots
 
@@ -2247,6 +2248,17 @@ class MacBridgeAdapter:
         # "Choose a color" (Room of Refuge, live 2026-10-07): a Static
         # StaticList_Colors request carries no Ids; the client answers
         # SubmitSelection((uint)CardColor) White=1..Green=5 (color_choice.py).
+        land_ids = basic_land_ids(response)
+        if land_ids is not None:
+            response["select_n_basic_land_options"] = basic_land_options(land_ids)
+            response["decision_context"] = {
+                "type": "choose_basic_land_type",
+                "ids": land_ids,
+                "options": [option["name"] for option in basic_land_options(land_ids)],
+                "min": response["select_n_min"],
+                "max": response["select_n_max"],
+            }
+            return
         is_color = getters.get("IsCardColorSelection") or getters.get("IsManaColorSelection")
         color_ids = color_selection_ids(
             list_type=response["select_n_list_type"],
@@ -2556,7 +2568,33 @@ class MacBridgeAdapter:
 
     def _cmd_submit_selection(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout, "SelectNRequest", "SearchRequest", "PayCostsRequest")
+        self._check_request_identity(snapshot, command)
+        shape: dict[str, Any] = {}
+        if snapshot.request_class == "SelectNRequest":
+            self._shape_SelectNRequest(snapshot.request, snapshot.getters, shape)
+        land_ids = basic_land_ids(shape)
+        if command.get("selection_id_type") == "basic_land" and land_ids is None:
+            raise AdapterError("Basic-land selection no longer matches the current request")
+        if land_ids is not None:
+            raw_ids = command.get("ids") or []
+            if not isinstance(raw_ids, list) or any(
+                type(value) is not int and not (isinstance(value, str) and value.isdecimal())
+                for value in raw_ids
+            ):
+                raise AdapterError("Basic-land selection requires explicit integer ids")
         ids = [int(i) for i in command.get("ids") or []]
+        if land_ids is not None:
+            if (
+                len(set(ids)) != len(ids)
+                or not set(ids).issubset(land_ids)
+                or not shape["select_n_min"] <= len(ids) <= shape["select_n_max"]
+            ):
+                raise AdapterError("Selection does not satisfy the basic land type choice")
+            selection = UINTS(ids)
+            self._submit(
+                snapshot, lambda ops, request: ops.call(request, "SubmitSelection", selection), timeout
+            )
+            return {"ok": True, "submitted_type": "SelectN"}
         if snapshot.request_class == "SearchRequest":
             offered = {num(i) for i in items(field(snapshot.request, "Options"))}
             minimum, maximum = num(field(snapshot.request, "Min")), num(field(snapshot.request, "Max"))
@@ -2587,8 +2625,6 @@ class MacBridgeAdapter:
             )
             return {"ok": True, "submitted_type": "CostSelection"}
         if snapshot.request_class == "SelectNRequest":
-            shape: dict[str, Any] = {}
-            self._shape_SelectNRequest(snapshot.request, snapshot.getters, shape)
             from arenamcp.card_name_choice import is_card_name_list, is_card_title_id
 
             if is_card_name_list(shape["select_n_list_type"], shape["select_n_static_list"]):

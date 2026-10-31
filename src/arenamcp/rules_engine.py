@@ -1225,6 +1225,10 @@ class RulesEngine:
         if dec_type in ("select_n_group", "select_from_groups", "search_from_groups", "gather"):
             return ["Select from options", "Done"]
 
+        if dec_type == "choose_basic_land_type":
+            names = decision_context.get("option_cards") or decision_context.get("options") or []
+            return [f"Choose basic land type: {name}" for name in names if name]
+
         if dec_type == "choose_color":
             # "As it enters, choose a color" (Room of Refuge): the log names
             # the colours (gamestate_decisions / color_choice.py); without

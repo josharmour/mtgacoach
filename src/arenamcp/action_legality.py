@@ -326,7 +326,7 @@ class _ActionLegalityMixin:
                 select_card_names=[card] if card else [],
                 card_name=card,
             )
-        if lower.startswith("choose color:"):
+        if lower.startswith(("choose color:", "choose basic land type:")):
             # rules_engine's colour menu ("Choose color: Blue") answers a
             # SelectN over colour ids (color_choice.py) — never a target.
             color = self._strip_decoration(act.split(":", 1)[1])

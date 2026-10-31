@@ -2261,6 +2261,21 @@ class _BridgeSubmitMixin:
 
         decision_context = game_state.get("decision_context") or {}
         offered_colors = [option.get("id") for option in pending.get("select_n_color_options") or []]
+        from arenamcp.basic_land_choice import basic_land_ids, basic_land_ids_for_names
+
+        land_ids = basic_land_ids(pending)
+        if land_ids is not None:
+            # BasicLandType is not a card id (Plains=1, never grp 75556).
+            from arenamcp.decisions import build_pending_decision, submit_option
+
+            decision = build_pending_decision(pending)
+            chosen = [f"sel:{value}" for value in basic_land_ids_for_names(desired_names, land_ids)]
+            if decision is None or not decision.selection_is_valid(chosen):
+                return None
+            if submit_option(bridge, decision, chosen):
+                return ClickResult(True, 0, 0, "select_n", "GRE bridge")
+            self._gre_bridge_failed_methods.add("select_n")
+            return None
         if not offered_colors and decision_context.get("type") == "choose_color":
             offered_colors = list(decision_context.get("option_ids") or decision_context.get("ids") or [])
         if offered_colors:
@@ -2709,6 +2724,10 @@ class _BridgeSubmitMixin:
             res = self._try_gre_bridge_select_n(GameAction(action_type=ActionType.SELECT_N), game_state)
             if res is not None and res.success:
                 return _ok("select_n/search min-or-arbitrary")
+            from arenamcp.basic_land_choice import basic_land_ids
+
+            if basic_land_ids(pending) is not None:
+                return False  # Never turn a missing basic-land choice into SubmitArbitrary.
             if bridge.submit_selection([]):
                 return _ok("empty selection (SubmitArbitrary)")
 

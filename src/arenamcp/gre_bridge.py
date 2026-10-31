@@ -80,6 +80,10 @@ def _infer_specific_decision_type(
     request_class: str | None,
 ) -> str | None:
     """Infer a concrete decision type from generic bridge selection payloads."""
+    from arenamcp.basic_land_choice import basic_land_ids
+
+    if basic_land_ids({"request_payload": request_payload, "decision_context": existing_ctx}) is not None:
+        return "choose_basic_land_type"
     if _is_color_choice_context(existing_ctx, request_payload):
         return "choose_color"
     values: list[str] = []
@@ -152,6 +156,8 @@ def _is_color_choice_context(existing_ctx: dict[str, Any], request_payload: Any)
 
 
 def _label_for_decision_type(decision_type: str, count: Any = None) -> str | None:
+    if decision_type == "choose_basic_land_type":
+        return "Choose a Basic Land Type"
     if decision_type == "choose_color":
         return "Choose a Color"
     if decision_type == "scry":
@@ -1332,12 +1338,22 @@ class GREBridge:
             logger.warning(f"GRE bridge submit_choose error: {e}")
         return False
 
-    def submit_selection(self, ids: list[int], *, id_type: str | None = None) -> bool:
+    def submit_selection(
+        self,
+        ids: list[int],
+        *,
+        id_type: str | None = None,
+        expected_request_id: tuple[int, int] | None = None,
+    ) -> bool:
         """Submit selection for SelectN or Search requests."""
         try:
             command = {"action": "submit_selection", "ids": ids}
             if id_type is not None:
                 command["selection_id_type"] = id_type
+            if expected_request_id is not None:
+                command.update(
+                    expected_game_state_id=expected_request_id[0], expected_msg_id=expected_request_id[1]
+                )
             if self._cost_selection_via_adapter and self._mac_adapter is not None:
                 resp = self._mac_adapter.handle(command)
             else:
@@ -2854,6 +2870,7 @@ def _decision_context_family(context: dict[str, Any]) -> str | None:
         "select_n",
         "choose",
         "choose_color",
+        "choose_basic_land_type",
         "choose_creature",
         "choose_land",
         "choose_enchantment",

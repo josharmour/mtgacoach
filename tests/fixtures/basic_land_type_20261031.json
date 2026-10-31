@@ -1,0 +1,94 @@
+[
+  {
+    "report": "151016",
+    "request": {
+      "type": "GREMessageType_SelectNReq",
+      "systemSeatIds": [
+        2
+      ],
+      "msgId": 317,
+      "gameStateId": 246,
+      "prompt": {
+        "promptId": 23,
+        "parameters": [
+          {
+            "parameterName": "CardId",
+            "type": "ParameterType_Number",
+            "numberValue": 514
+          }
+        ]
+      },
+      "selectNReq": {
+        "minSel": 1,
+        "maxSel": 1,
+        "context": "SelectionContext_Resolution",
+        "optionContext": "OptionContext_Resolution",
+        "listType": "SelectionListType_Static",
+        "staticList": "StaticList_BasicLandTypes",
+        "prompt": {},
+        "sourceId": 9015,
+        "validationType": "SelectionValidationType_NonRepeatable"
+      },
+      "allowCancel": "AllowCancel_No"
+    },
+    "rejected_ids": [
+      [
+        0
+      ],
+      [
+        0
+      ],
+      [
+        0
+      ],
+      [
+        0
+      ],
+      [
+        0
+      ]
+    ]
+  },
+  {
+    "report": "152006",
+    "request": {
+      "type": "GREMessageType_SelectNReq",
+      "systemSeatIds": [
+        2
+      ],
+      "msgId": 94,
+      "gameStateId": 66,
+      "prompt": {
+        "promptId": 23,
+        "parameters": [
+          {
+            "parameterName": "CardId",
+            "type": "ParameterType_Number",
+            "numberValue": 306
+          }
+        ]
+      },
+      "selectNReq": {
+        "minSel": 1,
+        "maxSel": 1,
+        "context": "SelectionContext_Resolution",
+        "optionContext": "OptionContext_Resolution",
+        "listType": "SelectionListType_Static",
+        "staticList": "StaticList_BasicLandTypes",
+        "prompt": {},
+        "sourceId": 9004,
+        "validationType": "SelectionValidationType_NonRepeatable"
+      },
+      "allowCancel": "AllowCancel_No"
+    },
+    "rejected_ids": [
+      [
+        75556
+      ]
+    ],
+    "manual_ids": [
+      3
+    ],
+    "resulting_land_subtype": "Swamp"
+  }
+]

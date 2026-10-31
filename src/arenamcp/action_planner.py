@@ -4967,6 +4967,10 @@ class ActionPlanner(_ActionLegalityMixin):
         try:
             chosen = self._llm_decision_options(decision, game_state)
             self._correct_false_lethal_claim(game_state)
+            from arenamcp.basic_land_choice import is_basic_land_choice
+
+            if is_basic_land_choice(decision) and not decision.selection_is_valid(chosen):
+                raise ValueError("Invalid basic-land selection; use a legal fallback, not a partial answer")
             valid = decision.option_ids()
             if decision.request_type == "ActionsAvailable":
                 valid = {option.option_id for option in decision.options if option.payable is not False}

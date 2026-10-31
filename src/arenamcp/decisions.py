@@ -1102,6 +1102,9 @@ def _build_select_n(
     ids = poll.get("select_n_ids") or poll.get("search_candidates") or []
     is_search = "Search" in rtype or "Search" in str(poll.get("request_class") or "")
     if not is_search:
+        land_decision = _build_basic_land_choice(poll, request_id, can_cancel, source_label, resolve_instance)
+        if land_decision is not None:
+            return land_decision
         name_decision = _build_card_name_choice(
             poll, request_id, can_cancel, source_label, resolve_instance, resolve_card
         )
@@ -1618,6 +1621,41 @@ def _build_card_name_choice(
         source_label=source_label,
         source_instance_id=asking,
         source_oracle_text=source_rules,
+    )
+
+
+def _build_basic_land_choice(
+    poll: dict[str, Any],
+    request_id: tuple[int, int],
+    can_cancel: bool,
+    source_label: str,
+    resolve_instance: Callable[[int], str] | None,
+) -> PendingDecision | None:
+    from arenamcp.basic_land_choice import basic_land_ids, basic_land_options
+
+    ids = basic_land_ids(poll)
+    if ids is None:
+        return None
+    if not source_label and resolve_instance is not None:
+        asking = next(iter(_prompt_card_ids(poll)), 0) or _prompt_card_instance(poll)
+        if asking:
+            source_label = resolve_instance(asking)
+    return PendingDecision(
+        request_id=request_id,
+        request_type="SelectN",
+        options=tuple(
+            DecisionOption(
+                f"sel:{option['id']}",
+                f"{option['name']} ({option['color'].lower()} mana)",
+                meta={"choice": "basic_land_type", "identity_known": True, **option},
+            )
+            for option in basic_land_options(ids)
+        ),
+        min_select=int(poll.get("select_n_min", 1)),
+        max_select=int(poll.get("select_n_max", 1)),
+        can_cancel=can_cancel,
+        source_label=source_label,
+        prompt_text="Choose a basic land type.",
     )
 
 
@@ -2591,6 +2629,18 @@ def submit_option(
     Mechanical validation: ids outside the decision's option set are
     rejected here — there is no string matching and no legality heuristic.
     """
+    from arenamcp.basic_land_choice import is_basic_land_choice
+
+    if is_basic_land_choice(decision):
+        if not decision.selection_is_valid(option_ids):
+            return False
+        return bool(
+            bridge.submit_selection(
+                [int(oid.split(":", 1)[1]) for oid in option_ids],
+                id_type="basic_land",
+                expected_request_id=decision.request_id,
+            )
+        )
     if decision.request_type == "Search":
         if not decision.selection_is_valid(option_ids):
             return False

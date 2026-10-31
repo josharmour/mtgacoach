@@ -10,6 +10,7 @@ import copy
 import logging
 from typing import TYPE_CHECKING, Any
 
+from arenamcp.basic_land_choice import basic_land_ids, basic_land_options
 from arenamcp.card_db import is_unknown_card_name
 from arenamcp.color_choice import color_options, color_selection_ids
 from arenamcp.gamestate_persistence import mark_match_ended
@@ -848,6 +849,13 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
         option_ids = color_ids
         id_type = "Color"
 
+    land_ids = basic_land_ids({"request_payload": req})
+    if land_ids is not None:
+        selection_type = "choose_basic_land_type"
+        decision_text = "Choose a Basic Land Type"
+        option_ids = land_ids
+        id_type = "BasicLandType"
+
     # An effect's alternatives named by prompt id, not cards (Perforating
     # Artist: sacrifice / discard / lose 3 life) — decisions.prompt_choice_ids.
     prompt_choices: list[dict[str, Any]] = []
@@ -876,11 +884,16 @@ def _handle_select_n_req(game_state: "GameState", msg: dict) -> bool:
     )
     # Resolve option IDs to card names (handles both game objects and direct grp_ids from library searches)
     option_cards: list[str] = [option["name"] for option in color_options(color_ids or [])]
+    option_cards += [option["name"] for option in basic_land_options(land_ids or [])]
     option_cards += [choice["text"] or f"Choice #{choice['id']}" for choice in prompt_choices]
     if subtype_ids:
         names = subtype_names()
         option_cards += [names.get(subtype) or f"Creature type #{subtype}" for subtype in subtype_ids]
-    for oid in option_ids[:20] if color_ids is None and not prompt_choices and not subtype_ids else []:
+    for oid in (
+        option_ids[:20]
+        if color_ids is None and land_ids is None and not prompt_choices and not subtype_ids
+        else []
+    ):
         grp_id = 0
         obj = game_state.game_objects.get(oid)
         if obj and obj.grp_id:
