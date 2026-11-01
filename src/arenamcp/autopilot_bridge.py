@@ -65,6 +65,39 @@ _ATTACK_ACK_MAX_WAIT_S = 1.4
 _BLOCK_ACK_MAX_WAIT_S = 0.8
 
 
+def _attack_declaration_reasoning(
+    kept_names: list[str],
+    held: list[tuple[str, str]],
+    note: str = "",
+    mandatory_names: list[str] | None = None,
+) -> str:
+    """Explain the attack declaration the bridge will actually submit.
+
+    The final guard can remove attackers after the model wrote its reason,
+    or add a creature the rules require to attack. The submitted reason must
+    describe what remains; the model's original reason is kept in
+    ``model_reasoning`` for diagnostics (ledger #36).
+    """
+    from arenamcp.narration import spoken_list, spoken_name
+
+    parts: list[str] = []
+    if kept_names:
+        parts.append(f"Attacking with {spoken_list([spoken_name(name) for name in kept_names])}")
+    forced = [name for name in mandatory_names or [] if name in kept_names]
+    if forced:
+        forced_spoken = spoken_list([spoken_name(name) for name in forced])
+        if len(forced) == len(kept_names):
+            parts[-1] += " (must attack)"
+        else:
+            parts.append(f"{forced_spoken} must attack")
+    if held:
+        reasons = "; ".join(f"{spoken_name(name)}: {reason}" for name, reason in held)
+        parts.append(f"held back {reasons}" if kept_names else f"Held back {reasons}")
+    if note:
+        parts.append(note)
+    return "; ".join(parts) + "."
+
+
 def _await_blockers_refresh(bridge: Any, pending: dict[str, Any]) -> dict[str, Any] | None:
     """The DeclareBlockers request after our update, as soon as the GRE re-issues it.
 
@@ -1145,12 +1178,14 @@ class _BridgeSubmitMixin:
         from arenamcp.combat_targets import attack_candidates, choose_recipient, recipient_label
 
         unproductive = unproductive_attackers(state, pending)
-        pairs = [
-            (name, entry)
-            for name, entry in zip(names, entries, strict=True)
-            if entry["attackerInstanceId"] not in unproductive
-        ]
-        if len(pairs) != len(entries):
+        held: list[tuple[str, str]] = []
+        pairs = []
+        for name, entry in zip(names, entries, strict=True):
+            if entry["attackerInstanceId"] in unproductive:
+                held.append((name, "zero power with no visible attack payoff"))
+            else:
+                pairs.append((name, entry))
+        if held:
             logger.info("Omitting zero-power attackers with no visible attack payoff")
         # Ledger #178: the line search's pushed attack already judged every block over its turns;
         # thinning it here would send the declaration the push replaced.
@@ -1169,6 +1204,7 @@ class _BridgeSubmitMixin:
         )
         for name, entry in pairs:
             if entry["attackerInstanceId"] in losing:
+                held.append((name, losing[entry["attackerInstanceId"]]))
                 logger.warning(
                     "Losing-attack guard (bridge): not attacking with %s [%d] -> %s: %s",
                     name,
@@ -1178,6 +1214,7 @@ class _BridgeSubmitMixin:
                 )
         pairs = [(name, entry) for name, entry in pairs if entry["attackerInstanceId"] not in losing]
         present_ids = {int(entry["attackerInstanceId"]) for _, entry in pairs}
+        mandatory_added: list[str] = []
         cards = {
             int(c.get("instance_id") or 0): c for c in state.get("battlefield") or [] if isinstance(c, dict)
         }
@@ -1198,12 +1235,14 @@ class _BridgeSubmitMixin:
             card_name = str((card or {}).get("name") or f"Creature {iid}")
             label = f"{card_name} [id:{iid}]"
             pairs.append((label, {"attackerInstanceId": iid, "damageRecipient": recipient}))
+            mandatory_added.append(label)
             present_ids.add(iid)
             logger.info("Bridge declare_attackers: adding mandatory (mustAttack) attacker %s", label)
         from arenamcp.attack_tax import affordable_entries
 
         payable = affordable_entries(state, [entry for _, entry in pairs], pending)
         payable_by_id = {entry["attackerInstanceId"]: entry for entry in payable}
+        tax_note = ""
         if payable != [entry for _, entry in pairs]:
             logger.info("Attack-tax budget: retaining payable subset %s", sorted(payable_by_id))
             pairs = [
@@ -1211,9 +1250,7 @@ class _BridgeSubmitMixin:
                 for name, entry in pairs
                 if entry["attackerInstanceId"] in payable_by_id
             ]
-            action = replace(
-                action, reasoning="Attack-tax budget: selected a payable subset of the proposed attack"
-            )
+            tax_note = "Attack-tax budget: selected a payable subset of the proposed attack"
         submitted = replace(
             action,
             action_type=ActionType.DECLARE_ATTACKERS,
@@ -1225,6 +1262,14 @@ class _BridgeSubmitMixin:
             },
             target_names=[],
         )
+        if held or tax_note or mandatory_added:
+            submitted = replace(
+                submitted,
+                reasoning=_attack_declaration_reasoning(
+                    [name for name, _ in pairs], held, tax_note, mandatory_added
+                ),
+                model_reasoning=action.model_reasoning or action.reasoning,
+            )
         return submitted, [entry for _, entry in pairs]
 
     def _await_attack_selection(
@@ -1609,12 +1654,17 @@ class _BridgeSubmitMixin:
                 or str(getattr(submitted, "model_reasoning", "") or "")
                 or str(getattr(action, "model_reasoning", "") or "")
             )  # not the plan's overall strategy: a reasonless hold would show a stale plan's line
+            model_reasoning = str(
+                getattr(submitted, "model_reasoning", "") or getattr(action, "model_reasoning", "") or ""
+            )
             trace = {
                 "reasoning": reasoning,
                 "fallback_reason": str(getattr(plan, "fallback_reason", "") or ""),
                 "strategy": str(getattr(plan, "overall_strategy", "") or ""),
                 "via": str(getattr(result, "method", "") or "GRE bridge"),
             }
+            if model_reasoning:
+                trace["model_reasoning"] = model_reasoning
             packet.add_combat_decision(
                 kind,
                 chosen=chosen,
