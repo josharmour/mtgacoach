@@ -212,3 +212,67 @@ def test_unknown_land_subtype_is_not_intrinsic_colorless_mana():
     assert _payment_after(state, unknown, state["hand"][3]) is None
     state["battlefield"].append({"instance_id": 602, "controller_seat_id": 1})
     assert _payment_after(state, state["hand"][0], state["hand"][3]) is None
+
+
+# Exact public facts/rationale from gameplay-ultra-audit.json G02 decision88/120.
+ADELINE_REASON = "Playing a Plains brings me to 3 mana so I can follow up by casting Adeline this turn, advancing the curve-out plan."
+
+
+def adeline_g02_shape():
+    state, decision = recorded_board()
+    state["battlefield"] = [card(i, "Mountain", "{T}: Add {R}.", "Basic Land — Mountain") for i in (281, 282)]
+    state["hand"][3] = card(
+        200, "Adeline, Resplendent Cathar", "Vigilance", "Legendary Creature", "{1}{W}{W}"
+    )
+    return state, decision
+
+
+def test_recorded_g02_short_name_and_casting_word_cannot_hide_missing_second_white():
+    state, decision = adeline_g02_shape()
+    mismatch = land_claim_mismatch(decision, state, ["idx:5"], ADELINE_REASON)
+    assert mismatch and "Adeline, Resplendent Cathar" in mismatch.reason
+    assert not mismatch.alternatives
+    assert (
+        land_claim_mismatch(
+            decision, state, ["idx:5"], "Play Plains now to prepare for casting Adeline next turn."
+        )
+        is None
+    )
+
+
+def test_ambiguous_short_name_and_possessive_do_not_invent_cast_intent():
+    state, decision = adeline_g02_shape()
+    assert (
+        land_claim_mismatch(decision, state, ["idx:5"], "Play Plains to cast Adeline's token this turn.")
+        is None
+    )
+    state["hand"].append(card(201, "Adeline, Another Card", "Vigilance", "Creature", "{R}"))
+    assert land_claim_mismatch(decision, state, ["idx:5"], ADELINE_REASON) is None
+    assert land_claim_mismatch(
+        decision, state, ["idx:5"], "Play Plains to cast Adeline, Resplendent Cathar this turn."
+    )
+
+
+def test_no_land_funds_promised_spell_rechecks_current_board_without_forcing_skip():
+    import pytest
+
+    from arenamcp.action_planner import SecondLookError
+
+    state, decision = adeline_g02_shape()
+    planner = ActionPlanner(backend=Mock())
+    planner._last_decision_trace = {}
+
+    def parse(raw):
+        data = json.loads(raw)
+        return data, data["option_ids"]
+
+    bad = Mock(return_value=json.dumps({"option_ids": ["idx:5"], "reasoning": ADELINE_REASON}))
+    with pytest.raises(SecondLookError):
+        planner._repair_land_claim(decision, state, {"reasoning": ADELINE_REASON}, ["idx:5"], bad, parse, "")
+    assert planner._last_decision_trace["land_payment_recheck"]["fallback"] == "current_board"
+    good_reason = "Play Plains to improve white access; Adeline still needs a second white source, so develop a different card."
+    good = Mock(return_value=json.dumps({"option_ids": ["idx:5"], "reasoning": good_reason}))
+    data, picks = planner._repair_land_claim(
+        decision, state, {"reasoning": ADELINE_REASON}, ["idx:5"], good, parse, ""
+    )
+    assert picks == ["idx:5"] and data["reasoning"] == good_reason

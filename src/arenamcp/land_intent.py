@@ -122,14 +122,23 @@ def land_claim_mismatch(decision, state, chosen, reasoning):
         for c in positive
     )
     promised = []
-    for spell in state.get("hand") or []:
-        name = str(spell.get("name") or "")
-        if not name or "land" in str(spell.get("type_line") or "").lower():
-            continue
+    spells = [c for c in state.get("hand") or [] if "land" not in str(c.get("type_line") or "").lower()]
+
+    def aliases(card):
+        full = str(card.get("name") or "").casefold()
+        return {full, full.split(",", 1)[0].strip()} - {""}
+
+    for spell in spells:
+        # G02's recorded “casting Adeline this turn” uses the legendary name's
+        # unambiguous prefix. Never bind shorthand to one of two namesakes.
+        names = [a for a in aliases(spell) if sum(a in aliases(c) for c in spells) == 1]
         if any(
-            re.search(r"\b(?:cast|enable|enables|enabling)\s+" + re.escape(name) + r"\b", c, re.I)
+            re.search(
+                r"\b(?:cast(?:ing)?|enable|enables|enabling)\s+" + re.escape(name) + r"(?=$|[\s,:#])", c, re.I
+            )
             and re.search(r"\b(?:this turn|now)\b", c, re.I)
             for c in positive
+            for name in names
         ):
             promised.append(spell)
     issues = []

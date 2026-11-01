@@ -9915,14 +9915,14 @@ class ActionPlanner(_ActionLegalityMixin):
         # Preserve the explicitly stated plan with a verified offered land.
         # If none satisfies it, do not silently execute the disproved plan.
         fallback = next(iter(mismatch.alternatives), None)
-        if fallback is None and decision.find("pass") is not None:
-            fallback = "pass"
-        picks = [fallback] if fallback else chosen
-        reason = (
-            f"{decision.find(fallback).label}: this offered land satisfies the stated entry/payment plan. "
-            if fallback and fallback != "pass"
-            else "Reassess the land plan. "
-        ) + mismatch.reason
+        if fallback is None:
+            repair["fallback"] = "current_board"
+            self._last_decision_trace["land_payment_recheck"] = repair
+            # The chosen land itself may still be right (G02 T5 Plains). A
+            # false promise about its follow-up is not a reason to skip it.
+            raise SecondLookError("Land payment premise refuted: " + mismatch.reason)
+        picks = [fallback]
+        reason = f"{decision.find(fallback).label}: this offered land satisfies the stated entry/payment plan. " + mismatch.reason
         repair.update(final=picks, fallback=True)
         self._last_decision_trace["land_payment_recheck"] = repair
         return {"option_ids": picks, "reasoning": reason}, picks
