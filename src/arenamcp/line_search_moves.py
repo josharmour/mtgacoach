@@ -111,6 +111,7 @@ from arenamcp.board_model import BoardModel, _regular_damage_part, cast_bans, sp
 from arenamcp.cast_growth_risk import grown, per_cast_growth
 from arenamcp.cast_triggers import cast_pumps, spell_kinds
 from arenamcp.combat_keywords import has_combat_keyword
+from arenamcp.combat_loss import CombatDetail, LossState
 from arenamcp.combat_solver import walker_value
 from arenamcp.combat_strategy import loyalty
 from arenamcp.cost_reduction import parse_cost_reduction, reduced_mana_value, reduction_amount
@@ -1549,6 +1550,8 @@ class Node:
     # Their planeswalkers: ((instance id, name, loyalty), ...) (ledger #42, 2026-10-19 a51dea64).
     walkers: tuple = ()
     persistent: tuple = ()  # returned noncreature engines; never attack/block/creature targets
+    our_loss: LossState = LossState()
+    opponent_loss: LossState = LossState()
 
     @property
     def terminal(self) -> bool:
@@ -2640,11 +2643,11 @@ class Moves:
         """``_combat`` memoised per search on (attacker ids, blocker ids, life)."""
         return self.combat_life(attackers, blockers, life, first=first, tag=tag)[:3]
 
-    def combat_life(self, attackers, blockers, life, *, first=False, tag=""):
+    def combat_life(self, attackers, blockers, life, *, first=False, tag="", defender=LossState()):
         """``_combat_life`` (lifelink gains too) memoised like ``combat``."""
-        return self.combat_detail(attackers, blockers, life, first=first, tag=tag)[:5]
+        return self.combat_detail(attackers, blockers, life, first=first, tag=tag, defender=defender)[:5]
 
-    def combat_detail(self, attackers, blockers, life, *, first=False, tag=""):
+    def combat_detail(self, attackers, blockers, life, *, first=False, tag="", defender=LossState(), defending_player=True):
         """``combat_life`` plus each attacker's damage through, as sorted (id, damage) pairs, and
         the ids of the blockers that blocked."""
         attackers = sorted(attackers, key=lambda b: b["instance_id"])
@@ -2652,7 +2655,7 @@ class Moves:
         able = sum(1 for b in blockers if b["_can_block"])
         if first and attackers and able and (len(attackers) + 1) ** able > _MAX_BLOCK_OPTIONS:
             self.exact_first = False  # the solver falls back to greedy blocks
-        key = (tag, ids_of(attackers), ids_of(blockers), max(1, life))
+        key = (tag, ids_of(attackers), ids_of(blockers), max(1, life), defender, defending_player)
         if self._scale_base:  # a per-creature body's power follows the board, not its id (#157)
             key += (
                 tuple(
@@ -2675,11 +2678,14 @@ class Moves:
                 ll_heal,
                 through,
                 used,
-            ) = _combat_life(attackers, blockers, life, detail=True)
-            found = self._memo[key] = (
+                remaining,
+                terminal,
+            ) = _combat_life(attackers, blockers, life, detail=True, with_loss=True,
+                             defender=defender, defending_player=defending_player)
+            found = self._memo[key] = CombatDetail((
                 damage, frozenset(dead_att), frozenset(dead_blk), gained, healed, tuple(sorted(through.items())),
                 frozenset(used), ll_gain, ll_heal,
-            )  # fmt: skip
+            ), remaining, terminal)  # fmt: skip
         return found
 
     def kills(self, reach: dict, body: dict, ours=(), *, attacking: bool = False, mana: int = 0) -> bool:
@@ -3768,6 +3774,7 @@ class Moves:
         ids = attack[1]
         attackers = [b for b in mid.ours if b["instance_id"] in ids]
         opp_after = None
+        opponent_loss, opponent_terminal = node.opponent_loss, node.opponent_loss.lost
         # "at:<walker>:<attackers>": those attackers go at one of their planeswalkers.
         at: dict[int, int] = {}
         if attack[0].startswith("at:"):
@@ -3802,7 +3809,7 @@ class Moves:
                     used,
                     w_ll_gain,
                     w_ll_heal,
-                ) = self.combat_detail(sent, blockers, loyal, tag=tag + "walker")
+                ) = self.combat_detail(sent, blockers, loyal, tag=tag + "walker", defending_player=False)
                 rest = [b for b in fighting if b["instance_id"] not in at]
                 spare = [b for b in blockers if b["instance_id"] not in used]
                 (
@@ -3815,7 +3822,9 @@ class Moves:
                     _ru,
                     ll_gain,
                     ll_heal,
-                ) = self.combat_detail(rest, spare, mid.opp_life, tag=tag)
+                ) = self.combat_detail(rest, spare, mid.opp_life, tag=tag, defender=opponent_loss)
+                details = self.combat_detail(rest, spare, mid.opp_life, tag=tag, defender=opponent_loss)
+                opponent_loss, opponent_terminal = details.loss, details.terminal
                 dead_ours, dead_theirs = dead_ours | w_dead_ours, dead_theirs | w_dead_theirs
                 gained, healed = gained + w_gained, healed + w_healed
                 ll_gain, ll_heal = ll_gain + w_ll_gain, ll_heal + w_ll_heal
@@ -3835,7 +3844,9 @@ class Moves:
                     _u,
                     ll_gain,
                     ll_heal,
-                ) = self.combat_detail(fighting, blockers, mid.opp_life, tag=tag)
+                ) = self.combat_detail(fighting, blockers, mid.opp_life, tag=tag, defender=opponent_loss)
+                details = self.combat_detail(fighting, blockers, mid.opp_life, tag=tag, defender=opponent_loss)
+                opponent_loss, opponent_terminal = details.loss, details.terminal
                 swap = self._sneak_swap(mid, fighting, blockers, tag)
                 if swap is not None:  # a Sneak creature in for an unblocked attacker (#156)
                     gain, returned, entered = swap
@@ -3895,6 +3906,7 @@ class Moves:
         carry = {
             "our_life": mid.our_life,
             "opp_life": mid.opp_life,
+            "opponent_loss": opponent_loss,
             "ours": tuple(mid.ours),
             "theirs": tuple(mid.theirs),
             "hand": tuple(mid.hand),
@@ -3904,18 +3916,24 @@ class Moves:
             "persistent": tuple(mid.persistent),
             "walkers": tuple((iid, name, loyal) for iid, (name, loyal) in sorted(mid.walkers.items())),
         }
-        if mid.opp_life <= 0:
+        if mid.opp_life <= 0 or opponent_terminal:
             return dataclasses.replace(
                 node, **carry, history=node.history + (Step(**step),), win_at=node.k + 1,
-                win_turn=node.abs_turn, overkill=-mid.opp_life,
+                win_turn=node.abs_turn, overkill=max(0, -mid.opp_life),
             )  # fmt: skip
         # Our end step (Fleeting Effigy goes back to the hand), then their turn's life gains.
         self._end_step(mid)
         carry.update(ours=tuple(mid.ours), hand=tuple(mid.hand))
+        if opponent_loss.draw_loses:
+            return dataclasses.replace(node, **carry, history=node.history + (Step(**step),),
+                                       win_at=node.k + 1, win_turn=node.abs_turn + 1, overkill=0)
+        opponent_loss = opponent_loss.draw()
+        carry["opponent_loss"] = opponent_loss
         gains = self.their_gains(mid)
         hit = self.their_attack(
             life=mid.our_life,
             opp_life=mid.opp_life,
+            our_loss=node.our_loss, opponent_loss=opponent_loss,
             ours=mid.ours,
             theirs=mid.theirs,
             able=[b for b in mid.theirs if b["_can_attack"]],
@@ -3933,6 +3951,13 @@ class Moves:
             gains=gains,
             persistent=tuple(mid.persistent),
         )
+        carry["our_loss"] = hit["our_loss"]
+        if not hit["dead"] and hit["our_loss"].draw_loses:
+            return dataclasses.replace(node, **{**carry, "our_life": hit["life"], "opp_life": hit["opp_life"]},
+                                       history=node.history + (Step(**step, life_after=hit["life"]),),
+                                       dead_at=node.attacks + 1, dead_turn=node.abs_turn + 2, overkill=0)
+        if not hit["dead"]:
+            carry["our_loss"] = hit["our_loss"].draw()
         after = Step(
             **step,
             held=hit["held"],
@@ -3944,7 +3969,7 @@ class Moves:
         if hit["dead"]:
             return dataclasses.replace(
                 node, **{**carry, "our_life": hit["life"], "opp_life": hit["opp_life"]}, history=history,
-                attacks=attacks, dead_at=attacks, dead_turn=node.abs_turn + 1, overkill=-hit["life"],
+                attacks=attacks, dead_at=attacks, dead_turn=node.abs_turn + 1, overkill=max(0, -hit["life"]),
             )  # fmt: skip
         # Their lifelink attackers (and our lifelink blockers) changed both life totals; each of
         # their planeswalkers used a loyalty ability (#229): a token-making one when its loyalty
@@ -3987,7 +4012,12 @@ class Moves:
         sneaks = [var for var, _t in mid.casts if var.kind == "sneak" and var.spell in mid.hand]
         if not sneaks or not fighting:
             return None
-        through = dict(self.combat_detail(fighting, blockers, mid.opp_life, tag=tag)[5])
+        from arenamcp.combat_loss import player_hit
+        # Sneak's old approximation swaps power after resolving blocks; it cannot
+        # also reuse poison/mill triggers of the creature it returned to hand.
+        if any(any(player_hit(a, max(0, a["power"]), 1)[1:]) for a in [*fighting, *(v.body for v in sneaks)]):
+            return None
+        through = dict(self.combat_detail(fighting, blockers, mid.opp_life, tag=tag, defender=mid.node.opponent_loss)[5])
         open_ = [a for a in fighting if a["power"] > 0 and through.get(a["instance_id"], 0) >= a["power"]]
         if not open_:
             return None
@@ -4275,7 +4305,7 @@ class Moves:
         index, turn, next_k, next_abs, fixed=None, variant="best", crack_exclude=frozenset(), tag="",
         blocks_locked=False, landfall=False, drops=None, crack_sources=None, spells=True, gains=0, drain_now=True,
         combat_counters=True,
-        after_upkeep=False, persistent=(),
+        after_upkeep=False, persistent=(), our_loss=LossState(), opponent_loss=LossState(),
     ) -> dict:  # fmt: skip
         """Their attack: any lethal policy kills us; else the non-suicidal one worst for us, and
         their most damaging one when every policy leaves them dead to our next turn anyway.
@@ -4351,7 +4381,7 @@ class Moves:
             if ids_of(attackers) not in seen:
                 seen.add(ids_of(attackers))
                 outcomes.append(
-                    self._policy(name, attackers, hand_left, *context, drain=drain, persistent=persistent)
+                    self._policy(name, attackers, hand_left, *context, drain=drain, persistent=persistent, our_loss=our_loss, opponent_loss=opponent_loss)
                 )
         held = tuple(sorted(self.spells[v.spell].name for v in flash))
         lethal = [o for o in outcomes if o["dead"]]
@@ -4360,7 +4390,7 @@ class Moves:
             return {**worst, "held": held + worst["used"]}
         safe = [o for o in outcomes if not o["suicidal"]]
         if not safe and fixed is None and () not in seen:
-            none = self._policy("none", (), hand_left, *context, drain=drain, persistent=persistent)
+            none = self._policy("none", (), hand_left, *context, drain=drain, persistent=persistent, our_loss=our_loss, opponent_loss=opponent_loss)
             outcomes.append(none)
             safe = [] if none["suicidal"] else [none]
         if safe:
@@ -4373,7 +4403,7 @@ class Moves:
 
     def _policy(
         self, name, attackers, hand, life, opp_life, ours, theirs, defenders, removal, entered, keep_tapped,
-        returning, index, next_k, next_abs, tag, left=0, landfall=0, crack_sources=(), *, drain=0, persistent=(),
+        returning, index, next_k, next_abs, tag, left=0, landfall=0, crack_sources=(), *, drain=0, persistent=(), our_loss=LossState(), opponent_loss=LossState(),
     ) -> dict:  # fmt: skip
         persistent = list(persistent)
         declared = sorted(attackers, key=lambda b: b["instance_id"])
@@ -4404,18 +4434,23 @@ class Moves:
         if landfall:  # "gets +2/+2 until end of turn" per land (``landfall`` entries): this attack only
             fighting, back = self._pumped(fighting, landfall)
         round_tag = tag + ("proxy" if boost else "")
+        before_loss = our_loss
+        terminal = our_loss.lost
+        def resolve_round(a, b, left):
+            nonlocal our_loss, terminal
+            details = self.combat_detail(a, b, left, first=index == 1, tag=round_tag + ("+atk" if annotated(fighting) else ""), defender=our_loss)
+            our_loss, terminal = details.loss, terminal or details.terminal
+            return details[:5]
         if annotated(fighting):
             # Their pumps, attack-trigger grants and extra combat (ledger #191, #193, #194): the
             # bodies change, so their own memo tag.
             damage, dead_att, dead_blk, gained, healed = attack_round(
                 fighting, defenders, life,
-                lambda a, b, left: self.combat_life(a, b, left, first=index == 1, tag=round_tag + "+atk"),
+                resolve_round,
                 declared=name == "declared",
             )  # fmt: skip
         else:
-            damage, dead_att, dead_blk, gained, healed = self.combat_life(
-                fighting, defenders, life, first=index == 1, tag=round_tag
-            )
+            damage, dead_att, dead_blk, gained, healed = resolve_round(fighting, defenders, life)
         dead_att = {abs(back.get(i, i)) for i in dead_att}
         # Lifelink lands with the damage: our lifelink blockers heal us, their lifelink
         # attackers heal them (match 41753907 T7: Dawnwing Marshal's 4 a turn). Their attack
@@ -4426,7 +4461,7 @@ class Moves:
 
         if not annotated(fighting) and not (self.engines and self.engines.no_gain):
             # Pure lifelink amount excludes net death-trigger life swings.
-            ll_gain = self.combat_detail(fighting, defenders, life, first=index == 1, tag=round_tag)[7]
+            ll_gain = self.combat_detail(fighting, defenders, life, first=index == 1, tag=round_tag, defender=before_loss)[7]
             engines = [
                 c
                 for c in self.model.battlefield
@@ -4451,9 +4486,10 @@ class Moves:
         if after > 0 and self.outlet:
             reach = self.engines.reach(len(theirs) + len(made))
             after = after - reach if after - reach <= 0 else after
-        if after <= 0:
+        if after <= 0 or terminal:
             return {
                 "dead": True,
+                "our_loss": our_loss,
                 "life": after,
                 "opp_life": opp_life,
                 "policy": name,
@@ -4491,12 +4527,16 @@ class Moves:
                 self._cast_triggers(scratch, spell)
             fighting, crack_tag = self.cast_pumped(crack, scratch.pumps)
         crack_damage, crack_dead_ours, crack_dead_theirs, crack_gained, crack_healed = (
-            self.combat_life(fighting, crack_blockers, opp_life, tag=crack_tag)
+            self.combat_life(fighting, crack_blockers, opp_life, tag=crack_tag, defender=opponent_loss)
             if crack
             else (0, set(), set(), 0, 0)
         )
         crack_net = crack_damage - crack_healed + self.pinged(ours_after, crack)
-        suicidal = (bool(crack) or burn > 0) and crack_net + burn >= opp_life
+        reply = self.combat_detail(fighting, crack_blockers, opp_life, tag=crack_tag, defender=opponent_loss) if crack else None
+        suicidal = not our_loss.draw_loses and (
+            ((bool(crack) or burn > 0) and crack_net + burn >= opp_life)
+            or bool(reply and (reply.terminal or reply.loss.draw_loses))
+        )
         # Worst for us means after our reply too: their attackers can't block on our
         # turn, so a policy is valued at the better of our holding and our crackback
         # (bug_20261007_182945: all-out 1/4 fliers every turn "took" 24 life to 5).
@@ -4513,6 +4553,7 @@ class Moves:
             )  # fmt: skip
         return {
             "dead": False,
+            "our_loss": our_loss,
             "life": after,
             "opp_life": opp_life,
             "policy": name,
@@ -4587,14 +4628,35 @@ class Moves:
             returning=tuple(returning),
             walkers=self.walkers0,
             persistent=tuple(persistent),
+            our_loss=model.our_loss or LossState(), opponent_loss=model.opponent_loss or LossState(),
         )
+
+    def _draw_for_us(self, node: Node) -> Node:
+        if node.terminal:
+            return node
+        if node.our_loss.lost or node.our_loss.draw_loses:
+            return dataclasses.replace(node, dead_at=max(1, node.attacks), dead_turn=node.abs_turn, overkill=0)
+        return dataclasses.replace(node, our_loss=node.our_loss.draw())
 
     def roots(self) -> list[tuple[str, Node]]:
         """[(block variant, node at the start of T)]: their attack under way resolved first."""
         node = self.root_node()
         model = self.model
+        if node.our_loss.lost:
+            return [("", dataclasses.replace(node, dead_at=1, dead_turn=model.turn, overkill=0))]
+        if node.opponent_loss.lost:
+            return [("", dataclasses.replace(node, win_at=1, win_turn=model.turn, overkill=0))]
+        before_draw = model.phase == "Phase_Beginning" and model.step in ("Step_Untap", "Step_Upkeep")
+        if before_draw and model.our_turn:
+            node = self._draw_for_us(node)
+            if node.terminal:
+                return [("", node)]
+        elif before_draw:
+            if node.opponent_loss.draw_loses:
+                return [("", dataclasses.replace(node, win_at=1, win_turn=model.turn, overkill=0))]
+            node = dataclasses.replace(node, opponent_loss=node.opponent_loss.draw())
         if not model.their_attack_pending:
-            return [("", node)]
+            return [("", node if model.our_turn else self._draw_for_us(node))]
         # A creature a forced mode removed before T (compare_modes) no longer attacks.
         alive = {b["instance_id"] for b in node.theirs}
         attackers = [b for b in (model.first_their_attackers or ()) if b["instance_id"] in alive]
@@ -4659,13 +4721,14 @@ class Moves:
                 # Their drains this turn: still to come before their attack is declared (#133).
                 drain_now=fixed is None,
                 after_upkeep=fixed is None and after_upkeep,
+                our_loss=node.our_loss, opponent_loss=node.opponent_loss,
             )
             block = variant if fixed is not None else ""
             if hit["dead"]:
                 out.append(
                     (variant, dataclasses.replace(node, our_life=hit["life"], opp_life=hit["opp_life"], attacks=1,
-                                                  now_life=hit["life"], block=block, dead_at=1, dead_turn=model.turn,
-                                                  overkill=-hit["life"]))
+                                                  now_life=hit["life"], block=block, dead_at=1, dead_turn=model.turn, our_loss=hit["our_loss"],
+                                                  overkill=max(0, -hit["life"])))
                 )  # fmt: skip
                 continue
             out.append(
@@ -4675,6 +4738,7 @@ class Moves:
                         node,
                         our_life=hit["life"],
                         opp_life=hit["opp_life"],
+                        our_loss=hit["our_loss"],
                         ours=tuple(hit["ours"]),
                         theirs=tuple(hit["theirs"]),
                         persistent=tuple(hit["persistent"]),
@@ -4689,7 +4753,7 @@ class Moves:
                     ),
                 )
             )
-        return out
+        return [(label, self._draw_for_us(result)) for label, result in out]
 
     # -- greedy play ---------------------------------------------------------------------
 

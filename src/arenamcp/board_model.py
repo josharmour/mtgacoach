@@ -466,6 +466,8 @@ class BoardModel:
     # and ``_per_gain`` (counters per life-gain event). None when it could not be read.
     engines: Any = None
     our_engines: Any = None  # the same for our side (our bodies carry the same fields)
+    our_loss: Any = None
+    opponent_loss: Any = None
 
     @property
     def unknowns(self) -> list[str]:
@@ -473,6 +475,9 @@ class BoardModel:
         notes = [f"{name} has unknown power/toughness" for name in self.unknown_bodies]
         if self.has_x_spells:
             notes.append("X spells are not scheduled")
+        from arenamcp.combat_loss import player_hit
+        if any(player_hit(card, 1, 1)[0] == 0 for card in self.battlefield):
+            notes.append("infect damage to creatures and persistent -1/-1 counters are not modeled")
         for commander in self.commanders:
             if not commander.cost:
                 notes.append(f"our commander {commander.name}: cost unknown (not cast in the lines)")
@@ -787,9 +792,12 @@ def build_board_model(state: dict) -> BoardModel | None:
                 for c in battlefield
                 if c.get("instance_id") in pending.doomed and (result := returned_enchantment(c)) is not None
             )
+    from arenamcp.combat_loss import loss_state
+
     return BoardModel(
         local=local, opponent=opponent, turn=turn, our_turn=our_turn, phase=phase, step=step,
         our_life=_life(state, local), opp_life=_life(state, opponent),
+        our_loss=loss_state(state), opponent_loss=loss_state(state, opponent=True),
         battlefield=tuple(battlefield), hand=tuple(hand),
         attached=MappingProxyType({k: tuple(v) for k, v in attached.items()}),
         our_rules=MappingProxyType(our_rules), their_rules=MappingProxyType(their_rules),
