@@ -1228,23 +1228,6 @@ def _evaluate_plan(result: LineSearchResult, steps: list[dict]) -> PlanEvaluatio
                 if why:
                     unmodelled.append(f"{label}: {hs.name} ({why})")
                 continue
-            trial = casts + [(var, None)]
-            if sum(v.loss for v, _ in trial) >= node.our_life:
-                issues.append(f"{label}: {name} costs the life we have left")
-                continue
-            pips = tuple(p for v, _ in trial for p in v.pips)
-            if sum(v.mana_value for v, _ in trial) > len(sources) or (
-                pips and not _pip_matching(pips, sources)
-            ):
-                colors = "".join(sorted({c for s in sources for c in s.produces if c != "C"})) or "no colours"
-                issues.append(f"{label}: {name} is unpayable with this line's {len(sources)} mana ({colors})")
-                continue
-            hand.remove(index)
-            why = unmodelled_effect(hs.spell.card, result)
-            if why:
-                unmodelled.append(f"{label}: {hs.name} ({why})")
-            elif mode_why:
-                unmodelled.append(f"{label}: {hs.name} (choose: {mode}): {mode_why}")
             taken = {t["instance_id"] for _v, t in casts if t is not None}
             options = (
                 search.targets(var.reach, node.theirs, node.their_tapped, node.ours)
@@ -1255,18 +1238,38 @@ def _evaluate_plan(result: LineSearchResult, steps: list[dict]) -> PlanEvaluatio
             named = [t for t in options if aim and _plain(t["name"]) == _plain(aim)]
             walker = next((w for w in node.walkers if aim and _plain(w[1]) == _plain(aim)), None)
             burn = next((v for v in hs.walker_vars if v.mode == var.mode), None)
+            target = (named or options or [None])[0]
             if walker is not None and burn is not None and not named:
-                casts.append((burn, search.walker_body(*walker)))  # "Lightning Strike (on Kaito)"
-                continue
-            if aim and not named and var.reach is not None:
-                # "Lightning Strike (on Dawnwing Marshal)" + "Burst Lightning (on Dawnwing Marshal)":
-                # a piece of a combined kill; the target dies once the pieces reach its toughness.
+                var, target = burn, search.walker_body(*walker)
+            elif aim and not named and var.reach is not None:
+                # A piece of a combined kill: each targeted spell pays ward,
+                # even when it cannot kill the creature by itself.
                 chip = next((c for c in hs.chips if c.mode == var.mode), None)
                 body = next((b for b in node.theirs if _plain(b["name"]) == _plain(aim)), None)
                 if chip is not None and body is not None and search.burn(chip, body, len(sources)):
-                    casts.append((chip, body))
-                    continue
-            casts.append((var, (named or options or [None])[0]))
+                    var, target = chip, body
+            trial = casts + [(var, target)]
+            if sum(v.loss for v, _ in trial) >= node.our_life:
+                issues.append(f"{label}: {name} costs the life we have left")
+                continue
+            pips = tuple(p for v, _ in trial for p in v.pips)
+            ward = sum(search.ward(t) for _, t in trial if t is not None)
+            if search.set_cost(node.ours, trial) > len(sources) or (
+                pips and not _pip_matching(pips, sources)
+            ):
+                colors = "".join(sorted({c for s in sources for c in s.produces if c != "C"})) or "no colours"
+                tax = f", including {ward} ward mana" if ward else ""
+                issues.append(
+                    f"{label}: {name} is unpayable with this line's {len(sources)} mana ({colors}){tax}"
+                )
+                continue
+            hand.remove(index)
+            why = unmodelled_effect(hs.spell.card, result)
+            if why:
+                unmodelled.append(f"{label}: {hs.name} ({why})")
+            elif mode_why:
+                unmodelled.append(f"{label}: {hs.name} (choose: {mode}): {mode_why}")
+            casts.append((var, target))
         mid = search.begin(node, land, tuple(casts))
         options, possible = search.attack_choices(mid)
         ids = _plan_attackers(search, mid, str(raw.get("attack") or ""), label, issues) if possible else ()

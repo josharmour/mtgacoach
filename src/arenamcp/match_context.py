@@ -51,7 +51,11 @@ STRATEGIC_POLICY_PARTS: tuple[tuple[str | None, str], ...] = (
         "the live board, stack, mana and legal options. A plan is conditional, not a forced script. "
         "Survival, a changed threat, new information or an immediate winning line can override it. "
         "For removal, compare acting now with holding interaction, the target's actual impact, protection, "
-        "and the resource trade. ",
+        "and the resource trade. Before spending development mana, budget the intended removal plus "
+        "all ward costs; if both lines do not fit, explain which interaction window is being given up. "
+        "For a transformation, check the answer's speed, activation costs that move the target, and "
+        "the later face's protection/target eligibility. Holding a sorcery-speed answer does not "
+        "allow responding on the opponent's turn. ",
     ),
     (
         "library",

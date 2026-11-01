@@ -2335,6 +2335,9 @@ def _check_plan_line(plan: GamePlan, assessment: Any, state: dict, issues: list[
         from arenamcp.line_search_moves import ALIVE
 
         line = evaluation.line
+        # Keep concrete payment failures even if the strategic comparison is
+        # incomplete. A spell-only budget can falsely promise removal + ward.
+        issues.extend(issue for issue in evaluation.issues if issue not in issues)
         skipped = _unchecked_plan(plan, evaluation, result, state)
         if skipped:
             # The replay would undervalue the plan: no verdict either way.

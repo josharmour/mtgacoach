@@ -8984,8 +8984,10 @@ class ActionPlanner(_ActionLegalityMixin):
             "OPTIONS:",
         ]
         from arenamcp.commander_combat import commander_sacrifice_context
+        from arenamcp.tactical_timing import timing_notes
 
         lines.extend(commander_sacrifice_context(game_state, decision))
+        lines.extend(timing_notes(decision, game_state))
         if any(o.meta.get("choiceKind") == "selection" for o in decision.options):
             lines.append(
                 "CASTING-COST SELECTION: choose only among these offered battlefield creatures, "
