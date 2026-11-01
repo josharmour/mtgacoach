@@ -10,6 +10,7 @@
 {% endblock %}
 
 {% block nav %}
+    <a class="nav-optional" href="#release">Latest update</a>
     <a class="nav-optional" href="#features">Features</a>
     <a class="nav-optional" href="#get-started">Platforms</a>
     <a href="#pricing">Pricing</a>
@@ -62,6 +63,44 @@
             </figure>
         </div>
     </section>
+
+    <!-- Release update ------------------------------------------------------ -->
+    <section id="release" aria-labelledby="release-title">
+        <div class="wrap">
+            <div class="section-head">
+                <p class="label">Version 3.8.0 · November 2026</p>
+                <h2 id="release-title">Better recovery. More careful decisions.</h2>
+                <p class="lede">This release works on the moments that interrupt a game:
+                queue transitions, tricky rules interactions, and advice that doesn't
+                match the cards in front of you.</p>
+            </div>
+            <div class="features">
+                <article class="feature">
+                    <h3>Keep the match moving</h3>
+                    <p>Queue the featured Recent Match through the Mac bridge, and keep
+                    restart recovery from navigating away while a match is still unfinished.
+                    Equipment plans retain useful equip opportunities and recognize planned
+                    haste grants; commander choices check the actual destination zone.</p>
+                </article>
+                <article class="feature">
+                    <h3>Check the play against the board</h3>
+                    <p>Combat forecasts account for blocker lifelink, infect and damage
+                    carried into extra combats. Mana checks preserve reserved resources
+                    and account for activation costs and known attack taxes. Commentary
+                    checks more target, mode and damage claims against the card's rules.</p>
+                </article>
+            </div>
+            <p class="hero-note">These are targeted fixes. Some rules interactions and live
+            platform checks remain open; this update does not establish Windows gameplay
+            validation. See the release notes for the current validation limits.</p>
+            <div class="hero-actions">
+                <a class="button primary" href="https://github.com/josharmour/mtgacoach/releases/tag/v3.8.0">Release notes &amp; downloads</a>
+                <a class="button" href="#get-started">Installation guide</a>
+            </div>
+        </div>
+    </section>
+
+    <div class="wrap"><hr class="rule"></div>
 
     <!-- What you see -------------------------------------------------------- -->
     <section id="tour" aria-labelledby="tour-title">
