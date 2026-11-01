@@ -80,3 +80,26 @@ is one line.
 → {"action": "submit_pass"}
 ← {"ok": true, "submitted_type": "Pass"}
 ```
+
+## Release provenance
+
+Release packaging requires a fresh Windows build against the installed Arena
+managed assemblies. From the repo root run:
+
+```powershell
+.\installer\build-bridge.ps1 -MtgaDir "C:\Program Files\Wizards of the Coast\MTGA"
+```
+
+This rebuilds without incremental output, records compiler/reference/source
+hashes, and stages only our DLL and manifest. It does not deploy into Arena. GitHub's packaging runners do not contain those proprietary
+references. They verify `src/arenamcp/resources/MtgaCoachBridge.build.json`
+against every bridge source/project input and the staged DLL before building the
+wheel or installer. A missing manifest or changed source/DLL fails packaging.
+
+The manifest records schema version 1, SHA-256 maps for source inputs and named
+reference assemblies, the DLL SHA-256, compiler version, and UTC build time.
+Keep the successful build log with release evidence. Publish only the bridge DLL
+and hashes; do not add Arena's reference DLLs or machine credentials to the repo.
+Run `python scripts/verify_bridge_release.py` before cutting a release. This check
+establishes correspondence to the recorded build; live Windows gameplay remains
+a separate qualification.

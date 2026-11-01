@@ -26,6 +26,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade build
+      - run: python scripts/verify_bridge_release.py
       - run: python -m build
       - uses: actions/upload-artifact@v4
         with:

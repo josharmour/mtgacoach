@@ -31,6 +31,12 @@ jobs:
           pip install build hatchling pyinstaller
           pip install -e .[desktop,full]
 
+      # Arena's managed references are available on the Windows bridge build host,
+      # not this packaging runner. Refuse stale/unproven DLL bytes before either
+      # the wheel or installer can package them.
+      - name: Verify current-source Windows bridge build
+        run: python scripts/verify_bridge_release.py
+
       - name: Build Python wheel
         run: python -m build --wheel
 
