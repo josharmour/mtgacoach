@@ -2624,7 +2624,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         damage_through = self._compute_optimal_blocking_damage(attacking, your_creatures)
         life_after_blocks = your_life - damage_through
         if damage_through < total_incoming:
-            if life_after_blocks <= 0:
+            if any(_has(c, "lifelink") for c in your_creatures):
+                lines.append(f"Damage-only block estimate: {damage_through} through; lifelink is evaluated below.")
+            elif life_after_blocks <= 0:
                 lines.append(
                     f"\u26a0\ufe0f Best blocks \u2192 take {damage_through} dmg \u2192 DEAD (from {your_life} life)! Not enough blockers!"
                 )
@@ -2735,6 +2737,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 trick_exposure=exposure,
             )
             if solver_plan is not None:
+                life_after_blocks = your_life - solver_plan.net_life_lost
                 lines.append(f"Computed optimal blocks: {solver_plan.explanation}")
                 if solver_plan.trick_rejected:
                     lines.append(
@@ -2754,8 +2757,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     "rules, hand and timing before deviating from the resulting resource comparison."
                 )
                 lines.append(
-                    f"Recommended blocks leave {your_life - solver_plan.damage_through} life "
-                    f"after {solver_plan.damage_through} combat damage. "
+                    f"Recommended blocks leave {your_life - solver_plan.net_life_lost} life "
+                    f"after {solver_plan.damage_through} combat damage, "
+                    f"{solver_plan.blocker_life_gained} lifelink gain and {solver_plan.death_drain:+d} death-trigger loss. "
                     "Nonlethal damage still costs life; compare a single expendable blocker "
                     "with taking the hit, and account for the next attack."
                 )

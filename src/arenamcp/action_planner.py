@@ -1971,8 +1971,7 @@ class ActionPlanner(_ActionLegalityMixin):
         if survival is None or not survival.assignments:
             return
         survival_through = (
-            survival.damage_through
-            + survival.death_drain
+            survival.net_life_lost
             + extra_combat_damage(state, attackers, survival.assignments)
         )
         if survival.player_loses or survival.draw_loss_pending or survival_through >= life:

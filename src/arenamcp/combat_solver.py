@@ -265,6 +265,8 @@ class CombatOutcome:
     blockers_died: list[dict] = field(default_factory=list)
     life_gained: int = 0  # a lifelink attacker's damage dealt (to blockers and through)
     blocker_life_gained: int = 0  # actual damage dealt by lifelink blockers
+    first_strike_damage: int = 0
+    first_strike_blocker_gain: int = 0
     combat_damage: int = 0  # damage dealt to the recipient before infect changes its result
     player_hits: int = 0
     poison_given: int = 0
@@ -333,6 +335,8 @@ def _resolve_attacker(
         damage = max(0, out.damage_through - bonus)
         life, out.poison_given, out.cards_milled = player_hit(attacker, damage, out.player_hits)
         out.damage_through = life + bonus
+        if out.first_strike_damage:
+            out.first_strike_damage = player_hit(attacker, out.first_strike_damage, 1)[0]
         out.player_loses = terminal and loses_on_combat_hit(attacker)
     return out
 
@@ -368,6 +372,7 @@ def _resolve_attacker_damage(attacker: dict, assigned: list[dict]) -> CombatOutc
         # and lifelink affect this result; defer blocked-combat keyword work.
         out.player_hits = (2 if atk_ds else 1) if atk_p > 0 else 0
         out.damage_through = atk_p * (2 if atk_ds else 1)
+        out.first_strike_damage = atk_p if atk_ds or _has(attacker, "first strike") else 0
         out.life_gained = out.damage_through if atk_lifelink else 0
         if out.damage_through > 0 and "combat_hit_bonus" in attacker:
             out.damage_through += int(attacker["combat_hit_bonus"] or 0)
@@ -472,6 +477,8 @@ def _resolve_attacker_damage(attacker: dict, assigned: list[dict]) -> CombatOutc
             attacker_strikes()
         damage, returning_deathtouch = blockers_strike(fs_blockers)
         taken += damage
+        out.first_strike_damage = out.damage_through
+        out.first_strike_blocker_gain = out.blocker_life_gained
         if attacker_dead():
             out.attacker_died = True
             if out.damage_through > 0:
@@ -508,6 +515,7 @@ class BlockPlan:
     blockers_lost_ids: frozenset[int] = frozenset()
     recovery_credit: float = 0.0
     attacker_life_gained: int = 0  # the attacking side's lifelink gain under these blocks
+    blocker_life_gained: int = 0  # defending player's lifelink, separate from death triggers
     attackers_killed_ids: frozenset[int] = frozenset()
     # Expected material lost to a combat trick of the attacking player (TrickExposure).
     trick_cost: float = 0.0
@@ -524,6 +532,10 @@ class BlockPlan:
     poison_given: int = 0
     cards_milled: int = 0
     draw_loss_pending: bool = False  # milling alone does not lose the game
+
+    @property
+    def net_life_lost(self) -> int:
+        return self.damage_through + self.death_drain - self.blocker_life_gained
 
 
 # What a life point the attacking side gains from a death trigger costs the blocking side, in
@@ -906,7 +918,8 @@ def _search_blocks(
         atk_killed_material = 0
         blocker_lost_material = 0
         blowout = 0
-        death_blocking = death_attacking = 0
+        death_blocking = death_attacking = blocker_gain = 0
+        first_damage = first_gain = 0
         lost_ids: set[int] = set()
         for a_idx in range(n_attackers):
             key = (a_idx, tuple(assigned_to_atk.get(a_idx, ())))
@@ -924,11 +937,17 @@ def _search_blocks(
                     outcome.poison_given,
                     outcome.cards_milled,
                     outcome.player_loses,
+                    outcome.blocker_life_gained if defending_player else 0,
+                    outcome.first_strike_damage,
+                    outcome.first_strike_blocker_gain if defending_player else 0,
                 )
                 fights[key] = fight
             poison += fight[7]
             mill += fight[8]
             player_loses |= fight[9]
+            blocker_gain += fight[10]
+            first_damage += fight[11]
+            first_gain += fight[12]
             total_damage += fight[0]
             atk_killed_material += fight[1]
             blocker_lost_material += fight[2]
@@ -938,6 +957,8 @@ def _search_blocks(
             death_attacking += fight[6]
 
         remaining = defender.hit(poison, mill)
+        if first_damage - first_gain >= your_life:
+            blocker_gain = first_gain  # a later damage step cannot rescue a dead player
         player_loses |= defending_player and remaining.lost
         score = _block_score(
             total_damage,
@@ -945,6 +966,7 @@ def _search_blocks(
             blocker_lost_material,
             your_life,
             death_loss=-death_blocking,
+            life_gained=blocker_gain,
             their_gain=death_attacking,
             player_loses=player_loses or (defending_player and remaining.draw_loses),
         )
@@ -952,7 +974,7 @@ def _search_blocks(
             recovery_credit is not None
             and not remaining.draw_loses
             and not player_loses
-            and total_damage - death_blocking < your_life
+            and total_damage - death_blocking - blocker_gain < your_life
         ):
             score += recovery_credit(frozenset(lost_ids))
         if raw_best is None or score > raw_best:
@@ -1125,6 +1147,7 @@ def _rebuild_block_plan(
     killed_attackers: list[dict] = []
     lost_blockers: list[dict] = []
     blowout = 0
+    first_damage = first_gain = 0
     for a_idx, atk in enumerate(attackers):
         assigned = assigned_to_atk.get(a_idx, [])
         outcome = _resolve_attacker(atk, assigned, defending_player=defending_player)
@@ -1133,6 +1156,10 @@ def _rebuild_block_plan(
         plan.cards_milled += outcome.cards_milled
         plan.damage_through += outcome.damage_through
         plan.attacker_life_gained += outcome.life_gained
+        if defending_player:
+            plan.blocker_life_gained += outcome.blocker_life_gained
+            first_gain += outcome.first_strike_blocker_gain
+        first_damage += outcome.first_strike_damage
         blocking, attacking = _death_life(atk, outcome)
         plan.death_drain -= blocking
         plan.attacker_death_life += attacking
@@ -1146,6 +1173,8 @@ def _rebuild_block_plan(
                 lost_blockers.append(dead)
             if trick_p > 0:
                 blowout += _blowout_loss(atk, assigned, outcome)
+    if first_damage - first_gain >= your_life:
+        plan.blocker_life_gained = first_gain
     remaining = defender.hit(plan.poison_given, plan.cards_milled)
     plan.player_loses |= defending_player and remaining.lost
     plan.draw_loss_pending = defending_player and remaining.draw_loses
@@ -1156,7 +1185,7 @@ def _rebuild_block_plan(
         recovery_credit is not None
         and not plan.player_loses
         and not plan.draw_loss_pending
-        and plan.damage_through + plan.death_drain < your_life
+        and plan.net_life_lost < your_life
     ):
         plan.recovery_credit = recovery_credit(plan.blockers_lost_ids)
         plan.score += plan.recovery_credit
@@ -1225,6 +1254,7 @@ def _block_score(
     your_life: int,
     *,
     death_loss: int = 0,
+    life_gained: int = 0,
     their_gain: int = 0,
     player_loses: bool = False,
 ) -> float:
@@ -1243,7 +1273,7 @@ def _block_score(
     if player_loses:
         return -1_000_000.0
     # If this block plan kills you, it's worst possible.
-    lost = damage_through + death_loss
+    lost = damage_through + death_loss - life_gained
     life_after = your_life - lost
     if life_after <= 0:
         life_score = -1000.0
@@ -1264,6 +1294,7 @@ def _score_block_plan(plan: BlockPlan, your_life: int) -> float:
         plan.blockers_lost_material,
         your_life,
         death_loss=plan.death_drain,
+        life_gained=plan.blocker_life_gained,
         their_gain=plan.attacker_death_life,
         player_loses=plan.player_loses or plan.draw_loss_pending,
     )
@@ -1298,6 +1329,8 @@ def _explain_block_plan(
         tail.append("empty library: next draw loses")
     if plan.damage_through > 0:
         tail.append(f"{plan.damage_through} dmg through")
+    if plan.blocker_life_gained:
+        tail.append(f"lifelink gains you {plan.blocker_life_gained}")
     if kills:
         tail.append(f"kills {', '.join(kills)}")
     if losses:
@@ -1351,13 +1384,13 @@ def _greedy_block_plan(
     killed_attackers: list[dict] = []
     lost_blockers: list[dict] = []
     trick_cost = 0.0
-    death_drain = attacker_death_life = 0
+    death_drain = attacker_death_life = blocker_gain = 0
     player_loses = False
     poison = mill = 0
 
     for _atk_idx, atk in sorted_atk:
         atk_iid = int(atk.get("instance_id") or 0)
-        life_left = max(1, your_life - total_damage - death_drain)
+        life_left = max(1, your_life - total_damage - death_drain + blocker_gain)
         unblocked = unblocked_hits[_atk_idx]
         pending_poison -= unblocked.poison_given
         pending_mill -= unblocked.cards_milled
@@ -1390,6 +1423,7 @@ def _greedy_block_plan(
                     lost,
                     life_left,
                     death_loss=-blocking,
+                    life_gained=outcome.blocker_life_gained if defending_player else 0,
                     their_gain=attacking,
                     player_loses=fatal,
                 )
@@ -1425,6 +1459,8 @@ def _greedy_block_plan(
         poison += outcome.poison_given
         mill += outcome.cards_milled
         total_damage += outcome.damage_through
+        if defending_player:
+            blocker_gain += outcome.blocker_life_gained
         blocking, attacking = _death_life(atk, outcome)
         death_drain -= blocking
         attacker_death_life += attacking
@@ -1489,6 +1525,7 @@ class AttackPlan:
     # Life the opponent loses to the death triggers of this combat's deaths (negative: gains;
     # Vein Ripper, Blood Artist; ledger #184). Our side's share is in ``life_gained``.
     opponent_death_loss: int = 0
+    opponent_life_gained: int = 0  # lifelink blockers, not death triggers
     opponent_loses: bool = False
     lose_to_crackback: bool = False
 
@@ -1880,7 +1917,7 @@ def _crackback_reserve(
 
     def crackback(home: list[dict]) -> int:
         plan = guarded_block_plan(crackers, home, your_life) if crackers else None
-        return plan.damage_through if plan else sum(_pt(a)[0] for a in crackers)
+        return plan.net_life_lost if plan else sum(_pt(a)[0] for a in crackers)
 
     order = sorted(range(len(candidates)), key=lambda i: (_pt(candidates[i])[0], -_pt(candidates[i])[1], i))
     home: list[int] = []
@@ -2016,9 +2053,7 @@ def evaluate_attack(
     crack_block = guarded_block_plan(crackers, defenders, your_life + life_gained, defender=loss_state(state))
     # Our blockers' deaths in their crackback drain us too (Vein Ripper, ledger #184).
     crackback = (
-        (crack_block.damage_through + max(0, crack_block.death_drain))
-        if crack_block
-        else sum(_pt(a)[0] for a in crackers)
+        max(0, crack_block.net_life_lost) if crack_block else sum(_pt(a)[0] for a in crackers)
     ) + drain
 
     plan = AttackPlan(
@@ -2030,6 +2065,7 @@ def evaluate_attack(
         blockers_killed_material=blk_killed_mat,
         life_gained=life_gained,
         opponent_death_loss=opponent_death_loss,
+        opponent_life_gained=opp_block.blocker_life_gained if opp_block else 0,
         opponent_loses=bool(opp_block and (opp_block.player_loses or opp_block.draw_loss_pending)),
         lose_to_crackback=bool(crack_block and (crack_block.player_loses or crack_block.draw_loss_pending)),
     )
@@ -2047,6 +2083,8 @@ def evaluate_attack(
         plan.explanation += "; combat-hit trigger wins the game"
     if plan.lose_to_crackback:
         plan.explanation += "; crackback combat-hit trigger loses the game"
+    if plan.opponent_life_gained:
+        plan.explanation += f"; their blocking lifelink gains {plan.opponent_life_gained} life"
     if opp_block is not None and (opp_block.death_drain or opp_block.attacker_death_life):
         plan.explanation += (
             f"; death triggers: them {-opp_block.death_drain:+d}, us {opp_block.attacker_death_life:+d} life"
@@ -2104,7 +2142,7 @@ def _score_attack_plan(plan: AttackPlan, your_life: int, opponent_life: int) -> 
     """Attack: damage to opponent is great; dying to crackback is worst."""
     # Their life lost this swing: combat damage plus the death triggers of its deaths
     # (``opponent_death_loss``; negative when their Vein Ripper gains them life).
-    dealt = plan.damage_through + plan.opponent_death_loss
+    dealt = plan.damage_through + plan.opponent_death_loss - plan.opponent_life_gained
     # Lethal this swing is the best possible outcome.
     if plan.opponent_loses or dealt >= opponent_life:
         return 10_000.0

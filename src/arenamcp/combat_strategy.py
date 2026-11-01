@@ -2260,7 +2260,7 @@ def _refused_chumps(
     for blocker, attacker in plan.assignments.items():
         groups.setdefault(attacker, []).append(blocker)
     refused = []
-    life_with = life - plan.damage_through
+    life_with = life - plan.net_life_lost
     ours = list(defenders.values())
     threats = [card for card in attackers if can_attack_next_turn(card)]
     wider = len(attackers) > len(ours)
@@ -2280,7 +2280,11 @@ def _refused_chumps(
             loses_on_combat_hit(attacker) or _ATTACKER_HIT_PAYOFF.search(_rules_text(attacker))
         ):
             continue
-        life_without = life_with - (_resolve_attacker(attacker, []).damage_through - outcome.damage_through)
+        death_gain, _ = combat_solver._death_life(attacker, outcome)
+        life_without = life_with - (
+            _resolve_attacker(attacker, []).damage_through - outcome.damage_through
+            + outcome.blocker_life_gained + death_gain
+        )
         if life_without <= CHUMP_DANGER_LIFE:
             continue
         without = {b: a for b, a in plan.assignments.items() if b not in blockers}
@@ -2355,7 +2359,7 @@ def _guarded_block_plan(
     guarded = combat_solver._search_blocks(
         attackers, defenders, life, blocker_allowed_attackers=allowed, max_options=max_options
     )
-    if guarded is None or life - guarded.damage_through <= CHUMP_DANGER_LIFE:
+    if guarded is None or life - guarded.net_life_lost <= CHUMP_DANGER_LIFE:
         return plan
     return guarded
 
