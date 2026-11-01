@@ -1455,6 +1455,65 @@ def _block_restricted(blocker: dict, battlefield: list[dict]) -> bool | None:
     return False
 
 
+def _positive_blocker_corrections(
+    text: str, ours: list[dict], theirs: list[dict], battlefield: list[dict]
+) -> tuple[str, list[str]]:
+    """#138: a named ground creature is not the blocker removed for a named flier.
+
+    Check the explicit blocker/attacker relationship, not every occurrence of
+    "blocker" or "attacks freely". Removal can legitimately open an attack;
+    this checks the alleged blocker's abilities before removal. Missing rules,
+    possible grants, mixed same-name abilities and conditional claims abstain.
+    """
+    keys = _claim_keys([*ours, *theirs])
+    kept, notes = [], []
+    for sentence in re.split(r"(?<=[.!?;])\s+", text):
+        lowered = sentence.lower().replace("’", "'")
+        if re.search(r"\b(?:if|unless|once|after|when|would|could|might|not|never|cannot|can't)\b", lowered):
+            kept.append(sentence)
+            continue
+        spans = _name_spans(lowered, keys)
+        facts = []
+        for index, (start, end, name) in enumerate(spans[:-1]):
+            target_start, target_end, target_name = spans[index + 1]
+            blockers = [c for c in theirs if c.get("name") == name]
+            attackers = [c for c in ours if c.get("name") == target_name]
+            if not blockers or not attackers:
+                continue
+            between = lowered[end:target_start]
+            # "Pyromancer blocker so Slickshot attacks...", "Pyromancer is a
+            # blocker for Slickshot", or "blocker (Scapegoat) so ... Slickshot".
+            removal_pump = re.match(
+                r"^\s*:\s*it removes (?:(?:a|the|their|only|future)\s+)*blocker,\s*grows\s*$", between
+            ) and re.search(r"\bunblocked\b[^.!?]*\battack\b", lowered[target_end:])
+            named_blocker = (
+                removal_pump
+                or re.match(r"^\s*(?:is\s+)?(?:(?:a|the|their|only|future)\s+)*blocker\b", between)
+                or re.search(r"\bblocker\s*\($", lowered[:start])
+            )
+            attack_link = (
+                removal_pump
+                or re.search(r"\b(?:for|against)\s*$", between)
+                or (re.search(r"\bso\b", between) and re.match(r"\s+attacks?\b", lowered[target_end:]))
+            )
+            if not named_blocker or not attack_link:
+                continue
+            if any(c.get("face_down") or c.get("is_phased_out") for c in [*blockers, *attackers]):
+                continue
+            if (
+                all(_keyword_truth([a], "flying", battlefield) is True for a in attackers)
+                and all(_keyword_truth([b], "flying", battlefield) is False for b in blockers)
+                and all(_keyword_truth([b], "reach", battlefield) is False for b in blockers)
+            ):
+                facts.append(f"{name} cannot block {target_name}: {name} has no flying or reach")
+        if facts:
+            notes.extend(facts)
+            kept.append("Rules correction: " + "; ".join(dict.fromkeys(facts)) + ".")
+        else:
+            kept.append(sentence)
+    return (" ".join(kept) if notes else text), list(dict.fromkeys(notes))
+
+
 def _claim_corrections(
     text: str,
     *,
@@ -1468,11 +1527,12 @@ def _claim_corrections(
     from arenamcp.combat_keywords import annotate_cant_be_blocked, has_combat_keyword
     from arenamcp.combat_solver import _can_block
 
+    text, positive_notes = _positive_blocker_corrections(text, ours, theirs, battlefield)
     lowered = text.lower().replace("’", "'")
     creatures = [*ours, *theirs, *hand]
     spans = _name_spans(lowered, _claim_keys(creatures)) if len(lowered) == len(text) else []
     if not spans:
-        return text, []
+        return text, positive_notes
     by_name: dict[str, list[dict]] = {}
     for card in creatures:
         by_name.setdefault(str(card.get("name")), []).append(card)
@@ -1483,7 +1543,7 @@ def _claim_corrections(
     unblockable = {str(c.get("name")) for c in marked if c.get("cant_be_blocked")}
     attackers = [name for _start, _end, name in spans if name in our_names]
     edits: list[tuple[int, int, str]] = []
-    notes: list[str] = []
+    notes: list[str] = list(positive_notes)
     for index, (start, end, name) in enumerate(spans):
         stop = spans[index + 1][0] if index + 1 < len(spans) else len(lowered)
         window = lowered[end : min(stop, end + _CLAIM_WINDOW)]
