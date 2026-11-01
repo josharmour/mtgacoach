@@ -97,7 +97,8 @@ class _AutoQueueMixin(AutoQuestMixin):
         if not navigator.restore_after_reload(record):
             logger.info("Auto queue after reload: navigation did not take match %s (disabled)", ended)
             return False
-        self._auto_queue_observed_match = self._auto_queue_last_noted = ended
+        if not record.get("idle_recent"):
+            self._auto_queue_observed_match = self._auto_queue_last_noted = ended
         expected = record.get("expected_queue") or {}
         logger.info(
             "Auto queue after reload: continuing navigation for match %s at stage %s; requeueing %s with %r",

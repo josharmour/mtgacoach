@@ -544,7 +544,8 @@ class AutoQueueNavigator:
         """One line of what navigation is doing, for the still-waiting and watchdog logs."""
         parts = [f"stage={self._stage}"]
         if self._armed_at:
-            parts.append(f"{now - self._armed_at:.0f}s since match {self._ended_match_id} ended")
+            origin = "idle navigation started" if self._idle_grind else f"match {self._ended_match_id} ended"
+            parts.append(f"{now - self._armed_at:.0f}s since {origin}")
         worker = self._worker
         if worker is not None and worker.is_alive():
             parts.append(f"step in {self._step_phase or 'start'} for {now - self._step_started:.0f}s")
@@ -691,6 +692,11 @@ class AutoQueueNavigator:
         """Opted-in cold start. The bridge must prove Home is idle before joining."""
         with self._lock:
             if not self.enabled or self.active or state.get("pending_decision"):
+                return False
+            # #347: a room ID arrives before turn one or the mulligan request.
+            # Its absence of turns is not evidence that this match ended.
+            if state.get("match_id") and not state.get("last_game_result"):
+                self._status("Match detected; autoplay is in control")
                 return False
             if getattr(self._bridge, "client_runtime", "") != "il2cpp-macos":
                 return False
@@ -854,6 +860,10 @@ class AutoQueueNavigator:
             self._recent_completed_at = float(record.get("recent_completed_at") or 0)
             self._quest_deck_id = str(record.get("deck_id") or "")
             for match_id in [*(record.get("seen_ends") or []), ended]:
+                # Older idle checkpoints stored their startup ID as ended even
+                # when that room was just starting. Do not suppress its real end.
+                if self._idle_grind and match_id == ended:
+                    continue
                 if match_id and match_id not in self._seen_ends:
                     self._seen_ends.append(str(match_id))
             self._last_event_id = str(record.get("last_event_id") or "")
@@ -929,7 +939,17 @@ class AutoQueueNavigator:
     def _new_match(self, state: dict) -> bool:
         match_id = state.get("match_id")
         return bool(
-            match_id and (self._ended_match_id or self._idle_grind) and match_id != self._ended_match_id
+            match_id
+            and (
+                ((self._ended_match_id or self._idle_grind) and match_id != self._ended_match_id)
+                # Idle navigation has no authoritative completion. The same ID
+                # can be the active room captured before mulligans at restart.
+                or (
+                    self._idle_grind
+                    and self._recent_mode
+                    and (state.get("pending_decision") or not state.get("last_game_result"))
+                )
+            )
         )
 
     def _started_next_match(self) -> bool:
@@ -1737,6 +1757,9 @@ class AutoQueueNavigator:
     def _queue_recent(self, generation: int, aborted: threading.Event, bridge: Any) -> None:
         target = bridge.get_recent_match()
         if not self._current(generation, aborted):
+            return
+        if self._new_match(self._get_game_state() or {}):
+            self._handoff(generation, aborted)
             return
         if not target.get("ok"):
             self._failures += 1
