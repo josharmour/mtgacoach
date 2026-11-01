@@ -1,0 +1,810 @@
+{
+  "provenance": {
+    "match_id": "814296ac-3f26-41ff-9d95-08d7ec00736c",
+    "candidate_path": "/Users/joshu/Documents/Codex/2026-10-31/task-2/monitoring/814296ac-kogla-candidate.json",
+    "raw_path": "/Users/joshu/Documents/Codex/2026-10-31/task-2/monitoring/814296ac-kogla-raw.json",
+    "bundle_path": "/Users/joshu/.arenamcp/match_bundles/814296ac-3f26-41ff-9d95-08d7ec00736c.json.gz",
+    "baseline_commit": "5d59144",
+    "local_card_database": "/Users/joshu/Library/Application Support/Steam/steamapps/common/MTGA/MTGA_Data/Downloads/Raw/Raw_CardDatabase_85cb9959d0cf4cf8e316f118c322b8c2.mtga",
+    "limitations": [
+      "Retained exact menus, explanations and GRE objects/events; not the full original flattened planner state.",
+      "Local card text resolved by exact grpId at extraction time; trace source oracle is retained separately.",
+      "Read-only evidence supports mutual lethal damage; it does not establish that trading Kogla was strategically wrong."
+    ]
+  },
+  "decisions": [
+    {
+      "pending_decision": {
+        "request_id": [
+          248,
+          328
+        ],
+        "request_type": "ActionsAvailable",
+        "options": [
+          {
+            "option_id": "idx:0",
+            "label": "Cast Icetill Explorer",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Cast",
+              "grpId": 96766,
+              "instanceId": 246,
+              "abilityGrpId": 0,
+              "manaCost": [
+                {
+                  "color": "[ \"Generic\" ]",
+                  "count": 2
+                },
+                {
+                  "color": "[ \"Green\" ]",
+                  "count": 2
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 564,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 671,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 544,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "idx:1",
+            "label": "Cast Titan of Industry",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Cast",
+              "grpId": 80310,
+              "instanceId": 250,
+              "abilityGrpId": 0,
+              "manaCost": [
+                {
+                  "color": "[ \"Generic\" ]",
+                  "count": 4
+                },
+                {
+                  "color": "[ \"Green\" ]",
+                  "count": 3
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 564,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 671,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 551,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 544,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 758,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "idx:2",
+            "label": "Cast Kogla, the Titan Ape",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Cast",
+              "grpId": 71229,
+              "instanceId": 550,
+              "abilityGrpId": 0,
+              "manaCost": [
+                {
+                  "color": "[ \"Generic\" ]",
+                  "count": 3
+                },
+                {
+                  "color": "[ \"Green\" ]",
+                  "count": 3
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 564,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 671,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 544,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 758,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "idx:3",
+            "label": "Cast Vaultborn Tyrant",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Cast",
+              "grpId": 90681,
+              "instanceId": 560,
+              "abilityGrpId": 0,
+              "manaCost": [
+                {
+                  "color": "[ \"Generic\" ]",
+                  "count": 5
+                },
+                {
+                  "color": "[ \"Green\" ]",
+                  "count": 2
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 564,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 671,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 544,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 758,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "idx:4",
+            "label": "Cast Emrakul, the Exigent Doom",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Cast",
+              "grpId": 106225,
+              "instanceId": 657,
+              "abilityGrpId": 208083,
+              "manaCost": [
+                {
+                  "color": "[ \"Generic\" ]",
+                  "count": 10
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 564,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 551,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 544,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 758,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 764,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "idx:5",
+            "label": "Cast Turntimber Symbiosis",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Cast",
+              "grpId": 73425,
+              "instanceId": 666,
+              "abilityGrpId": 0,
+              "manaCost": [
+                {
+                  "color": "[ \"Generic\" ]",
+                  "count": 4
+                },
+                {
+                  "color": "[ \"Green\" ]",
+                  "count": 3
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 564,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 671,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 551,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 544,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 758,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "idx:6",
+            "label": "Cast Tamiyo's Safekeeping",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Cast",
+              "grpId": 79648,
+              "instanceId": 870,
+              "abilityGrpId": 0,
+              "manaCost": [
+                {
+                  "color": "[ \"Green\" ]",
+                  "count": 1
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 564,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "idx:7",
+            "label": "Play land: Yavimaya, Cradle of Growth",
+            "payable": null,
+            "meta": {
+              "actionType": "ActionType_Play",
+              "grpId": 77064,
+              "instanceId": 247,
+              "abilityGrpId": 0,
+              "manaCost": null,
+              "autoTapActions": [],
+              "hasAutoTap": false
+            }
+          },
+          {
+            "option_id": "pass",
+            "label": "Pass",
+            "payable": null,
+            "meta": {}
+          },
+          {
+            "option_id": "idx:19",
+            "label": "PlayMdfc",
+            "payable": null,
+            "meta": {
+              "actionType": "ActionType_PlayMdfc",
+              "grpId": 73426,
+              "instanceId": 666,
+              "abilityGrpId": 0,
+              "manaCost": null,
+              "autoTapActions": [],
+              "hasAutoTap": false
+            }
+          }
+        ],
+        "min_select": 1,
+        "max_select": 1,
+        "can_pass": true,
+        "can_cancel": false,
+        "source_label": "",
+        "min_weight": null,
+        "max_weight": null,
+        "slots": []
+      },
+      "chosen_options": [
+        "idx:2"
+      ],
+      "explanation": "Casting Kogla, the Titan Ape. Kogla's ETB fight kills the 6/6 Warden (their counter engine) and leaves a 7/6 blocker, the best stabilization play now.",
+      "turn": {
+        "turn_number": 10,
+        "phase": "Phase_Main1",
+        "step": "",
+        "active_player": 1
+      },
+      "reasoning": "Kogla's ETB fight kills the 6/6 Warden (their counter engine) and leaves a 7/6 blocker, the best stabilization play now.",
+      "source_instance_id": 0,
+      "source_oracle_text": "",
+      "targets": []
+    },
+    {
+      "pending_decision": {
+        "request_id": [
+          251,
+          333
+        ],
+        "request_type": "SelectTargets",
+        "options": [
+          {
+            "option_id": "tgt:547",
+            "label": "Bristly Bill, Spine Sower",
+            "payable": null,
+            "meta": {
+              "instanceId": 547,
+              "grpId": 0,
+              "targetIdx": 1,
+              "highlight": "Tepid"
+            }
+          },
+          {
+            "option_id": "tgt:661",
+            "label": "Warden of the Grove",
+            "payable": null,
+            "meta": {
+              "instanceId": 661,
+              "grpId": 0,
+              "targetIdx": 1,
+              "highlight": "Tepid"
+            }
+          },
+          {
+            "option_id": "tgt:769",
+            "label": "Hulk, Brutal Brawler",
+            "payable": null,
+            "meta": {
+              "instanceId": 769,
+              "grpId": 0,
+              "targetIdx": 1,
+              "highlight": "Tepid"
+            }
+          }
+        ],
+        "min_select": 0,
+        "max_select": 1,
+        "can_pass": false,
+        "can_cancel": false,
+        "source_label": "Kogla, the Titan Ape ability",
+        "min_weight": null,
+        "max_weight": null,
+        "slots": [
+          {
+            "target_idx": 1,
+            "min_targets": 0,
+            "max_targets": 1,
+            "selected": 0,
+            "candidate_ids": [
+              547,
+              661,
+              769
+            ]
+          }
+        ]
+      },
+      "chosen_options": [
+        "tgt:661"
+      ],
+      "explanation": "Warden of the Grove Kogla's 7 damage kills the 6/6 Warden of the Grove, removing their counter engine; Bill is indestructible and Hulk survives at 6 toughness.",
+      "turn": {
+        "turn_number": 10,
+        "phase": "Phase_Main1",
+        "step": "",
+        "active_player": 1
+      },
+      "reasoning": "Kogla's 7 damage kills the 6/6 Warden of the Grove, removing their counter engine; Bill is indestructible and Hulk survives at 6 toughness.",
+      "source_instance_id": 876,
+      "source_oracle_text": "when cardname enters, it fights up to one target creature you don't control.",
+      "targets": [
+        {
+          "option_id": "tgt:547",
+          "name": "Bristly Bill, Spine Sower",
+          "controller_seat_id": 2,
+          "owner_seat_id": 2,
+          "pt": "4/4",
+          "status": "tapped: can't block until their next untap",
+          "dies_to_damage": "never (indestructible)"
+        },
+        {
+          "option_id": "tgt:661",
+          "name": "Warden of the Grove",
+          "controller_seat_id": 2,
+          "owner_seat_id": 2,
+          "pt": "6/6",
+          "status": "tapped: can't block until their next untap",
+          "dies_to_damage": 6
+        },
+        {
+          "option_id": "tgt:769",
+          "name": "Hulk, Brutal Brawler",
+          "controller_seat_id": 2,
+          "owner_seat_id": 2,
+          "pt": "6/6",
+          "status": "untapped",
+          "dies_to_damage": 6
+        }
+      ]
+    }
+  ],
+  "raw_objects_at_251": {
+    "871": {
+      "instanceId": 871,
+      "grpId": 71229,
+      "type": "GameObjectType_Card",
+      "zoneId": 28,
+      "ownerSeatId": 1,
+      "controllerSeatId": 1,
+      "cardTypes": [
+        "CardType_Creature"
+      ],
+      "power": {
+        "value": 7
+      },
+      "toughness": {
+        "value": 6
+      },
+      "uniqueAbilities": [
+        {
+          "id": 450,
+          "grpId": 136112
+        },
+        {
+          "id": 451,
+          "grpId": 145352
+        },
+        {
+          "id": 452,
+          "grpId": 137303
+        }
+      ],
+      "hasSummoningSickness": true
+    },
+    "876": {
+      "instanceId": 876,
+      "grpId": 136112,
+      "type": "GameObjectType_Ability",
+      "zoneId": 27,
+      "ownerSeatId": 1,
+      "controllerSeatId": 1,
+      "objectSourceGrpId": 71229,
+      "parentId": 871
+    },
+    "661": {
+      "instanceId": 661,
+      "grpId": 95689,
+      "type": "GameObjectType_Card",
+      "zoneId": 28,
+      "ownerSeatId": 2,
+      "controllerSeatId": 2,
+      "cardTypes": [
+        "CardType_Creature"
+      ],
+      "power": {
+        "value": 6
+      },
+      "toughness": {
+        "value": 6
+      },
+      "uniqueAbilities": [
+        {
+          "id": 420,
+          "grpId": 188872
+        },
+        {
+          "id": 421,
+          "grpId": 188873
+        }
+      ],
+      "hasSummoningSickness": true,
+      "isTapped": true
+    },
+    "769": {
+      "instanceId": 769,
+      "grpId": 105843,
+      "type": "GameObjectType_Card",
+      "zoneId": 28,
+      "ownerSeatId": 2,
+      "controllerSeatId": 2,
+      "cardTypes": [
+        "CardType_Creature"
+      ],
+      "power": {
+        "value": 6
+      },
+      "toughness": {
+        "value": 6
+      },
+      "uniqueAbilities": [
+        {
+          "id": 441,
+          "grpId": 76824
+        },
+        {
+          "id": 442,
+          "grpId": 207550
+        }
+      ],
+      "hasSummoningSickness": true
+    },
+    "547": {
+      "instanceId": 547,
+      "grpId": 90503,
+      "type": "GameObjectType_Card",
+      "zoneId": 28,
+      "ownerSeatId": 2,
+      "controllerSeatId": 2,
+      "cardTypes": [
+        "CardType_Creature"
+      ],
+      "power": {
+        "value": 4
+      },
+      "toughness": {
+        "value": 4
+      },
+      "hasSummoningSickness": true,
+      "uniqueAbilities": [
+        {
+          "id": 388,
+          "grpId": 171897
+        },
+        {
+          "id": 389,
+          "grpId": 171898
+        },
+        {
+          "id": 403,
+          "grpId": 104
+        }
+      ],
+      "isTapped": true
+    }
+  },
+  "local_card_facts": {
+    "71229": {
+      "name": "Kogla, the Titan Ape",
+      "oracle_text": "When Kogla enters, it fights up to one target creature you don't control.\nWhenever Kogla attacks, destroy target artifact or enchantment defending player controls.\n{o1oG}: Return target Human you control to its owner's hand. Kogla gains indestructible until end of turn.",
+      "type_line": "Legendary Creature \u2014 Ape",
+      "mana_cost": "{3}{G}{G}{G}",
+      "power": "7",
+      "toughness": "6"
+    },
+    "95689": {
+      "name": "Warden of the Grove",
+      "oracle_text": "At the beginning of your end step, put a +1/+1 counter on this creature.\nWhenever another nontoken creature you control enters, it endures X, where X is the number of counters on this creature.",
+      "type_line": "Creature \u2014 Hydra",
+      "mana_cost": "{2}{G}",
+      "power": "2",
+      "toughness": "2"
+    },
+    "90503": {
+      "name": "Bristly Bill, Spine Sower",
+      "oracle_text": "<i>Landfall</i> \u2014 Whenever a land you control enters, put a +1/+1 counter on target creature.\n{o3oGoG}: Double the number of +1/+1 counters on each creature you control.",
+      "type_line": "Legendary Creature \u2014 Plant Druid",
+      "mana_cost": "{1}{G}",
+      "power": "2",
+      "toughness": "2"
+    },
+    "105843": {
+      "name": "Hulk, Brutal Brawler",
+      "oracle_text": "Hulk attacks each combat if able.\nWhenever Hulk attacks, put a +1/+1 counter on each other creature you control.",
+      "type_line": "Legendary Creature \u2014 Gamma Berserker Hero",
+      "mana_cost": "{2}{G}{G}",
+      "power": "4",
+      "toughness": "4"
+    }
+  },
+  "resolution_state": 255,
+  "resolution_annotations": [
+    {
+      "id": 715,
+      "affectorId": 871,
+      "affectedIds": [
+        661
+      ],
+      "type": [
+        "AnnotationType_DamageDealt"
+      ],
+      "details": [
+        {
+          "key": "damage",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            7
+          ]
+        },
+        {
+          "key": "type",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            3
+          ]
+        },
+        {
+          "key": "markDamage",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "id": 716,
+      "affectorId": 661,
+      "affectedIds": [
+        871
+      ],
+      "type": [
+        "AnnotationType_DamageDealt"
+      ],
+      "details": [
+        {
+          "key": "damage",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            6
+          ]
+        },
+        {
+          "key": "type",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            3
+          ]
+        },
+        {
+          "key": "markDamage",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "id": 722,
+      "affectedIds": [
+        661
+      ],
+      "type": [
+        "AnnotationType_ObjectIdChanged"
+      ],
+      "details": [
+        {
+          "key": "orig_id",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            661
+          ]
+        },
+        {
+          "key": "new_id",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            877
+          ]
+        }
+      ]
+    },
+    {
+      "id": 723,
+      "affectedIds": [
+        877
+      ],
+      "type": [
+        "AnnotationType_ZoneTransfer"
+      ],
+      "details": [
+        {
+          "key": "zone_src",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            28
+          ]
+        },
+        {
+          "key": "zone_dest",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            37
+          ]
+        },
+        {
+          "key": "category",
+          "type": "KeyValuePairValueType_string",
+          "valueString": [
+            "SBA_Damage"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 724,
+      "affectedIds": [
+        871
+      ],
+      "type": [
+        "AnnotationType_ObjectIdChanged"
+      ],
+      "details": [
+        {
+          "key": "orig_id",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            871
+          ]
+        },
+        {
+          "key": "new_id",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            878
+          ]
+        }
+      ]
+    },
+    {
+      "id": 725,
+      "affectedIds": [
+        878
+      ],
+      "type": [
+        "AnnotationType_ZoneTransfer"
+      ],
+      "details": [
+        {
+          "key": "zone_src",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            28
+          ]
+        },
+        {
+          "key": "zone_dest",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            33
+          ]
+        },
+        {
+          "key": "category",
+          "type": "KeyValuePairValueType_string",
+          "valueString": [
+            "SBA_Damage"
+          ]
+        }
+      ]
+    }
+  ],
+  "postresolution_255_plan_excerpt": "STRATEGIC ROLE (deterministic board math, recomputed now): CONTROL/STABILIZE \u2014 dead in 2 turns even after casting Tamiyo's Safekeeping (T10) (1 vs 2 creatures, 1 vs 10 power) \u2014 stabilize: block, remove, gain life; attack with The Notary Hobbits: dead on T11; hold: dead on T13 [game plan (turn 9) said DEFENDER; these board facts are newer \u2014 follow them]\n  THIS TURN (T10, now): play Yavimaya, Cradle of Growth; cast Kogla, the Titan Ape; attack: none; hold: no instants in hand; keep Notary tokens back as blockers/mana [game plan T9, written before the opponent's board changed: re-check its attacks]\n  FACTS: they kill us in 2 attack(s) (their next attack: 6 -> you at 1), we kill them in \u2014 | race BEHIND (they kill in 2, we get nothing through) | life 7 vs 25 | clock leaves out: Hulk, Brutal Brawler (attack trigger) | !! DEAD IN 2 TURNS UNLESS WE STABILIZE\n  NEXT: T12: cast Icetill Explorer; attack: none; hold: keep Titan/Vaultborn until 7 mana; spend spare mana this turn: unused mana empties at the end of each step and phase | T14: no cast; attack: none; hold: no castable play at 6 mana; hold Kogla as blocker, wait for a land/draw to reach Titan\n  Board: us 1 creatures/1 power vs them 2/10 | hand 6 vs 1 | lands 4 + land drop vs 5\n  Threats: Hulk, Brutal Brawler (6/6); Bristly Bill, Spine Sower (4/4)\n  Priority: survive first \u2014 creatures that block, removal on attackers and life gain before card draw, mana rocks, cycling or bouncing cheap creatures.\n\nGAME PLAN (formed turn 9 \u2014 your strategic spine for this game):\n  Win condition(s): Kogla/Titan beatdown after big-mana ramp; Notary token swarm into Craterhoof/Finale alpha strike\n  Path to win: T10 Kogla fights Warden dead and blocks; T12 Icetill ramps lands; then Titan/Vaultborn at 7 mana.\n  Switch if: they tap out with no blockers -> attack with Kogla; draw a mana dork or extra land -> ramp toward Titan; Bill grows past our blockers -> tutor Finale/Craterhoof\n  Biggest threat: Bristly Bill indestructible counter engine pl \u2026[truncated]"
+}

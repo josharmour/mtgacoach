@@ -9079,6 +9079,9 @@ class ActionPlanner(_ActionLegalityMixin):
         trigger_uses = trigger_memory.observe(game_state) if trigger_memory is not None else frozenset()
         public_outcomes = sequence_values(decision, game_state, used_draw_triggers=trigger_uses)
         lines.extend(sequence_value_notes(public_outcomes))
+        from arenamcp.fight_outcomes import fight_outcomes
+
+        lines.extend(outcome.reason for outcome in fight_outcomes(decision, game_state))
         if any(o.meta.get("choiceKind") == "selection" for o in decision.options):
             lines.append(
                 "CASTING-COST SELECTION: choose only among these offered battlefield creatures, "
@@ -9825,13 +9828,15 @@ class ActionPlanner(_ActionLegalityMixin):
 
     def _recheck_damage_facts(self, decision, state, data, chosen, ask, parse, message):
         """Reconsider a disproved damage/death premise; unresolved errors use current-board fallback."""
+        from arenamcp.fight_outcomes import fight_claim_concerns
         from arenamcp.postresolution_claims import false_activation_target_kills, surviving_damage_targets
 
         def concerns(picks, answer):
             reason = answer.get("reasoning", "")
+            fights = fight_claim_concerns(decision, state, picks, reason)
             if decision.request_type == "ActionsAvailable":
-                return surviving_damage_targets(state, reason)
-            return false_activation_target_kills(
+                return fights + surviving_damage_targets(state, reason)
+            return fights + false_activation_target_kills(
                 decision,
                 state,
                 picks,
