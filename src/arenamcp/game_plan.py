@@ -1820,9 +1820,10 @@ def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[
     turn_info = state.get("turn") or {}
     turn = _round(turn_info.get("turn_number"))
     our_turn = turn_info.get("active_player") == local
+    from arenamcp.plan_phase import phase_claim_notes
     from arenamcp.session_facts import claim_notes
 
-    notes: list[str] = claim_notes(text, state)
+    notes: list[str] = claim_notes(text, state) + phase_claim_notes(text, state)
 
     # Keyword and blocking claims, as in the plan (#23).
     _corrected, found = _claim_corrections(

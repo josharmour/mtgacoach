@@ -9874,6 +9874,9 @@ class ActionPlanner(_ActionLegalityMixin):
         lists the request's options itself, so the view's own menu lines
         (Legal:, GRE_Request:, the priority banner) are left out.
         """
+        from arenamcp.plan_phase import phase_decision_note
+
+        timing = phase_decision_note(game_state)
         try:
             from arenamcp.coach import CoachEngine
 
@@ -9886,10 +9889,11 @@ class ActionPlanner(_ActionLegalityMixin):
                         for line in context.split("\n")
                         if not line.startswith(self._RESTATED_REQUEST_LINES)
                     )
-                return context
+                return f"{timing}\n{context}" if timing else context
         except Exception as e:
             logger.warning(f"typed-decision context formatter failed: {e}")
-        return self._fallback_format(game_state)
+        context = self._fallback_format(game_state)
+        return f"{timing}\n{context}" if timing else context
 
     @staticmethod
     def deterministic_option_pick(decision: Any) -> list[str]:
