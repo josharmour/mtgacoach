@@ -45,7 +45,7 @@ _COMPLEX = re.compile(
     r"\b(?:instead|prevent|double|protection|ward|shield|toxic|infect|wither)\b|"
     r"\b(?:can't|cannot) (?:gain|lose|draw|be dealt)|"
     r"\b(?:creatures?|permanents?) (?:you control |your opponents control )?(?:get|have)|"
-    r"\byou (?:have|gain) (?:hexproof|shroud|protection)|"
+    r"\byou\b[^.\n]*\b(?:have|gain|has|gains)\b[^.\n]*\b(?:hexproof|shroud|protection)|"
     r"\b(?:gets?|gains?) [+-]\d|\benters?[^.]*\bcounters?\b|"
     r"\b(?:don't|doesn't|cannot|can't) cause abilities|trigger[^.]*additional time",
     re.I,
@@ -59,13 +59,19 @@ def _complex(card):
     return _COMPLEX.search(text)
 
 
+def _stat(card, name):
+    return card.get("modified_" + name, card.get(name))
+
+
 def _simple_target(card):
     return (
         is_creature_now(card)
         and not card.get("is_phased_out")
-        and type(card.get("toughness")) is int
-        and card["toughness"] > 0
+        and type(_stat(card, "toughness")) is int
+        and _stat(card, "toughness") > 0
         and not _complex(card)
+        and not card.get("protection_from_players")
+        and not any(str(k).lower().startswith(("ward", "protection")) for k in card.get("keywords") or [])
         and not any(has_combat_keyword(card, k) for k in ("hexproof", "shroud", "indestructible"))
     )
 
@@ -148,7 +154,7 @@ def sequence_values(decision, state, *, used_draw_triggers=frozenset()):
                 if not _simple_target(target):
                     continue
                 damage = target.get("damage", 0)
-                if type(damage) is not int or int(burn["damage"]) + damage < target["toughness"]:
+                if type(damage) is not int or int(burn["damage"]) + damage < _stat(target, "toughness"):
                     continue
                 target_id = target.get("instance_id")
                 if type(target_id) is not int:
@@ -182,8 +188,15 @@ def sequence_values(decision, state, *, used_draw_triggers=frozenset()):
         if not is_creature_now(source) or len(engines) != 1 or len(punishers) != 1 or type(iid) is not int:
             continue
         engine, punisher = engines[0], punishers[0]
-        power = source.get("power")
-        if type(power) is not int or power > int(_draw_entry(engine)[1]) or _complex(source):
+        power = _stat(source, "power")
+        toughness = _stat(source, "toughness")
+        if (
+            type(power) is not int
+            or power > int(_draw_entry(engine)[1])
+            or type(toughness) is not int
+            or toughness <= 0
+            or _complex(source)
+        ):
             continue
         once = bool(_ONCE.search(_text(engine)))
         spent = engine.get("instance_id") in used_draw_triggers
@@ -211,7 +224,7 @@ def sequence_values(decision, state, *, used_draw_triggers=frozenset()):
                 army_counters=1,
             )
         )
-        if _simple_target(source) and source["toughness"] == 1:
+        if _simple_target(source) and toughness == 1:
             values.append(
                 SequenceValue(
                     option.option_id,

@@ -173,3 +173,46 @@ def test_recorded_g04_names_and_oracle_shapes_retain_the_measured_tradeoff():
     assert any(v.removed == (31,) and v.draws == 1 and v.army_counters == 1 for v in values)
     # A remaining burn activation is not credited to the newly dead Lavamancer.
     assert all(not hasattr(v, "future_damage") for v in values)
+
+
+def test_current_modified_stats_override_printed_stats():
+    s = position()
+    s["battlefield"][1]["modified_toughness"] = 4
+    assert not any(80 in v.removed for v in sequence_values(menu(cast(30)), s))
+    s["hand"][1]["modified_power"] = 3
+    assert not sequence_values(menu(cast(31)), s)
+    s["hand"][1]["modified_power"] = 1
+    s["hand"][1]["modified_toughness"] = 2
+    assert not any(v.removed for v in sequence_values(menu(cast(31)), s))
+
+
+@pytest.mark.parametrize("toughness", [None, 0, -1])
+def test_unknown_or_nonpositive_entry_toughness_does_not_invent_survival(toughness):
+    s = position()
+    s["hand"][1]["modified_toughness"] = toughness
+    assert not sequence_values(menu(cast(31)), s)
+    assert not sequence_values(menu(cast(31)), s, used_draw_triggers={70})
+
+
+def test_shared_player_hexproof_does_not_invent_legal_face_ping():
+    s = position()
+    s["battlefield"].append(
+        card(
+            99,
+            "Player protector",
+            "Flying\nYou and Humans you control have hexproof.",
+            "Creature",
+            power=4,
+            toughness=5,
+        )
+    )
+    assert not sequence_values(menu(cast(31)), s)
+
+
+def test_granted_targeting_protection_is_not_lost_when_absent_from_oracle():
+    s = position()
+    s["battlefield"][1]["protection_from_players"] = [1]
+    assert not any(80 in v.removed for v in sequence_values(menu(cast(30)), s))
+    s["battlefield"][1].pop("protection_from_players")
+    s["battlefield"][1]["keywords"] = ["Ward"]
+    assert not any(80 in v.removed for v in sequence_values(menu(cast(30)), s))
