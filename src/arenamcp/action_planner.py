@@ -1159,32 +1159,70 @@ class ActionPlanner(_ActionLegalityMixin):
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
-    def _hedged_declaration(self, complete: Callable[..., str], *, deadline: float | None = None) -> str:
-        """A high-effort declaration with a low-effort one racing alongside (ledger #159).
+    def _hedged_declaration(
+        self,
+        complete: Callable[..., str],
+        *,
+        deadline: float | None = None,
+        usable: Callable[[str], bool] | None = None,
+    ) -> str:
+        """Return the first usable declaration and cancel the other model call.
 
-        The high answer wins when it arrives within the budget; when it fails or
-        runs out, the low answer stands (if it came). Both failing raises the
-        high call's error, as ``_bounded_call`` would.
+        #222/#265/#277: waiting for high to exhaust its budget after low had
+        already answered consumed combat windows. Check the ordinary parser's
+        legal actions before accepting a fast answer. If neither answer is
+        usable, retain a response for the caller's bounded repair path.
         """
+        started = time.monotonic()
         if deadline is None:
-            deadline = time.monotonic() + float(self._timeout or 0.0)
-        if deadline <= time.monotonic():
+            deadline = started + float(self._timeout or 0.0)
+        if deadline <= started:
             raise concurrent.futures.TimeoutError()
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="planner-llm")
         cancels = [threading.Event(), threading.Event()]
         try:
-            high = pool.submit(complete, "decision.plan", "high", cancel_event=cancels[0])
-            low = pool.submit(complete, "decision.plan", None, cancel_event=cancels[1])
-            try:
-                return self._wait_for_model(high, deadline)
-            except Exception as error:
-                logger.info("Declaration plan: high effort failed (%s); trying the low-effort answer", error)
-                try:
-                    answer = self._wait_for_model(low, deadline)
-                except Exception:
-                    raise error from None
-                logger.info("Declaration plan: the low-effort answer stands")
-                return answer
+            pending = {
+                "high": pool.submit(complete, "decision.plan", "high", cancel_event=cancels[0]),
+                "low": pool.submit(complete, "decision.plan", None, cancel_event=cancels[1]),
+            }
+            answers: dict[str, str] = {}
+            errors: dict[str, Exception] = {}
+            while pending:
+                outer = getattr(self, "_decision_cancel_event", None)
+                if outer is not None and outer.is_set():
+                    raise LLMUnavailableError("request changed during planning")
+                for leg, future in list(pending.items()):
+                    if not future.done():
+                        continue
+                    del pending[leg]
+                    try:
+                        answer = future.result()
+                        answers[leg] = answer
+                        valid = usable(answer) if usable is not None else bool(answer)
+                        if valid:
+                            logger.info(
+                                "Declaration plan: %s won in %.0f ms; other effort not awaited",
+                                leg,
+                                (time.monotonic() - started) * 1000,
+                            )
+                            return answer
+                    except Exception as error:
+                        errors[leg] = error
+                        logger.info("Declaration plan: %s effort failed (%s)", leg, error)
+                remaining = deadline - time.monotonic()
+                if not pending or remaining <= 0:
+                    break
+                concurrent.futures.wait(
+                    pending.values(),
+                    timeout=min(0.05, remaining),
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+            for leg in ("high", "low"):
+                if leg in answers:
+                    return answers[leg]
+            if errors:
+                raise errors.get("high", next(iter(errors.values())))
+            raise concurrent.futures.TimeoutError()
         finally:
             # Stop outstanding network work after a winner, timeout or
             # request change; shutdown(wait=False) alone only stops waiting.
@@ -1481,7 +1519,19 @@ class ActionPlanner(_ActionLegalityMixin):
 
         try:
             response = (
-                self._hedged_declaration(_complete, deadline=model_deadline)
+                self._hedged_declaration(
+                    _complete,
+                    deadline=model_deadline,
+                    usable=lambda answer: bool(
+                        self._parse_response(
+                            answer,
+                            effective_legal_actions,
+                            decision_context=decision_context,
+                            bridge_request=game_state.get("_bridge_request_type"),
+                            game_state=game_state,
+                        ).actions
+                    ),
+                )
                 if effort
                 else self._bounded_call(_complete, timeout_s=model_deadline - time.monotonic())
             )

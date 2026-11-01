@@ -3506,6 +3506,10 @@ class GamePlanManager:
     _PLAN_MAX_TOKENS = 6000
     _PLAN_TIMEOUT_S = 75.0
     _PLAN_REASONING_EFFORT = "high"
+    # #141/#223, 650ae555: even hosted "low" spent 45s reasoning without
+    # producing a first plan. Seed the same validated schema without hidden
+    # reasoning, then let normal opponent-turn refreshes think more deeply.
+    _INITIAL_HOSTED_PLAN_TIMEOUT_S = 20.0
     # A reform younger than this yields to a decision call; an older one finishes.
     _YIELD_GRACE_S = 4.0
     # With no plan at all, a reform outlives its turn up to this long before it
@@ -4385,6 +4389,13 @@ class GamePlanManager:
                 # Yielded or superseded: its replacement owns the status and the
                 # stall count, and may already have landed.
                 return self._plan
+            if plan is None:
+                # A slow failure can outlast the whole refresh interval. Start
+                # its retry cooldown now, otherwise the next trigger launches
+                # another full reform immediately and keeps the lane busy.
+                # Superseded/reset workers returned above and cannot postpone
+                # the replacement's work.
+                self._last_attempt_at = time.monotonic()
             if (
                 plan is not None
                 and self._observed_turn > plan_turn
@@ -4772,6 +4783,14 @@ class GamePlanManager:
         user_message = with_deck_reference("\n".join(user_parts), game_state)
 
         self._reform_failure = ""
+        model = str(getattr(self._backend, "model", "")).lower()
+        fast_initial = self._plan is None and (
+            model == "current" or any(name in model for name in ("deepseek", "dsv4"))
+        )
+        budget = min(self._timeout, self._INITIAL_HOSTED_PLAN_TIMEOUT_S) if fast_initial else self._timeout
+        # Parsing repair is part of this reform, not a second full occupation
+        # of the background lane (#141/#223). Share one wall-clock deadline.
+        deadline = time.monotonic() + budget
         try:
             # 2026-10-10 Brawl: the first plan after a mid-game restart took 35 s
             # at high effort on a 21k-token prompt. With no plan at all, a quick
@@ -4782,9 +4801,14 @@ class GamePlanManager:
                 if not self.separate_strategy_planning and self._low_effort_reform(game_state, turn_num)
                 else self._PLAN_REASONING_EFFORT
             )
-            if effort == "low":
+            if fast_initial:
+                effort = "none"
+                logger.info("Game plan: first hosted plan without hidden reasoning (%.1fs budget)", budget)
+            elif effort == "low":
                 logger.info("Game plan: reform at low effort for speed")
-            response = self._complete(GAME_PLAN_PROMPT, user_message, cancel=cancel, effort=effort)
+            response = self._complete(
+                GAME_PLAN_PROMPT, user_message, cancel=cancel, effort=effort, deadline=deadline
+            )
         except Exception as e:
             logger.warning("game-plan LLM call failed (keeping prior plan): %s", e)
             self._reform_failure = "call failed"
@@ -4792,9 +4816,12 @@ class GamePlanManager:
 
         plan = self._usable_plan(response, turn_num, cancel=cancel, effort=effort)
         if plan is None and self._reform_failure == "no usable plan from the model":
-            plan = self._retry_for_json(user_message, turn_num, cancel=cancel)
+            retry_effort = "none" if fast_initial else "low"
+            plan = self._retry_for_json(
+                user_message, turn_num, cancel=cancel, deadline=deadline, effort=retry_effort
+            )
             if plan is not None:
-                effort = "low"
+                effort = retry_effort
         if plan is None:
             return None
         plan.effort = effort
@@ -4874,21 +4901,37 @@ class GamePlanManager:
         return plan
 
     def _retry_for_json(
-        self, user_message: str, turn_num: int, *, cancel: threading.Event | None
+        self,
+        user_message: str,
+        turn_num: int,
+        *,
+        cancel: threading.Event | None,
+        deadline: float | None = None,
+        effort: str = "low",
     ) -> GamePlan | None:
-        """One low-effort retry after an unusable answer (none once cancelled or with the server down)."""
+        """One cheap retry within this reform's budget, unless cancelled or the server is down."""
         if (cancel is not None and cancel.is_set()) or not background_llm_allowed(self._backend):
             return None
-        logger.info("game-plan: asking once more, at low effort, for just the JSON plan (turn %d)", turn_num)
+        if deadline is not None and time.monotonic() >= deadline:
+            logger.info("game-plan: JSON retry skipped; reform time budget exhausted (turn %d)", turn_num)
+            self._reform_failure = "reform time budget exhausted"
+            return None
+        logger.info(
+            "game-plan: asking once more, at %s effort, for just the JSON plan (turn %d)", effort, turn_num
+        )
         try:
             response = self._complete(
-                GAME_PLAN_PROMPT, user_message + self._RETRY_NUDGE, cancel=cancel, effort="low"
+                GAME_PLAN_PROMPT,
+                user_message + self._RETRY_NUDGE,
+                cancel=cancel,
+                effort=effort,
+                deadline=deadline,
             )
         except Exception as e:
             logger.warning("game-plan retry call failed (keeping prior plan): %s", e)
             self._reform_failure = "call failed"
             return None
-        plan = self._usable_plan(response, turn_num, cancel=cancel, effort="low")
+        plan = self._usable_plan(response, turn_num, cancel=cancel, effort=effort)
         if plan is not None:
             logger.info("game-plan retry produced a usable plan (turn %d)", turn_num)
         return plan
@@ -4900,6 +4943,7 @@ class GamePlanManager:
         *,
         cancel: threading.Event | None = None,
         effort: str | None = None,
+        deadline: float | None = None,
     ) -> str:
         """Call the backend for a background strategy plan.
 
@@ -4912,12 +4956,15 @@ class GamePlanManager:
         labels = accepted_call_kwargs(
             self._backend, call_class=self._CALL_CLASS, priority=BACKGROUND_PRIORITY, cancel_event=cancel
         )
+        remaining = self._timeout if deadline is None else min(self._timeout, deadline - time.monotonic())
+        if remaining <= 0:
+            raise TimeoutError("game-plan reform time budget exhausted")
         return self._backend.complete(
             system_prompt,
             user_message,
             self._PLAN_MAX_TOKENS,
             temperature=0.0,
-            request_timeout_s=self._timeout,
+            request_timeout_s=remaining,
             background=True,
             reasoning_effort=effort or self._PLAN_REASONING_EFFORT,
             **labels,
