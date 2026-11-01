@@ -9332,6 +9332,11 @@ class ActionPlanner(_ActionLegalityMixin):
             if intent_note:
                 lines.insert(lines.index("OPTIONS:"), intent_note)
         if decision.request_type == "CastingTimeOptions":
+            from arenamcp.mode_claims import one_way_mode_note
+
+            mode_fact = one_way_mode_note(decision)
+            if mode_fact:
+                lines.append("MODE RULES: " + mode_fact)
             lines.append(
                 "Choose all required modes together from the SAME childIndex. "
                 "Honor that child's min/max counts; do not mix modes with Done or another child."
@@ -10059,6 +10064,7 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         try:
             from arenamcp.game_plan import decision_claim_notes
+            from arenamcp.mode_claims import correct_mode_reasoning
             from arenamcp.selection_claims import correct_return_claims
 
             cast_ids = [
@@ -10069,8 +10075,10 @@ class ActionPlanner(_ActionLegalityMixin):
             selection_reasoning, selection_notes = correct_return_claims(
                 self._last_decision_reasoning, decision, chosen
             )
+            mode_reasoning, mode_notes = correct_mode_reasoning(selection_reasoning, decision)
             notes = decision_claim_notes(self._last_decision_reasoning, game_state, cast_ids=cast_ids)
             notes.extend(selection_notes)
+            notes.extend(mode_notes)
         except Exception as error:  # never cost the decision
             logger.debug("typed-decision claim check failed: %s", error)
             return
@@ -10085,7 +10093,7 @@ class ActionPlanner(_ActionLegalityMixin):
 
         original = self._last_decision_reasoning
         self._last_decision_reasoning = corrected_decision_reasoning(
-            selection_reasoning, game_state, cast_ids=cast_ids
+            mode_reasoning, game_state, cast_ids=cast_ids
         )
         trace = getattr(self, "_last_decision_trace", None)
         if isinstance(trace, dict) and original != self._last_decision_reasoning:

@@ -339,15 +339,119 @@ def mode_kill_check(state: dict, decision: Any, chosen: list[str], reasoning: st
     )
 
 
+_COUNTER_THEN_DAMAGE = re.compile(
+    r"put a \+1/\+1 counter on target creature you control\. "
+    r"it deals damage equal to its power to target creature you (?:don't|do not) control\.?",
+    re.IGNORECASE,
+)
+
+
+def _counter_damage_mode(decision: Any) -> int | None:
+    """Recognize the offered counter/bite mode, without inventing a mode model.
+
+    #300: the Arena mode labels contain rules text even when source Oracle is
+    absent. Require a complete single-child/single-source modal menu. If an
+    actual fight is also offered, an unqualified 'fight mode' is ambiguous.
+    """
+    if getattr(decision, "request_type", "") != "CastingTimeOptions":
+        return None
+    options = list(decision.options)
+    if not options or any((o.meta or {}).get("choiceKind") != "modal" for o in options):
+        return None
+    groups = {(_int(o.meta.get("sourceId")), _int(o.meta.get("childIndex"))) for o in options}
+    if len(groups) != 1:
+        return None
+    source_id, child = next(iter(groups))
+    if not source_id or child is None or decision.min_select != 1 or decision.max_select != 1:
+        return None
+    current_source = getattr(decision, "source_instance_id", 0)
+    if current_source and current_source != source_id:
+        return None
+    found = []
+    for option in options:
+        if _int(option.meta.get("max", 1)) != 1:
+            return None
+        label = re.fullmatch(r"Mode (\d+):\s*(.+)", str(option.label), re.IGNORECASE | re.DOTALL)
+        index = _int(option.meta.get("optionIndex"))
+        if not label or index is None or int(label[1]) != index + 1:
+            return None
+        rules = " ".join(label[2].replace("’", "'").split())
+        if re.search(r"\bfights?\b|\beach other\b", rules, re.IGNORECASE):
+            return None
+        if _COUNTER_THEN_DAMAGE.fullmatch(rules):
+            found.append(int(label[1]))
+    return found[0] if len(found) == 1 else None
+
+
+def one_way_mode_note(decision: Any) -> str:
+    """Ground the counter-before-damage order before a modal choice."""
+    mode = _counter_damage_mode(decision)
+    if mode is None:
+        return ""
+    return (
+        f"Mode {mode} puts the +1/+1 counter before measuring the friendly creature's power for "
+        "one-way damage to the opposing target. This effect causes no reciprocal damage."
+    )
+
+
+def correct_mode_reasoning(text: str, decision: Any) -> tuple[str, list[str]]:
+    """Correct a current mode's fight description, keeping strategic judgments.
+
+    Only a clause explicitly naming the current 'fight mode' (or its mode
+    number) is bound to this menu. Other spells, hypothetical fights and mixed
+    fight/bite menus remain untouched. No selection or damage simulation occurs.
+    """
+    fact = one_way_mode_note(decision)
+    if not fact:
+        return text, []
+    mode = _counter_damage_mode(decision)
+    parts = re.split(r"([;.!?]\s*)", str(text or ""))
+    changed = False
+    for index in range(0, len(parts), 2):
+        clause = parts[index]
+        if re.search(
+            r"\b(?:if|unless|when|once|after|until|would|could|might|suppose|assuming|not|never|isn't|is not|actually)\b",
+            clause,
+            re.IGNORECASE,
+        ):
+            continue
+        claim = re.match(r"\s*(?:(?:the|this|its)\s+)?fight mode\b", clause, re.IGNORECASE)
+        numbered = re.match(rf"\s*mode {mode}\s+(?:is|uses)\s+(?:a\s+)?fight\b", clause, re.IGNORECASE)
+        if not claim and not numbered:
+            continue
+        if claim and re.match(r"\s+(?:of|from|on|with)\b", clause[claim.end() :], re.IGNORECASE):
+            continue  # explicitly qualified by another spell/effect, not this menu
+        if (
+            re.search(
+                r"\breciprocal damage\b|\bdamage (?:back|in return)\b|\bboth\b.*\bdeal\b.*\bdamage\b",
+                clause,
+                re.IGNORECASE,
+            )
+            or numbered
+        ):
+            parts[index] = fact.rstrip(".")
+        else:
+            parts[index] = "the mode that adds a counter and deals one-way damage" + clause[claim.end() :]
+        changed = True
+    if not changed:
+        return text, []
+    corrected = "".join(parts)
+    if fact.rstrip(".") not in corrected:
+        corrected = corrected.rstrip() + " Rules correction: " + fact
+    return corrected, [fact]
+
+
 __all__ = [
     "ModeKillCheck",
     "ModeKills",
     "ModeMenu",
+    "correct_mode_reasoning",
     "describe_mode",
     "modal_options",
     "mode_kill_check",
     "mode_mentions",
     "mode_patterns",
+    "one_way_mode_note",
     "other_modes_named",
     "read_menu",
 ]

@@ -1,0 +1,85 @@
+{
+  "pending_decision": {
+    "request_id": [
+      136,
+      181
+    ],
+    "request_type": "CastingTimeOptions",
+    "options": [
+      {
+        "option_id": "idx:0",
+        "label": "Mode 1: Search your library for a creature or land card and reveal it. Put it onto the battlefield tapped if it's a land card. Otherwise, put it into your hand. Then shuffle.",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "modal",
+          "requestClass": "CastingTimeOption_ModalRequest",
+          "childIndex": 0,
+          "label": "Mode 1",
+          "optionIndex": 0,
+          "grpId": 170534,
+          "sourceId": 664,
+          "abilityGrpId": 170536,
+          "min": 1,
+          "max": 1
+        }
+      },
+      {
+        "option_id": "idx:1",
+        "label": "Mode 2: Put a +1/+1 counter on target creature you control. It deals damage equal to its power to target creature you don't control.",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "modal",
+          "requestClass": "CastingTimeOption_ModalRequest",
+          "childIndex": 0,
+          "label": "Mode 2",
+          "optionIndex": 1,
+          "grpId": 170535,
+          "sourceId": 664,
+          "abilityGrpId": 170536,
+          "min": 1,
+          "max": 1
+        }
+      },
+      {
+        "option_id": "idx:2",
+        "label": "Mode 3: Exile target artifact or enchantment.",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "modal",
+          "requestClass": "CastingTimeOption_ModalRequest",
+          "childIndex": 0,
+          "label": "Mode 3",
+          "optionIndex": 2,
+          "grpId": 2571,
+          "sourceId": 664,
+          "abilityGrpId": 170536,
+          "min": 1,
+          "max": 1
+        }
+      }
+    ],
+    "min_select": 1,
+    "max_select": 1,
+    "can_pass": false,
+    "can_cancel": true,
+    "source_label": "",
+    "min_weight": null,
+    "max_weight": null,
+    "slots": []
+  },
+  "chosen_options": [
+    "idx:0"
+  ],
+  "turn": {
+    "turn_number": 7,
+    "phase": "Phase_Main1",
+    "step": "",
+    "active_player": 2
+  },
+  "reasoning": "Charm's search mode fetches a land or creature to advance our ramp toward Notary Hobbits and big threats; fight mode has no profitable target and exile mode has no artifact/enchantment worth removing.",
+  "match_id": "3d69785b",
+  "provenance": "task-2/monitoring/3d69785b-charm-candidate.json; board state136 in 3d69785b-charm-board.json; 1793510716.314334"
+}
