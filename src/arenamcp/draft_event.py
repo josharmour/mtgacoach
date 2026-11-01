@@ -747,14 +747,20 @@ class DraftEventDriver:
                 model_splash=self.run.plan_splash if self.run.plan else None,
             )
             # The short narrator may truncate the model reason. Keep the
-            # rating comparison audible and visible rather than losing it.
-            comparisons = list(
-                dict.fromkeys(
-                    reason[reason.index("Rating trade-off:") :]
-                    for g in chosen
-                    if isinstance((reason := model_reasons.get(g)), str) and "Rating trade-off:" in reason
-                )
-            )
+            # supplied comparison audible and visible, including unrated Cube
+            # choices where there is no measured rating gap (#317).
+            comparisons = []
+            for g in chosen:
+                reason = model_reasons.get(g)
+                if not isinstance(reason, str):
+                    continue
+                starts = [
+                    reason.index(marker)
+                    for marker in ("Rules check:", "Rating trade-off:", "Alternative:")
+                    if marker in reason
+                ]
+                if starts and (comparison := reason[min(starts) :]) not in comparisons:
+                    comparisons.append(comparison)
             for comparison in comparisons:
                 if comparison not in line:
                     line += " " + comparison

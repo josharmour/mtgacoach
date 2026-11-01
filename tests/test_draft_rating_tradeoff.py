@@ -2,6 +2,7 @@
 
 from unittest.mock import Mock
 
+import pytest
 from tests.test_draft_unrated_fallback import make_driver
 
 from arenamcp.draft_advisor import DraftAdvisor
@@ -60,3 +61,35 @@ def test_comparison_survives_short_narration():
         model_reasons={2: "Short reason. " + comparison},
     )
     assert comparison in line
+
+
+@pytest.mark.parametrize("band", ["unknown", "good"])
+def test_supplied_comparison_survives_without_a_measured_rating_gap(band):
+    rec = result("We need interaction; we give up evasive pressure.", band, band)["recommendations"][0]
+    assert "rating_tradeoff" not in rec
+    comparison = rec["alternative_comparison"]
+    assert "Alternative: Flying threat." in comparison
+    assert "not proven advantage" in comparison
+    assert "17Lands" not in comparison
+    assert comparison in rec["reason"]
+
+    driver, _, _ = make_driver([1, 2])
+    driver._narrator = Mock()
+    driver._narrator.pick_line.return_value = "Picking Removal."
+    line = driver._pick_commentary(
+        chosen=[2],
+        names=["Removal"],
+        pack=[1, 2],
+        pool=[],
+        primer=None,
+        pack_number=1,
+        pick_number=6,
+        model_reasons={2: rec["reason"]},
+    )
+    assert comparison in line
+
+
+def test_no_comparison_is_invented_when_none_is_supplied():
+    rec = result(chosen_band="unknown", other_band="unknown")["recommendations"][0]
+    assert "alternative_comparison" not in rec
+    assert rec["reason"] == "Interaction fits the pool."

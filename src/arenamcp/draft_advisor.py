@@ -11,6 +11,7 @@ from collections import Counter
 from typing import Any
 
 from arenamcp.draft_autopick import opening_pick
+from arenamcp.draft_facts import reason_corrections
 from arenamcp.draft_guidance import COLOR_LETTERS, FormatContext, analyze_pool, compute_lane, normalize_card
 from arenamcp.draft_plan import plan_colors
 from arenamcp.limited_rules import rules_profile, synergy_evidence, synergy_graph
@@ -131,6 +132,11 @@ present in supported_synergies; it lists conservative rules-text enabler/payoff
 links, not guaranteed trigger frequency. Explain the
 actual condition and costs. For unmodeled interactions, explain card roles instead
 of claiming a verified synergy. Loyalty counters never substitute for +1/+1 counters.
+Read printed mana_cost literally: generic {1} is not a second colored pip or
+colorless {C}. A card's color does not determine the mana its ability produces.
+Putting Equipment onto the battlefield does not activate equip or waive its cost.
+Living weapon and For Mirrodin attach that Equipment to their own created token;
+attribute that attachment to the Equipment, not to a tutor or deployment ability.
 When passing a higher quality_band card, alternative must identify the strongest
 higher-band card left in the pack. Explain the concrete trade-off: the actual pool's
 missing role (cite counts only if you counted them, or name the relevant owned cards),
@@ -704,6 +710,7 @@ class DraftAdvisor:
             raise ValueError("Draft response has the wrong number of picks")
         available = Counter(card["grp_id"] for card in cards)
         names = {card["grp_id"]: card["name"] for card in cards}
+        by_id = {card["grp_id"]: card for card in cards + pool}
         selected = []
         for pick in picks:
             if not isinstance(pick, dict) or type(pick.get("grp_id")) is not int:
@@ -715,9 +722,26 @@ class DraftAdvisor:
             reason = _text(pick.get("reason"))
             if not reason:
                 raise ValueError("Draft pick needs an explanation")
-            selected.append({"grp_id": grp_id, "name": names[grp_id], "reason": reason})
+            explanation = {"grp_id": grp_id, "name": names[grp_id], "reason": reason}
+            # Check the full reason before truncation, so an omitted condition
+            # cannot turn a qualified payment claim into a printed-cost claim.
+            corrections = reason_corrections(pick["reason"], by_id[grp_id], cards + pool)
+            if corrections:
+                logger.warning(
+                    "Draft rationale corrected for %s: %s; original: %s",
+                    names[grp_id],
+                    corrections,
+                    pick["reason"],
+                )
+                explanation.update(
+                    original_reason=pick["reason"],
+                    rules_corrections=corrections,
+                    reason="Rules check: "
+                    + " ".join(corrections)
+                    + " The pick rationale was omitted because it contradicted supplied card data.",
+                )
+            selected.append(explanation)
         owned = {card["grp_id"] for card in pool} | {pick["grp_id"] for pick in selected}
-        by_id = {card["grp_id"]: card for card in cards + pool}
         for pick, raw in zip(selected, picks, strict=True):
             # synergy_with explains a pick; it does not make it. A partner that
             # is outside the pool or lacks a rules-text link is dropped and
@@ -768,6 +792,20 @@ class DraftAdvisor:
             reason = _text(alternative.get("reason"))
             if type(grp_id) is int and available[grp_id] > 0 and reason:
                 result["alternative"] = {"grp_id": grp_id, "name": names[grp_id], "reason": reason}
+                if corrections := reason_corrections(alternative["reason"], by_id[grp_id], cards + pool):
+                    logger.warning(
+                        "Draft alternative corrected for %s: %s; original: %s",
+                        names[grp_id],
+                        corrections,
+                        alternative["reason"],
+                    )
+                    result["alternative"].update(
+                        original_reason=alternative["reason"],
+                        rules_corrections=corrections,
+                        reason="Rules check: "
+                        + " ".join(corrections)
+                        + " The comparison rationale was omitted because it contradicted supplied card data.",
+                    )
         # Preserve a reviewable comparison through the driver's reason channel.
         # These are supplied 17Lands quality bands, never Untapped scores.
         bands = {
@@ -801,4 +839,16 @@ class DraftAdvisor:
             )
             pick["rating_tradeoff"] = comparison
             pick["reason"] += " " + comparison
+        # Equal/unknown bands are not evidence that two cards are equally good.
+        # Preserve a supplied comparison for Cube/unrated packs too, without
+        # describing it as a measured rating gap (#317).
+        if alternative := result.get("alternative"):
+            comparison = (
+                f"Alternative: {alternative['name']}. {alternative['reason']} "
+                "(Coach's judgment, not proven advantage.)"
+            )
+            for pick in selected:
+                if "rating_tradeoff" not in pick:
+                    pick["alternative_comparison"] = comparison
+                    pick["reason"] += " " + comparison
         return result
