@@ -1912,7 +1912,7 @@ class ActionPlanner(_ActionLegalityMixin):
         if plan.actions[0].action_type != ActionType.DECLARE_BLOCKERS and not declined:
             return
         from arenamcp.attack_potential import pumped_attackers
-        from arenamcp.combat_hit import loses_on_combat_hit
+        from arenamcp.combat_loss import loss_state
         from arenamcp.combat_solver import _death_life, _resolve_attacker, blocker_options, optimal_blocks
         from arenamcp.combat_strategy import extra_combat_damage, phantom_attackers, with_hit_bonus
         from arenamcp.death_triggers import annotate_death_swings
@@ -1948,24 +1948,24 @@ class ActionPlanner(_ActionLegalityMixin):
         planned = {} if declined else action.blocker_instance_assignments or {}
         through = 0
         hit_loss = False
+        alternate = loss_state(state)
         for atk in attackers:
             outcome = _resolve_attacker(
                 atk, [cards[b] for b, a in planned.items() if a == atk["instance_id"] and b in cards]
             )
-            hit_loss |= (
-                outcome.damage_through > 0
-                and loses_on_combat_hit(atk)
-                and atk.get("attack_target_id") not in cards
-            )
+            if atk.get("attack_target_id") not in cards:
+                hit_loss |= outcome.player_loses
+                alternate = alternate.hit(outcome.poison_given, outcome.cards_milled)
             through += outcome.damage_through - _death_life(atk, outcome)[0]
         # An extra combat follows this one (Aurelia, ledger #191): its damage through the blockers
         # these blocks leave counts as this turn's.
         through += extra_combat_damage(state, attackers, planned)
+        hit_loss |= alternate.lost or alternate.draw_loses
         lethal = hit_loss or through >= life
         if not lethal and life - through > BLOCK_DANGER_LIFE:
             return
         allowed = blocker_options(context.get("raw_blockers") or [], context.get("blocker_options"))
-        survival = optimal_blocks(attackers, blockers, life, blocker_allowed_attackers=allowed or None)
+        survival = optimal_blocks(attackers, blockers, life, blocker_allowed_attackers=allowed or None, defender=loss_state(state))
         if survival is None or not survival.assignments:
             return
         survival_through = (
@@ -1973,7 +1973,7 @@ class ActionPlanner(_ActionLegalityMixin):
             + survival.death_drain
             + extra_combat_damage(state, attackers, survival.assignments)
         )
-        if survival.player_loses or survival_through >= life:
+        if survival.player_loses or survival.draw_loss_pending or survival_through >= life:
             return
         if not lethal and survival_through > through - BLOCK_DANGER_MARGIN:
             return  # the solver's blocks do not keep meaningfully more life
@@ -1998,7 +1998,7 @@ class ActionPlanner(_ActionLegalityMixin):
         action.blocker_instance_assignments = dict(survival.assignments)
         action.blocker_assignments = {label(b): label(a) for b, a in survival.assignments.items()}
         outcome = (
-            "lose the game to a combat-hit trigger"
+            "lose the game to a combat-hit trigger, poison, or the next draw"
             if hit_loss
             else ("were lethal" if lethal else f"left us at {life - through}")
         )

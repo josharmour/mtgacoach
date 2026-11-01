@@ -19,6 +19,7 @@ from arenamcp.combat_keywords import (
     modified_conditional_keywords,
     unmet_modified_flag,
 )
+from arenamcp.combat_loss import LossState, loss_state
 from arenamcp.combat_solver import (
     _can_block,
     _cards_key,
@@ -2297,7 +2298,7 @@ def _refused_chumps(
     return refused
 
 
-def guarded_block_plan(attackers: list[dict], defenders: list[dict], life: int, *, max_options: int = 50_000):
+def guarded_block_plan(attackers: list[dict], defenders: list[dict], life: int, *, max_options: int = 50_000, defender: LossState = LossState()):
     """Our best blocks against ``attackers`` (a crackback forecast) without chumps the chump guard refuses.
 
     2026-10-19 T10 (match c36db3a3): the free-attack rule held Slickshot
@@ -2311,12 +2312,15 @@ def guarded_block_plan(attackers: list[dict], defenders: list[dict], life: int, 
     """
     if not attackers:
         return None
-    key = ("guarded_blocks", _cards_key(attackers), _cards_key(defenders), life, max_options)
-    return _memoized(key, lambda: _guarded_block_plan(attackers, defenders, life, max_options))
+    key = ("guarded_blocks", _cards_key(attackers), _cards_key(defenders), life, max_options, defender)
+    return _memoized(key, lambda: _guarded_block_plan(attackers, defenders, life, max_options, defender))
 
 
-def _guarded_block_plan(attackers: list[dict], defenders: list[dict], life: int, max_options: int):
-    plan = combat_solver._search_blocks(attackers, defenders, life, max_options=max_options)
+def _guarded_block_plan(attackers: list[dict], defenders: list[dict], life: int, max_options, defender=LossState()):
+    plan = combat_solver._search_blocks(attackers, defenders, life, max_options=max_options, defender=defender)
+    if any(_resolve_attacker(a, []).poison_given or _resolve_attacker(a, []).cards_milled for a in attackers):
+        # Life-only chump pruning cannot disprove a poison/mill-saving block.
+        return plan
     by_id = {int(card.get("instance_id") or 0): card for card in defenders}
     attacker_ids = {int(card.get("instance_id") or 0) for card in attackers}
     if (
@@ -2743,6 +2747,8 @@ def wasteful_chump_blocks(
     attackers = _incoming_attackers(state, local_seat, _legal_block_map(state, pending))
     if not attackers or not all(_known_body(card) for card in attackers):
         return {}
+    if any(_resolve_attacker(a, []).poison_given or _resolve_attacker(a, []).cards_milled for a in attackers):
+        return {}  # do not undo a poison/mill-saving block using life-only arithmetic
     if _affordable_block_trick(state, local):
         return {}
     unpriced = unpriced_pumps(attackers, state)
@@ -3090,6 +3096,7 @@ def safe_default_blocks(state: dict, pending: dict | None = None) -> tuple[dict[
         blocker_allowed_attackers=legal,
         max_options=SAFE_DEFAULT_BLOCK_OPTIONS,
         caller="safe_default_blocks",
+        defender=loss_state(state),
         trick_exposure=combat_solver.attacking_trick_exposure(state),
     )
     assignments = dict(plan.assignments) if plan is not None else {}

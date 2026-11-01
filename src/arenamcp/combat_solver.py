@@ -33,6 +33,7 @@ from typing import Any
 
 from arenamcp.combat_hit import loses_on_combat_hit
 from arenamcp.combat_keywords import can_be_blocked_by, has_combat_keyword
+from arenamcp.combat_loss import LossState, loss_state, player_hit
 from arenamcp.death_triggers import swing_of
 from arenamcp.player_protection import protected_from_player_source, protected_players, source_controller
 from arenamcp.token_lifetime import token_expires
@@ -264,6 +265,11 @@ class CombatOutcome:
     blockers_died: list[dict] = field(default_factory=list)
     life_gained: int = 0  # a lifelink attacker's damage dealt (to blockers and through)
     blocker_life_gained: int = 0  # actual damage dealt by lifelink blockers
+    combat_damage: int = 0  # damage dealt to the recipient before infect changes its result
+    player_hits: int = 0
+    poison_given: int = 0
+    cards_milled: int = 0
+    player_loses: bool = False
 
 
 def _damage_order(
@@ -306,7 +312,32 @@ def _damage_order(
     return first + rest + unkillable
 
 
-def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
+def _resolve_attacker(
+    attacker: dict, assigned: list[dict], *, defending_player: bool = True
+) -> CombatOutcome:
+    out = _resolve_attacker_damage(attacker, assigned)
+    out.combat_damage = out.damage_through
+    if defending_player and out.player_hits:
+        text = str(attacker.get("oracle_text") or "").lower()
+        keywords = attacker.get("keywords") or ()
+        relevant = any(word in text for word in ("toxic", "poisonous", "infect", "mills"))
+        relevant |= any(str(k).lower().startswith(("toxic", "poisonous", "infect")) for k in keywords)
+        terminal = (
+            "loses the game" in text
+            or any(str(a) == "19443" for a in (attacker.get("ability_grp_ids") or ()))
+            or any(str(a) == "19443" for a in (attacker.get("granted_abilities") or ()))
+        )
+        if not relevant and not terminal:
+            return out
+        bonus = int(attacker.get("combat_hit_bonus") or 0)
+        damage = max(0, out.damage_through - bonus)
+        life, out.poison_given, out.cards_milled = player_hit(attacker, damage, out.player_hits)
+        out.damage_through = life + bonus
+        out.player_loses = terminal and loses_on_combat_hit(attacker)
+    return out
+
+
+def _resolve_attacker_damage(attacker: dict, assigned: list[dict]) -> CombatOutcome:
     """Resolve one attacker against its assigned blockers.
 
     Simplified damage model:
@@ -335,6 +366,7 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
     if not assigned:
         # Unblocked branches dominate repeated forecasts. Only double strike
         # and lifelink affect this result; defer blocked-combat keyword work.
+        out.player_hits = (2 if atk_ds else 1) if atk_p > 0 else 0
         out.damage_through = atk_p * (2 if atk_ds else 1)
         out.life_gained = out.damage_through if atk_lifelink else 0
         if out.damage_through > 0 and "combat_hit_bonus" in attacker:
@@ -384,6 +416,7 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
             if dmg_left <= 0:
                 break
         if atk_trample and dmg_left > 0:
+            out.player_hits = 1
             out.damage_through = dmg_left + int(attacker.get("combat_hit_bonus") or 0)
         # Excess without trample is assigned to one of the unprotected
         # blockers, even if lethal damage was already assigned to it.
@@ -423,6 +456,7 @@ def _resolve_attacker(attacker: dict, assigned: list[dict]) -> CombatOutcome:
             if dmg_left <= 0:
                 break
         if atk_trample and dmg_left > 0:
+            out.player_hits += 1
             out.damage_through += dmg_left
         if atk_trample or damage_targets:
             dealt += dmg_left
@@ -486,7 +520,10 @@ class BlockPlan:
     # (negative: loses; also counted in ``attacker_life_gained``).
     death_drain: int = 0
     attacker_death_life: int = 0
-    player_loses: bool = False  # a connected terminal combat-hit trigger
+    player_loses: bool = False  # terminal combat-hit trigger or ten poison
+    poison_given: int = 0
+    cards_milled: int = 0
+    draw_loss_pending: bool = False  # milling alone does not lose the game
 
 
 # What a life point the attacking side gains from a death trigger costs the blocking side, in
@@ -672,6 +709,8 @@ def optimal_blocks(
     blockers: list[dict],
     your_life: int = 20,
     *,
+    defender: LossState = LossState(),
+    defending_player: bool = True,
     blocker_allowed_attackers: dict[int, set[int]] | None = None,
     max_options: int = 50_000,
     recovery_credit: Callable[[frozenset[int]], float] | None = None,
@@ -687,6 +726,8 @@ def optimal_blocks(
             attackers,
             blockers,
             your_life,
+            defender=defender,
+            defending_player=defending_player,
             blocker_allowed_attackers=blocker_allowed_attackers,
             max_options=max_options,
             recovery_credit=recovery_credit,
@@ -704,6 +745,8 @@ def optimal_blocks(
         _cards_key(attackers),
         _cards_key(blockers),
         your_life,
+        defender,
+        defending_player,
         allowed,
         max_options,
         trick_exposure,
@@ -716,6 +759,8 @@ def optimal_blocks(
             attackers,
             blockers,
             your_life,
+            defender=defender,
+            defending_player=defending_player,
             blocker_allowed_attackers=blocker_allowed_attackers,
             max_options=max_options,
             trick_exposure=trick_exposure,
@@ -730,6 +775,8 @@ def _search_blocks(
     blockers: list[dict],
     your_life: int = 20,
     *,
+    defender: LossState = LossState(),
+    defending_player: bool = True,
     blocker_allowed_attackers: dict[int, set[int]] | None = None,
     max_options: int = 50_000,
     recovery_credit: Callable[[frozenset[int]], float] | None = None,
@@ -771,7 +818,6 @@ def _search_blocks(
     # Cap search space — 4 attackers x 6 blockers = 5^6 = 15625 which is
     # cheap; but 8 attackers × 8 blockers = 9^8 ≈ 43M which is not. Fall
     # back to a greedy heuristic when combinatorial search would be slow.
-    terminal_hits = [loses_on_combat_hit(a) for a in attackers]
     n_attackers = len(attackers)
     n_blockers = len(blockers)
     n_options = (n_attackers + 1) ** n_blockers
@@ -811,6 +857,8 @@ def _search_blocks(
                 attackers,
                 blockers,
                 your_life,
+                defender=defender,
+                defending_player=defending_player,
                 blocker_allowed_attackers=blocker_allowed_attackers,
                 trick_exposure=trick_exposure,
             )
@@ -854,6 +902,7 @@ def _search_blocks(
         evaluated += 1
         total_damage = 0
         player_loses = False
+        poison = mill = 0
         atk_killed_material = 0
         blocker_lost_material = 0
         blowout = 0
@@ -864,7 +913,7 @@ def _search_blocks(
             fight = fights.get(key)
             if fight is None:
                 assigned = [blockers[b] for b in key[1]]
-                outcome = _resolve_attacker(attackers[a_idx], assigned)
+                outcome = _resolve_attacker(attackers[a_idx], assigned, defending_player=defending_player)
                 fight = (
                     outcome.damage_through,
                     _material(attackers[a_idx]) if outcome.attacker_died else 0,
@@ -872,9 +921,14 @@ def _search_blocks(
                     frozenset(dead.get("instance_id", 0) for dead in outcome.blockers_died),
                     _blowout_loss(attackers[a_idx], assigned, outcome) if trick_p > 0 else 0,
                     *_death_life(attackers[a_idx], outcome),
+                    outcome.poison_given,
+                    outcome.cards_milled,
+                    outcome.player_loses,
                 )
                 fights[key] = fight
-            player_loses |= fight[0] > 0 and terminal_hits[a_idx]
+            poison += fight[7]
+            mill += fight[8]
+            player_loses |= fight[9]
             total_damage += fight[0]
             atk_killed_material += fight[1]
             blocker_lost_material += fight[2]
@@ -883,6 +937,8 @@ def _search_blocks(
             death_blocking += fight[5]
             death_attacking += fight[6]
 
+        remaining = defender.hit(poison, mill)
+        player_loses |= defending_player and remaining.lost
         score = _block_score(
             total_damage,
             atk_killed_material,
@@ -890,9 +946,14 @@ def _search_blocks(
             your_life,
             death_loss=-death_blocking,
             their_gain=death_attacking,
-            player_loses=player_loses,
+            player_loses=player_loses or (defending_player and remaining.draw_loses),
         )
-        if recovery_credit is not None and not player_loses and total_damage - death_blocking < your_life:
+        if (
+            recovery_credit is not None
+            and not remaining.draw_loses
+            and not player_loses
+            and total_damage - death_blocking < your_life
+        ):
             score += recovery_credit(frozenset(lost_ids))
         if raw_best is None or score > raw_best:
             raw_best = score
@@ -904,7 +965,14 @@ def _search_blocks(
 
     # Rebuild the winner in full (plan, kills, explanation) once.
     plan = _rebuild_block_plan(
-        attackers, blockers, best_choice, your_life, recovery_credit=recovery_credit, trick_p=trick_p
+        attackers,
+        blockers,
+        best_choice,
+        your_life,
+        defender=defender,
+        defending_player=defending_player,
+        recovery_credit=recovery_credit,
+        trick_p=trick_p,
     )
     plan.evaluated = evaluated
     if cut:
@@ -914,6 +982,8 @@ def _search_blocks(
             attackers,
             blockers,
             your_life,
+            defender=defender,
+            defending_player=defending_player,
             blocker_allowed_attackers=blocker_allowed_attackers,
             trick_exposure=trick_exposure,
         )
@@ -934,7 +1004,15 @@ def _search_blocks(
     if plan.trick_cost > 0:
         plan.trick_risk = _trick_risk_note(attackers, blockers, best_choice, trick_exposure)
     if raw_choice != best_choice:
-        rejected = _rebuild_block_plan(attackers, blockers, raw_choice, your_life, trick_p=trick_p)
+        rejected = _rebuild_block_plan(
+            attackers,
+            blockers,
+            raw_choice,
+            your_life,
+            trick_p=trick_p,
+            defender=defender,
+            defending_player=defending_player,
+        )
         if rejected.trick_cost > 0:
             plan.trick_rejected = (
                 f"{rejected.explanation}: {_trick_risk_note(attackers, blockers, raw_choice, trick_exposure)}"
@@ -1029,6 +1107,8 @@ def _rebuild_block_plan(
     *,
     recovery_credit: Callable[[frozenset[int]], float] | None = None,
     trick_p: float = 0.0,
+    defender: LossState = LossState(),
+    defending_player: bool = True,
 ) -> BlockPlan:
     """One block assignment in full: plan, kills, losses, score (trick cost included) and explanation."""
     assigned_to_atk: dict[int, list[dict]] = {}
@@ -1047,8 +1127,10 @@ def _rebuild_block_plan(
     blowout = 0
     for a_idx, atk in enumerate(attackers):
         assigned = assigned_to_atk.get(a_idx, [])
-        outcome = _resolve_attacker(atk, assigned)
-        plan.player_loses |= outcome.damage_through > 0 and loses_on_combat_hit(atk)
+        outcome = _resolve_attacker(atk, assigned, defending_player=defending_player)
+        plan.player_loses |= outcome.player_loses
+        plan.poison_given += outcome.poison_given
+        plan.cards_milled += outcome.cards_milled
         plan.damage_through += outcome.damage_through
         plan.attacker_life_gained += outcome.life_gained
         blocking, attacking = _death_life(atk, outcome)
@@ -1064,12 +1146,16 @@ def _rebuild_block_plan(
                 lost_blockers.append(dead)
             if trick_p > 0:
                 blowout += _blowout_loss(atk, assigned, outcome)
+    remaining = defender.hit(plan.poison_given, plan.cards_milled)
+    plan.player_loses |= defending_player and remaining.lost
+    plan.draw_loss_pending = defending_player and remaining.draw_loses
     plan.score = _score_block_plan(plan, your_life)
     plan.blockers_lost_ids = frozenset(c.get("instance_id", 0) for c in lost_blockers)
     plan.attackers_killed_ids = frozenset(c.get("instance_id", 0) for c in killed_attackers)
     if (
         recovery_credit is not None
         and not plan.player_loses
+        and not plan.draw_loss_pending
         and plan.damage_through + plan.death_drain < your_life
     ):
         plan.recovery_credit = recovery_credit(plan.blockers_lost_ids)
@@ -1179,7 +1265,7 @@ def _score_block_plan(plan: BlockPlan, your_life: int) -> float:
         your_life,
         death_loss=plan.death_drain,
         their_gain=plan.attacker_death_life,
-        player_loses=plan.player_loses,
+        player_loses=plan.player_loses or plan.draw_loss_pending,
     )
 
 
@@ -1203,7 +1289,13 @@ def _explain_block_plan(
     losses = [b.get("name", "?") for b in lost_blockers]
     tail = []
     if plan.player_loses:
-        tail.append("combat-hit trigger loses the game")
+        tail.append("poison loses the game" if plan.poison_given else "combat-hit trigger loses the game")
+    if plan.poison_given:
+        tail.append(f"{plan.poison_given} poison")
+    if plan.cards_milled:
+        tail.append(f"mill {plan.cards_milled}")
+    if plan.draw_loss_pending:
+        tail.append("empty library: next draw loses")
     if plan.damage_through > 0:
         tail.append(f"{plan.damage_through} dmg through")
     if kills:
@@ -1231,6 +1323,8 @@ def _greedy_block_plan(
     *,
     blocker_allowed_attackers: dict[int, set[int]] | None,
     trick_exposure: TrickExposure | None = None,
+    defender: LossState = LossState(),
+    defending_player: bool = True,
 ) -> BlockPlan:
     """Fallback for large combat — one blocker per attacker, biggest attackers first.
 
@@ -1246,6 +1340,9 @@ def _greedy_block_plan(
     """
     trick_p = trick_probability(trick_exposure)
     sorted_atk = sorted(enumerate(attackers), key=lambda ia: (not loses_on_combat_hit(ia[1]), -_pt(ia[1])[0]))
+    unblocked_hits = {i: _resolve_attacker(a, [], defending_player=defending_player) for i, a in sorted_atk}
+    pending_poison = sum(o.poison_given for o in unblocked_hits.values())
+    pending_mill = sum(o.cards_milled for o in unblocked_hits.values())
     remaining_blockers = list(blockers)
     assignments: dict[int, int] = {}
     total_damage = 0
@@ -1256,11 +1353,23 @@ def _greedy_block_plan(
     trick_cost = 0.0
     death_drain = attacker_death_life = 0
     player_loses = False
+    poison = mill = 0
 
     for _atk_idx, atk in sorted_atk:
         atk_iid = int(atk.get("instance_id") or 0)
         life_left = max(1, your_life - total_damage - death_drain)
-        unblocked = _resolve_attacker(atk, [])
+        unblocked = unblocked_hits[_atk_idx]
+        pending_poison -= unblocked.poison_given
+        pending_mill -= unblocked.cards_milled
+
+        def risk(outcome, base_poison=poison + pending_poison, base_mill=mill + pending_mill):
+            projected = defender.hit(base_poison + outcome.poison_given, base_mill + outcome.cards_milled)
+            fatal = defending_player and (projected.lost or projected.draw_loses)
+            # When several blocks are needed, each reduction matters even if
+            # this one block alone cannot bring the forecast below ten.
+            pressure = 100 * (projected.poison + max(0, base_mill + outcome.cards_milled)) if fatal else 0
+            return outcome.player_loses or fatal, pressure
+
         best: tuple[float, int, int, dict, CombatOutcome] | None = None
         for blk in remaining_blockers:
             blk_iid = int(blk.get("instance_id") or 0)
@@ -1269,18 +1378,22 @@ def _greedy_block_plan(
             )
             if not _can_block_this_attacker(atk, blk, allowed):
                 continue
-            outcome = _resolve_attacker(atk, [blk])
+            outcome = _resolve_attacker(atk, [blk], defending_player=defending_player)
             killed = _material(atk) if outcome.attacker_died else 0
             lost = sum(_material(dead) for dead in outcome.blockers_died)
             blocking, attacking = _death_life(atk, outcome)
-            score = _block_score(
-                outcome.damage_through,
-                killed,
-                lost,
-                life_left,
-                death_loss=-blocking,
-                their_gain=attacking,
-                player_loses=outcome.damage_through > 0 and loses_on_combat_hit(atk),
+            fatal, pressure = risk(outcome)
+            score = (
+                _block_score(
+                    outcome.damage_through,
+                    killed,
+                    lost,
+                    life_left,
+                    death_loss=-blocking,
+                    their_gain=attacking,
+                    player_loses=fatal,
+                )
+                - pressure
             )
             if trick_p > 0:
                 score -= trick_p * _blowout_loss(atk, [blk], outcome)
@@ -1288,21 +1401,29 @@ def _greedy_block_plan(
             key = (score, -_material(blk), _pt(blk)[1])
             if best is None or key > best[:3]:
                 best = (*key, blk, outcome)
-        no_block = _block_score(
-            unblocked.damage_through,
-            0,
-            0,
-            life_left,
-            player_loses=unblocked.damage_through > 0 and loses_on_combat_hit(atk),
+        fatal, pressure = risk(unblocked)
+        no_block = (
+            _block_score(
+                unblocked.damage_through,
+                0,
+                0,
+                life_left,
+                player_loses=fatal,
+            )
+            - pressure
         )
         if best is None or best[0] <= no_block:
-            player_loses |= unblocked.damage_through > 0 and loses_on_combat_hit(atk)
+            player_loses |= unblocked.player_loses
+            poison += unblocked.poison_given
+            mill += unblocked.cards_milled
             total_damage += unblocked.damage_through
             continue
         chosen, outcome = best[3], best[4]
         remaining_blockers.remove(chosen)
         assignments[int(chosen.get("instance_id") or 0)] = atk_iid
-        player_loses |= outcome.damage_through > 0 and loses_on_combat_hit(atk)
+        player_loses |= outcome.player_loses
+        poison += outcome.poison_given
+        mill += outcome.cards_milled
         total_damage += outcome.damage_through
         blocking, attacking = _death_life(atk, outcome)
         death_drain -= blocking
@@ -1316,36 +1437,37 @@ def _greedy_block_plan(
             blocker_lost_material += _material(dead)
             lost_blockers.append(dead)
 
-    plan = BlockPlan(
-        assignments=assignments,
-        player_loses=player_loses,
-        damage_through=total_damage,
-        attackers_killed_material=atk_killed_material,
-        blockers_lost_material=blocker_lost_material,
-        blockers_lost_ids=frozenset(c.get("instance_id", 0) for c in lost_blockers),
-        attackers_killed_ids=frozenset(c.get("instance_id", 0) for c in killed_attackers),
-        trick_cost=trick_cost,
-        death_drain=death_drain,
-        attacker_death_life=attacker_death_life,
-        attacker_life_gained=attacker_death_life,
-    )
-    plan.score = _score_block_plan(plan, your_life) - trick_cost
-    plan.explanation = "greedy: " + ", ".join(
-        f"{b.get('name', '?')} -> atk#{assignments[int(b.get('instance_id') or 0)]}"
+    choice = tuple(
+        next(
+            (
+                i
+                for i, a in enumerate(attackers)
+                if a.get("instance_id") == assignments.get(b.get("instance_id"))
+            ),
+            None,
+        )
         for b in blockers
-        if int(b.get("instance_id") or 0) in assignments
     )
-    no_blocks = BlockPlan(
-        damage_through=sum(_resolve_attacker(attacker, []).damage_through for attacker in attackers),
-        player_loses=any(
-            loses_on_combat_hit(a) and _resolve_attacker(a, []).damage_through > 0 for a in attackers
-        ),
+    plan = _rebuild_block_plan(
+        attackers,
+        blockers,
+        choice,
+        your_life,
+        defender=defender,
+        defending_player=defending_player,
+        trick_p=trick_p,
     )
-    no_blocks.score = _score_block_plan(no_blocks, your_life)
-    if no_blocks.score >= plan.score:
-        no_blocks.explanation = f"greedy: no blocks ({no_blocks.damage_through} dmg through)"
-        return no_blocks
-    return plan
+    no_blocks = _rebuild_block_plan(
+        attackers,
+        blockers,
+        tuple(None for _ in blockers),
+        your_life,
+        defender=defender,
+        defending_player=defending_player,
+    )
+    chosen = no_blocks if no_blocks.score >= plan.score else plan
+    chosen.explanation = "greedy: " + chosen.explanation
+    return chosen
 
 
 # --- Declare attackers solver ------------------------------------------
@@ -1841,7 +1963,9 @@ def evaluate_attack(
     """
     # Opponent blocks optimally — from THEIR perspective, lower
     # "damage_through" is good; we invert by using their life.
-    opp_block = _search_blocks(attacking, opponent_blockers, opponent_life, symmetric=True)
+    opp_block = _search_blocks(
+        attacking, opponent_blockers, opponent_life, symmetric=True, defender=loss_state(state, opponent=True)
+    )
     opponent_death_loss = 0
     if opp_block is None:
         unblocked = [_resolve_attacker(a, []) for a in attacking]
@@ -1889,7 +2013,7 @@ def evaluate_attack(
             if not (c.get("instance_id") and c.get("instance_id") in killed)
         ]
         crackers, drain = next_turn_engines(state, crackers, survivors)
-    crack_block = guarded_block_plan(crackers, defenders, your_life + life_gained)
+    crack_block = guarded_block_plan(crackers, defenders, your_life + life_gained, defender=loss_state(state))
     # Our blockers' deaths in their crackback drain us too (Vein Ripper, ledger #184).
     crackback = (
         (crack_block.damage_through + max(0, crack_block.death_drain))
@@ -1906,8 +2030,8 @@ def evaluate_attack(
         blockers_killed_material=blk_killed_mat,
         life_gained=life_gained,
         opponent_death_loss=opponent_death_loss,
-        opponent_loses=bool(opp_block and opp_block.player_loses),
-        lose_to_crackback=bool(crack_block and crack_block.player_loses),
+        opponent_loses=bool(opp_block and (opp_block.player_loses or opp_block.draw_loss_pending)),
+        lose_to_crackback=bool(crack_block and (crack_block.player_loses or crack_block.draw_loss_pending)),
     )
     plan.score = _score_attack_plan(plan, your_life, opponent_life)
     walker_cost = walker_crackback_cost(crackback, your_life + life_gained, our_walker_loyalties)
