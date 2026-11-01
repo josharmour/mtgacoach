@@ -1,0 +1,391 @@
+{
+  "pending_decision": {
+    "request_id": [
+      259,
+      337
+    ],
+    "request_type": "ActionsAvailable",
+    "options": [
+      {
+        "option_id": "idx:1",
+        "label": "Cast Heroic Intervention",
+        "payable": true,
+        "meta": {
+          "actionType": "ActionType_Cast",
+          "grpId": 105244,
+          "instanceId": 249,
+          "abilityGrpId": 0,
+          "manaCost": [
+            {
+              "color": "[ \"Generic\" ]",
+              "count": 1
+            },
+            {
+              "color": "[ \"Green\" ]",
+              "count": 1
+            }
+          ],
+          "autoTapActions": [
+            {
+              "instanceId": 444,
+              "manaId": 0
+            },
+            {
+              "instanceId": 451,
+              "manaId": 0
+            }
+          ],
+          "hasAutoTap": true
+        }
+      },
+      {
+        "option_id": "idx:2",
+        "label": "Cast Finale of Devastation",
+        "payable": true,
+        "meta": {
+          "actionType": "ActionType_Cast",
+          "grpId": 69611,
+          "instanceId": 250,
+          "abilityGrpId": 0,
+          "manaCost": [
+            {
+              "color": "[ \"X\" ]",
+              "count": 1
+            },
+            {
+              "color": "[ \"Green\" ]",
+              "count": 2
+            }
+          ],
+          "autoTapActions": [
+            {
+              "instanceId": 444,
+              "manaId": 0
+            },
+            {
+              "instanceId": 451,
+              "manaId": 0
+            }
+          ],
+          "hasAutoTap": true
+        }
+      },
+      {
+        "option_id": "idx:4",
+        "label": "Cast Settle the Wilds",
+        "payable": true,
+        "meta": {
+          "actionType": "ActionType_Cast",
+          "grpId": 79961,
+          "instanceId": 525,
+          "abilityGrpId": 0,
+          "manaCost": [
+            {
+              "color": "[ \"Generic\" ]",
+              "count": 2
+            },
+            {
+              "color": "[ \"Green\" ]",
+              "count": 1
+            }
+          ],
+          "autoTapActions": [
+            {
+              "instanceId": 444,
+              "manaId": 0
+            },
+            {
+              "instanceId": 451,
+              "manaId": 0
+            },
+            {
+              "instanceId": 459,
+              "manaId": 0
+            }
+          ],
+          "hasAutoTap": true
+        }
+      },
+      {
+        "option_id": "idx:5",
+        "label": "Activate: Firdoch Core [{4}: this becomes a 4/4 artifact creature until end of turn.]",
+        "payable": true,
+        "meta": {
+          "actionType": "ActionType_Activate",
+          "grpId": 98577,
+          "instanceId": 460,
+          "abilityGrpId": 194115,
+          "manaCost": [
+            {
+              "color": "[ \"Generic\" ]",
+              "count": 4
+            }
+          ],
+          "autoTapActions": [
+            {
+              "instanceId": 444,
+              "manaId": 0
+            },
+            {
+              "instanceId": 451,
+              "manaId": 0
+            },
+            {
+              "instanceId": 459,
+              "manaId": 0
+            },
+            {
+              "instanceId": 472,
+              "manaId": 0
+            }
+          ],
+          "hasAutoTap": true
+        }
+      },
+      {
+        "option_id": "idx:6",
+        "label": "Activate: Misty Rainforest [{T}, Pay 1 life, Sacrifice this: Search your library for a Forest or Island card, put it onto the battlefield, then shuffle.]",
+        "payable": null,
+        "meta": {
+          "actionType": "ActionType_Activate",
+          "grpId": 77058,
+          "instanceId": 526,
+          "abilityGrpId": 99243,
+          "manaCost": null,
+          "autoTapActions": [],
+          "hasAutoTap": false
+        }
+      },
+      {
+        "option_id": "pass",
+        "label": "Pass",
+        "payable": null,
+        "meta": {}
+      }
+    ],
+    "min_select": 1,
+    "max_select": 1,
+    "can_pass": true,
+    "can_cancel": false,
+    "source_label": "",
+    "min_weight": null,
+    "max_weight": null,
+    "slots": []
+  },
+  "chosen": [
+    "idx:2"
+  ],
+  "reasoning": "Finale of Devastation is the deck's tutor-to-battlefield engine; with 7 mana it can fetch a stabilizing creature (e.g. Kogla/Thorn Mammoth) to block the flying Angels, advancing the board better than holding Heroic Intervention on an empty token board.",
+  "state": {
+    "local_seat_id": 1,
+    "deck_catalog": {
+      "kogla, the titan ape": {
+        "name": "Kogla, the Titan Ape",
+        "oracle_text": "When Kogla enters, it fights up to one target creature you don't control. Whenever Kogla attacks, destroy target artifact or enchantment defending player controls. {1}{G}: Return target Human you control to its owner's hand. Kogla gains indestructible until end of turn.",
+        "keywords": [
+          "Fight"
+        ],
+        "type_line": "Legendary Creature \u2014 Ape",
+        "cmc": 6.0,
+        "mana_cost": "{3}{G}{G}{G}"
+      },
+      "thorn mammoth": {
+        "name": "Thorn Mammoth",
+        "oracle_text": "Trample Whenever this creature or another creature you control enters, this creature fights up to one target creature you don't control.",
+        "keywords": [
+          "Trample",
+          "Fight"
+        ],
+        "type_line": "Creature \u2014 Elephant",
+        "cmc": 7.0,
+        "mana_cost": "{5}{G}{G}"
+      },
+      "titan of industry": {
+        "name": "Titan of Industry",
+        "oracle_text": "Reach, trample When this creature enters, choose two \u2014 \u2022 Destroy target artifact or enchantment. \u2022 Target player gains 5 life. \u2022 Create a 4/4 green Rhino Warrior creature token. \u2022 Put a shield counter on a creature you control.",
+        "keywords": [
+          "Reach",
+          "Trample"
+        ],
+        "type_line": "Creature \u2014 Elemental",
+        "cmc": 7.0,
+        "mana_cost": "{4}{G}{G}{G}"
+      },
+      "69611": {
+        "name": "Finale of Devastation",
+        "oracle_text": "Search your library and/or graveyard for a creature card with mana value X or less and put it onto the battlefield. If you search your library this way, shuffle. If X is 10 or more, creatures you control get +X/+X and gain haste until end of turn.",
+        "keywords": [],
+        "type_line": "Sorcery",
+        "cmc": 2.0,
+        "mana_cost": "{X}{G}{G}"
+      }
+    },
+    "hand": [
+      {
+        "name": "Finale of Devastation",
+        "oracle_text": "Search your library and/or graveyard for a creature card with mana value X or less and put it onto the battlefield. If you search your library this way, shuffle. If X is 10 or more, creatures you control get +X/+X and gain haste until end of turn.",
+        "keywords": [],
+        "type_line": "Sorcery",
+        "cmc": 2.0,
+        "mana_cost": "{X}{G}{G}",
+        "instance_id": 250,
+        "grp_id": 69611
+      }
+    ],
+    "battlefield": [
+      {
+        "name": "Misty Rainforest",
+        "oracle_text": "{oT}, Pay 1 life, Sacrifice this land: Search your library for a Forest or Island card, put it onto the battlefield, then shuffle.",
+        "type_line": "Land",
+        "grp_id": 77058,
+        "instance_id": 526,
+        "controller_seat_id": 1
+      },
+      {
+        "name": "Ob Nixilis, the Ascended",
+        "oracle_text": "Flying\nWhen Ob Nixilis enters, destroy all tapped creatures your opponents control. You gain 1 life for each creature destroyed this way.\nAt the beginning of each end step, if you gained life this turn, create a 4/4 white Angel creature token with flying.",
+        "type_line": "Legendary Creature \u2014 Angel",
+        "grp_id": 107938,
+        "instance_id": 510,
+        "controller_seat_id": 2
+      },
+      {
+        "name": "Woodfall Primus",
+        "oracle_text": "Trample\nWhen this creature enters, destroy target noncreature permanent.\nPersist",
+        "type_line": "Creature \u2014 Treefolk Shaman",
+        "grp_id": 29589,
+        "instance_id": 501,
+        "controller_seat_id": 1
+      },
+      {
+        "name": "Forest",
+        "oracle_text": "",
+        "type_line": "Basic Land \u2014 Forest",
+        "grp_id": 75553,
+        "instance_id": 500,
+        "controller_seat_id": 1
+      },
+      {
+        "name": "World Breaker",
+        "oracle_text": "Devoid\nWhen you cast this spell, exile target artifact, enchantment, or land.\nReach\n{o2oC}, Sacrifice a land: Return this card from your graveyard to your hand.",
+        "type_line": "Creature \u2014 Eldrazi",
+        "grp_id": 62415,
+        "instance_id": 493,
+        "controller_seat_id": 1
+      },
+      {
+        "name": "Resplendent Marshal",
+        "oracle_text": "Flying\nWhen this creature enters or dies, you may exile another creature card from your graveyard. When you do, put a +1/+1 counter on each creature you control other than this creature that shares a creature type with the exiled card.",
+        "type_line": "Creature \u2014 Angel Warrior",
+        "grp_id": 75059,
+        "instance_id": 488,
+        "controller_seat_id": 2
+      },
+      {
+        "name": "Plains",
+        "oracle_text": "",
+        "type_line": "Basic Land \u2014 Plains",
+        "grp_id": 79115,
+        "instance_id": 483,
+        "controller_seat_id": 2
+      },
+      {
+        "name": "Forest",
+        "oracle_text": "",
+        "type_line": "Basic Land \u2014 Forest",
+        "grp_id": 75553,
+        "instance_id": 472,
+        "controller_seat_id": 1
+      },
+      {
+        "name": "Plains",
+        "oracle_text": "",
+        "type_line": "Basic Land \u2014 Plains",
+        "grp_id": 79115,
+        "instance_id": 465,
+        "controller_seat_id": 2
+      },
+      {
+        "name": "Firdoch Core",
+        "oracle_text": "Changeling\n{oT}: Add one mana of any color.\n{o4}: This artifact becomes a 4/4 artifact creature until end of turn.",
+        "type_line": "Kindred Artifact \u2014 Shapeshifter",
+        "grp_id": 98577,
+        "instance_id": 460,
+        "controller_seat_id": 1
+      },
+      {
+        "name": "Forest",
+        "oracle_text": "",
+        "type_line": "Basic Land \u2014 Forest",
+        "grp_id": 75553,
+        "instance_id": 459,
+        "controller_seat_id": 1
+      },
+      {
+        "name": "Letter of Acceptance",
+        "oracle_text": "{oT}: Add one mana of any color.\n{o2}, {oT}, Sacrifice this artifact: Draw a card.",
+        "type_line": "Artifact",
+        "grp_id": 76664,
+        "instance_id": 454,
+        "controller_seat_id": 2
+      },
+      {
+        "name": "Plains",
+        "oracle_text": "",
+        "type_line": "Basic Land \u2014 Plains",
+        "grp_id": 79115,
+        "instance_id": 453,
+        "controller_seat_id": 2
+      },
+      {
+        "name": "Forest",
+        "oracle_text": "",
+        "type_line": "Basic Land \u2014 Forest",
+        "grp_id": 75553,
+        "instance_id": 451,
+        "controller_seat_id": 1
+      },
+      {
+        "name": "Giada, Font of Hope",
+        "oracle_text": "Flying\nVigilance\nEach other Angel you control enters with an additional +1/+1 counter on it for each Angel you already control.\n{oT}: Add {oW}. Spend this mana only to cast an Angel spell.",
+        "type_line": "Legendary Creature \u2014 Angel",
+        "grp_id": 93854,
+        "instance_id": 447,
+        "controller_seat_id": 2
+      },
+      {
+        "name": "Plains",
+        "oracle_text": "",
+        "type_line": "Basic Land \u2014 Plains",
+        "grp_id": 79115,
+        "instance_id": 446,
+        "controller_seat_id": 2
+      },
+      {
+        "name": "Forest",
+        "oracle_text": "",
+        "type_line": "Basic Land \u2014 Forest",
+        "grp_id": 75553,
+        "instance_id": 444,
+        "controller_seat_id": 1
+      },
+      {
+        "name": "Plains",
+        "oracle_text": "",
+        "type_line": "Basic Land \u2014 Plains",
+        "grp_id": 79115,
+        "instance_id": 442,
+        "controller_seat_id": 2
+      },
+      {
+        "name": "Angel",
+        "oracle_text": "Flying",
+        "type_line": "Token Creature \u2014 Angel",
+        "grp_id": 107957,
+        "instance_id": 524,
+        "controller_seat_id": 2
+      }
+    ]
+  },
+  "provenance": "Exact request259/337 and rationale from770c7b8e-tutor-commander-candidate.json. Public battlefield reconstructed by merging GRE objects/zones from match start through state259 in retained Player.log; local card DB supplies printed rules by grpId. Tutor target facts from770c7b8e-tutor-oracles.json. Minimal fixture is not original enriched runtime snapshot; mana pool/payment not reconstructed."
+}
