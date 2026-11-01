@@ -9364,6 +9364,11 @@ class ActionPlanner(_ActionLegalityMixin):
             intent_note = self._cast_intent_note(decision, game_state)
             if intent_note:
                 lines.insert(lines.index("OPTIONS:"), intent_note)
+        from arenamcp.stack_protection import protection_prompt_note
+
+        protection_note = protection_prompt_note(decision, game_state)
+        if protection_note:
+            lines.append("STACK PROTECTION FACTS: " + protection_note)
         if decision.request_type == "CastingTimeOptions":
             from arenamcp.mode_claims import one_way_mode_note
 
@@ -9776,6 +9781,11 @@ class ActionPlanner(_ActionLegalityMixin):
         data, chosen = review_commander_decline(
             decision, game_state, data, chosen, ask, parse, user_message, self._last_decision_trace
         )
+        from arenamcp.stack_protection import review_protection_claim
+
+        data, chosen = review_protection_claim(
+            decision, game_state, data, chosen, ask, parse, user_message, self._last_decision_trace
+        )
         from arenamcp.cast_payoffs import correct_cast_payoff_claim
 
         data = correct_cast_payoff_claim(decision, game_state, chosen, data, self._last_decision_trace)
@@ -10145,6 +10155,7 @@ class ActionPlanner(_ActionLegalityMixin):
             from arenamcp.game_plan import decision_claim_notes
             from arenamcp.mode_claims import correct_cast_mode_reasoning, correct_mode_reasoning
             from arenamcp.selection_claims import correct_return_claims
+            from arenamcp.stack_protection import correct_protection_claims
             from arenamcp.tutor_claims import correct_cast_tutor_blockers, correct_tutor_claims
 
             cast_ids = [
@@ -10152,8 +10163,11 @@ class ActionPlanner(_ActionLegalityMixin):
                 for option in decision.options
                 if option.option_id in chosen and (option.meta or {}).get("actionType") == "ActionType_Cast"
             ]
+            protection_reasoning, protection_notes = correct_protection_claims(
+                self._last_decision_reasoning, decision, game_state, chosen
+            )
             selection_reasoning, selection_notes = correct_return_claims(
-                self._last_decision_reasoning, decision, chosen
+                protection_reasoning, decision, chosen
             )
             tutor_reasoning, tutor_notes = correct_tutor_claims(
                 selection_reasoning, game_state, decision, chosen
@@ -10167,6 +10181,7 @@ class ActionPlanner(_ActionLegalityMixin):
             mode_reasoning, mode_notes = correct_mode_reasoning(cast_reasoning, decision)
             notes = decision_claim_notes(self._last_decision_reasoning, game_state, cast_ids=cast_ids)
             notes.extend(selection_notes)
+            notes.extend(protection_notes)
             notes.extend(mode_notes)
             notes.extend(cast_notes)
             notes.extend(tutor_notes)

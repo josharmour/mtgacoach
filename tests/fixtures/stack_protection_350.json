@@ -1,0 +1,337 @@
+{
+  "provenance": "Exact decisions188/281 and189/283 and reasons fromc4139d3e-counterspell-protection-candidate.json; supplied cached Oracle text frommatching-oracles.json. Minimal normalized snapshots reconstruct source448->691, targetspell684, counter690->684 and legal battlefield targets fromexact rawGRE181-198 and menus. Not original full enriched runtime state.",
+  "cast": {
+    "decision": {
+      "request_id": [
+        188,
+        281
+      ],
+      "request_type": "ActionsAvailable",
+      "options": [
+        {
+          "option_id": "idx:0",
+          "label": "Cast Tamiyo's Safekeeping",
+          "payable": true,
+          "meta": {
+            "actionType": "ActionType_Cast",
+            "grpId": 79648,
+            "instanceId": 448,
+            "abilityGrpId": 0,
+            "manaCost": [
+              {
+                "color": "[ \"Green\" ]",
+                "count": 1
+              }
+            ],
+            "autoTapActions": [
+              {
+                "instanceId": 683,
+                "manaId": 0
+              }
+            ],
+            "hasAutoTap": true,
+            "targets": [
+              {
+                "targetId": 1,
+                "targets": [
+                  {
+                    "targetInstanceId": 546,
+                    "highlight": "Tepid"
+                  },
+                  {
+                    "targetInstanceId": 553,
+                    "highlight": "Tepid"
+                  },
+                  {
+                    "targetInstanceId": 657,
+                    "highlight": "Tepid"
+                  },
+                  {
+                    "targetInstanceId": 664,
+                    "highlight": "Tepid"
+                  },
+                  {
+                    "targetInstanceId": 670,
+                    "highlight": "Tepid"
+                  },
+                  {
+                    "targetInstanceId": 683,
+                    "highlight": "Tepid"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "option_id": "pass",
+          "label": "Pass",
+          "payable": null,
+          "meta": {}
+        }
+      ],
+      "min_select": 1,
+      "max_select": 1,
+      "can_pass": true,
+      "can_cancel": false,
+      "source_label": "",
+      "min_weight": null,
+      "max_weight": null,
+      "slots": []
+    },
+    "chosen": [
+      "idx:0"
+    ],
+    "reasoning": "Strix Serenade is on the stack targeting Notary Hobbits; Safekeeping grants hexproof so the counter fizzles, preserving our token engine and gaining 2 life.",
+    "state": {
+      "local_seat_id": 2,
+      "battlefield": [
+        {
+          "instance_id": 546,
+          "name": "Forest",
+          "type_line": "Basic Land \u2014 Forest",
+          "controller_seat_id": 2
+        },
+        {
+          "instance_id": 553,
+          "name": "Forest",
+          "type_line": "Basic Land \u2014 Forest",
+          "controller_seat_id": 2
+        },
+        {
+          "instance_id": 657,
+          "name": "Utopia Sprawl",
+          "type_line": "Enchantment",
+          "controller_seat_id": 2
+        },
+        {
+          "instance_id": 664,
+          "name": "Forest",
+          "type_line": "Basic Land \u2014 Forest",
+          "controller_seat_id": 2
+        },
+        {
+          "instance_id": 670,
+          "name": "Forest",
+          "type_line": "Basic Land \u2014 Forest",
+          "controller_seat_id": 2
+        },
+        {
+          "instance_id": 683,
+          "name": "Forest",
+          "type_line": "Basic Land \u2014 Forest",
+          "controller_seat_id": 2
+        }
+      ],
+      "stack": [
+        {
+          "instance_id": 690,
+          "grp_id": 90920,
+          "name": "Strix Serenade",
+          "type_line": "Instant",
+          "oracle_text": "Counter target artifact, creature, or planeswalker spell. Its controller creates a 2/2 blue Bird creature token with flying.",
+          "controller_seat_id": 1,
+          "targeting": [
+            684
+          ]
+        },
+        {
+          "instance_id": 684,
+          "grp_id": 103511,
+          "name": "The Notary Hobbits",
+          "type_line": "Legendary Creature \u2014 Halfling Advisor",
+          "object_kind": "CARD",
+          "controller_seat_id": 2
+        }
+      ],
+      "hand": [
+        {
+          "name": "Tamiyo's Safekeeping",
+          "oracle_text": "Target permanent you control gains hexproof and indestructible until end of turn. You gain 2 life. (A permanent with hexproof and indestructible can't be the target of spells or abilities your opponents control. Damage and effects that say \"destroy\" don't destroy it.)",
+          "type_line": "Instant",
+          "grp_id": 79648,
+          "controller_seat_id": 2,
+          "instance_id": 448
+        }
+      ]
+    }
+  },
+  "target": {
+    "decision": {
+      "request_id": [
+        189,
+        283
+      ],
+      "request_type": "SelectTargets",
+      "options": [
+        {
+          "option_id": "tgt:546",
+          "label": "Forest",
+          "payable": null,
+          "meta": {
+            "instanceId": 546,
+            "grpId": 0,
+            "targetIdx": 1,
+            "highlight": "Tepid"
+          }
+        },
+        {
+          "option_id": "tgt:553",
+          "label": "Forest",
+          "payable": null,
+          "meta": {
+            "instanceId": 553,
+            "grpId": 0,
+            "targetIdx": 1,
+            "highlight": "Tepid"
+          }
+        },
+        {
+          "option_id": "tgt:657",
+          "label": "Utopia Sprawl",
+          "payable": null,
+          "meta": {
+            "instanceId": 657,
+            "grpId": 0,
+            "targetIdx": 1,
+            "highlight": "Tepid"
+          }
+        },
+        {
+          "option_id": "tgt:664",
+          "label": "Forest",
+          "payable": null,
+          "meta": {
+            "instanceId": 664,
+            "grpId": 0,
+            "targetIdx": 1,
+            "highlight": "Tepid"
+          }
+        },
+        {
+          "option_id": "tgt:670",
+          "label": "Forest",
+          "payable": null,
+          "meta": {
+            "instanceId": 670,
+            "grpId": 0,
+            "targetIdx": 1,
+            "highlight": "Tepid"
+          }
+        },
+        {
+          "option_id": "tgt:683",
+          "label": "Forest",
+          "payable": null,
+          "meta": {
+            "instanceId": 683,
+            "grpId": 0,
+            "targetIdx": 1,
+            "highlight": "Tepid"
+          }
+        }
+      ],
+      "min_select": 1,
+      "max_select": 1,
+      "can_pass": false,
+      "can_cancel": true,
+      "source_label": "Tamiyo's Safekeeping",
+      "min_weight": null,
+      "max_weight": null,
+      "slots": [
+        {
+          "target_idx": 1,
+          "min_targets": 1,
+          "max_targets": 1,
+          "selected": 0,
+          "candidate_ids": [
+            546,
+            553,
+            657,
+            664,
+            670,
+            683
+          ]
+        }
+      ]
+    },
+    "chosen": [
+      "tgt:683"
+    ],
+    "reasoning": "Grant hexproof to the Notary Hobbits spell's target so Strix Serenade fizzles, preserving our token engine; any Forest works but pick the untapped one.",
+    "state": {
+      "local_seat_id": 2,
+      "battlefield": [
+        {
+          "instance_id": 546,
+          "name": "Forest",
+          "type_line": "Basic Land \u2014 Forest",
+          "controller_seat_id": 2
+        },
+        {
+          "instance_id": 553,
+          "name": "Forest",
+          "type_line": "Basic Land \u2014 Forest",
+          "controller_seat_id": 2
+        },
+        {
+          "instance_id": 657,
+          "name": "Utopia Sprawl",
+          "type_line": "Enchantment",
+          "controller_seat_id": 2
+        },
+        {
+          "instance_id": 664,
+          "name": "Forest",
+          "type_line": "Basic Land \u2014 Forest",
+          "controller_seat_id": 2
+        },
+        {
+          "instance_id": 670,
+          "name": "Forest",
+          "type_line": "Basic Land \u2014 Forest",
+          "controller_seat_id": 2
+        },
+        {
+          "instance_id": 683,
+          "name": "Forest",
+          "type_line": "Basic Land \u2014 Forest",
+          "controller_seat_id": 2
+        }
+      ],
+      "stack": [
+        {
+          "name": "Tamiyo's Safekeeping",
+          "oracle_text": "Target permanent you control gains hexproof and indestructible until end of turn. You gain 2 life. (A permanent with hexproof and indestructible can't be the target of spells or abilities your opponents control. Damage and effects that say \"destroy\" don't destroy it.)",
+          "type_line": "Instant",
+          "grp_id": 79648,
+          "controller_seat_id": 2,
+          "instance_id": 691
+        },
+        {
+          "instance_id": 690,
+          "grp_id": 90920,
+          "name": "Strix Serenade",
+          "type_line": "Instant",
+          "oracle_text": "Counter target artifact, creature, or planeswalker spell. Its controller creates a 2/2 blue Bird creature token with flying.",
+          "controller_seat_id": 1,
+          "targeting": [
+            684
+          ]
+        },
+        {
+          "instance_id": 684,
+          "grp_id": 103511,
+          "name": "The Notary Hobbits",
+          "type_line": "Legendary Creature \u2014 Halfling Advisor",
+          "object_kind": "CARD",
+          "controller_seat_id": 2
+        }
+      ],
+      "hand": [],
+      "_bridge_request_payload": {
+        "sourceId": 691
+      }
+    }
+  }
+}
