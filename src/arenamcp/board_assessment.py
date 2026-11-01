@@ -3553,12 +3553,20 @@ def _role(
         return ROLE_CONTROL, f"the greedy line dies; best surviving line: {line_text}"
     if dead_in is not None and dead_in <= 2:
         deployed = next((s for s in lookahead if s.casts), None)
-        after = (
-            f" even after casting {', '.join(deployed.casts)} (T{deployed.turn})"
-            if deployed
-            else " and nothing castable stops it"
+        if deployed:
+            after = f" even after casting {', '.join(deployed.casts)} (T{deployed.turn})"
+        elif caveat:
+            # The search cannot value these casts, so "nothing castable" would deny
+            # plays Arena offers (ledger #244: two Auras offered while the reason
+            # said nothing castable stops it). Name them instead of guessing.
+            after = " and nothing modelled stops it"
+        else:
+            after = " and nothing castable stops it"
+        board_note = f"{board}; not modelled: {caveat}" if caveat else board
+        return (
+            ROLE_CONTROL,
+            f"dead in {dead_in} turns{after} ({board_note}) — stabilize: block, remove, gain life",
         )
-        return ROLE_CONTROL, f"dead in {dead_in} turns{after} ({board}) — stabilize: block, remove, gain life"
     # "Race it or remove it" only while we have a clock to race with (2026-10-19 10:24:18: "race
     # it" with our clock none).
     answer = "race it or remove it" if our_clock is not None else "remove it"
