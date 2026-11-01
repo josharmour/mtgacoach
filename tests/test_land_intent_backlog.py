@@ -162,3 +162,42 @@ def test_land_notes_show_distinct_double_white_access():
     notes = land_payment_notes(decision, state)
     assert "can pay {1}{W}{W} for Adeline" in notes[0]
     assert "cannot pay {1}{W}{W} for Adeline" in notes[2]
+
+
+def test_unrelated_untapped_source_is_not_a_false_entry_claim():
+    state, decision = recorded_board()
+    assert (
+        land_claim_mismatch(
+            decision, state, ["idx:7"], "Play Sundown Pass tapped. Keep Mountain untapped for interaction."
+        )
+        is None
+    )
+
+
+def test_colorless_requires_an_actual_colorless_source():
+    from arenamcp.land_intent import _payment_after
+
+    state, _ = recorded_board()
+    state["hand"][3]["mana_cost"] = "{C}"
+    assert _payment_after(state, state["hand"][0], state["hand"][3]) is False
+    state["battlefield"][0] = card(281, "Wastes", "{T}: Add {C}.", "Basic Land")
+    assert _payment_after(state, state["hand"][0], state["hand"][3]) is True
+
+
+def test_untap_mana_replacement_and_convoke_need_richer_payment_model():
+    from arenamcp.land_intent import _payment_after
+
+    for text in (
+        "Whenever a permanent enters the battlefield tapped and under your control, untap it.",
+        "If a land is tapped for mana, it produces {B} instead of any other type and amount.",
+    ):
+        state, _ = recorded_board()
+        state["battlefield"].append(card(600, "Modifier", text, "Artifact"))
+        assert _payment_after(state, state["hand"][2], state["hand"][3]) is None
+    state, decision = recorded_board()
+    state["hand"][3].update(mana_cost="{3}{W}", oracle_text="Convoke")
+    state["battlefield"] += [card(i, "Helper", "", "Creature") for i in (600, 601)]
+    assert (
+        land_claim_mismatch(decision, state, ["idx:5"], "Play Plains to cast Voice of Victory this turn.")
+        is None
+    )

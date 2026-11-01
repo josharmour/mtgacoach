@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from arenamcp.land_mana import basic_types, enters_tapped, mana_source
 from arenamcp.mana import get_local_seat_id
-from arenamcp.mulligan_policy import _mana_value, _pip_matching, _pips, _symbols
+from arenamcp.mulligan_policy import _mana_value, _pip_matching, _symbols
 from arenamcp.play_safety import find_source
 from arenamcp.rules_engine import _normalize_mana_symbols
 
@@ -46,7 +46,11 @@ def _payment_after(state, land, spell):
     cost = _normalize_mana_symbols(str(spell.get("mana_cost") or ""))
     if not cost or any(s not in {"W", "U", "B", "R", "G", "C"} and not s.isdigit() for s in _symbols(cost)):
         return None
-    if re.search(r"additional cost|costs? .*less|rather than pay", str(spell.get("oracle_text") or ""), re.I):
+    if re.search(
+        r"additional cost|costs? .*less|rather than pay|\b(?:convoke|delve|improvise|affinity|emerge|offering)\b",
+        str(spell.get("oracle_text") or ""),
+        re.I,
+    ):
         return None
     if any(p.get("mana_pool") for p in state.get("players") or [] if p.get("seat_id") == local):
         return None
@@ -54,7 +58,11 @@ def _payment_after(state, land, spell):
     # Static cost/mana effects need the complete payment engine, not a one-land count.
     for c in state.get("battlefield") or []:
         text = _normalize_mana_symbols(str(c.get("oracle_text") or ""))
-        if re.search(r"costs? .*\b(?:less|more)\b|additional.*mana|mana.*additional|twice", text, re.I):
+        if re.search(
+            r"costs? .*\b(?:less|more)\b|additional.*mana|mana.*additional|twice|\buntap\b|\binstead\b",
+            text,
+            re.I,
+        ):
             return None
         if "land" not in str(c.get("type_line") or "").lower() and re.search(r"\badd\b", text, re.I):
             return None
@@ -76,7 +84,8 @@ def _payment_after(state, land, spell):
             return None
         if not tapped:
             sources.append(mana_source(c, [*board, land]))
-    return _mana_value(cost) <= len(sources) and _pip_matching(_pips(cost), sources)
+    pips = tuple(frozenset({symbol}) for symbol in _symbols(cost) if symbol in "WUBRGC")
+    return _mana_value(cost) <= len(sources) and _pip_matching(pips, sources)
 
 
 def land_claim_mismatch(decision, state, chosen, reasoning):
@@ -94,7 +103,20 @@ def land_claim_mismatch(decision, state, chosen, reasoning):
     positive = [
         c for c in clauses if not re.search(r"\b(?:not|can't|cannot|don't|if|next turn|later)\b", c, re.I)
     ]
-    untapped = any(re.search(r"\buntapped\b", c, re.I) for c in positive)
+    # Bind entry to the chosen land, not another source being kept untapped.
+    subject = re.escape(str(land.get("name") or ""))
+    untapped = any(
+        re.search(
+            r"\b(?:play(?:ing)?\s+"
+            + subject
+            + r"(?:\s+as (?:the|our) land)?|"
+            + subject
+            + r"\s+(?:enters|will enter|comes in))\s+untapped\b",
+            c,
+            re.I,
+        )
+        for c in positive
+    )
     promised = []
     for spell in state.get("hand") or []:
         name = str(spell.get("name") or "")
