@@ -51,6 +51,7 @@ from arenamcp.draft_narration import DraftNarrator
 from arenamcp.event_course import LIMITED_MARKERS
 from arenamcp.limited_formats import use_event_expansion
 from arenamcp.set_primer import SetPrimer
+from arenamcp.sideboarding import SIDEBOARD_WAIT_MESSAGE
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,7 @@ class DraftEventDriver:
         self.run = DraftRun()
         self._basics: dict[int, str] | None = None
         self._last_screen: tuple[str, ...] | None = None
+        self._sideboard_waiting = False
 
     # -- control ------------------------------------------------------------
 
@@ -390,17 +392,22 @@ class DraftEventDriver:
 
     def _step(self) -> None:
         if self._in_match_fn():
+            self._sideboard_waiting = False
             self._wait(3.0, owns=False)
             return
         screen = self._command("get_screen")
         if not screen.get("ok"):
             self._wait(5.0, owns=False)
             return
+        if not screen.get("deck_builder") and not screen.get("sideboarding"):
+            self._sideboard_waiting = False
         seen = tuple(sorted(key for key, value in screen.items() if value is True and key != "ok"))
         if seen != self._last_screen:
             logger.info("Draft autoplay screen: %s", ", ".join(seen) or "none of draft/deck/event/home")
             self._last_screen = seen
-        if screen.get("draft"):
+        if screen.get("sideboarding"):
+            self._wait_for_sideboard()
+        elif screen.get("draft"):
             self._step_pick()
         elif screen.get("deck_builder"):
             self._step_deck()
@@ -1064,18 +1071,29 @@ class DraftEventDriver:
             return "saved"
         return ""
 
+    def _wait_for_sideboard(self) -> None:
+        # Keep the event UI out of queue/deck-build automation, but keep polling
+        # so no toggle or manual resume is needed after the player presses Done.
+        if not self._sideboard_waiting:
+            self._status(SIDEBOARD_WAIT_MESSAGE)
+        self._sideboard_waiting = True
+        self._wait(2.0)
+
     def _step_deck(self) -> None:
         run = self.run
+        basics = self._basic_candidates()
+        pool_view = self._command("get_limited_pool", basic_candidates=list(basics), timeout=10.0)
+        if not pool_view.get("ok"):
+            self._wait(2.0)
+            return
+        if pool_view.get("is_sideboarding"):
+            self._wait_for_sideboard()
+            return
         if run.deck_submitted_at and time.monotonic() - run.deck_submitted_at < 20.0:
             self._wait(2.0)
             return
         if run.deck_attempts >= 2:
             self._pause("the deck builder did not accept the deck after 2 tries; finish it manually")
-            return
-        basics = self._basic_candidates()
-        pool_view = self._command("get_limited_pool", basic_candidates=list(basics), timeout=10.0)
-        if not pool_view.get("ok"):
-            self._wait(2.0)
             return
         counts: Counter = Counter()
         for entry in (pool_view.get("main_deck") or []) + (pool_view.get("sideboard") or []):

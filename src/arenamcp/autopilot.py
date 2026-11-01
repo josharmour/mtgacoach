@@ -48,6 +48,7 @@ from arenamcp.gre_bridge import (
     enrich_snapshot_from_pending_response,
     get_bridge,
 )
+from arenamcp.sideboarding import SIDEBOARD_WAIT_MESSAGE, is_sideboarding
 from arenamcp.stack_order import stack_top
 from arenamcp.target_effects import source_effect_text, target_effect_is_harmful
 
@@ -1831,6 +1832,8 @@ class AutopilotEngine(
         """
         if self._config.dry_run or self._gre_bridge is None:
             return False
+        if is_sideboarding(game_state or {}):
+            return False
         if not getattr(self._gre_bridge, "connected", False):
             return False
         breq = str((game_state or {}).get("_bridge_request_type") or "")
@@ -3023,6 +3026,17 @@ class AutopilotEngine(
         self._automation_wait_reason = None
         return True
 
+    def _wait_for_sideboard(self, game_state: dict) -> bool:
+        if not is_sideboarding(game_state):
+            self._sideboard_waiting = False
+            return False
+        self._current_plan = None
+        self._state = AutopilotState.IDLE
+        if not getattr(self, "_sideboard_waiting", False):
+            self._notify("AUTOPILOT", SIDEBOARD_WAIT_MESSAGE)
+        self._sideboard_waiting = True
+        return True
+
     def process_trigger(
         self,
         game_state: dict[str, Any],
@@ -3053,6 +3067,8 @@ class AutopilotEngine(
             if self._abort_event.is_set():
                 self._state = AutopilotState.IDLE
                 return False
+            if self._wait_for_sideboard(game_state):
+                return True
             if not self._config.dry_run:
                 from arenamcp.bridge_readiness import automation_blocker, incomplete_hand_blocker
 
@@ -5320,6 +5336,8 @@ class AutopilotEngine(
         game_state = dict(caught_up)
         enrich_snapshot_from_pending_response(game_state, poll, bridge_connected=True)
         self._progress_game_state = game_state
+        if self._wait_for_sideboard(game_state):
+            return True
         if self._observe_decision_progress(poll, game_state):
             return True
 

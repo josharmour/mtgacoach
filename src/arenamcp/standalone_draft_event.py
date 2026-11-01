@@ -26,9 +26,13 @@ class _DraftEventMixin:
             return False  # Player.log says a draft or deck build is open
         # Player.log alone: get_game_state() would also read the bridge's board
         # every 3 s, a main-thread reflection call on BepInEx/Proton.
-        from arenamcp.server import _match_in_progress
+        from arenamcp import server
 
-        return _match_in_progress()
+        # SubmitDeckReq preserves the previous game's turn (#318). It can
+        # arrive before the result, so that turn must not hide the sideboard UI.
+        if getattr(server.game_state, "pending_decision", None) == "Sideboard":
+            return False
+        return server._match_in_progress()
 
     def _set_primer_service(self) -> Any:
         """The set research service, shared by the pre-draft prefetch and the draft driver."""

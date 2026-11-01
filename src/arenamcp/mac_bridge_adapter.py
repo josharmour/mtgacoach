@@ -28,6 +28,7 @@ from typing import Any
 from arenamcp.basic_land_choice import basic_land_ids, basic_land_options
 from arenamcp.color_choice import color_options, color_selection_ids
 from arenamcp.decisions import TargetSlot, assign_target_slots
+from arenamcp.sideboarding import SIDEBOARD_REQUESTS
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ BEPINEX_REFLECT_COMMANDS = frozenset(
 )  # fmt: skip
 
 DECISION_TYPES = {
+    **dict.fromkeys(SIDEBOARD_REQUESTS, "sideboard"),
     "SelectTargetsReq": "target_selection",
     "SearchReq": "search",
     "DistributionReq": "distribution",
@@ -544,7 +546,11 @@ class MacBridgeAdapter:
         if found["deck_builder"]:
             ops = _Ops()
             active = ops.get(H(handle(values[refs[2]["ref"]])), "_isActive", optional=True)
-            found["deck_builder"] = bool(self._run(ops, timeout)[active["ref"]])
+            context = ops.get(H(handle(values[refs[2]["ref"]])), "Context", optional=True)
+            sideboarding = ops.get(context, "IsSideboarding", optional=True)
+            editor = self._run(ops, timeout)
+            found["deck_builder"] = bool(editor[active["ref"]])
+            found["sideboarding"] = found["deck_builder"] and bool(editor[sideboarding["ref"]])
         return {"ok": True, **found}
 
     def _cmd_get_draft_state(self, command: dict, timeout: float | None) -> dict:
@@ -738,7 +744,9 @@ class MacBridgeAdapter:
             "grp_ids": [view["grp_id"] for view in chosen],
         }
 
-    def _limited_editor(self, timeout: float | None) -> tuple[dict, dict]:
+    def _limited_editor(
+        self, timeout: float | None, *, allow_sideboarding: bool = False
+    ) -> tuple[dict, dict]:
         """The open, editable limited deck builder's widget and model handles."""
         found = self._find("DeckBuilderWidget", timeout)
         if not found:
@@ -748,7 +756,8 @@ class MacBridgeAdapter:
         ops.expect_member(widget, "_isActive", True)
         context = ops.get(widget, "Context")
         ops.expect_member(context, "IsLimited", True)
-        ops.expect_member(context, "IsSideboarding", False)
+        if not allow_sideboarding:
+            ops.expect_member(context, "IsSideboarding", False)
         ops.expect_member(context, "IsReadOnly", False)
         provider = ops.get(widget, "ModelProvider")
         model = ops.get(provider, "_model", depth=0)
@@ -760,8 +769,12 @@ class MacBridgeAdapter:
 
     def _cmd_get_limited_pool(self, command: dict, timeout: float | None) -> dict:
         """Main deck, sideboard and how many of each candidate basic the pool holds."""
-        widget, model = self._limited_editor(timeout)
+        # Observation is valid between games; initial-deck writes remain guarded.
+        widget, model = self._limited_editor(timeout, allow_sideboarding=True)
         ops = _Ops()
+        ops.expect_member(widget, "_isActive", True)
+        context = ops.get(widget, "Context")
+        sideboarding = ops.get(context, "IsSideboarding")
         deck = ops.call(model, "GetServerModel")
         main = ops.get(deck, "mainDeck", depth=2)
         side = ops.get(deck, "sideboard", depth=2)
@@ -780,6 +793,7 @@ class MacBridgeAdapter:
             "ok": True,
             "main_deck": entries(main),
             "sideboard": entries(side),
+            "is_sideboarding": bool(values[sideboarding["ref"]]),
             "basics_in_pool": {
                 str(grp_id): num(values[quantity["ref"]])
                 for grp_id, quantity in zip(candidates, quantities, strict=True)
@@ -798,6 +812,7 @@ class MacBridgeAdapter:
         widget, model = self._limited_editor(timeout)
         ops = _Ops()
         ops.expect_member(widget, "_isActive", True)
+        ops.expect_member(ops.get(widget, "Context"), "IsSideboarding", False)
         for entry in current["main_deck"]:
             ops.call(model, "RemoveCardFromMainDeck", U(entry["grp_id"]), U(entry["count"]))
         for grp_id, count in target.items():
@@ -813,6 +828,7 @@ class MacBridgeAdapter:
         widget, _model = self._limited_editor(timeout)
         ops = _Ops()
         ops.expect_member(widget, "_isActive", True)
+        ops.expect_member(ops.get(widget, "Context"), "IsSideboarding", False)
         ops.call(widget, "DoneButton_OnClick")
         self._run(ops, timeout)
         return {"ok": True, "submitted_type": "LimitedDeckDone"}
@@ -3472,13 +3488,23 @@ class MacBridgeAdapter:
         self._submit(snapshot, lambda ops, req: ops.call(H(handle(mana)), "SubmitSelection", values), timeout)
         return {"ok": True, "submitted_type": "CastingManaType", "colors": ",".join(colors)}
 
+    @staticmethod
+    def _require_gameplay_request(snapshot: Snapshot) -> None:
+        if (
+            snapshot.request_class in SIDEBOARD_REQUESTS
+            or enum_name(snapshot.getters.get("Type")) in SIDEBOARD_REQUESTS
+        ):
+            raise AdapterError("Sideboarding requires an explicit deck submission; finish it in Arena")
+
     def _cmd_auto_respond(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout)
+        self._require_gameplay_request(snapshot)
         self._submit(snapshot, lambda ops, request: ops.call(request, "AutoRespond"), timeout)
         return {"ok": True, "submitted_type": "AutoRespond", "request_class": snapshot.request_class}
 
     def _cmd_cancel_action(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout)
+        self._require_gameplay_request(snapshot)
         cancel = bool(snapshot.getters.get("CanCancel"))
         self._submit(
             snapshot, lambda ops, request: ops.call(request, "Cancel" if cancel else "AutoRespond"), timeout

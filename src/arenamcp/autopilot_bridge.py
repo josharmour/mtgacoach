@@ -14,6 +14,7 @@ from arenamcp.autopilot_targets import (
     _normalize_planner_card_name,
 )
 from arenamcp.mana import mana_cost_to_cmc
+from arenamcp.sideboarding import is_sideboarding
 
 logger = logging.getLogger(__name__)
 
@@ -2635,6 +2636,9 @@ class _BridgeSubmitMixin:
         pending = bridge.get_pending_actions()
         if not pending or not pending.get("has_pending"):
             return None
+
+        if is_sideboarding(pending):
+            return False  # A deck needs explicit review/submission, never a gameplay default.
 
         dec_type = self._decision_type(game_state)
         btype = str(game_state.get("_bridge_request_type") or pending.get("request_type") or "")
