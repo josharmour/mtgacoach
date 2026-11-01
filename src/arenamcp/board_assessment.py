@@ -1607,10 +1607,18 @@ def _signature(state: dict) -> tuple:
             tuple(c.get("keywords") or ()),
             tuple(c.get("protection_from_players") or ()),
             protection_key(c),
-            c.get("owner_seat_id"), c.get("printed_power"), c.get("printed_toughness"),
-            c.get("type_line"), tuple(c.get("card_types") or ()), tuple(c.get("supertypes") or ()),
-            c.get("is_token"), c.get("object_kind"), c.get("is_copy"), c.get("is_phased_out"),
-            c.get("face_down"), tuple(c.get("removed_abilities") or ()),
+            c.get("owner_seat_id"),
+            c.get("printed_power"),
+            c.get("printed_toughness"),
+            c.get("type_line"),
+            tuple(c.get("card_types") or ()),
+            tuple(c.get("supertypes") or ()),
+            c.get("is_token"),
+            c.get("object_kind"),
+            c.get("is_copy"),
+            c.get("is_phased_out"),
+            c.get("face_down"),
+            tuple(c.get("removed_abilities") or ()),
         )
         for c in state.get("battlefield") or []
         if isinstance(c, dict)

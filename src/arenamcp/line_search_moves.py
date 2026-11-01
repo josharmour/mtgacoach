@@ -2440,19 +2440,34 @@ class Moves:
         tree = self.sacrifice_choices.get(key)
         if tree is None:
             tree = self.sacrifice_choices[key] = resolve(
-                self.model.battlefield, [*ours, *theirs], dead, active=active,
-                other=self.model.opponent if active == self.model.local else self.model.local, turn=turn,
+                self.model.battlefield,
+                [*ours, *theirs],
+                dead,
+                active=active,
+                other=self.model.opponent if active == self.model.local else self.model.local,
+                turn=turn,
             )
         if any(o.sacrificed for o in tree.outcomes()):
             self.exact_first = False
-            self.choice_caveats.add("combat blocks and sacrifice victim/trigger/transfer choices use bounded material policies")
+            self.choice_caveats.add(
+                "combat blocks and sacrifice victim/trigger/transfer choices use bounded material policies"
+            )
         chosen = tree.choose(
-            lambda o: self.value(life, opp_life, [c for c in o.bodies if seat(c) == self.model.local],
-                                 [c for c in o.bodies if seat(c) == self.model.opponent], ()), self.model.local,
+            lambda o: self.value(
+                life,
+                opp_life,
+                [c for c in o.bodies if seat(c) == self.model.local],
+                [c for c in o.bodies if seat(c) == self.model.opponent],
+                (),
+            ),
+            self.model.local,
         )
         entered = {**entered, **{new: turn for _old, new, _seat in chosen.transfers}}
-        return ([c for c in chosen.bodies if seat(c) == self.model.local],
-                [c for c in chosen.bodies if seat(c) == self.model.opponent], entered)
+        return (
+            [c for c in chosen.bodies if seat(c) == self.model.local],
+            [c for c in chosen.bodies if seat(c) == self.model.opponent],
+            entered,
+        )
 
     def death_bodies(self, bodies) -> list[dict]:
         from arenamcp.death_bodies import death_is_suppressed, token_specs_on_death
@@ -4008,8 +4023,14 @@ class Moves:
             )
             if not opponent_terminal:
                 mid.ours, mid.theirs, mid.entered = self.sacrifice_after_combat(
-                    mid.ours, mid.theirs, combat_dead, active=self.model.local, turn=node.abs_turn,
-                    life=mid.our_life, opp_life=mid.opp_life, entered=mid.entered,
+                    mid.ours,
+                    mid.theirs,
+                    combat_dead,
+                    active=self.model.local,
+                    turn=node.abs_turn,
+                    life=mid.our_life,
+                    opp_life=mid.opp_life,
+                    entered=mid.entered,
                 )
             # Non-vigilance attackers stay tapped through their turn.
             mid.our_tapped |= {b["instance_id"] for b in attackers if not has_combat_keyword(b, "vigilance")}
@@ -4708,9 +4729,15 @@ class Moves:
         )
         theirs_after += made + self.death_bodies([b for b in theirs if b["instance_id"] in dead_att])
         ours_after, theirs_after, entered = self.sacrifice_after_combat(
-            ours_after, theirs_after,
-            [b for b in ours if b["instance_id"] in dead_blk] + [b for b in theirs if b["instance_id"] in dead_att],
-            active=self.model.opponent, turn=next_abs - 1, life=after, opp_life=opp_life, entered=entered,
+            ours_after,
+            theirs_after,
+            [b for b in ours if b["instance_id"] in dead_blk]
+            + [b for b in theirs if b["instance_id"] in dead_att],
+            active=self.model.opponent,
+            turn=next_abs - 1,
+            life=after,
+            opp_life=opp_life,
+            entered=entered,
         )
         alive = {b["instance_id"] for b in theirs_after}
         # Their non-vigilance attackers stay tapped through our next turn.
@@ -4770,8 +4797,11 @@ class Moves:
                 [b for b in theirs_after if b["instance_id"] not in crack_dead_theirs],
                 [b for b in ours_after if b["instance_id"] in crack_dead_ours]
                 + [b for b in theirs_after if b["instance_id"] in crack_dead_theirs],
-                active=self.model.local, turn=next_abs, life=after + crack_gained,
-                opp_life=opp_life - crack_net, entered=entered,
+                active=self.model.local,
+                turn=next_abs,
+                life=after + crack_gained,
+                opp_life=opp_life - crack_net,
+                entered=entered,
             )
             v = max(
                 v,

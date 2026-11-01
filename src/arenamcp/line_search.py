@@ -377,8 +377,12 @@ class LineSearchResult:
     def to_projections(self) -> list[TurnProjection]:
         """The best line as the assessment's lookahead rows (T, T+1, T+2)."""
         steps = list(self.best.steps)
-        if (self._search is not None and self.best._leaf is not None and len(steps) < len(LABELS)
-                and not getattr(self._search, "_sacrifice_enabled", False)):
+        if (
+            self._search is not None
+            and self.best._leaf is not None
+            and len(steps) < len(LABELS)
+            and not getattr(self._search, "_sacrifice_enabled", False)
+        ):
             steps += self._search.fill_steps(self.best._leaf, len(steps), len(LABELS) - len(steps))
         names = {f.name for f in dataclasses.fields(TurnProjection)}
         rows = []
@@ -1059,12 +1063,27 @@ def search_lines(
         reasons = (str(error),)
         line = Line((), ALIVE, 0, 0.0, complete=False, unsupported=reasons)
         return LineSearchResult(
-            best=line, baseline=line, lines=[], first_action={}, now_life=None, dead_now=False,
-            dead_in=None, dead_in_greedy=None, all_dead_at_first=False, exact_first_attack=False,
-            only_survivor=False, only_first_attack_survivor=False, posture="either",
-            posture_reason="sacrifice continuation unsupported", nodes=getattr(search, "nodes", 0),
-            combats=getattr(search, "combats", 0), elapsed_ms=(time.perf_counter() - started) * 1000,
-            bounded=True, truncated=True, model=model, unsupported=reasons,
+            best=line,
+            baseline=line,
+            lines=[],
+            first_action={},
+            now_life=None,
+            dead_now=False,
+            dead_in=None,
+            dead_in_greedy=None,
+            all_dead_at_first=False,
+            exact_first_attack=False,
+            only_survivor=False,
+            only_first_attack_survivor=False,
+            posture="either",
+            posture_reason="sacrifice continuation unsupported",
+            nodes=getattr(search, "nodes", 0),
+            combats=getattr(search, "combats", 0),
+            elapsed_ms=(time.perf_counter() - started) * 1000,
+            bounded=True,
+            truncated=True,
+            model=model,
+            unsupported=reasons,
         )
     logger.debug(
         "line search: %s (nodes=%d, combats=%d, %.1f ms%s%s)", result.best.summary(), result.nodes,
