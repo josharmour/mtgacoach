@@ -4382,6 +4382,11 @@ class ActionPlanner(_ActionLegalityMixin):
         and the background game-plan reform both read.
         """
         self._bound_decision_evidence = None
+        from arenamcp.public_sequence import TriggerUseMemory
+
+        if not hasattr(self, "_public_trigger_uses"):
+            self._public_trigger_uses = TriggerUseMemory()
+        self._public_trigger_uses.observe(game_state)
         from arenamcp.offered_casts import bind_offered_casts
 
         decision, game_state = bind_offered_casts(decision, game_state)
@@ -4395,7 +4400,7 @@ class ActionPlanner(_ActionLegalityMixin):
             chosen = ["pass"]
             self._last_decision_reasoning = "Pass and reassess: " + invalid_target
             self._last_decision_option_ids = chosen
-            self._last_decision_trace.update(target_intent_guard=invalid_target, selected_ids=chosen)
+            self._last_decision_trace.update(target_intent_guard=invalid_target, selected_ids=chosen, reasoning=self._last_decision_reasoning)
         consistency = consistent_action(decision, game_state, chosen, self._last_decision_reasoning)
         if consistency:
             option_id, reason = consistency
@@ -9784,6 +9789,8 @@ class ActionPlanner(_ActionLegalityMixin):
             decision, tag_state, data, chosen, ask, parse, user_message
         )
         data, chosen = self._repair_land_claim(decision, tag_state, data, chosen, ask, parse, user_message)
+        data, chosen = self._repair_blink_claim(decision, tag_state, data, chosen, ask, parse, user_message)
+        data, chosen = self._recheck_public_sequence(decision, tag_state, data, chosen, ask, parse, user_message)
         reason = data.get("reasoning")
         self._last_decision_target_controllers = (
             data.get("target_controllers") if isinstance(data.get("target_controllers"), dict) else {}
@@ -9803,6 +9810,66 @@ class ActionPlanner(_ActionLegalityMixin):
             "typed-decision choice %s: %s", chosen, self._last_decision_reasoning or "reason not supplied"
         )
         return chosen
+
+    def _recheck_public_sequence(self, decision, state, data, chosen, ask, parse, message):
+        """Compare visible responses/trigger costs once without choosing a universal target."""
+        from arenamcp.public_sequence import public_sequence_concerns
+
+        memory = getattr(self, "_public_trigger_uses", None)
+        used = memory.observe(state) if memory is not None else frozenset()
+        def concerns(picks, answer):
+            return public_sequence_concerns(
+                decision, state, picks, answer.get("reasoning", ""), used_draw_triggers=used,
+            )
+        facts = concerns(chosen, data)
+        if not facts:
+            return data, chosen
+        repair = {"first": chosen, "evidence": list(facts)}
+        try:
+            revised, picks = parse(ask(
+                message + "\n\nPUBLIC SEQUENCE RECHECK: " + " ".join(facts)
+                + " Explicitly compare these public costs before committing; an acknowledged tradeoff may keep this play.",
+                effort="high", budget=min(self._timeout, 12.0),
+                cancel_event=getattr(self, "_decision_cancel_event", None),
+            ))
+            if not concerns(picks, revised):
+                repair["final"] = picks
+                self._last_decision_trace["public_sequence_recheck"] = repair
+                return revised, picks
+        except Exception as error:
+            repair["error"] = str(error)[:120]
+        # Public response availability is a risk, not proof that this cast is
+        # worse. Keep that choice if no supported comparison arrived, but do
+        # not preserve a guaranteed-kill/draw claim as a fact in decision memory.
+        repair.update(final=chosen, unresolved=True)
+        self._last_decision_trace["public_sequence_recheck"] = repair
+        label = decision.find(chosen[0]).label if chosen else "the selected play"
+        return {"option_ids": chosen, "reasoning": f"Proceed with {label}; sequence comparison remains unresolved. " + " ".join(facts)}, chosen
+
+    def _repair_blink_claim(self, decision, state, data, chosen, ask, parse, message):
+        """Resolve a named blink's identity/entry contradiction before committing it."""
+        from arenamcp.blink_intent import blink_intent_issue
+
+        mismatch = blink_intent_issue(decision, state, chosen, data.get("reasoning", ""))
+        if mismatch is None:
+            return data, chosen
+        repair = {"first": chosen, "evidence": mismatch.reason}
+        try:
+            revised, picks = parse(ask(
+                message + "\n\nBLINK IDENTITY RECHECK: " + mismatch.reason,
+                effort="high", budget=min(self._timeout, 12.0),
+                cancel_event=getattr(self, "_decision_cancel_event", None),
+            ))
+            if blink_intent_issue(decision, state, picks, revised.get("reasoning", "")) is None:
+                repair["final"] = picks
+                self._last_decision_trace["blink_identity_recheck"] = repair
+                return revised, picks
+        except Exception as error:
+            repair["error"] = str(error)[:120]
+        picks = ["pass"] if decision.find("pass") is not None else chosen
+        repair.update(final=picks, fallback=True)
+        self._last_decision_trace["blink_identity_recheck"] = repair
+        return {"option_ids": picks, "reasoning": "Pass and reassess: " + mismatch.reason}, picks
 
     def _repair_land_claim(self, decision, state, data, chosen, ask, parse, message):
         """Recheck false entry/payment claims without forcing every untapped land."""
