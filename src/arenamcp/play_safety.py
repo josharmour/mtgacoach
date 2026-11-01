@@ -1570,7 +1570,8 @@ def claimed_kills(reasoning: str, creatures: list[dict]) -> list[dict]:
     if not text or not _KILL_CLAIM.search(text):
         return []
     return [
-        creature for creature in creatures
+        creature
+        for creature in creatures
         if _kill_claim_spans(text, creature) or _contextual_kill_spans(text, creature, creatures)
     ]
 
@@ -1595,7 +1596,8 @@ def _contextual_kill_spans(text: str, creature: dict, creatures: list[dict]) -> 
             continue
         for claim in re.finditer(
             rf"\bkill\w*\s+(?:(?:the|their|that|a|an)\s+)?{power}/{toughness}\s+"
-            rf"(?:{re.escape(prefix)}|creature|threat|blocker|engine)\b", sentence[0],
+            rf"(?:{re.escape(prefix)}|creature|threat|blocker|engine)\b",
+            sentence[0],
         ):
             if not _negated_claim(sentence[0], claim.start()) and not _NEGATION.search(claim[0]):
                 spans.append((sentence.start() + claim.start(), sentence.start() + claim.end()))
@@ -1612,8 +1614,12 @@ def strip_kill_claims(reasoning: str, creatures: list[dict]) -> str:
     text = " ".join(str(reasoning or "").split())
     lower = text.lower()
     spans = sorted(
-        {span for creature in creatures
-         for span in _kill_claim_spans(lower, creature) + _contextual_kill_spans(lower, creature, creatures)},
+        {
+            span
+            for creature in creatures
+            for span in _kill_claim_spans(lower, creature)
+            + _contextual_kill_spans(lower, creature, creatures)
+        },
         reverse=True,
     )
     limit = len(text)

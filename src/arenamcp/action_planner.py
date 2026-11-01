@@ -4401,7 +4401,11 @@ class ActionPlanner(_ActionLegalityMixin):
             chosen = ["pass"]
             self._last_decision_reasoning = "Pass and reassess: " + invalid_target
             self._last_decision_option_ids = chosen
-            self._last_decision_trace.update(target_intent_guard=invalid_target, selected_ids=chosen, reasoning=self._last_decision_reasoning)
+            self._last_decision_trace.update(
+                target_intent_guard=invalid_target,
+                selected_ids=chosen,
+                reasoning=self._last_decision_reasoning,
+            )
         consistency = consistent_action(decision, game_state, chosen, self._last_decision_reasoning)
         if consistency:
             option_id, reason = consistency
@@ -9112,7 +9116,8 @@ class ActionPlanner(_ActionLegalityMixin):
             from arenamcp.activation_damage import target_activation_damage
 
             activation_damage = target_activation_damage(
-                game_state, self._decision_source_instance(game_state),
+                game_state,
+                self._decision_source_instance(game_state),
                 self._decision_source_oracle(decision, game_state),
             )
             if activation_damage is not None:
@@ -9710,7 +9715,9 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         data, chosen = self._repair_land_claim(decision, tag_state, data, chosen, ask, parse, user_message)
         data, chosen = self._repair_blink_claim(decision, tag_state, data, chosen, ask, parse, user_message)
-        data, chosen = self._recheck_public_sequence(decision, tag_state, data, chosen, ask, parse, user_message)
+        data, chosen = self._recheck_public_sequence(
+            decision, tag_state, data, chosen, ask, parse, user_message
+        )
         data, chosen = self._recheck_damage_facts(decision, tag_state, data, chosen, ask, parse, user_message)
         from arenamcp.commander_choice import review_commander_decline
 
@@ -9746,20 +9753,30 @@ class ActionPlanner(_ActionLegalityMixin):
             if decision.request_type == "ActionsAvailable":
                 return surviving_damage_targets(state, reason)
             return false_activation_target_kills(
-                decision, state, picks, reason, self._decision_source_instance(state),
+                decision,
+                state,
+                picks,
+                reason,
+                self._decision_source_instance(state),
                 self._decision_source_oracle(decision, state),
             )
+
         facts = concerns(chosen, data)
         if not facts:
             return data, chosen
         repair = {"first": chosen, "evidence": list(facts)}
         try:
-            revised, picks = parse(ask(
-                message + "\n\nDAMAGE FACT RECHECK: " + " ".join(facts)
-                + " Re-evaluate the remaining interaction and defensive plan using the actual surviving board.",
-                effort="high", budget=min(self._timeout, 12.0),
-                cancel_event=getattr(self, "_decision_cancel_event", None),
-            ))
+            revised, picks = parse(
+                ask(
+                    message
+                    + "\n\nDAMAGE FACT RECHECK: "
+                    + " ".join(facts)
+                    + " Re-evaluate the remaining interaction and defensive plan using the actual surviving board.",
+                    effort="high",
+                    budget=min(self._timeout, 12.0),
+                    cancel_event=getattr(self, "_decision_cancel_event", None),
+                )
+            )
             if not concerns(picks, revised):
                 repair["final"] = picks
                 self._last_decision_trace["damage_fact_recheck"] = repair
@@ -9776,21 +9793,32 @@ class ActionPlanner(_ActionLegalityMixin):
 
         memory = getattr(self, "_public_trigger_uses", None)
         used = memory.observe(state) if memory is not None else frozenset()
+
         def concerns(picks, answer):
             return public_sequence_concerns(
-                decision, state, picks, answer.get("reasoning", ""), used_draw_triggers=used,
+                decision,
+                state,
+                picks,
+                answer.get("reasoning", ""),
+                used_draw_triggers=used,
             )
+
         facts = concerns(chosen, data)
         if not facts:
             return data, chosen
         repair = {"first": chosen, "evidence": list(facts)}
         try:
-            revised, picks = parse(ask(
-                message + "\n\nPUBLIC SEQUENCE RECHECK: " + " ".join(facts)
-                + " Explicitly compare these public costs before committing; an acknowledged tradeoff may keep this play.",
-                effort="high", budget=min(self._timeout, 12.0),
-                cancel_event=getattr(self, "_decision_cancel_event", None),
-            ))
+            revised, picks = parse(
+                ask(
+                    message
+                    + "\n\nPUBLIC SEQUENCE RECHECK: "
+                    + " ".join(facts)
+                    + " Explicitly compare these public costs before committing; an acknowledged tradeoff may keep this play.",
+                    effort="high",
+                    budget=min(self._timeout, 12.0),
+                    cancel_event=getattr(self, "_decision_cancel_event", None),
+                )
+            )
             if not concerns(picks, revised):
                 repair["final"] = picks
                 self._last_decision_trace["public_sequence_recheck"] = repair
@@ -9803,7 +9831,10 @@ class ActionPlanner(_ActionLegalityMixin):
         repair.update(final=chosen, unresolved=True)
         self._last_decision_trace["public_sequence_recheck"] = repair
         label = decision.find(chosen[0]).label if chosen else "the selected play"
-        return {"option_ids": chosen, "reasoning": f"Proceed with {label}; sequence comparison remains unresolved. " + " ".join(facts)}, chosen
+        return {
+            "option_ids": chosen,
+            "reasoning": f"Proceed with {label}; sequence comparison remains unresolved. " + " ".join(facts),
+        }, chosen
 
     def _repair_blink_claim(self, decision, state, data, chosen, ask, parse, message):
         """Resolve a named blink's identity/entry contradiction before committing it."""
@@ -9814,11 +9845,14 @@ class ActionPlanner(_ActionLegalityMixin):
             return data, chosen
         repair = {"first": chosen, "evidence": mismatch.reason}
         try:
-            revised, picks = parse(ask(
-                message + "\n\nBLINK IDENTITY RECHECK: " + mismatch.reason,
-                effort="high", budget=min(self._timeout, 12.0),
-                cancel_event=getattr(self, "_decision_cancel_event", None),
-            ))
+            revised, picks = parse(
+                ask(
+                    message + "\n\nBLINK IDENTITY RECHECK: " + mismatch.reason,
+                    effort="high",
+                    budget=min(self._timeout, 12.0),
+                    cancel_event=getattr(self, "_decision_cancel_event", None),
+                )
+            )
             if blink_intent_issue(decision, state, picks, revised.get("reasoning", "")) is None:
                 repair["final"] = picks
                 self._last_decision_trace["blink_identity_recheck"] = repair
@@ -9839,11 +9873,14 @@ class ActionPlanner(_ActionLegalityMixin):
             return data, chosen
         repair = {"first": chosen, "evidence": mismatch.reason}
         try:
-            revised, picks = parse(ask(
-                message + "\n\nLAND PAYMENT RECHECK: " + mismatch.reason,
-                effort="high", budget=min(self._timeout, 12.0),
-                cancel_event=getattr(self, "_decision_cancel_event", None),
-            ))
+            revised, picks = parse(
+                ask(
+                    message + "\n\nLAND PAYMENT RECHECK: " + mismatch.reason,
+                    effort="high",
+                    budget=min(self._timeout, 12.0),
+                    cancel_event=getattr(self, "_decision_cancel_event", None),
+                )
+            )
             if land_claim_mismatch(decision, state, picks, revised.get("reasoning", "")) is None:
                 repair["final"] = picks
                 self._last_decision_trace["land_payment_recheck"] = repair
@@ -9856,8 +9893,11 @@ class ActionPlanner(_ActionLegalityMixin):
         if fallback is None and decision.find("pass") is not None:
             fallback = "pass"
         picks = [fallback] if fallback else chosen
-        reason = (f"{decision.find(fallback).label}: this offered land satisfies the stated entry/payment plan. "
-                  if fallback and fallback != "pass" else "Reassess the land plan. ") + mismatch.reason
+        reason = (
+            f"{decision.find(fallback).label}: this offered land satisfies the stated entry/payment plan. "
+            if fallback and fallback != "pass"
+            else "Reassess the land plan. "
+        ) + mismatch.reason
         repair.update(final=picks, fallback=True)
         self._last_decision_trace["land_payment_recheck"] = repair
         return {"option_ids": picks, "reasoning": reason}, picks
@@ -9875,11 +9915,14 @@ class ActionPlanner(_ActionLegalityMixin):
             return data, chosen
         repair = {"first": chosen, "target_id": window.target_id, "evidence": window.reason}
         try:
-            revised, picks = parse(ask(
-                message + "\n\nREMOVAL WINDOW RECHECK: " + window.reason,
-                effort="high", budget=min(self._timeout, 12.0),
-                cancel_event=getattr(self, "_decision_cancel_event", None),
-            ))
+            revised, picks = parse(
+                ask(
+                    message + "\n\nREMOVAL WINDOW RECHECK: " + window.reason,
+                    effort="high",
+                    budget=min(self._timeout, 12.0),
+                    cancel_event=getattr(self, "_decision_cancel_event", None),
+                )
+            )
             if invalid_transform_hold(decision, state, picks, revised.get("reasoning", "")) is None:
                 repair["final"] = picks
                 self._last_decision_trace["removal_window_recheck"] = repair
@@ -9892,10 +9935,13 @@ class ActionPlanner(_ActionLegalityMixin):
         repair["final"] = picks
         repair["fallback"] = True
         self._last_decision_trace["removal_window_recheck"] = repair
-        return {"option_ids": picks, "reasoning": (
-            f"Cast {window.source} targeting {window.target} #{window.target_id} now; "
-            f"holding it for {window.face} would lose this targeted answer to protection."
-        )}, picks
+        return {
+            "option_ids": picks,
+            "reasoning": (
+                f"Cast {window.source} targeting {window.target} #{window.target_id} now; "
+                f"holding it for {window.face} would lose this targeted answer to protection."
+            ),
+        }, picks
 
     def _reversal_check_failed(
         self,

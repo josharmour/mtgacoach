@@ -97,6 +97,45 @@ def test_expired_clock_does_not_build_prompt_or_send_model(monkeypatch):
     backend.complete.assert_not_called()
 
 
+def test_merged_tactical_rechecks_cannot_renew_the_arena_deadline(monkeypatch):
+    """Five independently added repairs share the initial call's four seconds."""
+    clock = [100.0]
+    budgets = []
+
+    class Backend:
+        def complete(self, *args, **kwargs):
+            budgets.append(kwargs["request_timeout_s"])
+            clock[0] += 1
+            return '{"option_ids": ["tgt:812"]}'
+
+    planner = ActionPlanner(Backend(), timeout=15)
+    monkeypatch.setattr("arenamcp.action_planner.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("arenamcp.decision_clock.model_deadline", lambda state: 104.0)
+    monkeypatch.setattr("arenamcp.action_planner.critical_decision", lambda *a, **k: "")
+    monkeypatch.setattr(planner, "_yield_background", lambda: True)
+    monkeypatch.setattr(planner, "_second_look", lambda d, s, data, picks, *a: (data, picks))
+    expired = []
+
+    def recheck(decision, state, data, chosen, ask, parse, message):
+        try:
+            return parse(ask(message, effort="low", budget=12.0))
+        except concurrent.futures.TimeoutError:
+            expired.append(True)
+            return data, chosen
+
+    for name in (
+        "_repair_invalid_transform_hold",
+        "_repair_land_claim",
+        "_repair_blink_claim",
+        "_recheck_public_sequence",
+        "_recheck_damage_facts",
+    ):
+        monkeypatch.setattr(planner, name, recheck)
+    assert planner._llm_decision_options(_decision([607, 812]), state_with_clock()) == ["tgt:812"]
+    assert budgets == [4, 3, 2, 1]
+    assert len(expired) == 2
+
+
 def test_prompt_work_counts_against_timestamp_free_bridge_clock(monkeypatch):
     backend = Mock()
     planner = ActionPlanner(backend)

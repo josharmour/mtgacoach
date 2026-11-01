@@ -1164,7 +1164,10 @@ class AutopilotEngine(
                     if now is not None and now[0] > before[0] and now[1] - before[1]:
                         self._self_cancelled_plays.discard(key)
                         self._self_cancelled_target_caps.pop(key, None)
-                        logger.info("Self-cancel guard: new Plains cap opens opponent targets for %s", name or entry_name)
+                        logger.info(
+                            "Self-cancel guard: new Plains cap opens opponent targets for %s",
+                            name or entry_name,
+                        )
                         return False
                 return True
         return False

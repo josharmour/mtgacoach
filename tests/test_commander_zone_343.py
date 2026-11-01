@@ -180,3 +180,41 @@ def test_correction_uses_remaining_decision_budget(replay, monkeypatch):
     assert planner.plan_decision_options(*replay) == ["optional:accept"]
     assert len(budgets) == 2
     assert 0 < budgets[1] < budgets[0] - 0.03
+
+
+def test_failed_correction_has_explicit_handoff_and_watchdog_path(replay, monkeypatch):
+    """No false decline, repeated model call, or invisible unanswered request."""
+    from tests.fakes import make_engine
+
+    decision, state = replay
+    planner, backend = planner_with(("optional:decline", BAD_REASON), TimeoutError("no budget"))
+    poll = {
+        "has_pending": True,
+        "request_type": "OptionalAction",
+        "request_class": "OptionalActionMessageRequest",
+        "game_state_id": decision.request_id[0],
+        "msg_id": decision.request_id[1],
+        "optional_mechanics": ["ZoneTransfer"],
+        "optional_recipients": [888],
+        "can_cancel": False,
+        "decision_context": state["decision_context"],
+    }
+    bridge = Mock(connected=True)
+    bridge.get_pending_actions.return_value = poll
+    bridge.auto_respond.return_value = True
+    engine = make_engine(bridge, planner, game_state=state)
+    manual = Mock()
+    monkeypatch.setattr(engine, "_pause_for_manual", manual)
+    monkeypatch.setattr(engine, "_record_autopilot_decision", Mock())
+    monkeypatch.setattr(engine, "_log_execution_path", Mock())
+    assert engine._try_typed_decision_path(state, "decision_required") is True
+    assert "no safe automatic choice" in manual.call_args.args[0]
+    assert engine.request_handed_to_user(poll)
+    bridge.submit_optional.assert_not_called()
+    assert backend.complete.call_count == 2
+    assert engine._try_typed_decision_path(state, "decision_required") is True
+    assert backend.complete.call_count == 2
+    submitted, detail = engine.watchdog_safe_default(state, "clock nearly expired")
+    assert submitted and detail == "submitted the safe default"
+    bridge.auto_respond.assert_called_once()
+    bridge.submit_optional.assert_not_called()

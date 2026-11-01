@@ -1,0 +1,80 @@
+# Backlog integration: staged, not installed
+
+Deployment restarts remain paused following the update-guard closure. The
+installed checkout was verified at `07098e91` at 05:02 UTC, with Coach and Arena
+running, Autopilot and Auto Queue enabled, and speech speed 1.5. No subsequent
+deployment or game-control command was issued during this integration.
+
+## Tested boundaries
+
+- `cd9320f`: previous prepared batch, 510 affected tests; not installed.
+- `ef9da20`: model-call cancellation, unknown draft context, nested activation
+  intent, Traditional Limited sideboarding, and update coordination. 327
+  affected tests plus 5 lock tests passed. These counts overlap earlier runs.
+- `6ac6b10`: poison/combat-mill search and memoization optimization. 455 combined
+  checks passed, including the existing load-adjusted timing assertions. This
+  is not qualification against the separate idle 80 ms target.
+- `53203e4`: opponent reanimation recipient attribution (#344). 118 combined
+  decision/claim checks passed. It corrects the explanation, not the choice's
+  strategic optimality.
+- Tactical stream through source `50fab79`, then commander-zone source
+  `e4b62a2`: 817 combined tests passed in 25.22 seconds after integration.
+  This is an affected regression batch, not the full repository suite or CI.
+
+The tactical integration retains all existing Arena-clock clamps, cancellation,
+activation intent, poison/legend projection, and current-offer expiry. It removes
+planning-time burn marks: only identified confirmed damage events may fill an
+omitted mark, and explicit public damage (including zero) wins.
+
+The one commander hook conflict was resolved by retaining both the tactical
+rechecks and the commander review. An additional integration regression forces
+all five tactical rechecks through the same four-second deadline: backend calls
+receive 4, 3, 2, and 1 seconds, and the remaining checks cannot start new calls.
+
+Commander correction failure produces an explicit manual handoff, does not
+submit the known-false decline, and does not repeatedly call the model for the
+same prompt. The existing watchdog can still request Arena's default near its
+deadline. The integration test uses a fake bridge: it does not establish which
+choice Arena will make or prove live acceptance.
+
+## Tactical coverage and limits
+
+- #322: explicit current free casts from exile enter search at their offered
+  cost; unknown/X/additional costs and future permissions remain unmodeled.
+- #342/#274/#279: current removal-window and named-target contradictions are
+  checked. Unknown modes and protection exceptions remain conservative.
+- #303/#254/#306: land entry/payment claims, counted mana, Dalkovan source-tap
+  reservation, and unchanged-board optional reservations have regressions.
+  General future colored-mana planning remains partial.
+- #311/#308: object-bound blink and public trigger/response consequences get
+  bounded rechecks. They are not a complete strategic sequencing solver.
+- #227: planned or submitted targeting is no longer treated as dealt damage.
+  Historical cases without actual damage evidence remain unresolved.
+- #84/#262: Headliner uses the current count after its sacrifice, and surviving
+  damage targets cannot be described as already dead. Unknown types and
+  intervening effects are not silently assumed away. Alternative match outcomes
+  and live qualification remain unproven.
+- #343: the exact commander recipient's graveyard/exile zone is distinguished
+  from surviving token copies. Legitimate recovery-based declines remain legal.
+- #344: the current selection prompt grounds the opposing recipient; selection
+  optimality remains unverified.
+
+Other open qualifications remain: idle poison-search timing; broader poison,
+mill, replacement, and infect-counter simulation; Constructed sideboarding;
+live Traditional Limited submission; draft ranking quality (#294); absent #272
+target evidence; native temporary-ability metadata (#288); and unrelated pending
+combat follow-ups. No historical backlog-wide closure is claimed.
+
+Parser diagnostic capture source `091bd189` remains excluded because it records
+full content without an explicit capture control and per-file byte cap. A bounded,
+privacy-aware implementation must be reviewed before integration.
+
+## Rollout coordination
+
+See `LOCAL_UPDATE_COORDINATION.md`. A prepared continuous activation script is
+kept locally at `/tmp/coach-backlog3-transaction.py`; it has not been executed and
+is pinned to the earlier prepared batch. Do not use it to claim installation of
+this newer stage. Update the target and verify it before any resumed rollout.
+
+All changes are local commits in `codex/session-burndown`. Nothing was pushed,
+and no live settings, history, account, deck, or queue target was changed here.
