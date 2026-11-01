@@ -13,7 +13,7 @@ from typing import Any
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 
 from .audio import AudioPlayback
-from .runtime import find_python_executable, get_app_root, get_runtime_root
+from .runtime import find_python_executable, get_app_root, get_runtime_root, is_packaged_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -103,14 +103,23 @@ class TtsManager(QObject):
 
         process = QProcess(self)
         env = QProcessEnvironment.systemEnvironment()
-        env.insert("PYTHONPATH", str(app_root / "src"))
+        packaged_runtime = is_packaged_runtime(python_exe, app_root)
+        if packaged_runtime:
+            # The bundled runtime's ._pth isolates imports; do not inject the
+            # checkout src directory into an installed app.
+            env.remove("PYTHONPATH")
+        else:
+            env.insert("PYTHONPATH", str(app_root / "src"))
         env.insert("MTGACOACH_RUNTIME_ROOT", runtime_root)
         env.insert("PYTHONUNBUFFERED", "1")
         env.insert("PYTHONIOENCODING", "utf-8")
         process.setProcessEnvironment(env)
         process.setWorkingDirectory(str(app_root))
         process.setProgram(python_exe)
-        process.setArguments(["-u", "-m", "arenamcp.desktop.tts_worker"])
+        if packaged_runtime:
+            process.setArguments(["-I", "-X", "utf8", "-u", "-m", "arenamcp.desktop.tts_worker"])
+        else:
+            process.setArguments(["-u", "-m", "arenamcp.desktop.tts_worker"])
         process.readyReadStandardOutput.connect(self._on_stdout_ready)
         process.readyReadStandardError.connect(self._on_stderr_ready)
         process.finished.connect(self._on_finished)

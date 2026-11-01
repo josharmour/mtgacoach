@@ -67,34 +67,53 @@ if (-not (Test-Path $ResourceDll)) {
 }
 
 $RuntimeDir = Join-Path $RepoRoot "dist\runtime"
-$PythonwExe = Join-Path $RuntimeDir "Scripts\pythonw.exe"
+$PythonwExe = Join-Path $RuntimeDir "pythonw.exe"
 
-if (-not (Test-Path $PythonwExe) -or -not ((Get-AuthenticodeSignature $PythonwExe).Status -eq "Valid")) {
-    Write-Host "Creating standalone Python runtime in dist\runtime using signed Python..."
-    if (Test-Path $RuntimeDir) {
-        Remove-Item -Recurse -Force $RuntimeDir
-    }
-    Push-Location $RepoRoot
-    try {
-        if (Get-Command py -ErrorAction SilentlyContinue) {
-            & py -3.11 -m venv dist/runtime
-        }
-        if (-not (Test-Path $PythonwExe)) {
-            & python -m venv dist/runtime
-        }
-        if (-not (Test-Path $PythonwExe)) { throw "python -m venv failed to create dist/runtime" }
-        & (Join-Path $RuntimeDir "Scripts\python.exe") -m pip install --upgrade pip
-        & (Join-Path $RuntimeDir "Scripts\python.exe") -m pip install -e .[desktop,full]
-        if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
-    }
-    finally {
-        Pop-Location
-    }
+# Build the wheel from the current checkout, then populate the relocatable
+# runtime with the shared builder used by CI. Never create a venv here: the
+# shipped runtime must be a complete official CPython base distribution.
+Push-Location $RepoRoot
+try {
+    & python -m build --wheel
+    if ($LASTEXITCODE -ne 0) { throw "python -m build --wheel failed" }
 }
+finally {
+    Pop-Location
+}
+
+$Wheel = Get-ChildItem -LiteralPath (Join-Path $RepoRoot "dist") -Filter "*.whl" -File |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if (-not $Wheel) { throw "No wheel found under dist after python -m build --wheel" }
+if ($Wheel.Name -notlike "arenamcp-$Version-*") {
+    throw "Newest wheel '$($Wheel.Name)' does not match package version $Version"
+}
+
+if (Get-Command py -ErrorAction SilentlyContinue) {
+    $PythonHome = (& py -3.11 -c "import sys; print(sys.base_prefix)" | Out-String).Trim()
+} else {
+    $PythonHome = (& python -c "import sys; print(sys.base_prefix)" | Out-String).Trim()
+}
+if (-not $PythonHome) { throw "Could not locate an official Python base installation for the runtime." }
+
+Write-Host "Populating relocatable runtime in dist\runtime from $PythonHome..."
+& (Join-Path $ScriptDir "build-runtime.ps1") `
+    -WheelPath $Wheel.FullName `
+    -PythonHome $PythonHome `
+    -RuntimeDir $RuntimeDir `
+    -RepoRoot $RepoRoot
+if ($LASTEXITCODE -ne 0) { throw "build-runtime.ps1 failed" }
 
 if (-not (Test-Path $PythonwExe)) {
     throw "Runtime creation failed to produce $PythonwExe"
 }
+
+Write-Host "Verifying runtime relocation before packaging..."
+& (Join-Path $ScriptDir "verify-runtime-relocation.ps1") `
+    -RuntimeDir $RuntimeDir `
+    -CheckoutRoot $RepoRoot `
+    -Relocate `
+    -Label "local-staged"
+if ($LASTEXITCODE -ne 0) { throw "runtime relocation verification failed" }
 
 Write-Host "Compiling Inno Setup installer with $InnoSetupCompiler..."
 Push-Location $ScriptDir
@@ -104,3 +123,4 @@ try {
 finally {
     Pop-Location
 }
+if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }

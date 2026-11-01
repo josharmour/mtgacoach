@@ -7,7 +7,15 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 
-from .runtime import find_python_executable, get_app_root, get_runtime_root
+from .runtime import find_python_executable, get_app_root, get_runtime_root, is_packaged_runtime
+
+
+def _coach_launch_args(python_exe: str, app_root: Path) -> tuple[list[str], bool]:
+    """Return (args, packaged_runtime) without changing source-checkout behavior."""
+    packaged = is_packaged_runtime(python_exe, app_root)
+    if packaged:
+        return (["-I", "-X", "utf8", "-u", "-m", "arenamcp.standalone", "--pipe"], True)
+    return (["-u", "-m", "arenamcp.standalone", "--pipe"], False)
 
 
 class CoachProcess(QObject):
@@ -51,12 +59,13 @@ class CoachProcess(QObject):
                 python_exe = sys.executable
                 python_source = "frozen_app"
                 args = ["--pipe"]
+                packaged_runtime = False
             else:
                 python_exe, python_source = find_python_executable()
                 if python_exe is None:
                     python_exe = sys.executable
                     python_source = "sys.executable"
-                args = ["-u", "-m", "arenamcp.standalone", "--pipe"]
+                args, packaged_runtime = _coach_launch_args(python_exe, app_root)
 
             if autopilot:
                 args.append("--autopilot")
@@ -70,12 +79,17 @@ class CoachProcess(QObject):
                 f"Launching: {python_exe} ({python_source})\n"
                 f"Args: {' '.join(args)}\n"
                 f"WorkDir: {app_root}\n"
-                f"PYTHONPATH: {src_dir}"
+                f"PYTHONPATH: {'(isolated; installed package)' if packaged_runtime else src_dir}"
             )
 
             process = QProcess(self)
             env = QProcessEnvironment.systemEnvironment()
-            env.insert("PYTHONPATH", src_dir)
+            if packaged_runtime:
+                # The bundled runtime's ._pth isolates imports; do not inject
+                # the checkout src directory into an installed app.
+                env.remove("PYTHONPATH")
+            else:
+                env.insert("PYTHONPATH", src_dir)
             env.insert("MTGACOACH_RUNTIME_ROOT", runtime_root)
             env.insert("MTGACOACH_FRONTEND", "pyside")
             # Engine events this frontend handles that older ones would ignore:

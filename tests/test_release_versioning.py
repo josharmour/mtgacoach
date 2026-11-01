@@ -242,3 +242,25 @@ def test_ci_installer_output_matches_checked_and_uploaded_filename() -> None:
     assert produced == checked
     assert uploaded and all(name == produced for name in uploaded)
     assert 'if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }' in workflow
+
+
+def test_iss_launches_the_root_runtime_and_drops_raw_source() -> None:
+    """The installed runtime is a base distribution with python.exe at its root.
+    Shortcuts must not point at the obsolete venv Scripts layout, and raw
+    checkout source must not be shipped alongside the installed wheel."""
+    text = ISS.read_text(encoding="utf-8")
+    assert "{app}\\runtime\\pythonw.exe" in text
+    assert "{app}\\runtime\\Scripts\\pythonw.exe" not in text
+    assert 'Source: "..\\src\\*"' not in text
+    assert 'Source: "..\\src\\arenamcp\\resources\\MtgaCoachBridge.dll"' not in text
+    assert "\\runtime\\Lib\\site-packages\\arenamcp\\resources\\MtgaCoachBridge.dll" in text
+    assert "AppDir + '\\assets\\BepInEx'" in text
+    assert 'Type: filesandordirs; Name: "{app}\\runtime"' in text
+
+
+def test_installer_workflow_uses_shared_builder_and_installed_smoke() -> None:
+    workflow = (WORKFLOWS / "installer.yml").read_text(encoding="utf-8")
+    assert "build-runtime.ps1" in workflow
+    assert "verify-runtime-relocation.ps1" in workflow
+    assert "/VERYSILENT" in workflow
+    assert "python -m venv dist/runtime" not in workflow

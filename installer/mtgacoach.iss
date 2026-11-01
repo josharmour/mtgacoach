@@ -43,28 +43,35 @@ Type: files; Name: "{app}\launch.vbs"
 Type: files; Name: "{app}\setup_wizard.py"
 Type: filesandordirs; Name: "{app}\launcher"
 Type: filesandordirs; Name: "{app}\scripts"
+; The old installer shipped a build-host venv at runtime\Scripts and raw
+; checkout source at src. Both are installer-owned and must not survive an
+; upgrade: a stale venv interpreter or editable install could shadow the new
+; relocatable runtime. User settings live under LOCALAPPDATA and are untouched.
+Type: filesandordirs; Name: "{app}\runtime"
+Type: filesandordirs; Name: "{app}\src"
 
 [Files]
 ; Standalone embedded Python runtime with all dependencies pre-installed (Smart App Control compliant)
 Source: "..\dist\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-; Application source and assets
-Source: "..\src\*"; DestDir: "{app}\src"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "__pycache__\*,*.pyc"
+; Application assets and metadata. The package itself is installed into the
+; bundled runtime's site-packages by installer/build-runtime.ps1; raw checkout
+; source is not shipped.
 Source: "..\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\pyproject.toml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\mtga_coach.ico"; DestDir: "{app}"; Flags: ignoreversion
 
-; Bridge plugin build output
-Source: "..\src\arenamcp\resources\MtgaCoachBridge.dll"; DestDir: "{app}\src\arenamcp\resources"; Flags: ignoreversion
+; The bridge DLL and BepInEx bundle ship inside the installed wheel
+; (arenamcp/resources); the installer deploys them from the runtime below.
 
 [Icons]
-Name: "{autoprograms}\mtgacoach"; Filename: "{app}\runtime\Scripts\pythonw.exe"; Parameters: "-m arenamcp.desktop"; WorkingDir: "{app}"; IconFilename: "{app}\mtga_coach.ico"
-Name: "{autodesktop}\mtgacoach"; Filename: "{app}\runtime\Scripts\pythonw.exe"; Parameters: "-m arenamcp.desktop"; WorkingDir: "{app}"; IconFilename: "{app}\mtga_coach.ico"; Tasks: desktopicon
+Name: "{autoprograms}\mtgacoach"; Filename: "{app}\runtime\pythonw.exe"; Parameters: "-I -X utf8 -m arenamcp.desktop"; WorkingDir: "{app}"; IconFilename: "{app}\mtga_coach.ico"
+Name: "{autodesktop}\mtgacoach"; Filename: "{app}\runtime\pythonw.exe"; Parameters: "-I -X utf8 -m arenamcp.desktop"; WorkingDir: "{app}"; IconFilename: "{app}\mtga_coach.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\runtime\Scripts\pythonw.exe"; Parameters: "-m arenamcp.desktop"; WorkingDir: "{app}"; Description: "Launch mtgacoach"; Flags: postinstall skipifsilent nowait runasoriginaluser
+Filename: "{app}\runtime\pythonw.exe"; Parameters: "-I -X utf8 -m arenamcp.desktop"; WorkingDir: "{app}"; Description: "Launch mtgacoach"; Flags: postinstall skipifsilent nowait runasoriginaluser
 
 [Code]
 // Helper function to find MTGA install folder
@@ -176,8 +183,9 @@ begin
       if FileExists(AppDir + '\assets\doorstop_config.ini') then
         FileCopy(AppDir + '\assets\doorstop_config.ini', MtgaDir + '\doorstop_config.ini', False);
 
-      // Deploy MtgaCoachBridge.dll
-      PluginSrc := AppDir + '\src\arenamcp\resources\MtgaCoachBridge.dll';
+      // Deploy MtgaCoachBridge.dll from the installed wheel's package data.
+      // Raw checkout source is not shipped, so app\src must not be required.
+      PluginSrc := AppDir + '\runtime\Lib\site-packages\arenamcp\resources\MtgaCoachBridge.dll';
       PluginDst := MtgaDir + '\BepInEx\plugins\MtgaCoachBridge.dll';
       if FileExists(PluginSrc) then
       begin

@@ -75,6 +75,12 @@ def _is_app_root(path: Path) -> bool:
     bridge_dir = path / "bepinex-plugin" / "MtgaCoachBridge"
     if pyproject.exists() and src_dir.is_dir():
         return True
+    # Installed layout: the app root owns the bundled runtime and its manifest,
+    # but intentionally has no checkout src/pyproject markers.
+    runtime_dir = path / "runtime"
+    runtime_python = runtime_dir / ("pythonw.exe" if sys.platform == "win32" else "python")
+    if runtime_python.exists() and (runtime_dir / "runtime-manifest.json").exists():
+        return True
     return bool(src_dir.is_dir() and bridge_dir.is_dir())
 
 
@@ -260,7 +266,14 @@ def find_python_executable() -> tuple[str | None, str]:
     scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
     py_exe = "python.exe" if sys.platform == "win32" else "python"
 
-    app_runtime = app_root / "runtime" / scripts_dir / py_exe
+    # The installed Windows runtime is a base distribution with python.exe at
+    # its root. Never fall back to the obsolete runtime\Scripts venv layout: an
+    # upgrade that failed to remove it must not silently select that
+    # interpreter. Non-Windows keeps the existing runtime/bin layout.
+    if sys.platform == "win32":
+        app_runtime = app_root / "runtime" / py_exe
+    else:
+        app_runtime = app_root / "runtime" / scripts_dir / py_exe
 
     candidates: list[tuple[Path, str]] = [
         (app_runtime, "app_runtime"),
@@ -282,6 +295,21 @@ def find_python_executable() -> tuple[str | None, str]:
         return (from_path, path_source)
 
     return (None, "not_found")
+
+
+def is_packaged_runtime(python_exe: str | None, app_root: str | Path | None = None) -> bool:
+    """True only for the installer's Windows runtime (root python.exe + manifest).
+
+    Source checkouts, per-user venvs, and non-Windows layouts must keep their
+    original PYTHONPATH/-m launch behavior; only this verified packaged runtime
+    gets isolated flags.
+    """
+    if sys.platform != "win32" or not python_exe:
+        return False
+    root = Path(app_root) if app_root is not None else Path(get_app_root())
+    runtime_dir = (root / "runtime").resolve()
+    exe = Path(python_exe).resolve()
+    return exe == (runtime_dir / "python.exe").resolve() and (runtime_dir / "runtime-manifest.json").is_file()
 
 
 def get_saved_mtga_dir() -> str | None:
@@ -462,7 +490,10 @@ def detect_runtime_state() -> RuntimeState:
     scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
     py_exe = "python.exe" if sys.platform == "win32" else "python"
 
-    app_runtime_py = app_runtime_dir / scripts_dir / py_exe
+    if sys.platform == "win32":
+        app_runtime_py = app_runtime_dir / py_exe
+    else:
+        app_runtime_py = app_runtime_dir / scripts_dir / py_exe
     runtime_venv_py = runtime_venv_dir / scripts_dir / py_exe
     if app_runtime_py.exists() and _python_responds(app_runtime_py):
         runtime_dir = app_runtime_dir
