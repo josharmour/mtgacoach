@@ -98,8 +98,8 @@ def test_driver_holds_sideboard_once_then_releases_for_next_game():
     driver._step()
     driver._step()
     assert driver.owns_ui and not driver.paused_reason
-    assert notices.count(SIDEBOARD_WAIT_MESSAGE) == 1
-    assert [action for action, _ in bridge.sent] == ["get_screen", "get_screen"]
+    assert sum("Sideboarding needs manual review" in notice for notice in notices) == 1
+    assert [action for action, _ in bridge.sent] == ["get_screen", "get_sideboard_state"] * 2
     assert driver.run.deck_plan == {"previous": "build"}
     in_match[0] = True
     driver._step()
@@ -119,7 +119,7 @@ def test_driver_catches_sideboard_opening_after_screen_read():
     driver._step()
     assert driver.owns_ui and not driver.paused_reason
     assert driver.run.pool_waits == 0 and driver.run.deck_attempts == 2
-    assert [action for action, _ in bridge.sent] == ["get_screen", "get_limited_pool"]
+    assert [action for action, _ in bridge.sent] == ["get_screen", "get_limited_pool", "get_sideboard_state"]
 
 
 def test_autopilot_waits_without_planning_escaping_or_permanent_pause_then_handles_mulligan():

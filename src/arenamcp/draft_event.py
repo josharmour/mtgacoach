@@ -51,7 +51,6 @@ from arenamcp.draft_narration import DraftNarrator
 from arenamcp.event_course import LIMITED_MARKERS
 from arenamcp.limited_formats import use_event_expansion
 from arenamcp.set_primer import SetPrimer
-from arenamcp.sideboarding import SIDEBOARD_WAIT_MESSAGE
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +141,8 @@ class DraftEventDriver:
         primer_service: Any,
         pick_advisor_fn: Callable[[], Any] | None = None,
         deck_advisor_fn: Callable[[], Any] | None = None,
+        sideboard_advisor_fn: Callable[[], Any] | None = None,
+        sideboard_context_fn: Callable[[dict], dict] | None = None,
         pack_fn: Callable[[], dict] | None = None,
         pool_cards_fn: Callable[[list[int], str], list[dict]] | None = None,
         picked_fn: Callable[[], list[int]] | None = None,
@@ -195,7 +196,11 @@ class DraftEventDriver:
         self.run = DraftRun()
         self._basics: dict[int, str] | None = None
         self._last_screen: tuple[str, ...] | None = None
-        self._sideboard_waiting = False
+        from arenamcp.sideboard_driver import SideboardDriver
+
+        self._sideboard_driver = SideboardDriver(
+            self._command, self._status, sideboard_advisor_fn, sideboard_context_fn
+        )
 
     # -- control ------------------------------------------------------------
 
@@ -396,7 +401,7 @@ class DraftEventDriver:
 
     def _step(self) -> None:
         if self._in_match_fn():
-            self._sideboard_waiting = False
+            self._sideboard_driver.left_sideboard()
             self._wait(3.0, owns=False)
             return
         screen = self._command("get_screen")
@@ -404,13 +409,13 @@ class DraftEventDriver:
             self._wait(5.0, owns=False)
             return
         if not screen.get("deck_builder") and not screen.get("sideboarding"):
-            self._sideboard_waiting = False
+            self._sideboard_driver.left_sideboard()
         seen = tuple(sorted(key for key, value in screen.items() if value is True and key != "ok"))
         if seen != self._last_screen:
             logger.info("Draft autoplay screen: %s", ", ".join(seen) or "none of draft/deck/event/home")
             self._last_screen = seen
         if screen.get("sideboarding"):
-            self._wait_for_sideboard()
+            self._step_sideboard()
         elif screen.get("draft"):
             self._step_pick()
         elif screen.get("deck_builder"):
@@ -1081,12 +1086,9 @@ class DraftEventDriver:
             return "saved"
         return ""
 
-    def _wait_for_sideboard(self) -> None:
-        # Keep the event UI out of queue/deck-build automation, but keep polling
-        # so no toggle or manual resume is needed after the player presses Done.
-        if not self._sideboard_waiting:
-            self._status(SIDEBOARD_WAIT_MESSAGE)
-        self._sideboard_waiting = True
+    def _step_sideboard(self) -> None:
+        control = self._control
+        self._sideboard_driver.step(lambda: not self.enabled or self._control != control)
         self._wait(2.0)
 
     def _step_deck(self) -> None:
@@ -1097,7 +1099,7 @@ class DraftEventDriver:
             self._wait(2.0)
             return
         if pool_view.get("is_sideboarding"):
-            self._wait_for_sideboard()
+            self._step_sideboard()
             return
         if run.deck_submitted_at and time.monotonic() - run.deck_submitted_at < 20.0:
             self._wait(2.0)

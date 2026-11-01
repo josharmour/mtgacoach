@@ -128,6 +128,7 @@ class _DraftEventMixin:
         from arenamcp.draft_advisor import DraftAdvisor
         from arenamcp.draft_event import DraftEventDriver
         from arenamcp.gre_bridge import get_bridge
+        from arenamcp.sideboard_plan import SideboardAdvisor, opponent_ids_for_sideboard
 
         card_db = server._get_mtgadb()
         primers = self._set_primer_service()
@@ -137,7 +138,8 @@ class _DraftEventMixin:
             backend = self._draft_event_backend()
             current = advisors.get(kind)
             if current is None or getattr(current, "_backend", None) is not backend:
-                advisors[kind] = DraftAdvisor(backend, timeout=timeout)
+                cls = SideboardAdvisor if kind == "sideboard" else DraftAdvisor
+                advisors[kind] = cls(backend, timeout=timeout)
             return advisors[kind]
 
         def status(detail: str) -> None:
@@ -145,12 +147,31 @@ class _DraftEventMixin:
                 self.ui.log(f"[DRAFT AUTOPLAY] {detail}\n")
                 self.ui.status("DRAFT_AUTOPLAY", detail)
 
+        def sideboard_context(state: dict) -> dict:
+            def details(gid: int) -> dict:
+                card = card_db.get_card(gid)
+                return {
+                    "grp_id": gid,
+                    **{
+                        key: getattr(card, key, "") or ""
+                        for key in ("name", "type_line", "oracle_text", "mana_cost")
+                    },
+                }
+
+            deck = state["deck"]
+            cards = [details(gid) for gid in sorted(set(deck["main"] + deck["sideboard"]))]
+            # Never import another match's opponent evidence into the plan.
+            opponent = opponent_ids_for_sideboard(server.game_state, state["request_id"])
+            return {"cards": cards, "opponent": [details(gid) for gid in opponent]}
+
         driver = self._draft_event_driver = DraftEventDriver(
             bridge_fn=get_bridge,
             tracker_fn=server.get_course_tracker,
             primer_service=primers,
             pick_advisor_fn=lambda: advisor("pick", 8.0),
             deck_advisor_fn=lambda: advisor("deck", 60.0),
+            sideboard_advisor_fn=lambda: advisor("sideboard", 8.0),
+            sideboard_context_fn=sideboard_context,
             pack_fn=self._mcp.get_draft_pack,
             pool_cards_fn=server.limited_pool_cards,
             picked_fn=lambda: list(server.draft_state.picked_cards),

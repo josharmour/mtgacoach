@@ -2,7 +2,7 @@
 
 SIDEBOARD_REQUESTS = frozenset({"SubmitDeck", "SubmitDeckReq", "SubmitDeckRequest"})
 SIDEBOARD_WAIT_MESSAGE = (
-    "Sideboarding: review your deck and press Done in Arena. Autoplay will resume when the next game starts."
+    "Sideboarding: waiting for a reviewed deck submission before the next game."
 )
 
 

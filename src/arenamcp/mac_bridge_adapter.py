@@ -494,7 +494,7 @@ class MacBridgeAdapter:
         {"ping", "get_pending_actions", "get_game_state", "get_timer_state", "get_match_info",
          "get_screen", "get_draft_state", "get_event_page", "get_deck_editor", "get_survey",
          "get_match_end", "get_limited_pool", "preview_draft_pick", "get_replay_status", "list_replays",
-         "get_recent_match"}
+         "get_recent_match", "get_sideboard_state"}
     )  # fmt: skip
     _LOGGED_RESULT_KEYS = frozenset(
         {"ok", "submitted_type", "survey_skipped", "waiting", "already_home", "step", "event_name",
@@ -766,6 +766,16 @@ class MacBridgeAdapter:
         if not model_handle:
             raise AdapterError("The limited deck model is unavailable")
         return widget, H(model_handle)
+
+    def _cmd_get_sideboard_state(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.native_sideboard import observe
+
+        return observe(self, timeout)[0]
+
+    def _cmd_submit_sideboard(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.native_sideboard import submit
+
+        return submit(self, command, timeout)
 
     def _cmd_get_limited_pool(self, command: dict, timeout: float | None) -> dict:
         """Main deck, sideboard and how many of each candidate basic the pool holds."""
