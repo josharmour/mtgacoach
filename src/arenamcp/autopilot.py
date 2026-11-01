@@ -128,6 +128,10 @@ class AutopilotEngine(
         # Set by standalone: (kind, key, detail, game_state) -> None. Reports
         # stuck/self-cancel incidents for the "Oops" emote (arenamcp.oops).
         self._oops_fn: Callable[[str, Any, str, dict | None], Any] | None = None
+        # #711: the coach's per-game identity, captured before planning and
+        # asked after it whether that exact game's concede was accepted.
+        self._game_key_fn: Callable[[Any], Any] | None = None
+        self._conceded_game_fn: Callable[[Any], bool] | None = None
         # Evidence the Oops blunder checks match against log facts: targets the
         # autopilot submitted, and the board each attack was declared on.
         self._oops_targets: deque = deque(maxlen=16)
@@ -1440,6 +1444,56 @@ class AutopilotEngine(
         if pre[0] != fresh[0] or pre[1] != fresh[1]:
             return False
         return pre[2] == fresh[2] or pre[2] == -1 or fresh[2] == -1
+
+    @staticmethod
+    def _plan_game_changed(pre_key: Any, fresh_key: Any) -> bool:
+        """Whether the game this plan answers was replaced while it was in flight.
+
+        The coach's per-game counter is authoritative. A match id that only
+        became known (None -> value) with the same counter is the same game,
+        not a new one; a missing identity on either side proves nothing.
+        """
+        if not isinstance(pre_key, tuple) or not isinstance(fresh_key, tuple):
+            return False
+        if len(pre_key) != 2 or len(fresh_key) != 2:
+            return False
+        pre_match, pre_number = pre_key
+        fresh_match, fresh_number = fresh_key
+        if pre_number is None or fresh_number is None:
+            return False
+        if pre_number != fresh_number:
+            return True
+        return bool(pre_match and fresh_match and str(pre_match) != str(fresh_match))
+
+    def _game_ended_during_planning(self, game_state: dict[str, Any], pre_game_key: Any = None) -> str:
+        """Why the game this plan answers is over, or "" when it is not.
+
+        Only authoritative signals count. An empty poll, a concession
+        countdown or a refused concede proves nothing about the game: the
+        bridge's durable intermission flags, the log's own match end and a
+        concede this exact game's bridge accepted do. ``pre_game_key`` is the
+        identity captured before planning started, so a concede acknowledged
+        for that game still counts after the coach moved on to the next one.
+        """
+        if game_state.get("_bridge_in_intermission"):
+            return "bridge intermission"
+        if game_state.get("match_ended"):
+            return "match ended"
+        if str(game_state.get("pending_decision") or "") == "Intermission":
+            return "intermission decision"
+        request = self._normalize_request_type(
+            game_state.get("_bridge_request_type") or game_state.get("_bridge_request_class")
+        )
+        if request.startswith("Intermission"):
+            return "intermission request"
+        conceded = getattr(self, "_conceded_game_fn", None)
+        if callable(conceded) and pre_game_key is not None:
+            try:
+                if conceded(pre_game_key):
+                    return "concede acknowledged"
+            except Exception as e:
+                logger.debug(f"concede evidence check failed: {e}")
+        return ""
 
     def _refresh_blocked_action_window(self, game_state: dict[str, Any]) -> None:
         """Reset blocked-action suppression when the priority window changes.
@@ -3985,6 +4039,16 @@ class AutopilotEngine(
             self._refresh_game_plan(game_state)
 
             _plan_started_at = time.perf_counter()
+            # #711: capture which game this plan answers before the call. A
+            # concede acknowledged for it must still count if the coach's
+            # counter moves on to the next game while the plan is in flight.
+            pre_game_key = None
+            key_fn = getattr(self, "_game_key_fn", None)
+            if callable(key_fn):
+                try:
+                    pre_game_key = key_fn(game_state.get("match_id"))
+                except Exception as e:
+                    logger.debug(f"pre-plan game key capture failed: {e}")
             legal_actions = self._drop_exhausted_activations(legal_actions, game_state)
             # A different request appearing mid-call cancels the model call,
             # as on the typed path; the next cycle plans the new request.
@@ -4009,6 +4073,62 @@ class AutopilotEngine(
                 )
                 self._state = AutopilotState.IDLE
                 return True
+
+            # #711: the game can end while the plan is in flight — a concede
+            # acknowledged 99 ms before an old SelectN plan returned. Nothing
+            # in that plan is legal any more, and a normal game end must not
+            # be reported as a takeover or a bridge failure. Pre-game plans
+            # (mulligan, starting player) cannot be overtaken by a game end and
+            # their bridge poll can block during animations, so they only
+            # consult the snapshot they planned from.
+            fresh_for_end: dict[str, Any] = {}
+            _pregame_plan = bool(plan.actions) and plan.actions[0].action_type in (
+                ActionType.MULLIGAN_KEEP,
+                ActionType.MULLIGAN_MULL,
+                ActionType.CHOOSE_STARTING_PLAYER,
+            )
+            if not _pregame_plan:
+                try:
+                    fresh_for_end = self._get_game_state()
+                except Exception as e:
+                    logger.debug(f"post-plan terminal check poll failed: {e}")
+                if not isinstance(fresh_for_end, dict):
+                    fresh_for_end = {}
+            ended_reason = self._game_ended_during_planning(
+                fresh_for_end, pre_game_key
+            ) or self._game_ended_during_planning(game_state, pre_game_key)
+            if ended_reason:
+                logger.info(
+                    "Autopilot: discarding plan — the game ended during planning (%s); "
+                    "%d planned action(s) dropped",
+                    ended_reason,
+                    len(plan.actions),
+                )
+                self._state = AutopilotState.IDLE
+                return True
+
+            # #711: a game can also end naturally while the plan is in flight.
+            # The new game's snapshot has no terminal flags left, so compare the
+            # coach's authoritative per-game key captured before the call with
+            # the one it reports now. A match id that only became known with an
+            # unchanged counter is the same game, not a new one.
+            fresh_game_key = None
+            if callable(key_fn):
+                try:
+                    fresh_game_key = key_fn(fresh_for_end.get("match_id"))
+                except Exception as e:
+                    logger.debug(f"post-plan game key check failed: {e}")
+            if self._plan_game_changed(pre_game_key, fresh_game_key):
+                logger.info(
+                    "Autopilot: discarding plan — the next game started during planning "
+                    "(game %r -> %r); %d planned action(s) dropped",
+                    pre_game_key,
+                    fresh_game_key,
+                    len(plan.actions),
+                )
+                self._state = AutopilotState.IDLE
+                return True
+
             reason = getattr(plan, "fallback_reason", "")
             self.last_plan_fallback_reason = reason if isinstance(reason, str) else ""
             llm_unavailable = self.last_plan_fallback_reason == FALLBACK_LLM_UNAVAILABLE

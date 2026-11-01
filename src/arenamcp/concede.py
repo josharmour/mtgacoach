@@ -1671,6 +1671,8 @@ class ConcedeController:
         self._recommended: OrderedDict = OrderedDict()
         self._declined: OrderedDict = OrderedDict()
         self._conceded: OrderedDict = OrderedDict()
+        # The coach's per-game key -> record of a concede the bridge accepted.
+        self._sent: OrderedDict = OrderedDict()
         self._arms: OrderedDict = OrderedDict()
         self._last_logged: tuple | None = None
         self._last_estimate: LossEstimate | None = None
@@ -1721,6 +1723,59 @@ class ConcedeController:
     def recommended(self, game_key: Any) -> bool:
         with self._lock:
             return game_key in self._recommended
+
+    def _remember_sent(self, armed: _Armed, fresh: dict) -> None:
+        """Remember which exact game the bridge accepted a concede for.
+
+        Keyed by the coach's per-game key (``armed.game_key``: match id plus
+        its own game counter), which exists even when the log snapshot carries
+        no ``gameNumber`` — the #711 incident snapshot had none. Only an
+        accepted send counts: a countdown, a cancel or a refused concede
+        proves nothing about the game.
+        """
+        key = armed.game_key
+        try:
+            hash(key)
+        except TypeError:
+            return
+        match_id = key[0] if isinstance(key, tuple) and len(key) == 2 else None
+        match_number = key[1] if isinstance(key, tuple) and len(key) == 2 else None
+        with self._lock:
+            _remember(
+                self._sent,
+                key,
+                {
+                    "match_id": match_id,
+                    "match_number": match_number,
+                    "game_number": fresh.get("game_number"),
+                    "turn": (fresh.get("turn") or {}).get("turn_number"),
+                    "at": self._clock(),
+                },
+            )
+
+    def conceded_game(self, match_id: Any = None, match_number: Any = None) -> bool:
+        """True when this exact game's concede was accepted by the bridge.
+
+        Identity is the coach's per-game counter (plus the match id when both
+        sides know it), so it works when the snapshot has no ``gameNumber``
+        (#711) and never carries over into the next game of the same match.
+        A missing counter is never evidence.
+        """
+        if match_number is None:
+            return False
+        try:
+            number = int(match_number)
+        except (TypeError, ValueError):
+            return False
+        with self._lock:
+            for record in self._sent.values():
+                if record.get("match_number") != number:
+                    continue
+                recorded_match = record.get("match_id")
+                if match_id and recorded_match and str(recorded_match) != str(match_id):
+                    continue
+                return True
+            return False
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -2078,6 +2133,7 @@ class ConcedeController:
                 return
             if result.get("ok"):
                 logger.warning("[CONCEDE] concede sent for game %r: %s", armed.game_key, result)
+                self._remember_sent(armed, fresh)
                 self._emit({"state": "sent", "id": armed.token})
                 self._confirm(armed)
                 return

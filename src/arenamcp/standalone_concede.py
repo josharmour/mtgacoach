@@ -68,6 +68,32 @@ class _ConcedeMixin:
         controller = getattr(self, "_concede", None)
         return bool(controller is not None and controller.concede_in_progress(game_key))
 
+    def _autopilot_game_key(self, match_id: Any = None) -> tuple | None:
+        """The coach's authoritative per-game identity for the game being planned.
+
+        Captured before a planning call and compared after it, so a concede
+        acknowledged for that game still counts when the counter has already
+        moved on to the next game (#711).
+        """
+        number = getattr(self, "_match_number", None)
+        if number is None:
+            return None
+        return (match_id, number)
+
+    def _conceded_game_for_autopilot(self, game_key: Any = None) -> bool:
+        """True when the captured game's concede was accepted by the bridge.
+
+        The autopilot uses it to discard a plan that returns after the game
+        ended even when the snapshot has not caught up yet (#711). Identity is
+        this coach's per-game counter — the same key the countdown armed with —
+        so it works without a snapshot ``gameNumber`` and never suppresses
+        play in the next game of the same match.
+        """
+        controller = getattr(self, "_concede", None)
+        if controller is None or not isinstance(game_key, tuple) or len(game_key) != 2:
+            return False
+        return bool(controller.conceded_game(game_key[0], game_key[1]))
+
     def set_auto_concede(self, enabled: bool) -> bool:
         """Turn auto-concede on or off (saved); turning it off cancels a countdown."""
         enabled = bool(enabled)

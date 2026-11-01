@@ -1133,6 +1133,12 @@ class StandaloneCoach(
             self._autopilot._advice_recorder = self._record_advice
             self._autopilot._stuck_report_fn = self._auto_capture_autopilot_stuck
             self._autopilot._oops_fn = self._oops_report
+            # #711: a plan that returns after this game's concede was accepted
+            # is obsolete even before the snapshot shows the intermission. The
+            # game key is captured before planning, so the next game's counter
+            # cannot hide the acknowledgment for the game being planned.
+            self._autopilot._game_key_fn = self._autopilot_game_key
+            self._autopilot._conceded_game_fn = self._conceded_game_for_autopilot
             # A typed decision's model call is cancelled when the bridge
             # prefetch thread sees a different request (BridgeDecisionPoller).
             _watch = getattr(getattr(self, "_bridge_poller", None), "watch_requests", None)
