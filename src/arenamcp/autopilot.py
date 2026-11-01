@@ -5883,7 +5883,7 @@ class AutopilotEngine(
         window (a pending decision in the log, or anything on the stack);
         returns None when any signal is missing.
         """
-        if not isinstance(game_state, dict):
+        if not isinstance(game_state, dict) or game_state.get("match_ended"):
             return None
         if not getattr(self._gre_bridge, "connected", False):
             return None
@@ -5909,15 +5909,19 @@ class AutopilotEngine(
 
         if seconds_remaining(game_state.get("timer_state"), seat) is None:
             return None
-        gsid = int(game_state.get("_bridge_game_state_id") or 0)
-        # Stable while the window lasts (the watchdog accumulates age on this
-        # key); a new turn/phase starts a fresh window at age 0.
-        msg_id = f"{turn.get('turn_number')}:{turn.get('phase')}:{turn.get('step')}"
+        # Synthetic identity controls escalation only, never submission.
+        # Unrelated game-state updates cannot renew a missing request's clock.
+        msg_id = repr(
+            (
+                game_state.get("match_id"), game_state.get("game_number"),
+                turn.get("turn_number"), turn.get("phase"), turn.get("step"), seat,
+            )
+        )
         return {
             "has_pending": True,
             "request_type": "ActionsAvailable",
             "request_class": "",
-            "game_state_id": gsid,
+            "game_state_id": 0,
             "msg_id": msg_id,
             "actions": [],
             "_log_derived": True,

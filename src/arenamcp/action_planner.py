@@ -1159,15 +1159,18 @@ class ActionPlanner(_ActionLegalityMixin):
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
-    def _hedged_declaration(self, complete: Callable[..., str]) -> str:
+    def _hedged_declaration(self, complete: Callable[..., str], *, deadline: float | None = None) -> str:
         """A high-effort declaration with a low-effort one racing alongside (ledger #159).
 
         The high answer wins when it arrives within the budget; when it fails or
         runs out, the low answer stands (if it came). Both failing raises the
         high call's error, as ``_bounded_call`` would.
         """
+        if deadline is None:
+            deadline = time.monotonic() + float(self._timeout or 0.0)
+        if deadline <= time.monotonic():
+            raise concurrent.futures.TimeoutError()
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="planner-llm")
-        deadline = time.monotonic() + float(self._timeout or 0.0)
         cancels = [threading.Event(), threading.Event()]
         try:
             high = pool.submit(complete, "decision.plan", "high", cancel_event=cancels[0])
@@ -1224,6 +1227,9 @@ class ActionPlanner(_ActionLegalityMixin):
             ActionPlan with structured actions to execute.
         """
         start = time.perf_counter()
+        from arenamcp.decision_clock import model_deadline as arena_model_deadline
+
+        arena_deadline = arena_model_deadline(game_state)
         effective_legal_actions = self._filter_legal_actions_for_planning(game_state, legal_actions or [])
         if legal_actions and (
             not effective_legal_actions
@@ -1440,6 +1446,8 @@ class ActionPlanner(_ActionLegalityMixin):
         # actions and _fallback_plan would submit a real game action (blind
         # passes, 2026-07-05). _call_llm raises on a sentinel as well.
         model_deadline = time.monotonic() + self._timeout
+        if arena_deadline is not None:
+            model_deadline = min(model_deadline, arena_deadline)
 
         def _complete(
             call_class: str = "decision.plan",
@@ -1472,7 +1480,11 @@ class ActionPlanner(_ActionLegalityMixin):
             diag["effort"] = effort_why
 
         try:
-            response = self._hedged_declaration(_complete) if effort else self._bounded_call(_complete)
+            response = (
+                self._hedged_declaration(_complete, deadline=model_deadline)
+                if effort
+                else self._bounded_call(_complete, timeout_s=model_deadline - time.monotonic())
+            )
             elapsed = (time.perf_counter() - start) * 1000
             logger.info(f"Action planning took {elapsed:.0f}ms")
         except concurrent.futures.TimeoutError:
@@ -8992,6 +9004,13 @@ class ActionPlanner(_ActionLegalityMixin):
         raise errors[0]
 
     def _llm_decision_options(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
+        from arenamcp.decision_clock import model_deadline as arena_model_deadline
+
+        # Include prompt/search preparation in the Arena deadline, including
+        # snapshots whose live bridge timers carry no wall-clock timestamp.
+        arena_deadline = arena_model_deadline(game_state)
+        if arena_deadline is not None and arena_deadline <= time.monotonic():
+            raise concurrent.futures.TimeoutError("Arena clock reserved for safe default")
         # Circuit open: fail before formatting a 25k-character prompt, so the
         # caller's deterministic pick lands at once instead of after 12 s.
         if llm_circuit_open(getattr(self, "_backend", None)):
@@ -9573,6 +9592,12 @@ class ActionPlanner(_ActionLegalityMixin):
         decision_deadline = time.monotonic() + (
             self._sized_budget(self._CRITICAL_DECISION_BUDGET_S, first_token_s) if critical else normal_budget
         )
+        if arena_deadline is not None:
+            decision_deadline = min(decision_deadline, arena_deadline)
+        remaining_budget = decision_deadline - time.monotonic()
+        if remaining_budget <= 0:
+            raise concurrent.futures.TimeoutError("Arena clock reserved for safe default")
+        normal_budget = min(normal_budget, remaining_budget)
         answered_high = False
         if critical:
             low_agrees = None
@@ -9599,7 +9624,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 low_agrees,
                 low_doubt,
                 patient=critical.startswith("within lethal reach"),
-                high_budget=self._sized_budget(self._CRITICAL_DECISION_BUDGET_S, first_token_s),
+                high_budget=min(
+                    self._sized_budget(self._CRITICAL_DECISION_BUDGET_S, first_token_s), remaining_budget
+                ),
             )
             answered_high = (self._last_decision_trace.get("hedge") or {}).get("winner") == "high"
         else:

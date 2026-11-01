@@ -1299,13 +1299,7 @@ class StandaloneCoach(
                     resp = synthesized
         bridge = getattr(poller, "_bridge", None)
         last_answer = float(getattr(bridge, "last_submission_at", 0.0) or 0.0)
-        from arenamcp.decision_clock import seconds_remaining
-
-        remaining = seconds_remaining(
-            curr_state.get("timer_state"),
-            self._get_local_seat_from_state(curr_state),
-            not_before=watchdog.first_seen_wall - 3.0,
-        )
+        from arenamcp.decision_clock import decision_seconds_remaining
         from arenamcp.request_tracker import request_window
 
         current_window = request_window(curr_state)
@@ -1313,6 +1307,10 @@ class StandaloneCoach(
             (curr_state.get("match_id"), curr_state.get("game_number"), *current_window)
             if current_window is not None
             else None
+        )
+        remaining = decision_seconds_remaining(
+            curr_state,
+            not_before=watchdog.clock_window_started_at(resp, window=watchdog_window) - 3.0,
         )
         judged = curr_state
         handed = False

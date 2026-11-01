@@ -196,6 +196,57 @@ def seconds_remaining(
     return remaining - max(0.0, now - received)
 
 
+def decision_seconds_remaining(
+    state: dict[str, Any], *, now: float | None = None, not_before: float | None = None
+) -> float | None:
+    """A fresh request deadline or the still-running rope for this exact turn.
+
+    Active/nonactive rope reports span multiple requests. Their turn identity,
+    not the current request's first observation, establishes freshness. Other
+    timer types still require a recent report so stale windows cannot authorize
+    a default in a later phase or game.
+    """
+    if state.get("match_ended"):
+        return None
+    now = time.time() if now is None else now
+    turn = state.get("turn") or {}
+    seat = state.get("local_seat_id") or next(
+        (p.get("seat_id") for p in state.get("players") or [] if p.get("is_local")), None
+    )
+    timers = state.get("timer_state") or {}
+    remaining = seconds_remaining(timers, seat, now=now, not_before=not_before)
+    entry = timers.get(seat, timers.get(str(seat)))
+    if not isinstance(entry, dict) or not seat or not turn.get("turn_number"):
+        return remaining
+    active = turn.get("active_player")
+    if not active:
+        return remaining
+    kind = "TimerType_ActivePlayer" if active == seat else "TimerType_NonActivePlayer"
+    reported_kind = entry.get("timer_type")
+    known_turns = entry.get("rope_turn") or {}
+    if reported_kind in known_turns and (
+        reported_kind != kind or known_turns[reported_kind] != turn["turn_number"]
+    ):
+        remaining = None
+    if (entry.get("rope_turn") or {}).get(kind) != turn["turn_number"] or not (
+        entry.get("rope_running") or {}
+    ).get(kind):
+        return remaining
+    rope = (entry.get("rope_s") or {}).get(kind)
+    if not isinstance(rope, (int, float)):
+        return remaining
+    received = entry.get("received_at")
+    rope -= max(0.0, now - (now if received is None else float(received)))
+    return rope if remaining is None else min(rope, remaining)
+
+
+def model_deadline(state: dict[str, Any], *, reserve_s: float = 5.0) -> float | None:
+    """Monotonic deadline leaving time for the existing safe default/submission."""
+    now = time.time()
+    remaining = decision_seconds_remaining(state, now=now, not_before=now - 3.0)
+    return None if remaining is None else time.monotonic() + max(0.0, remaining - reserve_s)
+
+
 # Our turn's rope this low: stop starting optional plays (each costs a model
 # call or several) and move on to the attack / the pass. The decision
 # watchdog's CLOCK_MARGIN_S takes over at the same mark for an unanswered

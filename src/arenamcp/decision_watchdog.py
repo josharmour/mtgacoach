@@ -119,13 +119,22 @@ class DecisionWatchdog:
         clock_remaining_s: float | None = None,
     ) -> bool:
         """Whether ``step`` could ask for anything now (lets callers skip costly inputs)."""
-        if request_key(resp, window=window) != self._key or self._key is None:
+        key = request_key(resp, window=window)
+        if key is None:
+            return False
+        if clock_remaining_s is not None and clock_remaining_s <= self.CLOCK_MARGIN_S:
+            return True
+        if key != self._key or self._key is None:
             return False
         if self._defaulted_at is not None:
             return True
-        if clock_remaining_s is not None and clock_remaining_s <= self.CLOCK_MARGIN_S:
-            return True
         return self._now() - max(self._since, float(last_answer_at or 0.0)) >= self.REPLAN_AFTER_S
+
+    def clock_window_started_at(self, resp: dict[str, Any] | None, *, window: tuple | None = None) -> float:
+        """Reject an earlier request's clock when observing a new request."""
+        if self._key is not None and request_key(resp, window=window) == self._key:
+            return self.first_seen_wall
+        return time.time()
 
     def step(
         self,
@@ -154,7 +163,6 @@ class DecisionWatchdog:
             self._key = key
             self._since = now
             self.first_seen_wall = time.time() if wall_now is None else wall_now
-            return None
         age = now - max(self._since, float(last_answer_at or 0.0))
         urgent = clock_remaining_s is not None and clock_remaining_s <= self.CLOCK_MARGIN_S
         label = request_label(resp)
