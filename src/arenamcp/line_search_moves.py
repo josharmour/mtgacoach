@@ -1410,6 +1410,8 @@ class Step:
     life_after: int | None = None  # our life after their following attack
     their_creatures_after: int | None = None
     policy: str = ""  # their attack policy
+    public_response: str = ""  # opponent response chosen before our adaptive attack
+    opponent_discards: int = 0
     greedy: bool = False
     # Casts that change nothing about this turn's attack: cast them after combat (main 2).
     post_combat: tuple[str, ...] = ()
@@ -1552,6 +1554,7 @@ class Node:
     persistent: tuple = ()  # returned noncreature engines; never attack/block/creature targets
     our_loss: LossState = LossState()
     opponent_loss: LossState = LossState()
+    opponent_discards: int = 0  # cumulative known cards paid, never identities
 
     @property
     def terminal(self) -> bool:
@@ -1565,7 +1568,8 @@ class Mid:
         "node", "land", "casts", "sources", "base_sources", "used_mv", "used_pips", "our_life", "opp_life",
         "ours", "theirs", "our_tapped", "entered", "hand", "lands", "played", "rocks", "returning",
         "attack_first", "applied", "modes", "targets", "cycles", "cast_names", "keys", "gained", "walkers",
-        "pumps", "persistent",
+        "pumps", "persistent", "their_tapped", "responses", "response_case", "response_cache",
+        "public_response", "opponent_discards",
     )  # fmt: skip
 
     def copy(self) -> Mid:
@@ -1956,6 +1960,8 @@ def unmodelled_effect(card: dict | None, result: Any = None) -> str:
     """
     if not isinstance(card, dict) or not card.get("name"):
         return ""
+    if _name(card) in getattr(getattr(result, "_search", None), "public_unmodelled", set()):
+        return "its unsupported public-response continuations"
     if card.get("_card_unknown"):  # a commander without card data (``board_model.our_commanders``)
         return "its rules text is unknown"
     try:
@@ -2086,6 +2092,11 @@ class Moves:
         self._sacrifice_enabled = relevant(model.battlefield)
         self.sacrifice_choices = {}
         self.choice_caveats = set()
+        self.public_unmodelled = set()
+        self.public_responses = {}
+        from arenamcp.public_response import relevant
+
+        self._public_response_enabled = any(relevant(body) for body in model.theirs)
         self.survival, self.lethal_now = bool(survival), bool(lethal_now)
         self.started = time.perf_counter()
         self.hard = hard_ms / 1000.0
@@ -2593,6 +2604,14 @@ class Moves:
             face=each,
             sweep=0 if oracle_modes else _sweep(_cast_text(etb)),
         )
+        # A fixed Helix-style spell is classified as removal, so the old
+        # role-gated gain parser omitted its unconditional life gain (#308).
+        from arenamcp.public_response import fixed_burn
+
+        if fixed := fixed_burn(card):
+            plain = dataclasses.replace(
+                plain, gain=0 if self.engines and self.engines.no_gain else int(fixed["gain"] or 0)
+            )
         if spell.has_x or spell.role == "counter" or spell.uncastable:
             plain, variants = None, []  # never cast proactively (or can't be cast now)
         elif (
@@ -2876,6 +2895,8 @@ class Moves:
             return (WIN, -node.win_at, 0.1 * node.overkill)
         if node.dead_at is not None:
             return (DEAD, node.dead_at, -0.1 * node.overkill)
+        # Same 1.5/card heuristic used for their unseen draws (PUNISH_CARD_VALUE).
+        # This values a known discard count, never a guessed discarded card.
         return (
             ALIVE,
             0,
@@ -2887,7 +2908,8 @@ class Moves:
                 node.hand,
                 node.walkers,
                 node.persistent,
-            ),
+            )
+            + PUNISH_CARD_VALUE * node.opponent_discards,
         )
 
     def sick(self, body, k, abs_turn, entered) -> bool:
@@ -2988,6 +3010,14 @@ class Moves:
                 out.append(body)
             if len(out) == _TARGETS:
                 break
+        # A protected top threat must not crowd every ordinary alternative out
+        # of the bounded target list (#308). Keep one unprotected target too.
+        from arenamcp.public_response import relevant
+
+        if self._public_response_enabled and any(relevant(b) for b in out):
+            alternative = next((b for b in killable if not relevant(b) and b not in out), None)
+            if alternative is not None:
+                out.append(alternative)
         return out
 
     @staticmethod
@@ -3280,10 +3310,11 @@ class Moves:
 
     def _future_bodies(self, bodies):
         from arenamcp.combat_protection import future_protection
+        from arenamcp.public_response import expire
 
         out = []
         for body in bodies:
-            future = future_protection(body)
+            future = future_protection(expire(body) if "_public_response_original" in body else body)
             if future is not body and id(body) in self._body_spell:
                 self._body_spell[id(future)] = self._body_spell[id(body)]
             out.append(future)
@@ -3442,6 +3473,45 @@ class Moves:
             grown.append(new)
         return grown, frozenset(tapped)
 
+    def _public_case(self, node, casts):
+        if not self._public_response_enabled:
+            return None
+        from arenamcp.public_response import response
+
+        found = None
+        for var, target in casts:
+            case = response(
+                self.model,
+                self.spells[var.spell].spell.card,
+                target,
+                current=node.k == 0 and self.our_turn,
+                count=len(casts),
+            )
+            if case is not None:
+                found = case
+        return found
+
+    def _unmodelled_response(self, casts, reason):
+        names = {self.spells[v.spell].name for v, _ in casts}
+        self.public_unmodelled.update(names)
+        self.choice_caveats.add(f"{', '.join(sorted(names))}: {reason}")
+        self.truncated = self.bounded = True
+        self.exact_first = False
+
+    def supported_casts(self, node, casts):
+        if not self._public_response_enabled:
+            return True
+        from arenamcp.public_response import UnsupportedResponse
+
+        try:
+            self._public_case(node, casts)
+            return True
+        except UnsupportedResponse as error:
+            if node.k == 0 and len(casts) == 1:
+                raise  # unknown current availability never becomes 'no response'
+            self._unmodelled_response(casts, str(error))
+            return False
+
     def choice_text(self, choice) -> str:
         return " + ".join(
             f"{self.spells[v.spell].name}:{v.kind}:{v.mode}:{t['instance_id'] if t else ''}"
@@ -3534,6 +3604,8 @@ class Moves:
                     pips = tuple(p for v, _ in choice for p in v.pips)
                     if pips and not _pip_matching(pips, sources):
                         continue
+                    if not self.supported_casts(node, choice):
+                        continue
                     value = self.choice_value(choice, theirs, self.gained_at_start(node), node.ours)
                     scored.append((choice, value, total))
         scored.sort(key=lambda item: (-round(item[1], 6), -item[2], self.choice_text(item[0])))
@@ -3604,6 +3676,7 @@ class Moves:
                 tapped=_enters_tapped(card, board),
                 source=mana_source(card, board),
             )
+        response_case = self._public_case(node, casts)
         mid = Mid.__new__(Mid)
         if self.pumps_possible and len(casts) > 1:
             # Creature spells first, then the noncreature spells whose casts pump them (ledger #94:
@@ -3635,6 +3708,10 @@ class Moves:
         mid.our_life, mid.opp_life = node.our_life, node.opp_life
         mid.ours, mid.theirs = list(node.ours), list(node.theirs)
         mid.our_tapped = set(node.our_tapped)
+        mid.their_tapped = set(node.their_tapped)
+        mid.responses, mid.response_case, mid.response_cache = (), None, {}
+        mid.public_response = ""
+        mid.opponent_discards = node.opponent_discards
         mid.entered = dict(node.entered)
         mid.hand = list(node.hand)
         mid.lands = [x for x in node.lands if land is None or x.iid != land.iid]
@@ -3648,8 +3725,27 @@ class Moves:
         mid.walkers = {iid: (name, loyal) for iid, name, loyal in node.walkers}
         mid.pumps = dict(self.root_pumps) if node.k == 0 else {}
         mid.keys = self.play_keys(land, casts)
+        alternate = mid.copy() if response_case is not None else None
         if not mid.attack_first:
             self._apply_casts(mid)
+        if alternate is not None:
+            if mid.attack_first:
+                from arenamcp.public_response import UnsupportedResponse
+
+                raise UnsupportedResponse("public protection response: post-combat cast timing unmodelled")
+            alternate.response_case = response_case
+            alternate.public_response = "opponent discards for indestructible"
+            alternate.opponent_discards += 1
+            self._apply_casts(alternate)
+            mid.public_response = "opponent declines protection"
+            mid.responses = (mid.copy(), alternate)
+            # The bounded opponent policy scores through the following attack,
+            # not every adaptive continuation to the full search horizon.
+            self.truncated = self.bounded = True
+            self.exact_first = False
+            self.choice_caveats.add(
+                "Public responses use a one-turn adversarial policy with adaptive attacks; later forecasts are conditional, not exhaustive."
+            )
         return mid
 
     def _apply_casts(self, mid: Mid) -> None:
@@ -3674,6 +3770,19 @@ class Moves:
             mid.theirs = [grown(b) for b in mid.theirs]
             if target is not None and not var.walker:
                 target = next((b for b in mid.theirs if b["instance_id"] == target["instance_id"]), target)
+            protected = (
+                mid.response_case is not None
+                and target is not None
+                and target["instance_id"] == mid.response_case.target_id
+            )
+            if protected:
+                from arenamcp.public_response import protected_body
+
+                saved = protected_body(target, mid.response_case.damage)
+                mid.theirs = [saved if b is target else b for b in mid.theirs]
+                target = saved
+                if mid.response_case.taps:
+                    mid.their_tapped.add(target["instance_id"])
             if self.pumps_possible:  # its cast triggers resolve first: the bodies already in play
                 self._cast_triggers(mid, var.spell)
             if var.mode_text:
@@ -3720,6 +3829,8 @@ class Moves:
                         mid.walkers[iid] = (name, loyal - var.walker)
                     else:
                         del mid.walkers[iid]
+            elif protected:
+                mid.targets.append((hs.name, target["name"]))
             elif target is not None and var.chip and any(b is target for b in mid.theirs):
                 iid = target["instance_id"]
                 chipped[iid] = chipped.get(iid, self.marked(target, mid.node)) + var.chip
@@ -3855,7 +3966,7 @@ class Moves:
         ]
         if not able:
             return [("none", ())], True
-        blockers = [b for b in mid.theirs if b["instance_id"] not in node.their_tapped]
+        blockers = [b for b in mid.theirs if b["instance_id"] not in mid.their_tapped]
         fighting, tag = self.cast_pumped(able, mid.pumps)
         _damage, dead, _ = self.combat(fighting, blockers, mid.opp_life, tag=tag)
         air = any(_reach_or_flying(b) and b["_can_block"] for b in blockers)
@@ -3900,6 +4011,22 @@ class Moves:
 
     def finish(self, mid: Mid, attack: tuple[str, tuple], *, greedy: bool = False) -> Node:
         """Our attack (and casts after it), then their attack: the next node or a terminal one."""
+        if mid.responses:
+            # Opponent acts first; we choose our attack AFTER seeing that response.
+            # Collapse min(response, max(our attack)) within this action, never
+            # expose either response as an action the outer search can maximize.
+            if greedy not in mid.response_cache:
+                outcomes = []
+                for branch in mid.responses:
+                    options = self.attack_choices(branch)[0]
+                    best = max(
+                        (self.finish(branch, option, greedy=greedy) for option in options),
+                        key=self.score,
+                    )
+                    outcomes.append(best)
+                mid.response_cache[greedy] = min(outcomes, key=self.score)
+                self.public_responses[self.choice_text(mid.casts)] = tuple(outcomes)
+            return mid.response_cache[greedy]
         self.tick()
         mid = mid.copy()
         node = mid.node
@@ -3920,7 +4047,7 @@ class Moves:
             # Attack triggers that ping the opponent (Hired Claw) resolve before blocks.
             if attack[0] != "declared":
                 mid.opp_life -= self.pinged(mid.ours, attackers)
-            blockers = [b for b in mid.theirs if b["instance_id"] not in node.their_tapped]
+            blockers = [b for b in mid.theirs if b["instance_id"] not in mid.their_tapped]
             fighting, tag = attackers, ""
             if attack[0] == "declared" and self.model.step == "Step_FirstStrikeDamage":
                 # Their life already shows our first-strike damage: only the regular part is left.
@@ -4050,6 +4177,8 @@ class Moves:
         step = {
             "k": node.k,
             "turn": node.abs_turn,
+            "public_response": mid.public_response,
+            "opponent_discards": mid.opponent_discards - node.opponent_discards,
             "label": LABELS[min(node.k, len(LABELS) - 1)],
             "land": mid.land.name if mid.land is not None else "",
             "casts": tuple(mid.cast_names),
@@ -4072,6 +4201,7 @@ class Moves:
         carry = {
             "our_life": mid.our_life,
             "opp_life": mid.opp_life,
+            "opponent_discards": mid.opponent_discards,
             "opponent_loss": opponent_loss,
             "ours": tuple(mid.ours),
             "theirs": tuple(mid.theirs),
@@ -4443,7 +4573,7 @@ class Moves:
             found = self._strength_memo[id(var.reach)] = _reach_strength(var.reach)
         return found
 
-    def _held(self, hand, spare, life) -> tuple[list[Variant], list[Variant], int]:
+    def _held(self, hand, spare, life, theirs=()) -> tuple[list[Variant], list[Variant], int]:
         """Instants we keep up for their turn, affordable together: (removal, flash creatures, mana left)."""
         sources, used_mv, used_pips = spare
         candidates = []
@@ -4453,6 +4583,22 @@ class Moves:
             ]
             killers = [v for v in instant if v.reach is not None]
             bodied = [v for v in instant if _bodies(v)]
+            from arenamcp.public_response import UnsupportedResponse, relevant, response
+
+            if self._public_response_enabled and killers and any(relevant(b) for b in theirs):
+                kept = []
+                for var in killers:
+                    try:
+                        for body in theirs:
+                            if self.kills(var.reach, body):
+                                response(self.model, self.spells[var.spell].spell.card, body, current=False)
+                    except UnsupportedResponse:
+                        self._unmodelled_response(
+                            ((var, None),), "public protection response on their turn unmodelled"
+                        )
+                    else:
+                        kept.append(var)
+                killers = kept
             if killers:  # the mode that kills the most: destroy, then the most damage
                 var = max(killers, key=self._strength)
                 candidates.append((0, -self._strength(var), self.spells[index].name, var))
@@ -4532,7 +4678,7 @@ class Moves:
             theirs = self.anthem_bodies(theirs, opp_life)
             able = self.anthem_bodies(able, opp_life, alive=theirs)
         drain = self.their_drain(theirs, after_upkeep=after_upkeep) if drain_now else 0
-        removal, flash, left = self._held(hand, spare, life)
+        removal, flash, left = self._held(hand, spare, life, theirs)
         flash_bodies = [b for v in flash for b in _bodies(v)]
         hand_left = tuple(i for i in hand if i not in {v.spell for v in flash})
         entered = dict(entered)
@@ -5058,7 +5204,7 @@ class Moves:
             if cheap and len(options) > 1:
                 everyone = next((o for o in options if o[0] == "all"), options[0])
                 attackers = [b for b in mid.ours if b["instance_id"] in everyone[1]]
-                blockers = [b for b in mid.theirs if b["instance_id"] not in node.their_tapped]
+                blockers = [b for b in mid.theirs if b["instance_id"] not in mid.their_tapped]
                 fighting, tag = self.cast_pumped(attackers, mid.pumps)
                 damage = self.combat(fighting, blockers, mid.opp_life, tag=tag)[0]
                 lethal = damage + self.sneak_gain(mid, fighting, blockers, tag) >= mid.opp_life

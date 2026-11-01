@@ -92,6 +92,7 @@ from arenamcp.line_search_moves import (
     DEAD,
     LABELS,
     NOTHING,
+    PUNISH_CARD_VALUE,
     WIN,
     Deadline,
     HandSpell,
@@ -171,6 +172,8 @@ class Line:
     def outcome(self) -> str:
         if self.unsupported:
             return "unknown"
+        if any(s.public_response for s in self.steps) and not (self.cls == WIN and self.win_at == 1):
+            return "unknown"  # response choice used one-turn value, not horizon minimax
         return {WIN: "win", ALIVE: "alive", DEAD: "dead"}[self.cls]
 
     @property
@@ -191,6 +194,12 @@ class Line:
         return lives + [s.life_after for s in self.steps if s.life_after is not None]
 
     def outcome_text(self) -> str:
+        prefix = ""
+        if any(s.public_response for s in self.steps) and not (self.cls == WIN and self.win_at == 1):
+            prefix = "conditional on the one-turn response policy: "
+        return prefix + self._outcome_text()
+
+    def _outcome_text(self) -> str:
         """'lethal on T15' / 'dead on T15' / 'survives (life 7, 5, 8; opponent at 17)'."""
         if self.unsupported:
             return "unsupported forecast: " + "; ".join(self.unsupported)
@@ -248,6 +257,9 @@ class Line:
                     "cycles": list(s.cycles),
                     "attack": list(s.attack),
                     "held": list(s.held),
+                    "targets": dict(s.targets),
+                    "public_response": s.public_response,
+                    "opponent_discards": s.opponent_discards,
                     "life_after": s.life_after,
                     "opp_life_after": s.opp_life_after,
                 }
@@ -558,6 +570,8 @@ class _Search(Moves):
                 choice.append((var, target))
             # Cast order as the search enumerates it (hand order): the same T step has the same sig.
             choice.sort(key=lambda item: node.hand.index(item[0].spell))
+            if not self.supported_casts(node, tuple(choice)):
+                choice = []
             mid = self.begin(node, land, tuple(choice))
             options, _possible = self.attack_choices(mid)
             node = self.finish(mid, options[0] if options[0][0] == "declared" else ("none", ()), greedy=True)
@@ -601,14 +615,17 @@ class _Search(Moves):
         if opp_now <= 0:
             return None  # (not distant: T itself kills)
         alive = dataclasses.replace(node, opp_life=opp_now, win_at=None, win_turn=None, overkill=0)
-        value = self.value(
-            alive.our_life,
-            opp_now,
-            alive.ours,
-            alive.theirs + alive.returning,
-            alive.hand,
-            alive.walkers,
-            alive.persistent,
+        value = (
+            self.value(
+                alive.our_life,
+                opp_now,
+                alive.ours,
+                alive.theirs + alive.returning,
+                alive.hand,
+                alive.walkers,
+                alive.persistent,
+            )
+            + PUNISH_CARD_VALUE * alive.opponent_discards
         )
         race = 0.0 if self.past_soft() or self.truncated else self.race(alive)
         return float(value + race)
@@ -628,7 +645,7 @@ class _Search(Moves):
             now_life=node.now_life,
             block=node.block,
             baseline=baseline,
-            complete=not node.rolled,
+            complete=not node.rolled and not self.public_unmodelled and not self.public_responses,
             aliases=frozenset(aliases),
             _leaf=node,
         )
@@ -695,6 +712,9 @@ class _Search(Moves):
                     for n, ids in self.attack_choices(mid)[0]
                 ]
             for child_keys, attacks, child in children:
+                if child.history and child.history[0].public_response:
+                    child_keys = keys | child.history[0].keys
+                    attacks = bool(child.history[0].attack)
                 sig = self._sig(child)
                 if sig in by_sig:  # a transposition: same board, other T step
                     by_sig[sig].aliases |= child_keys
@@ -716,6 +736,7 @@ class _Search(Moves):
             tuple(c.get("instance_id") for c in node.persistent),
             tuple(sorted(s.name for s in node.played)), len(node.rocks), ids_of(node.returning),
             node.dead_at, node.win_at, node.overkill, node.block, node.walkers, node.our_loss, node.opponent_loss,
+            node.opponent_discards,
         )  # fmt: skip
 
     def _rank(self, group: _Group) -> tuple:
@@ -835,8 +856,8 @@ class _Search(Moves):
             first_action=first_action,
             now_life=best.now_life,
             dead_now=False,
-            dead_in=best.dead_at,
-            dead_in_greedy=baseline.dead_at,
+            dead_in=None if self.public_responses or self.public_unmodelled else best.dead_at,
+            dead_in_greedy=None if self.public_responses or self.public_unmodelled else baseline.dead_at,
             all_dead_at_first=exact_root and bool(main) and all(g.node.dead_at == 1 for g in main),
             exact_first_attack=exact_root and self.exact_first,
             only_survivor=only,
@@ -1076,7 +1097,7 @@ def search_lines(
             only_survivor=False,
             only_first_attack_survivor=False,
             posture="either",
-            posture_reason="sacrifice continuation unsupported",
+            posture_reason="continuation unsupported",
             nodes=getattr(search, "nodes", 0),
             combats=getattr(search, "combats", 0),
             elapsed_ms=(time.perf_counter() - started) * 1000,
