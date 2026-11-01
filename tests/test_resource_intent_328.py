@@ -50,6 +50,29 @@ def test_affordable_lines_and_explicit_development_tradeoffs_stand():
     )
 
 
+@pytest.mark.parametrize("attachment", ["unrelated", "unattached", "reverse", "wearing"])
+def test_only_the_targets_attachments_add_to_its_ward_reservation(attachment):
+    state = board(4, 1)
+    aura = card(
+        99,
+        "Protection aura",
+        "Enchant creature\nEnchanted creature has ward {2}.",
+        "Enchantment — Aura",
+        seat=2,
+    )
+    if attachment == "unrelated":
+        aura["attached_to_id"] = 999
+    elif attachment == "reverse":
+        aura["attached_to_id"] = 90
+    elif attachment == "wearing":
+        state["battlefield"][-1]["attached_with_ids"] = [99]
+    state["battlefield"].append(aura)
+    original = deepcopy(state)
+    conflict = removal_reservation_conflict(menu(cast(20), cast(30)), state, ["idx:20"], REASON)
+    assert bool(conflict) == (attachment in {"reverse", "wearing"})
+    assert state == original
+
+
 def test_ambiguous_or_illegal_target_and_unknown_mana_abstain():
     for change in ("namesake", "hexproof", "mana", "refund", "future_source", "ward_answer", "stack"):
         state = board(4, 3)

@@ -98,7 +98,7 @@ def test_expired_clock_does_not_build_prompt_or_send_model(monkeypatch):
 
 
 def test_merged_tactical_rechecks_cannot_renew_the_arena_deadline(monkeypatch):
-    """Five independently added repairs share the initial call's four seconds."""
+    """Six independently added repairs share the initial call's four seconds."""
     clock = [100.0]
     budgets = []
 
@@ -129,11 +129,12 @@ def test_merged_tactical_rechecks_cannot_renew_the_arena_deadline(monkeypatch):
         "_repair_blink_claim",
         "_recheck_public_sequence",
         "_recheck_damage_facts",
+        "_recheck_resource_claim",
     ):
         monkeypatch.setattr(planner, name, recheck)
     assert planner._llm_decision_options(_decision([607, 812]), state_with_clock()) == ["tgt:812"]
     assert budgets == [4, 3, 2, 1]
-    assert len(expired) == 2
+    assert len(expired) == 3
 
 
 def test_prompt_work_counts_against_timestamp_free_bridge_clock(monkeypatch):

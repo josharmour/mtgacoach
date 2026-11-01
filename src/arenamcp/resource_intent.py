@@ -6,7 +6,7 @@ from arenamcp.mana import get_local_seat_id, mana_cost_to_cmc
 from arenamcp.offered_casts import offered_cost
 from arenamcp.play_safety import _effective_cost, exact_mana_total, find_source
 from arenamcp.removal_windows import target_eligibility
-from arenamcp.ward import ward_of
+from arenamcp.ward import attached_to, ward_of
 
 
 def _known_cost(card, meta):
@@ -111,7 +111,7 @@ def removal_reservation_conflict(decision, state: dict, chosen: list[str], reaso
             target = targets[0]
             if target_eligibility(removal, target, state) is not True:
                 continue
-            ward = ward_of(target, board)
+            ward = ward_of(target, attached_to(target, board))
             if ward is None or ward.mana is None or ward.mana <= 0:
                 continue
             reserve = cost + ward.mana
