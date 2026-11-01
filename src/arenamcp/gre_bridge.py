@@ -1112,6 +1112,26 @@ class GREBridge:
             logger.warning(f"GRE bridge pass error: {e}")
             return False
 
+    def get_recent_match(self) -> dict:
+        """Read the actual featured Recent Match entry; never guess a target."""
+        try:
+            return self._send_safe({"action": "get_recent_match"}, timeout=10.0)
+        except GREBridgeError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def queue_recent_match(self, target: dict, *, completed_at: float = 0) -> dict:
+        """Reserve before sending: an ambiguous timeout must never cause a second join."""
+        from arenamcp.recent_queue_attempt import reserve
+
+        try:
+            blocked = self.automation_blocker()
+            if blocked:
+                return {"ok": False, "error": blocked}
+            reserve(self._native_identity, target, completed_at)
+            return self._send_safe({**target, "action": "queue_recent_match"}, timeout=10.0)
+        except (GREBridgeError, OSError, ValueError, KeyError) as exc:
+            return {"ok": False, "error": str(exc)}
+
     def queue_match(self, event: str = "AIBotMatch", deck_id: str | None = None) -> bool:
         """Queue for a match (bot or constructed/event) via the bridge.
 

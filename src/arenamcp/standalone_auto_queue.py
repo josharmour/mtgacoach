@@ -19,8 +19,8 @@ class _AutoQueueMixin(AutoQuestMixin):
         self._auto_queue_enabled = bool(enabled)
         self.settings.set("auto_queue_enabled", self._auto_queue_enabled)
         self._auto_queue_since = time.time()
-        # Turning it on never starts a match; only a restart resumes one.
-        self._auto_queue_restart_pending = False
+        # Explicit opt-in starts the native Recent Match path when Home is idle.
+        self._auto_queue_restart_pending = bool(enabled)
         self._auto_queue_resume = None
         self._auto_queue_last_noted = None
         self._auto_queue_observed_match = None
@@ -34,7 +34,7 @@ class _AutoQueueMixin(AutoQuestMixin):
         self.ui.status("AUTO_QUEUE", "ON" if enabled else "OFF")
         self.ui.status(
             "AUTO_QUEUE_DETAIL",
-            "Waiting for this match to finish; Autoplay must be on." if enabled else "",
+            "Autoplay must be on; replaying the first Recent Match when Arena is idle." if enabled else "",
         )
         return self._auto_queue_enabled
 
@@ -80,7 +80,7 @@ class _AutoQueueMixin(AutoQuestMixin):
             age = time.time() - float(record.get("saved_at") or 0.0)
         except (TypeError, ValueError):
             age = float("inf")
-        if not ended:
+        if not ended and not record.get("recent_mode"):
             return False
         if not 0 <= age <= 600:
             logger.info(
@@ -140,6 +140,10 @@ class _AutoQueueMixin(AutoQuestMixin):
                 ", decision pending" if state.get("pending_decision") else "",
             )
             return False
+        if getattr(getattr(navigator, "_bridge", None), "client_runtime", "") == "il2cpp-macos":
+            # No fabricated completion or dependency on a previous Player.log:
+            # Arena's current Home/queue/model state is checked in the worker.
+            return navigator.start_recent_match(state)
         from arenamcp.server import idle_completed_match_from_log
 
         completed = idle_completed_match_from_log()

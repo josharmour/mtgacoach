@@ -473,6 +473,8 @@ class AutoQueueNavigator:
         self.paused_reason = ""
         self._ended_match_id: str | None = None
         self._idle_grind = False
+        self._recent_mode = False
+        self._recent_completed_at = 0.0
         self._seen_ends: deque[str] = deque(maxlen=32)
         self._next_poll = 0.0
         # Clicks per proposal that showed no effect yet, and all clicks.
@@ -635,7 +637,7 @@ class AutoQueueNavigator:
                 self._attempts.clear()
                 self._clicks = 0
                 self._next_poll = 0
-                if self._idle_grind:
+                if self._idle_grind or self._recent_mode:
                     self._stage = "queue" if self._queue_started else "home"
                 else:
                     self._stage = "resuming"
@@ -685,12 +687,28 @@ class AutoQueueNavigator:
                 return False
             return self._arm_navigation({**target, "match_id": state.get("match_id")}, idle=True)
 
+    def start_recent_match(self, state: dict) -> bool:
+        """Opted-in cold start. The bridge must prove Home is idle before joining."""
+        with self._lock:
+            if not self.enabled or self.active or state.get("pending_decision"):
+                return False
+            if getattr(self._bridge, "client_runtime", "") != "il2cpp-macos":
+                return False
+            return self._arm_navigation({"match_id": state.get("match_id")}, idle=True)
+
     def _arm_navigation(self, state: dict, *, idle: bool = False) -> bool:
         with self._lock:
             self._abort.set()
             self._abort = threading.Event()
             self._generation += 1
             self._quest_mode = state.get("quest_mode") is True
+            self._recent_mode = (
+                not self._quest_mode
+                and getattr(self._bridge, "client_runtime", "") == "il2cpp-macos"
+                and callable(getattr(self._bridge, "get_recent_match", None))
+                and callable(getattr(self._bridge, "queue_recent_match", None))
+            )
+            self._recent_completed_at = float(state.get("completed_at") or 0)
             self._quest_deck_id = str(state.get("deck_id") or "")
             self._ended_match_id = state.get("match_id")
             if state.get("event_id"):
@@ -726,7 +744,9 @@ class AutoQueueNavigator:
             self._progress("Grind started from idle" if idle else f"match {self._ended_match_id} ended")
             self._armed_at = self._progress_at
             self._status(
-                "Grind ready; joining the selected free queue"
+                "Reading Arena's first Recent Match entry"
+                if idle and self._recent_mode
+                else "Grind ready; joining the selected free queue"
                 if idle
                 else "Match finished; returning to Recently Played"
             )
@@ -751,7 +771,11 @@ class AutoQueueNavigator:
         resumable, as re-enabling it would resume it.
         """
         with self._lock:
-            if self._idle_grind or not self._ended_match_id or not (self.active or self._resume_pending):
+            if (
+                (self._idle_grind and not self._recent_mode)
+                or (not self._ended_match_id and not self._recent_mode)
+                or not (self.active or self._resume_pending)
+            ):
                 return None
             now, wall = time.monotonic(), time.time()
 
@@ -760,6 +784,10 @@ class AutoQueueNavigator:
 
             record = {
                 "saved_at": wall,
+                "recent_mode": self._recent_mode,
+                "recent_completed_at": self._recent_completed_at,
+                "idle_recent": self._idle_grind and self._recent_mode,
+                "deck_id": self._quest_deck_id,
                 "ended_match_id": self._ended_match_id,
                 "expected_queue": dict(self._expected_queue) if self._expected_queue else None,
                 "last_event_id": self._last_event_id,
@@ -800,7 +828,7 @@ class AutoQueueNavigator:
         """
         ended = str(record.get("ended_match_id") or "")
         with self._lock:
-            if not self.enabled or not ended:
+            if not self.enabled or (not ended and not record.get("recent_mode")):
                 return False
             now, wall = time.monotonic(), time.time()
 
@@ -821,7 +849,10 @@ class AutoQueueNavigator:
             self._abort = threading.Event()
             self._generation += 1
             self._ended_match_id = ended
-            self._idle_grind = False
+            self._idle_grind = record.get("idle_recent") is True
+            self._recent_mode = record.get("recent_mode") is True
+            self._recent_completed_at = float(record.get("recent_completed_at") or 0)
+            self._quest_deck_id = str(record.get("deck_id") or "")
             for match_id in [*(record.get("seen_ends") or []), ended]:
                 if match_id and match_id not in self._seen_ends:
                     self._seen_ends.append(str(match_id))
@@ -1070,7 +1101,10 @@ class AutoQueueNavigator:
         if (
             selection.get("event_id") == expected["event_id"]
             and selection.get("deck_name") == expected["deck_name"]
-            and (not getattr(self, "_quest_mode", False) or selection.get("deck_id") == self._quest_deck_id)
+            and (
+                not (getattr(self, "_quest_mode", False) or self._recent_mode)
+                or selection.get("deck_id") == self._quest_deck_id
+            )
         ):
             if not self._queue_confirmed:
                 self._queue_confirmed = True
@@ -1178,13 +1212,26 @@ class AutoQueueNavigator:
                     getattr(bridge, "client_runtime", "") == "bepinex"
                     or (
                         getattr(bridge, "client_runtime", "") == "il2cpp-macos"
-                        and getattr(self, "_quest_mode", False)
-                        and self._last_event_id == "Play"
+                        and (
+                            self._recent_mode
+                            or (getattr(self, "_quest_mode", False) and self._last_event_id == "Play")
+                        )
                     )
                 )
             )
 
             if can_bridge_queue:
+                if (
+                    self._recent_mode
+                    and self._stage in {"results", "resuming"}
+                    and callable(getattr(bridge, "get_match_end", None))
+                ):
+                    # Keep the animation/readiness-aware native result handler.
+                    # If the scene is gone, the Home resolver verifies that it is
+                    # truly idle; no screen/input fallback is needed on this path.
+                    if self._leave_result_via_bridge(bridge, generation, aborted):
+                        return
+                    self._stage = "home"
                 self._step_bridge(generation, aborted, bridge)
                 return
 
@@ -1686,6 +1733,47 @@ class AutoQueueNavigator:
             logger.debug("Auto queue: could not save the missed click's screens: %s", error)
             return ""
 
+    def _queue_recent(self, generation: int, aborted: threading.Event, bridge: Any) -> None:
+        target = bridge.get_recent_match()
+        if not self._current(generation, aborted):
+            return
+        if not target.get("ok"):
+            self._failures += 1
+            reason = target.get("error") or "Recent Match is not ready"
+            if time.monotonic() - self._armed_at >= 90 or any(
+                word in reason
+                for word in ("no available entry", "event page", "free entry", "no available deck", "limited")
+            ):
+                self._pause(f"Recent Match stopped: {reason}")
+            else:
+                self._next_poll = time.monotonic() + 2
+                self._status(f"Waiting for Arena's Recent Match: {reason}")
+            return
+        if not all(target.get(key) for key in ("event_id", "deck_id", "deck_name", "format")):
+            self._pause("Recent Match identity is incomplete; no substitute selected")
+            return
+        self._expected_queue = {key: target[key] for key in ("event_id", "deck_name")}
+        self._quest_deck_id = target["deck_id"]
+        self._last_event_id = target["event_id"]
+        self._queue_clicked_at = time.time()
+        # Retain even on exception/timeout or reconnect. The bridge also journals
+        # this attempt before sending, covering a complete engine/process restart.
+        self._queue_started = True
+        self._stage = "queue"
+        reply = bridge.queue_recent_match(target, completed_at=self._recent_completed_at)
+        if not self._current(generation, aborted):
+            return
+        self._next_poll = time.monotonic() + 3
+        if reply.get("ok"):
+            self._progress("submitted the first Recent Match entry")
+            self._status(
+                f"Submitted Recent Match: {target['deck_name']} / {target['event_id']}; waiting for Arena confirmation"
+            )
+        else:
+            self._pause(
+                f"Recent Match submission unconfirmed; not resubmitting: {reply.get('error', 'bridge unavailable')}"
+            )
+
     def _step_bridge(self, generation: int, aborted: threading.Event, bridge: Any) -> None:
         """Handle post-match screen dismissal and requeueing directly via GRE bridge."""
         try:
@@ -1716,6 +1804,9 @@ class AutoQueueNavigator:
 
             # Stage 2: At Home screen -> join matchmaking
             if self._stage == "home" and not self._queue_started:
+                if self._recent_mode:
+                    self._queue_recent(generation, aborted, bridge)
+                    return
                 event_name = self._last_event_id or "AIBotMatch"
                 if getattr(self, "_quest_mode", False):
                     from arenamcp.auto_quest import FREE_EVENTS
@@ -1767,7 +1858,7 @@ class AutoQueueNavigator:
                 if self._new_match(self._get_game_state() or {}):
                     self._handoff(generation, aborted)
                     return
-                if getattr(self, "_quest_mode", False):
+                if getattr(self, "_quest_mode", False) or self._recent_mode:
                     wrong_queue = self._joined_wrong_queue()
                     if wrong_queue:
                         self._pause(wrong_queue)
@@ -1775,11 +1866,11 @@ class AutoQueueNavigator:
                     if not self._queue_confirmed:
                         if time.time() - self._queue_clicked_at >= 60:
                             self._pause(
-                                "Arena did not confirm the requested deck and free queue; inspect Arena before restarting Grind."
+                                "Arena did not confirm the requested deck and free queue; inspect Arena before restarting auto-queue."
                             )
                             return
                         self._next_poll = time.monotonic() + 3.0
-                        self._status("Waiting for Arena to confirm the exact quest deck and free queue...")
+                        self._status("Waiting for Arena to confirm the exact deck and free queue...")
                         return
                 self._next_poll = time.monotonic() + 3.0
                 self._status("Waiting for opponent / match to start...")
@@ -1803,6 +1894,7 @@ class AutoQueueNavigator:
                 "paused_reason": self.paused_reason,
                 "ended_match_id": self._ended_match_id,
                 "queue_started": self._queue_started,
+                "recent_match": self._recent_mode,
                 "queue_observed": self._queue_observed,
                 "last_proposal": self._last_proposal,
                 "last_rejection": self._last_rejection,

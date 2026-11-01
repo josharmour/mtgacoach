@@ -468,7 +468,8 @@ class MacBridgeAdapter:
     _READ_ONLY_COMMANDS = frozenset(
         {"ping", "get_pending_actions", "get_game_state", "get_timer_state", "get_match_info",
          "get_screen", "get_draft_state", "get_event_page", "get_deck_editor", "get_survey",
-         "get_match_end", "get_limited_pool", "preview_draft_pick", "get_replay_status", "list_replays"}
+         "get_match_end", "get_limited_pool", "preview_draft_pick", "get_replay_status", "list_replays",
+         "get_recent_match"}
     )  # fmt: skip
     _LOGGED_RESULT_KEYS = frozenset(
         {"ok", "submitted_type", "survey_skipped", "waiting", "already_home", "step", "event_name",
@@ -1051,6 +1052,26 @@ class MacBridgeAdapter:
                 ) from exc
             raise
         return {"ok": True, "submitted_type": "QueueMatch", "event": "Play", "deck_id": deck_id}
+
+    @staticmethod
+    def _expect_queue_guid(ops: _Ops, value: dict, deck_id: str) -> None:
+        identifier = uuid.UUID(deck_id)
+        ops.expect_class(value, "Guid")
+        parts = (identifier.time_low, identifier.time_mid, identifier.time_hi_version, *identifier.bytes[8:])
+        for name, part, width in zip("abcdefghijk", parts, (32, 16, 16, 0, 0, 0, 0, 0, 0, 0, 0), strict=True):
+            if width and part >= 1 << (width - 1):
+                part -= 1 << width
+            ops.expect_member(value, "_" + name, part)
+
+    def _cmd_get_recent_match(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.recent_match_bridge import recent_match
+
+        return recent_match(self, timeout)
+
+    def _cmd_queue_recent_match(self, command: dict, timeout: float | None) -> dict:
+        from arenamcp.recent_match_bridge import queue_recent_match
+
+        return queue_recent_match(self, command, timeout)
 
     # -- deck editing and crafting (feature #204) -----------------------------
     # Classes verified in the re-output: Client_DeckCard is a struct of two

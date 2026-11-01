@@ -109,7 +109,7 @@ class QueueArena(FakeArena):
                         ]
                         if op["method"] == "GetValidationForFormat":
                             assert target["$c"] == "DeckViewInfo"
-                            assert args == [{"str": "Standard"}]
+                            assert args == [{"str": getattr(self, "validation_format", "Standard")}]
                             deck = target["deck"]
                             self.validation_requests.append((target, deck, args))
                             value = {
