@@ -674,7 +674,12 @@ def damage_effect(
     Strike or Burst Lightning ("any target") was ever checked.
     """
     if activation:
-        text = _offered_ability(card, metadata)[1]
+        cost, text = _offered_ability(card, metadata)
+        from arenamcp.activation_damage import creature_count_damage
+
+        counted = creature_count_damage(card, state, cost, text, metadata)
+        if counted is not None:
+            return counted
     else:
         type_line = str(card.get("type_line") or "").lower()
         if type_line and not any(kind in type_line for kind in ("instant", "sorcery")):
@@ -1564,7 +1569,37 @@ def claimed_kills(reasoning: str, creatures: list[dict]) -> list[dict]:
     text = " ".join(str(reasoning or "").lower().split())
     if not text or not _KILL_CLAIM.search(text):
         return []
-    return [creature for creature in creatures if _kill_claim_spans(text, creature)]
+    return [
+        creature for creature in creatures
+        if _kill_claim_spans(text, creature) or _contextual_kill_spans(text, creature, creatures)
+    ]
+
+
+def _contextual_kill_spans(text: str, creature: dict, creatures: list[dict]) -> list[tuple[int, int]]:
+    # A unique shortened name plus its exact P/T can identify a creature even
+    # when the kill clause calls it "the 6/6 threat" (#84 Headliner/Hexhaven).
+    # Bind both facts within one sentence; never guess between namesakes or
+    # equal-sized opposing bodies, or across an unrelated earlier mention.
+    words = str(creature.get("name") or "").lower().split()
+    prefix = words[0] if words else ""
+    power, toughness = creature.get("power"), creature.get("toughness")
+    if len(prefix) < 5 or type(power) is not int or type(toughness) is not int:
+        return []
+    if sum(str(c.get("name") or "").lower().split()[0:1] == [prefix] for c in creatures) != 1:
+        return []
+    if sum(c.get("power") == power and c.get("toughness") == toughness for c in creatures) != 1:
+        return []
+    spans = []
+    for sentence in re.finditer(r"[^.;!?]+", text):
+        if not re.search(r"\b" + re.escape(prefix) + r"\b", sentence[0]):
+            continue
+        for claim in re.finditer(
+            rf"\bkill\w*\s+(?:(?:the|their|that|a|an)\s+)?{power}/{toughness}\s+"
+            rf"(?:{re.escape(prefix)}|creature|threat|blocker|engine)\b", sentence[0],
+        ):
+            if not _negated_claim(sentence[0], claim.start()) and not _NEGATION.search(claim[0]):
+                spans.append((sentence.start() + claim.start(), sentence.start() + claim.end()))
+    return spans
 
 
 def strip_kill_claims(reasoning: str, creatures: list[dict]) -> str:
@@ -1577,7 +1612,9 @@ def strip_kill_claims(reasoning: str, creatures: list[dict]) -> str:
     text = " ".join(str(reasoning or "").split())
     lower = text.lower()
     spans = sorted(
-        {span for creature in creatures for span in _kill_claim_spans(lower, creature)}, reverse=True
+        {span for creature in creatures
+         for span in _kill_claim_spans(lower, creature) + _contextual_kill_spans(lower, creature, creatures)},
+        reverse=True,
     )
     limit = len(text)
     for start, end in spans:

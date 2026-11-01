@@ -9109,6 +9109,17 @@ class ActionPlanner(_ActionLegalityMixin):
                 + (self._decision_source_oracle(decision, game_state) or "unknown")
                 + power_only_note(self._decision_source_oracle(decision, game_state)),
             )
+            from arenamcp.activation_damage import target_activation_damage
+
+            activation_damage = target_activation_damage(
+                game_state, self._decision_source_instance(game_state),
+                self._decision_source_oracle(decision, game_state),
+            )
+            if activation_damage is not None:
+                lines.append(
+                    f"ACTIVATION DAMAGE: {activation_damage[0]} damage with the current creature count after "
+                    "its cost, including any source sacrifice. Responses can change that count before resolution."
+                )
             if effect_mentions_blink(self._decision_source_oracle(decision, game_state)):
                 lines.append(
                     "BLINK TIMING: Immediate exile-and-return during your turn does not prevent "
@@ -9700,6 +9711,7 @@ class ActionPlanner(_ActionLegalityMixin):
         data, chosen = self._repair_land_claim(decision, tag_state, data, chosen, ask, parse, user_message)
         data, chosen = self._repair_blink_claim(decision, tag_state, data, chosen, ask, parse, user_message)
         data, chosen = self._recheck_public_sequence(decision, tag_state, data, chosen, ask, parse, user_message)
+        data, chosen = self._recheck_damage_facts(decision, tag_state, data, chosen, ask, parse, user_message)
         reason = data.get("reasoning")
         self._last_decision_target_controllers = (
             data.get("target_controllers") if isinstance(data.get("target_controllers"), dict) else {}
@@ -9719,6 +9731,39 @@ class ActionPlanner(_ActionLegalityMixin):
             "typed-decision choice %s: %s", chosen, self._last_decision_reasoning or "reason not supplied"
         )
         return chosen
+
+    def _recheck_damage_facts(self, decision, state, data, chosen, ask, parse, message):
+        """Reconsider a disproved damage/death premise; unresolved errors use current-board fallback."""
+        from arenamcp.postresolution_claims import false_activation_target_kills, surviving_damage_targets
+
+        def concerns(picks, answer):
+            reason = answer.get("reasoning", "")
+            if decision.request_type == "ActionsAvailable":
+                return surviving_damage_targets(state, reason)
+            return false_activation_target_kills(
+                decision, state, picks, reason, self._decision_source_instance(state),
+                self._decision_source_oracle(decision, state),
+            )
+        facts = concerns(chosen, data)
+        if not facts:
+            return data, chosen
+        repair = {"first": chosen, "evidence": list(facts)}
+        try:
+            revised, picks = parse(ask(
+                message + "\n\nDAMAGE FACT RECHECK: " + " ".join(facts)
+                + " Re-evaluate the remaining interaction and defensive plan using the actual surviving board.",
+                effort="high", budget=min(self._timeout, 12.0),
+                cancel_event=getattr(self, "_decision_cancel_event", None),
+            ))
+            if not concerns(picks, revised):
+                repair["final"] = picks
+                self._last_decision_trace["damage_fact_recheck"] = repair
+                return revised, picks
+        except Exception as error:
+            repair["error"] = str(error)[:120]
+        repair["fallback"] = "current_board"
+        self._last_decision_trace["damage_fact_recheck"] = repair
+        raise SecondLookError("Damage/death premise refuted: " + " ".join(facts))
 
     def _recheck_public_sequence(self, decision, state, data, chosen, ask, parse, message):
         """Compare visible responses/trigger costs once without choosing a universal target."""
