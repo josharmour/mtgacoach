@@ -611,6 +611,8 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
     plan.role = role
 
     # --- win conditions -------------------------------------------------------
+    from arenamcp.plan_dependencies import library_dependencies
+
     library = assessment.library_count
     library_only = _library_only_names(state)
     kept: list[str] = []
@@ -619,7 +621,7 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
             if library is not None and library > _SMALL_LIBRARY:
                 issues.append(f"win condition '{win}' rejected: our library still has {library} cards")
                 continue
-        needed = sorted(name for name in library_only if _mentions(win, name))
+        needed = library_dependencies(win, state, library_only)
         if needed and not _DRAW_LABEL.search(win):
             issues.append(f"win condition '{win}' rejected: needs {', '.join(needed)} (still in the library)")
             continue
@@ -634,7 +636,7 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
 
     # --- turn plan ------------------------------------------------------------
     plan.turn_plan = _validate_turns(plan.turn_plan, assessment, state, issues)
-    _check_library_dependencies(plan, library_only, issues)
+    _check_library_dependencies(plan, library_only, issues, state)
     _check_dropped_cast_dependencies(plan, state, issues)
     _check_keyword_claims(plan, assessment, state, issues)
     _check_kill_claims(plan, assessment, state, issues)
@@ -697,16 +699,17 @@ def _check_dropped_cast_dependencies(plan: GamePlan, state: dict, issues: list[s
             step[attr] = checked(str(step.get(attr) or ""), names, f"{step.get('label')} {attr}")
 
 
-def _check_library_dependencies(plan: GamePlan, library_only: set[str], issues: list[str]) -> None:
+def _check_library_dependencies(plan: GamePlan, library_only: set[str], issues: list[str], state: dict) -> None:
     """A rejected undrawn win must not survive as an unconditional instruction.
 
     #240/#272/#287: dropping "Akroma's Will" from wins still left "preserve
     Leonardo as Will enabler" in the path/holds. Keep explicit draw/tutor
     conditions and historical/threat descriptions; remove unsupported orders.
     """
+    from arenamcp.plan_dependencies import library_dependencies
 
     def checked(text: str, where: str) -> str:
-        needed = sorted(name for name in library_only if _mentions(text, name))
+        needed = library_dependencies(text, state, library_only)
         explicitly_unavailable = re.search(
             r"\b(?:not in hand|still in (?:the )?library|unavailable|not applicable)\b|"
             r"\b(?:do not|don't) (?:wait|rely|plan|hold|save)\b",
