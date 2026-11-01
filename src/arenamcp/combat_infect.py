@@ -31,12 +31,20 @@ def counter_change(card, *, minus=0, plus=0):
     if remaining:
         kind = "CounterType_M1M1" if shift < 0 else "CounterType_P1P1"
         counters[kind] = int(counters.get(kind, 0)) + remaining
-    changed = {**card, "power": card["power"] + shift, "toughness": card["toughness"] + shift,
-               "counters": counters, "_counter_shift": card.get("_counter_shift", 0) + shift}
+    changed = {
+        **card,
+        "power": card["power"] + shift,
+        "toughness": card["toughness"] + shift,
+        "counters": counters,
+        "_counter_shift": card.get("_counter_shift", 0) + shift,
+    }
     if raw is not card:
-        changed["_card"] = {**raw, "counters": counters,
-                            "power": int(raw.get("power") or 0) + shift,
-                            "toughness": int(raw.get("toughness") or 0) + shift}
+        changed["_card"] = {
+            **raw,
+            "counters": counters,
+            "power": int(raw.get("power") or 0) + shift,
+            "toughness": int(raw.get("toughness") or 0) + shift,
+        }
     return changed
 
 
@@ -115,8 +123,9 @@ def resolve_infect(attacker, assigned):
             shrink[identity] += amount
         for c in cards:
             toughness = stats(c)[1]
-            if toughness <= 0 or (not _has(c, "indestructible") and
-                                  (marked[id(c)] >= toughness or id(c) in touched)):
+            if toughness <= 0 or (
+                not _has(c, "indestructible") and (marked[id(c)] >= toughness or id(c) in touched)
+            ):
                 dead.add(id(c))
         if first_step:
             out.first_strike_damage = out.damage_through

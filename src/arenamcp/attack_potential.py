@@ -850,14 +850,18 @@ def attack_round(
         standing = apply_deltas([b for b in blockers if b.get("instance_id") not in dead_blk], changes)
         more = once(again, standing, left)
         damage2, dead_att2, dead_blk2, gain2, healed2 = more[:5]
-        return CombatDetail((
-            damage + damage2,
-            set(dead_att) | set(dead_att2),
-            set(dead_blk) | set(dead_blk2),
-            gain + gain2,
-            healed + healed2,
-        ), getattr(more, "loss", getattr(result, "loss", LossState())),
-           getattr(more, "terminal", False), add_deltas(changes, getattr(more, "counter_deltas", {})))
+        return CombatDetail(
+            (
+                damage + damage2,
+                set(dead_att) | set(dead_att2),
+                set(dead_blk) | set(dead_blk2),
+                gain + gain2,
+                healed + healed2,
+            ),
+            getattr(more, "loss", getattr(result, "loss", LossState())),
+            getattr(more, "terminal", False),
+            add_deltas(changes, getattr(more, "counter_deltas", {})),
+        )
     # ``_combat_life``'s separated shape (#199(a)): the lifelink gains (indexes 5/6) compose
     # like the net gains; the extra combat's blockers are the survivors.
     damage, dead_att, dead_blk, gain, healed, ll_gain, ll_heal = result
@@ -879,13 +883,17 @@ def attack_round(
         ll_gain2,
         ll_heal2,
     ) = (more := once(again, standing, left))
-    return CombatDetail((
-        damage + damage2,
-        set(dead_att) | set(dead_att2),
-        set(dead_blk) | set(dead_blk2),
-        gain + gain2,
-        healed + healed2,
-        ll_gain + ll_gain2,
-        ll_heal + ll_heal2,
-    ), getattr(more, "loss", getattr(result, "loss", LossState())),
-       getattr(more, "terminal", False), add_deltas(changes, getattr(more, "counter_deltas", {})))
+    return CombatDetail(
+        (
+            damage + damage2,
+            set(dead_att) | set(dead_att2),
+            set(dead_blk) | set(dead_blk2),
+            gain + gain2,
+            healed + healed2,
+            ll_gain + ll_gain2,
+            ll_heal + ll_heal2,
+        ),
+        getattr(more, "loss", getattr(result, "loss", LossState())),
+        getattr(more, "terminal", False),
+        add_deltas(changes, getattr(more, "counter_deltas", {})),
+    )

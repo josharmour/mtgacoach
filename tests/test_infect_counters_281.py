@@ -10,8 +10,18 @@ from arenamcp.combat_solver import _resolve_attacker
 
 
 def body(i, p, t, text="", **more):
-    return dict(instance_id=i, name=f"Creature {i}", type_line="Creature", power=p, toughness=t,
-                oracle_text=text, _can_block=True, _can_attack=True, _unblockable=False, **more)
+    return dict(
+        instance_id=i,
+        name=f"Creature {i}",
+        type_line="Creature",
+        power=p,
+        toughness=t,
+        oracle_text=text,
+        _can_block=True,
+        _can_attack=True,
+        _unblockable=False,
+        **more,
+    )
 
 
 def test_supplied_first_strike_infect_shrinks_blocker_before_return_damage():
@@ -42,9 +52,13 @@ def test_double_strike_uses_changed_toughness_and_real_lifelink():
     assert not outcome.attacker_died and not outcome.blockers_died
 
 
-@pytest.mark.parametrize("trample,expected,poison", [
-    (True, {2: 2, 3: 3}, 2), (False, {2: 2, 3: 5}, 0),
-])
+@pytest.mark.parametrize(
+    "trample,expected,poison",
+    [
+        (True, {2: 2, 3: 3}, 2),
+        (False, {2: 2, 3: 5}, 0),
+    ],
+)
 def test_infect_allocation_multiple_blockers_overassignment_and_trample(trample, expected, poison):
     attacker = body(1, 7, 8, "Infect\nLifelink" + ("\nTrample" if trample else ""))
     outcome = _resolve_attacker(attacker, [body(2, 2, 2), body(3, 3, 3)])
@@ -83,8 +97,9 @@ def test_killed_infect_source_does_not_deal_regular_damage():
 
 
 def test_inactive_infect_grant_is_not_treated_as_infect():
-    outcome = _resolve_attacker(body(1, 2, 2, "{B}: This creature gains infect until end of turn."),
-                                [body(2, 3, 3)])
+    outcome = _resolve_attacker(
+        body(1, 2, 2, "{B}: This creature gains infect until end of turn."), [body(2, 3, 3)]
+    )
     assert not outcome.counter_deltas and outcome.attacker_died
 
 
@@ -108,9 +123,11 @@ def test_extra_combat_sees_shrunk_survivor_and_combines_deltas():
     attacker = body(1, 2, 3, "Infect\nFirst strike", _atk_extra=ExtraCombat(1, "Fixture", True))
     blocker = body(2, 4, 4)
     seen = []
+
     def once(a, b, life):
         seen.append([(c["power"], c["toughness"]) for c in b])
         return _combat_life(a, b, life, defender=LossState(poison=9))
+
     result = attack_round([attacker], [blocker], 30, once)
     assert seen == [[(4, 4)], [(2, 2)]]
     assert result[2] == {2} and result.counter_deltas == {2: 4}
@@ -122,7 +139,9 @@ def moves_for(ours, theirs, **state_fields):
     from test_combat_loss_281 import board
 
     state = board(ours, theirs, **state_fields)
-    return Moves(build_board_model(state), survival=False, lethal_now=False, hard_ms=1e8, opponent=None), state
+    return Moves(
+        build_board_model(state), survival=False, lethal_now=False, hard_ms=1e8, opponent=None
+    ), state
 
 
 def test_counter_changes_persist_across_turns_and_memo_contexts():
@@ -159,8 +178,16 @@ def test_planeswalker_combat_also_carries_surviving_infect_counters():
     from test_combat_loss_281 import board
 
     state = board([body(1, 2, 2, "Infect\nFirst strike")], [body(2, 3, 3)])
-    state["battlefield"].append(dict(instance_id=88, name="Walker", type_line="Planeswalker",
-                                     loyalty=1, controller_seat_id=2, owner_seat_id=2))
+    state["battlefield"].append(
+        dict(
+            instance_id=88,
+            name="Walker",
+            type_line="Planeswalker",
+            loyalty=1,
+            controller_seat_id=2,
+            owner_seat_id=2,
+        )
+    )
     moves = Moves(build_board_model(state), survival=False, lethal_now=False, hard_ms=1e8, opponent=None)
     after = moves.finish(moves.begin(moves.root_node(), None, ()), ("at:88:1", (1,)))
     assert after.theirs[0]["power"] == 1 and after.opponent_loss.poison == 0
@@ -203,16 +230,20 @@ def test_extra_combat_retains_alternate_loss_metadata():
     from arenamcp.combat_loss import CombatDetail
 
     attacker = body(1, 2, 3, "Infect", _atk_extra=ExtraCombat(1, "Fixture", True))
-    results = iter([
-        CombatDetail((0, set(), set(), 0, 0), LossState(poison=8)),
-        CombatDetail((0, set(), set(), 0, 0), LossState(poison=10), True),
-    ])
+    results = iter(
+        [
+            CombatDetail((0, set(), set(), 0, 0), LossState(poison=8)),
+            CombatDetail((0, set(), set(), 0, 0), LossState(poison=10), True),
+        ]
+    )
     result = attack_round([attacker], [], 20, lambda *_: next(results))
     assert result.terminal and result.loss.poison == 10
 
 
 def test_counter_copy_keeps_cast_spell_identity_for_end_step_return():
-    moves, _ = moves_for([body(1, 3, 3, "At the beginning of your end step, return this creature to its owner's hand.")], [])
+    moves, _ = moves_for(
+        [body(1, 3, 3, "At the beginning of your end step, return this creature to its owner's hand.")], []
+    )
     original = moves.root_node().ours[0]
     moves._body_spell[id(original)] = 77
     changed = moves._combat_counters([original], {1: 1})[0]

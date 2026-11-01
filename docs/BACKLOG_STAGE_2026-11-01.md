@@ -20,6 +20,15 @@ deployment or game-control command was issued during this integration.
 - Tactical stream through source `50fab79`, then commander-zone source
   `e4b62a2`: 817 combined tests passed in 25.22 seconds after integration.
   This is an affected regression batch, not the full repository suite or CI.
+- Ward/short-name mana follow-ups and the three combat-core commits: one
+  combined run across 80 affected files produced 1,336 passes and one prompt
+  growth failure (1,030 characters versus the existing 1,000-character cap).
+  Removed the redundant "nothing gained casting first" claim while retaining
+  the explicit post-combat cast order. All 316 affected prompt/planning checks
+  then passed in 10.77 seconds, including the previously failing cap. The cap
+  was not loosened. No second aggregate or full-suite run was performed.
+  Lint/format passed on all 21 changed Python files; whitespace checks preserve
+  `coach.py`'s existing CRLF convention. Separate ward/deadline checks: 25 passed.
 
 The tactical integration retains all existing Arena-clock clamps, cancellation,
 activation intent, poison/legend projection, and current-offer expiry. It removes
@@ -28,7 +37,7 @@ omitted mark, and explicit public damage (including zero) wins.
 
 The one commander hook conflict was resolved by retaining both the tactical
 rechecks and the commander review. An additional integration regression forces
-all five tactical rechecks through the same four-second deadline: backend calls
+all six tactical rechecks through the same four-second deadline: backend calls
 receive 4, 3, 2, and 1 seconds, and the remaining checks cannot start new calls.
 
 Commander correction failure produces an explicit manual handoff, does not
@@ -38,6 +47,13 @@ deadline. The integration test uses a fake bridge: it does not establish which
 choice Arena will make or prove live acceptance.
 
 ## Tactical coverage and limits
+
+- #328: typed removal reservations include development cost and the target's
+  actual ward attachments. Integration caught and fixed an unrelated Aura
+  incorrectly increasing the target's ward. Both directions of attachment
+  identity are covered; unrelated and unattached Auras do not add ward.
+- #303: shortened card names still receive colored-mana promise checks.
+  This does not establish general future land-sequencing quality.
 
 - #322: explicit current free casts from exile enter search at their offered
   cost; unknown/X/additional costs and future permissions remain unmodeled.
@@ -59,11 +75,26 @@ choice Arena will make or prove live acceptance.
 - #344: the current selection prompt grounds the opposing recipient; selection
   optimality remains unverified.
 
+## Combat continuation
+
+Integrated sources `5e0504f`, `2912879`, and `2cf2ddf` add blocker lifelink to
+survival and lethal estimates, active color protection with bounded grant
+lifetimes, and infect damage-step counters. The poison optimization was already
+present and was not picked twice. The merge preserves counter metadata through
+memoized combat, extra combats, own/opponent turns, and planeswalker attacks.
+Existing observed counter effects are not subtracted twice.
+
+The infect fixture is synthetic, not a captured-match replay. Historical full
+packets remain missing for parts of #273/#278/#284. Remaining search limits
+include retained-engine valuation, sacrifice-aware continuation, unrepresented
+grant durations, activated proliferate, conditional counter/replacement effects,
+ordinary marked damage across extra combats, and generic end-step death triggers.
+
 Other open qualifications remain: idle poison-search timing; broader poison,
-mill, replacement, and infect-counter simulation; Constructed sideboarding;
+mill and replacement simulation; Constructed sideboarding;
 live Traditional Limited submission; draft ranking quality (#294); absent #272
-target evidence; native temporary-ability metadata (#288); and unrelated pending
-combat follow-ups. No historical backlog-wide closure is claimed.
+target evidence; native temporary-ability metadata (#288); and the combat limits
+above. No historical backlog-wide closure is claimed.
 
 Parser diagnostic capture source `091bd189` remains excluded because it records
 full content without an explicit capture control and per-file byte cap. A bounded,

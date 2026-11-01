@@ -687,7 +687,9 @@ def _combat_life(
     defender = defender or LossState()
     if not attackers:
         empty = (0, set(), set(), 0, 0, 0, 0, {}, set()) if detail else (0, set(), set(), 0, 0, 0, 0)
-        return CombatDetail(empty + (defender, defender.lost) if with_loss else empty, defender, defender.lost)
+        return CombatDetail(
+            empty + (defender, defender.lost) if with_loss else empty, defender, defender.lost
+        )
     blockers = [b for b in blockers if b["_can_block"]]
     groups: dict[int, list[dict]] = {}
     if blockers:
@@ -753,17 +755,23 @@ def _combat_life(
             through,
             used,
         )
-        return CombatDetail(result + (remaining, terminal) if with_loss else result,
-                            remaining, terminal, counter_deltas)
-    return CombatDetail((
-        damage,
-        dead_attackers,
-        dead_blockers,
-        attacker_gain,
-        defender_gain,
-        attacker_lifelink,
-        defender_lifelink,
-    ), remaining, terminal, counter_deltas)
+        return CombatDetail(
+            result + (remaining, terminal) if with_loss else result, remaining, terminal, counter_deltas
+        )
+    return CombatDetail(
+        (
+            damage,
+            dead_attackers,
+            dead_blockers,
+            attacker_gain,
+            defender_gain,
+            attacker_lifelink,
+            defender_lifelink,
+        ),
+        remaining,
+        terminal,
+        counter_deltas,
+    )
 
 
 def _attack_round(attackers: list[dict], blockers: list[dict], life: int) -> tuple[int, set[int], set[int]]:
@@ -1348,7 +1356,7 @@ class BoardAssessment:
         if step.attack and not lethal:
             bits.append("attack with " + ", ".join(step.attack))
         if later:
-            bits.append("then cast " + " + ".join(later) + " after combat (nothing gained casting first)")
+            bits.append("then cast " + " + ".join(later) + " after combat")
         elif index == 0 and self.posture == "hold":
             bits.append("hold back (no attack)")
         text = "; ".join(bits)

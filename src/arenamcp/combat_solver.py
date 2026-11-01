@@ -413,9 +413,7 @@ def _resolve_attacker_damage(attacker: dict, assigned: list[dict]) -> CombatOutc
         # lifelink: no damage need be wasted on a protected blocker. Trample
         # still requires assigning lethal to every blocker before the player.
         damage_targets = (
-            assigned
-            if atk_trample
-            else [b for b in assigned if not prevents_damage(b, attacker)]
+            assigned if atk_trample else [b for b in assigned if not prevents_damage(b, attacker)]
         )
         for blk in damage_targets:
             lethal = 1 if atk_dth else _pt(blk)[1]
@@ -452,9 +450,7 @@ def _resolve_attacker_damage(attacker: dict, assigned: list[dict]) -> CombatOutc
         alive = [b for b in assigned if b not in out.blockers_died]
         dmg_left = atk_p
         dealt = 0
-        damage_targets = (
-            alive if atk_trample else [b for b in alive if not prevents_damage(b, attacker)]
-        )
+        damage_targets = alive if atk_trample else [b for b in alive if not prevents_damage(b, attacker)]
         for blk in damage_targets:
             blk_t = _pt(blk)[1]
             lethal = (1 if marked[id(blk)] == 0 else 0) if atk_dth else max(0, blk_t - marked[id(blk)])
@@ -2043,9 +2039,9 @@ def evaluate_attack(
         for blocker_id, attacker_id in opp_block.assignments.items():
             if blocker_id in by_id:
                 groups.setdefault(attacker_id, []).append(by_id[blocker_id])
-        counter_deltas = add_deltas(*(
-            _resolve_attacker(a, groups.get(a.get("instance_id"), [])).counter_deltas for a in attacking
-        ))
+        counter_deltas = add_deltas(
+            *(_resolve_attacker(a, groups.get(a.get("instance_id"), [])).counter_deltas for a in attacking)
+        )
     died = True if (atk_lost_mat > 0 or blk_killed_mat > 0) else creature_died_this_turn
     crackers = [
         future_protection(card)

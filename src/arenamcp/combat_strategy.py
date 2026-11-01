@@ -2282,8 +2282,10 @@ def _refused_chumps(
             continue
         death_gain, _ = combat_solver._death_life(attacker, outcome)
         life_without = life_with - (
-            _resolve_attacker(attacker, []).damage_through - outcome.damage_through
-            + outcome.blocker_life_gained + death_gain
+            _resolve_attacker(attacker, []).damage_through
+            - outcome.damage_through
+            + outcome.blocker_life_gained
+            + death_gain
         )
         if life_without <= CHUMP_DANGER_LIFE:
             continue

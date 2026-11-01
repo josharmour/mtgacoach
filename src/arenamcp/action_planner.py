@@ -1970,9 +1970,8 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         if survival is None or not survival.assignments:
             return
-        survival_through = (
-            survival.net_life_lost
-            + extra_combat_damage(state, attackers, survival.assignments)
+        survival_through = survival.net_life_lost + extra_combat_damage(
+            state, attackers, survival.assignments
         )
         if survival.player_loses or survival.draw_loss_pending or survival_through >= life:
             return
@@ -9718,7 +9717,9 @@ class ActionPlanner(_ActionLegalityMixin):
             decision, tag_state, data, chosen, ask, parse, user_message
         )
         data, chosen = self._recheck_damage_facts(decision, tag_state, data, chosen, ask, parse, user_message)
-        data, chosen = self._recheck_resource_claim(decision, tag_state, data, chosen, ask, parse, user_message)
+        data, chosen = self._recheck_resource_claim(
+            decision, tag_state, data, chosen, ask, parse, user_message
+        )
         from arenamcp.commander_choice import review_commander_decline
 
         data, chosen = review_commander_decline(
@@ -9753,11 +9754,14 @@ class ActionPlanner(_ActionLegalityMixin):
             return data, chosen
         repair = {"first": chosen, "evidence": conflict}
         try:
-            revised, picks = parse(ask(
-                message + "\n\nRESOURCE RESERVATION RECHECK: " + conflict,
-                effort="high", budget=min(self._timeout, 12.0),
-                cancel_event=getattr(self, "_decision_cancel_event", None),
-            ))
+            revised, picks = parse(
+                ask(
+                    message + "\n\nRESOURCE RESERVATION RECHECK: " + conflict,
+                    effort="high",
+                    budget=min(self._timeout, 12.0),
+                    cancel_event=getattr(self, "_decision_cancel_event", None),
+                )
+            )
             if not removal_reservation_conflict(decision, state, picks, revised.get("reasoning", "")):
                 repair["final"] = picks
                 self._last_decision_trace["resource_reservation_recheck"] = repair
@@ -9921,7 +9925,10 @@ class ActionPlanner(_ActionLegalityMixin):
             # false promise about its follow-up is not a reason to skip it.
             raise SecondLookError("Land payment premise refuted: " + mismatch.reason)
         picks = [fallback]
-        reason = f"{decision.find(fallback).label}: this offered land satisfies the stated entry/payment plan. " + mismatch.reason
+        reason = (
+            f"{decision.find(fallback).label}: this offered land satisfies the stated entry/payment plan. "
+            + mismatch.reason
+        )
         repair.update(final=picks, fallback=True)
         self._last_decision_trace["land_payment_recheck"] = repair
         return {"option_ids": picks, "reasoning": reason}, picks

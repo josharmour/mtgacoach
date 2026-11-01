@@ -478,7 +478,9 @@ class BoardModel:
         from arenamcp.combat_loss import player_hit
 
         if any(player_hit(card, 1, 1)[0] == 0 for card in self.battlefield):
-            notes.append("conditional infect grants and counter-prevention/replacement effects are not modeled")
+            notes.append(
+                "conditional infect grants and counter-prevention/replacement effects are not modeled"
+            )
         for commander in self.commanders:
             if not commander.cost:
                 notes.append(f"our commander {commander.name}: cost unknown (not cast in the lines)")

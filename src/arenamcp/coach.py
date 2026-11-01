@@ -2625,7 +2625,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         life_after_blocks = your_life - damage_through
         if damage_through < total_incoming:
             if any(_has(c, "lifelink") for c in your_creatures):
-                lines.append(f"Damage-only block estimate: {damage_through} through; lifelink is evaluated below.")
+                lines.append(
+                    f"Damage-only block estimate: {damage_through} through; lifelink is evaluated below."
+                )
             elif life_after_blocks <= 0:
                 lines.append(
                     f"\u26a0\ufe0f Best blocks \u2192 take {damage_through} dmg \u2192 DEAD (from {your_life} life)! Not enough blockers!"
