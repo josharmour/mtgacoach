@@ -2,6 +2,78 @@
 
 import re
 
+_CONCLUSION_START = (
+    r"(?:^|\b(?:so|therefore|thus|hence|instead|however|but)\b\s*[:,]?\s*)"
+    r"(?:(?:I|we)\s+)?(?:(?:will|should|must|shall)\s+)?"
+)
+_PASS_CONCLUSION = re.compile(
+    _CONCLUSION_START + r"(?:(?:choose|prefer|recommend)\s+|let's\s+|"
+    r"the (?:best|better|correct|right) (?:play|choice|action) is (?:to )?)?"
+    r"pass(?:ing)?\b",
+    re.I,
+)
+_HOLD_PASS_CONCLUSION = re.compile(
+    _CONCLUSION_START + r"hold (?:it|this|that|the spell)\b[^.;!?]*?\band pass\b", re.I
+)
+_OTHER_CONCLUSION = re.compile(
+    _CONCLUSION_START + r"(?:cast|play|activate|deploy|use)\b",
+    re.I,
+)
+
+
+def explicit_current_pass_conclusion(rationale):
+    """An affirmative final action conclusion, not a strategic preference score.
+
+    Inspect current-action clauses in order so an earlier cast suggestion
+    does not veto a later pass conclusion, or vice versa. Questions, quoted
+    advice, hypothetical branches and after-cast passes are not commitments.
+    Return the supporting clause for a recheck/trace; unknown phrasing abstains.
+    """
+    text = str(rationale or "").replace("’", "'")
+    text = re.sub(r'"[^"\n]*"|“[^”\n]*”|(?<!\w)\'[^\'\n]*\'(?!\w)', "", text)
+    conclusion = ""
+    prior_cast = False
+    for sentence in re.finditer(r"[^.;!?]+[.;!?]?", text):
+        clause = sentence[0].strip()
+        if clause.endswith("?") or re.search(
+            r"\b(?:if|unless|could|might|would|maybe|perhaps|whether|after|before|then|once|first|until|when)\b",
+            clause,
+            re.I,
+        ):
+            # A later conditional/sequential action leaves the terminal
+            # commitment ambiguous; do not reuse an earlier Pass sentence.
+            if re.search(r"\b(?:pass|cast|play|activate|deploy|use)\b", clause, re.I):
+                conclusion = ""
+            if (
+                _OTHER_CONCLUSION.search(clause)
+                and not re.search(r"\b(?:if|unless|could|might|would|maybe|perhaps|whether)\b", clause, re.I)
+                and not clause.endswith("?")
+            ):
+                prior_cast = True
+            continue
+        events = [(m.start(), False, m) for m in _OTHER_CONCLUSION.finditer(clause)]
+        events += [(m.start(), True, m) for m in _PASS_CONCLUSION.finditer(clause)]
+        events += [(m.start(), True, m) for m in _HOLD_PASS_CONCLUSION.finditer(clause)]
+        for _, passing, match in sorted(events, key=lambda event: event[0]):
+            tail = clause[match.end() :]
+            if re.match(r"\s+(?:next turn|later|is|was|seems|looks|on|up|over|no|not)\b", tail, re.I):
+                continue
+            if passing:
+                # Passing on another option or after a planned cast is not a
+                # current Pass action. An explicit reversal connector can
+                # supersede the earlier cast recommendation.
+                if re.search(r"\bto (?:let|allow|resolve)\b", tail, re.I):
+                    continue
+                if prior_cast and not re.match(
+                    r"(?:so|therefore|thus|hence|instead|however|but)\b", match[0], re.I
+                ):
+                    continue
+                conclusion = clause
+            else:
+                prior_cast = True
+                conclusion = ""
+    return conclusion
+
 
 def consistent_action(decision, state, chosen, rationale):
     if len(chosen) != 1 or not any(o.option_id == "pass" for o in decision.options):
@@ -12,19 +84,13 @@ def consistent_action(decision, state, chosen, rationale):
         or str((option.meta or {}).get("actionType", "")).removeprefix("ActionType_").lower() != "cast"
     ):
         return None
-    stack = state.get("stack") or []
-    text = str(rationale or "").lower().replace("’", "'")
-    # An explicit hold-and-pass conclusion on an empty stack contradicts this
-    # cast. Do not infer intent from negation, questions, or a future pass.
-    if (
-        not stack
-        and re.search(r"\bhold (?:it|this|that|the spell)\b[^.;!?]*\band pass\b", text)
-        and not re.search(r"\b(?:don't|do not|not|never|if|could|might|then cast)\b", text)
-    ):
+    if explicit_current_pass_conclusion(rationale):
         return (
             "pass",
-            "Hold the spell and pass: the selected cast contradicted the explicit hold-and-pass conclusion.",
+            "Pass: the selected cast contradicted the explicit current-action conclusion.",
         )
+    stack = state.get("stack") or []
+    text = str(rationale or "").lower().replace("’", "'")
     local = state.get("local_seat_id") or next(
         (p.get("seat_id") for p in state.get("players", []) if p.get("is_local")), None
     )

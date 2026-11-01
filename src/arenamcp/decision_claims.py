@@ -40,6 +40,18 @@ def action_claim_mismatch(decision, state, chosen, reasoning):
     if option is None:
         return None
     action = str(option.meta.get("actionType") or "").removeprefix("ActionType_").lower()
+    from arenamcp.decision_consistency import explicit_current_pass_conclusion
+
+    conclusion = explicit_current_pass_conclusion(reasoning)
+    if action == "cast" and decision.find("pass") is not None and conclusion:
+        # The offered action itself establishes this contradiction. Missing
+        # card enrichment must not disable the selected-action identity check.
+        return ActionClaim(
+            f"You selected {option.label}, but the current-action conclusion says: {conclusion} "
+            "Reconsider the action and its reason together. Keep the cast if its actual effects "
+            "justify it and explain that current value, or select Pass if passing. This mismatch "
+            "does not establish which strategic choice is better."
+        )
     source = _selected_face(option, state)
     name = _text(source.get("name"))
     if not name:

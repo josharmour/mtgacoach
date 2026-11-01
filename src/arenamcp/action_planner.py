@@ -4422,12 +4422,24 @@ class ActionPlanner(_ActionLegalityMixin):
             )
         consistency = consistent_action(decision, game_state, chosen, self._last_decision_reasoning)
         if consistency:
+            original_ids = list(chosen)
+            original_reasoning = self._last_decision_reasoning
             option_id, reason = consistency
             chosen = [option_id]
             self._last_decision_reasoning = reason
             self._last_decision_option_ids = chosen
+            # A reused contradictory answer must not remain cached when this
+            # turn did not ask the model (and _cache_answer therefore skips).
+            self._answer_cache = None
             self._last_decision_trace.update(
-                consistency_guard={"with": option_id, "reason": reason}, selected_ids=chosen
+                consistency_guard={
+                    "original_ids": original_ids,
+                    "original_reasoning": original_reasoning,
+                    "with": option_id,
+                    "reason": reason,
+                },
+                selected_ids=chosen,
+                reasoning=reason,
             )
         protection = protective_pass(decision, game_state, chosen)
         if protection:

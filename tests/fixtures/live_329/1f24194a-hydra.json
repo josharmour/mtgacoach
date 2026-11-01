@@ -1,0 +1,97 @@
+{
+  "pending_decision": {
+    "request_id": [
+      108,
+      146
+    ],
+    "request_type": "ActionsAvailable",
+    "options": [
+      {
+        "option_id": "idx:2",
+        "label": "Cast Goldvein Hydra",
+        "payable": true,
+        "meta": {
+          "actionType": "ActionType_Cast",
+          "grpId": 90513,
+          "instanceId": 249,
+          "abilityGrpId": 0,
+          "manaCost": [
+            {
+              "color": "[ \"X\" ]",
+              "count": 1
+            },
+            {
+              "color": "[ \"Green\" ]",
+              "count": 1
+            }
+          ],
+          "autoTapActions": [
+            {
+              "instanceId": 459,
+              "manaId": 0
+            }
+          ],
+          "hasAutoTap": true
+        }
+      },
+      {
+        "option_id": "pass",
+        "label": "Pass",
+        "payable": null,
+        "meta": {}
+      }
+    ],
+    "min_select": 1,
+    "max_select": 1,
+    "can_pass": true,
+    "can_cancel": false,
+    "source_label": "",
+    "min_weight": null,
+    "max_weight": null,
+    "slots": []
+  },
+  "chosen_options": [
+    "idx:2"
+  ],
+  "outcome": "pending",
+  "timestamp": 1793516307.086586,
+  "trace": {
+    "planning_mode": "separate_strategy",
+    "request_type": "ActionsAvailable",
+    "request_id": [
+      108,
+      146
+    ],
+    "source": "",
+    "source_instance_id": 0,
+    "source_oracle_text": "",
+    "local_seat_id": 1,
+    "targets": [],
+    "lines": {
+      "summary": "LINES (2-turn search, greedy 3rd; their new cards/tricks not modelled): best no play; then Misty Rainforest + Kogla, the Titan Ape \u2014 survives (life 25, 25, 25; opponent at 16) (Kogla, the Titan Ape, The Notary Hobbits not modelled) | not modelled, judge these yourself: Goldvein Hydra (its X cost)",
+      "tags": {
+        "idx:2": "[LINE: effect not modelled]"
+      },
+      "unmodelled": {
+        "idx:2": "Goldvein Hydra (its X cost)"
+      }
+    },
+    "plan_block": "STRATEGIC ROLE (deterministic board math, recomputed now): DEFENDER \u2014 empty boards (avg MV 4.3) \u2014 develop on curve, trade early\n  THIS TURN (T6, now): play Forest \u2713; no cast; attack: none; hold: hold mana; Goldvein Hydra X=3 if drawn mana allows, else pass toward Kogla [game plan T2, written before the opponent's board changed: re-check its attacks]\n  FACTS: they kill us in \u2014 attack(s), we kill them in \u2014 | race STALLED (neither side gets damage through the other's blocks) | life 25 vs 23\n  NEXT: T8: play Misty Rainforest; cast Kogla, the Titan Ape (life after their attack: 25) | T10: attack with Kogla, the Titan Ape; then cast The Notary Hobbits after combat (life after their attack: 25)\n  COMMANDER (command zone: cast it like a hand card; each cast from there adds {2} to the next): The Notary Hobbits {3}{G}{G} now (no tax yet); castable from T8; the best line casts it on T10; not modelled: its tokens \u2014 weigh that yourself\n  Board: us 0 creatures/0 power vs them 0/0 | hand 5 vs 5 | lands 5 vs 2\n  Priority: develop the board on curve; card draw and rocks only with spare mana.\n\nGAME PLAN (formed turn 2 \u2014 your strategic spine for this game):\n  Win condition(s): Ramp to Kogla/World Breaker and commander tokens; Goldvein Hydra into big trample threat\n  Path to win: T2 pass; T4 Forest+Shared Roots to 3 lands; T6 land, hold for Kogla/commander at 5-6 mana\n  Switch if: we reach 5+ mana -> cast Notary Hobbits for three bodies; they deploy a big counter creature -> prioritize Kogla fight\n  Biggest threat: Hamza +1/+1 counter engine with Ozolith growing a large creature\n  Develop next: Land ramp into Shared Roots, then commander or Kogla\n  Active mechanism: engine_2 big-mana ramp: building lands now\n  Active mechanism: engine_1 Halfling mana engine: commander not yet castable\n  Active mechanism: engine_3 tutor toolbox: no tutors in hand\n  Resource priority: Preserve Forests and Shared Roots as ramp; spend Goldvein Hydra only when X>=3 for a real body\n  Recheck assumption: No o \u2026[truncated]",
+    "llm_usage": {
+      "input_tokens": 11780,
+      "cached_input_tokens": null
+    },
+    "selected_ids": [
+      "idx:2"
+    ],
+    "reasoning": "With 5 lands and only 2 mana left, Goldvein Hydra at X=1 is a weak body but it's the only payable play; however, holding mana for Kogla next turn is stronger, so pass.",
+    "target_controllers": {}
+  },
+  "explanation": "Casting Goldvein Hydra. With 5 lands and only 2 mana left, Goldvein Hydra at X=1 is a weak body but it's the only payable play; however, holding mana for Kogla next turn is stronger, so pass.",
+  "turn": {
+    "turn_number": 6,
+    "phase": "Main1",
+    "step": "None",
+    "active_player": 1
+  }
+}
