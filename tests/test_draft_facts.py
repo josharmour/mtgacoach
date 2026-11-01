@@ -131,7 +131,9 @@ def test_correct_loyalty_and_colorless_empower_claims_are_not_rejected():
         "Inspired Tethermage adds loyalty counters.",
         "Keeper supplies colorless Empower support.",
     ]:
-        assert validate(reason)["recommendations"][0]["reason"] == reason
+        pick = validate(reason)["recommendations"][0]
+        assert pick["reason"].startswith(reason)
+        assert "rules_corrections" not in pick
 
 
 @pytest.mark.parametrize(

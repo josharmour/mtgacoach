@@ -1,0 +1,85 @@
+{
+  "description": "Previously exposed captured regression cases, not holdouts. No outcome or rank-quality claim.",
+  "cases": [
+    {
+      "case": "late_castability",
+      "draft_id": "c3561347-0f38-4eb5-ae6b-29fc76d7298e",
+      "pack": 3,
+      "pick": 1,
+      "source": "draft-behavior-replay-prepared.json",
+      "source_sha256": "37f3a444950b9ca9fdfe724098a28389d50a96beb84347f15248abe04c62b224",
+      "reason": "Demonic Tutor is a colorless-effect staple that finds whatever the UR spells deck needs next \u2014 removal, a finisher like Goldspan Dragon, or the missing piece \u2014 with no mana commitment beyond BB.",
+      "selected": {
+        "grp_id": 77506,
+        "name": "Demonic Tutor",
+        "mana_cost": "{1}{B}",
+        "type_line": "Sorcery",
+        "oracle_text": "Search your library for a card, put that card into your hand, then shuffle.",
+        "related_faces": []
+      },
+      "context": []
+    },
+    {
+      "case": "equipment_interaction",
+      "draft_id": "876476c6-0554-435e-bf2a-cc5e7f4b8add",
+      "pack": 2,
+      "pick": 9,
+      "source": "draft-behavior-replay-prepared.json",
+      "source_sha256": "37f3a444950b9ca9fdfe724098a28389d50a96beb84347f15248abe04c62b224",
+      "reason": "A game-ending equipment our WR aggro deck can cheat out via Stoneforge Mystic's free-equip ability, turning any attacker into an indestructible 5+ power threat that exiles blockers. (synergy unverified)",
+      "selected": {
+        "grp_id": 76186,
+        "name": "Kaldra Compleat",
+        "mana_cost": "{7}",
+        "type_line": "Legendary Artifact \u2014 Equipment",
+        "oracle_text": "Living weapon\nIndestructible\nEquipped creature gets +5/+5 and has first strike, trample, indestructible, haste, and \"Whenever this creature deals combat damage to a creature, exile that creature.\"\nEquip {o7}",
+        "related_faces": []
+      },
+      "context": [
+        {
+          "grp_id": 35737,
+          "name": "Stoneforge Mystic",
+          "mana_cost": "{1}{W}",
+          "type_line": "Creature \u2014 Kor Artificer",
+          "oracle_text": "When this creature enters, you may search your library for an Equipment card, reveal it, put it into your hand, then shuffle.\n{o1oW}, {oT}: You may put an Equipment card from your hand onto the battlefield.",
+          "related_faces": []
+        }
+      ]
+    },
+    {
+      "case": "mana_production",
+      "draft_id": "876476c6-0554-435e-bf2a-cc5e7f4b8add",
+      "pack": 2,
+      "pick": 4,
+      "source": "historical-draft-untapped-audit.json",
+      "source_sha256": "f35c7b4d2c339333a6b22284a02972a5c4ed0f5f359da2a26d261b901d8c6af0",
+      "reason": "Colorless-producing white land that fixes nothing but always casts; its Channel is extra removal for our aggressive WR plan, cheaper with legendaries like Adeline already in the pool. (synergy unverified)",
+      "selected": {
+        "grp_id": 79708,
+        "name": "Eiganjo, Seat of the Empire",
+        "mana_cost": "",
+        "type_line": "Legendary Land",
+        "oracle_text": "{oT}: Add {oW}.\n<i>Channel</i> \u2014 {o2oW}, Discard this card: It deals 4 damage to target attacking or blocking creature. This ability costs {o1} less to activate for each legendary creature you control.",
+        "related_faces": []
+      },
+      "context": []
+    },
+    {
+      "case": "generic_discount",
+      "draft_id": "cbeeb704-5e3e-4c8b-93cb-332a8264b43b",
+      "pack": 3,
+      "pick": 3,
+      "source": "quick-draft-comparison.json",
+      "source_sha256": "32c808c9014c666d38430fab5683e7cde9d921770ba281dfe7818e5246e2358c",
+      "reason": "Removal is the pool's scarcest resource (only Spin Out plus one Run Over), and this second copy discounts to {0} targeting Vehicles like Veloheart Bike or Rangers' Aetherhive, converting our big bodies into removal.",
+      "selected": {
+        "grp_id": 94981,
+        "name": "Run Over",
+        "mana_cost": "{1}{G}",
+        "type_line": "Instant",
+        "oracle_text": "This spell costs {o1} less to cast if it targets a Mount or Vehicle you control.\nTarget creature you control deals damage equal to its power to target creature an opponent controls."
+      },
+      "context": []
+    }
+  ]
+}
