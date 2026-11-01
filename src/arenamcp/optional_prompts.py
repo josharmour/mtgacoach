@@ -142,6 +142,8 @@ def prompt_cards(decision: Any, state: dict) -> list[dict[str, Any]]:
 
 def prompt_note(decision: Any, state: dict) -> str:
     """The OPTIONAL PROMPT lines for the typed-decision prompt."""
+    from arenamcp.commander_choice import commander_zone_note
+
     context = state.get("decision_context") or {}
     same_ctx = context.get("type") == "optional_action" and _same_request(decision, context)
     accept = decision.find("optional:accept") if hasattr(decision, "find") else None
@@ -183,6 +185,9 @@ def prompt_note(decision: Any, state: dict) -> str:
             "  The card asking is not identified. Do not assume it is the same effect as an earlier "
             "prompt; accept only if accepting is safe whatever the effect is."
         )
+    zone_note = commander_zone_note(decision, state)
+    if zone_note:
+        lines.append(zone_note)
     return "\n".join(lines)
 
 

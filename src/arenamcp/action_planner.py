@@ -9712,6 +9712,11 @@ class ActionPlanner(_ActionLegalityMixin):
         data, chosen = self._repair_blink_claim(decision, tag_state, data, chosen, ask, parse, user_message)
         data, chosen = self._recheck_public_sequence(decision, tag_state, data, chosen, ask, parse, user_message)
         data, chosen = self._recheck_damage_facts(decision, tag_state, data, chosen, ask, parse, user_message)
+        from arenamcp.commander_choice import review_commander_decline
+
+        data, chosen = review_commander_decline(
+            decision, game_state, data, chosen, ask, parse, user_message, self._last_decision_trace
+        )
         reason = data.get("reasoning")
         self._last_decision_target_controllers = (
             data.get("target_controllers") if isinstance(data.get("target_controllers"), dict) else {}

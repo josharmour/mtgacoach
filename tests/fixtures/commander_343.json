@@ -1,0 +1,366 @@
+{
+  "provenance": {
+    "match_id": "9f593806-560b-4dcc-882a-5fef170f19ba",
+    "request_id": [
+      407,
+      542
+    ],
+    "note": "Exact request and reduced preceding GRE diff; unrelated objects and zone memberships omitted."
+  },
+  "game_state": {
+    "type": "GameStateType_Diff",
+    "gameStateId": 407,
+    "gameObjects": [
+      {
+        "instanceId": 825,
+        "grpId": 103511,
+        "type": "GameObjectType_Card",
+        "zoneId": 30,
+        "visibility": "Visibility_Public",
+        "ownerSeatId": 2,
+        "controllerSeatId": 2,
+        "superTypes": [
+          "SuperType_Legendary"
+        ],
+        "cardTypes": [
+          "CardType_Creature"
+        ],
+        "subtypes": [
+          "SubType_Halfling",
+          "SubType_Advisor"
+        ],
+        "color": [
+          "CardColor_Green"
+        ],
+        "power": {
+          "value": 5
+        },
+        "toughness": {
+          "value": 5
+        },
+        "isTapped": true,
+        "damage": 2,
+        "name": 1113733,
+        "overlayGrpId": 103511,
+        "abilityOriginalCardGrpIds": [
+          72447
+        ],
+        "uniqueAbilities": [
+          {
+            "id": 499,
+            "grpId": 205209
+          },
+          {
+            "id": 500,
+            "grpId": 205210
+          },
+          {
+            "id": 538,
+            "grpId": 14
+          }
+        ]
+      },
+      {
+        "instanceId": 835,
+        "grpId": 103511,
+        "type": "GameObjectType_Token",
+        "zoneId": 28,
+        "visibility": "Visibility_Public",
+        "ownerSeatId": 2,
+        "controllerSeatId": 2,
+        "cardTypes": [
+          "CardType_Creature"
+        ],
+        "subtypes": [
+          "SubType_Halfling",
+          "SubType_Advisor"
+        ],
+        "color": [
+          "CardColor_Green"
+        ],
+        "power": {
+          "value": 5
+        },
+        "toughness": {
+          "value": 5
+        },
+        "isCopy": true,
+        "isTapped": true,
+        "attackState": "AttackState_Attacking",
+        "blockState": "BlockState_Unblocked",
+        "attackInfo": {
+          "targetId": 1,
+          "damageAssigned": true
+        },
+        "objectSourceGrpId": 103511,
+        "name": 1113733,
+        "parentId": 834,
+        "overlayGrpId": 103511,
+        "abilityOriginalCardGrpIds": [
+          72447
+        ],
+        "uniqueAbilities": [
+          {
+            "id": 501,
+            "grpId": 205209
+          },
+          {
+            "id": 502,
+            "grpId": 205210
+          },
+          {
+            "id": 539,
+            "grpId": 14
+          }
+        ]
+      },
+      {
+        "instanceId": 836,
+        "grpId": 103511,
+        "type": "GameObjectType_Token",
+        "zoneId": 28,
+        "visibility": "Visibility_Public",
+        "ownerSeatId": 2,
+        "controllerSeatId": 2,
+        "cardTypes": [
+          "CardType_Creature"
+        ],
+        "subtypes": [
+          "SubType_Halfling",
+          "SubType_Advisor"
+        ],
+        "color": [
+          "CardColor_Green"
+        ],
+        "power": {
+          "value": 5
+        },
+        "toughness": {
+          "value": 5
+        },
+        "isCopy": true,
+        "isTapped": true,
+        "attackState": "AttackState_Attacking",
+        "blockState": "BlockState_Unblocked",
+        "attackInfo": {
+          "targetId": 1,
+          "damageAssigned": true
+        },
+        "objectSourceGrpId": 103511,
+        "name": 1113733,
+        "parentId": 834,
+        "overlayGrpId": 103511,
+        "abilityOriginalCardGrpIds": [
+          72447
+        ],
+        "uniqueAbilities": [
+          {
+            "id": 503,
+            "grpId": 205209
+          },
+          {
+            "id": 504,
+            "grpId": 205210
+          },
+          {
+            "id": 540,
+            "grpId": 14
+          }
+        ]
+      },
+      {
+        "instanceId": 888,
+        "grpId": 103511,
+        "type": "GameObjectType_Card",
+        "zoneId": 37,
+        "visibility": "Visibility_Public",
+        "ownerSeatId": 2,
+        "controllerSeatId": 2,
+        "superTypes": [
+          "SuperType_Legendary"
+        ],
+        "cardTypes": [
+          "CardType_Creature"
+        ],
+        "subtypes": [
+          "SubType_Halfling",
+          "SubType_Advisor"
+        ],
+        "color": [
+          "CardColor_Green"
+        ],
+        "power": {
+          "value": 1
+        },
+        "toughness": {
+          "value": 1
+        },
+        "name": 1113733,
+        "overlayGrpId": 103511,
+        "uniqueAbilities": [
+          {
+            "id": 542,
+            "grpId": 205209
+          },
+          {
+            "id": 543,
+            "grpId": 205210
+          }
+        ]
+      }
+    ],
+    "zones": [
+      {
+        "zoneId": 28,
+        "type": "ZoneType_Battlefield",
+        "visibility": "Visibility_Public",
+        "objectInstanceIds": [
+          835,
+          836
+        ]
+      },
+      {
+        "zoneId": 30,
+        "type": "ZoneType_Limbo",
+        "visibility": "Visibility_Public",
+        "objectInstanceIds": [
+          825
+        ]
+      },
+      {
+        "zoneId": 37,
+        "type": "ZoneType_Graveyard",
+        "visibility": "Visibility_Public",
+        "ownerSeatId": 2,
+        "objectInstanceIds": [
+          888
+        ]
+      }
+    ],
+    "annotations": [
+      {
+        "id": 1255,
+        "affectorId": 871,
+        "affectedIds": [
+          825
+        ],
+        "type": [
+          "AnnotationType_DamageDealt"
+        ],
+        "details": [
+          {
+            "key": "damage",
+            "type": "KeyValuePairValueType_int32",
+            "valueInt32": [
+              2
+            ]
+          },
+          {
+            "key": "type",
+            "type": "KeyValuePairValueType_int32",
+            "valueInt32": [
+              1
+            ]
+          },
+          {
+            "key": "markDamage",
+            "type": "KeyValuePairValueType_int32",
+            "valueInt32": [
+              1
+            ]
+          }
+        ]
+      },
+      {
+        "id": 1264,
+        "affectedIds": [
+          825
+        ],
+        "type": [
+          "AnnotationType_ObjectIdChanged"
+        ],
+        "details": [
+          {
+            "key": "orig_id",
+            "type": "KeyValuePairValueType_int32",
+            "valueInt32": [
+              825
+            ]
+          },
+          {
+            "key": "new_id",
+            "type": "KeyValuePairValueType_int32",
+            "valueInt32": [
+              888
+            ]
+          }
+        ]
+      },
+      {
+        "id": 1265,
+        "affectedIds": [
+          888
+        ],
+        "type": [
+          "AnnotationType_ZoneTransfer"
+        ],
+        "details": [
+          {
+            "key": "zone_src",
+            "type": "KeyValuePairValueType_int32",
+            "valueInt32": [
+              28
+            ]
+          },
+          {
+            "key": "zone_dest",
+            "type": "KeyValuePairValueType_int32",
+            "valueInt32": [
+              37
+            ]
+          },
+          {
+            "key": "category",
+            "type": "KeyValuePairValueType_string",
+            "valueString": [
+              "SBA_Deathtouch"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "optional_message": {
+    "type": "GREMessageType_OptionalActionMessage",
+    "systemSeatIds": [
+      2
+    ],
+    "msgId": 542,
+    "gameStateId": 407,
+    "prompt": {
+      "promptId": 144,
+      "parameters": [
+        {
+          "parameterName": "CardId",
+          "type": "ParameterType_Number",
+          "numberValue": 0
+        },
+        {
+          "parameterName": "CardId",
+          "type": "ParameterType_Number",
+          "numberValue": 888
+        }
+      ]
+    },
+    "optionalActionMessage": {
+      "sourceId": 14415,
+      "optionalActionTypes": [
+        "CardMechanicType_ZoneTransfer"
+      ],
+      "recipientIds": [
+        888
+      ]
+    },
+    "allowCancel": "AllowCancel_No"
+  }
+}
