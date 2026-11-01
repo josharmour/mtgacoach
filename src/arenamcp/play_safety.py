@@ -238,7 +238,7 @@ def exact_mana_total(state: dict) -> int | None:
         counted = re.search(
             r"(?:^|\n)\{t\}: add \{([wubrgc])\} for each ([a-z]+) you control\.(?:$|\n)", text
         )
-        if counted and counted[2] == "halfling" and len(re.findall(r"\badd\b", text)) == 1:
+        if counted and len(re.findall(r"\badd\b", text)) == 1:
             subtype = counted[2]
             controlled = [
                 obj
