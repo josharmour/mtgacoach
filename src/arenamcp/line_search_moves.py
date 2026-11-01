@@ -62,7 +62,7 @@ import functools
 import re
 import time
 from dataclasses import dataclass, field
-from itertools import combinations, product
+from itertools import combinations, permutations, product
 from types import SimpleNamespace
 from typing import Any, Protocol
 
@@ -115,6 +115,13 @@ from arenamcp.combat_loss import CombatDetail, LossState
 from arenamcp.combat_solver import walker_value
 from arenamcp.combat_strategy import loyalty
 from arenamcp.cost_reduction import parse_cost_reduction, reduced_mana_value, reduction_amount
+from arenamcp.entry_draw_transition import (
+    EngineAvailability,
+    draw_engine,
+)
+from arenamcp.entry_draw_transition import (
+    resolve as resolve_entry_draw,
+)
 from arenamcp.land_mana import land_colors, mana_source, refresh_sources
 from arenamcp.legend_rule import resolve_legends
 from arenamcp.mulligan_policy import _mana_value, _pip_matching, hand_card
@@ -524,6 +531,8 @@ _OTHERWISE_TOKENS = re.compile(
 )
 # A card they draw, in line value (our hand counts 0.3 x each card's value; theirs are unseen).
 PUNISH_CARD_VALUE = 1.5
+# A public card we draw: count only, never a guessed identity (same conservative card heuristic).
+DRAW_CARD_VALUE = 1.5
 
 
 def attack_punisher(card: dict) -> tuple[int, int, int, int]:
@@ -1412,9 +1421,12 @@ class Step:
     policy: str = ""  # their attack policy
     public_response: str = ""  # opponent response chosen before our adaptive attack
     opponent_discards: int = 0
+    draws: int = 0  # public draw count; the drawn card's identity is unknown
     greedy: bool = False
     # Casts that change nothing about this turn's attack: cast them after combat (main 2).
     post_combat: tuple[str, ...] = ()
+    # The supported entry-draw chain is order-sensitive; keep cast order in ``sig``.
+    order_sensitive: bool = False
     keys: frozenset = frozenset()
     plays: tuple = field(
         default=(), repr=False, compare=False
@@ -1428,8 +1440,11 @@ class Step:
     def sig(self) -> tuple:
         """What was played: two steps with the same sig are the same choice (cast order ignored)."""
         return (
-            self.turn, self.land, tuple(sorted(self.casts)), tuple(sorted(self.modes)),
+            self.turn, self.land,
+            self.casts if self.order_sensitive else tuple(sorted(self.casts)),
+            tuple(sorted(self.modes)),
             tuple(sorted(self.targets)), tuple(sorted(self.cycles)), self.attack, self.at_walkers,
+            self.draws,
         )  # fmt: skip
 
     def text(self) -> str:
@@ -1555,6 +1570,7 @@ class Node:
     our_loss: LossState = LossState()
     opponent_loss: LossState = LossState()
     opponent_discards: int = 0  # cumulative known cards paid, never identities
+    draws: int = 0  # public cards drawn this line; identities are never invented
 
     @property
     def terminal(self) -> bool:
@@ -1569,7 +1585,8 @@ class Mid:
         "ours", "theirs", "our_tapped", "entered", "hand", "lands", "played", "rocks", "returning",
         "attack_first", "applied", "modes", "targets", "cycles", "cast_names", "keys", "gained", "walkers",
         "pumps", "persistent", "their_tapped", "responses", "response_case", "response_cache",
-        "public_response", "opponent_discards",
+        "public_response", "opponent_discards", "entry_draw_used", "entry_draw_branches", "draws",
+        "entry_draw_blocked",
     )  # fmt: skip
 
     def copy(self) -> Mid:
@@ -2951,7 +2968,8 @@ class Moves:
                 node.walkers,
                 node.persistent,
             )
-            + PUNISH_CARD_VALUE * node.opponent_discards,
+            + PUNISH_CARD_VALUE * node.opponent_discards
+            + DRAW_CARD_VALUE * node.draws,
         )
 
     def sick(self, body, k, abs_turn, entered) -> bool:
@@ -3540,6 +3558,86 @@ class Moves:
         self.truncated = self.bounded = True
         self.exact_first = False
 
+    def _entry_draw_pair(self, casts: tuple) -> tuple[int, tuple[int, ...]] | None:
+        """(engine index, qualifying entrant indices) for one supported engine.
+
+        Multiple engines or multiple qualifying entrants are not modelled: the
+        once-per-turn trigger and a possible death/return make selecting one
+        entrant unsafe.  Raise so the caller can abstain explicitly.
+        """
+        from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+        engines = [
+            (index, var)
+            for index, (var, _target) in enumerate(casts)
+            if var.kind == "cast" and var.body is not None and draw_engine(var.body) is not None
+        ]
+        if not engines:
+            return None
+        if len(engines) > 1:
+            # Each engine is also an other creature for the other's trigger, so
+            # selecting one engine/entrant pair would silently drop a real chain.
+            raise UnsupportedContinuation("multiple draw engines in one cast set unmodelled")
+        engine_index, engine = engines[0]
+        cap = draw_engine(engine.body)[0]
+        entrants = tuple(
+            index
+            for index, (var, _target) in enumerate(casts)
+            if index != engine_index
+            and var.kind == "cast"
+            and var.body is not None
+            and draw_engine(var.body) is None
+            and var.body["power"] <= cap
+        )
+        if not entrants:
+            return None
+        if len(entrants) > 1:
+            raise UnsupportedContinuation("multiple qualifying entrants in one entry-draw chain unmodelled")
+        if any(var.tokens or var.life_tokens for var, _target in casts):
+            raise UnsupportedContinuation("token-producing entry in an entry-draw chain unmodelled")
+        return engine_index, entrants
+
+    def _entry_draw_order(self, casts: tuple) -> tuple[int, int] | None:
+        """(engine index, entering index) when this cast set is the supported entry-draw chain.
+
+        The search's normal cast ordering is value-driven; this chain is order-sensitive
+        because the engine must already be on the battlefield when the other creature
+        enters. Only a structural check here: ``_apply_casts`` resolves the chain and
+        abstains when the observed state is unsupported.
+        """
+        if len(casts) < 2:
+            return None
+        pair = self._entry_draw_pair(casts)
+        if pair is None:
+            return None
+        return pair[0], pair[1][0]
+
+    def _entry_draw_orders(self, choice: tuple) -> tuple[tuple, ...]:
+        """Every legal order of a supported chain set, including entrant before engine.
+
+        Engine-before-entry is a trigger condition, not a cast-legality condition:
+        casting the entrant first is legal and simply draws nothing.  The normal
+        enumeration keeps hand order; for the narrow entry-draw chain we also
+        enumerate the other orders of the same set (bounded to three spells and one
+        engine), so removal-before-entry, entry-first and entrant-before-engine are
+        compared from the same initial public state rather than by changing hand
+        order.  Sets with more than one targeted spell keep hand order: reordering
+        those could make a target disappear before its spell is cast.
+        """
+        if len(choice) < 2 or len(choice) > 3:
+            return (choice,)
+        if any(var.kind != "cast" for var, _target in choice):
+            return (choice,)
+        pair = self._entry_draw_pair(choice)
+        if pair is None or sum(target is not None for _var, target in choice) > 1:
+            return (choice,)
+        orders = []
+        for order in permutations(range(len(choice))):
+            ordered = tuple(choice[index] for index in order)
+            if ordered not in orders:
+                orders.append(ordered)
+        return tuple(orders) or (choice,)
+
     def supported_casts(self, node, casts):
         if not self._public_response_enabled:
             return True
@@ -3565,6 +3663,8 @@ class Moves:
 
         A set whose life payments would kill us is never cast.
         """
+        from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
         theirs, their_tapped = node.theirs, node.their_tapped
         bans = self.bans(node)
         marking = node.k == 0 and self.our_turn  # damage marked this turn still counts
@@ -3650,6 +3750,22 @@ class Moves:
                         continue
                     value = self.choice_value(choice, theirs, self.gained_at_start(node), node.ours)
                     scored.append((choice, value, total))
+        # The supported entry-draw chain is order-sensitive: keep every legal order of
+        # the same set (engine before entrant), so removal-before-entry and entry-first
+        # are compared from the same initial public state. ``begin`` preserves the
+        # order for these sets and ``Step.sig`` keeps them distinct.
+        expanded = []
+        for choice, value, total in scored:
+            try:
+                orders = self._entry_draw_orders(choice) if node.abs_turn == self.first_turn else (choice,)
+            except UnsupportedContinuation as error:
+                self._unmodelled_response(choice, str(error))
+                continue
+            for ordered in orders:
+                if ordered != choice and not self.supported_casts(node, ordered):
+                    continue
+                expanded.append((ordered, value, total))
+        scored = expanded
         scored.sort(key=lambda item: (-round(item[1], 6), -item[2], self.choice_text(item[0])))
         result = self._cast_memo[key] = [item[0] for item in scored]
         return result
@@ -3719,8 +3835,19 @@ class Moves:
                 source=mana_source(card, board),
             )
         response_case = self._public_case(node, casts)
+        entry_draw_blocked = False
+        from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+        try:
+            order_sensitive = self._entry_draw_order(casts) is not None
+        except UnsupportedContinuation as error:
+            if getattr(self, "replay", False):
+                raise
+            self._unmodelled_response(casts, str(error))
+            order_sensitive = False
+            entry_draw_blocked = True
         mid = Mid.__new__(Mid)
-        if self.pumps_possible and len(casts) > 1:
+        if not order_sensitive and self.pumps_possible and len(casts) > 1:
             # Creature spells first, then the noncreature spells whose casts pump them (ledger #94:
             # Slickshot Show-Off, then Tectonic Hazard); the order below still comes first.
             casts = tuple(
@@ -3732,7 +3859,9 @@ class Moves:
                     ),
                 )
             )
-        elif any(v.life_tokens or self.spells[v.spell].reduction is not None for v, _ in casts):
+        elif not order_sensitive and any(
+            v.life_tokens or self.spells[v.spell].reduction is not None for v, _ in casts
+        ):
             # Gain life first, then cast what scales with the life gained this turn (pro game
             # 2026-10-18, YFRA match 1 T11: Something Worth Saving, then Germinate Recruits);
             # bodies and counters before a spell they make cheaper (T15: Seed Suture, then Ghalta).
@@ -3754,6 +3883,10 @@ class Moves:
         mid.responses, mid.response_case, mid.response_cache = (), None, {}
         mid.public_response = ""
         mid.opponent_discards = node.opponent_discards
+        mid.draws = node.draws
+        mid.entry_draw_used = set()
+        mid.entry_draw_branches = ()
+        mid.entry_draw_blocked = entry_draw_blocked
         mid.entered = dict(node.entered)
         mid.hand = list(node.hand)
         mid.lands = [x for x in node.lands if land is None or x.iid != land.iid]
@@ -3770,6 +3903,10 @@ class Moves:
         alternate = mid.copy() if response_case is not None else None
         if not mid.attack_first:
             self._apply_casts(mid)
+        if response_case is not None and mid.responses:
+            from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+            raise UnsupportedContinuation("entry-draw chain with a public response unmodelled")
         if alternate is not None:
             if mid.attack_first:
                 from arenamcp.public_response import UnsupportedResponse
@@ -3779,6 +3916,10 @@ class Moves:
             alternate.public_response = "opponent discards for indestructible"
             alternate.opponent_discards += 1
             self._apply_casts(alternate)
+            if alternate.responses:
+                from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+                raise UnsupportedContinuation("entry-draw chain with a public response unmodelled")
             mid.public_response = "opponent declines protection"
             mid.responses = (mid.copy(), alternate)
             # The bounded opponent policy scores through the following attack,
@@ -3790,10 +3931,178 @@ class Moves:
             )
         return mid
 
-    def _apply_casts(self, mid: Mid) -> None:
+    def _new_army(self) -> dict:
+        """A fresh opposing Orc Army token for the supported amass branch."""
+        from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+        iid = self._token_id
+        self._token_id += 1
+        card = {
+            "instance_id": iid,
+            "name": "Orc Army",
+            "power": 0,
+            "toughness": 0,
+            "type_line": "Token Creature — Orc Army",
+            "card_types": ["CardType_Creature"],
+            "subtypes": ["Orc", "Army"],
+            "object_kind": "TOKEN",
+            "controller_seat_id": self.model.opponent,
+            "owner_seat_id": self.model.opponent,
+            "oracle_text": "",
+        }
+        body = _body(card, self.model.turn, self.model.their_rules)
+        if body is None:
+            raise UnsupportedContinuation("created Army has unknown power/toughness")
+        return body
+
+    @staticmethod
+    def _creature_card(card: dict) -> bool:
+        types = card.get("card_types")
+        if types is not None:
+            return any(str(kind).lower().removeprefix("cardtype_") == "creature" for kind in types)
+        return "creature" in str(card.get("type_line") or "").lower()
+
+    def _their_noncreature_permanents(self) -> tuple[dict, ...]:
+        """Current opposing noncreature permanents, never the pre-removal snapshot."""
+        return tuple(
+            card
+            for card in self.model.battlefield
+            if isinstance(card, dict)
+            and _controller(card) == self.model.opponent
+            and not self._creature_card(card)
+        )
+
+    def _our_walkers(self) -> tuple[dict, ...]:
+        return tuple(
+            card
+            for card in self.model.our_permanents
+            if isinstance(card, dict) and "planeswalker" in str(card.get("type_line") or "").lower()
+        )
+
+    def _preexisting_entry_draw(self, mid: Mid, body: dict) -> bool:
+        """True when ``body`` qualifies for a draw engine already on the battlefield.
+
+        Such an engine was not cast in this line, so its once-per-turn use is
+        unknown.  Resolving the trigger would invent availability; the caller
+        abstains instead.
+        """
+        power = body.get("power")
+        if power is None:
+            return False
+        engines = list(mid.ours)
+        engines.extend(engine for engine in mid.persistent if _controller(engine) == self.model.local)
+        for engine in engines:
+            if engine["instance_id"] == body["instance_id"]:
+                continue
+            rule = draw_engine(engine)
+            if rule is not None and power <= rule[0]:
+                return True
+        return False
+
+    def _entry_draw(self, mid: Mid, body: dict) -> None:
+        """Resolve the supported entry -> draw -> opposing ping/amass chain for ``body``."""
+        from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+        pair = self._entry_draw_pair(mid.casts)
+        if pair is None:
+            if self._preexisting_entry_draw(mid, body):
+                reason = "entry-draw trigger from an engine already on the battlefield unmodelled"
+                if getattr(self, "replay", False):
+                    raise UnsupportedContinuation(reason)
+                self._unmodelled_response(mid.casts, reason)
+            return
+        engine_index, entrants = pair
+        entrant_ids = {
+            mid.casts[index][0].body["instance_id"]
+            for index in entrants
+            if mid.casts[index][0].body is not None
+        }
+        if body["instance_id"] not in entrant_ids:
+            return  # the engine itself entering is not a trigger
+        if len(entrants) > 1:
+            raise UnsupportedContinuation("multiple qualifying entrants in one entry-draw chain unmodelled")
+        if any(var.tokens or var.life_tokens for var, _target in mid.casts):
+            raise UnsupportedContinuation("token-producing entry in an entry-draw chain unmodelled")
+        if mid.node.abs_turn != self.first_turn:
+            if getattr(self, "replay", False):
+                raise UnsupportedContinuation("entry-draw chain outside the current turn unmodelled")
+            self._unmodelled_response(mid.casts, "entry-draw chain outside the current turn unmodelled")
+            return
+        engine_var = mid.casts[engine_index][0]
+        engine = next(
+            (b for b in mid.ours if b["instance_id"] == engine_var.body["instance_id"]),
+            None,
+        )
+        if engine is None:
+            return  # the entry happened before the engine was on the battlefield
+        if mid.entry_draw_branches:
+            raise UnsupportedContinuation("multiple entry-draw chains in one cast set unmodelled")
+        availability = (
+            EngineAvailability.entered_used()
+            if engine["instance_id"] in mid.entry_draw_used
+            else EngineAvailability.entered_unused()
+        )
+        resolution = resolve_entry_draw(
+            entering=(body,),
+            ours=tuple(mid.ours),
+            theirs=tuple(mid.theirs),
+            persistent=tuple(mid.persistent),
+            our_life=mid.our_life,
+            opp_life=mid.opp_life,
+            engine_use={engine["instance_id"]: availability},
+            new_army=self._new_army,
+            our_walkers=self._our_walkers(),
+            our_permanents=tuple(self.model.our_permanents),
+            their_permanents=self._their_noncreature_permanents(),
+        )
+        if resolution.chain is None:
+            return
+        if not resolution.branches:
+            raise UnsupportedContinuation("entry-draw chain has no supported opponent branch")
+        # Keep every supported opponent choice; ``finish`` collapses them adversarially
+        # through our following attack instead of choosing on an immediate heuristic.
+        mid.entry_draw_branches = tuple(resolution.branches)
+
+    def _fork_entry_draw(self, mid: Mid, next_index: int, chipped: dict[int, int]) -> None:
+        """Fork the resolved entry-draw branches and continue the remaining casts on each."""
+        from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+        branches = mid.entry_draw_branches
+        mid.entry_draw_branches = ()
+        alts = []
+        for branch in branches:
+            alt = mid.copy()
+            alt.ours = self.rescale(list(branch.ours))
+            alt.theirs = list(branch.theirs)
+            alt.persistent = list(branch.persistent)
+            alt.our_life = branch.our_life
+            alt.opp_life = branch.opp_life
+            alt.draws += branch.draws
+            alt.entry_draw_used = set(branch.used_after)
+            alive = {b["instance_id"] for b in alt.ours}
+            alt.entered = {iid: turn for iid, turn in alt.entered.items() if iid in alive}
+            alt.our_tapped &= alive
+            alt.responses = ()
+            alt.response_cache = {}
+            alt.public_response = ""
+            if next_index < len(alt.casts):
+                self._apply_casts(alt, next_index, dict(chipped))
+                if alt.responses:
+                    raise UnsupportedContinuation("multiple entry-draw chains in one cast set unmodelled")
+            alts.append(alt)
+        mid.responses = tuple(alts)
+        self.bounded = self.truncated = True
+        self.exact_first = False
+        self.choice_caveats.add(
+            "Entry-draw branches are collapsed adversarially through the following attack; "
+            "later turns are conditional."
+        )
+
+    def _apply_casts(self, mid: Mid, start: int = 0, chipped: dict[int, int] | None = None) -> None:
         mid.applied = True
-        chipped: dict[int, int] = {}  # damage combined-kill pieces dealt each target so far
-        for var, target in mid.casts:
+        chipped = {} if chipped is None else chipped  # damage combined-kill pieces dealt each target so far
+        for index in range(start, len(mid.casts)):
+            var, target = mid.casts[index]
             if var.kind == "sneak":
                 continue  # cast after their blocks (``finish``)
             hs = self.spells[var.spell]
@@ -3844,11 +4153,17 @@ class Moves:
                 if old["instance_id"] in mid.our_tapped:
                     mid.our_tapped.add(new["instance_id"])
             made = list(var.tokens) + list(self._life_bodies(var, mid.gained))
+            if made and not mid.entry_draw_blocked and self._entry_draw_pair(mid.casts) is not None:
+                from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+                raise UnsupportedContinuation("token-producing entry in an entry-draw chain unmodelled")
             for body in ([var.body] if var.body is not None else []) + made:
                 mid.ours.append(body)
                 mid.entered[body["instance_id"]] = mid.node.abs_turn
                 if self.consuls:
                     mid.opp_life += self._enters_under_them(body, mid.our_tapped)
+                if body is var.body and not mid.entry_draw_blocked:
+                    self._entry_draw(mid, body)
             # A board-counted ETB resolves after legend-rule state actions.
             mid.ours = self.rescale(mid.ours)
             for body in self._named_bodies(var, mid.ours):
@@ -3906,7 +4221,10 @@ class Moves:
             mid.gained += var.gain
             if var.rock:
                 mid.rocks.append(SimpleNamespace(produces=frozenset("WUBRGC"), name=hs.name))
-        mid.ours = self.rescale(mid.ours)  # "+1/+0 for each other creature you control" (#157)
+            mid.ours = self.rescale(mid.ours)  # "+1/+0 for each other creature you control" (#157)
+            if mid.entry_draw_branches:
+                self._fork_entry_draw(mid, index + 1, chipped)
+                return
 
     def cast_pump(self, body: dict) -> tuple:
         """``cast_triggers.cast_pumps`` of a body, memoised."""
@@ -4221,6 +4539,7 @@ class Moves:
             "turn": node.abs_turn,
             "public_response": mid.public_response,
             "opponent_discards": mid.opponent_discards - node.opponent_discards,
+            "draws": mid.draws - node.draws,
             "label": LABELS[min(node.k, len(LABELS) - 1)],
             "land": mid.land.name if mid.land is not None else "",
             "casts": tuple(mid.cast_names),
@@ -4237,6 +4556,7 @@ class Moves:
             "keys": frozenset(mid.keys | {("attack", frozenset(ids)) if ids else ("noattack",)}),
             "plays": (mid.land, tuple(mid.casts), ids),
             "post_combat": post_combat,
+            "order_sensitive": not mid.entry_draw_blocked and self._entry_draw_order(mid.casts) is not None,
             "at_walkers": tuple(sorted(at_walkers)),
             "walker_attack": attack[0] if at else "",
         }
@@ -4244,6 +4564,7 @@ class Moves:
             "our_life": mid.our_life,
             "opp_life": mid.opp_life,
             "opponent_discards": mid.opponent_discards,
+            "draws": mid.draws,
             "opponent_loss": opponent_loss,
             "ours": tuple(mid.ours),
             "theirs": tuple(mid.theirs),

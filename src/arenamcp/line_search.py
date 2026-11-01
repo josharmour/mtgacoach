@@ -743,7 +743,7 @@ class _Search(Moves):
             tuple(c.get("instance_id") for c in node.persistent),
             tuple(sorted(s.name for s in node.played)), len(node.rocks), ids_of(node.returning),
             node.dead_at, node.win_at, node.overkill, node.block, node.walkers, node.our_loss, node.opponent_loss,
-            node.opponent_discards,
+            node.opponent_discards, node.draws,
         )  # fmt: skip
 
     def _rank(self, group: _Group) -> tuple:
@@ -1187,6 +1187,7 @@ def _sibling(result: LineSearchResult, **kwargs: Any) -> _Search:
         root_effect=base.root_effect, **kwargs,
     )  # fmt: skip
     search.free = True
+    search.replay = True
     return search
 
 
