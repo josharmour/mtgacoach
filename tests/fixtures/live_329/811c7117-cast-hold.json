@@ -1,0 +1,214 @@
+{
+  "source_file": "/Users/joshu/Documents/Codex/2026-10-31/task-2/monitoring/811c7117-cast-hold-candidate.json",
+  "scope": "Exact retained menus, choices and rationale; tests reconstruct only public fields needed for this guard, not a complete match replay.",
+  "records": [
+    {
+      "pending_decision": {
+        "request_id": [
+          297,
+          406
+        ],
+        "request_type": "ActionsAvailable",
+        "options": [
+          {
+            "option_id": "idx:0",
+            "label": "Cast Nature's Rhythm [alternative cost: Harmonize {oXoGoGoGoG}]",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Cast",
+              "grpId": 95672,
+              "instanceId": 625,
+              "abilityGrpId": 0,
+              "manaCost": [
+                {
+                  "color": "[ \"X\" ]",
+                  "count": 1
+                },
+                {
+                  "color": "[ \"Green\" ]",
+                  "count": 4
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 446,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 453,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 464,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 473,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true,
+              "alternativeGrpId": 188856,
+              "alternative": "Harmonize",
+              "alternativeCostText": "Harmonize {oXoGoGoGoG}"
+            }
+          },
+          {
+            "option_id": "idx:1",
+            "label": "Cast Tooth and Nail",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Cast",
+              "grpId": 57281,
+              "instanceId": 834,
+              "abilityGrpId": 0,
+              "manaCost": [
+                {
+                  "color": "[ \"Generic\" ]",
+                  "count": 5
+                },
+                {
+                  "color": "[ \"Green\" ]",
+                  "count": 2
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 446,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 453,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 464,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 473,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 491,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 492,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 498,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "idx:2",
+            "label": "Activate: Loot, Exuberant Explorer [{4}{G}{G}, {T}: Look at the top six cards of your library. You may reveal a creature card with mana value less than or equal to the number of lands you contr\u2026]",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Activate",
+              "grpId": 93819,
+              "instanceId": 465,
+              "abilityGrpId": 175871,
+              "manaCost": [
+                {
+                  "color": "[ \"Generic\" ]",
+                  "count": 4
+                },
+                {
+                  "color": "[ \"Green\" ]",
+                  "count": 2
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 446,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 453,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 464,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 473,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 491,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 492,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "idx:3",
+            "label": "Activate: World Breaker [from graveyard: {2}{C}, Sacrifice a land: Return this card from your graveyard to your hand.]",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Activate",
+              "grpId": 62415,
+              "instanceId": 502,
+              "abilityGrpId": 102706,
+              "manaCost": [
+                {
+                  "color": "[ \"Generic\" ]",
+                  "count": 2
+                },
+                {
+                  "color": "[ \"Colorless\" ]",
+                  "count": 1
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 481,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "pass",
+            "label": "Pass",
+            "payable": null,
+            "meta": {}
+          }
+        ],
+        "min_select": 1,
+        "max_select": 1,
+        "can_pass": true,
+        "can_cancel": false,
+        "source_label": "",
+        "min_weight": null,
+        "max_weight": null,
+        "slots": []
+      },
+      "chosen_options": [
+        "idx:1"
+      ],
+      "turn": {
+        "turn_number": 12,
+        "phase": "Phase_Main1",
+        "step": "",
+        "active_player": 1
+      },
+      "timestamp": 1793509712.3591108,
+      "reasoning": "Tooth and Nail entwined puts two creatures from hand onto the battlefield, but hand only has Tooth and Nail itself, so it does nothing; better to attack for lethal pressure now.",
+      "local_seat_id": 1
+    }
+  ]
+}

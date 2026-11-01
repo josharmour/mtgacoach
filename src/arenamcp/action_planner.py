@@ -9759,6 +9759,7 @@ class ActionPlanner(_ActionLegalityMixin):
             decision, tag_state, data, chosen, ask, parse, user_message
         )
         data, chosen = self._repair_land_claim(decision, tag_state, data, chosen, ask, parse, user_message)
+        data, chosen = self._recheck_action_claim(decision, tag_state, data, chosen, ask, parse, user_message)
         data, chosen = self._repair_blink_claim(decision, tag_state, data, chosen, ask, parse, user_message)
         data, chosen = self._recheck_public_sequence(
             decision, tag_state, data, chosen, ask, parse, user_message
@@ -9941,6 +9942,40 @@ class ActionPlanner(_ActionLegalityMixin):
         repair.update(final=picks, fallback=True)
         self._last_decision_trace["blink_identity_recheck"] = repair
         return {"option_ids": picks, "reasoning": "Pass and reassess: " + mismatch.reason}, picks
+
+    def _recheck_action_claim(self, decision, state, data, chosen, ask, parse, message):
+        """Reconcile an explicit action/rationale mismatch before caching or remembering it."""
+        from arenamcp.decision_claims import action_claim_mismatch
+
+        mismatch = action_claim_mismatch(decision, state, chosen, data.get("reasoning", ""))
+        if mismatch is None:
+            return data, chosen
+        check = {"original_ids": list(chosen), "original_reasoning": data.get("reasoning"), "facts": mismatch.reason}
+        self._last_decision_trace["action_claim_check"] = check
+        try:
+            revised, picks = parse(
+                ask(
+                    message + "\n\nACTION IDENTITY/INTENT CHECK: " + mismatch.reason,
+                    effort="high",
+                    budget=min(self._timeout, 12.0),
+                    cancel_event=getattr(self, "_decision_cancel_event", None),
+                )
+            )
+            if not decision.selection_is_valid(picks):
+                raise ValueError("action recheck did not select a legal offered choice")
+            if action_claim_mismatch(decision, state, picks, revised.get("reasoning", "")) is not None:
+                raise ValueError("revised reason still contradicts the selected action")
+            check.update(final_ids=list(picks), final_reasoning=revised.get("reasoning"))
+            return revised, picks
+        except Exception as error:
+            check["error"] = str(error)[:160]
+        if mismatch.land_fact:
+            # Preserve the offered land, but do not propagate a fictitious
+            # commander cast into the answer cache, memory, or later plan.
+            check.update(final_ids=list(chosen), fallback="land_identity", final_reasoning=mismatch.land_fact)
+            return {"option_ids": chosen, "reasoning": mismatch.land_fact}, chosen
+        check["fallback"] = "current_board"
+        raise SecondLookError("Cast/hold rationale unresolved: " + mismatch.reason)
 
     def _repair_land_claim(self, decision, state, data, chosen, ask, parse, message):
         """Recheck false entry/payment claims without forcing every untapped land."""

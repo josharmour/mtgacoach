@@ -1,0 +1,301 @@
+{
+  "source_file": "/Users/joshu/Documents/Codex/2026-10-31/task-2/monitoring/9376b418-mdfc-candidate.json",
+  "scope": "Exact retained menus, choices and rationale; tests reconstruct only public fields needed for this guard, not a complete match replay.",
+  "records": [
+    {
+      "pending_decision": {
+        "request_id": [
+          324,
+          451
+        ],
+        "request_type": "ActionsAvailable",
+        "options": [
+          {
+            "option_id": "idx:2",
+            "label": "Cast Settle the Wilds",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Cast",
+              "grpId": 79961,
+              "instanceId": 786,
+              "abilityGrpId": 0,
+              "manaCost": [
+                {
+                  "color": "[ \"Generic\" ]",
+                  "count": 2
+                },
+                {
+                  "color": "[ \"Green\" ]",
+                  "count": 1
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 550,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 556,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 670,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "pass",
+            "label": "Pass",
+            "payable": null,
+            "meta": {}
+          },
+          {
+            "option_id": "idx:13",
+            "label": "PlayMdfc",
+            "payable": null,
+            "meta": {
+              "actionType": "ActionType_PlayMdfc",
+              "grpId": 90825,
+              "instanceId": 902,
+              "abilityGrpId": 0,
+              "manaCost": null,
+              "autoTapActions": [],
+              "hasAutoTap": false
+            }
+          }
+        ],
+        "min_select": 1,
+        "max_select": 1,
+        "can_pass": true,
+        "can_cancel": false,
+        "source_label": "",
+        "min_weight": null,
+        "max_weight": null,
+        "slots": []
+      },
+      "chosen_options": [
+        "idx:13"
+      ],
+      "turn": {
+        "turn_number": 13,
+        "phase": "Phase_Main1",
+        "step": "",
+        "active_player": 2
+      },
+      "timestamp": 1793512080.32479,
+      "reasoning": "Casting the commander creates three bodies and a Halfling mana engine, far better than Settle the Wilds' unmodeled seek; tokens boost Nykthos devotion and feed Craterhoof/Finale later.",
+      "local_seat_id": 2
+    },
+    {
+      "pending_decision": {
+        "request_id": [
+          325,
+          454
+        ],
+        "request_type": "OptionalAction",
+        "options": [
+          {
+            "option_id": "optional:accept",
+            "label": "Accept the optional effect",
+            "payable": null,
+            "meta": {
+              "sourceId": 9020,
+              "mechanics": [],
+              "recipients": [],
+              "promptCardIds": [
+                904
+              ],
+              "promptCards": [],
+              "promptText": "Pay 3 life?"
+            }
+          },
+          {
+            "option_id": "optional:decline",
+            "label": "Decline the optional effect",
+            "payable": null,
+            "meta": {
+              "sourceId": 9020,
+              "mechanics": [],
+              "recipients": [],
+              "promptCardIds": [
+                904
+              ],
+              "promptCards": [],
+              "promptText": "Pay 3 life?"
+            }
+          }
+        ],
+        "min_select": 1,
+        "max_select": 1,
+        "can_pass": false,
+        "can_cancel": false,
+        "source_label": "",
+        "min_weight": null,
+        "max_weight": null,
+        "slots": [],
+        "prompt_text": "Pay 3 life?"
+      },
+      "chosen_options": [
+        "optional:accept"
+      ],
+      "turn": {
+        "turn_number": 13,
+        "phase": "Main1",
+        "step": "None",
+        "active_player": 2
+      },
+      "timestamp": 1793512082.5190258,
+      "reasoning": "Paying 3 life lets Tanglespan Bridgeworks enter untapped for immediate green mana toward the commander, and 26 life is safe against their 1-power clock.",
+      "local_seat_id": 2
+    },
+    {
+      "pending_decision": {
+        "request_id": [
+          326,
+          456
+        ],
+        "request_type": "ActionsAvailable",
+        "options": [
+          {
+            "option_id": "idx:2",
+            "label": "Cast Settle the Wilds",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Cast",
+              "grpId": 79961,
+              "instanceId": 786,
+              "abilityGrpId": 0,
+              "manaCost": [
+                {
+                  "color": "[ \"Generic\" ]",
+                  "count": 2
+                },
+                {
+                  "color": "[ \"Green\" ]",
+                  "count": 1
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 550,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 556,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 904,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "pass",
+            "label": "Pass",
+            "payable": null,
+            "meta": {}
+          }
+        ],
+        "min_select": 1,
+        "max_select": 1,
+        "can_pass": true,
+        "can_cancel": false,
+        "source_label": "",
+        "min_weight": null,
+        "max_weight": null,
+        "slots": []
+      },
+      "chosen_options": [
+        "pass"
+      ],
+      "turn": {
+        "turn_number": 13,
+        "phase": "Main1",
+        "step": "None",
+        "active_player": 2
+      },
+      "timestamp": 1793512084.506052,
+      "reasoning": "Commander already cast this turn; Settle the Wilds' unmodeled seek isn't worth tapping out over holding mana, and no other payable play exists.",
+      "local_seat_id": 2
+    },
+    {
+      "pending_decision": {
+        "request_id": [
+          334,
+          466
+        ],
+        "request_type": "ActionsAvailable",
+        "options": [
+          {
+            "option_id": "idx:2",
+            "label": "Cast Settle the Wilds",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Cast",
+              "grpId": 79961,
+              "instanceId": 786,
+              "abilityGrpId": 0,
+              "manaCost": [
+                {
+                  "color": "[ \"Generic\" ]",
+                  "count": 2
+                },
+                {
+                  "color": "[ \"Green\" ]",
+                  "count": 1
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 550,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 556,
+                  "manaId": 0
+                },
+                {
+                  "instanceId": 904,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "pass",
+            "label": "Pass",
+            "payable": null,
+            "meta": {}
+          }
+        ],
+        "min_select": 1,
+        "max_select": 1,
+        "can_pass": true,
+        "can_cancel": false,
+        "source_label": "",
+        "min_weight": null,
+        "max_weight": null,
+        "slots": []
+      },
+      "chosen_options": [
+        "pass"
+      ],
+      "turn": {
+        "turn_number": 13,
+        "phase": "Phase_Main2",
+        "step": "",
+        "active_player": 2
+      },
+      "timestamp": 1793512088.407574,
+      "reasoning": "Commander already cast this turn; Settle the Wilds' unmodeled seek isn't worth tapping out over holding mana, and no other payable play exists.",
+      "local_seat_id": 2
+    }
+  ]
+}

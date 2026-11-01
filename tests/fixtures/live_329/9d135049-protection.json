@@ -1,0 +1,115 @@
+{
+  "source_file": "/Users/joshu/Documents/Codex/2026-10-31/task-2/monitoring/9d135049-protection-candidate.json",
+  "scope": "Exact retained menus, choices and rationale; tests reconstruct only public fields needed for this guard, not a complete match replay.",
+  "records": [
+    {
+      "pending_decision": {
+        "request_id": [
+          338,
+          501
+        ],
+        "request_type": "ActionsAvailable",
+        "options": [
+          {
+            "option_id": "idx:0",
+            "label": "Cast Tamiyo's Safekeeping",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Cast",
+              "grpId": 79648,
+              "instanceId": 972,
+              "abilityGrpId": 0,
+              "manaCost": [
+                {
+                  "color": "[ \"Green\" ]",
+                  "count": 1
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 564,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "idx:1",
+            "label": "Activate: Field of Ruin [{2}, {T}, Sacrifice this: Destroy target nonbasic land an opponent controls. Each player searches their library for a basic land card, puts it onto the battl\u2026]",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Activate",
+              "grpId": 66487,
+              "instanceId": 552,
+              "abilityGrpId": 116809,
+              "manaCost": [
+                {
+                  "color": "[ \"Generic\" ]",
+                  "count": 2
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 542,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "idx:2",
+            "label": "Activate: Mutavault [{1}: this becomes a 2/2 creature with all creature types until end of turn. It's still a land.]",
+            "payable": true,
+            "meta": {
+              "actionType": "ActionType_Activate",
+              "grpId": 54281,
+              "instanceId": 768,
+              "abilityGrpId": 15429,
+              "manaCost": [
+                {
+                  "color": "[ \"Generic\" ]",
+                  "count": 1
+                }
+              ],
+              "autoTapActions": [
+                {
+                  "instanceId": 564,
+                  "manaId": 0
+                }
+              ],
+              "hasAutoTap": true
+            }
+          },
+          {
+            "option_id": "pass",
+            "label": "Pass",
+            "payable": null,
+            "meta": {}
+          }
+        ],
+        "min_select": 1,
+        "max_select": 1,
+        "can_pass": true,
+        "can_cancel": false,
+        "source_label": "",
+        "min_weight": null,
+        "max_weight": null,
+        "slots": []
+      },
+      "chosen_options": [
+        "idx:0"
+      ],
+      "turn": {
+        "turn_number": 13,
+        "phase": "Main1",
+        "step": "None",
+        "active_player": 2
+      },
+      "timestamp": 1793509272.286576,
+      "reasoning": "Holding Tamiyo's Safekeeping protects a key blocker from Wandering Emperor exile or removal during the opponent's turn; Field of Ruin and Mutavault activations don't stabilize against Atraxa/Vorinclex.",
+      "local_seat_id": 1
+    }
+  ]
+}
