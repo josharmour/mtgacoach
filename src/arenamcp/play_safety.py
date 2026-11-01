@@ -110,6 +110,11 @@ def tutor_has_target(state: dict, card: dict, value: int) -> bool | None:
 
 
 def _effective_cost(card: dict, metadata: dict) -> str:
+    from arenamcp.offered_casts import offered_cost
+
+    free = offered_cost(metadata, card)
+    if free is not None:
+        return free
     raw_cost = metadata.get("manaCost")
     if not isinstance(raw_cost, list) or not raw_cost:
         return _normalize_mana_symbols(str(card.get("mana_cost") or ""))

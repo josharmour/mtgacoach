@@ -1082,6 +1082,14 @@ def action_key(option: Any, state: dict) -> ActionKey | None:
     if zone == "command":
         # Our commander, cast from the command zone: the search keys it by its own instance id.
         return ("cast", _int(source.get("instance_id")) or 0, None) if action == "cast" else None
+    if zone == "exile" and action == "cast":
+        from arenamcp.offered_casts import offered_cost
+
+        return (
+            ("cast", _int(source.get("instance_id")) or 0, None)
+            if offered_cost(meta, source) is not None
+            else None
+        )
     if zone != "hand":
         return None
     if action == "cast":

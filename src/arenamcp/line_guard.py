@@ -294,7 +294,12 @@ def unmodelled_cast(result: LineSearchResult | None, option: Any, state: dict) -
     # and does not include the offered free cast from exile. A lower line
     # score cannot establish that spending burn before that creature is best.
     if source and mana_cost_waived(meta):
-        return f"{_name(source)} (offered free alternative cost/zone not modelled)"
+        modelled = any(
+            s.card.get("_current_exile_offer") and s.card.get("instance_id") == source.get("instance_id")
+            for s in getattr(getattr(result, "model", None), "spells", ())
+        )
+        if not modelled:
+            return f"{_name(source)} (offered free alternative cost/zone not modelled)"
     if zone == "command":
         # Our commander as the search read it (``board_model.our_commanders``: a copy marked
         # when its card data is unknown).

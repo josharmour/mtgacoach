@@ -4382,6 +4382,9 @@ class ActionPlanner(_ActionLegalityMixin):
         and the background game-plan reform both read.
         """
         self._bound_decision_evidence = None
+        from arenamcp.offered_casts import bind_offered_casts
+
+        decision, game_state = bind_offered_casts(decision, game_state)
         chosen = self._plan_decision_options(decision, game_state)
         from arenamcp.decision_consistency import consistent_action
         from arenamcp.stack_responses import protective_pass
@@ -6830,7 +6833,9 @@ class ActionPlanner(_ActionLegalityMixin):
 
             if decision.request_type == "ActionsAvailable":
                 from arenamcp.board_assessment import assess
+                from arenamcp.offered_casts import bind_offered_casts
 
+                decision, state = bind_offered_casts(decision, state)
                 assessment = assess(state)
                 result = getattr(assessment, "line_search", None)
                 if assessment is None or result is None or not assessment.our_turn:

@@ -4,17 +4,8 @@ import re
 
 from arenamcp.board_assessment import card_role
 from arenamcp.mulligan_policy import hand_card
+from arenamcp.offered_casts import mana_cost_waived
 from arenamcp.play_safety import find_source
-
-_FREE_CAST = re.compile(r"^cast without paying (?:its |the |their )?mana cost[.!]?$", re.I)
-
-
-def mana_cost_waived(meta: dict) -> bool:
-    """An explicit offered alternative waives printed mana, not additional costs."""
-    return bool(
-        meta.get("alternativeGrpId")
-        and _FREE_CAST.fullmatch(str(meta.get("alternativeCostText") or "").strip())
-    )
 
 
 def timing_notes(decision, state: dict) -> list[str]:

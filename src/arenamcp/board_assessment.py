@@ -1622,7 +1622,14 @@ def _signature(state: dict) -> tuple:
             key=repr,
         )
     )
+    from arenamcp.offered_casts import free_exile_casts
+
+    offered = tuple(
+        (c.get("instance_id"), c.get("name"), c.get("oracle_text"), cost)
+        for c, _, cost in free_exile_casts(state)
+    )
     return (
+        offered,
         state.get("match_id"),
         turn.get("turn_number"),
         turn.get("active_player"),
@@ -3180,9 +3187,9 @@ def _schedule(
         sources = list(budget["sources"]) + extra
         best: tuple = ()
         best_key = (0.0, 0)
-        pool = remaining
+        pool = [s for s in remaining if not index or not s.card.get("_current_exile_offer")]
         if index == 0 and instant_only_first:
-            pool = [s for s in remaining if hand_card({**s.card, "rarity": "-"}).instant_speed]
+            pool = [s for s in pool if hand_card({**s.card, "rarity": "-"}).instant_speed]
         for size in range(1, min(_MAX_SPELLS_PER_TURN, len(pool)) + 1):
             for combo in combinations(pool, size):
                 total = sum(s.mana_value for s in combo)
@@ -3225,6 +3232,7 @@ def _schedule(
             for s in spells
             if not s.has_x
             and not s.uncastable
+            and (not index or not s.card.get("_current_exile_offer"))
             and s.mana_value <= len(sources)
             and _pip_matching(s.pips, sources)
         ]

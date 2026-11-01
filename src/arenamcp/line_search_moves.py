@@ -3945,6 +3945,8 @@ class Moves:
             )  # fmt: skip
         # Our end step (Fleeting Effigy goes back to the hand), then their turn's life gains.
         self._end_step(mid)
+        # An offered free exile cast proves permission now, not after this turn.
+        mid.hand = [i for i in mid.hand if not self.spells[i].spell.card.get("_current_exile_offer")]
         carry.update(ours=tuple(mid.ours), hand=tuple(mid.hand))
         if opponent_loss.draw_loses:
             return dataclasses.replace(

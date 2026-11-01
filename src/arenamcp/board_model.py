@@ -741,6 +741,24 @@ def build_board_model(state: dict) -> BoardModel | None:
                 uncastable=_cast_gate_unmet(card, our_graveyard) or spell_banned(card, bans),
             )
         )
+    # Current explicit alternative cast from exile (#322). Keep printed card
+    # characteristics intact; only its payment and source zone differ.
+    from arenamcp.offered_casts import free_exile_casts
+
+    for card, action, cost in free_exile_casts(state):
+        info = hand_card({**card, "mana_cost": cost})
+        spells.append(
+            _Spell(
+                card={**card, "_current_exile_offer": True},
+                name=_name(card),
+                role=card_role(card),
+                mana_value=info.mana_value,
+                pips=info.pips,
+                has_x=False,
+                zone="exile",
+                uncastable=_cast_gate_unmet(card, our_graveyard) or spell_banned(card, bans),
+            )
+        )
     # Our commanders in the command zone: cast like hand cards, at their current cost.
     commanders = our_commanders(state, local)
     for commander in commanders:
