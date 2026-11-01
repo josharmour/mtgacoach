@@ -1,0 +1,913 @@
+{
+  "scope": "Exact retained decisions/reasons, raw actions and relevant public objects. Enriched state reconstructs only Greaves, Notaries and Ugin from raw facts plus saved local oracles; not a full match replay.",
+  "source_match": "252bd136-5c13-46ad-beec-c8de7d60e5df",
+  "state": {
+    "local_seat_id": 1,
+    "turn": {
+      "turn_number": 7,
+      "phase": "Phase_Main1",
+      "step": "",
+      "active_player": 1
+    },
+    "players": [
+      {
+        "seat_id": 1,
+        "is_local": true,
+        "mana_pool": {}
+      }
+    ],
+    "hand": [
+      {
+        "instance_id": 247,
+        "grp_id": 95516,
+        "name": "Ugin, Eye of the Storms",
+        "oracle_text": "When you cast this spell, exile up to one target permanent that's one or more colors.\nWhenever you cast a colorless spell, exile up to one target permanent that's one or more colors.\nYou gain 3 life and draw a card.\nAdd {oCoCoC}.\nSearch your library for any number of colorless nonland cards, exile them, then shuffle. Until end of turn, you may cast those cards without paying their mana costs.",
+        "controller_seat_id": 1,
+        "owner_seat_id": 1,
+        "card_types": [
+          "Planeswalker"
+        ],
+        "subtypes": [
+          "Ugin"
+        ],
+        "is_tapped": false,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "type_line": "Planeswalker \u2014 Ugin",
+        "mana_cost": "{7}"
+      }
+    ],
+    "battlefield": [
+      {
+        "instance_id": 561,
+        "grp_id": 19737,
+        "name": "Lightning Greaves",
+        "oracle_text": "Equipped creature has haste and shroud.\nEquip {o0}",
+        "controller_seat_id": 1,
+        "owner_seat_id": 1,
+        "card_types": [
+          "Artifact"
+        ],
+        "subtypes": [
+          "Equipment"
+        ],
+        "is_tapped": false,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "type_line": "Artifact \u2014 Equipment",
+        "mana_cost": "{2}"
+      },
+      {
+        "instance_id": 665,
+        "grp_id": 103511,
+        "name": "The Notary Hobbits",
+        "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+        "controller_seat_id": 1,
+        "owner_seat_id": 1,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Halfling",
+          "Advisor"
+        ],
+        "is_tapped": false,
+        "summoning_sickness": true,
+        "object_kind": "CARD",
+        "type_line": "Creature \u2014 Halfling Advisor",
+        "mana_cost": "{3}{G}{G}",
+        "power": 1,
+        "toughness": 1
+      },
+      {
+        "instance_id": 672,
+        "grp_id": 103511,
+        "name": "The Notary Hobbits",
+        "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+        "controller_seat_id": 1,
+        "owner_seat_id": 1,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Halfling",
+          "Advisor"
+        ],
+        "is_tapped": false,
+        "summoning_sickness": true,
+        "object_kind": "TOKEN",
+        "type_line": "Creature \u2014 Halfling Advisor",
+        "mana_cost": "{3}{G}{G}",
+        "power": 1,
+        "toughness": 1
+      },
+      {
+        "instance_id": 673,
+        "grp_id": 103511,
+        "name": "The Notary Hobbits",
+        "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+        "controller_seat_id": 1,
+        "owner_seat_id": 1,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Halfling",
+          "Advisor"
+        ],
+        "is_tapped": false,
+        "summoning_sickness": true,
+        "object_kind": "TOKEN",
+        "type_line": "Creature \u2014 Halfling Advisor",
+        "mana_cost": "{3}{G}{G}",
+        "power": 1,
+        "toughness": 1
+      }
+    ],
+    "stack": [],
+    "_bridge_actions": [
+      {
+        "actionType": "ActionType_Cast",
+        "grpId": 95516,
+        "instanceId": 247,
+        "facetId": 247,
+        "manaCost": [
+          {
+            "color": [
+              "ManaColor_Generic"
+            ],
+            "count": 7
+          }
+        ],
+        "shouldStop": true
+      },
+      {
+        "actionType": "ActionType_Cast",
+        "grpId": 80310,
+        "instanceId": 547,
+        "facetId": 547,
+        "manaCost": [
+          {
+            "color": [
+              "ManaColor_Generic"
+            ],
+            "count": 4
+          },
+          {
+            "color": [
+              "ManaColor_Green"
+            ],
+            "count": 3
+          }
+        ],
+        "shouldStop": true
+      },
+      {
+        "actionType": "ActionType_Activate",
+        "grpId": 19737,
+        "instanceId": 561,
+        "facetId": 561,
+        "abilityGrpId": 2152,
+        "shouldStop": true,
+        "targets": [
+          {
+            "targetIdx": 1,
+            "targets": [
+              {
+                "targetInstanceId": 543,
+                "highlight": "HighlightType_Hot"
+              },
+              {
+                "targetInstanceId": 665,
+                "highlight": "HighlightType_Hot"
+              },
+              {
+                "targetInstanceId": 672,
+                "highlight": "HighlightType_Hot"
+              },
+              {
+                "targetInstanceId": 673,
+                "highlight": "HighlightType_Hot"
+              }
+            ]
+          }
+        ],
+        "uniqueAbilityId": 458
+      },
+      {
+        "actionType": "ActionType_Pass"
+      }
+    ]
+  },
+  "records": [
+    {
+      "decision": {
+        "request_id": [
+          146,
+          195
+        ],
+        "request_type": "ActionsAvailable",
+        "options": [
+          {
+            "option_id": "idx:2",
+            "label": "Activate: Lightning Greaves [Equip {0}]",
+            "payable": null,
+            "meta": {
+              "actionType": "ActionType_Activate",
+              "grpId": 19737,
+              "instanceId": 561,
+              "abilityGrpId": 2152,
+              "manaCost": null,
+              "autoTapActions": [],
+              "hasAutoTap": false,
+              "targets": [
+                {
+                  "targetId": 1,
+                  "targets": [
+                    {
+                      "targetInstanceId": 543,
+                      "highlight": "Hot"
+                    },
+                    {
+                      "targetInstanceId": 665,
+                      "highlight": "Hot"
+                    },
+                    {
+                      "targetInstanceId": 672,
+                      "highlight": "Hot"
+                    },
+                    {
+                      "targetInstanceId": 673,
+                      "highlight": "Hot"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "option_id": "pass",
+            "label": "Pass",
+            "payable": null,
+            "meta": {}
+          }
+        ],
+        "min_select": 1,
+        "max_select": 1,
+        "can_pass": true,
+        "can_cancel": false,
+        "source_label": "",
+        "min_weight": null,
+        "max_weight": null,
+        "slots": []
+      },
+      "reason": "No spells are castable and equipping Greaves grants no attack or tap payoff this turn, so pass and keep the equipment free for later.",
+      "turn": {
+        "turn_number": 7,
+        "phase": "Phase_Main1",
+        "step": "",
+        "active_player": 1
+      }
+    },
+    {
+      "decision": {
+        "request_id": [
+          154,
+          205
+        ],
+        "request_type": "ActionsAvailable",
+        "options": [
+          {
+            "option_id": "idx:2",
+            "label": "Activate: Lightning Greaves [Equip {0}]",
+            "payable": null,
+            "meta": {
+              "actionType": "ActionType_Activate",
+              "grpId": 19737,
+              "instanceId": 561,
+              "abilityGrpId": 2152,
+              "manaCost": null,
+              "autoTapActions": [],
+              "hasAutoTap": false,
+              "targets": [
+                {
+                  "targetId": 1,
+                  "targets": [
+                    {
+                      "targetInstanceId": 543,
+                      "highlight": "Hot"
+                    },
+                    {
+                      "targetInstanceId": 665,
+                      "highlight": "Hot"
+                    },
+                    {
+                      "targetInstanceId": 672,
+                      "highlight": "Hot"
+                    },
+                    {
+                      "targetInstanceId": 673,
+                      "highlight": "Hot"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "option_id": "pass",
+            "label": "Pass",
+            "payable": null,
+            "meta": {}
+          }
+        ],
+        "min_select": 1,
+        "max_select": 1,
+        "can_pass": true,
+        "can_cancel": false,
+        "source_label": "",
+        "min_weight": null,
+        "max_weight": null,
+        "slots": []
+      },
+      "reason": "Combat has passed and equipping Greaves grants no tap payoff worth losing shroud flexibility; no castable spells remain, so pass.",
+      "turn": {
+        "turn_number": 7,
+        "phase": "Main2",
+        "step": "None",
+        "active_player": 1
+      }
+    }
+  ],
+  "raw_objects": [
+    {
+      "instanceId": 247,
+      "grpId": 95516,
+      "type": "GameObjectType_Card",
+      "zoneId": 31,
+      "visibility": "Visibility_Private",
+      "ownerSeatId": 1,
+      "controllerSeatId": 1,
+      "superTypes": [
+        "SuperType_Legendary"
+      ],
+      "cardTypes": [
+        "CardType_Planeswalker"
+      ],
+      "subtypes": [
+        "SubType_Ugin"
+      ],
+      "viewers": [
+        1
+      ],
+      "loyalty": {
+        "value": 7
+      },
+      "name": 926667,
+      "overlayGrpId": 95516,
+      "loyaltyUsed": {},
+      "uniqueAbilities": [
+        {
+          "id": 171,
+          "grpId": 188687
+        },
+        {
+          "id": 172,
+          "grpId": 188688
+        },
+        {
+          "id": 173,
+          "grpId": 188689
+        },
+        {
+          "id": 174,
+          "grpId": 188690
+        },
+        {
+          "id": 175,
+          "grpId": 188691
+        },
+        {
+          "id": 420,
+          "grpId": 114
+        }
+      ]
+    },
+    {
+      "instanceId": 561,
+      "grpId": 19737,
+      "type": "GameObjectType_Card",
+      "zoneId": 28,
+      "visibility": "Visibility_Public",
+      "ownerSeatId": 1,
+      "controllerSeatId": 1,
+      "cardTypes": [
+        "CardType_Artifact"
+      ],
+      "subtypes": [
+        "SubType_Equipment"
+      ],
+      "name": 10861,
+      "overlayGrpId": 19737,
+      "uniqueAbilities": [
+        {
+          "id": 457,
+          "grpId": 2151
+        },
+        {
+          "id": 458,
+          "grpId": 2152
+        }
+      ]
+    },
+    {
+      "instanceId": 665,
+      "grpId": 103511,
+      "type": "GameObjectType_Card",
+      "zoneId": 28,
+      "visibility": "Visibility_Public",
+      "ownerSeatId": 1,
+      "controllerSeatId": 1,
+      "superTypes": [
+        "SuperType_Legendary"
+      ],
+      "cardTypes": [
+        "CardType_Creature"
+      ],
+      "subtypes": [
+        "SubType_Halfling",
+        "SubType_Advisor"
+      ],
+      "color": [
+        "CardColor_Green"
+      ],
+      "power": {
+        "value": 1
+      },
+      "toughness": {
+        "value": 1
+      },
+      "hasSummoningSickness": true,
+      "name": 1113733,
+      "overlayGrpId": 103511,
+      "uniqueAbilities": [
+        {
+          "id": 476,
+          "grpId": 205209
+        },
+        {
+          "id": 477,
+          "grpId": 205210
+        }
+      ]
+    },
+    {
+      "instanceId": 672,
+      "grpId": 103511,
+      "type": "GameObjectType_Token",
+      "zoneId": 28,
+      "visibility": "Visibility_Public",
+      "ownerSeatId": 1,
+      "controllerSeatId": 1,
+      "cardTypes": [
+        "CardType_Creature"
+      ],
+      "subtypes": [
+        "SubType_Halfling",
+        "SubType_Advisor"
+      ],
+      "color": [
+        "CardColor_Green"
+      ],
+      "power": {
+        "value": 1
+      },
+      "toughness": {
+        "value": 1
+      },
+      "isCopy": true,
+      "hasSummoningSickness": true,
+      "objectSourceGrpId": 103511,
+      "name": 1113733,
+      "parentId": 671,
+      "overlayGrpId": 103511,
+      "uniqueAbilities": [
+        {
+          "id": 478,
+          "grpId": 205209
+        },
+        {
+          "id": 479,
+          "grpId": 205210
+        }
+      ]
+    },
+    {
+      "instanceId": 673,
+      "grpId": 103511,
+      "type": "GameObjectType_Token",
+      "zoneId": 28,
+      "visibility": "Visibility_Public",
+      "ownerSeatId": 1,
+      "controllerSeatId": 1,
+      "cardTypes": [
+        "CardType_Creature"
+      ],
+      "subtypes": [
+        "SubType_Halfling",
+        "SubType_Advisor"
+      ],
+      "color": [
+        "CardColor_Green"
+      ],
+      "power": {
+        "value": 1
+      },
+      "toughness": {
+        "value": 1
+      },
+      "isCopy": true,
+      "hasSummoningSickness": true,
+      "objectSourceGrpId": 103511,
+      "name": 1113733,
+      "parentId": 671,
+      "overlayGrpId": 103511,
+      "uniqueAbilities": [
+        {
+          "id": 480,
+          "grpId": 205209
+        },
+        {
+          "id": 481,
+          "grpId": 205210
+        }
+      ]
+    }
+  ],
+  "raw_requests": [
+    {
+      "type": "GREMessageType_ActionsAvailableReq",
+      "systemSeatIds": [
+        1
+      ],
+      "msgId": 195,
+      "gameStateId": 146,
+      "prompt": {
+        "promptId": 2
+      },
+      "actionsAvailableReq": {
+        "actions": [
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 95516,
+            "instanceId": 247,
+            "facetId": 247,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 7
+              }
+            ],
+            "shouldStop": true
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 80310,
+            "instanceId": 547,
+            "facetId": 547,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 4
+              },
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 3
+              }
+            ],
+            "shouldStop": true
+          },
+          {
+            "actionType": "ActionType_Activate",
+            "grpId": 19737,
+            "instanceId": 561,
+            "facetId": 561,
+            "abilityGrpId": 2152,
+            "shouldStop": true,
+            "targets": [
+              {
+                "targetIdx": 1,
+                "targets": [
+                  {
+                    "targetInstanceId": 543,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 665,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 672,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 673,
+                    "highlight": "HighlightType_Hot"
+                  }
+                ]
+              }
+            ],
+            "uniqueAbilityId": 458
+          },
+          {
+            "actionType": "ActionType_Pass"
+          }
+        ],
+        "inactiveActions": [
+          {
+            "actionType": "ActionType_Activate",
+            "grpId": 97547,
+            "instanceId": 560,
+            "facetId": 560,
+            "abilityGrpId": 192869,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 2,
+                "abilityGrpId": 192869
+              },
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 1,
+                "abilityGrpId": 192869
+              }
+            ],
+            "uniqueAbilityId": 456
+          },
+          {
+            "actionType": "ActionType_Play",
+            "grpId": 77063,
+            "instanceId": 245,
+            "facetId": 245
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 75553,
+            "instanceId": 542,
+            "facetId": 542,
+            "abilityGrpId": 1005,
+            "uniqueAbilityId": 434
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 54163,
+            "instanceId": 543,
+            "facetId": 543,
+            "abilityGrpId": 1005,
+            "uniqueAbilityId": 435
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 75553,
+            "instanceId": 548,
+            "facetId": 548,
+            "abilityGrpId": 1005,
+            "uniqueAbilityId": 443
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 97547,
+            "instanceId": 560,
+            "facetId": 560,
+            "abilityGrpId": 1005,
+            "uniqueAbilityId": 455
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 75553,
+            "instanceId": 576,
+            "facetId": 576,
+            "abilityGrpId": 1005,
+            "uniqueAbilityId": 475
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 103511,
+            "instanceId": 665,
+            "facetId": 665,
+            "abilityGrpId": 205210,
+            "uniqueAbilityId": 477
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 103511,
+            "instanceId": 672,
+            "facetId": 672,
+            "abilityGrpId": 205210,
+            "uniqueAbilityId": 479
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 103511,
+            "instanceId": 673,
+            "facetId": 673,
+            "abilityGrpId": 205210,
+            "uniqueAbilityId": 481
+          }
+        ]
+      }
+    },
+    {
+      "type": "GREMessageType_ActionsAvailableReq",
+      "systemSeatIds": [
+        1
+      ],
+      "msgId": 205,
+      "gameStateId": 154,
+      "prompt": {
+        "promptId": 2
+      },
+      "actionsAvailableReq": {
+        "actions": [
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 95516,
+            "instanceId": 247,
+            "facetId": 247,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 7
+              }
+            ],
+            "shouldStop": true
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 80310,
+            "instanceId": 547,
+            "facetId": 547,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 4
+              },
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 3
+              }
+            ],
+            "shouldStop": true
+          },
+          {
+            "actionType": "ActionType_Activate",
+            "grpId": 19737,
+            "instanceId": 561,
+            "facetId": 561,
+            "abilityGrpId": 2152,
+            "shouldStop": true,
+            "targets": [
+              {
+                "targetIdx": 1,
+                "targets": [
+                  {
+                    "targetInstanceId": 543,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 665,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 672,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 673,
+                    "highlight": "HighlightType_Hot"
+                  }
+                ]
+              }
+            ],
+            "uniqueAbilityId": 458
+          },
+          {
+            "actionType": "ActionType_Pass"
+          }
+        ],
+        "inactiveActions": [
+          {
+            "actionType": "ActionType_Activate",
+            "grpId": 97547,
+            "instanceId": 560,
+            "facetId": 560,
+            "abilityGrpId": 192869,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 2,
+                "abilityGrpId": 192869
+              },
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 1,
+                "abilityGrpId": 192869
+              }
+            ],
+            "uniqueAbilityId": 456
+          },
+          {
+            "actionType": "ActionType_Play",
+            "grpId": 77063,
+            "instanceId": 245,
+            "facetId": 245
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 75553,
+            "instanceId": 542,
+            "facetId": 542,
+            "abilityGrpId": 1005,
+            "uniqueAbilityId": 434
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 54163,
+            "instanceId": 543,
+            "facetId": 543,
+            "abilityGrpId": 1005,
+            "uniqueAbilityId": 435
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 75553,
+            "instanceId": 548,
+            "facetId": 548,
+            "abilityGrpId": 1005,
+            "uniqueAbilityId": 443
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 97547,
+            "instanceId": 560,
+            "facetId": 560,
+            "abilityGrpId": 1005,
+            "uniqueAbilityId": 455
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 75553,
+            "instanceId": 576,
+            "facetId": 576,
+            "abilityGrpId": 1005,
+            "uniqueAbilityId": 475
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 103511,
+            "instanceId": 665,
+            "facetId": 665,
+            "abilityGrpId": 205210,
+            "uniqueAbilityId": 477
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 103511,
+            "instanceId": 672,
+            "facetId": 672,
+            "abilityGrpId": 205210,
+            "uniqueAbilityId": 479
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 103511,
+            "instanceId": 673,
+            "facetId": 673,
+            "abilityGrpId": 205210,
+            "uniqueAbilityId": 481
+          }
+        ]
+      }
+    }
+  ]
+}

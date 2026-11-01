@@ -4402,9 +4402,12 @@ class ActionPlanner(_ActionLegalityMixin):
         if not hasattr(self, "_public_trigger_uses"):
             self._public_trigger_uses = TriggerUseMemory()
         self._public_trigger_uses.observe(game_state)
+        from arenamcp.equipment_relay import relay_cast_costs
         from arenamcp.offered_casts import bind_offered_casts
 
+        relay_costs = relay_cast_costs(game_state)
         decision, game_state = bind_offered_casts(decision, game_state)
+        game_state = {**game_state, "_equipment_relay_costs": relay_costs}
         chosen = self._plan_decision_options(decision, game_state)
         from arenamcp.decision_consistency import consistent_action
         from arenamcp.removal_windows import invalid_removal_intent
@@ -9801,6 +9804,9 @@ class ActionPlanner(_ActionLegalityMixin):
         from arenamcp.cast_payoffs import correct_cast_payoff_claim
 
         data = correct_cast_payoff_claim(decision, game_state, chosen, data, self._last_decision_trace)
+        from arenamcp.equipment_opportunities import correct_equipment_payoff_claim
+
+        data = correct_equipment_payoff_claim(decision, game_state, chosen, data, self._last_decision_trace)
         reason = data.get("reasoning")
         self._last_decision_target_controllers = (
             data.get("target_controllers") if isinstance(data.get("target_controllers"), dict) else {}

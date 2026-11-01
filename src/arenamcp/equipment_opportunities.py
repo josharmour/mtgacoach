@@ -92,6 +92,7 @@ def equipment_opportunity_note(decision, state):
             if str(t.get("highlight") or "").removeprefix("HighlightType_") in {"Hot", "Tepid"}
         }
         fresh = []
+        fresh_cards = []
         for iid in sorted(candidates - {None}):
             card = cards.get(iid, {})
             if (
@@ -109,8 +110,12 @@ def equipment_opportunity_note(decision, state):
             ):
                 continue
             fresh.append(f"{card.get('name') or 'Creature'} [id:{iid}]")
+            fresh_cards.append(card)
         if not fresh:
             continue
+        from arenamcp.equipment_relay import colorless_relay_note
+
+        relay = colorless_relay_note(decision, state, gear, fresh_cards)
         lines.append(
             f"{option.option_id} {gear.get('name')}: equip {{0}}; Arena offers fresh untapped targets "
             + ", ".join(fresh)
@@ -124,21 +129,46 @@ def equipment_opportunity_note(decision, state):
             "Evaluate the actual payoff and colored mana before banking mana; extra colorless cannot pay green costs. "
             "Shroud, when granted, protects that wearer from targeted effects but also blocks your own targeting; "
             "it does not stop sacrifice or sweepers. Weigh losing protection on an existing wearer."
+            + (" " + relay if relay else "")
         )
     return "EQUIPMENT OPPORTUNITY: " + " ".join(lines) if lines else ""
 
 
 def equipment_pass_concern(decision, state, chosen, reason):
-    if chosen != ["pass"] or not re.search(
+    if chosen != ["pass"]:
+        return ""
+    dismissed = re.search(
         r"\bno useful (?:\w+ )?target|\bgains? nothing\b|\b(?:haste|equip\w*)[^.;]*\b(?:useless|worthless)\b",
         str(reason),
         re.I,
-    ):
+    )
+    relay_dismissed = re.search(
+        r"\bno (?:attack or )?tap payoff\b",
+        str(reason),
+        re.I,
+    )
+    if not dismissed and not relay_dismissed:
         return ""
     note = equipment_opportunity_note(decision, state)
+    if not dismissed and "COLORLESS RELAY:" not in note:
+        return ""
     return (
         note
         + " Explain the concrete reason to pass rather than dismissing haste because the target is summoning sick."
         if note
         else ""
     )
+
+
+def correct_equipment_payoff_claim(decision, state, chosen, data, trace):
+    """Preserve a pass, but do not store a repeated denial of a supported relay."""
+    reason = str(data.get("reasoning") or "")
+    concern = equipment_pass_concern(decision, state, chosen, reason)
+    if "COLORLESS RELAY:" not in concern:
+        return data
+    trace["equipment_payoff_claim"] = {"uncorrected_reasoning": reason, "facts": concern}
+    return {
+        **data,
+        "reasoning": "Passing despite a supported free-equip mana route to a spell in hand. "
+        "The model did not justify foregoing that payment opportunity; recheck the relay before treating it as no tap payoff.",
+    }
