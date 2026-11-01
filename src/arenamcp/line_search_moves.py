@@ -2655,7 +2655,14 @@ class Moves:
         able = sum(1 for b in blockers if b["_can_block"])
         if first and attackers and able and (len(attackers) + 1) ** able > _MAX_BLOCK_OPTIONS:
             self.exact_first = False  # the solver falls back to greedy blocks
-        key = (tag, ids_of(attackers), ids_of(blockers), max(1, life), defender, defending_player)
+        # Ordinary draws change the library each turn, but cannot change this combat's
+        # blocks unless an attacker mills. Keep zero distinct: a pending failed draw
+        # already affects survival scoring. Never discard poison from the context.
+        library_irrelevant = defender.library not in (None, 0) and not any(
+            "mill" in str(b.get("oracle_text") or "").lower() for b in attackers
+        )
+        context = LossState(defender.poison) if library_irrelevant else defender
+        key = (tag, ids_of(attackers), ids_of(blockers), max(1, life), context, defending_player)
         if self._scale_base:  # a per-creature body's power follows the board, not its id (#157)
             key += (
                 tuple(
@@ -2681,11 +2688,13 @@ class Moves:
                 remaining,
                 terminal,
             ) = _combat_life(attackers, blockers, life, detail=True, with_loss=True,
-                             defender=defender, defending_player=defending_player)
+                             defender=context, defending_player=defending_player)
             found = self._memo[key] = CombatDetail((
                 damage, frozenset(dead_att), frozenset(dead_blk), gained, healed, tuple(sorted(through.items())),
                 frozenset(used), ll_gain, ll_heal,
             ), remaining, terminal)  # fmt: skip
+        if library_irrelevant:
+            return CombatDetail(found, LossState(found.loss.poison, defender.library), found.terminal)
         return found
 
     def kills(self, reach: dict, body: dict, ours=(), *, attacking: bool = False, mana: int = 0) -> bool:
@@ -3822,8 +3831,7 @@ class Moves:
                     _ru,
                     ll_gain,
                     ll_heal,
-                ) = self.combat_detail(rest, spare, mid.opp_life, tag=tag, defender=opponent_loss)
-                details = self.combat_detail(rest, spare, mid.opp_life, tag=tag, defender=opponent_loss)
+                ) = (details := self.combat_detail(rest, spare, mid.opp_life, tag=tag, defender=opponent_loss))
                 opponent_loss, opponent_terminal = details.loss, details.terminal
                 dead_ours, dead_theirs = dead_ours | w_dead_ours, dead_theirs | w_dead_theirs
                 gained, healed = gained + w_gained, healed + w_healed
@@ -3844,8 +3852,7 @@ class Moves:
                     _u,
                     ll_gain,
                     ll_heal,
-                ) = self.combat_detail(fighting, blockers, mid.opp_life, tag=tag, defender=opponent_loss)
-                details = self.combat_detail(fighting, blockers, mid.opp_life, tag=tag, defender=opponent_loss)
+                ) = (details := self.combat_detail(fighting, blockers, mid.opp_life, tag=tag, defender=opponent_loss))
                 opponent_loss, opponent_terminal = details.loss, details.terminal
                 swap = self._sneak_swap(mid, fighting, blockers, tag)
                 if swap is not None:  # a Sneak creature in for an unblocked attacker (#156)
@@ -4434,11 +4441,12 @@ class Moves:
         if landfall:  # "gets +2/+2 until end of turn" per land (``landfall`` entries): this attack only
             fighting, back = self._pumped(fighting, landfall)
         round_tag = tag + ("proxy" if boost else "")
-        before_loss = our_loss
         terminal = our_loss.lost
+        last_details = None
         def resolve_round(a, b, left):
-            nonlocal our_loss, terminal
+            nonlocal our_loss, terminal, last_details
             details = self.combat_detail(a, b, left, first=index == 1, tag=round_tag + ("+atk" if annotated(fighting) else ""), defender=our_loss)
+            last_details = details
             our_loss, terminal = details.loss, terminal or details.terminal
             return details[:5]
         if annotated(fighting):
@@ -4461,7 +4469,7 @@ class Moves:
 
         if not annotated(fighting) and not (self.engines and self.engines.no_gain):
             # Pure lifelink amount excludes net death-trigger life swings.
-            ll_gain = self.combat_detail(fighting, defenders, life, first=index == 1, tag=round_tag, defender=before_loss)[7]
+            ll_gain = last_details[7]
             engines = [
                 c
                 for c in self.model.battlefield
