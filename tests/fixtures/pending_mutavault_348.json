@@ -1,0 +1,182 @@
+{
+  "provenance": "Trimmed exact GRE/decision fields from task-2/monitoring/4159449e-finale-tax-{raw,candidate}.json; 2026-11-01 06:15 UTC, build 5d591446. Test board text is supplied separately.",
+  "match_id": "4159449e-5f0f-4749-87c8-04d246ba29b7",
+  "messages": [
+    {
+      "type": "GameStateType_Diff",
+      "gameStateId": 280,
+      "gameObjects": [
+        {
+          "instanceId": 545,
+          "grpId": 15429,
+          "type": "GameObjectType_Ability",
+          "zoneId": 27,
+          "visibility": "Visibility_Public",
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "objectSourceGrpId": 98606,
+          "parentId": 506
+        }
+      ],
+      "zones": [
+        {
+          "zoneId": 27,
+          "type": "ZoneType_Stack",
+          "visibility": "Visibility_Public",
+          "objectInstanceIds": [
+            545,
+            540
+          ]
+        }
+      ]
+    },
+    {
+      "type": "GameStateType_Diff",
+      "gameStateId": 281,
+      "gameObjects": [
+        {
+          "instanceId": 546,
+          "grpId": 15429,
+          "type": "GameObjectType_Ability",
+          "zoneId": 27,
+          "visibility": "Visibility_Public",
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "objectSourceGrpId": 98606,
+          "parentId": 506
+        }
+      ],
+      "zones": [
+        {
+          "zoneId": 27,
+          "type": "ZoneType_Stack",
+          "visibility": "Visibility_Public",
+          "objectInstanceIds": [
+            546,
+            545,
+            540
+          ]
+        }
+      ]
+    },
+    {
+      "type": "GameStateType_Diff",
+      "gameStateId": 282,
+      "gameObjects": [
+        {
+          "instanceId": 547,
+          "grpId": 15429,
+          "type": "GameObjectType_Ability",
+          "zoneId": 27,
+          "visibility": "Visibility_Public",
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "objectSourceGrpId": 98606,
+          "parentId": 506
+        }
+      ],
+      "zones": [
+        {
+          "zoneId": 27,
+          "type": "ZoneType_Stack",
+          "visibility": "Visibility_Public",
+          "objectInstanceIds": [
+            547,
+            546,
+            545,
+            540
+          ]
+        }
+      ]
+    }
+  ],
+  "choices": [
+    {
+      "request_id": [
+        279,
+        389
+      ],
+      "action": {
+        "actionType": "ActionType_Activate",
+        "grpId": 98606,
+        "instanceId": 506,
+        "abilityGrpId": 15429,
+        "manaCost": [
+          {
+            "color": "[ \"Generic\" ]",
+            "count": 1
+          }
+        ],
+        "autoTapActions": [
+          {
+            "instanceId": 0,
+            "manaId": 1842
+          }
+        ],
+        "hasAutoTap": true
+      },
+      "chosen_options": [
+        "idx:1"
+      ],
+      "explanation": "Activating: Mutavault [{1}: this becomes a 2/2 creature with all creature types until end of turn. It's still a land.] Finale at X=10 is resolving next and grants +10/+10 haste to all creatures; animating Mutavault adds a 2/2 body that becomes a lethal attacker, while Field of Ruin wastes mana and a land."
+    },
+    {
+      "request_id": [
+        280,
+        391
+      ],
+      "action": {
+        "actionType": "ActionType_Activate",
+        "grpId": 98606,
+        "instanceId": 506,
+        "abilityGrpId": 15429,
+        "manaCost": [
+          {
+            "color": "[ \"Generic\" ]",
+            "count": 1
+          }
+        ],
+        "autoTapActions": [
+          {
+            "instanceId": 0,
+            "manaId": 1842
+          }
+        ],
+        "hasAutoTap": true
+      },
+      "chosen_options": [
+        "idx:1"
+      ],
+      "explanation": "Activating: Mutavault [{1}: this becomes a 2/2 creature with all creature types until end of turn. It's still a land.] Finale at X=10 grants +10/+10 haste to all creatures, so animating Mutavault adds a lethal attacker; Field of Ruin wastes mana and a land."
+    },
+    {
+      "request_id": [
+        281,
+        393
+      ],
+      "action": {
+        "actionType": "ActionType_Activate",
+        "grpId": 98606,
+        "instanceId": 506,
+        "abilityGrpId": 15429,
+        "manaCost": [
+          {
+            "color": "[ \"Generic\" ]",
+            "count": 1
+          }
+        ],
+        "autoTapActions": [
+          {
+            "instanceId": 0,
+            "manaId": 1842
+          }
+        ],
+        "hasAutoTap": true
+      },
+      "chosen_options": [
+        "idx:1"
+      ],
+      "explanation": "Activating: Mutavault [{1}: this becomes a 2/2 creature with all creature types until end of turn. It's still a land.] Finale at X=10 grants +10/+10 haste to all creatures, so animating Mutavault adds another lethal attacker; Field of Ruin wastes mana and a land."
+    }
+  ]
+}

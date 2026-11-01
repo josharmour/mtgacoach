@@ -560,6 +560,21 @@ def pointless_self_animation(state: dict, card: dict, metadata: dict) -> str:
     )
     if not crew and not match:
         return ""
+    from arenamcp.pending_animation import pending_animation_reason, repeat_animation_has_payoff
+
+    creature_now = any(
+        str(kind).removeprefix("CardType_") == "Creature" for kind in card.get("card_types") or []
+    )
+    if match and not repeat_animation_has_payoff(state, ability, metadata):
+        pending = pending_animation_reason(state, card, metadata)
+        if pending:
+            return pending
+        # A pending Finale/creature buff justifies becoming a creature once.
+        # It must not bypass redundancy after that animation has resolved.
+        power, toughness = card.get("power"), card.get("toughness")
+        if creature_now and isinstance(power, int) and isinstance(toughness, int):
+            if power >= int(match[1]) and toughness >= int(match[2]):
+                return "already a creature with at least the animation's power and toughness"
     if _animation_has_visible_payoff(state, card, metadata):
         return ""
 
