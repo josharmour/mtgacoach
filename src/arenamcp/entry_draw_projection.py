@@ -31,10 +31,7 @@ def model_reasons(model):
             continue
         power = card.get("modified_power", card.get("power"))
         for engine in engines:
-            if (
-                card.get("instance_id") is not None
-                and card.get("instance_id") == engine.get("instance_id")
-            ):
+            if card.get("instance_id") is not None and card.get("instance_id") == engine.get("instance_id"):
                 continue  # "other creatures": an engine does not draw for itself
             if type(power) is int and power > int(_draw_entry(engine)[1]):
                 continue
