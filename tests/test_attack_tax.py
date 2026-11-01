@@ -43,7 +43,9 @@ def _game_state(opp_extras=(), lands=4):
         *opp_extras,
     ]
     for i in range(lands):
-        battlefield.append({**_card(f"Forest {i}", owner=1, types="Basic Land — Forest"), "instance_id": 100 + i})
+        battlefield.append(
+            {**_card(f"Forest {i}", owner=1, types="Basic Land — Forest"), "instance_id": 100 + i}
+        )
     return {
         "players": [
             {"seat_id": 1, "is_local": True},

@@ -9955,7 +9955,11 @@ class ActionPlanner(_ActionLegalityMixin):
         mismatch = action_claim_mismatch(decision, state, chosen, data.get("reasoning", ""))
         if mismatch is None:
             return data, chosen
-        check = {"original_ids": list(chosen), "original_reasoning": data.get("reasoning"), "facts": mismatch.reason}
+        check = {
+            "original_ids": list(chosen),
+            "original_reasoning": data.get("reasoning"),
+            "facts": mismatch.reason,
+        }
         self._last_decision_trace["action_claim_check"] = check
         try:
             revised, picks = parse(

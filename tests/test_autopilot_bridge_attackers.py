@@ -102,13 +102,15 @@ def _make_attacker_state(legal_attackers: list[str], *, no_blockers: bool = Fals
 
 
 @pytest.fixture
-def engine():
+def engine(monkeypatch):
     """Build an AutopilotEngine with mocked bridge and game state.
 
     Follows the pattern in test_autopilot_bridge_lock.py.
     """
     from arenamcp.autopilot import AutopilotConfig, AutopilotEngine
 
+    # Inject before construction so no real bridge keepalive thread starts.
+    monkeypatch.setattr("arenamcp.autopilot.get_bridge", _DummyBridge)
     eng = AutopilotEngine(planner=None, get_game_state=_get_game_state, config=AutopilotConfig())
     eng._speak_fn = None
 

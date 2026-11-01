@@ -2089,7 +2089,8 @@ class Moves:
 
         if model.attack_tax_notes:
             raise UnsupportedAttackTaxProjection(
-                "attack-tax payment and source tapping across future turns: " + ", ".join(model.attack_tax_notes)
+                "attack-tax payment and source tapping across future turns: "
+                + ", ".join(model.attack_tax_notes)
             )
         from arenamcp.sacrifice_continuation import UnsupportedContinuation, model_reasons, relevant
 

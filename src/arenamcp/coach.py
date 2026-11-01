@@ -2404,7 +2404,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if valid_attackers:
             lethal = (
                 "LETHAL"
-                if all_payable and (
+                if all_payable
+                and (
                     (opp_block_count == 0 and your_attack_power >= opp_life) or unblockable_power >= opp_life
                 )
                 else f"{opp_block_count}blk"

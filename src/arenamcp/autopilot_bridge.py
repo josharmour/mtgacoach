@@ -1025,8 +1025,14 @@ class _BridgeSubmitMixin:
             from arenamcp.attack_tax import AttackBudget
 
             best = optimal_attacks(
-                candidates, opp_blockers, opp_life, your_life, theirs, spare,
-                caller="bridge attack override", attack_budget=AttackBudget(game_state),
+                candidates,
+                opp_blockers,
+                opp_life,
+                your_life,
+                theirs,
+                spare,
+                caller="bridge attack override",
+                attack_budget=AttackBudget(game_state),
             )
         except Exception as e:
             logger.debug(f"attack override solver failed: {e}")
@@ -1201,7 +1207,8 @@ class _BridgeSubmitMixin:
         if payable != [entry for _, entry in pairs]:
             logger.info("Attack-tax budget: retaining payable subset %s", sorted(payable_by_id))
             pairs = [
-                (name, payable_by_id[entry["attackerInstanceId"]]) for name, entry in pairs
+                (name, payable_by_id[entry["attackerInstanceId"]])
+                for name, entry in pairs
                 if entry["attackerInstanceId"] in payable_by_id
             ]
             action = replace(
@@ -1366,7 +1373,8 @@ class _BridgeSubmitMixin:
         from arenamcp.combat_targets import attack_candidates
 
         held_ids = {
-            c.get("attackerInstanceId") for c in attack_candidates(game_state, pending) or []
+            c.get("attackerInstanceId")
+            for c in attack_candidates(game_state, pending) or []
             if c.get("selectedDamageRecipient")
         }
         if taxes(game_state) and held_ids - {e["attackerInstanceId"] for e in attacker_entries}:

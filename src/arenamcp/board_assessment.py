@@ -2164,7 +2164,9 @@ def _assess(state: dict) -> BoardAssessment | None:
         # The legacy fallback omits the same public sacrifice effects/taxes. It must
         # not become a fabricated lethal/survival verdict when search declines.
         unsupported_label = (
-            "attack-tax projection unsupported" if model.attack_tax_notes else "sacrifice continuation unsupported"
+            "attack-tax projection unsupported"
+            if model.attack_tax_notes
+            else "sacrifice continuation unsupported"
         )
         unknowns.extend(unsupported_label + ": " + note for note in unsupported_search)
         lookahead, our_lives, their_lives = [], [], []
