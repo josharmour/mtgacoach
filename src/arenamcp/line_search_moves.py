@@ -5274,14 +5274,16 @@ class Moves:
         if not annotated(fighting) and not (self.engines and self.engines.no_gain):
             # Pure lifelink amount excludes net death-trigger life swings.
             ll_gain = last_details[7]
-            engines = [
-                c
-                for c in self.model.battlefield
-                if not _is_creature(c) and _controller(c) == self.model.opponent
-            ]
-            engines += [b for b in theirs if b["instance_id"] not in removed]
-            engines += [c for c in persistent if _controller(c) == self.model.opponent]
-            after -= gain_drain(engines, ll_gain, after)
+            # gain_drain returns 0 for no gain: skip building its engine list on that path.
+            if ll_gain > 0:
+                engines = [
+                    c
+                    for c in self.model.battlefield
+                    if not _is_creature(c) and _controller(c) == self.model.opponent
+                ]
+                engines += [b for b in theirs if b["instance_id"] not in removed]
+                engines += [c for c in persistent if _controller(c) == self.model.opponent]
+                after -= gain_drain(engines, ll_gain, after)
         opp_life += gained
         persistent.extend(self.return_engines([b for b in theirs if b["instance_id"] in dead_att]))
         persistent.extend(self.return_engines([b for b in ours if b["instance_id"] in dead_blk]))
