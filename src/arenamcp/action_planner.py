@@ -7834,7 +7834,14 @@ class ActionPlanner(_ActionLegalityMixin):
         the target step's model picked a 3/4 Battlesong Berserker the 2 damage
         could not kill. Any other priority choice clears it. A kicker choice
         (CastingTimeOptions) is kept for its spell (:meth:`_recorded_kick`).
+        Activations carry a separate source-bound purpose into their nested
+        menus; they never borrow the cast's searched damage target.
         """
+        from arenamcp.activation_intent import observe_activation
+
+        self._activation_intent = observe_activation(
+            getattr(self, "_activation_intent", None), decision, game_state, chosen, reasoning
+        )
         if decision.request_type == "CastingTimeOptions":
             self._remember_kicker_choice(decision, game_state, chosen)
             return
@@ -9357,6 +9364,13 @@ class ActionPlanner(_ActionLegalityMixin):
         ):
             if note:
                 lines.insert(lines.index("OPTIONS:"), note)
+        from arenamcp.activation_intent import activation_intent_note
+
+        activation_note = activation_intent_note(
+            getattr(self, "_activation_intent", None), decision, game_state
+        )
+        if activation_note:
+            lines.insert(lines.index("OPTIONS:"), activation_note)
         if decision.request_type == "SelectTargets":
             # The cast step's reason and the line's target (2026-10-19 10:13:47, match 1e4ccb0c).
             intent_note = self._cast_intent_note(decision, game_state)
@@ -9479,6 +9493,8 @@ class ActionPlanner(_ActionLegalityMixin):
             "local_seat_id": local_seat,
             "targets": target_trace[:80],
         }
+        if activation_note:
+            self._last_decision_trace["activation_intent"] = activation_note
         if lines_text or line_tags:
             self._last_decision_trace["lines"] = {"summary": lines_text, "tags": line_tags}
             if unmodelled:
