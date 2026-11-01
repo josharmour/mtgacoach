@@ -47,8 +47,39 @@ retained in `tests/test_combat_fight_cache_review.py`. Matched cold-cache tests
 showed about 7–8% improvement on two slow boards with unchanged search counts and
 outcomes. No burn gain, original Linux cause, or dual-Coach load qualification is
 claimed. Timing limits and truncation assertions were not weakened. These changes
-are validated together in the following CI batch; source publication and live
-deployment remain distinct.
+were validated together in `ce29324`: 1,041 affected tests passed locally, but
+[CI failed three performance checks](https://github.com/josharmour/mtgacoach/actions/runs/41322604504)
+with 8,868 passed and 22 skipped. Source publication and live deployment remain distinct.
+
+## Latest published batch and scoped record closures
+
+Published `0b33a56` combines the #84 diagnostic correction (`9c40bb5`) and a
+second performance optimization (`0b33a56`, source `946990b`). The former aligns
+recorded explanations with final attack removals, mandatory additions and attack
+taxes while preserving the original explanation separately. It does not change
+attack selection or close historical #84. The latter reuses fight keys within a
+block search and protection keys by current content, including nested mutations.
+
+The combined local run passed **1,050 tests** with stable source hashes. In
+[CI run 41327515639](https://github.com/josharmour/mtgacoach/actions/runs/41327515639),
+**8,912 passed, 22 skipped and two performance checks failed**: SLOW_202111 took
+499ms against 480ms, and burn search truncated. SLOW_212608 now passes. Lint and
+hosted-service checks passed. No timing limit was relaxed; release performance
+qualification remains incomplete.
+
+The separate 17:28 UTC audit verified these bounded offline closures against the
+same source revision without production edits:
+
+| ID | Evidence | Limits |
+|---|---|---|
+| #292 | Synchronized durable-save/upload test, retry/saved-output tests and reload busy/timeout controls | Local writes still block reload; HTTP 429 retries after save do not. No new live reload-under-429 qualification. |
+| #337 | Eight existing terminal-life regressions and four retained minimized-event replays, including duplicate-terminal and unchanged-input checks | Explicit life totals and positive-life concessions remain authoritative. Not complete match replay or a historical-data rewrite. |
+
+The audit's **23 existing tests and four retained-event replays passed**. Source
+and test hashes matched the pinned revision. The canonical unresolved-record count
+is now **114**, not 114 demonstrated current bugs. #267 remains pending because its
+original delayed-result sequence was not recovered; no #267 closure is counted.
+Private incident identifiers, captures and local task paths remain unpublished.
 
 ## Historical source/test locators
 
@@ -291,7 +322,7 @@ the auditor's published-source ancestry check, not a new test run.
 | #263 | OFFLINE_CLOSED | no direct commit locator | Not recorded | Semantic/platform inspection required |
 | #290 | FIX_PENDING | no direct commit locator | Not recorded | `tests/test_death_trigger_redirect_20261019.py` |
 | #291 | OFFLINE_CLOSED | no direct commit locator | Not recorded | `tests/test_aura_stack_timing.py` |
-| #292 | FIX_PENDING | no direct commit locator | Not recorded | Semantic/platform inspection required |
+| #292 | OFFLINE_CLOSED | no direct commit locator | Not recorded | Semantic/platform inspection required |
 | #293 | FIX_PENDING | no direct commit locator | Not recorded | `tests/test_cube_format_inference.py` |
 | #295 | FIX_PENDING | no direct commit locator | Not recorded | Semantic/platform inspection required |
 | #296 | FIX_PENDING | no direct commit locator | Not recorded | Semantic/platform inspection required |
@@ -318,5 +349,5 @@ the auditor's published-source ancestry check, not a new test run.
 | #334 | OFFLINE_CLOSED | no direct commit locator | Not recorded | `tests/test_cast_growth_risk_334.py` |
 | #335 | OFFLINE_CLOSED | no direct commit locator | Not recorded | `tests/test_target_guard_session_20261031.py` |
 | #336 | OFFLINE_CLOSED | no direct commit locator | Not recorded | `tests/test_target_guard_session_20261031.py` |
-| #337 | FIX_PENDING | no direct commit locator | Not recorded | `tests/test_terminal_life_337.py` |
+| #337 | OFFLINE_CLOSED | no direct commit locator | Not recorded | `tests/test_terminal_life_337.py` |
 | #339 | OFFLINE_CLOSED | no direct commit locator | Not recorded | `tests/test_session_land_and_mobilize.py` |

@@ -1,35 +1,35 @@
 # Backlog triage — 2026-11-01
 
-This reconciles the audit completed at 14:20 UTC with the subsequently published
-#308 source revision `b9c9dd5a469b71eecc4ba3a42cdc3bd643c2affe`.
+This reconciles the frozen 14:20 UTC ledger audit with the 17:28 UTC scoped
+closure review against published source `0b33a56b58a50b4d0144d756e15aaa35f7124961`.
 
-**116 canonical numbered records remain unresolved. This is not a count of 116
+**114 canonical numbered records remain unresolved. This is not a count of 114
 demonstrated current bugs.** The original ledger contains 350 historical incidents.
 Source repair, offline qualification, deployment and matching live outcomes are
 separate claims. GitHub issues #709/#711 use a different namespace; unnumbered
 Greaves and commander-choice work is outside this count.
 
-The source inventory excludes 192 historical fix records, 33 bounded offline
+The source inventory excludes 192 historical fix records, 35 bounded offline
 closures, five withdrawn reports, three exact live cases, and duplicate alias
 #346 → #5. Every original ID remains in the inventory below. The original private
 reports and ledger are retained locally and are not published here.
 
-## Exclusive next action
+## Exclusive audit categories
 
-| Next action | Count |
+| Category | Count |
 |---|---:|
-| Verified residual source defect | 0 |
-| Current-path reproduction (#84) | 1 |
-| Bounded modelling and historical evidence (#280, #308) | 2 |
-| Evidence, platform or evaluation prerequisites | 19 |
-| Repaired scopes requiring further qualification | 94 |
-| **Total** | **116** |
+| Scoped fix recorded, pending closure verification | 55 |
+| Partial or open mixed scope | 39 |
+| Evidence, platform or evaluation prerequisites | 18 |
+| Ambiguous incident | 2 |
+| **Total** | **114** |
 
-#308 no longer awaits an integration receipt: the corrected bounded model is
-published. Its historical scope remains open, so it moved categories without
-changing the total. #244 likewise remains open after its narrower wording repair. The #329 follow-up
-moves that record from a verified source defect to further qualification, also
-without changing the total.
+These categories classify each unresolved canonical record once. They do not count
+independent current defects or replace the historical disposition inventory below.
+The two new bounded offline closures, #292 and #337, reduce the previous total from
+116 to 114. #308, #244 and #329 remain open after their narrower published repairs.
+#84 now has a published final-declaration diagnostic correction; broader strategic
+scope and closure verification remain.
 
 ## Latest scoped decisions
 
@@ -59,13 +59,25 @@ without changing the total.
   Original historical evidence, later-turn generality and live-load qualification
   remain incomplete. The rejected token-entry cases now pass unchanged.
 
+- **#292:** offline closure of upload/retry blocking reload after the match bundle
+  has been durably saved. Local writes still block reload; best-effort HTTP 429
+  upload retries do not. Live reload-under-429 qualification remains separate.
+- **#337:** offline closure of omitted terminal life totals reconstructed once from
+  signed terminal life changes. Explicit totals, ordinary sparse updates and
+  positive-life concessions remain authoritative. Four minimized retained-event
+  replays pass; this does not qualify complete match replay or rewrite history.
+- **#267:** remains verification-pending because the original delayed-result
+  sequences were not recovered in this review. No closure is inferred from #337.
+
 ## Evidence and ownership
 
 The auditor reviewed batches of 251 and 144 existing focused tests, plus a #329
 probe with one failure and one passing control. A subsequent 27-test #340 rerun
 passed after #308 integration; it is not 27 additional distinct tests. The
 integration owner independently passed 409 affected #308 tests with stable source
-hashes and unchanged original reviewer assertions. See the
+hashes and unchanged original reviewer assertions. The #292/#337 review passed
+23 existing tests and four retained-event replays, with pinned source hashes
+verified; no additional full-suite run was requested for this documentation. See the
 [evidence index](backlog-evidence-2026-11-01.md) for source and CI receipts.
 
 All 11 historical specialist assignments were completed/idle at the audit snapshot;
@@ -79,10 +91,10 @@ documents does not update it or restart either application.
 | Disposition | Count |
 |---|---:|
 | AMBIGUOUS | 2 |
-| FIX_PENDING | 62 |
+| FIX_PENDING | 60 |
 | FIX_RECORDED | 192 |
 | LIVE_CASE | 3 |
-| OFFLINE_CLOSED | 33 |
+| OFFLINE_CLOSED | 35 |
 | OPEN | 22 |
 | PARTIAL | 31 |
 | WITHDRAWN | 5 |
@@ -390,7 +402,7 @@ Descriptions identify historical issue topics, not newly reproduced defects.
 | #289 | OPEN | Autopilot / LLM latency |
 | #290 | FIX_PENDING | Autopilot / concede |
 | #291 | OFFLINE_CLOSED | Autopilot / target timing |
-| #292 | FIX_PENDING | Runtime / auto-reload |
+| #292 | OFFLINE_CLOSED | Runtime / auto-reload |
 | #293 | FIX_PENDING | Draft / Cube format |
 | #294 | OPEN | Draft / opening quality |
 | #295 | FIX_PENDING | Draft / false artifact mechanisms |
@@ -435,7 +447,7 @@ Descriptions identify historical issue topics, not newly reproduced defects.
 | #334 | OFFLINE_CLOSED | Session / removal line ignores target growth triggered by our own spell casts |
 | #335 | OFFLINE_CLOSED | Session / target guard breaks combined removal by ignoring pending damage on the stack |
 | #336 | OFFLINE_CLOSED | Session / modal safety guard ignores an animated creature-land and replaces valid removal with a no-kill sweep |
-| #337 | FIX_PENDING | Session / terminal zero life is omitted by Arena's diff and the saved match state retains positive life |
+| #337 | OFFLINE_CLOSED | Session / terminal zero life is omitted by Arena's diff and the saved match state retains positive life |
 | #338 | LIVE_CASE | Session / Multiversal Passage basic-land-type selection exposes no legal options |
 | #339 | OFFLINE_CLOSED | Session / losing-attack guard suppresses Mobilize and assumes prohibited spell tricks |
 | #340 | OFFLINE_CLOSED | Session / line search preserves duplicate legendary creatures and spends development mana on a redundant Belladonna |
