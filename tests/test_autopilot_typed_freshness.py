@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -20,7 +20,10 @@ def _poll(instance_id=10, state_id=1):
 def _engine():
     planner = MagicMock()
     planner.plan_decision_options.return_value = ["idx:0"]
-    engine = AutopilotEngine(planner=planner, config=AutopilotConfig(dry_run=False))
+    # AutopilotEngine.__init__ calls get_bridge(), which starts a keepalive
+    # thread and opens a socket. Patch the factory so tests stay offline.
+    with patch("arenamcp.autopilot.get_bridge", return_value=MagicMock()):
+        engine = AutopilotEngine(planner=planner, config=AutopilotConfig(dry_run=False))
     engine._gre_bridge = MagicMock()
     engine._gre_bridge.connected = True
     return engine

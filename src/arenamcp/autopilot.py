@@ -1495,6 +1495,65 @@ class AutopilotEngine(
                 logger.debug(f"concede evidence check failed: {e}")
         return ""
 
+    def _typed_boundary_reason(
+        self,
+        snapshots: tuple[dict[str, Any], ...],
+        pre_game_key: Any = None,
+        poll: dict[str, Any] | None = None,
+    ) -> str:
+        """Why a typed decision planned against ``pre_game_key``'s game is obsolete.
+
+        The bridge's request fingerprint only proves the *request* is still
+        pending; it says nothing about the game behind it. An accepted
+        concession or the next game starting leaves that fingerprint
+        unchanged (#711), so the same authoritative signals the legacy path
+        uses decide whether the planned options may still be submitted.
+        """
+        if poll:
+            request = self._normalize_request_type(poll.get("request_type") or poll.get("request_class"))
+            if request.startswith("Intermission"):
+                return "intermission request"
+        # An accepted concession is terminal evidence on its own; it must not
+        # depend on a snapshot being available.
+        conceded = getattr(self, "_conceded_game_fn", None)
+        if callable(conceded) and pre_game_key is not None:
+            try:
+                if conceded(pre_game_key):
+                    return "concede acknowledged"
+            except Exception as e:
+                logger.debug(f"concede evidence check failed: {e}")
+        for snapshot in snapshots:
+            reason = self._game_ended_during_planning(snapshot or {})
+            if reason:
+                return reason
+        key_fn = getattr(self, "_game_key_fn", None)
+        if callable(key_fn):
+            # A snapshot that gained a match id while planning is enrichment,
+            # not a new game; a *changed* known id with the same counter is.
+            fresh_match = None
+            for snapshot in reversed(snapshots):
+                if snapshot and snapshot.get("match_id"):
+                    fresh_match = snapshot.get("match_id")
+                    break
+            try:
+                fresh_key = key_fn(fresh_match)
+            except Exception as e:
+                logger.debug(f"post-plan game key check failed: {e}")
+                return ""
+            if self._plan_game_changed(pre_game_key, fresh_key):
+                return f"next game started during planning ({pre_game_key!r} -> {fresh_key!r})"
+        return ""
+
+    def _discard_typed_plan(self, decision: Any, option_ids: list[str], reason: str) -> None:
+        """Drop a typed plan whose game ended while it was being planned (#711)."""
+        logger.info(
+            "typed-decision %s: discarding plan — %s; %d option(s) dropped",
+            decision.request_type,
+            reason,
+            len(option_ids),
+        )
+        self._state = AutopilotState.IDLE
+
     def _refresh_blocked_action_window(self, game_state: dict[str, Any]) -> None:
         """Reset blocked-action suppression when the priority window changes.
 
@@ -5611,6 +5670,17 @@ class AutopilotEngine(
         # strategic model request off the tactical deadline.
         self._refresh_game_plan(game_state)
 
+        # #711: capture which game this decision answers before the model
+        # call; an accepted concession or a new game must still be visible
+        # after it returns.
+        pre_game_key = None
+        key_fn = getattr(self, "_game_key_fn", None)
+        if callable(key_fn):
+            try:
+                pre_game_key = key_fn(game_state.get("match_id"))
+            except Exception as e:
+                logger.debug(f"pre-plan game key capture failed: {e}")
+
         cancel = threading.Event()
         unwatch = self._cancel_on_request_change(decision, fp, cancel)
         set_cancel = getattr(self._planner, "set_decision_cancel_event", None)
@@ -5631,6 +5701,13 @@ class AutopilotEngine(
         if cancel.is_set():
             logger.info("typed-decision: request changed during planning; model call cancelled, yielding")
             self._state = AutopilotState.IDLE
+            return True
+        # #711: the game can end while this decision is being planned. Check
+        # the cheap authoritative signals before any fallback, decline,
+        # cancel, pass or submission below.
+        boundary = self._typed_boundary_reason((game_state,), pre_game_key)
+        if boundary:
+            self._discard_typed_plan(decision, option_ids, boundary)
             return True
         self._note_typed_fallback()
         if decision.request_type == "CastingTimeOptions":
@@ -5661,6 +5738,13 @@ class AutopilotEngine(
             return True
         if self._abort_event.is_set():
             self._state = AutopilotState.IDLE
+            return True
+        # #711: the re-polled request can still be the same fingerprint while
+        # the game behind it has ended (accepted concession, next game). The
+        # poll itself is authoritative for an intermission request.
+        boundary = self._typed_boundary_reason((game_state,), pre_game_key, fresh_poll)
+        if boundary:
+            self._discard_typed_plan(decision, option_ids, boundary)
             return True
 
         if option_ids == [DECLINE_DECISION]:
