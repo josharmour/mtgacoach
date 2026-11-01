@@ -2415,9 +2415,12 @@ class Moves:
 
         if death_is_suppressed(self.model.battlefield):
             return []
-        return [engine for body in bodies
-                if not (body.get("_card") or body).get("_return_credit_blocked")
-                and (engine := returned_enchantment(body)) is not None]
+        return [
+            engine
+            for body in bodies
+            if not (body.get("_card") or body).get("_return_credit_blocked")
+            and (engine := returned_enchantment(body)) is not None
+        ]
 
     def death_bodies(self, bodies) -> list[dict]:
         from arenamcp.death_bodies import death_is_suppressed, token_specs_on_death
@@ -2669,12 +2672,29 @@ class Moves:
         context = LossState(defender.poison) if library_irrelevant else defender
         from arenamcp.combat_protection import protection_key
 
-        key = (tag, ids_of(attackers), ids_of(blockers), max(1, life), context, defending_player,
-               tuple(protection_key(b) for b in (*attackers, *blockers)))
-        key += (tuple((b["instance_id"], b.get("_counter_shift", 0))
-                      for b in (*attackers, *blockers) if b.get("_counter_shift")),)
-        key += (tuple((b["instance_id"], b.get("_combat_damage", 0), bool(b.get("_track_combat_damage")))
-                      for b in (*attackers, *blockers) if b.get("_combat_damage") or b.get("_track_combat_damage")),)
+        key = (
+            tag,
+            ids_of(attackers),
+            ids_of(blockers),
+            max(1, life),
+            context,
+            defending_player,
+            tuple(protection_key(b) for b in (*attackers, *blockers)),
+        )
+        key += (
+            tuple(
+                (b["instance_id"], b.get("_counter_shift", 0))
+                for b in (*attackers, *blockers)
+                if b.get("_counter_shift")
+            ),
+        )
+        key += (
+            tuple(
+                (b["instance_id"], b.get("_combat_damage", 0), bool(b.get("_track_combat_damage")))
+                for b in (*attackers, *blockers)
+                if b.get("_combat_damage") or b.get("_track_combat_damage")
+            ),
+        )
         if self._scale_base:  # a per-creature body's power follows the board, not its id (#157)
             key += (
                 tuple(
@@ -2715,7 +2735,13 @@ class Moves:
                 frozenset(used), ll_gain, ll_heal,
             ), remaining, terminal, raw_combat.counter_deltas, raw_combat.damage_deltas)  # fmt: skip
         if library_irrelevant:
-            return CombatDetail(found, LossState(found.loss.poison, defender.library), found.terminal, found.counter_deltas, found.damage_deltas)
+            return CombatDetail(
+                found,
+                LossState(found.loss.poison, defender.library),
+                found.terminal,
+                found.counter_deltas,
+                found.damage_deltas,
+            )
         return found
 
     def kills(self, reach: dict, body: dict, ours=(), *, attacking: bool = False, mana: int = 0) -> bool:
@@ -2790,8 +2816,11 @@ class Moves:
             - sum(self.material(b) for b in theirs)
             + 0.3 * sum(self.spells[i].hand_value for i in hand)
             - sum(walker_value(loyal) for _iid, _name, loyal in walkers)
-            + sum(engine_value(c) * (1 if _controller(c) == self.model.local else -1)
-                  for c in persistent if _controller(c) in (self.model.local, self.model.opponent))
+            + sum(
+                engine_value(c) * (1 if _controller(c) == self.model.local else -1)
+                for c in persistent
+                if _controller(c) in (self.model.local, self.model.opponent)
+            )
         )
 
     def score(self, node: Node) -> tuple:
@@ -3931,7 +3960,11 @@ class Moves:
             mid.gained += ll_gain
             opp_after = mid.opp_life
             mid.persistent.extend(self.return_engines([b for b in mid.ours if b["instance_id"] in dead_ours]))
-            mid.ours = self.rescale(self._combat_counters([b for b in mid.ours if b["instance_id"] not in dead_ours], counter_deltas))
+            mid.ours = self.rescale(
+                self._combat_counters(
+                    [b for b in mid.ours if b["instance_id"] not in dead_ours], counter_deltas
+                )
+            )
             died = [b for b in mid.theirs if b["instance_id"] in dead_theirs]
             replacement = self.death_bodies(died)
             mid.persistent.extend(self.return_engines(died))
@@ -4561,7 +4594,10 @@ class Moves:
             last_details = details
             counter_deltas = add_deltas(counter_deltas, details.counter_deltas)
             our_loss, terminal = details.loss, terminal or details.terminal
-            return CombatDetail(details[:5], details.loss, details.terminal, details.counter_deltas, details.damage_deltas)
+            return CombatDetail(
+                details[:5], details.loss, details.terminal, details.counter_deltas, details.damage_deltas
+            )
+
         if annotated(fighting):
             # Their pumps, attack-trigger grants and extra combat (ledger #191, #193, #194): the
             # bodies change, so their own memo tag.

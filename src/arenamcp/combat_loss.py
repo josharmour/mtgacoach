@@ -123,7 +123,14 @@ def infect_source(card: dict) -> bool:
 class CombatDetail(tuple):
     """Existing combat tuple plus the defending player's alternate-loss state."""
 
-    def __new__(cls, values, loss: LossState = LossState(), terminal: bool = False, counter_deltas=None, damage_deltas=None):
+    def __new__(
+        cls,
+        values,
+        loss: LossState = LossState(),
+        terminal: bool = False,
+        counter_deltas=None,
+        damage_deltas=None,
+    ):
         result = super().__new__(cls, values)
         result.loss = loss
         result.terminal = terminal

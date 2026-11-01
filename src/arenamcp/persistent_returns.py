@@ -148,7 +148,8 @@ def annotate_return_credit(battlefield):
     cards = [c for c in battlefield if not c.get("is_phased_out") and not c.get("face_down")]
     blocked = death_is_suppressed(cards) or any(
         "exile" in (text := str(c.get("oracle_text") or "").lower())
-        and "instead" in text and ("graveyard" in text or "die" in text)
+        and "instead" in text
+        and ("graveyard" in text or "die" in text)
         for c in cards
     )
     for card in battlefield:

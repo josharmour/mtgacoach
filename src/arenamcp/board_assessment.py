@@ -758,17 +758,28 @@ def _combat_life(
             through,
             used,
         )
-        return CombatDetail(result + (remaining, terminal) if with_loss else result,
-                            remaining, terminal, counter_deltas, damage_deltas)
-    return CombatDetail((
-        damage,
-        dead_attackers,
-        dead_blockers,
-        attacker_gain,
-        defender_gain,
-        attacker_lifelink,
-        defender_lifelink,
-    ), remaining, terminal, counter_deltas, damage_deltas)
+        return CombatDetail(
+            result + (remaining, terminal) if with_loss else result,
+            remaining,
+            terminal,
+            counter_deltas,
+            damage_deltas,
+        )
+    return CombatDetail(
+        (
+            damage,
+            dead_attackers,
+            dead_blockers,
+            attacker_gain,
+            defender_gain,
+            attacker_lifelink,
+            defender_lifelink,
+        ),
+        remaining,
+        terminal,
+        counter_deltas,
+        damage_deltas,
+    )
 
 
 def _attack_round(attackers: list[dict], blockers: list[dict], life: int) -> tuple[int, set[int], set[int]]:

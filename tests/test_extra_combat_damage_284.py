@@ -34,15 +34,20 @@ def test_trample_assigns_only_remaining_lethal_before_extra_combat_spill():
 
 
 def test_prevented_damage_does_not_leave_marks_or_gain_life():
-    result = attack_round([extra(body(1, 3, 8, "Lifelink", colors=["R"]))],
-                          [body(2, 1, 4, "Protection from red")], 3, _combat_life)
+    result = attack_round(
+        [extra(body(1, 3, 8, "Lifelink", colors=["R"]))],
+        [body(2, 1, 4, "Protection from red")],
+        3,
+        _combat_life,
+    )
     assert result[2] == set() and result[5] == 0
     assert result.damage_deltas == {1: 2}
 
 
 def test_indestructible_survives_cumulative_lethal_damage():
-    result = attack_round([extra(body(1, 2, 3, "Indestructible"))],
-                          [body(2, 2, 3, "Indestructible")], 2, _combat_life)
+    result = attack_round(
+        [extra(body(1, 2, 3, "Indestructible"))], [body(2, 2, 3, "Indestructible")], 2, _combat_life
+    )
     assert result[1] == result[2] == set()
     assert result.damage_deltas == {1: 4, 2: 4}
 

@@ -1,5 +1,31 @@
 # Backlog integration: staged, not installed
 
+## Closed integration batch
+
+All currently accepted compatible work is combined on `codex/session-burndown`.
+The final batch incorporates marked extra-combat damage (`390f3c8` → `8b108ee`),
+retained-engine valuation (`76a50e0` → `51e26ac`), the reported Greaves equip
+opportunity (`a34f936` → `c1ff241`), and grounded plan-name aliases
+(`aafd354` → `d59ecb8`). Previously integrated prerequisites were not duplicated.
+
+**1,704 tests passed in 48.67 seconds across 100 affected test files** after all
+four changes and conflict resolutions. Ruff/format and whitespace checks passed
+on 19 changed Python files. Formatting was checked for AST equivalence. This is
+the combined affected batch, not a full repository suite, CI, or live match test.
+
+The exact committed history above installed main is recorded in
+`BACKLOG_INTEGRATED_COMMITS_2026-11-01.json`. The earlier prepared `cd9320f` and
+all subsequently accepted batches are ancestors of this integration branch.
+The conditional-keyword follow-up `52b23a7` is explicitly deferred to the next
+batch. Parser capture `091bd189` remains held for privacy controls and bounds.
+
+Normal restart currently loads `/Volumes/repos/mtgacoach/src`, main `07098e91`,
+using `~/Library/Application Support/mtgacoach/venv/bin/python`. The verified
+Python 3.12 editable-package path points there, not at this worktree. Updating
+that checkout could affect lazy-loaded code in the running app, so activation
+must occur only with safe app coordination after the deployment pause is lifted.
+No restart alone will install these worktree changes.
+
 Deployment restarts remain paused following the update-guard closure. The
 installed checkout was verified at `07098e91` at 05:02 UTC, with Coach and Arena
 running, Autopilot and Auto Queue enabled, and speech speed 1.5. No subsequent
@@ -100,13 +126,31 @@ survival and lethal estimates, active color protection with bounded grant
 lifetimes, and infect damage-step counters. The poison optimization was already
 present and was not picked twice. The merge preserves counter metadata through
 memoized combat, extra combats, own/opponent turns, and planeswalker attacks.
-Existing observed counter effects are not subtracted twice.
+Existing observed counter effects are not subtracted twice. The continuation
+also carries ordinary marked damage between modeled extra combats, and values
+returned enchantment engines separately from lost creature bodies with known
+ownership and visible interference. Original source packets remain missing for
+some historical claims; this does not prove their alternative winning lines.
 
 The infect fixture is synthetic, not a captured-match replay. Historical full
 packets remain missing for parts of #273/#278/#284. Remaining search limits
-include retained-engine valuation, sacrifice-aware continuation, unrepresented
-grant durations, activated proliferate, conditional counter/replacement effects,
-ordinary marked damage across extra combats, and generic end-step death triggers.
+include broader retained-engine interactions, #280 sacrifice-victim/chained-death
+and Tergrid continuation, unrepresented grant durations, activated proliferate,
+conditional counter/replacement effects, and generic end-step death triggers.
+
+## Greaves and shorthand scope
+
+The Greaves repair preserves Arena-offered targets, reviews dismissive passes
+when a current free equip can grant haste, and allows a grounded planned haste
+grant without incorrectly calling it innate haste. Existing precise claim
+predicates and bounded decision deadlines remain intact. It does not equip every
+creature simultaneously, invent green mana from colorless, force every equip,
+or prove that the earlier false correction caused the subsequent pass.
+
+The alias repair resolves dependency shorthand only when current known card
+identities yield one match. Ambiguous names and ordinary prose remain unchanged.
+It addresses the reproduced #240/#287 source gap, not all historical strategy
+quality or the missing #272 target packet.
 
 Other open qualifications remain: idle poison-search timing; broader poison,
 mill and replacement simulation; Constructed sideboarding;

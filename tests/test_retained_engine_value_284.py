@@ -35,10 +35,16 @@ def test_rebuild_and_attacker_deaths_use_the_same_residual_credit():
     assert plan.blockers_lost_material == 6
 
 
-@pytest.mark.parametrize("change", [
-    {"is_token": True}, {"object_kind": "TOKEN"}, {"is_copy": True},
-    {"card_types": ["Enchantment"]}, {"owner_seat_id": None},
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"is_token": True},
+        {"object_kind": "TOKEN"},
+        {"is_copy": True},
+        {"card_types": ["Enchantment"]},
+        {"owner_seat_id": None},
+    ],
+)
 def test_no_speculative_return_credit_for_ineligible_or_unknown_identity(change):
     card = {**engine(), **change}
     assert return_credit(card) == 0
@@ -51,11 +57,14 @@ def test_stolen_engine_returns_value_to_opponent_instead_of_retaining_it():
     assert _death_material(card) == _material(card) + 3
 
 
-@pytest.mark.parametrize("oracle", [
-    "Creatures entering the battlefield or dying don't cause abilities to trigger.",
-    "If a creature would die, exile it instead.",
-    "If a card or token would be put into a graveyard from anywhere, exile it instead.",
-])
+@pytest.mark.parametrize(
+    "oracle",
+    [
+        "Creatures entering the battlefield or dying don't cause abilities to trigger.",
+        "If a creature would die, exile it instead.",
+        "If a card or token would be put into a graveyard from anywhere, exile it instead.",
+    ],
+)
 def test_visible_interference_blocks_credit_and_refresh_invalidates_memo(oracle):
     attacker, blocker = body(3, 2, 2), engine(power=2, toughness=2)
     blocker["oracle_text"] = blocker["oracle_text"].replace("Lifelink\n", "")

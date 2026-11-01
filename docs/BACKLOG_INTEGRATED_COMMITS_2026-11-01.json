@@ -1,0 +1,249 @@
+{
+  "installed_base": "07098e912a94d311578cc07d650910540d46a96d",
+  "combined_code_head": "d59ecb8bf9f681dbe24a7927841a9f3faec50fb8",
+  "integration_branch": "codex/session-burndown",
+  "deployment_paused": true,
+  "commits_above_installed_base": [
+    {
+      "commit": "4c36bd33cdedc584dd7b5976110e85c4444388ca",
+      "subject": "Bound decision work by Arena clock and preserve missing-request deadlines"
+    },
+    {
+      "commit": "53c7faedebb608275945ce97338b0c46d77284b3",
+      "subject": "Preserve explicit native effect clears without trusting partial collections"
+    },
+    {
+      "commit": "5ca5201fbfb8a30fc883536df3118f69952870bd",
+      "subject": "Correct captured draft equipment and generic-discount claims"
+    },
+    {
+      "commit": "867dd6a39e7a9df91930f977046cf37383894cc1",
+      "subject": "Disclose missing draft alternative comparisons"
+    },
+    {
+      "commit": "8804e970df33e23e26897ef2e4b11dd7e6677f16",
+      "subject": "Add offline saved-draft ranking component replay"
+    },
+    {
+      "commit": "b352b8aeb47e9667f5ef7687f7ac8c79954b1453",
+      "subject": "Bound initial strategy work and return ready combat declarations"
+    },
+    {
+      "commit": "7403b0fbabaf5ff3f7bbf638380b2beb476e5ac0",
+      "subject": "Preserve returning enchantment identity and combat engine facts"
+    },
+    {
+      "commit": "11a5f19468bec04b0de79a75d91d8bb4e7ab39e5",
+      "subject": "Ground every plan instruction in current card availability"
+    },
+    {
+      "commit": "6194d8a265a3361cbf9738f90cc42196d358dcdf",
+      "subject": "Repair mana-illegal plans once without extending their budget"
+    },
+    {
+      "commit": "16311261bcb554680ec36b54cab3fd2ab97c7be9",
+      "subject": "Keep postcombat timing explicit through equipment selections"
+    },
+    {
+      "commit": "0db2c4742bc706c7a9af73c16a36b2c2f233a8bf",
+      "subject": "Preserve negative plan advice and qualify mill deadline fallback"
+    },
+    {
+      "commit": "1ca9a87f6898e472f5bedb57b218bf67815fb577",
+      "subject": "Qualify accepted chump narration and lethal-block preservation"
+    },
+    {
+      "commit": "cd9320f72d10a1951023f97c14e8125d00597203",
+      "subject": "Verify shared strategy repair deadlines across backlog streams"
+    },
+    {
+      "commit": "4359d67bff2a218064b9e01f5381b803680d2285",
+      "subject": "Cancel abandoned action calls and map all latency backlog incidents"
+    },
+    {
+      "commit": "af66e1a3aebd6c40e1b3ca2650648815449bfd2e",
+      "subject": "Keep unknown draft formats and empty primers on rules fallback"
+    },
+    {
+      "commit": "5bd6a81b37ec909788d57d2bbf25e78ce406421f",
+      "subject": "Carry source-bound activation intent through nested legal decisions"
+    },
+    {
+      "commit": "f29afd40e4e8c98ac42dc22d68ea47864a1bfa21",
+      "subject": "Plan and submit request-bound Traditional Limited sideboards"
+    },
+    {
+      "commit": "ef9da20dd53d0905c6909158cbdb05aae0dca568",
+      "subject": "Verify update lock ownership and document continuous activation"
+    },
+    {
+      "commit": "0ba1fb6ac1853b6cdcb5a7eb76632904d1c0556c",
+      "subject": "Score poison and combat mill in block survival decisions"
+    },
+    {
+      "commit": "561a0d0514be7c8f8a5ab499627d1aef6a7ed337",
+      "subject": "Carry poison and library loss states through combat search"
+    },
+    {
+      "commit": "5d84ddf14e7d8a40ccec386a61d4ee6b2d03522b",
+      "subject": "Reuse combat results across irrelevant library changes"
+    },
+    {
+      "commit": "6ac6b10341ad443580c6dea1a235419b08c79f08",
+      "subject": "Format integrated poison and library combat projections"
+    },
+    {
+      "commit": "53203e4a574f738c542130441ec66cf0caf964d2",
+      "subject": "Fix opponent reanimation benefit attribution in selections"
+    },
+    {
+      "commit": "4b3154d0139c16ea642f60606b8dbc98944f0efa",
+      "subject": "Model explicitly offered free casts from exile"
+    },
+    {
+      "commit": "f30dc3b79f81642149fcd8bc0afadb1dcbd2d05e",
+      "subject": "Repair impossible hold-for-transformation removal plans"
+    },
+    {
+      "commit": "e2b84bbc358a33c374c30624028f43568aded3a2",
+      "subject": "Validate named removal intents and reopen changed Plains caps"
+    },
+    {
+      "commit": "8a8984463d84286f18cac84457b486102c8719f5",
+      "subject": "Count visible subtype mana beyond Halfling sources"
+    },
+    {
+      "commit": "2c4b3516071d1dfab67f6aa0ee0de4ea9215cbed",
+      "subject": "Preserve explicit mana reservations across optional triggers"
+    },
+    {
+      "commit": "7f09a40812123d3f2a5f31ed624ca0cb8d0495d7",
+      "subject": "Recheck land choices that contradict entry or colored payment facts"
+    },
+    {
+      "commit": "72f588f05f34400ee9154cdc9e4ddeabeb553941",
+      "subject": "Keep land claim repairs conservative around other mana mechanics"
+    },
+    {
+      "commit": "799a88bab6f400a9eb030b92cbc7e7b699b4fd7d",
+      "subject": "Recheck blink identity and public trigger consequences"
+    },
+    {
+      "commit": "1a22298476b7358fecfc0f9fdfecb0c8fe170bc8",
+      "subject": "Resolve removal identities and abstain on unsupported target modes"
+    },
+    {
+      "commit": "20df8b2f00c42757c8247f9a62e563412fe30138",
+      "subject": "Reserve activation tap costs before checking available mana"
+    },
+    {
+      "commit": "e23242b9642bfcb693e619326a9a41189c103cc0",
+      "subject": "Reconcile burn damage from confirmed events instead of planned targets"
+    },
+    {
+      "commit": "1dd9cac0db8fe23ba37edcb1c16b57a54664c54e",
+      "subject": "Leave unidentified land and mana sources unpriced"
+    },
+    {
+      "commit": "f29f188e319451e6ce62ca7f2330fbe7de06e640",
+      "subject": "Price sacrifice damage and recheck contradicted death claims"
+    },
+    {
+      "commit": "8bd29a6852a1201540252109c002d0ceaa62f44c",
+      "subject": "Ground commander relocation choices in the exact recipient zone"
+    },
+    {
+      "commit": "a91e40b5b3928bde3d6cddc4b9cd3498c87d2340",
+      "subject": "Verify combined tactical deadlines and commander fallback handoff"
+    },
+    {
+      "commit": "b4688ec76ea476d6fe12bc34c876c6140e387a16",
+      "subject": "Recheck pre-development removal and ward resource promises"
+    },
+    {
+      "commit": "05d1df8f9101737d2010c83f185ba142644c92a6",
+      "subject": "Check recorded short-name colored mana promises without skipping useful lands"
+    },
+    {
+      "commit": "bde837b4ae4164fd537bfd72ba299e0226fcec3e",
+      "subject": "Limit ward reservations to target attachments and retain shared repair deadline"
+    },
+    {
+      "commit": "b5e222f9d13db5cff250d67077e85601eb150dfe",
+      "subject": "Count blocker lifelink in combat survival and lethal forecasts"
+    },
+    {
+      "commit": "b27c097ad987ded967df91f0330d913ec3e490a6",
+      "subject": "Model active color protection in combat and bound grant lifetimes"
+    },
+    {
+      "commit": "3b0da8b5088d7f2b03ce3c849ca0b50f97441147",
+      "subject": "Resolve infect counters by damage step and retain combat shrink in search"
+    },
+    {
+      "commit": "441418ea857832a2bb421bf502959713d3d39cd2",
+      "subject": "Verify combined combat forecasts and retain bounded strategy prompts"
+    },
+    {
+      "commit": "2ceb040d6429f6d0c5ae71fbf1b6971992b76b21",
+      "subject": "Fix verified positive blocker claims against flying attackers"
+    },
+    {
+      "commit": "0ca3da99455bcc6a8af9a7060452df4c9099572c",
+      "subject": "Record tracked matches that end before turn one"
+    },
+    {
+      "commit": "29e5ec216daa5934789eaebee17a1f097b0df842",
+      "subject": "Record verified blocker explanation and early-result integration"
+    },
+    {
+      "commit": "8b108eeb92b16958e70006952e4dfef98806c45e",
+      "subject": "Carry marked damage between projected extra combats"
+    },
+    {
+      "commit": "51e26acacd6e38c59214d08d23c2da641633c936",
+      "subject": "Value retained enchantment engines separately from combat body losses"
+    },
+    {
+      "commit": "c1ff2410f1b420c5bd7d5596a6fac41717656511",
+      "subject": "Preserve equip opportunities and recognize planned haste grants"
+    },
+    {
+      "commit": "d59ecb8bf9f681dbe24a7927841a9f3faec50fb8",
+      "subject": "Ground plan dependency shorthand in unambiguous card identities"
+    }
+  ],
+  "latest_source_mapping": {
+    "390f3c80c871709b047ef64400f88b12205898f8": "8b108ee",
+    "76a50e0d45f8904f2ceb7f9c59f36e0916d08828": "51e26ac",
+    "a34f936da2fe3e3b14a2e2c34620a2cade7d35e9": "c1ff241",
+    "aafd3540362478d88e6527d55c3df59cacdfabb0": "d59ecb8"
+  },
+  "excluded_sources": [
+    {
+      "commit": "52b23a7d887df0750103fba843e16a5f6f8aafce",
+      "reason": "Explicitly assigned to next batch after this scope was frozen"
+    },
+    {
+      "commit": "091bd18971dd32974f54711b04423afa14a43d5c",
+      "reason": "Diagnostic content capture requires explicit controls and per-file bounds before integration"
+    }
+  ],
+  "not_closed": [
+    "#280 sacrifice-victim and chained-death/Tergrid continuation",
+    "#294 draft ranking quality",
+    "#272 historical legal-target evidence gap",
+    "#288 temporary ability metadata",
+    "Historical missing full packets and broader simulation qualifications listed in BACKLOG_STAGE_2026-11-01.md"
+  ],
+  "combined_validation": {
+    "passed": 1704,
+    "failed": 0,
+    "seconds": 48.67,
+    "test_files": 100,
+    "lint_format_files": 19,
+    "full_suite": false,
+    "ci": false,
+    "live_match": false
+  }
+}

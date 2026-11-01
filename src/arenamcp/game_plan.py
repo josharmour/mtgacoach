@@ -699,7 +699,9 @@ def _check_dropped_cast_dependencies(plan: GamePlan, state: dict, issues: list[s
             step[attr] = checked(str(step.get(attr) or ""), names, f"{step.get('label')} {attr}")
 
 
-def _check_library_dependencies(plan: GamePlan, library_only: set[str], issues: list[str], state: dict) -> None:
+def _check_library_dependencies(
+    plan: GamePlan, library_only: set[str], issues: list[str], state: dict
+) -> None:
     """A rejected undrawn win must not survive as an unconditional instruction.
 
     #240/#272/#287: dropping "Akroma's Will" from wins still left "preserve

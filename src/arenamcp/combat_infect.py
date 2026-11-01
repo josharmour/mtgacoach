@@ -56,7 +56,8 @@ def apply_marked_damage(cards, changes):
     """Carry actual ordinary damage only to another combat in the same turn."""
     return [
         {**c, "_combat_damage": c.get("_combat_damage", 0) + changes[c["instance_id"]]}
-        if changes.get(c.get("instance_id")) else c
+        if changes.get(c.get("instance_id"))
+        else c
         for c in cards
     ]
 
