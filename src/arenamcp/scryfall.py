@@ -262,13 +262,13 @@ class ScryfallCache:
         )
 
     def _rate_limit_api(self) -> None:
-        """Enforce rate limiting for API calls."""
-        now = time.time()
+        """Space API calls without depending on adjustments to the system clock."""
+        now = time.monotonic()
         elapsed_ms = (now - self._last_api_call) * 1000
         if elapsed_ms < API_RATE_LIMIT_MS:
             sleep_time = (API_RATE_LIMIT_MS - elapsed_ms) / 1000
             time.sleep(sleep_time)
-        self._last_api_call = time.time()
+        self._last_api_call = time.monotonic()
 
     def _fetch_from_api(self, arena_id: int) -> dict[str, Any] | None:
         """Fetch card from Scryfall API by arena_id."""
