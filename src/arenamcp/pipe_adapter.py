@@ -16,7 +16,9 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 import webbrowser
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from arenamcp.backend_health import (
@@ -82,6 +84,11 @@ class PipeAdapter:
         import queue
 
         self._write_queue: queue.Queue[str] = queue.Queue(maxsize=500)
+        # User-initiated public reports wait here until the user explicitly
+        # confirms the destination and contents. Nothing is read or sent while
+        # a request is pending.
+        self._pending_bugreports: dict[str, dict[str, Any]] = {}
+        self._pending_bugreports_lock = threading.Lock()
         from arenamcp.speech_completion import SpeechCompletion
 
         # Desktop acknowledgments for speech the engine must wait on.
@@ -499,11 +506,22 @@ class PipeAdapter:
 
     def _dispatch(self, cmd: dict[str, Any]) -> None:
         """Dispatch a command dict to the appropriate coach method."""
+        action = cmd.get("cmd", "")
+
+        # Confirmation commands are handled before the coach check: cancelling
+        # a pending public report must work even if the coach is unavailable,
+        # and must never touch credentials or the network.
+        if action == "confirm_bugreport":
+            self._confirm_bugreport(str(cmd.get("request_id", "")))
+            return
+        if action == "cancel_bugreport":
+            self._cancel_bugreport(str(cmd.get("request_id", "")))
+            return
+
         coach = self._coach
         if coach is None:
             return
 
-        action = cmd.get("cmd", "")
         try:
             if action == "toggle_autopilot":
                 # Deprecated alias — prefer set_autopilot (idempotent).
@@ -1203,7 +1221,12 @@ class PipeAdapter:
         user_message: str = "",
         extra_context: dict[str, Any] | None = None,
     ) -> None:
-        """Save and submit a bug report to GitHub."""
+        """Save a bug report locally and ask before filing it publicly.
+
+        Saving is local-only. No credential is read and no network, subprocess,
+        or browser call is made until the user confirms the destination and the
+        exact title/body in a separate ``confirm_bugreport`` command.
+        """
         coach = self._coach
         if not coach:
             self.error("Coach not available")
@@ -1211,7 +1234,6 @@ class PipeAdapter:
 
         self.log("Preparing debug report...")
 
-        # Auto-save a bug report
         report_path = None
         if hasattr(coach, "save_bug_report"):
             report_path = coach.save_bug_report(
@@ -1220,42 +1242,89 @@ class PipeAdapter:
                 progress_cb=self.log,
                 extra_context=extra_context,
             )
-        if report_path:
-            self.log(f"Bug report saved: {report_path}")
-        else:
+        if not report_path:
             self.error("Failed to save bug report.")
             return
 
-        from arenamcp.bugreport import GITHUB_REPO, build_issue_payload, build_issue_url
-        from arenamcp.logging_config import LOG_DIR
+        report_path = Path(report_path)
+        self.log(f"Bug report saved locally: {report_path}")
 
-        bug_dir = LOG_DIR / "bug_reports"
-        if not bug_dir.exists():
-            self.error("No bug reports found.")
-            return
-
-        reports = sorted(bug_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if not reports:
-            self.error("No bug reports found.")
-            return
-
-        report_path = reports[0]
         try:
-            import json as _json
-
-            report_data = _json.loads(report_path.read_text(encoding="utf-8"))
+            report_data = json.loads(report_path.read_text(encoding="utf-8"))
         except Exception as e:
             self.error(f"Failed to read bug report: {e}")
             return
 
+        from arenamcp.bugreport import GITHUB_ISSUES_URL, GITHUB_REPO, build_issue_payload
+
         title, body = build_issue_payload(report_data, report_path, user_message)
+        request_id = uuid.uuid4().hex
+        request = {
+            "request_id": request_id,
+            "destination": GITHUB_ISSUES_URL,
+            "repo": GITHUB_REPO,
+            "title": title,
+            "body": body,
+            "labels": ["bug"],
+            "report_path": str(report_path),
+        }
+        with self._pending_bugreports_lock:
+            self._pending_bugreports[request_id] = request
+        self._emit({"type": "bug_report_confirmation_request", **request})
+        self.log(
+            f"Public filing requires confirmation. Destination: {GITHUB_ISSUES_URL}. "
+            "Review the title and body, then confirm or cancel."
+        )
+
+    def _confirm_bugreport(self, request_id: str) -> None:
+        """Consume the pending request, then submit it off the command reader."""
+        with self._pending_bugreports_lock:
+            request = self._pending_bugreports.pop(request_id, None)
+        if request is None:
+            self.error("No pending bug report confirmation (it may have been cancelled or already used).")
+            return
+        try:
+            threading.Thread(
+                target=self._submit_confirmed_bugreport_safe,
+                args=(request,),
+                daemon=True,
+                name="bug-report-submit",
+            ).start()
+        except Exception as e:
+            logger.exception("Failed to start confirmed bug report submission")
+            self.error(f"Failed to start bug report submission: {e}")
+
+    def _submit_confirmed_bugreport_safe(self, request: dict[str, Any]) -> None:
+        """Worker entry point: never let a submission exception escape the thread."""
+        try:
+            self._submit_confirmed_bugreport(request)
+        except Exception as e:
+            logger.exception("Confirmed bug report submission failed")
+            self.error(f"Bug report submission failed: {e}")
+
+    def _cancel_bugreport(self, request_id: str) -> None:
+        """Discard a pending public filing without reading credentials or sending anything."""
+        with self._pending_bugreports_lock:
+            request = self._pending_bugreports.pop(request_id, None)
+        if request is None:
+            self.log("No pending bug report to cancel.")
+            return
+        self.log(f"Public filing cancelled. Local report kept at {request['report_path']}.")
+
+    def _submit_confirmed_bugreport(self, request: dict[str, Any]) -> None:
+        """Submit a user-confirmed report. Only this path may publish publicly."""
+        from arenamcp.bugreport import GITHUB_REPO, build_issue_url
+
+        title = str(request["title"])
+        body = str(request["body"])
+        labels = list(request.get("labels") or ["bug"])
 
         try:
             import requests
 
             token = self._get_github_token()
             if token:
-                self.log("Submitting bug report to GitHub API...")
+                self.log("Submitting confirmed bug report to GitHub API...")
                 response = requests.post(
                     f"https://api.github.com/repos/{GITHUB_REPO}/issues",
                     headers={
@@ -1263,7 +1332,7 @@ class PipeAdapter:
                         "Authorization": f"Bearer {token}",
                         "X-GitHub-Api-Version": "2022-11-28",
                     },
-                    json={"title": title, "body": body, "labels": ["bug"]},
+                    json={"title": title, "body": body, "labels": labels},
                     timeout=12,
                 )
                 if response.ok:

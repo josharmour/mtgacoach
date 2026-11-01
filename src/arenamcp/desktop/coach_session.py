@@ -39,6 +39,10 @@ class CoachSession(QObject):
     collectionChanged = Signal(dict)  # owned cards + wildcard balances (#204)
     deckOpResult = Signal(dict)  # update_deck / create_deck / craft result (#204)
     bugReportSaved = Signal(str, str)  # path, error
+    # A user-initiated /bugreport is waiting for explicit confirmation before
+    # anything is published. Payload: request_id, destination, title, body,
+    # report_path.
+    bugReportConfirmationRequested = Signal(dict)
     errorOccurred = Signal(str)
 
     # Tactical-search result for the sidebar's tactical line
@@ -208,6 +212,14 @@ class CoachSession(QObject):
     def send_command(self, command: str, *args: Any) -> None:
         """Send a JSON command to the coach subprocess."""
         self._process.send_command(command, *args)
+
+    def confirm_bug_report(self, request_id: str) -> None:
+        """Tell the engine to publish the exact report the user reviewed."""
+        self._process.send_payload({"cmd": "confirm_bugreport", "request_id": request_id})
+
+    def cancel_bug_report(self, request_id: str) -> None:
+        """Discard a pending public filing; the local report is kept."""
+        self._process.send_payload({"cmd": "cancel_bugreport", "request_id": request_id})
 
     def request_deck_list(self) -> None:
         self._process.send_payload({"cmd": "list_decks"})
@@ -652,6 +664,9 @@ class CoachSession(QObject):
             path = str(event.get("path") or "")
             err = str(event.get("error") or "")
             self.bugReportSaved.emit(path, err)
+
+        elif ev_type == "bug_report_confirmation_request":
+            self.bugReportConfirmationRequested.emit(dict(event))
 
         elif ev_type in ("error", "emit_error"):
             err = str(event.get("message") or event.get("error") or "Unknown error")

@@ -16,6 +16,8 @@ from typing import Any
 from PySide6.QtCore import QPoint, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -338,6 +340,7 @@ class CompactCoachPanel(QWidget):
         super().__init__(parent)
         self._settings = settings.get_settings()
         self._session = session or CoachSession(self)
+        self._bug_report_dialog_open = False
         self._dot_values: dict[str, str] = {}
         self._auto_queue_enabled = bool(self._settings.get("auto_queue_enabled", False))
         self._auto_queue_detail = "Waiting for coaching to start." if self._auto_queue_enabled else ""
@@ -796,6 +799,9 @@ class CompactCoachPanel(QWidget):
         self._session.errorOccurred.connect(self._on_error_occurred)
         self._session.mctsUpdated.connect(self._on_mcts_updated)
         self._session.bugReportSaved.connect(self._on_bug_report_saved)
+        confirmation_signal = getattr(self._session, "bugReportConfirmationRequested", None)
+        if confirmation_signal is not None:
+            confirmation_signal.connect(self._on_bug_report_confirmation_requested)
         startup_signal = getattr(self._session, "startupStatusChanged", None)
         if startup_signal is not None:
             startup_signal.connect(self._on_startup_status)
@@ -1326,6 +1332,83 @@ class CompactCoachPanel(QWidget):
 
         self.bug_report_btn.setText("Report saved — link copied")
         QTimer.singleShot(3000, lambda: self.bug_report_btn.setText(_BUG_REPORT_LABEL))
+
+    def _on_bug_report_confirmation_requested(self, request: dict[str, Any]) -> None:
+        """Show the exact destination and contents before any public filing."""
+        request_id = str(request.get("request_id") or "")
+        if not request_id:
+            return
+        if self._bug_report_dialog_open:
+            # Never stack dialogs; the newer request is cancelled, not published.
+            self._session.cancel_bug_report(request_id)
+            self.append_log(
+                "Another bug report confirmation is already open; this request was cancelled.",
+                role="status",
+            )
+            return
+
+        destination = str(request.get("destination") or "")
+        title = str(request.get("title") or "")
+        body = str(request.get("body") or "")
+        report_path = str(request.get("report_path") or "")
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("File a public bug report?")
+        layout = QVBoxLayout(dialog)
+
+        intro = QLabel(
+            "Nothing has been sent yet. Confirming publishes the report below to GitHub "
+            "under this project's issue tracker."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        destination_label = QLabel(f"Destination: {destination}")
+        destination_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        destination_label.setWordWrap(True)
+        layout.addWidget(destination_label)
+
+        title_label = QLabel(f"Title: {title}")
+        title_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        title_label.setWordWrap(True)
+        layout.addWidget(title_label)
+
+        body_view = QTextEdit()
+        body_view.setReadOnly(True)
+        body_view.setPlainText(body)
+        body_view.setMinimumHeight(220)
+        layout.addWidget(body_view)
+
+        if report_path:
+            path_label = QLabel(f"Local copy kept at: {report_path}")
+            path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            path_label.setWordWrap(True)
+            layout.addWidget(path_label)
+
+        buttons = QDialogButtonBox()
+        publish_button = buttons.addButton("Publish to GitHub", QDialogButtonBox.ButtonRole.AcceptRole)
+        cancel_button = buttons.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
+        cancel_button.setDefault(True)
+        publish_button.setAutoDefault(False)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        self._bug_report_dialog_open = True
+        try:
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        finally:
+            self._bug_report_dialog_open = False
+
+        if accepted:
+            self._session.confirm_bug_report(request_id)
+            self.append_log(f"Publishing confirmed bug report to {destination}…", role="status")
+        else:
+            self._session.cancel_bug_report(request_id)
+            self.append_log(
+                f"Public filing cancelled. Local report kept at {report_path}.",
+                role="status",
+            )
 
     def _on_spoken_line(self, text: str) -> None:
         display_text = text

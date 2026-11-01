@@ -106,10 +106,11 @@ class _DiagnosticsMixin:
     def _auto_bug_report_bridge_fallback(self, reason: str, extra: dict) -> None:
         """Invoked by autopilot whenever the GRE bridge can't submit an action.
 
-        Every bridge miss = a bug. Always save a local report. Attempt a
-        silent GitHub upload using the configured token/gh CLI. Rate-limiting
-        is handled in autopilot so duplicate calls within a cooldown are
-        suppressed; here we just save + try to upload.
+        Every bridge miss = a bug worth keeping locally. Automatic telemetry is
+        never consent to publish: this path must not read credentials or touch
+        GitHub, even when a token or ``gh`` happens to be available. Public
+        filing is a separate user action (/bugreport) that requires an explicit
+        confirmation showing the destination and contents.
         """
         try:
             bug_path = self.save_bug_report(
@@ -119,93 +120,11 @@ class _DiagnosticsMixin:
             )
             if not bug_path:
                 return
-            # Quick user-visible log so they know telemetry fired
-            self.ui.log(f"[auto-bug] Saved: {bug_path}")
-            # Attempt GitHub upload in background (non-blocking).
-            import threading
-
-            threading.Thread(
-                target=self._auto_upload_bug_to_github,
-                args=(bug_path, reason),
-                daemon=True,
-            ).start()
+            # Quick user-visible log so they know telemetry fired locally.
+            self.ui.log(f"[auto-bug] Saved locally: {bug_path} (not uploaded)")
+            logger.info("[auto-bug] saved locally only: %s", bug_path)
         except Exception as e:
             logger.debug(f"auto-bug-report failed: {e}")
-
-    def _auto_upload_bug_to_github(self, bug_path, reason: str) -> None:
-        """Background GitHub upload for an auto-filed fallback bug report."""
-        try:
-            import json as _json
-
-            from arenamcp.bugreport import (
-                GITHUB_REPO,
-                build_issue_payload,
-            )
-
-            with open(bug_path, encoding="utf-8") as f:
-                report_data = _json.loads(f.read())
-
-            title, body = build_issue_payload(report_data, bug_path, reason)
-            # Prefix title to flag these as auto-reports
-            if not title.startswith("[auto]"):
-                title = "[auto] " + title
-            if len(title) > 80:
-                title = title[:77].rstrip() + "..."
-
-            # Try GitHub API with gh token first
-            token = self._get_github_token_for_auto_bug()
-            if token:
-                import requests
-
-                resp = requests.post(
-                    f"https://api.github.com/repos/{GITHUB_REPO}/issues",
-                    headers={
-                        "Accept": "application/vnd.github+json",
-                        "Authorization": f"Bearer {token}",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                    json={"title": title, "body": body, "labels": ["bug", "auto-reported"]},
-                    timeout=12,
-                )
-                if resp.ok:
-                    url = str(resp.json().get("html_url", ""))
-                    self.ui.log(f"[auto-bug] Uploaded: {url}")
-                    return
-                logger.debug(f"auto-bug GitHub API failed: {resp.status_code}")
-            # No silent CLI fallback: we don't want to prompt the user.
-        except Exception as e:
-            logger.debug(f"auto-bug upload failed: {e}")
-
-    def _get_github_token_for_auto_bug(self) -> str:
-        """Return a GitHub token for silent auto-uploads, or empty string."""
-        import os
-
-        token = (
-            os.environ.get("MTGACOACH_GITHUB_TOKEN", "").strip() or os.environ.get("GITHUB_TOKEN", "").strip()
-        )
-        if token:
-            return token
-        # Try gh CLI (synchronous, but short timeout)
-        import shutil
-
-        gh = shutil.which("gh")
-        if not gh:
-            return ""
-        try:
-            import subprocess
-
-            result = subprocess.run(
-                [gh, "auth", "token"],
-                capture_output=True,
-                text=True,
-                timeout=3,
-                check=False,
-            )
-            if result.returncode == 0:
-                return (result.stdout or "").strip()
-        except Exception:
-            pass
-        return ""
 
     def take_screenshot_analysis(self, automatic: bool = False) -> None:
         """Capture screen and request visual analysis (e.g. Mulligan).

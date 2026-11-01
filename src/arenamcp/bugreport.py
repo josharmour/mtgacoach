@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 GITHUB_REPO = "josharmour/mtgacoach"
+GITHUB_ISSUES_URL = f"https://github.com/{GITHUB_REPO}/issues"
 GITHUB_ISSUES_NEW_URL = f"https://github.com/{GITHUB_REPO}/issues/new"
 
 

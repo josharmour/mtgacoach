@@ -6,6 +6,8 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtWidgets import QDialog, QLabel, QTextEdit
+
 from arenamcp.desktop.compact_coach import CompactCoachPanel
 
 
@@ -83,6 +85,57 @@ def test_saved_autopilot_report_has_visible_local_link(panel, tmp_path):
     assert "Open autopilot bug report" in panel.autopilot_report_link.text()
     assert "file:///" in panel.autopilot_report_link.text()
     assert panel.autopilot_report_link.toolTip() == str(path)
+
+
+def _confirmation_request() -> dict[str, Any]:
+    return {
+        "type": "bug_report_confirmation_request",
+        "request_id": "req-1",
+        "destination": "https://github.com/josharmour/mtgacoach/issues",
+        "title": "Bridge fallback on Cast",
+        "body": "full report body",
+        "report_path": "/tmp/bug_test.json",
+    }
+
+
+def test_bug_report_confirmation_dialog_shows_contents_and_confirms(panel, monkeypatch):
+    confirmed: list[str] = []
+    cancelled: list[str] = []
+    monkeypatch.setattr(panel._session, "confirm_bug_report", confirmed.append)
+    monkeypatch.setattr(panel._session, "cancel_bug_report", cancelled.append)
+
+    seen: list[tuple[list[str], list[str]]] = []
+
+    def fake_exec(dialog):
+        labels = [label.text() for label in dialog.findChildren(QLabel)]
+        bodies = [view.toPlainText() for view in dialog.findChildren(QTextEdit)]
+        seen.append((labels, bodies))
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", fake_exec)
+
+    panel._on_bug_report_confirmation_requested(_confirmation_request())
+
+    assert confirmed == ["req-1"]
+    assert cancelled == []
+    labels, bodies = seen[0]
+    assert any("https://github.com/josharmour/mtgacoach/issues" in text for text in labels)
+    assert any("Bridge fallback on Cast" in text for text in labels)
+    assert bodies == ["full report body"]
+
+
+def test_bug_report_confirmation_dialog_cancel_keeps_local_report(panel, monkeypatch):
+    confirmed: list[str] = []
+    cancelled: list[str] = []
+    monkeypatch.setattr(panel._session, "confirm_bug_report", confirmed.append)
+    monkeypatch.setattr(panel._session, "cancel_bug_report", cancelled.append)
+    monkeypatch.setattr(QDialog, "exec", lambda dialog: QDialog.DialogCode.Rejected)
+
+    panel._on_bug_report_confirmation_requested(_confirmation_request())
+
+    assert confirmed == []
+    assert cancelled == ["req-1"]
+    assert any("cancelled" in text.lower() for _, text, _ in panel._activity_history)
 
 
 def test_board_lists_opponent_creatures_and_groups_lands(panel):

@@ -27,6 +27,42 @@ def test_coach_session_bug_report_saved_event(qapp):
     session.shutdown()
 
 
+def test_coach_session_bug_report_confirmation_event(qapp):
+    """The engine's confirmation request must reach the desktop UI."""
+    session = CoachSession()
+    received: list[dict] = []
+    session.bugReportConfirmationRequested.connect(received.append)
+
+    event = {
+        "type": "bug_report_confirmation_request",
+        "request_id": "req-1",
+        "destination": "https://github.com/josharmour/mtgacoach/issues",
+        "title": "Bridge fallback",
+        "body": "full body",
+        "report_path": "/tmp/bug_test.json",
+    }
+    session._handle_process_event(event)
+
+    assert received == [event]
+    session.shutdown()
+
+
+def test_coach_session_confirm_and_cancel_send_request_id(qapp, monkeypatch):
+    """The desktop must be able to answer the engine's confirmation request."""
+    session = CoachSession()
+    sent: list[dict] = []
+    monkeypatch.setattr(session._process, "send_payload", sent.append)
+
+    session.confirm_bug_report("req-1")
+    session.cancel_bug_report("req-2")
+
+    assert sent == [
+        {"cmd": "confirm_bugreport", "request_id": "req-1"},
+        {"cmd": "cancel_bugreport", "request_id": "req-2"},
+    ]
+    session.shutdown()
+
+
 def test_backend_health_event_reaches_the_sidebar(qapp):
     """#215: the engine's backend_health snapshots must reach the desktop."""
     session = CoachSession()

@@ -6,7 +6,6 @@ import contextlib
 import importlib
 import json
 import logging
-import subprocess
 import threading
 from collections import OrderedDict
 from copy import deepcopy
@@ -480,12 +479,13 @@ class _PostMatchMixin:
     ) -> bool:
         """Persist completed-match data so analysis can be run later."""
         # End-of-match telemetry: sample up to 5 bridge-fallback bugs
-        # collected during the match and file them on GitHub.
+        # collected during the match and save them locally. Automatic
+        # telemetry never publishes to GitHub.
         try:
             if self._autopilot is not None and hasattr(self._autopilot, "flush_fallback_bugs_for_match"):
                 n = self._autopilot.flush_fallback_bugs_for_match()
                 if n:
-                    logger.info(f"Dispatched {n} sampled fallback bug(s) from match")
+                    logger.info(f"Saved {n} sampled fallback bug(s) locally from match")
         except Exception as e:
             logger.debug(f"flush_fallback_bugs_for_match failed: {e}")
 
@@ -891,9 +891,12 @@ class _PostMatchMixin:
             if callable(emit_feedback_request):
                 emit_feedback_request(display_analysis, match_result)
             else:
-                self.ui.log("[bold yellow]Type /bugreport to file coaching improvements to GitHub[/]")
+                self.ui.log(
+                    "[bold yellow]Type /bugreport to save a diagnostic report; "
+                    "public filing requires an explicit confirmation[/]"
+                )
 
-            # Offer to file GH issue for missed decisions detected by vision watchdog
+            # Save vision-watchdog detections locally; never file them publicly.
             self._offer_missed_decision_issue(missed_decisions=missed_decisions)
 
         except Exception as e:
@@ -909,17 +912,14 @@ class _PostMatchMixin:
         match_result: str,
         advice_history: list[dict],
     ) -> None:
-        """Deterministic post-match review: detect real, evidenced problems
-        and file ONE consolidated GitHub issue when warranted.
+        """Deterministic post-match review: detect real, evidenced problems.
 
-        This is what makes the analyze button improve the coach: unlike the
-        prose analysis (which has invented events), every finding here is
-        mechanically derived from the log slice, advice history, and match
-        packet, and carries its evidence lines.
+        The review is always saved locally. It is never filed publicly on its
+        own: high-severity findings are evidence for a human decision, not
+        consent to publish. A user who wants to file one can use /bugreport,
+        which shows the destination and contents before asking for confirmation.
         """
-        from arenamcp import __version__
         from arenamcp.match_review import (
-            build_issue,
             read_log_slice,
             run_match_review,
             save_review,
@@ -979,39 +979,25 @@ class _PostMatchMixin:
             self.ui.log(f"  [{f.severity}] {f.category}: {f.title}")
 
         if not should_file_issue(findings):
-            self.ui.log("[yellow]Low-severity only — saved locally, no issue filed.[/]")
+            self.ui.log("[yellow]Low-severity only — saved locally.[/]")
             return
 
-        title, body = build_issue(match_id, match_result, findings, version=__version__)
-        token = self._get_github_token_for_auto_bug()
-        if not token:
-            self.ui.log("[yellow]No GitHub token — review saved locally only.[/]")
-            return
-        try:
-            import requests
-
-            from arenamcp.bugreport import GITHUB_REPO
-
-            resp = requests.post(
-                f"https://api.github.com/repos/{GITHUB_REPO}/issues",
-                headers={
-                    "Accept": "application/vnd.github+json",
-                    "Authorization": f"Bearer {token}",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-                json={"title": title, "body": body, "labels": ["match-review"]},
-                timeout=12,
-            )
-            if resp.ok:
-                url = str(resp.json().get("html_url", ""))
-                self.ui.log(f"[match-review] Filed: {url}")
-            else:
-                logger.debug(f"match-review GitHub API failed: {resp.status_code}")
-        except Exception as e:
-            logger.debug(f"match-review issue filing failed: {e}")
+        # High-severity findings are still only evidence for a human decision.
+        # Never read a token or publish here: /bugreport is the explicit,
+        # confirmed path for public filing.
+        self.ui.log(
+            "[yellow]High-severity findings saved locally. Public filing requires "
+            "an explicit /bugreport confirmation.[/]"
+        )
+        logger.info("match-review: findings saved locally; public filing requires explicit consent")
 
     def _offer_missed_decision_issue(self, missed_decisions: list[dict] | None = None) -> None:
-        """Offer to file a GH issue if vision detected missed decisions this match.
+        """Save vision-watchdog detections locally; never file them publicly.
+
+        The watchdog is automatic telemetry. Its detections are useful local
+        diagnostics, but they are not consent to publish. A user who wants to
+        file one can use /bugreport, which shows the destination and contents
+        before asking for confirmation.
 
         Accepts missed_decisions directly to avoid coupling to instance state.
         Falls back to getattr for callers that still use the old singleton pattern.
@@ -1025,141 +1011,19 @@ class _PostMatchMixin:
         count = len(missed)
         self.ui.log("")
         self.ui.log(f"[bold yellow]Vision watchdog detected {count} missed decision point(s) this match.[/]")
-        self.ui.log("[yellow]Filing GitHub issue with details...[/]")
 
         try:
-            self._file_missed_decision_gh_issue(missed)
+            path = self._save_missed_decisions_local(missed)
+            self.ui.log(
+                f"[yellow]Saved locally: {path}. Public filing requires an explicit "
+                "/bugreport confirmation.[/]"
+            )
         except Exception as e:
-            logger.error(f"Failed to file GH issue for missed decisions: {e}")
-            self.ui.log(f"[red]Failed to file GH issue: {e}[/]")
-            # Fall back to saving a local bug report
-            self._save_missed_decisions_local(missed)
+            logger.error(f"Failed to save missed decisions locally: {e}")
+            self.ui.log(f"[red]Failed to save missed decisions locally: {e}[/]")
 
-    def _file_missed_decision_gh_issue(self, missed: list[dict]) -> None:
-        """File a GitHub issue with missed decision details."""
-        # Build issue body
-        lines = [
-            "## Missed Decision Points Detected by Vision Watchdog",
-            "",
-            f"**Match date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            f"**Decisions detected:** {len(missed)}",
-            "",
-            "The vision watchdog detected game states where Arena was waiting for player input,",
-            "but no predefined trigger fired. These represent gaps in the trigger/GRE message mapping.",
-            "",
-            "### Details",
-            "",
-        ]
-
-        for i, d in enumerate(missed, 1):
-            local_seat = d.get("local_seat", "?")
-            active = d.get("active_player", "?")
-            priority = d.get("priority_player", "?")
-            is_ours = d.get("is_our_turn")
-            turn_owner = "OURS" if is_ours else ("OPPONENT" if is_ours is False else "?")
-            last_gre = d.get("last_gre_decision", "none")
-            screenshot = d.get("screenshot", "")
-
-            lines.append(f"#### Decision {i}")
-            lines.append(f"- **Timestamp:** {d.get('timestamp', 'N/A')}")
-            lines.append(f"- **Turn:** {d.get('turn', 'N/A')}")
-            lines.append(f"- **Phase:** {d.get('phase', 'N/A')}")
-            lines.append(f"- **Step:** {d.get('step', '')}")
-            lines.append(f"- **Type:** {d.get('decision_type', 'N/A')}")
-            lines.append(f"- **Prompt:** {d.get('prompt_text', 'N/A')}")
-            lines.append(f"- **Confidence:** {d.get('confidence', 'N/A')}")
-            lines.append(f"- **Stall duration:** {d.get('stall_duration_s', 'N/A')}s")
-            lines.append(f"- **Avg tempo:** {d.get('avg_tempo_s', 'N/A')}s")
-            lines.append(f"- **Num options:** {d.get('num_options', 'N/A')}")
-            lines.append("- **Validation context:**")
-            lines.append(f"  - Local seat: {local_seat} | Active player: {active} | Priority: {priority}")
-            lines.append(f"  - Turn owner: **{turn_owner}** | We have priority: {priority == local_seat}")
-            lines.append(f"  - Last cleared GRE decision: `{last_gre}`")
-            if screenshot:
-                lines.append(f"  - Screenshot: `~/.arenamcp/watchdog_screenshots/{screenshot}`")
-            log_ctx = d.get("log_context", [])
-            if log_ctx:
-                # Show last 5 in GH issue (full 10 in local JSON sidecar)
-                trimmed = log_ctx[-5:]
-                lines.append(f"- **Game log ({len(trimmed)} of {len(log_ctx)} states before detection):**")
-                lines.append("```")
-                for log_line in trimmed:
-                    lines.append(log_line)
-                lines.append("```")
-            lines.append("")
-
-        lines.append("### Suggested Action")
-        lines.append("")
-        lines.append("Review each detection's validation context. Detections where turn owner is OPPONENT")
-        lines.append("or where a GRE decision was recently cleared are likely **false positives**.")
-        lines.append("True positives (our turn, our priority, no recent GRE decision) indicate gaps")
-        lines.append("in the trigger/GRE message mapping.")
-        lines.append("")
-        lines.append("---")
-        lines.append("*Auto-filed by mtgacoach vision watchdog*")
-
-        body = "\n".join(lines)
-
-        # Determine unique decision types for the title
-        types = sorted(set(d.get("decision_type", "unknown") for d in missed))
-        types_str = ", ".join(types[:3])
-        if len(types) > 3:
-            types_str += f" (+{len(types) - 3} more)"
-        title = f"Missed decision points: {types_str}"
-        if len(title) > 70:
-            title = title[:67] + "..."
-
-        result = subprocess.run(
-            [
-                "gh",
-                "issue",
-                "create",
-                "--repo",
-                "josharmour/mtgacoach",
-                "--title",
-                title,
-                "--label",
-                "bug,vision-watchdog",
-                "--body",
-                body,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-
-        if result.returncode == 0:
-            issue_url = result.stdout.strip()
-            self.ui.log(f"[bold green]GitHub issue filed: {issue_url}[/]")
-            logger.info(f"Filed GH issue for {len(missed)} missed decisions: {issue_url}")
-        else:
-            # Label might not exist yet — retry without labels
-            if "label" in result.stderr.lower():
-                result2 = subprocess.run(
-                    [
-                        "gh",
-                        "issue",
-                        "create",
-                        "--repo",
-                        "josharmour/mtgacoach",
-                        "--title",
-                        title,
-                        "--body",
-                        body,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                if result2.returncode == 0:
-                    issue_url = result2.stdout.strip()
-                    self.ui.log(f"[bold green]GitHub issue filed: {issue_url}[/]")
-                    logger.info(f"Filed GH issue for {len(missed)} missed decisions: {issue_url}")
-                    return
-            raise RuntimeError(f"gh issue create failed: {result.stderr.strip()}")
-
-    def _save_missed_decisions_local(self, missed: list[dict]) -> None:
-        """Save missed decisions to a local file as fallback when GH filing fails."""
+    def _save_missed_decisions_local(self, missed: list[dict]) -> Path:
+        """Save missed decisions to a local file (the only automatic destination)."""
         bug_dir = LOG_DIR / "bug_reports"
         bug_dir.mkdir(exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1168,6 +1032,7 @@ class _PostMatchMixin:
             json.dump({"missed_decisions": missed, "timestamp": timestamp}, f, indent=2)
         self.ui.log(f"[yellow]Saved missed decisions locally: {path}[/]")
         logger.info(f"Saved {len(missed)} missed decisions to {path}")
+        return path
 
     def trigger_match_analysis(self) -> None:
         """Manually trigger post-match analysis (from Analyze Match button).
