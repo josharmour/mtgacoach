@@ -9053,6 +9053,12 @@ class ActionPlanner(_ActionLegalityMixin):
         from arenamcp.land_intent import land_payment_notes
 
         lines.extend(land_payment_notes(decision, game_state))
+        from arenamcp.sequence_value import sequence_value_notes, sequence_values
+
+        trigger_memory = getattr(self, "_public_trigger_uses", None)
+        trigger_uses = trigger_memory.observe(game_state) if trigger_memory is not None else frozenset()
+        public_outcomes = sequence_values(decision, game_state, used_draw_triggers=trigger_uses)
+        lines.extend(sequence_value_notes(public_outcomes))
         if any(o.meta.get("choiceKind") == "selection" for o in decision.options):
             lines.append(
                 "CASTING-COST SELECTION: choose only among these offered battlefield creatures, "
@@ -9455,6 +9461,8 @@ class ActionPlanner(_ActionLegalityMixin):
         }
         if activation_note:
             self._last_decision_trace["activation_intent"] = activation_note
+        if public_outcomes:
+            self._last_decision_trace["public_sequence_values"] = [v.record() for v in public_outcomes]
         if lines_text or line_tags:
             self._last_decision_trace["lines"] = {"summary": lines_text, "tags": line_tags}
             if unmodelled:
