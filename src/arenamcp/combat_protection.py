@@ -133,6 +133,36 @@ def _sig(value):
     return tuple(value) if isinstance(value, list) else value
 
 
+def _colors_signature(card, inner):
+    """The first color field ``source_colors`` would read, as a hashable value."""
+    for field in ("_source_colors", "modified_colors", "colors"):
+        for obj in (card, inner):
+            value = obj.get(field)
+            if value is not None:
+                return _sig(value)
+    return None
+
+
+def _may_have_protection(card, raw):
+    """Whether any field other than colors can contribute a protection quality."""
+    if card.get("_protection_future"):
+        return True
+    # Every English printing of the ability contains this stem; checking it
+    # without ``lower()`` keeps the common no-protection body allocation-free.
+    if "rotection" in str(raw.get("oracle_text") or ""):
+        return True
+    objects = (card,) if raw is card else (card, raw)
+    for obj in objects:
+        for ability in obj.get("ability_grp_ids") or ():
+            if ability in COLOR_PROTECTION_ABILITIES:
+                return True
+        for field in ("keywords", "granted_abilities"):
+            for value in obj.get(field) or ():
+                if "rotection" in str(value):
+                    return True
+    return False
+
+
 def protection_signature(card):
     """Every input ``protection_key`` reads, as a cheap hashable fingerprint.
 
@@ -140,15 +170,20 @@ def protection_signature(card):
     in-place refresh of the body or of its nested ``_card`` backing dict (a
     ``modified_colors`` change must not serve a stale key). It reads the same
     fields ``protection_key`` does, without the parsing and set work.
+
+    Most bodies have no protection at all. For those the key's quality set is
+    always empty, so only the color fields and the unpreventable flag can
+    change it; skip the other ten field reads and tuple entries.
     """
     inner = card.get("_card")
     if not isinstance(inner, dict) or not inner or inner is card:
         inner = None
     raw = inner if inner is not None else card
+    colors = _colors_signature(card, inner)
+    if not _may_have_protection(card, raw):
+        return ("plain", colors, bool(card.get("damage_cant_be_prevented")))
     parts = [
-        _sig(card.get("_source_colors")),
-        _sig(card.get("modified_colors")),
-        _sig(card.get("colors")),
+        colors,
         bool(card.get("_protection_future")),
         _sig(card.get("ability_grp_ids")),
         _sig(card.get("keywords")),
@@ -160,9 +195,6 @@ def protection_signature(card):
     if inner is not None:
         parts.extend(
             (
-                _sig(inner.get("_source_colors")),
-                _sig(inner.get("modified_colors")),
-                _sig(inner.get("colors")),
                 _sig(inner.get("ability_grp_ids")),
                 _sig(inner.get("keywords")),
                 _sig(inner.get("granted_abilities")),
