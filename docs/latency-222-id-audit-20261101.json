@@ -1,0 +1,734 @@
+{
+  "scope": "All23 assigned IDs exactly once; incident roots can overlap. No blanket historical/live closure. Tests are local fakes/replays, not remote inference. Original ledger unchanged.",
+  "source_ledger": "/Volumes/repos/mtgacoach/autopilot-improvements.md",
+  "source_sha256": "34aeaf0f2262d28ab304af22aec9030927b7d172d4a9414f9ec1a24ac95ecf8c",
+  "base_followup": "e4c06ca686f0b893347b7f6461d3d031f7b5f4ab",
+  "controls": {
+    "F1": "e4c06ca: first legal declaration wins; loser cancelled",
+    "F2": "e4c06ca: reform and JSON repair share deadline",
+    "F3": "e4c06ca: long failure cooldown starts at completion",
+    "F4": "e4c06ca: fast initial hosted plan followed by ordinary deeper refresh",
+    "F5": "follow-up: cancel non-hedged action/repair calls when caller stops waiting",
+    "P": "existing proxy budget, bounded retry, health and stream closure controls",
+    "T": "existing typed first-usable-answer, bounded doubt and shared second-look budget controls",
+    "R": "existing outage-memory provenance and changed-board reversal controls",
+    "S": "existing late-game supersede starvation controls",
+    "B": "existing opponent-turn scheduling/lethal exception and deck handoff controls",
+    "J": "existing unusable-plan rejection and one bounded JSON retry"
+  },
+  "test_groups": {
+    "F1": [
+      "tests/test_latency_budget_222_followup.py::test_ready_low_declaration_cancels_high_before_its_budget_expires",
+      "tests/test_latency_budget_222_followup.py::test_fast_invalid_declaration_does_not_displace_the_valid_other_leg",
+      "tests/test_declaration_budget_232.py::test_declaration_hedge_cancels_outstanding_calls"
+    ],
+    "F2": [
+      "tests/test_latency_budget_222_followup.py::test_strategy_json_retry_shares_the_original_reform_budget"
+    ],
+    "F3": [
+      "tests/test_latency_budget_222_followup.py::test_long_failed_reform_cools_down_from_completion"
+    ],
+    "F4": [
+      "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_gets_a_fast_answer_before_deep_refreshes",
+      "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_repair_keeps_fast_mode_and_shared_budget",
+      "tests/test_latency_budget_222_followup.py::test_fast_initial_plan_reaches_proxy_without_hidden_reasoning"
+    ],
+    "F5": [
+      "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+      "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+    ],
+    "P": [
+      "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+      "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+      "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+      "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+      "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes"
+    ],
+    "T": [
+      "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+      "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+      "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+      "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded"
+    ],
+    "R": [
+      "tests/test_decision_memory.py::test_outage_pass_is_remembered_without_becoming_a_strategic_commitment",
+      "tests/test_decision_memory.py::test_changed_permanent_or_stack_is_not_an_unchanged_board_reversal",
+      "tests/test_reversal_recheck_failure_20261019.py::test_a_failed_recheck_keeps_a_line_best_pick",
+      "tests/test_reversal_recheck_failure_20261019.py::test_a_failed_recheck_keeps_a_lethal_pick"
+    ],
+    "S": [
+      "tests/test_autopilot_fixes_20261019.py::test_late_game_sparse_hand_and_consecutive_supersedes_use_low_effort",
+      "tests/test_autopilot_fixes_20261019.py::test_one_supersede_with_a_sparse_late_hand_keeps_the_late_plan"
+    ],
+    "B": [
+      "tests/test_game_plan.py::test_mid_turn_reforms_wait_for_the_opponents_turn",
+      "tests/test_game_plan_lethal_flip_midturn.py::test_lethal_flip_replans_our_turn_immediately",
+      "tests/test_deck_handoff_20261101.py::test_cancellation_reserves_lane_before_retry_can_overtake"
+    ],
+    "J": [
+      "tests/test_game_plan_unusable_and_kills_20261019.py::test_an_unusable_answer_is_logged_and_retried_once_at_low_effort",
+      "tests/test_game_plan_unusable_and_kills_20261019.py::test_a_second_unusable_answer_keeps_the_prior_plan_without_a_third_call"
+    ]
+  },
+  "issues": [
+    {
+      "id": 141,
+      "source_ledger_line": 747,
+      "historical_evidence": "d9a33232; fresh c667eb4d and 650ae555",
+      "observed_mechanisms": "Late-game supersede starvation is distinct from first-plan hidden-reasoning delay. Current 650ae555 first request had no content after 45.3s.",
+      "control_keys": [
+        "S",
+        "F2",
+        "F3",
+        "F4"
+      ],
+      "tests": [
+        "tests/test_autopilot_fixes_20261019.py::test_late_game_sparse_hand_and_consecutive_supersedes_use_low_effort",
+        "tests/test_autopilot_fixes_20261019.py::test_one_supersede_with_a_sparse_late_hand_keeps_the_late_plan",
+        "tests/test_latency_budget_222_followup.py::test_strategy_json_retry_shares_the_original_reform_budget",
+        "tests/test_latency_budget_222_followup.py::test_long_failed_reform_cools_down_from_completion",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_gets_a_fast_answer_before_deep_refreshes",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_repair_keeps_fast_mode_and_shared_budget",
+        "tests/test_latency_budget_222_followup.py::test_fast_initial_plan_reaches_proxy_without_hidden_reasoning"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Verify initial plan completion/quality and retained late-game plan under live turn changes; no guarantee from request-policy tests.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 222,
+      "source_ledger_line": 817,
+      "historical_evidence": "2c397f62, dffd55b0",
+      "observed_mechanisms": "Budget-cut streams and excessive second-answer waiting; ordinary and repair calls could also outlive their caller wait.",
+      "control_keys": [
+        "P",
+        "T",
+        "F1",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes",
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_latency_budget_222_followup.py::test_ready_low_declaration_cancels_high_before_its_budget_expires",
+        "tests/test_latency_budget_222_followup.py::test_fast_invalid_declaration_does_not_displace_the_valid_other_leg",
+        "tests/test_declaration_budget_232.py::test_declaration_hedge_cancels_outstanding_calls",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Correlate end-to-end decision duration, remaining Arena clock, and cancellation acknowledgements after integration; remote saturation remains unqualified.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 223,
+      "source_ledger_line": 818,
+      "historical_evidence": "2026-10-23 audit: 686 decisions; fresh 650ae555",
+      "observed_mechanisms": "Background overlap and cancelled/repeated reforms; long failures previously had no effective post-completion cooldown. Initial hosted reasoning remained expensive.",
+      "control_keys": [
+        "B",
+        "F2",
+        "F3",
+        "F4",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_game_plan.py::test_mid_turn_reforms_wait_for_the_opponents_turn",
+        "tests/test_game_plan_lethal_flip_midturn.py::test_lethal_flip_replans_our_turn_immediately",
+        "tests/test_deck_handoff_20261101.py::test_cancellation_reserves_lane_before_retry_can_overtake",
+        "tests/test_latency_budget_222_followup.py::test_strategy_json_retry_shares_the_original_reform_budget",
+        "tests/test_latency_budget_222_followup.py::test_long_failed_reform_cools_down_from_completion",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_gets_a_fast_answer_before_deep_refreshes",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_repair_keeps_fast_mode_and_shared_budget",
+        "tests/test_latency_budget_222_followup.py::test_fast_initial_plan_reaches_proxy_without_hidden_reasoning",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Measure overlap and time to first usable plan on installed build. Existing immediate lethal-flip policy remains deliberate, not deferred wholesale.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 231,
+      "source_ledger_line": 837,
+      "historical_evidence": "d90d0eae, e276ca14",
+      "observed_mechanisms": "Repeated first-token and total-budget timeouts; 15–31s whole-loop stalls do not by themselves identify one request as the cause.",
+      "control_keys": [
+        "P",
+        "T",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes",
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Match request start/end spans and chain waits to the historical stall. Live load qualification needed; no observed exact-case replay.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 232,
+      "source_ledger_line": 838,
+      "historical_evidence": "c63678d8",
+      "observed_mechanisms": "No first token plus declare-blocker timeout; late declaration hedge could wait despite ready low. Harmful fallback strategy is a separate cause.",
+      "control_keys": [
+        "P",
+        "F1",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes",
+        "tests/test_latency_budget_222_followup.py::test_ready_low_declaration_cancels_high_before_its_budget_expires",
+        "tests/test_latency_budget_222_followup.py::test_fast_invalid_declaration_does_not_displace_the_valid_other_leg",
+        "tests/test_declaration_budget_232.py::test_declaration_hedge_cancels_outstanding_calls",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Replay exact blocker board with combat owner and qualify cancellation/deadline in live DeclareBlockers; this fix does not change fallback strategy.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 239,
+      "source_ledger_line": 845,
+      "historical_evidence": "18975f2b",
+      "observed_mechanisms": "First-token/circuit saturation plus repeated watchdog replies and post-cast hop-limit signature. Multiple layers, not one remote-service defect.",
+      "control_keys": [
+        "P",
+        "T",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes",
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Execution owner must qualify repeated OptionalAction responses/hop progression; correlate service and request lifecycle timings.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 241,
+      "source_ledger_line": 847,
+      "historical_evidence": "4106994f; c7b1185c, 0a0b80ab",
+      "observed_mechanisms": "Outage fallback pass was treated as strategic hold during a timed-out reversal recheck; already addressed by provenance and board signature controls.",
+      "control_keys": [
+        "R",
+        "T",
+        "P"
+      ],
+      "tests": [
+        "tests/test_decision_memory.py::test_outage_pass_is_remembered_without_becoming_a_strategic_commitment",
+        "tests/test_decision_memory.py::test_changed_permanent_or_stack_is_not_an_unchanged_board_reversal",
+        "tests/test_reversal_recheck_failure_20261019.py::test_a_failed_recheck_keeps_a_line_best_pick",
+        "tests/test_reversal_recheck_failure_20261019.py::test_a_failed_recheck_keeps_a_lethal_pick",
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Replay exact Gaea’s Gift window with original memory provenance if available; controls are mechanism tests, not that exact card-state acceptance.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 248,
+      "source_ledger_line": 854,
+      "historical_evidence": "50668fe5, 447ae530",
+      "observed_mechanisms": "Budget exhaustion and 16–31s loop delays accompanied by post-cast six-second waits.",
+      "control_keys": [
+        "P",
+        "T",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes",
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Separate post-cast waits (#206/#243) from model duration; obtain post-install per-call and chain timings.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 249,
+      "source_ledger_line": 855,
+      "historical_evidence": "0620a891, a627d4fe",
+      "observed_mechanisms": "No-first-token/budget timeouts, first-plan delay, benign recovered malformed blocker JSON.",
+      "control_keys": [
+        "P",
+        "T",
+        "F1",
+        "F4",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes",
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_latency_budget_222_followup.py::test_ready_low_declaration_cancels_high_before_its_budget_expires",
+        "tests/test_latency_budget_222_followup.py::test_fast_invalid_declaration_does_not_displace_the_valid_other_leg",
+        "tests/test_declaration_budget_232.py::test_declaration_hedge_cancels_outstanding_calls",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_gets_a_fast_answer_before_deep_refreshes",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_repair_keeps_fast_mode_and_shared_budget",
+        "tests/test_latency_budget_222_followup.py::test_fast_initial_plan_reaches_proxy_without_hidden_reasoning",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Service-load and first-plan live qualification; malformed answer handling belongs to parser stream and is not evidence of universal parse failure.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 253,
+      "source_ledger_line": 859,
+      "historical_evidence": "cd0b1978, e53b79f6",
+      "observed_mechanisms": "Long decision chains plus schema-shaped empty role and initial-plan lag; follow-up opinions need one shared budget.",
+      "control_keys": [
+        "T",
+        "F2",
+        "F3",
+        "F4",
+        "J",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_latency_budget_222_followup.py::test_strategy_json_retry_shares_the_original_reform_budget",
+        "tests/test_latency_budget_222_followup.py::test_long_failed_reform_cools_down_from_completion",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_gets_a_fast_answer_before_deep_refreshes",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_repair_keeps_fast_mode_and_shared_budget",
+        "tests/test_latency_budget_222_followup.py::test_fast_initial_plan_reaches_proxy_without_hidden_reasoning",
+        "tests/test_game_plan_unusable_and_kills_20261019.py::test_an_unusable_answer_is_logged_and_retried_once_at_low_effort",
+        "tests/test_game_plan_unusable_and_kills_20261019.py::test_a_second_unusable_answer_keeps_the_prior_plan_without_a_third_call",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Execution f9b88c8 owns Arena-clock/chain deadline changes. Verify empty-plan rejection and first availability without conflating it with service TTFT.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 256,
+      "source_ledger_line": 862,
+      "historical_evidence": "9dc1c55c",
+      "observed_mechanisms": "First-token/budget delays; rejected unavailable-card win conditions and closed attack window compounded the episode.",
+      "control_keys": [
+        "P",
+        "T",
+        "F1",
+        "F4",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes",
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_latency_budget_222_followup.py::test_ready_low_declaration_cancels_high_before_its_budget_expires",
+        "tests/test_latency_budget_222_followup.py::test_fast_invalid_declaration_does_not_displace_the_valid_other_leg",
+        "tests/test_declaration_budget_232.py::test_declaration_hedge_cancels_outstanding_calls",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_gets_a_fast_answer_before_deep_refreshes",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_repair_keeps_fast_mode_and_shared_budget",
+        "tests/test_latency_budget_222_followup.py::test_fast_initial_plan_reaches_proxy_without_hidden_reasoning",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Unavailable-card strategy (#240) and closed-window combat (#230/#243) need their owners; service timings alone cannot establish causal loss.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 260,
+      "source_ledger_line": 866,
+      "historical_evidence": "6bef1efb, 06bbdd81, b5f55777",
+      "observed_mechanisms": "15–21s stalls without first-token timeout; fallback contradiction, post-cast wait and PayCosts/AutoTap mismatch are separate signals.",
+      "control_keys": [
+        "T",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Correlate blocking frame/decision-chain time. Execution owns PayCosts request mismatch; claims/fallback owner handles contradictory rationale.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 264,
+      "source_ledger_line": 870,
+      "historical_evidence": "90b6a56c, 94f1043a, edfd8db0",
+      "observed_mechanisms": "Milder loop stalls with no first-token or budget failures; one first-plan-start lag.",
+      "control_keys": [
+        "T",
+        "F4",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_gets_a_fast_answer_before_deep_refreshes",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_repair_keeps_fast_mode_and_shared_budget",
+        "tests/test_latency_budget_222_followup.py::test_fast_initial_plan_reaches_proxy_without_hidden_reasoning",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Need end-to-end spans to explain stalls; cannot infer service delay merely from watchdog warning. First-plan live completion pending.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 265,
+      "source_ledger_line": 871,
+      "historical_evidence": "e756afa4, 15eaac1a",
+      "observed_mechanisms": "High-effort declaration fails at budget while low could stand; separate malformed typed output and illegal declaration pass.",
+      "control_keys": [
+        "F1",
+        "F5",
+        "P"
+      ],
+      "tests": [
+        "tests/test_latency_budget_222_followup.py::test_ready_low_declaration_cancels_high_before_its_budget_expires",
+        "tests/test_latency_budget_222_followup.py::test_fast_invalid_declaration_does_not_displace_the_valid_other_leg",
+        "tests/test_declaration_budget_232.py::test_declaration_hedge_cancels_outstanding_calls",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token",
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Qualify faster accepted declaration live; parser/legality owner retains malformed/illegal-output work. No exact historical full-game replay.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 266,
+      "source_ledger_line": 872,
+      "historical_evidence": "04314b21, 8d26e22e, c06d3a82",
+      "observed_mechanisms": "Two budget exhaustions in one window, first-plan lag, hop-limit(1), and library-only strategy rejection.",
+      "control_keys": [
+        "P",
+        "T",
+        "F2",
+        "F4",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes",
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_latency_budget_222_followup.py::test_strategy_json_retry_shares_the_original_reform_budget",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_gets_a_fast_answer_before_deep_refreshes",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_repair_keeps_fast_mode_and_shared_budget",
+        "tests/test_latency_budget_222_followup.py::test_fast_initial_plan_reaches_proxy_without_hidden_reasoning",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Identify whether exhausted calls were hedge or serial work; execution owns hop limit and strategy owner owns unavailable-card rejection.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 269,
+      "source_ledger_line": 875,
+      "historical_evidence": "211d4ccc, 87cac475",
+      "observed_mechanisms": "Low answer specifically doubted for false lethal; high did not arrive. Bounded wait correctly falls to board math rather than accepting unsafe low.",
+      "control_keys": [
+        "T",
+        "P",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Replay doubt/fallback outcome on exact board; do not remove false-lethal guard to reduce latency. Qualify actual fallback time versus Arena clock.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 275,
+      "source_ledger_line": 881,
+      "historical_evidence": "788e9968, a2b16e80",
+      "observed_mechanisms": "One budget-exhaustion/19s loop stall, first-plan lag and hop-limit signature. Companion match had no stalls.",
+      "control_keys": [
+        "P",
+        "T",
+        "F4",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes",
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_gets_a_fast_answer_before_deep_refreshes",
+        "tests/test_latency_budget_222_followup.py::test_first_hosted_plan_repair_keeps_fast_mode_and_shared_budget",
+        "tests/test_latency_budget_222_followup.py::test_fast_initial_plan_reaches_proxy_without_hidden_reasoning",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Live timing distribution and execution hop progression; one quiet game does not close recurrence.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 276,
+      "source_ledger_line": 882,
+      "historical_evidence": "228fed6f, 750806ad",
+      "observed_mechanisms": "decision.plan high used full15s despite first token at5.4s; loop resumed around22s.",
+      "control_keys": [
+        "P",
+        "F1",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes",
+        "tests/test_latency_budget_222_followup.py::test_ready_low_declaration_cancels_high_before_its_budget_expires",
+        "tests/test_latency_budget_222_followup.py::test_fast_invalid_declaration_does_not_displace_the_valid_other_leg",
+        "tests/test_declaration_budget_232.py::test_declaration_hedge_cancels_outstanding_calls",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Check whether historical low leg was ready; validate first-usable declaration and total loop timing. No causal loss established.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 277,
+      "source_ledger_line": 883,
+      "historical_evidence": "faa03ef3, bfd351f0",
+      "observed_mechanisms": "High-effort declaration exhausted budget then low stood and attack executed; a direct delayed-winner signature.",
+      "control_keys": [
+        "F1",
+        "F5",
+        "P"
+      ],
+      "tests": [
+        "tests/test_latency_budget_222_followup.py::test_ready_low_declaration_cancels_high_before_its_budget_expires",
+        "tests/test_latency_budget_222_followup.py::test_fast_invalid_declaration_does_not_displace_the_valid_other_leg",
+        "tests/test_declaration_budget_232.py::test_declaration_hedge_cancels_outstanding_calls",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token",
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Live first-valid-winner/cancel confirmation and residual 33s chain timing. First-plan and hop-limit variants remain separate.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 283,
+      "source_ledger_line": 889,
+      "historical_evidence": "341f42fc, 93237e88",
+      "observed_mechanisms": "15–18s loop stalls and one budget exhaustion; correct board-math fallback in companion match.",
+      "control_keys": [
+        "P",
+        "T",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes",
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Per-call/chain correlation under load; correct fallback is not evidence the full latency defect is closed.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 285,
+      "source_ledger_line": 891,
+      "historical_evidence": "78904ea7, fd68fa31, 53bdd320, 10f24c09",
+      "observed_mechanisms": "High declaration budget cut while low stood; other budget failures/model-unavailable fallback and hop-limit(1).",
+      "control_keys": [
+        "F1",
+        "P",
+        "T",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_latency_budget_222_followup.py::test_ready_low_declaration_cancels_high_before_its_budget_expires",
+        "tests/test_latency_budget_222_followup.py::test_fast_invalid_declaration_does_not_displace_the_valid_other_leg",
+        "tests/test_declaration_budget_232.py::test_declaration_hedge_cancels_outstanding_calls",
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes",
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Qualify declaration speed and service timeouts separately; execution owner handles hop progression. No proven caused loss.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 286,
+      "source_ledger_line": 892,
+      "historical_evidence": "0c12cb47",
+      "observed_mechanisms": "High declaration exhausted budget before deterministic Sneak guard converted lethal; illegal pass/fallback retry is distinct.",
+      "control_keys": [
+        "F1",
+        "P",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_latency_budget_222_followup.py::test_ready_low_declaration_cancels_high_before_its_budget_expires",
+        "tests/test_latency_budget_222_followup.py::test_fast_invalid_declaration_does_not_displace_the_valid_other_leg",
+        "tests/test_declaration_budget_232.py::test_declaration_hedge_cancels_outstanding_calls",
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Verify accepted timely declaration without weakening lethal guard; parser/legality retry requires exact-case owner qualification.",
+      "exact_historical_outcome_replayed": false
+    },
+    {
+      "id": 289,
+      "source_ledger_line": 895,
+      "historical_evidence": "220b8546",
+      "observed_mechanisms": "Typed low reported4.051s while high exhausted budget and loop stalled19s; big-board fallback and stale strategy later compounded outcome.",
+      "control_keys": [
+        "T",
+        "P",
+        "F5"
+      ],
+      "tests": [
+        "tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high",
+        "tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait",
+        "tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget",
+        "tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded",
+        "tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure",
+        "tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried",
+        "tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay",
+        "tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request",
+        "tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes",
+        "tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend",
+        "tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token"
+      ],
+      "disposition": "PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED",
+      "unresolved_prerequisite": "Current usable-low race test covers wait mechanism, not historical solver choice. Combat owner must replay #288 and strategic owner #240/#287.",
+      "exact_historical_outcome_replayed": false
+    }
+  ],
+  "qualification_evidence": {
+    "path": "/Users/joshu/Documents/Codex/2026-10-31/task-12/q1-latency-evidence.json",
+    "sha256": "fd1fe87f57b94606de18fcabc3b7ea7464e2ca84b8022b4dbf6200291fffa3d9",
+    "scope": "Sanitized existing log excerpts; runtime revision not independently identified in this evidence. No external model calls.",
+    "observations": [
+      "650ae555 repeats the already-audited45.2996s no-content cancellation and24.2379s retry cancellation.",
+      "00573568 first plan completed in21.2655s and was retained on turn4 from a turn1 snapshot.",
+      "These use low effort and75s budgets; they are not acceptance evidence for the new none-effort20s initial policy."
+    ],
+    "new_root_cause": false,
+    "live_fix_qualification": false
+  }
+}

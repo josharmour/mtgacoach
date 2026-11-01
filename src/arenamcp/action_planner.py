@@ -1507,6 +1507,21 @@ class ActionPlanner(_ActionLegalityMixin):
                 cancel_event=cancel_event,
             )
 
+        def _bounded_complete(call_class: str = "decision.plan") -> str:
+            # A future timeout stops only the waiter. Cancel the underlying
+            # call too, as the typed/declaration hedges already do, so it does
+            # not compete with the next live request. Repair gets a fresh token
+            # but shares the original (possibly Arena-clamped) deadline.
+            cancel = threading.Event()
+            try:
+                return self._bounded_call(
+                    lambda: _complete(call_class, cancel_event=cancel),
+                    timeout_s=model_deadline - time.monotonic(),
+                )
+            except BaseException:
+                cancel.set()
+                raise
+
         # Ledger #159 (be1a945f T10): declarations ran at low effort with 25 power against their
         # 12 life. Within lethal reach or in danger they think at high effort, a low-effort
         # answer racing alongside as the hedge (``_hedged_declaration``).
@@ -1533,7 +1548,7 @@ class ActionPlanner(_ActionLegalityMixin):
                     ),
                 )
                 if effort
-                else self._bounded_call(_complete, timeout_s=model_deadline - time.monotonic())
+                else _bounded_complete()
             )
             elapsed = (time.perf_counter() - start) * 1000
             logger.info(f"Action planning took {elapsed:.0f}ms")
@@ -1612,10 +1627,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 )
             user_message += repair_instruction
             try:
-                repair_response = self._bounded_call(
-                    lambda: _complete(f"decision.{repair_kind}_repair"),
-                    timeout_s=model_deadline - time.monotonic(),
-                )
+                repair_response = _bounded_complete(f"decision.{repair_kind}_repair")
                 plan = self._parse_response(
                     repair_response,
                     effective_legal_actions,
