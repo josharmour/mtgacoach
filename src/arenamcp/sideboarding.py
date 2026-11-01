@@ -1,9 +1,7 @@
 """Recognize the between-games deck request without treating it as gameplay."""
 
 SIDEBOARD_REQUESTS = frozenset({"SubmitDeck", "SubmitDeckReq", "SubmitDeckRequest"})
-SIDEBOARD_WAIT_MESSAGE = (
-    "Sideboarding: waiting for a reviewed deck submission before the next game."
-)
+SIDEBOARD_WAIT_MESSAGE = "Sideboarding: waiting for a reviewed deck submission before the next game."
 
 
 def is_sideboarding(state: dict) -> bool:
