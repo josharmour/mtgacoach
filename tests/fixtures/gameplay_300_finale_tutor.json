@@ -1,0 +1,690 @@
+{
+  "numeric_decision": {
+    "request_id": [
+      260,
+      339
+    ],
+    "request_type": "CastingTimeOptions",
+    "options": [
+      {
+        "option_id": "idx:0",
+        "label": "X = 0",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 0",
+          "sourceId": 527,
+          "numericValue": 0,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:1",
+        "label": "X = 1",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 1",
+          "sourceId": 527,
+          "numericValue": 1,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:2",
+        "label": "X = 2",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 2",
+          "sourceId": 527,
+          "numericValue": 2,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:3",
+        "label": "X = 3",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 3",
+          "sourceId": 527,
+          "numericValue": 3,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:4",
+        "label": "X = 4",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 4",
+          "sourceId": 527,
+          "numericValue": 4,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:5",
+        "label": "X = 5",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 5",
+          "sourceId": 527,
+          "numericValue": 5,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:6",
+        "label": "X = 6",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 6",
+          "sourceId": 527,
+          "numericValue": 6,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:7",
+        "label": "X = 7",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 7",
+          "sourceId": 527,
+          "numericValue": 7,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:8",
+        "label": "X = 8",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 8",
+          "sourceId": 527,
+          "numericValue": 8,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:9",
+        "label": "X = 9",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 9",
+          "sourceId": 527,
+          "numericValue": 9,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:10",
+        "label": "X = 10",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 10",
+          "sourceId": 527,
+          "numericValue": 10,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:11",
+        "label": "X = 11",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 11",
+          "sourceId": 527,
+          "numericValue": 11,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:12",
+        "label": "X = 12",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 12",
+          "sourceId": 527,
+          "numericValue": 12,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:13",
+        "label": "X = 13",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 13",
+          "sourceId": 527,
+          "numericValue": 13,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:14",
+        "label": "X = 14",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 14",
+          "sourceId": 527,
+          "numericValue": 14,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:15",
+        "label": "X = 15",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 15",
+          "sourceId": 527,
+          "numericValue": 15,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:16",
+        "label": "X = 16",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 16",
+          "sourceId": 527,
+          "numericValue": 16,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:17",
+        "label": "X = 17",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 17",
+          "sourceId": 527,
+          "numericValue": 17,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:18",
+        "label": "X = 18",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 18",
+          "sourceId": 527,
+          "numericValue": 18,
+          "min": 0,
+          "max": 2147483647
+        }
+      },
+      {
+        "option_id": "idx:19",
+        "label": "X = 19",
+        "payable": null,
+        "meta": {
+          "actionType": "CastingTimeOption",
+          "choiceKind": "numeric_input",
+          "requestClass": "CastingTimeOption_NumericInputRequest",
+          "childIndex": 0,
+          "label": "X = 19",
+          "sourceId": 527,
+          "numericValue": 19,
+          "min": 0,
+          "max": 2147483647
+        }
+      }
+    ],
+    "min_select": 1,
+    "max_select": 1,
+    "can_pass": false,
+    "can_cancel": true,
+    "source_label": "",
+    "min_weight": null,
+    "max_weight": null,
+    "slots": []
+  },
+  "numeric_chosen": [
+    "idx:4"
+  ],
+  "numeric_reasoning": "X=4 fetches the biggest stabilizing creature (Kogla/Thorn Mammoth/Titan) to block the flying Angels; X<10 gives no alpha-strike bonus so maximize the tutor target.",
+  "search_decision": {
+    "request_id": [
+      265,
+      349
+    ],
+    "request_type": "Search",
+    "options": [
+      {
+        "option_id": "sel:281",
+        "label": "Llanowar Elves",
+        "payable": null,
+        "meta": {
+          "grpId": 93940,
+          "identity_known": true,
+          "card": {
+            "name": "Llanowar Elves",
+            "oracle_text": "{oT}: Add {oG}.",
+            "type_line": "Creature \u2014 Elf Druid",
+            "mana_cost": "{G}",
+            "cmc": 1.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:278",
+        "label": "Birds of Paradise",
+        "payable": null,
+        "meta": {
+          "grpId": 91888,
+          "identity_known": true,
+          "card": {
+            "name": "Birds of Paradise",
+            "oracle_text": "Flying\n{oT}: Add one mana of any color.",
+            "type_line": "Creature \u2014 Bird",
+            "mana_cost": "{G}",
+            "cmc": 1.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:328",
+        "label": "Rofellos, Llanowar Emissary",
+        "payable": null,
+        "meta": {
+          "grpId": 59613,
+          "identity_known": true,
+          "card": {
+            "name": "Rofellos, Llanowar Emissary",
+            "oracle_text": "{oT}: Add {oG} for each Forest you control.",
+            "type_line": "Legendary Creature \u2014 Elf Druid",
+            "mana_cost": "{G}{G}",
+            "cmc": 2.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:295",
+        "label": "Elvish Mystic",
+        "payable": null,
+        "meta": {
+          "grpId": 54163,
+          "identity_known": true,
+          "card": {
+            "name": "Elvish Mystic",
+            "oracle_text": "{oT}: Add {oG}.",
+            "type_line": "Creature \u2014 Elf Druid",
+            "mana_cost": "{G}",
+            "cmc": 1.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:319",
+        "label": "Arboreal Grazer",
+        "payable": null,
+        "meta": {
+          "grpId": 69600,
+          "identity_known": true,
+          "card": {
+            "name": "Arboreal Grazer",
+            "oracle_text": "Reach\nWhen this creature enters, you may put a land card from your hand onto the battlefield tapped.",
+            "type_line": "Creature \u2014 Sloth Beast",
+            "mana_cost": "{G}",
+            "cmc": 1.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:259",
+        "label": "Prosperous Innkeeper",
+        "payable": null,
+        "meta": {
+          "grpId": 77305,
+          "identity_known": true,
+          "card": {
+            "name": "Prosperous Innkeeper",
+            "oracle_text": "When this creature enters, create a Treasure token.\nWhenever another creature you control enters, you gain 1 life.",
+            "type_line": "Creature \u2014 Halfling Citizen",
+            "mana_cost": "{1}{G}",
+            "cmc": 2.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:341",
+        "label": "Kami of Bamboo Groves",
+        "payable": null,
+        "meta": {
+          "grpId": 81103,
+          "identity_known": true,
+          "card": {
+            "name": "Kami of Bamboo Groves",
+            "oracle_text": "When this creature enters, you may put a land card from your hand onto the battlefield tapped.\n<i>Channel</i> \u2014 {o2oG}, Discard this card: Conjure two cards named Forest into your hand.",
+            "type_line": "Enchantment Creature \u2014 Spirit",
+            "mana_cost": "{G}",
+            "cmc": 1.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:273",
+        "label": "Delighted Halfling",
+        "payable": null,
+        "meta": {
+          "grpId": 84850,
+          "identity_known": true,
+          "card": {
+            "name": "Delighted Halfling",
+            "oracle_text": "{oT}: Add {oC}.\n{oT}: Add one mana of any color. Spend this mana only to cast a legendary spell, and that spell can't be countered.",
+            "type_line": "Creature \u2014 Halfling Citizen",
+            "mana_cost": "{G}",
+            "cmc": 1.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:327",
+        "label": "Haywire Mite",
+        "payable": null,
+        "meta": {
+          "grpId": 82684,
+          "identity_known": true,
+          "card": {
+            "name": "Haywire Mite",
+            "oracle_text": "When this creature dies, you gain 2 life.\n{oG}, Sacrifice this creature: Exile target noncreature artifact or noncreature enchantment.",
+            "type_line": "Artifact Creature \u2014 Insect",
+            "mana_cost": "{1}",
+            "cmc": 1.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:313",
+        "label": "Goldvein Hydra",
+        "payable": null,
+        "meta": {
+          "grpId": 90513,
+          "identity_known": true,
+          "card": {
+            "name": "Goldvein Hydra",
+            "oracle_text": "Vigilance\nTrample\nHaste\nThis creature enters with X +1/+1 counters on it.\nWhen this creature dies, create a number of tapped Treasure tokens equal to its power.",
+            "type_line": "Creature \u2014 Hydra",
+            "mana_cost": "{X}{G}",
+            "cmc": 1.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:323",
+        "label": "Fanatic of Rhonas",
+        "payable": null,
+        "meta": {
+          "grpId": 91002,
+          "identity_known": true,
+          "card": {
+            "name": "Fanatic of Rhonas",
+            "oracle_text": "{oT}: Add {oG}.\n<i>Ferocious</i> \u2014 {oT}: Add {oGoGoGoG}. Activate only if you control a creature with power 4 or greater.\nEternalize {o2oGoG}",
+            "type_line": "Creature \u2014 Snake Druid",
+            "mana_cost": "{1}{G}",
+            "cmc": 2.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:279",
+        "label": "Loot, Exuberant Explorer",
+        "payable": null,
+        "meta": {
+          "grpId": 93819,
+          "identity_known": true,
+          "card": {
+            "name": "Loot, Exuberant Explorer",
+            "oracle_text": "You may play an additional land on each of your turns.\n{o4oGoG}, {oT}: Look at the top six cards of your library. You may reveal a creature card with mana value less than or equal to the number of lands you control from among them and put it onto the battlefield. Put the rest on the bottom in a random order.",
+            "type_line": "Legendary Creature \u2014 Beast Noble",
+            "mana_cost": "{2}{G}",
+            "cmc": 3.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:300",
+        "label": "Icetill Explorer",
+        "payable": null,
+        "meta": {
+          "grpId": 96766,
+          "identity_known": true,
+          "card": {
+            "name": "Icetill Explorer",
+            "oracle_text": "You may play an additional land on each of your turns.\nYou may play lands from your graveyard.\n<i>Landfall</i> \u2014 Whenever a land you control enters, mill a card.",
+            "type_line": "Creature \u2014 Insect Scout",
+            "mana_cost": "{2}{G}{G}",
+            "cmc": 4.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:265",
+        "label": "Badgermole Cub",
+        "payable": null,
+        "meta": {
+          "grpId": 97444,
+          "identity_known": true,
+          "card": {
+            "name": "Badgermole Cub",
+            "oracle_text": "When this creature enters, earthbend 1.\nWhenever you tap a creature for mana, add an additional {oG}.",
+            "type_line": "Creature \u2014 Badger Mole",
+            "mana_cost": "{1}{G}",
+            "cmc": 2.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:257",
+        "label": "Chomping Changeling",
+        "payable": null,
+        "meta": {
+          "grpId": 98493,
+          "identity_known": true,
+          "card": {
+            "name": "Chomping Changeling",
+            "oracle_text": "Changeling\nWhen this creature enters, destroy up to one target artifact or enchantment.",
+            "type_line": "Creature \u2014 Shapeshifter",
+            "mana_cost": "{2}{G}",
+            "cmc": 3.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:326",
+        "label": "Mutable Explorer",
+        "payable": null,
+        "meta": {
+          "grpId": 98507,
+          "identity_known": true,
+          "card": {
+            "name": "Mutable Explorer",
+            "oracle_text": "Changeling\nWhen this creature enters, create a tapped Mutavault token.",
+            "type_line": "Creature \u2014 Shapeshifter",
+            "mana_cost": "{2}{G}",
+            "cmc": 3.0
+          }
+        }
+      },
+      {
+        "option_id": "sel:264",
+        "label": "Shang-Chi, Master of Kung Fu",
+        "payable": null,
+        "meta": {
+          "grpId": 105082,
+          "identity_known": true,
+          "card": {
+            "name": "Shang-Chi, Master of Kung Fu",
+            "oracle_text": "You may activate abilities of creatures you control as though those creatures had haste.\n{oT}: Add two mana of any one color. Spend this mana only to activate abilities of creature sources.",
+            "type_line": "Legendary Creature \u2014 Human Warrior Hero",
+            "mana_cost": "{1}{G}",
+            "cmc": 2.0
+          }
+        }
+      }
+    ],
+    "min_select": 0,
+    "max_select": 1,
+    "can_pass": false,
+    "can_cancel": false,
+    "source_label": "",
+    "min_weight": null,
+    "max_weight": null,
+    "slots": [],
+    "prompt_text": "Search for a creature card with mana value 4 or less."
+  },
+  "search_chosen": [
+    "sel:328"
+  ],
+  "search_reasoning": "Rofellos is the strongest MV<=4 ramp engine, tapping for one green per Forest (5 now) to power the commander and future Finale X>=10.",
+  "state": {
+    "local_seat_id": 1,
+    "stack": [
+      {
+        "instance_id": 527,
+        "grp_id": 69611,
+        "name": "Finale of Devastation"
+      }
+    ],
+    "deck_catalog": {
+      "kogla, the titan ape": {
+        "name": "Kogla, the Titan Ape",
+        "oracle_text": "When Kogla enters, it fights up to one target creature you don't control. Whenever Kogla attacks, destroy target artifact or enchantment defending player controls. {1}{G}: Return target Human you control to its owner's hand. Kogla gains indestructible until end of turn.",
+        "keywords": [
+          "Fight"
+        ],
+        "type_line": "Legendary Creature \u2014 Ape",
+        "cmc": 6.0,
+        "mana_cost": "{3}{G}{G}{G}"
+      },
+      "thorn mammoth": {
+        "name": "Thorn Mammoth",
+        "oracle_text": "Trample Whenever this creature or another creature you control enters, this creature fights up to one target creature you don't control.",
+        "keywords": [
+          "Trample",
+          "Fight"
+        ],
+        "type_line": "Creature \u2014 Elephant",
+        "cmc": 7.0,
+        "mana_cost": "{5}{G}{G}"
+      },
+      "titan of industry": {
+        "name": "Titan of Industry",
+        "oracle_text": "Reach, trample When this creature enters, choose two \u2014 \u2022 Destroy target artifact or enchantment. \u2022 Target player gains 5 life. \u2022 Create a 4/4 green Rhino Warrior creature token. \u2022 Put a shield counter on a creature you control.",
+        "keywords": [
+          "Reach",
+          "Trample"
+        ],
+        "type_line": "Creature \u2014 Elemental",
+        "cmc": 7.0,
+        "mana_cost": "{4}{G}{G}{G}"
+      },
+      "69611": {
+        "name": "Finale of Devastation",
+        "oracle_text": "Search your library and/or graveyard for a creature card with mana value X or less and put it onto the battlefield. If you search your library this way, shuffle. If X is 10 or more, creatures you control get +X/+X and gain haste until end of turn.",
+        "keywords": [],
+        "type_line": "Sorcery",
+        "cmc": 2.0,
+        "mana_cost": "{X}{G}{G}"
+      }
+    }
+  },
+  "provenance": "Exact decisions260/339 and265/349, reasoning and choices: task-2/monitoring/770c7b8e-tutor-commander-candidate.json. Card facts:770c7b8e-tutor-oracles.json. Minimal state reconstructs stack source527 from numeric request and Finale group69611 from preceding cast259/337; original full enriched numeric snapshot not retained here. No later search menu supplied to earlier X decision."
+}
