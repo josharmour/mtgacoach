@@ -2788,7 +2788,7 @@ def submit_option(
                 "submit_option: refusing incomplete group assignment %s (%s)", chosen, decision.source_label
             )
             return False
-        return bool(bridge.submit_group(groups))
+        return bool(bridge.submit_group(groups, expected_request_id=decision.request_id))
     if first.startswith("grp:"):
         # Chosen = bottom; the rest of the option set keeps (LondonWorkflow
         # response shape: [Hand/Top keep group, Library/Bottom group]).
@@ -2801,7 +2801,7 @@ def submit_option(
             {"ids": keep, "zone": "Hand", "sub_zone": "Top"},
             {"ids": bottom, "zone": "Library", "sub_zone": "Bottom"},
         ]
-        return bool(bridge.submit_group(groups))
+        return bool(bridge.submit_group(groups, expected_request_id=decision.request_id))
     logger.warning("submit_option: unknown option id scheme %r", first)
     return False
 

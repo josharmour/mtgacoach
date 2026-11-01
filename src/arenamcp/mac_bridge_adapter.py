@@ -2688,6 +2688,7 @@ class MacBridgeAdapter:
 
     def _cmd_submit_group(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout, "GroupRequest")
+        self._check_request_identity(snapshot, command)
         specs = command.get("groups") or []
 
         def build(ops: _Ops, request: dict) -> None:

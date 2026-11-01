@@ -1366,10 +1366,17 @@ class GREBridge:
             logger.warning(f"GRE bridge submit_selection error: {e}")
         return False
 
-    def submit_group(self, groups: list[dict[str, Any]]) -> bool:
+    def submit_group(
+        self, groups: list[dict[str, Any]], *, expected_request_id: tuple[int, int] | None = None
+    ) -> bool:
         """Submit group ordering (scry top/bottom, etc.)."""
         try:
-            resp = self._send_safe({"action": "submit_group", "groups": groups})
+            command = {"action": "submit_group", "groups": groups}
+            if expected_request_id is not None:
+                command.update(
+                    expected_game_state_id=expected_request_id[0], expected_msg_id=expected_request_id[1]
+                )
+            resp = self._send_safe(command)
             if resp.get("ok"):
                 logger.info(f"GRE bridge submitted {len(groups)} groups")
                 return True

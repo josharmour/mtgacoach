@@ -2504,7 +2504,8 @@ class _BridgeSubmitMixin:
         # Extract the revealed instance IDs the request is asking us to order.
         request_payload = pending.get("request_payload") or {}
         instance_ids_raw = (
-            request_payload.get("instanceIds")
+            pending.get("group_instance_ids")
+            or request_payload.get("instanceIds")
             or (pending.get("decision_context") or {}).get("instanceIds")
             or []
         )
@@ -2539,25 +2540,35 @@ class _BridgeSubmitMixin:
         top_ids: list[int] = []
         if desired_names:
             for want in desired_names:
+                matched = []
                 for name, iids in name_to_iid.items():
-                    if want and (want == name or want in name or name in want):
+                    if want == name:
                         for iid in iids:
-                            if iid in instance_ids and iid not in top_ids:
-                                top_ids.append(iid)
+                            if iid in instance_ids:
+                                matched.append(iid)
+                if not matched:
+                    return None  # An expired SelectN label is not a scry instruction.
+                top_ids.extend(iid for iid in dict.fromkeys(matched) if iid not in top_ids)
 
-        # If no specific names resolved, fall back to scry_position intent.
+        # With no named cards, require explicit top/bottom intent.
         pos = (action.scry_position or "").lower()
+        if not desired_names and pos not in {"top", "bottom"}:
+            return None
         if not top_ids and not desired_names and pos == "top":
             top_ids = list(instance_ids)
-            # pos == "bottom" or empty: leave top empty (all go bottom)
+            # pos == "bottom": leave top empty (all go bottom)
 
         bottom_ids = [iid for iid in instance_ids if iid not in top_ids]
 
-        groups = [
-            {"ids": top_ids, "zone": "Library", "sub_zone": "Top"},
-            {"ids": bottom_ids, "zone": "Library", "sub_zone": "Bottom"},
-        ]
-        success = bridge.submit_group(groups)
+        # Use the live specs, including their order and bounds. A surveil or
+        # London Group is not a scry merely because a stale plan says so.
+        from arenamcp.decisions import build_pending_decision, submit_option
+
+        decision = build_pending_decision(pending)
+        chosen = [f"grp:{iid}:top" for iid in top_ids] + [f"grp:{iid}:bottom" for iid in bottom_ids]
+        if decision is None or not decision.selection_is_valid(chosen):
+            return None
+        success = submit_option(bridge, decision, chosen)
         if success:
             self._log_execution_path(
                 ExecutionPath.GRE_AWARE, f"scry: top={len(top_ids)} bottom={len(bottom_ids)} via GRE bridge"

@@ -260,7 +260,7 @@ def test_group_submit_builds_keep_and_bottom_groups():
         def __init__(self):
             self.groups = None
 
-        def submit_group(self, groups):
+        def submit_group(self, groups, *, expected_request_id=None):
             self.groups = groups
             return True
 
@@ -275,7 +275,7 @@ def test_group_submit_builds_keep_and_bottom_groups():
 def test_typed_path_group_uses_llm_or_defers_to_legacy():
     bridge = TypedBridge(_GROUP_POLL)
     bridge.groups = None
-    bridge.submit_group = lambda groups: (setattr(bridge, "groups", groups), True)[1]
+    bridge.submit_group = lambda groups, **kwargs: (setattr(bridge, "groups", groups), True)[1]
 
     # Valid LLM pick → typed path owns it.
     planner = planner_with('{"option_ids": ["grp:105"], "reasoning": "worst card"}')

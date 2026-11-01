@@ -1,0 +1,167 @@
+[
+  {
+    "timestamp": 1793492839097,
+    "message": {
+      "type": "GREMessageType_SelectNReq",
+      "systemSeatIds": [
+        2
+      ],
+      "msgId": 228,
+      "gameStateId": 167,
+      "prompt": {
+        "promptId": 23
+      },
+      "selectNReq": {
+        "minSel": 1,
+        "maxSel": 2,
+        "context": "SelectionContext_TriggeredAbility",
+        "optionContext": "OptionContext_Stacking",
+        "listType": "SelectionListType_Dynamic",
+        "ids": [
+          330,
+          331
+        ],
+        "idType": "IdType_InstanceId",
+        "validationType": "SelectionValidationType_NonRepeatable"
+      }
+    }
+  },
+  {
+    "timestamp": 1793492839188,
+    "message": {
+      "type": "GREMessageType_SelectNReq",
+      "systemSeatIds": [
+        2
+      ],
+      "msgId": 232,
+      "gameStateId": 170,
+      "prompt": {
+        "promptId": 23
+      },
+      "selectNReq": {
+        "minSel": 1,
+        "maxSel": 2,
+        "context": "SelectionContext_TriggeredAbility",
+        "optionContext": "OptionContext_Stacking",
+        "listType": "SelectionListType_Dynamic",
+        "ids": [
+          333,
+          334
+        ],
+        "idType": "IdType_InstanceId",
+        "validationType": "SelectionValidationType_NonRepeatable"
+      }
+    }
+  },
+  {
+    "timestamp": 1793492840721,
+    "message": {
+      "type": "GREMessageType_GroupReq",
+      "systemSeatIds": [
+        2
+      ],
+      "msgId": 236,
+      "gameStateId": 173,
+      "prompt": {
+        "promptId": 92,
+        "parameters": [
+          {
+            "parameterName": "CardId",
+            "type": "ParameterType_Number",
+            "numberValue": 325
+          }
+        ]
+      },
+      "groupReq": {
+        "instanceIds": [
+          231
+        ],
+        "groupSpecs": [
+          {
+            "upperBound": 1,
+            "zoneType": "ZoneType_Library",
+            "subZoneType": "SubZoneType_Top"
+          },
+          {
+            "upperBound": 1,
+            "zoneType": "ZoneType_Library",
+            "subZoneType": "SubZoneType_Bottom"
+          }
+        ],
+        "groupType": "GroupType_Ordered",
+        "context": "GroupingContext_Scry",
+        "sourceId": 334
+      },
+      "allowCancel": "AllowCancel_No"
+    }
+  },
+  {
+    "timestamp": 1793492842797,
+    "message": {
+      "type": "GREMessageType_SelectNReq",
+      "systemSeatIds": [
+        2
+      ],
+      "msgId": 243,
+      "gameStateId": 178,
+      "prompt": {
+        "promptId": 23
+      },
+      "selectNReq": {
+        "minSel": 1,
+        "maxSel": 2,
+        "context": "SelectionContext_TriggeredAbility",
+        "optionContext": "OptionContext_Stacking",
+        "listType": "SelectionListType_Dynamic",
+        "ids": [
+          337,
+          338
+        ],
+        "idType": "IdType_InstanceId",
+        "validationType": "SelectionValidationType_NonRepeatable"
+      }
+    }
+  },
+  {
+    "timestamp": 1793492844999,
+    "message": {
+      "type": "GREMessageType_GroupReq",
+      "systemSeatIds": [
+        2
+      ],
+      "msgId": 248,
+      "gameStateId": 181,
+      "prompt": {
+        "promptId": 92,
+        "parameters": [
+          {
+            "parameterName": "CardId",
+            "type": "ParameterType_Number",
+            "numberValue": 325
+          }
+        ]
+      },
+      "groupReq": {
+        "instanceIds": [
+          231
+        ],
+        "groupSpecs": [
+          {
+            "upperBound": 1,
+            "zoneType": "ZoneType_Library",
+            "subZoneType": "SubZoneType_Top"
+          },
+          {
+            "upperBound": 1,
+            "zoneType": "ZoneType_Library",
+            "subZoneType": "SubZoneType_Bottom"
+          }
+        ],
+        "groupType": "GroupType_Ordered",
+        "context": "GroupingContext_Scry",
+        "sourceId": 338
+      },
+      "allowCancel": "AllowCancel_No"
+    }
+  }
+]

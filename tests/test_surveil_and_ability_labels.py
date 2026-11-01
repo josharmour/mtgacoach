@@ -105,7 +105,7 @@ class _GroupBridge:
     def get_pending_actions(self):
         return self.poll_resp
 
-    def submit_group(self, groups):
+    def submit_group(self, groups, *, expected_request_id=None):
         self.groups.append(groups)
         return True
 
@@ -491,7 +491,7 @@ def test_planner_follows_reasoning_when_it_names_a_different_card(monkeypatch):
 def test_typed_path_surveil_uses_the_safe_default_when_the_model_answer_is_unusable(monkeypatch):
     bridge = TypedBridge(SURVEIL_BRIDGE_POLL)
     bridge.groups = None
-    bridge.submit_group = lambda groups: (setattr(bridge, "groups", groups), True)[1]
+    bridge.submit_group = lambda groups, **kwargs: (setattr(bridge, "groups", groups), True)[1]
     monkeypatch.setattr(
         "arenamcp.decisions.default_group_choice", lambda decision, state=None: ["grp:298:top"]
     )

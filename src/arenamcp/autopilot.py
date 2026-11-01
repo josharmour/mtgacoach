@@ -5659,6 +5659,27 @@ class AutopilotEngine(
             return True
         if self._abort_event.is_set():
             return True
+        if decision.request_type in {"SelectN", "Group"}:
+            # #341: triggered-ability SelectN advanced to scry between the
+            # final poll and submission. Reusing that failed choice in the
+            # legacy planner poisoned the new Group window and paused it.
+            # Own this trigger when it expired; the next cycle plans the
+            # current request with its own ids and destination semantics.
+            try:
+                latest = self._gre_bridge.get_pending_actions() or {}
+                current = build_pending_decision(latest, resolve_instance=_resolve_instance)
+            except Exception as exc:
+                logger.info("typed-decision: cannot revalidate failed selection: %s", exc)
+                self._state = AutopilotState.IDLE
+                return True
+            current_fp = decision_fingerprint(current) if current else None
+            if current_fp != fp or current.request_id != decision.request_id:
+                self._request_tracker.observe(current_fp, request_window(game_state))
+                logger.info(
+                    "typed-decision: %s moved on after failed submit; yielding", decision.request_type
+                )
+                self._state = AutopilotState.IDLE
+                return True
         if poll.get("payment_selection"):
             self._pause_for_manual("Non-mana payment submission failed — select payment manually", game_state)
             return True

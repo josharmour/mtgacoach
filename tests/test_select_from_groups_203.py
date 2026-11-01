@@ -233,7 +233,7 @@ class _RecordingBridge:
         self.select_from_groups_calls.append(groups)
         return self.submit_ok
 
-    def submit_group(self, groups):
+    def submit_group(self, groups, *, expected_request_id=None):
         self.group_calls.append(groups)
         return True
 

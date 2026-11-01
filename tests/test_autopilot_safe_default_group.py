@@ -36,7 +36,7 @@ class _FakeBridge:
     def get_pending_actions(self):
         return self._pending
 
-    def submit_group(self, groups):
+    def submit_group(self, groups, *, expected_request_id=None):
         self.group_calls.append(groups)
         return True
 
