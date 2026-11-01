@@ -226,6 +226,14 @@ def _python_responds(path: Path) -> bool:
     ``--version`` probe rejects both.
     """
     key = str(path)
+    # The interpreter running this process has already demonstrated that it
+    # works. Probing it again blocks the GUI during speech/coach startup,
+    # notably when Windows process creation is slow. Keep probing alternate
+    # runtimes (including pythonw's python.exe sibling) and frozen launchers.
+    if not getattr(sys, "frozen", False) and os.path.normcase(os.path.abspath(key)) == (
+        os.path.normcase(os.path.abspath(sys.executable))
+    ):
+        return True
     cached = _PYTHON_PROBE_CACHE.get(key)
     if cached is not None:
         return cached
