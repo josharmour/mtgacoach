@@ -1522,16 +1522,26 @@ def _plan_attackers(search: _Search, mid: Any, text: str, label: str, issues: li
         b for b in mid.ours if _plain(b["name"]) in plain or _plain(b["name"].split(",")[0]) in plain
     ]  # fmt: skip
     ids = []
+    sick_bodies = []
+    ready_names = set()
     for body in named:
         if body["instance_id"] in mid.our_tapped or not body["_can_attack"]:
             continue
         if search.sick(body, node.k, node.abs_turn, mid.entered):
-            if not everyone:
-                cast_now = mid.entered.get(body["instance_id"]) == node.abs_turn
-                why = "can't attack the turn it is cast" if cast_now else "is summoning-sick"
-                issues.append(f"{label}: {body['name']} {why}")
+            sick_bodies.append(body)
             continue
         ids.append(body["instance_id"])
+        ready_names.add(_plain(body["name"]))
+    # A plan names a creature, not a specific copy. A ready copy fulfills that
+    # attack; still exclude every sick instance from the simulated attackers.
+    if not everyone:
+        for body in sick_bodies:
+            if _plain(body["name"]) not in ready_names:
+                cast_now = mid.entered.get(body["instance_id"]) == node.abs_turn
+                why = "can't attack the turn it is cast" if cast_now else "is summoning-sick"
+                issue = f"{label}: {body['name']} {why}"
+                if issue not in issues:
+                    issues.append(issue)
     return tuple(sorted(ids))
 
 

@@ -1623,8 +1623,22 @@ def _signature(state: dict) -> tuple:
         for c in state.get("battlefield") or []
         if isinstance(c, dict)
     )
+    # Replays retain the assessed hand's bodies. Updated rules/keywords (notably
+    # haste) must invalidate that snapshot even when the instance ids are unchanged.
     hand = tuple(
-        c.get("instance_id") or c.get("name") for c in state.get("hand") or [] if isinstance(c, dict)
+        (
+            c.get("instance_id"),
+            c.get("name"),
+            c.get("oracle_text"),
+            c.get("power"),
+            c.get("toughness"),
+            c.get("type_line"),
+            c.get("mana_cost"),
+            tuple(c.get("keywords") or ()),
+            tuple(c.get("removed_abilities") or ()),
+        )
+        for c in state.get("hand") or []
+        if isinstance(c, dict)
     )
     players = tuple(
         (

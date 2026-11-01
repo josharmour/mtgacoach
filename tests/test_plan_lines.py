@@ -714,6 +714,19 @@ def test_a_creature_cast_this_turn_is_not_an_attacker():
     )
     assert plan.turn_plan[0]["attack"] == "Arbiter"
     assert not [issue for issue in plan.issues if "can't attack" in issue]
+    # Losing haste with the same hand instances must not reuse the hasty replay.
+    ba._CACHE.clear()
+    hasty_assessment = ba.assess(hasty)
+    ordinary_assessment = ba.assess(state)
+    assert ordinary_assessment is not hasty_assessment
+    assert ba.assess(deepcopy(state)) is ordinary_assessment
+    replay = gp._evaluate_plan_line(
+        [{"label": "T", "land": "Island", "cast": ["Archive Arbiter"], "attack": "Arbiter"}],
+        ordinary_assessment,
+        state,
+    )
+    assert replay is not None
+    assert "T: Archive Arbiter can't attack the turn it is cast" in replay.issues
 
 
 def test_a_second_copy_cast_this_turn_leaves_the_ready_copy_an_attacker():
