@@ -34,8 +34,9 @@ from typing import Any
 from arenamcp.combat_hit import loses_on_combat_hit
 from arenamcp.combat_keywords import can_be_blocked_by, has_combat_keyword
 from arenamcp.combat_loss import LossState, loss_state, player_hit
+from arenamcp.combat_protection import future_protection, prevents_damage, protection_key
 from arenamcp.death_triggers import swing_of
-from arenamcp.player_protection import protected_from_player_source, protected_players, source_controller
+from arenamcp.player_protection import protected_players, source_controller
 from arenamcp.token_lifetime import token_expires
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ def _card_key(c: dict) -> tuple:
         token_expires(c),
         source_controller(c),
         protected_players(c),
+        protection_key(c),
     )
 
 
@@ -292,7 +294,7 @@ def _damage_order(
     unkillable = [
         b
         for b in blockers
-        if _has(b, "indestructible") or (source is not None and protected_from_player_source(b, source))
+        if _has(b, "indestructible") or (source is not None and prevents_damage(b, source))
     ]
     killable = [b for b in blockers if b not in unkillable]
     lethal = {id(b): (1 if deathtouch else _pt(b)[1]) for b in killable}
@@ -391,7 +393,7 @@ def _resolve_attacker_damage(attacker: dict, assigned: list[dict]) -> CombatOutc
     fs_blockers = [b for b in assigned if first_striker(b)]
 
     def blockers_strike(blockers: list[dict]) -> tuple[int, bool]:
-        dealing = [b for b in blockers if not protected_from_player_source(attacker, b)]
+        dealing = [b for b in blockers if not prevents_damage(attacker, b)]
         out.blocker_life_gained += sum(max(0, _pt(b)[0]) for b in dealing if _has(b, "lifelink"))
         return (
             sum(max(0, _pt(b)[0]) for b in dealing),
@@ -408,12 +410,12 @@ def _resolve_attacker_damage(attacker: dict, assigned: list[dict]) -> CombatOutc
         damage_targets = (
             assigned
             if atk_trample
-            else [b for b in assigned if not protected_from_player_source(b, attacker)]
+            else [b for b in assigned if not prevents_damage(b, attacker)]
         )
         for blk in damage_targets:
             lethal = 1 if atk_dth else _pt(blk)[1]
             take = min(dmg_left, lethal)
-            prevented = protected_from_player_source(blk, attacker)
+            prevented = prevents_damage(blk, attacker)
             dealt += 0 if prevented else take
             if not prevented and take >= lethal and not _has(blk, "indestructible"):
                 out.blockers_died.append(blk)
@@ -446,13 +448,13 @@ def _resolve_attacker_damage(attacker: dict, assigned: list[dict]) -> CombatOutc
         dmg_left = atk_p
         dealt = 0
         damage_targets = (
-            alive if atk_trample else [b for b in alive if not protected_from_player_source(b, attacker)]
+            alive if atk_trample else [b for b in alive if not prevents_damage(b, attacker)]
         )
         for blk in damage_targets:
             blk_t = _pt(blk)[1]
             lethal = (1 if marked[id(blk)] == 0 else 0) if atk_dth else max(0, blk_t - marked[id(blk)])
             take = min(dmg_left, lethal)
-            prevented = protected_from_player_source(blk, attacker)
+            prevented = prevents_damage(blk, attacker)
             dealt += 0 if prevented else take
             marked[id(blk)] += 0 if prevented else take
             if not prevented and take >= lethal and not _has(blk, "indestructible"):
@@ -2029,13 +2031,13 @@ def evaluate_attack(
     lost = opp_block.attackers_killed_ids if opp_block is not None else frozenset()
     died = True if (atk_lost_mat > 0 or blk_killed_mat > 0) else creature_died_this_turn
     crackers = [
-        card
+        future_protection(card)
         for card in opponent_attackers_next_turn
         if not (card.get("instance_id") and card.get("instance_id") in killed)
         and can_attack_next_turn(card, creature_died=died)
     ]
     defenders = [
-        card
+        future_protection(card)
         for card in our_defenders
         if not leaves_at_our_end_step(card)
         and not (card.get("instance_id") and card in attacking and card.get("instance_id") in lost)

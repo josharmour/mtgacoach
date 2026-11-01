@@ -2664,7 +2664,10 @@ class Moves:
             "mill" in str(b.get("oracle_text") or "").lower() for b in attackers
         )
         context = LossState(defender.poison) if library_irrelevant else defender
-        key = (tag, ids_of(attackers), ids_of(blockers), max(1, life), context, defending_player)
+        from arenamcp.combat_protection import protection_key
+
+        key = (tag, ids_of(attackers), ids_of(blockers), max(1, life), context, defending_player,
+               tuple(protection_key(b) for b in (*attackers, *blockers)))
         if self._scale_base:  # a per-creature body's power follows the board, not its id (#157)
             key += (
                 tuple(
@@ -3189,6 +3192,17 @@ class Moves:
             found = self._leaves_memo[id(body)] = (body, leaves_at_our_end_step(body.get("_card") or body))
         return found[1]
 
+    def _future_bodies(self, bodies):
+        from arenamcp.combat_protection import future_protection
+
+        out = []
+        for body in bodies:
+            future = future_protection(body)
+            if future is not body and id(body) in self._body_spell:
+                self._body_spell[id(future)] = self._body_spell[id(body)]
+            out.append(future)
+        return out
+
     def _end_step(self, mid: Mid) -> None:
         """Our end step: a creature that returns to its owner's hand then (Fleeting Effigy) is no
         blocker on their turn; one cast from our hand in this line goes back to the hand.
@@ -3197,12 +3211,13 @@ class Moves:
         as a permanent untapped blocker ('LINE best' as one).
         """
         leaving = [b for b in mid.ours if self.leaves(b)]
-        if not leaving:
-            return
-        mid.ours = self.rescale([b for b in mid.ours if not self.leaves(b)])  # one creature fewer (#157)
-        back = {self._body_spell[id(b)] for b in leaving if id(b) in self._body_spell} - set(mid.hand)
-        if back:
-            mid.hand = sorted([*mid.hand, *back], key=lambda i: self._hand_pos.get(i, i))
+        if leaving:
+            mid.ours = self.rescale([b for b in mid.ours if not self.leaves(b)])
+            back = {self._body_spell[id(b)] for b in leaving if id(b) in self._body_spell} - set(mid.hand)
+            if back:
+                mid.hand = sorted([*mid.hand, *back], key=lambda i: self._hand_pos.get(i, i))
+        mid.ours = self._future_bodies(mid.ours)
+        mid.theirs = self._future_bodies(mid.theirs)
 
     def their_gains(self, mid: Mid) -> int:
         """Their life-gain events on their turn after our turn ``mid``: their gain triggers, their
@@ -4594,7 +4609,8 @@ class Moves:
                 self._cast_triggers(scratch, spell)
             fighting, crack_tag = self.cast_pumped(crack, scratch.pumps)
         crack_damage, crack_dead_ours, crack_dead_theirs, crack_gained, crack_healed = (
-            self.combat_life(fighting, crack_blockers, opp_life, tag=crack_tag, defender=opponent_loss)
+            self.combat_life(self._future_bodies(fighting), self._future_bodies(crack_blockers),
+                             opp_life, tag=crack_tag, defender=opponent_loss)
             if crack
             else (0, set(), set(), 0, 0)
         )
@@ -4645,6 +4661,8 @@ class Moves:
         """The board before T (a forced mode from ``compare_modes`` applied)."""
         model = self.model
         ours, theirs = list(model.ours), list(model.theirs)
+        if self.first_turn > model.turn and not model.their_attack_pending:
+            ours, theirs = self._future_bodies(ours), self._future_bodies(theirs)
         entered: dict = {}
         # Our creature spells on the stack resolve before T's attack (summoning sick on T).
         entering = list(model.our_stack_bodies)
@@ -4814,8 +4832,8 @@ class Moves:
                         our_life=hit["life"],
                         opp_life=hit["opp_life"],
                         our_loss=hit["our_loss"],
-                        ours=tuple(hit["ours"]),
-                        theirs=tuple(hit["theirs"]),
+                        ours=tuple(self._future_bodies(hit["ours"])),
+                        theirs=tuple(self._future_bodies(hit["theirs"])),
                         persistent=tuple(hit["persistent"]),
                         our_tapped=frozenset(),
                         their_tapped=hit["their_tapped"],

@@ -1562,6 +1562,7 @@ _CACHE_SIZE = 32
 
 def _signature(state: dict) -> tuple:
     from arenamcp.board_model import canonical_phase_step
+    from arenamcp.combat_protection import protection_key
 
     turn = state.get("turn") or {}
     # _assess reads phase/step only in log form: 'Main1'/'None' and 'Phase_Main1'/'' share one entry.
@@ -1579,6 +1580,7 @@ def _signature(state: dict) -> tuple:
             c.get("turn_entered_battlefield"),
             tuple(c.get("keywords") or ()),
             tuple(c.get("protection_from_players") or ()),
+            protection_key(c),
         )
         for c in state.get("battlefield") or []
         if isinstance(c, dict)
@@ -2977,13 +2979,15 @@ def _protected_from(body: dict, card: dict, *, targeted: bool = True, damage: bo
     instants" read as targetable by an all-instant burn hand. A spell whose
     type or colour is unknown counts as having none of them.
     """
-    from arenamcp.player_protection import protected_from_player_source
+    from arenamcp.combat_protection import damage_is_unpreventable, protected_from_source
 
     # Protection prevents targeting and damage, not untargeted destruction,
     # exile, bounce or -X/-X. Hexproof below only applies to targeting.
     if not targeted and not damage:
         return False
-    if protected_from_player_source(body, card):
+    if not targeted and damage and damage_is_unpreventable(card):
+        return False
+    if protected_from_source(body, card):
         return True
     text = _text(body.get("_card") or body)
     if " from " not in text:

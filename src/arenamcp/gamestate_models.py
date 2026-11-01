@@ -180,7 +180,7 @@ class GameObject:
             result["modified_toughness"] = self.modified_toughness
         if self.modified_cost is not None:
             result["modified_cost"] = self.modified_cost
-        if self.modified_colors:
+        if self.modified_colors is not None:
             result["modified_colors"] = self.modified_colors
         if self.modified_types:
             result["modified_types"] = self.modified_types
