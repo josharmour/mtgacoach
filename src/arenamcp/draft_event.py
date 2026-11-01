@@ -281,9 +281,10 @@ class DraftEventDriver:
         return getattr(card, "name", "") or f"Card {grp_id}"
 
     def _set_code_for(self, grp_ids: list[int]) -> str:
-        # Cube packs mix printings from many sets. A plurality such as DMU
-        # says nothing about this event's ratings or archetypes (#293).
-        if "cube" in self.run.event_name.casefold():
+        # A printing set is not an event identity. With missing course metadata
+        # we cannot distinguish a retail draft from a mixed-printing Cube
+        # (#293); keep that uncertainty instead of requesting retail ratings.
+        if not self.run.event_name.strip() or "cube" in self.run.event_name.casefold():
             return ""
         codes = Counter()
         for grp_id in grp_ids:
@@ -294,13 +295,15 @@ class DraftEventDriver:
         return codes.most_common(1)[0][0] if codes else ""
 
     def _primer(self, set_code: str) -> SetPrimer | None:
-        if not set_code or "cube" in self.run.event_name.casefold():
+        if not set_code or not self.run.event_name.strip() or "cube" in self.run.event_name.casefold():
             return None
         primer = self._primers.get(set_code)
         if primer is None:
             self._primers.ensure(set_code)
             primer = self._primers.quick(set_code)
-        return primer
+        # An empty quick primer has no card metadata. Treat it like an absent
+        # primer so ranking, advice and deck building use local rules (#297).
+        return primer if primer is not None and primer.cards else None
 
     def _canonical(self, grp_id: int, primer: SetPrimer | None) -> int:
         """The primer's id for this card (Arena may show a preferred printing)."""
@@ -368,6 +371,7 @@ class DraftEventDriver:
         return sorted(ranking, key=lambda row: (is_ordinary_basic(row.name), -row.score))
 
     def _new_run_if_needed(self, event_name: str, pack_number: int, pick_number: int) -> None:
+        event_name = str(event_name or "").strip()
         run = self.run
         if (event_name and run.event_name and event_name != run.event_name) or (
             pack_number == 1 and pick_number == 1 and run.picks and run.picks[-1]["key"][:2] != (1, 1)
@@ -377,7 +381,7 @@ class DraftEventDriver:
             self.run.event_name = event_name
             # Alchemy events ("PremierDraft_YFRA_...") rate and prime from 17lands' Y26FRA.
             use_event_expansion(event_name)
-        if "cube" in self.run.event_name.casefold():
+        if not self.run.event_name or "cube" in self.run.event_name.casefold():
             self.run.set_code = ""  # also discard a previously inferred retail set
 
     # -- the step -------------------------------------------------------------
@@ -1178,7 +1182,7 @@ class DraftEventDriver:
     def _decide_deck(self, pool_ids: list[int]) -> dict | None:
         """The counted builds plus the advisor's refinement, if it holds up against them."""
         run = self.run
-        if not run.set_code:
+        if not run.set_code or not run.event_name.strip() or "cube" in run.event_name.casefold():
             run.set_code = self._set_code_for(pool_ids)
         primer = self._primer(run.set_code)
         cards = self._pool_cards_fn(pool_ids, run.set_code) if self._pool_cards_fn else []

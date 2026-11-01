@@ -346,6 +346,7 @@ def test_driver_picks_the_ranked_card_once_and_waits_for_it_to_land(primer):
         }
     )
     driver = driver_for(bridge, primer)
+    driver.run.event_name = "PremierDraft_TST"
     driver._step()
     submits = [f for a, f in bridge.sent if a == "submit_draft_pick"]
     assert submits == [{"cards": [{"grp_id": 1, "title_id": 10}], "timeout": 8.0}]
@@ -366,6 +367,7 @@ def test_driver_ranks_against_picks_made_before_it_took_over(primer):
     )
     red_pool = [4] * 8 + [13, 18, 3]
     driver = driver_for(bridge, primer, picked_fn=lambda: red_pool)
+    driver.run.event_name = "PremierDraft_TST"
     driver._step()
     submits = [f for a, f in bridge.sent if a == "submit_draft_pick"]
     assert submits[0]["cards"][0]["grp_id"] == 3
@@ -415,6 +417,7 @@ def test_model_takeover_sees_all_picks_and_current_pack_signals(primer, pack_num
         },
     )
     driver.run.pool = [3]
+    driver.run.event_name = "PremierDraft_TST"
     driver._step()
 
     assert seen["pool_ids"] == logged_pool
@@ -539,6 +542,7 @@ def test_tick_runs_steps_in_the_background_and_reports_ownership(primer):
         }
     )
     driver = driver_for(bridge, primer)
+    driver.run.event_name = "PremierDraft_TST"
     driver.tick()
     driver._worker.join(timeout=5)
     assert driver.run.pool == [1]

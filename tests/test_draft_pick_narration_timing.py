@@ -79,6 +79,8 @@ def world(primer, *, seconds=60, replies=None, narrate=None, commentary=True, **
         sleep=clock.sleep,
         **kwargs,
     )
+    # These timing tests exercise a known retail primer, not missing course metadata.
+    driver.run.event_name = "PremierDraft_TST"
     return SimpleNamespace(clock=clock, events=events, spoken=spoken, bridge=bridge, driver=driver)
 
 
