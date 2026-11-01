@@ -9719,6 +9719,7 @@ class ActionPlanner(_ActionLegalityMixin):
             decision, tag_state, data, chosen, ask, parse, user_message
         )
         data, chosen = self._recheck_damage_facts(decision, tag_state, data, chosen, ask, parse, user_message)
+        data, chosen = self._recheck_resource_claim(decision, tag_state, data, chosen, ask, parse, user_message)
         from arenamcp.commander_choice import review_commander_decline
 
         data, chosen = review_commander_decline(
@@ -9743,6 +9744,30 @@ class ActionPlanner(_ActionLegalityMixin):
             "typed-decision choice %s: %s", chosen, self._last_decision_reasoning or "reason not supplied"
         )
         return chosen
+
+    def _recheck_resource_claim(self, decision, state, data, chosen, ask, parse, message):
+        """Price an explicit pre-development removal/ward promise before accepting it."""
+        from arenamcp.resource_intent import removal_reservation_conflict
+
+        conflict = removal_reservation_conflict(decision, state, chosen, data.get("reasoning", ""))
+        if not conflict:
+            return data, chosen
+        repair = {"first": chosen, "evidence": conflict}
+        try:
+            revised, picks = parse(ask(
+                message + "\n\nRESOURCE RESERVATION RECHECK: " + conflict,
+                effort="high", budget=min(self._timeout, 12.0),
+                cancel_event=getattr(self, "_decision_cancel_event", None),
+            ))
+            if not removal_reservation_conflict(decision, state, picks, revised.get("reasoning", "")):
+                repair["final"] = picks
+                self._last_decision_trace["resource_reservation_recheck"] = repair
+                return revised, picks
+        except Exception as error:
+            repair["error"] = str(error)[:120]
+        repair["fallback"] = "current_board"
+        self._last_decision_trace["resource_reservation_recheck"] = repair
+        raise SecondLookError("Removal/ward resource promise refuted: " + conflict)
 
     def _recheck_damage_facts(self, decision, state, data, chosen, ask, parse, message):
         """Reconsider a disproved damage/death premise; unresolved errors use current-board fallback."""
