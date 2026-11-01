@@ -34,6 +34,8 @@ See [the 3.8.0 release notes](docs/releases/v3.8.0.md) for scope and remaining l
 
 ### Standard Windows Installer
 Download and run **`mtgacoach-Setup.exe`** from the [Latest Release](https://github.com/josharmour/mtgacoach/releases/latest).
+The installer includes a self-contained Python runtime, so no separate virtual
+environment or Python installation is required.
 
 ---
 
