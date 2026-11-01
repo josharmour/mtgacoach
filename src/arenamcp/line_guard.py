@@ -259,7 +259,8 @@ def _candidates(
 
 
 def _usable(result: LineSearchResult | None) -> bool:
-    return result is not None and not result.truncated and not result.dead_now
+    return (result is not None and not result.truncated and not result.dead_now
+            and not getattr(result, "unsupported", ()) and not getattr(result, "choice_caveats", ()))
 
 
 def _unmodelled_finisher(result: LineSearchResult, option: Any, state: dict) -> bool:

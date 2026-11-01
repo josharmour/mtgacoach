@@ -154,6 +154,7 @@ class Line:
     # A distant or greedy-tail win (``distant_win``) valued as alive with only T's damage (#158).
     distant_v: float | None = None
     _leaf: Any = field(default=None, repr=False, compare=False)
+    unsupported: tuple[str, ...] = ()
 
     @property
     def score(self) -> tuple[int, int, float]:
@@ -168,6 +169,8 @@ class Line:
 
     @property
     def outcome(self) -> str:
+        if self.unsupported:
+            return "unknown"
         return {WIN: "win", ALIVE: "alive", DEAD: "dead"}[self.cls]
 
     @property
@@ -189,6 +192,8 @@ class Line:
 
     def outcome_text(self) -> str:
         """'lethal on T15' / 'dead on T15' / 'survives (life 7, 5, 8; opponent at 17)'."""
+        if self.unsupported:
+            return "unsupported forecast: " + "; ".join(self.unsupported)
         if self.cls == WIN:
             if self._leaf is not None and self._leaf.opp_life > 0:
                 cause = (
@@ -327,6 +332,8 @@ class LineSearchResult:
     _search: Any = field(default=None, repr=False, compare=False)
     # The greedy line dies but the best line survives, and it is not the only survivor.
     greedy_dies: bool = False
+    unsupported: tuple[str, ...] = ()
+    choice_caveats: tuple[str, ...] = ()
 
     def stats(self) -> dict[str, Any]:
         return {
@@ -347,7 +354,11 @@ class LineSearchResult:
         stack objects, ``board_assessment._our_pending``): the lines read the
         board before they resolve, which the line says.
         """
+        if self.unsupported:
+            return ("LINES UNSUPPORTED: " + "; ".join(self.unsupported))[:max_chars]
         head = "LINES (2-turn search, greedy 3rd; their new cards/tricks not modelled): "
+        if self.choice_caveats:
+            head = "LINES (bounded public sacrifice choices; advisory): "
         parts = [f"best {self.best.summary()}{_unmodelled_mark(self.best, unmodelled)}"]
         parts += [
             f"alt {line.summary(90)}{_unmodelled_mark(line, unmodelled)}"
@@ -366,7 +377,8 @@ class LineSearchResult:
     def to_projections(self) -> list[TurnProjection]:
         """The best line as the assessment's lookahead rows (T, T+1, T+2)."""
         steps = list(self.best.steps)
-        if self._search is not None and self.best._leaf is not None and len(steps) < len(LABELS):
+        if (self._search is not None and self.best._leaf is not None and len(steps) < len(LABELS)
+                and not getattr(self._search, "_sacrifice_enabled", False)):
             steps += self._search.fill_steps(self.best._leaf, len(steps), len(LABELS) - len(steps))
         names = {f.name for f in dataclasses.fields(TurnProjection)}
         rows = []
@@ -835,6 +847,7 @@ class _Search(Moves):
             truncated=self.truncated,
             model=self.model,
             _search=self,
+            choice_caveats=tuple(sorted(self.choice_caveats)),
         )
 
     @staticmethod
@@ -1007,6 +1020,7 @@ class _Search(Moves):
             truncated=False,
             model=self.model,
             _search=self,
+            choice_caveats=tuple(sorted(self.choice_caveats)),
         )
 
 
@@ -1031,11 +1045,27 @@ def search_lines(
     ``budget`` (work units, default ``WORK_BUDGET``) is the deterministic soft
     limit; ``soft_ms`` is its legacy form (120 ms = the default budget).
     """
-    search = _Search(
-        model, survival=survival, lethal_now=lethal_now, soft_ms=soft_ms, hard_ms=hard_ms, groups=groups,
-        width=width, k_next=k_next, opponent=opponent, budget=budget,
-    )  # fmt: skip
-    result = search.run()
+    from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+    search = None
+    started = time.perf_counter()
+    try:
+        search = _Search(
+            model, survival=survival, lethal_now=lethal_now, soft_ms=soft_ms, hard_ms=hard_ms, groups=groups,
+            width=width, k_next=k_next, opponent=opponent, budget=budget,
+        )  # fmt: skip
+        result = search.run()
+    except UnsupportedContinuation as error:
+        reasons = (str(error),)
+        line = Line((), ALIVE, 0, 0.0, complete=False, unsupported=reasons)
+        return LineSearchResult(
+            best=line, baseline=line, lines=[], first_action={}, now_life=None, dead_now=False,
+            dead_in=None, dead_in_greedy=None, all_dead_at_first=False, exact_first_attack=False,
+            only_survivor=False, only_first_attack_survivor=False, posture="either",
+            posture_reason="sacrifice continuation unsupported", nodes=getattr(search, "nodes", 0),
+            combats=getattr(search, "combats", 0), elapsed_ms=(time.perf_counter() - started) * 1000,
+            bounded=True, truncated=True, model=model, unsupported=reasons,
+        )
     logger.debug(
         "line search: %s (nodes=%d, combats=%d, %.1f ms%s%s)", result.best.summary(), result.nodes,
         result.combats, result.elapsed_ms, ", bounded" if result.bounded else "",
@@ -1195,11 +1225,17 @@ def evaluate_plan(
     Turns the plan leaves out play greedily. ``state`` is accepted for
     symmetry; the result's board is used.
     """
+    if result is not None and result.unsupported:
+        return PlanEvaluation(None, [], [], list(result.unsupported))
     if result is None or result._search is None:
         return PlanEvaluation(None, [], [])
     try:
         return _evaluate_plan(result, steps)
-    except Exception:  # never let plan checking break the plan
+    except Exception as error:  # never let plan checking break the plan
+        from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+        if isinstance(error, UnsupportedContinuation):
+            return PlanEvaluation(None, [], [], [str(error)])
         logger.debug("plan evaluation failed", exc_info=True)
         return PlanEvaluation(None, [], [])
 

@@ -1607,6 +1607,10 @@ def _signature(state: dict) -> tuple:
             tuple(c.get("keywords") or ()),
             tuple(c.get("protection_from_players") or ()),
             protection_key(c),
+            c.get("owner_seat_id"), c.get("printed_power"), c.get("printed_toughness"),
+            c.get("type_line"), tuple(c.get("card_types") or ()), tuple(c.get("supertypes") or ()),
+            c.get("is_token"), c.get("object_kind"), c.get("is_copy"), c.get("is_phased_out"),
+            c.get("face_down"), tuple(c.get("removed_abilities") or ()),
         )
         for c in state.get("battlefield") or []
         if isinstance(c, dict)
@@ -2124,6 +2128,20 @@ def _assess(state: dict) -> BoardAssessment | None:
     # The greedy line above stays the baseline (and the fallback): a failed or
     # truncated search keeps its facts.
     search = _run_line_search(model, survival=survival_hint and not lethal_now, lethal_now=lethal_now)
+    unsupported_search = tuple(getattr(search, "unsupported", ())) if search is not None else ()
+    if search is None:
+        from arenamcp.sacrifice_continuation import relevant
+
+        if relevant(model.battlefield):
+            unsupported_search = ("sacrifice continuation requires an available line search",)
+    if unsupported_search:
+        # The legacy fallback omits the same public sacrifice effects. It must
+        # not become a fabricated lethal/survival verdict when search declines.
+        unknowns.extend("sacrifice continuation unsupported: " + note for note in unsupported_search)
+        lookahead, our_lives, their_lives = [], [], []
+        dead_in = dead_in_greedy = now_life = our_clock = their_clock = None
+        lethal_now = lethal_next_turn = opp_lethal_on_board = False
+        race, race_detail = "unknown", "sacrifice continuation unsupported"
     found = None  # the search, when its facts are used
     best_text, race_term = "", None
     if search is not None and not search.truncated:
@@ -2161,8 +2179,17 @@ def _assess(state: dict) -> BoardAssessment | None:
         except Exception as error:
             logger.debug("unmodelled checks failed: %s", error, exc_info=True)
     ours_pending = [f"our pending {name}" for name in pending]
-    caveat = ", ".join([*unmodelled, *ours_pending])
-    first_caveat = ", ".join([*unmodelled_first, *ours_pending])
+    choice_caveats = list(getattr(search, "choice_caveats", ())) if search is not None else []
+    unknowns.extend(choice_caveats)
+    if choice_caveats:
+        # Legal continuation alternatives are retained, but their material
+        # policy is not a proof that every victim/block choice loses a race.
+        # Keep the advisory lines; do not turn them into concede/forced-race facts.
+        dead_in = dead_in_greedy = our_clock = their_clock = None
+        lethal_next_turn = opp_lethal_on_board = False
+        race, race_detail = "unknown", "bounded public sacrifice choices"
+    caveat = ", ".join([*unmodelled, *ours_pending, *choice_caveats])
+    first_caveat = ", ".join([*unmodelled_first, *ours_pending, *choice_caveats])
     pending_note = f" — before our pending {', '.join(pending)} resolves" if pending else ""
 
     # --- advantages ----------------------------------------------------------

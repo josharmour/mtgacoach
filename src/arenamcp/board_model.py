@@ -468,6 +468,7 @@ class BoardModel:
     our_engines: Any = None  # the same for our side (our bodies carry the same fields)
     our_loss: Any = None
     opponent_loss: Any = None
+    has_pending_stack: bool = False
 
     @property
     def unknowns(self) -> list[str]:
@@ -826,6 +827,7 @@ def build_board_model(state: dict) -> BoardModel | None:
         any_ours_attacking=any_ours_attacking, any_theirs_attacking=any_theirs_attacking,
         pre_combat=pre_combat, in_combat_before_damage=in_combat_before_damage,
         our_attack_pending=our_attack_pending, their_attack_pending=their_attack_pending,
+        has_pending_stack=bool(state.get("stack")),
         first_our_attackers=tuple(able_now(ours)) if our_attack_pending else None,
         first_their_attackers=None if first_their_attackers is None else tuple(first_their_attackers),
         untapped_ours=tuple(untapped_ours), untapped_theirs=tuple(untapped_theirs),

@@ -1,0 +1,99 @@
+{
+  "match_id": "constructed-equivalent-sacrifice-280",
+  "local_seat_id": 1,
+  "opponent_seat_id": 2,
+  "turn": {
+    "turn_number": 6,
+    "active_player": 1,
+    "phase": "Phase_Main1",
+    "step": ""
+  },
+  "players": [
+    {
+      "seat_id": 1,
+      "is_local": true,
+      "life_total": 30,
+      "counters": {
+        "Poison": 0
+      }
+    },
+    {
+      "seat_id": 2,
+      "life_total": 30,
+      "counters": {
+        "Poison": 0
+      }
+    }
+  ],
+  "battlefield": [
+    {
+      "instance_id": 1,
+      "name": "Grizzly Bears",
+      "type_line": "Creature \u2014 Bear",
+      "card_types": [
+        "Creature"
+      ],
+      "controller_seat_id": 1,
+      "owner_seat_id": 1,
+      "power": 2,
+      "toughness": 2,
+      "printed_power": 2,
+      "printed_toughness": 2,
+      "oracle_text": "",
+      "turn_entered_battlefield": 1
+    },
+    {
+      "instance_id": 10,
+      "name": "Tergrid, God of Fright",
+      "type_line": "Legendary Creature \u2014 God",
+      "card_types": [
+        "Creature"
+      ],
+      "controller_seat_id": 1,
+      "owner_seat_id": 1,
+      "power": 4,
+      "toughness": 5,
+      "printed_power": 4,
+      "printed_toughness": 5,
+      "oracle_text": "Menace\nWhenever an opponent sacrifices a nontoken permanent or discards a permanent card, you may put that card from a graveyard onto the battlefield under your control.",
+      "turn_entered_battlefield": 1
+    },
+    {
+      "instance_id": 2,
+      "name": "Hill Giant",
+      "type_line": "Creature \u2014 Giant",
+      "card_types": [
+        "Creature"
+      ],
+      "controller_seat_id": 2,
+      "owner_seat_id": 2,
+      "power": 3,
+      "toughness": 3,
+      "printed_power": 3,
+      "printed_toughness": 3,
+      "oracle_text": "",
+      "turn_entered_battlefield": 1
+    },
+    {
+      "instance_id": 90,
+      "name": "Grave Pact",
+      "type_line": "Enchantment",
+      "card_types": [
+        "Enchantment"
+      ],
+      "controller_seat_id": 1,
+      "owner_seat_id": 1,
+      "oracle_text": "Whenever a creature you control dies, each other player sacrifices a creature."
+    }
+  ],
+  "hand": [],
+  "graveyard": [],
+  "stack": [],
+  "zones": {
+    "library_count": null,
+    "library_count_source": "log_zone_membership",
+    "opponent_library_count": null,
+    "opponent_library_count_source": "bridge_total_card_count"
+  },
+  "fixture_note": "Constructed legal public equivalent for #280. Not a captured game, historical replay, or proof of the reported winning line."
+}

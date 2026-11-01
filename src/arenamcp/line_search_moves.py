@@ -2079,6 +2079,13 @@ class Moves:
         budget: int | None = None,
     ) -> None:
         self.model = model
+        from arenamcp.sacrifice_continuation import UnsupportedContinuation, model_reasons, relevant
+
+        if reasons := model_reasons(model):
+            raise UnsupportedContinuation("; ".join(reasons))
+        self._sacrifice_enabled = relevant(model.battlefield)
+        self.sacrifice_choices = {}
+        self.choice_caveats = set()
         self.survival, self.lethal_now = bool(survival), bool(lethal_now)
         self.started = time.perf_counter()
         self.hard = hard_ms / 1000.0
@@ -2421,6 +2428,31 @@ class Moves:
             if not (body.get("_card") or body).get("_return_credit_blocked")
             and (engine := returned_enchantment(body)) is not None
         ]
+
+    def sacrifice_after_combat(self, ours, theirs, dead, *, active, turn, life, opp_life, entered):
+        """Public continuation with all victim/trigger/optional-transfer alternatives retained."""
+        if not self._sacrifice_enabled or not dead or life <= 0 or opp_life <= 0:
+            return ours, theirs, entered
+        from arenamcp.combat_solver import _card_key
+        from arenamcp.sacrifice_continuation import resolve, seat
+
+        key = (active, turn, tuple(_card_key(c) for c in (*ours, *theirs)), tuple(_card_key(c) for c in dead))
+        tree = self.sacrifice_choices.get(key)
+        if tree is None:
+            tree = self.sacrifice_choices[key] = resolve(
+                self.model.battlefield, [*ours, *theirs], dead, active=active,
+                other=self.model.opponent if active == self.model.local else self.model.local, turn=turn,
+            )
+        if any(o.sacrificed for o in tree.outcomes()):
+            self.exact_first = False
+            self.choice_caveats.add("combat blocks and sacrifice victim/trigger/transfer choices use bounded material policies")
+        chosen = tree.choose(
+            lambda o: self.value(life, opp_life, [c for c in o.bodies if seat(c) == self.model.local],
+                                 [c for c in o.bodies if seat(c) == self.model.opponent], ()), self.model.local,
+        )
+        entered = {**entered, **{new: turn for _old, new, _seat in chosen.transfers}}
+        return ([c for c in chosen.bodies if seat(c) == self.model.local],
+                [c for c in chosen.bodies if seat(c) == self.model.opponent], entered)
 
     def death_bodies(self, bodies) -> list[dict]:
         from arenamcp.death_bodies import death_is_suppressed, token_specs_on_death
@@ -3959,6 +3991,8 @@ class Moves:
             mid.our_life += gained
             mid.gained += ll_gain
             opp_after = mid.opp_life
+            combat_dead = [b for b in mid.ours if b["instance_id"] in dead_ours]
+            combat_dead += [b for b in mid.theirs if b["instance_id"] in dead_theirs]
             mid.persistent.extend(self.return_engines([b for b in mid.ours if b["instance_id"] in dead_ours]))
             mid.ours = self.rescale(
                 self._combat_counters(
@@ -3972,6 +4006,11 @@ class Moves:
                 apply_deltas([b for b in mid.theirs if b["instance_id"] not in dead_theirs], counter_deltas)
                 + replacement
             )
+            if not opponent_terminal:
+                mid.ours, mid.theirs, mid.entered = self.sacrifice_after_combat(
+                    mid.ours, mid.theirs, combat_dead, active=self.model.local, turn=node.abs_turn,
+                    life=mid.our_life, opp_life=mid.opp_life, entered=mid.entered,
+                )
             # Non-vigilance attackers stay tapped through their turn.
             mid.our_tapped |= {b["instance_id"] for b in attackers if not has_combat_keyword(b, "vigilance")}
         post_combat: tuple[str, ...] = ()
@@ -4668,6 +4707,11 @@ class Moves:
             + bounced
         )
         theirs_after += made + self.death_bodies([b for b in theirs if b["instance_id"] in dead_att])
+        ours_after, theirs_after, entered = self.sacrifice_after_combat(
+            ours_after, theirs_after,
+            [b for b in ours if b["instance_id"] in dead_blk] + [b for b in theirs if b["instance_id"] in dead_att],
+            active=self.model.opponent, turn=next_abs - 1, life=after, opp_life=opp_life, entered=entered,
+        )
         alive = {b["instance_id"] for b in theirs_after}
         # Their non-vigilance attackers stay tapped through our next turn.
         their_tapped = (
@@ -4721,12 +4765,19 @@ class Moves:
         # (bug_20261007_182945: all-out 1/4 fliers every turn "took" 24 life to 5).
         v = self.value(after, opp_life, ours_after, theirs_after, hand, persistent=persistent)
         if crack:
+            reply_ours, reply_theirs, _ = self.sacrifice_after_combat(
+                [b for b in ours_after if b["instance_id"] not in crack_dead_ours],
+                [b for b in theirs_after if b["instance_id"] not in crack_dead_theirs],
+                [b for b in ours_after if b["instance_id"] in crack_dead_ours]
+                + [b for b in theirs_after if b["instance_id"] in crack_dead_theirs],
+                active=self.model.local, turn=next_abs, life=after + crack_gained,
+                opp_life=opp_life - crack_net, entered=entered,
+            )
             v = max(
                 v,
                 self.value(
                     after + crack_gained, opp_life - crack_net,
-                    [b for b in ours_after if b["instance_id"] not in crack_dead_ours],
-                    [b for b in theirs_after if b["instance_id"] not in crack_dead_theirs],
+                    reply_ours, reply_theirs,
                     hand, persistent=persistent,
                 ),
             )  # fmt: skip
