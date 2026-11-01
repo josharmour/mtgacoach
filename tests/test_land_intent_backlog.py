@@ -201,3 +201,14 @@ def test_untap_mana_replacement_and_convoke_need_richer_payment_model():
         land_claim_mismatch(decision, state, ["idx:5"], "Play Plains to cast Voice of Victory this turn.")
         is None
     )
+
+
+def test_unknown_land_subtype_is_not_intrinsic_colorless_mana():
+    from arenamcp.land_intent import _entry, _payment_after
+
+    state, _ = recorded_board()
+    unknown = card(601, "Unknown Gate", "", "Land — Gate", subtypes=["Subtype_Gate"])
+    assert _entry(state, unknown) is None
+    assert _payment_after(state, unknown, state["hand"][3]) is None
+    state["battlefield"].append({"instance_id": 602, "controller_seat_id": 1})
+    assert _payment_after(state, state["hand"][0], state["hand"][3]) is None

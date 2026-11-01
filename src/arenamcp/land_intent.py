@@ -37,7 +37,9 @@ def _entry(state, land):
         return True
     if re.search(r"enter", text, re.I):
         return None
-    return False if text or basic_types(land) else None
+    return (
+        False if text or (basic_types(land) & {"plains", "island", "swamp", "mountain", "forest"}) else None
+    )
 
 
 def _payment_after(state, land, spell):
@@ -55,6 +57,8 @@ def _payment_after(state, land, spell):
     if any(p.get("mana_pool") for p in state.get("players") or [] if p.get("seat_id") == local):
         return None
     board = [c for c in state.get("battlefield") or [] if c.get("controller_seat_id") == local]
+    if any(not c.get("type_line") or "oracle_text" not in c for c in board):
+        return None  # an unidentified controlled object may itself provide mana
     # Static cost/mana effects need the complete payment engine, not a one-land count.
     for c in state.get("battlefield") or []:
         text = _normalize_mana_symbols(str(c.get("oracle_text") or ""))
@@ -73,9 +77,9 @@ def _payment_after(state, land, spell):
         text = _normalize_mana_symbols(str(c.get("oracle_text") or ""))
         # Only ordinary tap-for-one and the entry/Verge conditions understood by land_mana.
         abilities = re.findall(r"\{T\}:\s*Add ([^.]+)\.", text, re.I)
-        if (not abilities and not basic_types(c)) or any(
-            not re.fullmatch(r"\{[WUBRGC]\}(?: or \{[WUBRGC]\})?", a, re.I) for a in abilities
-        ):
+        if (
+            not abilities and not (basic_types(c) & {"plains", "island", "swamp", "mountain", "forest"})
+        ) or any(not re.fullmatch(r"\{[WUBRGC]\}(?: or \{[WUBRGC]\})?", a, re.I) for a in abilities):
             return None
         if re.search(r"spend|sacrifice|pay|\{\d+\}.*\{T\}|for each", text, re.I):
             return None
