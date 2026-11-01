@@ -57,6 +57,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from arenamcp.attack_potential import annotated, attack_round, modelled_attack_trigger
+from arenamcp.combat_hit import loses_on_combat_hit
 from arenamcp.combat_keywords import (
     has_combat_keyword,
     is_creature_modified,
@@ -599,6 +600,10 @@ def _body(
         "toughness": max(0, toughness),
         "oracle_text": card.get("oracle_text") or "",
         "keywords": body_keywords,
+        # Odin's chapter grant is active state, not just printed Saga text (#247).
+        "counters": dict(card.get("counters") or {}),
+        "ability_grp_ids": list(card.get("ability_grp_ids") or ()),
+        "granted_abilities": list(card.get("granted_abilities") or ()),
         "type_line": card.get("type_line") or "",
         "is_token": "token" in str(card.get("object_kind") or "").lower() or "token" in _types(card),
         "_tapped": bool(card.get("is_tapped")),
@@ -1598,6 +1603,7 @@ def _signature(state: dict) -> tuple:
             c.get("instance_id"),
             c.get("name"),
             c.get("oracle_text"),  # newly resolved poison/proliferate text changes the clock
+            loses_on_combat_hit(c),  # chapter/grant changes can be fatal at unchanged P/T
             c.get("power"),
             c.get("toughness"),
             c.get("is_tapped"),
