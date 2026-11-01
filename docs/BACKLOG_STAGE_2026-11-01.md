@@ -29,6 +29,24 @@ deployment or game-control command was issued during this integration.
   was not loosened. No second aggregate or full-suite run was performed.
   Lint/format passed on all 21 changed Python files; whitespace checks preserve
   `coach.py`'s existing CRLF convention. Separate ward/deadline checks: 25 passed.
+- Combat integration boundary: `441418e`.
+- Sources `fdcf764` (#138) and `bb0848c` (early-win #5 recurrence) then integrated
+  as `2ceb040` and `0ca3da9`. All 228 combined claim, game-result, and queue
+  regressions passed in 8.67 seconds; lint/format passed on five changed files.
+
+## Explanation and early-result follow-up
+
+#138 corrects a positively asserted ground blocker relationship when the named
+attacker has flying and the alleged blocker demonstrably lacks flying/reach.
+It preserves the selected action and original diagnostic reasoning; it does not
+establish that choosing that removal target was strategically optimal. Unknown
+grants, ambiguous identities, and conditional claims abstain. A separately
+reported conditional-keyword false positive remains outside this narrow fix.
+
+The #5 recurrence records matches observed in their room/mulligan phase even if
+they end before turn one. It retains startup-history rejection, result identity,
+duplicate suppression, and queue behavior. Tests use isolated state; no existing
+match history was rewritten and live early-concession qualification is pending.
 
 The tactical integration retains all existing Arena-clock clamps, cancellation,
 activation intent, poison/legend projection, and current-offer expiry. It removes
