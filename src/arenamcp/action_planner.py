@@ -6005,6 +6005,11 @@ class ActionPlanner(_ActionLegalityMixin):
         ):
             return []
         found: list[tuple[str, str]] = []
+        from arenamcp.equipment_opportunities import equipment_pass_concern
+
+        equipment_concern = equipment_pass_concern(decision, game_state, chosen, reasoning)
+        if equipment_concern:
+            found.append(("equipment_haste", equipment_concern))
         for kind, check in (
             ("false_lethal", self._false_lethal_concern),
             ("face_burn", self._face_burn_concern),
@@ -9310,6 +9315,11 @@ class ActionPlanner(_ActionLegalityMixin):
             if note:
                 lines.insert(lines.index("OPTIONS:"), note)
         from arenamcp.activation_intent import activation_intent_note
+        from arenamcp.equipment_opportunities import equipment_opportunity_note
+
+        equipment_note = equipment_opportunity_note(decision, game_state)
+        if equipment_note:
+            lines.insert(lines.index("OPTIONS:"), equipment_note)
 
         activation_note = activation_intent_note(
             getattr(self, "_activation_intent", None), decision, game_state

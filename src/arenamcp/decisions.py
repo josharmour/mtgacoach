@@ -982,6 +982,7 @@ def _build_actions_available(
                     "manaCost": action.get("manaCost"),
                     "autoTapActions": action.get("autoTapActions") or [],
                     "hasAutoTap": has_autotap_solution(action),
+                    **({"targets": action["targets"]} if action.get("targets") else {}),
                     # The alternative cost Arena offers this cast through (Sneak: ledger #156).
                     **(
                         {"alternativeGrpId": int(action.get("alternativeGrpId") or 0)}

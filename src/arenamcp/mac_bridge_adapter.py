@@ -3557,7 +3557,19 @@ def serialize_action(action: dict) -> dict[str, Any]:
         ]
         if taps:
             result["autoTapActions"] = taps
-    targets = [{"targetId": num(field(t, "TargetIdx"))} for t in items(field(action, "Targets"))]
+    targets = []
+    for slot in items(field(action, "Targets")):
+        entry = {"targetId": num(field(slot, "TargetIdx"))}
+        candidates = [
+            {
+                "targetInstanceId": num(field(target, "TargetInstanceId")),
+                "highlight": enum_name(field(target, "Highlight")),
+            }
+            for target in items(field(slot, "Targets"))
+        ]
+        if candidates:
+            entry["targets"] = candidates
+        targets.append(entry)
     if targets:
         result["targets"] = targets
     if num(field(action, "Highlight")):

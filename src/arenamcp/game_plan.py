@@ -1905,6 +1905,8 @@ def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[
     lowered = text.lower().replace("’", "'")
     if len(lowered) != len(text):
         return notes
+    from arenamcp.equipment_opportunities import planned_haste_names
+
     creatures = [*ours, *theirs, *[c for c in hand if _is_creature_card(c)]]
     spans = _name_spans(lowered, _claim_keys([*creatures, *hand]))
     by_name: dict[str, list[dict]] = {}
@@ -1937,7 +1939,11 @@ def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[
             r"\bhast(?:e|y)(?:-ish)?\b",
             near,
         )
-        if claimed and _keyword_truth(cards, "haste", battlefield) is False:
+        if (
+            claimed
+            and name not in planned_haste_names(text, state, cast_ids, at=start)
+            and _keyword_truth(cards, "haste", battlefield) is False
+        ):
             fact = f"{name} has no haste"
             if fact not in notes and not any(n.startswith(f"{name} has no haste") for n in notes):
                 notes.append(fact)
@@ -2037,7 +2043,11 @@ def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[
         }
         able = {str(c.get("name")) for c in ours if not _summoning_sick(c, turn, global_haste)}
         for index, (start, _end, name) in enumerate(spans):
-            if name not in sick or name in able:
+            if (
+                name not in sick
+                or name in able
+                or name in planned_haste_names(text, state, cast_ids, at=start)
+            ):
                 continue
             after = window(index)
             before = lowered[max(0, start - 40) : start]

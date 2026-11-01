@@ -1,0 +1,1787 @@
+{
+  "provenance": {
+    "report": "bug_20261031_221054.json",
+    "match_id": "d28f0f51-6b85-4947-b130-03c5b146f522",
+    "note": "Exact GRE requests. Board uses report-enriched cards, removes next-turn land 702 and restores T11 tap flags from GRE. Raw battlefield objects retained to verify reconstruction. Inactive actions and irrelevant raw object fields omitted."
+  },
+  "requests": {
+    "219": {
+      "type": "GREMessageType_ActionsAvailableReq",
+      "systemSeatIds": [
+        2
+      ],
+      "msgId": 279,
+      "gameStateId": 219,
+      "prompt": {
+        "promptId": 2
+      },
+      "actionsAvailableReq": {
+        "actions": [
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 89065,
+            "instanceId": 351,
+            "facetId": 351,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 3
+              }
+            ],
+            "shouldStop": true,
+            "targets": [
+              {
+                "targetIdx": 3,
+                "targets": [
+                  {
+                    "targetInstanceId": 666,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 683,
+                    "highlight": "HighlightType_Hot"
+                  }
+                ]
+              },
+              {
+                "targetIdx": 1,
+                "targets": [
+                  {
+                    "targetInstanceId": 672,
+                    "highlight": "HighlightType_Tepid"
+                  },
+                  {
+                    "targetInstanceId": 689,
+                    "highlight": "HighlightType_Tepid"
+                  },
+                  {
+                    "targetInstanceId": 696,
+                    "highlight": "HighlightType_Tepid"
+                  },
+                  {
+                    "targetInstanceId": 697,
+                    "highlight": "HighlightType_Tepid"
+                  }
+                ]
+              },
+              {
+                "targetIdx": 2
+              }
+            ]
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 29589,
+            "instanceId": 567,
+            "facetId": 567,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 5
+              },
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 3
+              }
+            ],
+            "shouldStop": true
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 19737,
+            "instanceId": 681,
+            "facetId": 681,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 2
+              }
+            ],
+            "shouldStop": true,
+            "autoTapSolution": {
+              "autoTapActions": [
+                {
+                  "instanceId": 462,
+                  "abilityGrpId": 1152,
+                  "manaPaymentOption": {
+                    "mana": [
+                      {
+                        "manaId": 653,
+                        "color": "ManaColor_Colorless",
+                        "srcInstanceId": 462,
+                        "specs": [
+                          {
+                            "type": "ManaSpecType_Predictive"
+                          }
+                        ],
+                        "abilityGrpId": 1152,
+                        "count": 1
+                      }
+                    ]
+                  }
+                },
+                {
+                  "instanceId": 671,
+                  "abilityGrpId": 1005,
+                  "manaPaymentOption": {
+                    "mana": [
+                      {
+                        "manaId": 652,
+                        "color": "ManaColor_Green",
+                        "srcInstanceId": 671,
+                        "specs": [
+                          {
+                            "type": "ManaSpecType_Predictive"
+                          }
+                        ],
+                        "abilityGrpId": 1005,
+                        "count": 1
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 50879,
+            "instanceId": 688,
+            "facetId": 688,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 6
+              },
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 2
+              }
+            ],
+            "shouldStop": true
+          },
+          {
+            "actionType": "ActionType_Activate",
+            "grpId": 97547,
+            "instanceId": 671,
+            "facetId": 671,
+            "abilityGrpId": 192869,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 2,
+                "abilityGrpId": 192869
+              },
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 1,
+                "abilityGrpId": 192869
+              }
+            ],
+            "shouldStop": true,
+            "targets": [
+              {
+                "targetIdx": 1,
+                "targets": [
+                  {
+                    "targetInstanceId": 444,
+                    "highlight": "HighlightType_Tepid"
+                  },
+                  {
+                    "targetInstanceId": 448,
+                    "highlight": "HighlightType_Tepid"
+                  },
+                  {
+                    "targetInstanceId": 462,
+                    "highlight": "HighlightType_Tepid"
+                  },
+                  {
+                    "targetInstanceId": 468,
+                    "highlight": "HighlightType_Tepid"
+                  },
+                  {
+                    "targetInstanceId": 574,
+                    "highlight": "HighlightType_Tepid"
+                  },
+                  {
+                    "targetInstanceId": 664,
+                    "highlight": "HighlightType_Tepid"
+                  },
+                  {
+                    "targetInstanceId": 671,
+                    "highlight": "HighlightType_Tepid"
+                  }
+                ]
+              }
+            ],
+            "uniqueAbilityId": 428
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 54769,
+            "instanceId": 462,
+            "facetId": 462,
+            "abilityGrpId": 1152,
+            "manaPaymentOptions": [
+              {
+                "mana": [
+                  {
+                    "manaId": 653,
+                    "color": "ManaColor_Colorless",
+                    "srcInstanceId": 462,
+                    "specs": [
+                      {
+                        "type": "ManaSpecType_Predictive"
+                      }
+                    ],
+                    "abilityGrpId": 1152,
+                    "count": 1
+                  }
+                ]
+              }
+            ],
+            "isBatchable": true,
+            "uniqueAbilityId": 392,
+            "manaSelections": [
+              {
+                "instanceId": 462,
+                "abilityGrpId": 1152,
+                "options": [
+                  {
+                    "mana": [
+                      {
+                        "color": "ManaColor_Colorless",
+                        "count": 1
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 54769,
+            "instanceId": 462,
+            "facetId": 462,
+            "abilityGrpId": 20420,
+            "manaPaymentOptions": [
+              {
+                "mana": [
+                  {
+                    "manaId": 654,
+                    "color": "ManaColor_Green",
+                    "srcInstanceId": 462,
+                    "specs": [
+                      {
+                        "type": "ManaSpecType_Predictive"
+                      }
+                    ],
+                    "abilityGrpId": 20420,
+                    "count": 8
+                  }
+                ]
+              }
+            ],
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 2,
+                "abilityGrpId": 20420
+              }
+            ],
+            "uniqueAbilityId": 393,
+            "manaSelections": [
+              {
+                "instanceId": 462,
+                "abilityGrpId": 20420,
+                "selectionCount": 1,
+                "validationType": "SelectionValidationType_NonRepeatable",
+                "options": [
+                  {
+                    "selectedColor": "ManaColor_White",
+                    "mana": [
+                      {
+                        "color": "ManaColor_White"
+                      }
+                    ]
+                  },
+                  {
+                    "selectedColor": "ManaColor_Blue",
+                    "mana": [
+                      {
+                        "color": "ManaColor_Blue"
+                      }
+                    ]
+                  },
+                  {
+                    "selectedColor": "ManaColor_Black",
+                    "mana": [
+                      {
+                        "color": "ManaColor_Black"
+                      }
+                    ]
+                  },
+                  {
+                    "selectedColor": "ManaColor_Red",
+                    "mana": [
+                      {
+                        "color": "ManaColor_Red"
+                      }
+                    ]
+                  },
+                  {
+                    "selectedColor": "ManaColor_Green",
+                    "mana": [
+                      {
+                        "color": "ManaColor_Green",
+                        "count": 8
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 97547,
+            "instanceId": 671,
+            "facetId": 671,
+            "abilityGrpId": 1005,
+            "manaPaymentOptions": [
+              {
+                "mana": [
+                  {
+                    "manaId": 652,
+                    "color": "ManaColor_Green",
+                    "srcInstanceId": 671,
+                    "specs": [
+                      {
+                        "type": "ManaSpecType_Predictive"
+                      }
+                    ],
+                    "abilityGrpId": 1005,
+                    "count": 1
+                  }
+                ]
+              }
+            ],
+            "isBatchable": true,
+            "uniqueAbilityId": 427,
+            "manaSelections": [
+              {
+                "instanceId": 671,
+                "abilityGrpId": 1005,
+                "options": [
+                  {
+                    "mana": [
+                      {
+                        "color": "ManaColor_Green",
+                        "count": 1
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "actionType": "ActionType_Pass"
+          },
+          {
+            "actionType": "ActionType_FloatMana"
+          }
+        ]
+      }
+    },
+    "222": {
+      "type": "GREMessageType_ActionsAvailableReq",
+      "systemSeatIds": [
+        2
+      ],
+      "msgId": 284,
+      "gameStateId": 222,
+      "prompt": {
+        "promptId": 2
+      },
+      "actionsAvailableReq": {
+        "actions": [
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 89065,
+            "instanceId": 351,
+            "facetId": 351,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 3
+              }
+            ],
+            "shouldStop": true,
+            "targets": [
+              {
+                "targetIdx": 3,
+                "targets": [
+                  {
+                    "targetInstanceId": 666,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 683,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 698,
+                    "highlight": "HighlightType_Cold"
+                  }
+                ]
+              },
+              {
+                "targetIdx": 1,
+                "targets": [
+                  {
+                    "targetInstanceId": 672,
+                    "highlight": "HighlightType_Tepid"
+                  },
+                  {
+                    "targetInstanceId": 689,
+                    "highlight": "HighlightType_Tepid"
+                  },
+                  {
+                    "targetInstanceId": 696,
+                    "highlight": "HighlightType_Tepid"
+                  },
+                  {
+                    "targetInstanceId": 697,
+                    "highlight": "HighlightType_Tepid"
+                  }
+                ]
+              },
+              {
+                "targetIdx": 2
+              }
+            ]
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 29589,
+            "instanceId": 567,
+            "facetId": 567,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 5
+              },
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 3
+              }
+            ],
+            "shouldStop": true
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 50879,
+            "instanceId": 688,
+            "facetId": 688,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 6
+              },
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 2
+              }
+            ],
+            "shouldStop": true
+          },
+          {
+            "actionType": "ActionType_Activate",
+            "grpId": 19737,
+            "instanceId": 698,
+            "facetId": 698,
+            "abilityGrpId": 2152,
+            "shouldStop": true,
+            "targets": [
+              {
+                "targetIdx": 1,
+                "targets": [
+                  {
+                    "targetInstanceId": 672,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 689,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 696,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 697,
+                    "highlight": "HighlightType_Hot"
+                  }
+                ]
+              }
+            ],
+            "uniqueAbilityId": 448
+          },
+          {
+            "actionType": "ActionType_Pass"
+          }
+        ]
+      }
+    },
+    "236": {
+      "type": "GREMessageType_ActionsAvailableReq",
+      "systemSeatIds": [
+        2
+      ],
+      "msgId": 303,
+      "gameStateId": 236,
+      "prompt": {
+        "promptId": 2
+      },
+      "actionsAvailableReq": {
+        "actions": [
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 89065,
+            "instanceId": 351,
+            "facetId": 351,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 3
+              }
+            ],
+            "shouldStop": true,
+            "targets": [
+              {
+                "targetIdx": 3,
+                "targets": [
+                  {
+                    "targetInstanceId": 666,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 683,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 698,
+                    "highlight": "HighlightType_Cold"
+                  }
+                ]
+              },
+              {
+                "targetIdx": 1,
+                "targets": [
+                  {
+                    "targetInstanceId": 672,
+                    "highlight": "HighlightType_Tepid"
+                  },
+                  {
+                    "targetInstanceId": 689,
+                    "highlight": "HighlightType_Tepid"
+                  },
+                  {
+                    "targetInstanceId": 696,
+                    "highlight": "HighlightType_Tepid"
+                  },
+                  {
+                    "targetInstanceId": 697,
+                    "highlight": "HighlightType_Tepid"
+                  }
+                ]
+              },
+              {
+                "targetIdx": 2
+              }
+            ]
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 29589,
+            "instanceId": 567,
+            "facetId": 567,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 5
+              },
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 3
+              }
+            ],
+            "shouldStop": true
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 50879,
+            "instanceId": 688,
+            "facetId": 688,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 6
+              },
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 2
+              }
+            ],
+            "shouldStop": true
+          },
+          {
+            "actionType": "ActionType_Activate",
+            "grpId": 19737,
+            "instanceId": 698,
+            "facetId": 698,
+            "abilityGrpId": 2152,
+            "shouldStop": true,
+            "targets": [
+              {
+                "targetIdx": 1,
+                "targets": [
+                  {
+                    "targetInstanceId": 672,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 689,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 696,
+                    "highlight": "HighlightType_Hot"
+                  },
+                  {
+                    "targetInstanceId": 697,
+                    "highlight": "HighlightType_Hot"
+                  }
+                ]
+              }
+            ],
+            "uniqueAbilityId": 448
+          },
+          {
+            "actionType": "ActionType_Pass"
+          }
+        ]
+      }
+    }
+  },
+  "request_states": {
+    "219": {
+      "turnInfo": {
+        "decisionPlayer": 2,
+        "activePlayer": 2,
+        "phase": "Phase_Main1",
+        "step": "Step_Draw",
+        "turnNumber": 11,
+        "priorityPlayer": 2,
+        "nextPhase": "Phase_Combat",
+        "nextStep": "Step_BeginCombat"
+      },
+      "battlefield_objects": [
+        {
+          "instanceId": 689,
+          "grpId": 103511,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "hasSummoningSickness": true,
+          "power": {
+            "value": 1
+          },
+          "toughness": {
+            "value": 1
+          }
+        },
+        {
+          "instanceId": 683,
+          "grpId": 73457,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 1,
+          "controllerSeatId": 1
+        },
+        {
+          "instanceId": 672,
+          "grpId": 90681,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "hasSummoningSickness": true,
+          "power": {
+            "value": 6
+          },
+          "toughness": {
+            "value": 6
+          }
+        },
+        {
+          "instanceId": 671,
+          "grpId": 97547,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 666,
+          "grpId": 72551,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 1,
+          "controllerSeatId": 1,
+          "isTapped": true
+        },
+        {
+          "instanceId": 664,
+          "grpId": 75553,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 574,
+          "grpId": 75553,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 560,
+          "grpId": 75333,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 1,
+          "controllerSeatId": 1,
+          "isTapped": true
+        },
+        {
+          "instanceId": 468,
+          "grpId": 75553,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 462,
+          "grpId": 54769,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 453,
+          "grpId": 75333,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 1,
+          "controllerSeatId": 1,
+          "isTapped": true
+        },
+        {
+          "instanceId": 448,
+          "grpId": 75553,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 446,
+          "grpId": 78632,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 1,
+          "controllerSeatId": 1,
+          "isTapped": true
+        },
+        {
+          "instanceId": 444,
+          "grpId": 75553,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 696,
+          "grpId": 103511,
+          "type": "GameObjectType_Token",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "hasSummoningSickness": true,
+          "power": {
+            "value": 1
+          },
+          "toughness": {
+            "value": 1
+          }
+        },
+        {
+          "instanceId": 697,
+          "grpId": 103511,
+          "type": "GameObjectType_Token",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "hasSummoningSickness": true,
+          "power": {
+            "value": 1
+          },
+          "toughness": {
+            "value": 1
+          }
+        }
+      ]
+    },
+    "222": {
+      "turnInfo": {
+        "decisionPlayer": 2,
+        "activePlayer": 2,
+        "phase": "Phase_Main1",
+        "step": "Step_Draw",
+        "turnNumber": 11,
+        "priorityPlayer": 2,
+        "nextPhase": "Phase_Combat",
+        "nextStep": "Step_BeginCombat"
+      },
+      "battlefield_objects": [
+        {
+          "instanceId": 698,
+          "grpId": 19737,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2
+        },
+        {
+          "instanceId": 689,
+          "grpId": 103511,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "hasSummoningSickness": true,
+          "power": {
+            "value": 1
+          },
+          "toughness": {
+            "value": 1
+          }
+        },
+        {
+          "instanceId": 683,
+          "grpId": 73457,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 1,
+          "controllerSeatId": 1
+        },
+        {
+          "instanceId": 672,
+          "grpId": 90681,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "hasSummoningSickness": true,
+          "power": {
+            "value": 6
+          },
+          "toughness": {
+            "value": 6
+          }
+        },
+        {
+          "instanceId": 671,
+          "grpId": 97547,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 666,
+          "grpId": 72551,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 1,
+          "controllerSeatId": 1,
+          "isTapped": true
+        },
+        {
+          "instanceId": 664,
+          "grpId": 75553,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 574,
+          "grpId": 75553,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 560,
+          "grpId": 75333,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 1,
+          "controllerSeatId": 1,
+          "isTapped": true
+        },
+        {
+          "instanceId": 468,
+          "grpId": 75553,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 462,
+          "grpId": 54769,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 453,
+          "grpId": 75333,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 1,
+          "controllerSeatId": 1,
+          "isTapped": true
+        },
+        {
+          "instanceId": 448,
+          "grpId": 75553,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 446,
+          "grpId": 78632,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 1,
+          "controllerSeatId": 1,
+          "isTapped": true
+        },
+        {
+          "instanceId": 444,
+          "grpId": 75553,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 696,
+          "grpId": 103511,
+          "type": "GameObjectType_Token",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "hasSummoningSickness": true,
+          "power": {
+            "value": 1
+          },
+          "toughness": {
+            "value": 1
+          }
+        },
+        {
+          "instanceId": 697,
+          "grpId": 103511,
+          "type": "GameObjectType_Token",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "hasSummoningSickness": true,
+          "power": {
+            "value": 1
+          },
+          "toughness": {
+            "value": 1
+          }
+        }
+      ]
+    },
+    "236": {
+      "turnInfo": {
+        "decisionPlayer": 2,
+        "activePlayer": 2,
+        "phase": "Phase_Main2",
+        "step": "Step_EndCombat",
+        "turnNumber": 11,
+        "priorityPlayer": 2,
+        "nextPhase": "Phase_Ending",
+        "nextStep": "Step_End"
+      },
+      "battlefield_objects": [
+        {
+          "instanceId": 698,
+          "grpId": 19737,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2
+        },
+        {
+          "instanceId": 689,
+          "grpId": 103511,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "hasSummoningSickness": true,
+          "power": {
+            "value": 1
+          },
+          "toughness": {
+            "value": 1
+          }
+        },
+        {
+          "instanceId": 683,
+          "grpId": 73457,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 1,
+          "controllerSeatId": 1
+        },
+        {
+          "instanceId": 672,
+          "grpId": 90681,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true,
+          "hasSummoningSickness": true,
+          "power": {
+            "value": 6
+          },
+          "toughness": {
+            "value": 6
+          }
+        },
+        {
+          "instanceId": 671,
+          "grpId": 97547,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 666,
+          "grpId": 72551,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 1,
+          "controllerSeatId": 1,
+          "isTapped": true
+        },
+        {
+          "instanceId": 664,
+          "grpId": 75553,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 574,
+          "grpId": 75553,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 560,
+          "grpId": 75333,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 1,
+          "controllerSeatId": 1,
+          "isTapped": true
+        },
+        {
+          "instanceId": 468,
+          "grpId": 75553,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 462,
+          "grpId": 54769,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 453,
+          "grpId": 75333,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 1,
+          "controllerSeatId": 1,
+          "isTapped": true
+        },
+        {
+          "instanceId": 448,
+          "grpId": 75553,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 446,
+          "grpId": 78632,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 1,
+          "controllerSeatId": 1,
+          "isTapped": true
+        },
+        {
+          "instanceId": 444,
+          "grpId": 75553,
+          "type": "GameObjectType_Card",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "isTapped": true
+        },
+        {
+          "instanceId": 696,
+          "grpId": 103511,
+          "type": "GameObjectType_Token",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "hasSummoningSickness": true,
+          "power": {
+            "value": 1
+          },
+          "toughness": {
+            "value": 1
+          }
+        },
+        {
+          "instanceId": 697,
+          "grpId": 103511,
+          "type": "GameObjectType_Token",
+          "zoneId": 28,
+          "ownerSeatId": 2,
+          "controllerSeatId": 2,
+          "hasSummoningSickness": true,
+          "power": {
+            "value": 1
+          },
+          "toughness": {
+            "value": 1
+          }
+        }
+      ]
+    }
+  },
+  "state": {
+    "local_seat_id": 2,
+    "players": [
+      {
+        "seat_id": 1,
+        "life_total": 21,
+        "life_gained_this_turn": 0,
+        "life_gained_this_game": 2,
+        "counters": {},
+        "lands_played": 1,
+        "mana_pool": {},
+        "team_id": 1,
+        "status": "InGame",
+        "controller_seat_id": 1,
+        "is_local": false,
+        "mulligan_count": 0,
+        "timeout_count": 1,
+        "commander_ids": [
+          243
+        ],
+        "designations": [
+          "Commander"
+        ]
+      },
+      {
+        "seat_id": 2,
+        "life_total": 28,
+        "life_gained_this_turn": 0,
+        "life_gained_this_game": 3,
+        "counters": {},
+        "lands_played": 0,
+        "mana_pool": {},
+        "team_id": 2,
+        "status": "InGame",
+        "controller_seat_id": 2,
+        "is_local": true,
+        "mulligan_count": 0,
+        "timeout_count": 2,
+        "commander_ids": [
+          689
+        ],
+        "designations": [
+          "Commander"
+        ]
+      }
+    ],
+    "hand": [
+      {
+        "instance_id": 351,
+        "grp_id": 89065,
+        "name": "Archdruid's Charm",
+        "oracle_text": "Choose one \u2014 \n\u2022<indent=4%><indent=4%>Search your library for a creature or land card and reveal it. Put it onto the battlefield tapped if it's a land card. Otherwise, put it into your hand. Then shuffle. </indent></indent>\n\u2022<indent=4%><indent=4%>Put a +1/+1 counter on target creature you control. It deals damage equal to its power to target creature you don't control. </indent></indent>\n\u2022<indent=4%><indent=4%>Exile target artifact or enchantment.</indent></indent>",
+        "type_line": "Instant",
+        "mana_cost": "{G}{G}{G}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2
+      },
+      {
+        "instance_id": 567,
+        "grp_id": 29589,
+        "name": "Woodfall Primus",
+        "oracle_text": "Trample\nWhen this creature enters, destroy target noncreature permanent.\nPersist",
+        "type_line": "Creature \u2014 Treefolk Shaman",
+        "mana_cost": "{5}{G}{G}{G}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2
+      },
+      {
+        "instance_id": 688,
+        "grp_id": 50879,
+        "name": "Vorinclex, Voice of Hunger",
+        "oracle_text": "Trample\nWhenever you tap a land for mana, add one mana of any type that land produced.\nWhenever an opponent taps a land for mana, that land doesn't untap during its controller's next untap step.",
+        "type_line": "Legendary Creature \u2014 Phyrexian Praetor",
+        "mana_cost": "{6}{G}{G}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2
+      }
+    ],
+    "battlefield": [
+      {
+        "instance_id": 444,
+        "grp_id": 75553,
+        "name": "Forest",
+        "oracle_text": "({T}: Add {G}.)",
+        "type_line": "Basic Land \u2014 Forest",
+        "mana_cost": "",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 1,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [
+          "Forest"
+        ],
+        "object_kind": "CARD",
+        "ability_grp_ids": [
+          1005
+        ]
+      },
+      {
+        "instance_id": 446,
+        "grp_id": 78632,
+        "name": "Haunted Ridge",
+        "oracle_text": "This land enters tapped unless you control two or more other lands.\n{oT}: Add {oB} or {oR}.",
+        "type_line": "Land",
+        "mana_cost": "",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 2,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "ability_grp_ids": [
+          145461,
+          1211
+        ]
+      },
+      {
+        "instance_id": 448,
+        "grp_id": 75553,
+        "name": "Forest",
+        "oracle_text": "({T}: Add {G}.)",
+        "type_line": "Basic Land \u2014 Forest",
+        "mana_cost": "",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 3,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [
+          "Forest"
+        ],
+        "object_kind": "CARD",
+        "ability_grp_ids": [
+          1005
+        ]
+      },
+      {
+        "instance_id": 453,
+        "grp_id": 75333,
+        "name": "Snow-Covered Mountain",
+        "oracle_text": "({T}: Add {R}.)",
+        "type_line": "Basic Snow Land \u2014 Mountain",
+        "mana_cost": "",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 4,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [
+          "Mountain"
+        ],
+        "object_kind": "CARD",
+        "ability_grp_ids": [
+          1004
+        ]
+      },
+      {
+        "instance_id": 462,
+        "grp_id": 54769,
+        "name": "Nykthos, Shrine to Nyx",
+        "oracle_text": "{oT}: Add {oC}.\n{o2}, {oT}: Choose a color. Add an amount of mana of that color equal to your devotion to that color.",
+        "type_line": "Legendary Land",
+        "mana_cost": "",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 5,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "ability_grp_ids": [
+          1152,
+          20420
+        ]
+      },
+      {
+        "instance_id": 468,
+        "grp_id": 75553,
+        "name": "Forest",
+        "oracle_text": "({T}: Add {G}.)",
+        "type_line": "Basic Land \u2014 Forest",
+        "mana_cost": "",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 5,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [
+          "Forest"
+        ],
+        "object_kind": "CARD",
+        "ability_grp_ids": [
+          1005
+        ]
+      },
+      {
+        "instance_id": 560,
+        "grp_id": 75333,
+        "name": "Snow-Covered Mountain",
+        "oracle_text": "({T}: Add {R}.)",
+        "type_line": "Basic Snow Land \u2014 Mountain",
+        "mana_cost": "",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 6,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [
+          "Mountain"
+        ],
+        "object_kind": "CARD",
+        "ability_grp_ids": [
+          1004
+        ]
+      },
+      {
+        "instance_id": 574,
+        "grp_id": 75553,
+        "name": "Forest",
+        "oracle_text": "({T}: Add {G}.)",
+        "type_line": "Basic Land \u2014 Forest",
+        "mana_cost": "",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 7,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [
+          "Forest"
+        ],
+        "object_kind": "CARD",
+        "ability_grp_ids": [
+          1005
+        ]
+      },
+      {
+        "instance_id": 664,
+        "grp_id": 75553,
+        "name": "Forest",
+        "oracle_text": "({T}: Add {G}.)",
+        "type_line": "Basic Land \u2014 Forest",
+        "mana_cost": "",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 7,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [
+          "Forest"
+        ],
+        "object_kind": "CARD",
+        "ability_grp_ids": [
+          1005
+        ]
+      },
+      {
+        "instance_id": 666,
+        "grp_id": 72551,
+        "name": "Unstable Obelisk",
+        "oracle_text": "{oT}: Add {oC}.\n{o7}, {oT}, Sacrifice this artifact: Destroy target permanent.",
+        "type_line": "Artifact",
+        "mana_cost": "{3}",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 8,
+        "card_types": [
+          "Artifact"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "ability_grp_ids": [
+          1152,
+          76738
+        ]
+      },
+      {
+        "instance_id": 671,
+        "grp_id": 97547,
+        "name": "Ba Sing Se",
+        "oracle_text": "This land enters tapped unless you control a basic land.\n{oT}: Add {oG}.\n{o2oG}, {oT}: Earthbend 2. Activate only as a sorcery.",
+        "type_line": "Land",
+        "mana_cost": "",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 9,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "ability_grp_ids": [
+          192867,
+          1005,
+          192869
+        ]
+      },
+      {
+        "instance_id": 672,
+        "grp_id": 90681,
+        "name": "Vaultborn Tyrant",
+        "oracle_text": "Trample\nWhenever this creature or another creature you control with power 4 or greater enters, you gain 3 life and draw a card.\nWhen this creature dies, if it's not a token, create a token that's a copy of it, except it's an artifact in addition to its other types.",
+        "type_line": "Creature \u2014 Dinosaur",
+        "mana_cost": "{5}{G}{G}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": 6,
+        "toughness": 6,
+        "is_tapped": false,
+        "turn_entered_battlefield": 9,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Dinosaur"
+        ],
+        "object_kind": "CARD",
+        "keywords": [
+          "trample"
+        ],
+        "ability_grp_ids": [
+          14,
+          172064,
+          172065
+        ]
+      },
+      {
+        "instance_id": 683,
+        "grp_id": 73457,
+        "name": "Lithoform Engine",
+        "oracle_text": "{o2}, {oT}: Copy target activated or triggered ability you control. You may choose new targets for the copy.\n{o3}, {oT}: Copy target instant or sorcery spell you control. You may choose new targets for the copy.\n{o4}, {oT}: Copy target permanent spell you control. <i>(The copy becomes a token.)</i>",
+        "type_line": "Legendary Artifact",
+        "mana_cost": "{4}",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": 10,
+        "card_types": [
+          "Artifact"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "ability_grp_ids": [
+          138591,
+          138592,
+          138593
+        ]
+      },
+      {
+        "instance_id": 689,
+        "grp_id": 103511,
+        "name": "The Notary Hobbits",
+        "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+        "type_line": "Legendary Creature \u2014 Halfling Advisor",
+        "mana_cost": "{3}{G}{G}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": 1,
+        "toughness": 1,
+        "is_tapped": false,
+        "turn_entered_battlefield": 11,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Halfling",
+          "Advisor"
+        ],
+        "object_kind": "CARD",
+        "ability_grp_ids": [
+          205209,
+          205210
+        ],
+        "summoning_sickness": true
+      },
+      {
+        "instance_id": 696,
+        "grp_id": 103511,
+        "name": "The Notary Hobbits",
+        "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+        "type_line": "Legendary Creature \u2014 Halfling Advisor",
+        "mana_cost": "{3}{G}{G}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": 1,
+        "toughness": 1,
+        "is_tapped": false,
+        "turn_entered_battlefield": 11,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Halfling",
+          "Advisor"
+        ],
+        "object_kind": "TOKEN",
+        "ability_grp_ids": [
+          205209,
+          205210
+        ],
+        "summoning_sickness": true
+      },
+      {
+        "instance_id": 697,
+        "grp_id": 103511,
+        "name": "The Notary Hobbits",
+        "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+        "type_line": "Legendary Creature \u2014 Halfling Advisor",
+        "mana_cost": "{3}{G}{G}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": 1,
+        "toughness": 1,
+        "is_tapped": false,
+        "turn_entered_battlefield": 11,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Halfling",
+          "Advisor"
+        ],
+        "object_kind": "TOKEN",
+        "ability_grp_ids": [
+          205209,
+          205210
+        ],
+        "summoning_sickness": true
+      },
+      {
+        "instance_id": 698,
+        "grp_id": 19737,
+        "name": "Lightning Greaves",
+        "oracle_text": "Equipped creature has haste and shroud.\nEquip {o0}",
+        "type_line": "Artifact \u2014 Equipment",
+        "mana_cost": "{2}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": 11,
+        "card_types": [
+          "Artifact"
+        ],
+        "subtypes": [
+          "Equipment"
+        ],
+        "object_kind": "CARD",
+        "ability_grp_ids": [
+          2151,
+          2152
+        ]
+      }
+    ],
+    "turn": {
+      "turn_number": 11,
+      "active_player": 2,
+      "priority_player": 2,
+      "phase": "Phase_Main1"
+    }
+  },
+  "cast_reason": "Greaves gives the summoning-sick Notary tokens haste and shroud, letting them tap for mana and attack this turn while protecting the engine."
+}
