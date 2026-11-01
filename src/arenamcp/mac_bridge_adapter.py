@@ -19,6 +19,7 @@ reveal/annotation history still comes from Player.log (docs/DECISIONS.md,
 from __future__ import annotations
 
 import logging
+import re
 import time
 import uuid
 from collections.abc import Callable
@@ -390,6 +391,11 @@ class MacBridgeAdapter:
         self._runtime = runtime
         self._sleep = sleep
         self._clock = clock
+        self._stalled_ticks: str | None = None
+        self._stalled_polls = 0
+        # A successful socket ping does not mean Unity is processing frames.
+        # Latch until a fresh handshake constructs a new adapter (#326).
+        self.client_frozen_reason: str | None = None
 
     # -- transport ---------------------------------------------------------
 
@@ -439,6 +445,8 @@ class MacBridgeAdapter:
 
     def handle(self, command: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
         action = str(command.get("action") or "")
+        if self.client_frozen_reason and action != "ping":
+            return {"ok": False, "error": self.client_frozen_reason, "client_frozen": True}
         handler = getattr(self, "_cmd_" + action, None)
         if handler is None:
             return {
@@ -449,10 +457,25 @@ class MacBridgeAdapter:
         try:
             result = handler(command, timeout)
         except AdapterError as exc:
+            if action == "get_pending_actions":
+                match = re.search(r"main thread did not answer in time \(ticks=(\d+)\)", str(exc))
+                ticks = match.group(1) if match else None
+                self._stalled_polls = (
+                    self._stalled_polls + 1 if ticks and ticks == self._stalled_ticks else int(bool(ticks))
+                )
+                self._stalled_ticks = ticks
+                if self._stalled_polls >= 3:
+                    self.client_frozen_reason = (
+                        f"Arena appears frozen: its main thread stayed at tick {ticks} across three failed polls. "
+                        "Autoplay and automatic queueing are paused. Check Arena and reconnect through Coach when ready."
+                    )
             logger.info("mac bridge %s failed: %s", action, exc)
             if isinstance(exc, RequestAlreadyAnswered):
                 return {"ok": False, "error": str(exc), "already_answered": True}
             return {"ok": False, "error": str(exc)}
+        if action == "get_pending_actions":
+            self._stalled_ticks = None
+            self._stalled_polls = 0
         if action not in self._READ_ONLY_COMMANDS and action != "submit_action":
             # submit_action logs its own line; everything else that changes the
             # client is logged here so the coaching log shows each "hand" the

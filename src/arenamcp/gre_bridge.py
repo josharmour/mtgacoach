@@ -250,10 +250,17 @@ class GREBridge:
     def connected(self) -> bool:
         return self._connected and not getattr(self, "_handshake_pending", False)
 
+    @property
+    def client_frozen_reason(self) -> str | None:
+        reason = getattr(self._mac_adapter, "client_frozen_reason", None)
+        return reason if isinstance(reason, str) and reason else None
+
     def automation_blocker(self, *, fresh: bool = True) -> str | None:
         """Require a completed handshake for this Arena process lifetime."""
         if not self._connected or not self._handshake_complete:
             return "Bridge disconnected — automation paused; reconnect Arena through Coach after the match."
+        if self.client_frozen_reason:
+            return self.client_frozen_reason
         if self.client_runtime == "il2cpp-macos":
             from arenamcp.bridge_readiness import native_arena_identity
 

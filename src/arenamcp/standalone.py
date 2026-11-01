@@ -1255,8 +1255,27 @@ class StandaloneCoach(
             or getattr(config, "dry_run", False)
             or getattr(config, "land_drop_mode", False)
             or poller is None
-            or not poller.connected
         ):
+            watchdog.reset()
+            return None
+        bridge = getattr(poller, "_bridge", None)
+        frozen = getattr(bridge, "client_frozen_reason", None)
+        if isinstance(frozen, str) and frozen:
+            from arenamcp.autopilot_models import AutopilotState
+
+            watchdog.reset()
+            engine._state = AutopilotState.PAUSED
+            engine._automation_wait_reason = frozen
+            notice = (getattr(bridge, "connection_generation", None), frozen)
+            if getattr(self, "_frozen_client_notice", None) != notice:
+                self._frozen_client_notice = notice
+                logger.error("[WATCHDOG] %s", frozen)
+                with contextlib.suppress(Exception):
+                    self.ui.advice(frozen, "AUTOPILOT")
+                self.speak_advice(frozen, blocking=False, speech_category="essential")
+            return "paused"
+        self._frozen_client_notice = None
+        if not poller.connected:
             watchdog.reset()
             return None
         try:
@@ -2559,7 +2578,7 @@ class StandaloneCoach(
                     _watchdog = self._tick_decision_watchdog(curr_state)
                     if _watchdog == "replan" and "decision_required" not in triggers:
                         triggers.insert(0, "decision_required")
-                    elif _watchdog == "submitted":
+                    elif _watchdog in ("submitted", "paused"):
                         triggers = []
 
                     # Suppress stale triggers right after a match boundary
@@ -2642,7 +2661,13 @@ class StandaloneCoach(
                         # BUT: "Action Required" is just generic main-phase priority,
                         # not a real decision (Mulligan/Scry/Discard/Target). Suppress
                         # it if we already advised this turn+phase to avoid duplicates.
-                        is_critical = trigger in CRITICAL_PRIORITY
+                        # Advice frequency must not swallow a real combat
+                        # window merely because Player.log retains a cost label (#325).
+                        is_critical = trigger in CRITICAL_PRIORITY or (
+                            self._autopilot_enabled
+                            and self._autopilot is not None
+                            and trigger in ("combat_attackers", "combat_blockers")
+                        )
 
                         if trigger == "decision_required":
                             # Arbiter (fable-improvements.md item 4): when the
@@ -2949,8 +2974,12 @@ class StandaloneCoach(
                         # NOTE: "new_turn" is excluded — when the player's turn starts, they
                         # always need advice even if a stale ability is still on the stack.
                         stack = curr_state.get("stack", [])
+                        # Quiet advice still needs an actual pass from Autopilot
+                        # when Arena holds priority for us (#327).
+                        autoplay = self._autopilot_enabled and self._autopilot is not None
                         if (
-                            stack
+                            not autoplay
+                            and stack
                             and trigger in ("land_played", "spell_resolved", "priority_gained")
                             and not has_pending_decision
                         ):
@@ -2968,7 +2997,7 @@ class StandaloneCoach(
                             "spell_resolved",
                             "opponent_turn",
                         }
-                        if trigger in QUIET_TRIGGERS and not has_pending_decision:
+                        if not autoplay and trigger in QUIET_TRIGGERS and not has_pending_decision:
                             has_instants = self._trigger._has_castable_instants(curr_state)
                             stack = curr_state.get("stack", [])
 
