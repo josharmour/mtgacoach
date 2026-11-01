@@ -1223,12 +1223,13 @@ class AutoQueueNavigator:
             if can_bridge_queue:
                 if (
                     self._recent_mode
-                    and self._stage in {"results", "resuming"}
+                    and not self._queue_started
                     and callable(getattr(bridge, "get_match_end", None))
                 ):
                     # Keep the animation/readiness-aware native result handler.
-                    # If the scene is gone, the Home resolver verifies that it is
-                    # truly idle; no screen/input fallback is needed on this path.
+                    # The result object can appear AFTER the match-end log. Keep
+                    # checking until Home really accepts a submission, even if a
+                    # previous frame contained neither scene.
                     if self._leave_result_via_bridge(bridge, generation, aborted):
                         return
                     self._stage = "home"

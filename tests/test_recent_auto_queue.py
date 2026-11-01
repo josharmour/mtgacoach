@@ -192,3 +192,22 @@ def test_turning_auto_queue_off_during_target_read_prevents_submission():
     bridge.get_recent_match.side_effect = disable
     step(nav)
     bridge.queue_recent_match.assert_not_called()
+
+
+def test_result_scene_appearing_after_completion_log_is_still_dismissed():
+    from tests.test_auto_queue_result_bridge_20261020 import CLOSED, READY
+
+    nav, bridge, state, _, controller = setup()
+    state["match_id"] = "ended"
+    target = bridge.get_recent_match.return_value
+    bridge.get_match_end = Mock(side_effect=[CLOSED, READY, CLOSED])
+    bridge.leave_match = Mock(return_value={"ok": True})
+    bridge.get_recent_match.side_effect = [{"ok": False, "error": "Home not present"}, target]
+    nav.note_match_end({"match_id": "ended", "completed_at": time.time()}, confirmed_match_end=True)
+    step(nav)
+    bridge.queue_recent_match.assert_not_called()
+    step(nav)
+    bridge.leave_match.assert_called_once()
+    step(nav)
+    bridge.queue_recent_match.assert_called_once()
+    controller.capture.assert_not_called()
