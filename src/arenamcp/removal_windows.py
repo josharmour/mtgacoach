@@ -17,6 +17,41 @@ _LIMIT = re.compile(r"with (mana value|power|toughness) (\d+) or (less|greater)"
 _PLAINS = re.compile(r"with mana value less than or equal to the number of plains you control", re.I)
 
 
+_PERMANENT_TYPES = {"creature", "land", "artifact", "enchantment", "planeswalker", "battle"}
+
+
+def _current_types(card: dict) -> set[str]:
+    raw = card.get("card_types")
+    if isinstance(raw, list):
+        return {str(t).lower().removeprefix("cardtype_") for t in raw}
+    return set(
+        re.findall(
+            r"\b(?:creature|land|artifact|enchantment|planeswalker|battle|instant|sorcery)\b",
+            str(card.get("type_line") or "").lower(),
+        )
+    )
+
+
+def _plains_count(state: dict, local: int) -> int:
+    def plains(card):
+        if (
+            card.get("controller_seat_id") != local
+            or card.get("is_phased_out")
+            or "land" not in _current_types(card)
+        ):
+            return False
+        subtypes = card.get("subtypes")
+        if isinstance(subtypes, list):
+            return "plains" in {str(t).lower().removeprefix("subtype_") for t in subtypes}
+        return bool(re.search(r"\bplains\b", str(card.get("type_line") or ""), re.I))
+
+    return sum(plains(c) for c in state.get("battlefield") or [])
+
+
+def _ability(card: dict) -> bool:
+    return str(card.get("object_kind") or "").upper() == "ABILITY" or bool(card.get("parent_instance_id"))
+
+
 def target_eligibility(source: dict, target: dict, state: dict) -> bool | None:
     """Whether supported destroy/exile clauses can target this battlefield object."""
     local = get_local_seat_id(state)
@@ -24,6 +59,11 @@ def target_eligibility(source: dict, target: dict, state: dict) -> bool | None:
     clauses = list(_TARGET.finditer(text))
     if not clauses or local is None:
         return None
+    if target.get("is_phased_out"):
+        return False
+    # A different targeting/damage mode may satisfy the intent. Absence from
+    # this narrow parser is not proof that the complete spell cannot do it.
+    other_effect = bool(re.search(r"\b(?:target|damage|destroy|exile|return)\b", _TARGET.sub("", text), re.I))
     results = []
     for clause in clauses:
         tail = clause["tail"].lower()
@@ -36,20 +76,18 @@ def target_eligibility(source: dict, target: dict, state: dict) -> bool | None:
         if leftover:
             results.append(None)
             continue
-        types = str(target.get("type_line") or "").lower()
+        types = _current_types(target)
         controller = target.get("controller_seat_id")
         if not types or controller is None:
             results.append(None)
             continue
         kind = clause["kind"].lower()
         if kind == "nonland permanent":
-            allowed = "land" not in types
+            allowed = bool(types & _PERMANENT_TYPES) and "land" not in types
         elif kind == "noncreature permanent":
-            allowed = "creature" not in types
+            allowed = bool(types & _PERMANENT_TYPES) and "creature" not in types
         elif kind == "permanent":
-            allowed = any(
-                k in types for k in ("creature", "land", "artifact", "enchantment", "planeswalker", "battle")
-            )
+            allowed = bool(types & _PERMANENT_TYPES)
         else:
             allowed = any(k in types for k in kind.split(" or "))
         if (
@@ -88,16 +126,12 @@ def target_eligibility(source: dict, target: dict, state: dict) -> bool | None:
                 results.append(None)
                 continue
             if plains:
-                maximum = sum(
-                    c.get("controller_seat_id") == local
-                    and bool(re.search(r"\bplains\b", str(c.get("type_line") or ""), re.I))
-                    for c in state.get("battlefield") or []
-                )
+                maximum = _plains_count(state, local)
                 allowed = value <= maximum
             else:
                 allowed = value <= int(limit[2]) if limit[3].lower() == "less" else value >= int(limit[2])
-        results.append(allowed)
-    return True if True in results else None if None in results else False
+        results.append(None if allowed and "oracle_text" not in target else allowed)
+    return True if True in results else None if None in results or other_effect else False
 
 
 @dataclass(frozen=True)
@@ -207,45 +241,69 @@ def invalid_removal_intent(decision, state: dict, chosen: list[str], reasoning: 
     if not source or not _TARGET.search(cast_targeting_text(source)):
         return ""
     local = get_local_seat_id(state)
+    if local is None:
+        return ""
+    by_name = {}
     for zone in ("battlefield", "stack"):
         for target in state.get(zone) or []:
             name = str(target.get("name") or "")
-            if not name or target.get("controller_seat_id") in (None, local):
+            if not name or target.get("controller_seat_id") in (None, local) or _ability(target):
                 continue
-            intended = re.search(
-                r"\b(?:exil(?:e|ing)|destroy(?:ing)?|remov(?:e|ing)|kill(?:ing)?|target(?:ing)?)\s+"
-                + re.escape(name)
-                + r"(?=$|[\s.,;:#])",
-                str(reasoning or ""),
-                re.I,
-            )
-            if not intended:
-                continue
-            prefix = str(reasoning or "")[: intended.start()].rsplit(".", 1)[-1].rsplit(";", 1)[-1]
-            if re.search(r"\b(?:not|can't|cannot|don't|never|if)\b", prefix, re.I):
-                continue
-            legal = target_eligibility(source, target, state)
-            if zone == "stack" and legal is not None:
-                return f"{name} is still on the stack; {source.get('name')} targets a battlefield permanent, not that spell."
-            if legal is False:
-                return f"{name} is not a legal target for any supported removal mode of {source.get('name')} on this board."
+            by_name.setdefault(name.casefold(), []).append((zone, target))
+    for named in by_name.values():
+        name = str(named[0][1]["name"])
+        intended = re.search(
+            r"\b(?:exil(?:e|ing)|destroy(?:ing)?|remov(?:e|ing)|kill(?:ing)?|target(?:ing)?)\s+"
+            + re.escape(name)
+            + r"(?=$|[\s.,;:#])(?:\s*#(?P<iid>\d+))?",
+            str(reasoning or ""),
+            re.I,
+        )
+        if not intended:
+            continue
+        prefix = str(reasoning or "")[: intended.start()].rsplit(".", 1)[-1].rsplit(";", 1)[-1]
+        if re.search(r"\b(?:not|can't|cannot|don't|never|if)\b", prefix, re.I):
+            continue
+        if intended["iid"]:
+            named = [(z, c) for z, c in named if str(c.get("instance_id")) == intended["iid"]]
+        if not named:
+            continue  # explicit identity is absent; never substitute a namesake
+        checks = [(z, c, target_eligibility(source, c, state)) for z, c in named]
+        if any(legal is None or (zone == "battlefield" and legal is True) for zone, _, legal in checks):
+            continue  # a legal/unknown namesake makes name-only intent ambiguous
+        if all(zone == "stack" for zone, _, _ in checks):
+            return f"{name} is still on the stack; {source.get('name')} targets a battlefield permanent, not that spell."
+        return f"{name} is not a legal target for any supported removal mode of {source.get('name')} on this board."
     return ""
 
 
 def plains_cap_targets(state: dict, instance_id: int, name: str = "") -> tuple[int, frozenset] | None:
     """Facts that can reopen a cancelled Plains-scaled removal, not unrelated requests."""
-    source = find_source(state, {"instanceId": instance_id}, name=name)
-    if not source or not _PLAINS.search(cast_targeting_text(source)):
-        return None
     local = get_local_seat_id(state)
     if local is None:
         return None
+    source = find_source(state, {"instanceId": instance_id}) if instance_id else {}
+    if not source:
+        # Casting/cancelling changes Arena identities. Prefer the exact pending
+        # spell before falling back to an unambiguous controlled namesake.
+        context = state.get("decision_context") or {}
+        payload = state.get("_bridge_request_payload") or {}
+        pending_id = context.get("source_id") or context.get("sourceId") or payload.get("sourceId")
+        candidates = [
+            c
+            for zone in ("hand", "stack", "exile", "command")
+            for c in state.get(zone) or []
+            if c.get("controller_seat_id", c.get("owner_seat_id")) == local
+            and not _ability(c)
+            and name
+            and str(c.get("name") or "").casefold() == name.casefold()
+        ]
+        pending = [c for c in candidates if pending_id and str(c.get("instance_id")) == str(pending_id)]
+        source = pending[0] if len(pending) == 1 else candidates[0] if len(candidates) == 1 else {}
+    if not source or not _PLAINS.search(cast_targeting_text(source)):
+        return None
     battlefield = state.get("battlefield") or []
-    count = sum(
-        c.get("controller_seat_id") == local
-        and bool(re.search(r"\bplains\b", str(c.get("type_line") or ""), re.I))
-        for c in battlefield
-    )
+    count = _plains_count(state, local)
     targets = frozenset(
         c["instance_id"]
         for c in battlefield

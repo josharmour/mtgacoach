@@ -154,3 +154,46 @@ def test_conditional_hexproof_and_visible_bypass_are_not_unconditional_windows()
         card(60, "Exception", "You may target creatures as though they didn't have hexproof.", "Artifact")
     )
     assert invalid_transform_hold(menu(cast(30)), state, ["pass"], HOLD) is None
+
+
+def test_current_types_and_phasing_control_targeting_and_plains_caps():
+    state = board(3)
+    source = card(
+        30,
+        "Lay Down Arms",
+        "Exile target creature with mana value less than or equal to the number of Plains you control.",
+        "Sorcery",
+        "{W}",
+    )
+    heliod = card(
+        99,
+        "Heliod, Sun-Crowned",
+        "Indestructible",
+        "Legendary Enchantment Creature — God",
+        "{2}{W}",
+        seat=2,
+        card_types=["CardType_Enchantment"],
+    )
+    assert target_eligibility(source, heliod, state) is False
+    heliod["card_types"] = ["CardType_Creature", "CardType_Enchantment"]
+    assert target_eligibility(source, heliod, state) is True
+    state["battlefield"][0]["is_phased_out"] = True
+    assert target_eligibility(source, heliod, state) is False
+    state["battlefield"][0]["is_phased_out"] = False
+    state["battlefield"][0]["subtypes"] = ["SubType_Island"]
+    assert target_eligibility(source, heliod, state) is False
+    state["battlefield"][0].pop("subtypes")
+    heliod["is_phased_out"] = True
+    assert target_eligibility(source, heliod, state) is False
+
+
+def test_missing_rules_or_restricted_stats_stay_unknown():
+    state = board(3)
+    source = card(30, "Answer", "Exile target creature.", "Instant", "{W}")
+    target = card(50, "Unknown target", "", "Creature", "{2}{G}", seat=2, power=2, toughness=2)
+    target.pop("oracle_text")
+    assert target_eligibility(source, target, state) is None
+    source["oracle_text"] = "Exile target creature with mana value 3 or less."
+    target["oracle_text"] = ""
+    target.pop("mana_cost")
+    assert target_eligibility(source, target, state) is None
