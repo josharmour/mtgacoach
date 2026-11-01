@@ -934,23 +934,36 @@ def _handle_match_created(payload: dict) -> None:
         # Always resolved, even after the game-end result: finalMatchResult is
         # authoritative and corrects an inferred one (2026-10-19: a stale
         # last_game_result made every later MatchCompleted skip this).
-        # IntermissionReq may have already wiped seat/team state via reset().
-        our_seat = seat_id or game_state.local_seat_id
-        if our_seat is None and game_state._pre_reset_snapshot:
-            our_seat = game_state._pre_reset_snapshot.get("local_seat_id")
+        # IntermissionReq resets live identity and take_game_end consumes its
+        # snapshot. Keep the finished game's small identity record until the
+        # next game starts; never borrow a different match's seat/team.
+        ended = game_state.last_ended_game() or {}
+        same_ended_match = bool(ended) and (match_id is None or ended.get("match_id") == match_id)
+        ended_identity = ended if same_ended_match else {}
+        snapshot = game_state._pre_reset_snapshot or {}
+        if match_id is not None and snapshot.get("match_id") != match_id:
+            snapshot = {}
+        our_seat = seat_id or ended_identity.get("local_seat_id") or snapshot.get("local_seat_id")
+        if our_seat is None and not ended:
+            our_seat = game_state.local_seat_id
 
         our_team = team_id
-        if our_team is None:
+        if our_team is None and our_seat is not None:
+            our_team = next(
+                (p.get("teamId") for p in participants if p.get("systemSeatId") == our_seat), None
+            )
+        if our_team is None and our_seat == ended_identity.get("local_seat_id"):
+            our_team = ended_identity.get("local_team_id")
+        if our_team is None and not ended:
             our_team = game_state.get_local_team_id()
-        if our_team is None and game_state._pre_reset_snapshot:
-            for player in game_state._pre_reset_snapshot.get("players", []):
+        if our_team is None:
+            for player in snapshot.get("players", []):
                 if player.get("seat_id") == our_seat:
                     our_team = player.get("team_id")
                     break
 
         # The resultList holds every game of the match: describe the game that
         # just ended (the last one), not game 1 of a Bo3.
-        ended = game_state.last_ended_game() or {}
         ended_game_number = (
             ended.get("game_number")
             if match_id is None or ended.get("match_id") in (None, match_id)

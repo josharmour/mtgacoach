@@ -400,19 +400,29 @@ def test_bo3_games_are_recorded_as_their_own_games(monkeypatch, arena, bundles):
     assert [p["result"] for p in packets(f"{m}-g3")] == ["win"]
 
 
-def test_final_match_result_corrects_a_game_recorded_without_a_result(monkeypatch, arena, bundles, caplog):
+@pytest.mark.parametrize("identity_available", [True, False])
+def test_final_match_result_corrects_a_game_recorded_without_a_result(
+    monkeypatch, arena, bundles, caplog, identity_available
+):
     """A GameOver without results (nobody at 0) records "unknown"; MatchCompleted's loss corrects it."""
     a = "a-unknown-41753907-9013"
     coach = loop_coach(arena)
+
+    def complete_after_record_taken():
+        if not identity_available:
+            monkeypatch.setattr("arenamcp.log_utils.get_local_player_id", lambda: None)
+            monkeypatch.setattr("arenamcp.log_utils.detect_local_seat", lambda: None)
+        arena.complete_match(
+            a, "Llimark", [result_row(THEIR_TEAM), result_row(THEIR_TEAM, "MatchScope_Match")]
+        )
+
     script(
         coach,
         {
             1: lambda: (arena.start_match(a, "Llimark"), arena.play(a, 1, 3)),
             2: lambda: arena.play(a, 1, 14),
             3: lambda: arena.end_game(a, 1, None),
-            4: lambda: arena.complete_match(
-                a, "Llimark", [result_row(THEIR_TEAM), result_row(THEIR_TEAM, "MatchScope_Match")]
-            ),
+            4: complete_after_record_taken,
         },
     )
     with caplog.at_level(logging.INFO):
@@ -421,6 +431,66 @@ def test_final_match_result_corrects_a_game_recorded_without_a_result(monkeypatc
     assert history() == {a: ("loss", "Llimark")}  # one record, corrected in place
     assert f"Corrected game result for {a}: unknown -> loss" in caplog.text
     assert bundles == [(a, "unknown")]  # uploaded at the game end, once
+
+
+@pytest.mark.parametrize("consume", [False, True])
+@pytest.mark.parametrize("repeat_end", [False, True])
+@pytest.mark.parametrize("team_in_state", [None, 7])
+def test_final_result_retains_finished_games_local_identity(
+    monkeypatch, arena, consume, repeat_end, team_in_state
+):
+    """#267: reset/take must not discard the seat needed by a delayed result."""
+    match_id = "267-delayed-result"
+    arena.play(match_id, 1, 14)
+    arena.gs.players[2].team_id = team_in_state
+    arena.gs.publish_snapshot()
+    arena.gs.prepare_for_game_end()
+    arena.gs.reset()
+    if consume:
+        arena.gs.take_game_end()
+    if repeat_end:
+        arena.gs.prepare_for_game_end()
+        arena.gs.take_game_end()
+    monkeypatch.setattr("arenamcp.log_utils.get_local_player_id", lambda: None)
+    monkeypatch.setattr("arenamcp.log_utils.detect_local_seat", lambda: None)
+    event = room_event(match_id, "opponent", "MatchGameRoomStateType_MatchCompleted", [result_row(7)])
+    players = event["matchGameRoomStateChangedEvent"]["gameRoomInfo"]["gameRoomConfig"]["reservedPlayers"]
+    players[1]["teamId"] = 7  # Team IDs are not necessarily seat IDs.
+    server._handle_match_created(event)
+    record = arena.gs.take_game_end()
+    assert record is not None and record["result"] == "win"
+    assert record["match_id"] == match_id
+    arena.gs.note_game_identity("next-match")
+    assert arena.gs.last_ended_game() is None
+
+
+def test_final_result_does_not_borrow_another_finished_games_identity(monkeypatch, arena, caplog):
+    arena.play("previous-match", 1, 10)
+    arena.gs.prepare_for_game_end()
+    arena.gs.reset()
+    arena.gs.take_game_end()
+    monkeypatch.setattr("arenamcp.log_utils.get_local_player_id", lambda: None)
+    monkeypatch.setattr("arenamcp.log_utils.detect_local_seat", lambda: None)
+    arena.complete_match("unseen-match", "opponent", [result_row(OUR_TEAM)])
+    assert arena.gs.take_game_end() is None
+    assert "could not resolve local outcome" in caplog.text
+
+
+def test_final_result_uses_retained_team_when_completed_room_omits_roster(monkeypatch, arena):
+    match_id = "267-no-final-roster"
+    arena.play(match_id, 1, 14)
+    arena.gs.players[2].team_id = 7
+    arena.gs.prepare_for_game_end()
+    arena.gs.reset()
+    arena.gs.take_game_end()
+    monkeypatch.setattr("arenamcp.log_utils.get_local_player_id", lambda: None)
+    monkeypatch.setattr("arenamcp.log_utils.detect_local_seat", lambda: None)
+    event = room_event(match_id, "opponent", "MatchGameRoomStateType_MatchCompleted", [result_row(7)])
+    event["matchGameRoomStateChangedEvent"]["gameRoomInfo"]["gameRoomConfig"]["reservedPlayers"] = []
+    server._handle_match_created(event)
+    record = arena.gs.take_game_end()
+    assert record["result"] == "win"
+    assert record["match_id"] == match_id
 
 
 def test_a_game_end_from_the_startup_catch_up_is_discarded(monkeypatch, arena, bundles, caplog):

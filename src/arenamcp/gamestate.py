@@ -561,6 +561,10 @@ class GameState(_GameStateAnnotationsMixin):
                 "game_number": game_number,
                 "result": self._game_end_data.get("result"),
                 "taken": False,
+                # A delayed finalMatchResult still needs this game's identity
+                # after reset() and take_game_end() discard the full snapshot.
+                "local_seat_id": ended.get("local_seat_id") if repeat else self.local_seat_id,
+                "local_team_id": ended.get("local_team_id") if repeat else self._get_local_team_id_locked(),
             }
             if not repeat:
                 # Keep backward-compatible alias for external readers
