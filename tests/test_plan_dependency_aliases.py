@@ -111,3 +111,32 @@ def test_shared_word_does_not_hide_an_explicit_full_name_dependency():
     plan = plan_with("Preserve Leonardo for Akroma's Will")
     validate_plan(plan, assess(game), game)
     assert plan.path == ""
+
+
+@pytest.mark.parametrize("text", ["Fblthp unblockable chip damage", "Fblthp combat damage", "Fblthp beats"])
+def test_unique_named_win_subject_requires_the_library_card(text):
+    game = state()
+    game["deck_catalog"] = {3: {"name": "Fblthp, Impossibly Lost", "type_line": "Legendary Creature"}}
+    plan = GamePlan(win_conditions=[text, "Fblthp beats if drawn"])
+    validate_plan(plan, assess(game), game)
+    assert plan.win_conditions == ["Fblthp beats if drawn"]
+    assert any("fblthp impossibly lost" in issue for issue in plan.issues)
+
+
+@pytest.mark.parametrize("kind", ["ambiguous", "visible", "ordinary_verb", "not_win_context"])
+def test_named_win_subject_does_not_guess_other_contexts(kind):
+    from arenamcp.plan_dependencies import library_dependencies
+
+    game = state()
+    game["deck_catalog"] = {3: {"name": "Fblthp, Impossibly Lost", "type_line": "Creature"}}
+    text = "Fblthp unblockable chip damage"
+    library = {"fblthp impossibly lost"}
+    if kind == "ambiguous":
+        game["deck_catalog"][4] = {"name": "Fblthp, the Lost", "type_line": "Creature"}
+    elif kind == "visible":
+        game["hand"] = [game["deck_catalog"][3]]
+        library = set()
+    elif kind == "ordinary_verb":
+        game["deck_catalog"] = {3: {"name": "Make Mischief", "type_line": "Sorcery"}}
+        text, library = "Make unblockable attackers", {"make mischief"}
+    assert not library_dependencies(text, game, library, win_condition=kind != "not_win_context")

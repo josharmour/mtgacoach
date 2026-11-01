@@ -3,7 +3,7 @@
 import re
 
 
-def library_dependencies(text, state, library_only):
+def library_dependencies(text, state, library_only, *, win_condition=False):
     from arenamcp.game_plan import _mentions, _plain
 
     catalog = state.get("deck_catalog") or {}
@@ -20,6 +20,14 @@ def library_dependencies(text, state, library_only):
     names = {_plain(c.get("name")) for c in cards if isinstance(c, dict) and c.get("name")}
     needed = {
         name for name in library_only if (name in names or len(name.split()) > 1) and _mentions(text, name)
+    }
+    # A leading personal name in a win-condition noun phrase is a dependency,
+    # unlike ordinary future-tense prose such as "Will attack". Restrict this
+    # shorthand to the unique first component of a supplied comma-separated name.
+    named_subjects = {
+        _plain(c["name"].split(",", 1)[0])
+        for c in cards
+        if isinstance(c, dict) and isinstance(c.get("name"), str) and "," in c["name"]
     }
     aliases = {}
     for name in names:
@@ -38,11 +46,21 @@ def library_dependencies(text, state, library_only):
         for mention in re.finditer(pattern, str(text)):
             before = str(text)[max(0, mention.start() - 40) : mention.start()]
             after = str(text)[mention.end() :]
-            if re.search(
-                r"\b(?:for|as|cast|casting|hold|save|resolve|using|with|into|enable|enables)\s+(?:the\s+)?$",
-                before,
-                re.I,
-            ) or re.match(r"\s+(?:enabler|alpha|finisher|lethal|dual.mode)\b", after, re.I):
+            named_win_subject = (
+                win_condition
+                and alias in named_subjects
+                and not str(text)[: mention.start()].strip()
+                and re.match(r"\s+(?:unblockable|(?:chip|combat) damage|beats)\b", after, re.I)
+            )
+            if (
+                named_win_subject
+                or re.search(
+                    r"\b(?:for|as|cast|casting|hold|save|resolve|using|with|into|enable|enables)\s+(?:the\s+)?$",
+                    before,
+                    re.I,
+                )
+                or re.match(r"\s+(?:enabler|alpha|finisher|lethal|dual.mode)\b", after, re.I)
+            ):
                 needed.add(identity)
                 break
     return sorted(needed)

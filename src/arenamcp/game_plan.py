@@ -621,7 +621,7 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
             if library is not None and library > _SMALL_LIBRARY:
                 issues.append(f"win condition '{win}' rejected: our library still has {library} cards")
                 continue
-        needed = library_dependencies(win, state, library_only)
+        needed = library_dependencies(win, state, library_only, win_condition=True)
         if needed and not _DRAW_LABEL.search(win):
             issues.append(f"win condition '{win}' rejected: needs {', '.join(needed)} (still in the library)")
             continue
