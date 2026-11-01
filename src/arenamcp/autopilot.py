@@ -5913,8 +5913,12 @@ class AutopilotEngine(
         # Unrelated game-state updates cannot renew a missing request's clock.
         msg_id = repr(
             (
-                game_state.get("match_id"), game_state.get("game_number"),
-                turn.get("turn_number"), turn.get("phase"), turn.get("step"), seat,
+                game_state.get("match_id"),
+                game_state.get("game_number"),
+                turn.get("turn_number"),
+                turn.get("phase"),
+                turn.get("step"),
+                seat,
             )
         )
         return {

@@ -116,6 +116,10 @@ def test_no_extra_request_while_decision_pending_budget_spent_or_backend_blocked
         backend = Blocked(BAD)
         manager = GamePlanManager(backend)
     plan = manager._reform(game, 9)
+    if blocked == "budget":
+        assert backend.requests == []
+        assert plan is None
+        return
     assert len(backend.requests) == 1
     assert plan.turn_plan[0]["cast"] == []
     assert not plan.path
