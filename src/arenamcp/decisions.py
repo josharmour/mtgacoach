@@ -3188,7 +3188,12 @@ def select_n_note(decision: Any, state: dict[str, Any]) -> str:
         note = type_choice_note(decision, state, name)
         rules = clean_rules_text(rules, name)
         return note + (f" {name}: {rules[:240]}" if name and rules else "")
+    from arenamcp.selection_claims import opponent_return_note
+
     lines = []
+    recipient_note = opponent_return_note(decision)
+    if recipient_note:
+        lines.append(recipient_note)
     loss_note = hand_loss_note(decision, state)
     if loss_note:
         lines.append(loss_note)

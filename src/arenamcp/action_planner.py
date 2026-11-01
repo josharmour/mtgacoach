@@ -9860,13 +9860,18 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         try:
             from arenamcp.game_plan import decision_claim_notes
+            from arenamcp.selection_claims import correct_return_claims
 
             cast_ids = [
                 option.meta.get("instanceId")
                 for option in decision.options
                 if option.option_id in chosen and (option.meta or {}).get("actionType") == "ActionType_Cast"
             ]
+            selection_reasoning, selection_notes = correct_return_claims(
+                self._last_decision_reasoning, decision, chosen
+            )
             notes = decision_claim_notes(self._last_decision_reasoning, game_state, cast_ids=cast_ids)
+            notes.extend(selection_notes)
         except Exception as error:  # never cost the decision
             logger.debug("typed-decision claim check failed: %s", error)
             return
@@ -9880,7 +9885,9 @@ class ActionPlanner(_ActionLegalityMixin):
         from arenamcp.game_plan import corrected_decision_reasoning
 
         original = self._last_decision_reasoning
-        self._last_decision_reasoning = corrected_decision_reasoning(original, game_state, cast_ids=cast_ids)
+        self._last_decision_reasoning = corrected_decision_reasoning(
+            selection_reasoning, game_state, cast_ids=cast_ids
+        )
         trace = getattr(self, "_last_decision_trace", None)
         if isinstance(trace, dict) and original != self._last_decision_reasoning:
             trace["uncorrected_reasoning"] = original
