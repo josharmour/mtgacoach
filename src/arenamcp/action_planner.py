@@ -9770,6 +9770,9 @@ class ActionPlanner(_ActionLegalityMixin):
         data, chosen = self._second_look(
             decision, tag_state, data, chosen, concerns_for, ask, parse, user_message, answered_high
         )
+        data, chosen = self._repair_invalid_transform_hold(
+            decision, tag_state, data, chosen, ask, parse, user_message
+        )
         reason = data.get("reasoning")
         self._last_decision_target_controllers = (
             data.get("target_controllers") if isinstance(data.get("target_controllers"), dict) else {}
@@ -9789,6 +9792,41 @@ class ActionPlanner(_ActionLegalityMixin):
             "typed-decision choice %s: %s", chosen, self._last_decision_reasoning or "reason not supplied"
         )
         return chosen
+
+    def _repair_invalid_transform_hold(self, decision, state, data, chosen, ask, parse, message):
+        """Reconsider a proven impossible future answer once, then take its current window.
+
+        Only an explicit contradictory hold-for-craft rationale qualifies; ordinary
+        holds, incomplete rules, unaffordable ward and immediate combat wins stand.
+        """
+        from arenamcp.removal_windows import invalid_transform_hold
+
+        window = invalid_transform_hold(decision, state, chosen, data.get("reasoning", ""))
+        if window is None or _lethal_this_turn(state) is True:
+            return data, chosen
+        repair = {"first": chosen, "target_id": window.target_id, "evidence": window.reason}
+        try:
+            revised, picks = parse(ask(
+                message + "\n\nREMOVAL WINDOW RECHECK: " + window.reason,
+                effort="high", budget=min(self._timeout, 12.0),
+                cancel_event=getattr(self, "_decision_cancel_event", None),
+            ))
+            if invalid_transform_hold(decision, state, picks, revised.get("reasoning", "")) is None:
+                repair["final"] = picks
+                self._last_decision_trace["removal_window_recheck"] = repair
+                return revised, picks
+        except Exception as error:
+            repair["error"] = str(error)[:120]
+        # The recheck did not supply a valid reason to surrender the current
+        # answer. This is a conditional intent repair, not a removal-first rule.
+        picks = [window.option_id]
+        repair["final"] = picks
+        repair["fallback"] = True
+        self._last_decision_trace["removal_window_recheck"] = repair
+        return {"option_ids": picks, "reasoning": (
+            f"Cast {window.source} targeting {window.target} #{window.target_id} now; "
+            f"holding it for {window.face} would lose this targeted answer to protection."
+        )}, picks
 
     def _reversal_check_failed(
         self,
