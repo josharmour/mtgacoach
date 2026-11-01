@@ -3290,9 +3290,7 @@ def _schedule(
     """
     for spell in spells:
         spell.value = _spell_value(spell, survival=survival, theirs=theirs, ours=ours)
-    remaining = [
-        s for s in spells if not s.has_x and not s.uncastable and not s.zone_blocked and s.value > 0
-    ]
+    remaining = [s for s in spells if not s.has_x and not s.uncastable and not s.zone_blocked and s.value > 0]
     from arenamcp.legend_rule import resolve_legends
 
     projected = list(ours)

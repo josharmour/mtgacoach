@@ -96,7 +96,8 @@ def review_commander_decline(decision, state, data, chosen, ask, parse, message,
         "\n\nCOMMANDER ZONE CHECK: "
         + (
             "Your decline was justified by keeping the commander on the battlefield. "
-            if battlefield_error else "Compare the destination and recast costs before accepting. "
+            if battlefield_error
+            else "Compare the destination and recast costs before accepting. "
         )
         + note
         + " Reconsider both legal choices and explain the actual destination, recovery and recast tradeoff. "

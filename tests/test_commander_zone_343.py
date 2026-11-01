@@ -203,6 +203,9 @@ def test_failed_correction_has_explicit_handoff_and_watchdog_path(replay, monkey
     bridge.get_pending_actions.return_value = poll
     bridge.auto_respond.return_value = True
     engine = make_engine(bridge, planner, game_state=state)
+    # This regression owns the optional-choice response sequence, not background strategy.
+    # Prevent a concurrent strategy request from consuming the same mocked responses.
+    engine._game_plan_mgr = None
     manual = Mock()
     monkeypatch.setattr(engine, "_pause_for_manual", manual)
     monkeypatch.setattr(engine, "_record_autopilot_decision", Mock())

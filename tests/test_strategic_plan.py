@@ -223,7 +223,9 @@ def test_reform_feeds_board_facts_and_uses_the_larger_background_budget():
     assert args == (6000,)  # 2026-10-10: headroom for high-effort reasoning
     # 2026-10-10: the first plan of a game is quick (low effort); later reforms think at high.
     assert kwargs["reasoning_effort"] == "low" and kwargs["background"] is True
-    assert kwargs["request_timeout_s"] == 75.0 and kwargs["temperature"] == 0.0
+    # A shared deadline subtracts preparation time from the 75-second ceiling.
+    assert 0 < kwargs["request_timeout_s"] <= 75.0
+    assert kwargs["temperature"] == 0.0
     assert plan.role == ROLE_DEFENDER
     assert plan.turn_plan[0]["cast"] == ["Undulating Witness"]
     assert plan.facts["their_clock"] == 2

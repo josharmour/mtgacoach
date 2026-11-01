@@ -888,7 +888,8 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
                 if card is not None:
                     blocked = next(
                         (
-                            issue for issue in (replay.issues if replay else [])
+                            issue
+                            for issue in (replay.issues if replay else [])
                             if issue.startswith(f"{label}: {card.get('name')} cannot cast from command")
                         ),
                         None,

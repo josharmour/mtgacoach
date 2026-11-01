@@ -2847,7 +2847,10 @@ class Moves:
         pays for a body with the rest of the hand. A restriction already on the
         board is ``_Spell.uncastable`` (``board_model.board_cast_bans``).
         """
-        key = (ids_of(node.ours), ids_of(node.theirs))
+        # Opponent identity matters only for outside-hand restrictions.
+        # Keep the established own-body cache for ordinary hand-only searches.
+        ours_key = ids_of(node.ours)
+        key = (ours_key, ids_of(node.theirs)) if self._has_nonhand_spells else ours_key
         found = self._ban_memo.get(key)
         if found is None:
             kinds: set = set()
@@ -2874,7 +2877,8 @@ class Moves:
                 outside_hand_ban(
                     c,
                     ours=(c.get("controller_seat_id") == self.model.local)
-                    if c.get("controller_seat_id") is not None else None,
+                    if c.get("controller_seat_id") is not None
+                    else None,
                 )
                 for c in fixed
             )
