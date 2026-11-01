@@ -1746,8 +1746,11 @@ def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict
         if reason:
             return reason
     if action_type == "activate":
+        from arenamcp.activation_payment import activation_payment_reason
+
         return (
-            temporary_shrink_wasted(card, state, activation=True, metadata=metadata)
+            activation_payment_reason(state, card, metadata)
+            or temporary_shrink_wasted(card, state, activation=True, metadata=metadata)
             or castable_discard_for_minor_effect(card, state, metadata)
             or pointless_self_animation(state, card, metadata)
             or pump_before_blocks_wasted(card, state, metadata)
