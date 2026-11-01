@@ -236,6 +236,7 @@ def test_service_revalidates_before_publishing_and_never_blocks_producer(change)
     muted = [False]
     done = threading.Event()
     events = []
+    first_generation_events = []
 
     class Client:
         def start(self, config):
@@ -261,7 +262,11 @@ def test_service_revalidates_before_publishing_and_never_blocks_producer(change)
 
     def emit(event):
         events.append(event)
-        if event["type"] == "commentary_status":
+        if event["type"] == "commentary_status" and not done.is_set():
+            # Freeze this generation before waking the asserting thread.
+            # A new life-change observation can legitimately produce fresh
+            # narration immediately after the stale opening is rejected.
+            first_generation_events.extend(events)
             done.set()
 
     service = CommentaryService(
@@ -274,7 +279,7 @@ def test_service_revalidates_before_publishing_and_never_blocks_producer(change)
     service.offer(state)
     try:
         assert done.wait(3)
-        proposals = [e for e in events if e["type"] == "commentary_proposal"]
+        proposals = [e for e in first_generation_events if e["type"] == "commentary_proposal"]
         assert bool(proposals) == (change == "none")
     finally:
         service.close()
