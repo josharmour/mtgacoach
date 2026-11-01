@@ -30,6 +30,26 @@ control; and 27 affected #340 tests rerun on the #308 revision. These overlappin
 runs must not be added together as unique test coverage. Live installation remains
 separate from published-source acceptance.
 
+## Subsequent modal and performance review
+
+The #329 follow-up (`6092e15`, integrated as `a319e01`) repairs the independently
+reproduced automatic modal substitution without supported cast-trigger payoff.
+Selected choices continue through ordinary target/cancel handling. Its standalone
+integration checks passed 194 tests, including game-boundary compatibility. The
+historical umbrella remains partial.
+
+The docs-only `fb8bc4d` run failed the same three latency checks twice despite the
+preceding code-identical source CI pass. A local pre-#308/current comparison passed
+both versions and did not establish #308 as the cause. The subsequent performance
+candidate (`b1cfa78`, integrated as `8b1dfb0`) adds a bounded blocked-fight cache;
+the resolver body is AST-identical and independent mutation/identity probes are
+retained in `tests/test_combat_fight_cache_review.py`. Matched cold-cache tests
+showed about 7–8% improvement on two slow boards with unchanged search counts and
+outcomes. No burn gain, original Linux cause, or dual-Coach load qualification is
+claimed. Timing limits and truncation assertions were not weakened. These changes
+are validated together in the following CI batch; source publication and live
+deployment remain distinct.
+
 ## Historical source/test locators
 
 Statuses are reconciled; locator provenance remains historical. "Reachable" describes

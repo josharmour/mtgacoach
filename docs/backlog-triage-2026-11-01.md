@@ -18,16 +18,18 @@ reports and ledger are retained locally and are not published here.
 
 | Next action | Count |
 |---|---:|
-| Verified residual source defect (#329) | 1 |
+| Verified residual source defect | 0 |
 | Current-path reproduction (#84) | 1 |
 | Bounded modelling and historical evidence (#280, #308) | 2 |
 | Evidence, platform or evaluation prerequisites | 19 |
-| Repaired scopes requiring further qualification | 93 |
+| Repaired scopes requiring further qualification | 94 |
 | **Total** | **116** |
 
 #308 no longer awaits an integration receipt: the corrected bounded model is
 published. Its historical scope remains open, so it moved categories without
-changing the total. #244 likewise remains open after its narrower wording repair.
+changing the total. #244 likewise remains open after its narrower wording repair. The #329 follow-up
+moves that record from a verified source defect to further qualification, also
+without changing the total.
 
 ## Latest scoped decisions
 
@@ -48,8 +50,10 @@ changing the total. #244 likewise remains open after its narrower wording repair
 - **#247:** Odin terminal-hit scope passes; broader poison/mill remains partial.
 - **#350:** protection facts and bounded reconsideration pass; prevention of the
   original unnecessary cast is not established when reconsideration fails.
-- **#329:** earlier action/rationale and Drannith scopes pass; an independent no-payoff
-  modal-switch probe still fails. That residual is assigned for repair and counted once.
+- **#329:** earlier action/rationale and Drannith scopes pass. The no-payoff modal
+  substitution residual is repaired in the reviewed follow-up: selected modes remain
+  intact unless the existing attacker trigger check establishes supported payoff.
+  Broader strategy and live qualification remain; the ID is still counted once.
 - **#308:** one new current-turn engine/entrant sequence compares spell orders and
   adversarial ping/amass responses. Unsupported token chains explicitly abstain.
   Original historical evidence, later-turn generality and live-load qualification
