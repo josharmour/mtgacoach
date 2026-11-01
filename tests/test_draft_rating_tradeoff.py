@@ -89,7 +89,50 @@ def test_supplied_comparison_survives_without_a_measured_rating_gap(band):
     assert comparison in line
 
 
-def test_no_comparison_is_invented_when_none_is_supplied():
+def test_missing_unranked_comparison_is_disclosed_without_inventing_rationale():
     rec = result(chosen_band="unknown", other_band="unknown")["recommendations"][0]
-    assert "alternative_comparison" not in rec
-    assert rec["reason"] == "Interaction fits the pool."
+    assert "No comparison was supplied" in rec["alternative_comparison"]
+    assert "strongest alternative unknown" in rec["alternative_comparison"]
+    assert rec["reason"].startswith("Interaction fits the pool.")
+
+
+def test_missing_unknown_band_comparison_uses_remaining_heuristic_leader():
+    cards = [dict(grp_id=g, name=f"Card {g}") for g in (1, 2, 3)]
+    payload = dict(picks=[dict(grp_id=1, reason="Flexible card.")], plan="Stay open.", needs=[])
+    result = DraftAdvisor._validate(
+        payload,
+        cards,
+        [],
+        1,
+        rankings=[
+            dict(grp_id=999, rank=1),
+            dict(grp_id=1, rank=2),
+            dict(grp_id=3, rank=3),
+            dict(grp_id=2, rank=4),
+        ],
+    )
+    assert result["alternative"]["grp_id"] == 3
+    assert result["alternative"]["comparison_missing"] is True
+    reason = result["recommendations"][0]["reason"]
+    assert "No comparison was supplied" in reason
+    assert "heuristic ranking, not measured quality" in reason
+    assert "rating_tradeoff" not in result["recommendations"][0]
+
+
+def test_no_distinct_remaining_choice_needs_no_comparison():
+    card = dict(grp_id=1, name="Only card")
+    payload = dict(picks=[dict(grp_id=1, reason="Only choice.")], plan="Stay open.", needs=[])
+    for cards in ([card], [card, card]):
+        assert "alternative" not in DraftAdvisor._validate(payload, cards, [], 1)
+
+
+def test_missing_comparison_prefers_higher_supplied_band_to_heuristic_order():
+    cards = [
+        dict(grp_id=1, name="Pick", quality_band="average"),
+        dict(grp_id=2, name="Stronger", quality_band="strong"),
+        dict(grp_id=3, name="Other", quality_band="good"),
+    ]
+    payload = dict(picks=[dict(grp_id=1, reason="Flexible card.")], plan="Stay open.", needs=[])
+    result = DraftAdvisor._validate(payload, cards, [], 1, rankings=[dict(grp_id=3, rank=1)])
+    assert result["alternative"]["grp_id"] == 2
+    assert "No comparison" in result["recommendations"][0]["rating_tradeoff"]

@@ -143,7 +143,11 @@ missing role (cite counts only if you counted them, or name the relevant owned c
 what this pick adds, and what power you give up. "In lane" or "synergy" alone is not
 an explanation. Distinguish a demonstrated shortage from a speculative preference;
 say when the choice is uncertain. Never claim that deck fit proves higher win rate.
-An alternative is optional only when no higher-band card is passed. Keep each explanation under 40 words.
+Include an alternative whenever a distinct unpicked card remains, including equal
+or unknown bands. With no measured rating gap, use the strongest plausible
+remaining heuristic candidate and explain the trade-off without claiming a
+measured advantage. An alternative is optional only when no distinct unpicked
+card remains. Keep each explanation under 40 words.
 """
 
 
@@ -636,7 +640,12 @@ class DraftAdvisor:
                 raise ValueError("Draft response has no JSON object")
             payload, _end = json.JSONDecoder().raw_decode(response[start:])
             result = self._validate(
-                payload, cards, pool, required, (pack.get("set_strategy") or {}).get("archetypes")
+                payload,
+                cards,
+                pool,
+                required,
+                (pack.get("set_strategy") or {}).get("archetypes"),
+                rankings=fallback.get("evaluations"),
             )
         except Exception as exc:
             logger.warning("Draft reasoning unavailable; using card-text guidance: %s", exc)
@@ -702,6 +711,8 @@ class DraftAdvisor:
         pool: list[dict],
         required: int,
         archetypes: list[dict] | None = None,
+        *,
+        rankings: list[dict] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("Draft response must be an object")
@@ -790,7 +801,12 @@ class DraftAdvisor:
         if isinstance(alternative, dict):
             grp_id = alternative.get("grp_id")
             reason = _text(alternative.get("reason"))
-            if type(grp_id) is int and available[grp_id] > 0 and reason:
+            if (
+                type(grp_id) is int
+                and available[grp_id] > 0
+                and grp_id not in {p["grp_id"] for p in selected}
+                and reason
+            ):
                 result["alternative"] = {"grp_id": grp_id, "name": names[grp_id], "reason": reason}
                 if corrections := reason_corrections(alternative["reason"], by_id[grp_id], cards + pool):
                     logger.warning(
@@ -815,9 +831,43 @@ class DraftAdvisor:
             )
         }
         details = {card["grp_id"]: _card_details(card) for card in cards}
-        remaining = [
-            c for c in cards if available[c["grp_id"]] > 0 and details[c["grp_id"]]["quality_band"] in bands
-        ]
+        selected_ids = {pick["grp_id"] for pick in selected}
+        unpicked = list(
+            {
+                c["grp_id"]: c
+                for c in cards
+                if available[c["grp_id"]] > 0 and c["grp_id"] not in selected_ids
+            }.values()
+        )
+        remaining = [c for c in unpicked if details[c["grp_id"]]["quality_band"] in bands]
+        if unpicked and "alternative" not in result:
+            # Expose the missing comparison without inventing the model's
+            # reasoning or implying that an unrated estimate is ground truth.
+            ranks = {
+                row["grp_id"]: row["rank"]
+                for row in rankings or []
+                if isinstance(row, dict)
+                and type(row.get("grp_id")) is int
+                and type(row.get("rank")) is int
+                and row["rank"] > 0
+            }
+            if remaining:
+                top_band = max(bands[details[c["grp_id"]]["quality_band"]] for c in remaining)
+                candidates = [c for c in remaining if bands[details[c["grp_id"]]["quality_band"]] == top_band]
+                basis = "highest known supplied 17Lands band"
+            elif any(c["grp_id"] in ranks for c in unpicked):
+                candidates = [c for c in unpicked if c["grp_id"] in ranks]
+                basis = "supplied heuristic ranking, not measured quality"
+            else:
+                candidates = unpicked
+                basis = "unranked remaining pack card; strongest alternative unknown"
+            candidate = min(candidates, key=lambda c: ranks.get(c["grp_id"], float("inf")))
+            result["alternative"] = {
+                "grp_id": candidate["grp_id"],
+                "name": candidate["name"],
+                "reason": f"No comparison was supplied; this trade-off is unverified. Comparison candidate: {basis}.",
+                "comparison_missing": True,
+            }
         for pick in selected:
             band = details[pick["grp_id"]]["quality_band"]
             if band not in bands or not remaining:
@@ -834,7 +884,7 @@ class DraftAdvisor:
             )
             comparison += (
                 f"Coach's rationale: {alt['reason']} (judgment, not proven advantage)."
-                if alt.get("grp_id") == leader["grp_id"]
+                if alt.get("grp_id") == leader["grp_id"] and not alt.get("comparison_missing")
                 else "No comparison with this higher-rated alternative was supplied; this choice is unverified."
             )
             pick["rating_tradeoff"] = comparison
