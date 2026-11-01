@@ -1569,7 +1569,10 @@ def _signature(state: dict) -> tuple:
     )
     players = tuple(
         (
-            p.get("seat_id"), p.get("life_total"), p.get("lands_played"), p.get("is_local"),
+            p.get("seat_id"),
+            p.get("life_total"),
+            p.get("lands_played"),
+            p.get("is_local"),
             tuple(sorted((str(k), str(v)) for k, v in (p.get("counters") or {}).items())),
         )
         for p in state.get("players") or []

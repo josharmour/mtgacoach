@@ -113,7 +113,8 @@ def decision_semantics(poll: dict[str, Any], state: dict[str, Any]) -> dict[str,
         board["library_count"] = library
     board["player_counters"] = [
         {"seat_id": p.get("seat_id"), "counters": p.get("counters") or {}}
-        for p in state.get("players") or [] if isinstance(p, dict)
+        for p in state.get("players") or []
+        if isinstance(p, dict)
     ]
     return _stable(
         {

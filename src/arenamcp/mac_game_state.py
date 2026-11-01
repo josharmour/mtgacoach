@@ -237,10 +237,7 @@ def assemble_state(results: list[Any], index: dict[str, int]) -> dict[str, Any]:
         if (
             isinstance(counter_data, dict)
             and counter_data.get("$n") == len(counter_items)
-            and all(
-                enum_name(field(d, "Type")) and field(d, "Count") is not None
-                for d in counter_items
-            )
+            and all(enum_name(field(d, "Type")) and field(d, "Count") is not None for d in counter_items)
         ):
             counters: dict[str, int] = {}
             for datum in counter_items:

@@ -938,9 +938,10 @@ class GameState(_GameStateAnnotationsMixin):
                         life_gained_this_turn=_coerce_int(player_data.get("life_gained_this_turn", 0), 0),
                         life_gained_this_game=_coerce_int(player_data.get("life_gained_this_game", 0), 0),
                         counters={
-                            str(k): _coerce_int(v, 0)
-                            for k, v in (player_data.get("counters") or {}).items()
-                        } if isinstance(player_data.get("counters"), dict) else {},
+                            str(k): _coerce_int(v, 0) for k, v in (player_data.get("counters") or {}).items()
+                        }
+                        if isinstance(player_data.get("counters"), dict)
+                        else {},
                     )
 
                 self.game_objects = {}

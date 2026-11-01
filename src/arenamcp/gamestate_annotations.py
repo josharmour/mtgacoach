@@ -187,13 +187,15 @@ class _GameStateAnnotationsMixin:
                             kind = counter_type.removeprefix("CounterType_")
                             delta = max(0, counter_count) * (1 if is_added else -1)
                             player.counters[kind] = max(0, player.counters.get(kind, 0) + delta)
-                            self._add_event({
-                                "type": "player_counter_changed",
-                                "seat_id": obj_id,
-                                "counter_type": kind,
-                                "amount": delta,
-                                "total": player.counters[kind],
-                            })
+                            self._add_event(
+                                {
+                                    "type": "player_counter_changed",
+                                    "seat_id": obj_id,
+                                    "counter_type": kind,
+                                    "amount": delta,
+                                    "total": player.counters[kind],
+                                }
+                            )
                             continue
                         obj = self.game_objects.get(obj_id)
                         if obj:
