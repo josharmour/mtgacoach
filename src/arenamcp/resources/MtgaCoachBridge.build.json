@@ -1,8 +1,8 @@
 {
-  "built_at_utc": "2026-11-01T08:50:59.149103+00:00",
+  "built_at_utc": "2026-11-01T21:26:54.9041507Z",
   "compiler": "dotnet 10.0.403",
-  "dll_sha256": "ed2af5ccdb9e35b33f85d00481743978f2629a9283c6600fe7e2cfff4dac6472",
-  "evidence": "Successful Windows build transcript retained by release maintainer. Build time is DLL modification timestamp; source and reference hash inventory was captured after compilation. This manifest is not a reproducible-build attestation or live gameplay qualification.",
+  "dll_sha256": "49d8354208f9e8b884de17711f17ee1ecddedc64cc02bdbc2cfa358a0cbf8b4e",
+  "evidence": "Successful Windows build reported 12 warnings and no errors. Source inventory independently matched the compiled source snapshot; reference inventory and DLL timestamp verified on the build host after compilation. Not a reproducible-build attestation or live gameplay qualification.",
   "reference_sha256": {
     "0Harmony.dll": "1a21cc03424fc82c3dd1346905d16494536b9595ae4162228d99fb7c285c1031",
     "Assembly-CSharp.dll": "b403ad3ee08a512255e0f2645f7f0bc736dfc2678040ca7ca1cd6dfc2a9fc5ff",
@@ -21,7 +21,7 @@
     "bepinex-plugin/MtgaCoachBridge/BotBattleBridge.cs": "514ad3f8068ff4a456996e2806707781aa5181cefac5ea7adac299caa331f0c2",
     "bepinex-plugin/MtgaCoachBridge/MtgaCoachBridge.csproj": "d63721694dd8ffba8d42a5ad77eabdb7630333aec8323089fbf90978adffe387",
     "bepinex-plugin/MtgaCoachBridge/MtgaCoachHost.cs": "75c4e920dd298c6242cabcc5c9133a52d8f75200d9c659c69c1b625e599d3e0d",
-    "bepinex-plugin/MtgaCoachBridge/Plugin.Actions.cs": "531109ee95110d8c0ed0ed017896c90a4c1284547d9c3e0ff012d1b23bf1c4af",
+    "bepinex-plugin/MtgaCoachBridge/Plugin.Actions.cs": "91150952565a0acc26df888b1b70f443518dce78d9829421f3455e2efb5a117f",
     "bepinex-plugin/MtgaCoachBridge/Plugin.Attackers.cs": "9a267349b9a5d2d8c6667fc96f5de7f1de59dd769804fc672ec2fa97b5b6ea0f",
     "bepinex-plugin/MtgaCoachBridge/Plugin.GameState.cs": "c4b2b697d30e85c855fd3d0dea751e1d741981bc1bf2f28b248ff599dd87d4cf",
     "bepinex-plugin/MtgaCoachBridge/Plugin.Payment.cs": "dc6b18b17008cddbfeb180cada98f6477700e1af0de8c4f384cc63b9210a9986",
@@ -29,7 +29,7 @@
     "bepinex-plugin/MtgaCoachBridge/Plugin.Reflect.cs": "59d3de3be2e57126cb90873f2b1e589fa528a8ec9fcca306c76cab40163f0ef3",
     "bepinex-plugin/MtgaCoachBridge/Plugin.ReplayGeometry.cs": "79df5e3c5d2d7c6070a90b5d4de254e2a55dcb8d2bab281541f916b7bd47b45c",
     "bepinex-plugin/MtgaCoachBridge/Plugin.cs": "3a054e10f709f54b3788361047811c1ecf54a4ac5270542569578454a13a483a",
-    "bepinex-plugin/MtgaCoachBridge/PracticeMatchBridge.cs": "0ef8024fdd5db85aa59a3d049013abe57780cf882ff6cfa8f7d98578377abd68",
+    "bepinex-plugin/MtgaCoachBridge/PracticeMatchBridge.cs": "2b07c6535ca28dea9e047d87567d40b694f064f85994430b0b83fe72eff2609b",
     "bepinex-plugin/MtgaCoachBridge/ReflectBatch.cs": "2ce07dcad85e1487a8c73bdec555c98d8c8129bc672fc77aac1940fc4d1d762f"
   }
 }
