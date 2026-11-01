@@ -7,8 +7,8 @@ pre-cast rationale "it kills none of their creatures now and pumps nothing" —
 false after the Strike — and passed. The Drake survived at full size and won
 the race.
 
-The log's object snapshots miss spell damage, so the planner records the
-damage its own target steps dealt this turn and the hold checks see it.
+The log's object snapshots can miss spell damage. The planner may fill those
+omissions only from the existing parser's confirmed damage_dealt events.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def _t14_main():
     """
     drake = _card(338, "Enigma Drake", 1, **DRAKE)
     hand = [_card(222, "Tectonic Hazard", 2), _card(223, "Lightning Strike", 2)]
-    return _board(
+    state = _board(
         2,
         14,
         2,
@@ -50,6 +50,8 @@ def _t14_main():
         their_life=7,
         lands_played=1,
     )
+    state["match_id"] = "227-confirmed-event-test"
+    return state
 
 
 def _strike_target_state():
@@ -77,17 +79,18 @@ def test_after_our_strike_resolves_the_hold_yields_and_hazard_goes():
     assert planner.plan_decision_options(_targets("Lightning Strike", [338]), _strike_target_state()) == [
         "tgt:338"
     ]
-    assert planner._resolved_burn_marks().get("damage", {}).get(338) == 3
+    assert planner._resolved_burn_marks().get("damage", {}) == {}
 
     # The very next window: same snapshot shape, Drake still undamaged on paper.
     next_state = _t14_main()
+    next_state["recent_events"] = [dict(type="damage_dealt", turn=14, source_id=400, target_id=338, amount=3)]
     menu = _menu(next_state, (222, True))
     model.answers[None] = [_reply(_option(menu, 222), "Hazard kills the wounded Drake now.")]
     chosen = planner.plan_decision_options(menu, next_state)
     assert chosen == [_option(menu, 222)], planner.get_decision_reasoning(chosen)
-    # SelectTargets is out of the fast path's families by design, so both the
-    # target step and the Hazard window asked the model.
-    assert len(model.efforts) == 2
+    # Both decision windows reach the model. Confirmed damage now reaches the
+    # effort selector too, so the Hazard window may use its existing high/low hedge.
+    assert 2 <= len(model.efforts) <= 3
     assert "kills none of their creatures now" not in planner.get_decision_reasoning(chosen)
     assert "false_kill_claim" not in planner.get_last_decision_trace()
 
@@ -119,10 +122,11 @@ def test_our_own_creatures_are_never_marked():
     assert "damage" not in claw
 
 
-def test_strike_mark_comes_from_the_cards_oracle():
-    """The recorded damage is what Lightning Strike deals (3)."""
+def test_mark_comes_from_actual_damage_event_not_printed_oracle_amount():
     planner = _planner(_Model(_reply("tgt:338", "Strike.")))
     planner.plan_decision_options(_targets("Lightning Strike", [338]), _strike_target_state())
-    marks = planner._resolved_burn_marks()
-    assert marks["turn"] == 14
-    assert marks["damage"] == {338: 3}
+    state = _t14_main()
+    state["recent_events"] = [dict(type="damage_dealt", turn=14, source_id=400, target_id=338, amount=2)]
+    patched = planner._state_with_our_burn_marks(state)
+    assert next(c for c in patched["battlefield"] if c["instance_id"] == 338)["damage"] == 2
+    assert planner._resolved_burn_marks()["damage"] == {338: 2}

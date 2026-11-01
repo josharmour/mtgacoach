@@ -4382,6 +4382,7 @@ class ActionPlanner(_ActionLegalityMixin):
         and the background game-plan reform both read.
         """
         self._bound_decision_evidence = None
+        game_state = self._state_with_our_burn_marks(game_state)
         from arenamcp.public_sequence import TriggerUseMemory
 
         if not hasattr(self, "_public_trigger_uses"):
@@ -4424,16 +4425,12 @@ class ActionPlanner(_ActionLegalityMixin):
             logger.info("Protection guard: %s", reason)
         # Bookkeeping that must survive a mid-planning request change: a
         # completed answer is exactly what an identical re-presented window
-        # reuses (#226(b)), and our resolved burn's damage is board fact
-        # whichever window it was paid in (#227).
+        # reuses (#226(b)). Damage reconciliation above reads confirmed events,
+        # never this planned or submitted target choice (#227).
         try:
             self._cache_answer(decision, game_state, chosen, self._last_decision_reasoning)
         except Exception as error:  # the cache never blocks a decision
             logger.debug("answer cache skipped: %s", error)
-        try:
-            self._note_resolved_burn(decision, game_state, chosen)
-        except Exception as error:  # the mark never blocks a decision
-            logger.debug("burn mark skipped: %s", error)
         cancel_event = getattr(self, "_decision_cancel_event", None)
         if cancel_event is not None and cancel_event.is_set():
             return chosen  # superseded: the caller discards it, memory must not keep it
@@ -4664,108 +4661,20 @@ class ActionPlanner(_ActionLegalityMixin):
 
     # ── #227: damage our own resolved burn left on their creatures ────────
 
+    def _confirmed_burn(self):
+        from arenamcp.confirmed_burn import ConfirmedBurn
+
+        if not hasattr(self, "_confirmed_burn_events"):
+            self._confirmed_burn_events = ConfirmedBurn()
+        return self._confirmed_burn_events
+
     def _resolved_burn_marks(self) -> dict:
-        """This turn's record of burn damage WE dealt to their creatures.
-
-        The log's object snapshots routinely miss the damage a resolved spell
-        marked (2c397f62 T14: Lightning Strike resolved on their 5/4 Enigma
-        Drake, the next window's state still showed it undamaged), so the
-        hold policy re-held Tectonic Hazard with the pre-cast rationale "it
-        kills none of their creatures now" — false after the Strike, and the
-        Drake won the race. We watched our own target step: that is board
-        fact. Keyed by turn; damage washes at end of turn.
-        """
-        marks = getattr(self, "_burn_mark_ledger", None)
-        if marks is None:
-            marks = self._burn_mark_ledger = {}
-        return marks
-
-    def _note_resolved_burn(self, decision: Any, game_state: dict[str, Any], chosen: list[str]) -> None:
-        """Record the damage the burn we just aimed deals to its target (#227).
-
-        Called for every answered SelectTargets whose source is a damage-only
-        spell; the mark applies from the next window (the cast was submitted)
-        and accumulates across this turn's spells.
-        """
-        if decision.request_type != "SelectTargets" or len(chosen) != 1:
-            return
-        option_id = str(chosen[0])
-        if not option_id.startswith("tgt:"):
-            return
-        target_id = _as_int(option_id[len("tgt:") :])
-        if target_id <= 0:
-            return
-        source_name = str(decision.source_label or "")
-        if not source_name:
-            return
-        card = next(
-            (
-                candidate
-                for zone in ("hand", "graveyard", "exile", "stack")
-                for candidate in (game_state.get(zone) or [])
-                if isinstance(candidate, dict) and candidate.get("name") == source_name
-            ),
-            None,
-        )
-        if card is None:
-            return
-        from arenamcp.decision_memory import burn_reach
-
-        burn = burn_reach(str(card.get("oracle_text") or ""), card, game_state)
-        if burn is None or not burn.creatures:
-            return
-        damage = max(dmg for _need, dmg in burn.variants)
-        if damage <= 0:
-            return
-        marks = self._resolved_burn_marks()
-        turn = (game_state.get("turn") or {}).get("turn_number")
-        if marks.get("turn") != turn:
-            marks.clear()
-            marks["turn"] = turn
-            marks["damage"] = {}
-        dealt = marks.setdefault("damage", {})
-        dealt[target_id] = int(dealt.get(target_id, 0)) + int(damage)
-        logger.debug(
-            "burn mark: %s deals %s to instance %s this turn (%s total)",
-            source_name,
-            damage,
-            target_id,
-            dealt[target_id],
-        )
+        """Last omitted marks supplied by confirmed GRE damage events, never intent."""
+        return self._confirmed_burn().last_marks
 
     def _state_with_our_burn_marks(self, game_state: dict[str, Any]) -> dict[str, Any]:
-        """The board as the hold policy must see it: their creatures carry our resolved damage (#227).
-
-        A shallow copy with patched creature dicts — the hold checks
-        (``burn_kills_nothing`` and friends) read ``damage`` off the state's
-        battlefield, and the original state belongs to the caller. Marks from
-        an earlier turn are ignored: damage washes at end of turn.
-        """
-        marks = getattr(self, "_burn_mark_ledger", None) or {}
-        if marks.get("turn") != (game_state.get("turn") or {}).get("turn_number"):
-            return game_state
-        dealt = marks.get("damage") or {}
-        if not dealt:
-            return game_state
-        local = game_state.get("local_seat_id")
-        battlefield = []
-        changed = False
-        for card in game_state.get("battlefield") or []:
-            mark = dealt.get(card.get("instance_id"))
-            controller = card.get("controller_seat_id")
-            if mark and controller is not None and controller != local:
-                card = {
-                    **card,
-                    "damage": int(card.get("damage") or 0) + int(mark),
-                    "damaged_this_turn": True,
-                }
-                changed = True
-            battlefield.append(card)
-        if not changed:
-            return game_state
-        patched = dict(game_state)
-        patched["battlefield"] = battlefield
-        return patched
+        """Fill omitted damage from observed events; explicit public damage wins."""
+        return self._confirmed_burn().reconcile(game_state)
 
     def recent_decisions_text(self) -> str:
         """Our latest typed decisions, one per line, for the game-plan reform prompt."""
