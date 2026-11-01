@@ -273,6 +273,7 @@ class Player:
     life_gained_this_turn: int = 0
     life_gained_this_game: int = 0
     counters: dict[str, int] = field(default_factory=dict)
+    has_enduring_story: bool | None = None  # public persistent Storied designation
 
     def to_dict(self) -> dict:
         return {
@@ -283,6 +284,7 @@ class Player:
             "counters": dict(self.counters),
             "lands_played": self.lands_played,
             "mana_pool": self.mana_pool,
+            "has_enduring_story": self.has_enduring_story,
             "team_id": self.team_id,
             "status": self.status,
             "controller_seat_id": self.controller_seat_id,

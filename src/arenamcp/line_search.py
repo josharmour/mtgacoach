@@ -1070,6 +1070,7 @@ def search_lines(
     ``budget`` (work units, default ``WORK_BUDGET``) is the deterministic soft
     limit; ``soft_ms`` is its legacy form (120 ms = the default budget).
     """
+    from arenamcp.attack_tax import UnsupportedAttackTaxProjection
     from arenamcp.sacrifice_continuation import UnsupportedContinuation
 
     search = None
@@ -1080,7 +1081,7 @@ def search_lines(
             width=width, k_next=k_next, opponent=opponent, budget=budget,
         )  # fmt: skip
         result = search.run()
-    except UnsupportedContinuation as error:
+    except (UnsupportedContinuation, UnsupportedAttackTaxProjection) as error:
         reasons = (str(error),)
         line = Line((), ALIVE, 0, 0.0, complete=False, unsupported=reasons)
         return LineSearchResult(
@@ -1097,7 +1098,7 @@ def search_lines(
             only_survivor=False,
             only_first_attack_survivor=False,
             posture="either",
-            posture_reason="continuation unsupported",
+            posture_reason="public forecast unsupported",
             nodes=getattr(search, "nodes", 0),
             combats=getattr(search, "combats", 0),
             elapsed_ms=(time.perf_counter() - started) * 1000,

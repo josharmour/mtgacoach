@@ -732,6 +732,17 @@ class _GameStateAnnotationsMixin:
                         }
                     )
 
+                elif ann_type == "AnnotationType_AbilityWordActive":
+                    # #210: Storied is a permanent player designation, not a count
+                    # that switches off when a qualifying permanent leaves.
+                    if (
+                        str(detail_map.get("AbilityWordName", "")).lower() == "storied"
+                        and _coerce_int(detail_map.get("Enduring Story"), 0) == 1
+                    ):
+                        seat = _coerce_int(ann.get("affectorId"), 0)
+                        if seat in self.players:
+                            self.players[seat].has_enduring_story = True
+
                 elif ann_type == "AnnotationType_ColorProduction":
                     colors = _coerce_str_list(detail_map.get("colors", detail_map.get("value", [])))
                     for obj_id in affected_ids:

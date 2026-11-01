@@ -1585,12 +1585,14 @@ def optimal_attacks(
     our_walker_loyalties: tuple[int, ...] = (),
     creature_died_this_turn: bool | None = None,
     caller: str = "",
+    attack_budget=None,
 ) -> AttackPlan | None:
     """Best attack (memoized; see `_search_attacks`). ``caller`` names the asker in the deadline
     log; a deadline under a second is the caller's own cap (``display_deadline``) and logs at
     DEBUG."""
     key = (
         "attacks",
+        attack_budget.key if attack_budget is not None else None,
         _cards_key(candidate_attackers),
         _cards_key(opponent_blockers),
         opponent_life,
@@ -1610,6 +1612,8 @@ def optimal_attacks(
         extra["creature_died_this_turn"] = creature_died_this_turn
     if caller:
         extra["caller"] = caller
+    if attack_budget is not None:
+        extra["attack_budget"] = attack_budget
     return _memoized(
         key,
         lambda: _search_attacks(
@@ -1639,6 +1643,7 @@ def _search_attacks(
     our_walker_loyalties: tuple[int, ...] = (),
     creature_died_this_turn: bool | None = None,
     caller: str = "",
+    attack_budget=None,
 ) -> AttackPlan | None:
     """Pick the attacker subset that maximizes damage while surviving crackback.
 
@@ -1714,8 +1719,13 @@ def _search_attacks(
             )
             break
         attacking = [candidate_attackers[i] for i in subset]
+        payment = attack_budget.player_payment(attacking) if attack_budget is not None else None
+        if attack_budget is not None and payment is None:
+            continue
         held_back = [candidate_attackers[i] for i in range(n) if i not in set(subset)]
         our_defenders = held_back + your_remaining_blockers
+        if payment is not None:
+            our_defenders = [c for c in our_defenders if c["instance_id"] not in payment.tapped_creatures]
         # The crackback search may run twice (combat_strategy.guarded_block_plan
         # re-runs it once without the chumps the chump guard refuses).
         cost = block_search_size(attacking, opponent_blockers, symmetric=True) + 2 * block_search_size(

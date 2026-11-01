@@ -1645,6 +1645,8 @@ def _signature(state: dict) -> tuple:
             p.get("seat_id"),
             p.get("life_total"),
             p.get("lands_played"),
+            p.get("has_enduring_story"),
+            tuple(sorted((str(k), str(v)) for k, v in (p.get("mana_pool") or {}).items())),
             p.get("is_local"),
             tuple(sorted((str(k), str(v)) for k, v in (p.get("counters") or {}).items())),
         )
@@ -2156,14 +2158,19 @@ def _assess(state: dict) -> BoardAssessment | None:
 
         if relevant(model.battlefield):
             unsupported_search = ("sacrifice continuation requires an available line search",)
+    if model.attack_tax_notes:
+        unsupported_search += ("attack-tax payment and source tapping across future turns",)
     if unsupported_search:
-        # The legacy fallback omits the same public sacrifice effects. It must
+        # The legacy fallback omits the same public sacrifice effects/taxes. It must
         # not become a fabricated lethal/survival verdict when search declines.
-        unknowns.extend("sacrifice continuation unsupported: " + note for note in unsupported_search)
+        unsupported_label = (
+            "attack-tax projection unsupported" if model.attack_tax_notes else "sacrifice continuation unsupported"
+        )
+        unknowns.extend(unsupported_label + ": " + note for note in unsupported_search)
         lookahead, our_lives, their_lives = [], [], []
         dead_in = dead_in_greedy = now_life = our_clock = their_clock = None
         lethal_now = lethal_next_turn = opp_lethal_on_board = False
-        race, race_detail = "unknown", "sacrifice continuation unsupported"
+        race, race_detail = "unknown", unsupported_label
     found = None  # the search, when its facts are used
     best_text, race_term = "", None
     if search is not None and not search.truncated:

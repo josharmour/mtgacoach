@@ -1,0 +1,1096 @@
+{
+  "fixture_note": "Public recovery state304 after tax cancellation, reconstructed from 4159449e-finale-tax-raw.json; selected attack flags cleared solely to reevaluate the four proposed attackers. Printed text from installed Arena DB; observed Finale/Craterhoof haste/trample grants retained. Not a full match replay or proof of a forced win.",
+  "match_id": "4159449e-5f0f-4749-87c8-04d246ba29b7",
+  "local_seat_id": 2,
+  "turn": {
+    "turn_number": 11,
+    "active_player": 2,
+    "phase": "Combat",
+    "step": "DeclareAttack"
+  },
+  "players": [
+    {
+      "seat_id": 1,
+      "life_total": 27,
+      "life_gained_this_turn": 0,
+      "life_gained_this_game": 0,
+      "counters": {},
+      "lands_played": 0,
+      "mana_pool": {},
+      "has_enduring_story": true,
+      "team_id": 1,
+      "status": "PlayerStatus_InGame",
+      "controller_seat_id": 1,
+      "is_local": false
+    },
+    {
+      "seat_id": 2,
+      "life_total": 28,
+      "life_gained_this_turn": 0,
+      "life_gained_this_game": 0,
+      "counters": {},
+      "lands_played": 0,
+      "mana_pool": {},
+      "has_enduring_story": null,
+      "team_id": 2,
+      "status": "PlayerStatus_InGame",
+      "controller_seat_id": 2,
+      "is_local": true
+    }
+  ],
+  "battlefield": [
+    {
+      "instance_id": 548,
+      "grp_id": 72447,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Creature"
+      ],
+      "subtypes": [
+        "Beast"
+      ],
+      "power": 25,
+      "toughness": 25,
+      "is_tapped": true,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [],
+      "keywords": [
+        "haste",
+        "Trample",
+        "Haste",
+        "trample"
+      ],
+      "ability_grp_ids": [
+        9,
+        99713,
+        9,
+        14
+      ],
+      "name": "Craterhoof Behemoth",
+      "type_line": "Creature \u2014 Beast",
+      "oracle_text": "Haste\nWhen this creature enters, creatures you control gain trample and get +X/+X until end of turn, where X is the number of creatures you control.",
+      "mana_cost": "{5}{G}{G}{G}",
+      "colors": [
+        "G"
+      ]
+    },
+    {
+      "instance_id": 536,
+      "grp_id": 84850,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Creature"
+      ],
+      "subtypes": [
+        "Halfling",
+        "Citizen"
+      ],
+      "power": 21,
+      "toughness": 22,
+      "is_tapped": true,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [],
+      "keywords": [
+        "haste",
+        "Trample",
+        "Haste",
+        "trample"
+      ],
+      "ability_grp_ids": [
+        1152,
+        167014,
+        9,
+        14
+      ],
+      "name": "Delighted Halfling",
+      "type_line": "Creature \u2014 Halfling Citizen",
+      "oracle_text": "{oT}: Add {oC}.\n{oT}: Add one mana of any color. Spend this mana only to cast a legendary spell, and that spell can't be countered.",
+      "mana_cost": "{G}",
+      "colors": [
+        "G"
+      ]
+    },
+    {
+      "instance_id": 522,
+      "grp_id": 95516,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Planeswalker"
+      ],
+      "subtypes": [
+        "Ugin"
+      ],
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [
+        "SuperType_Legendary"
+      ],
+      "counters": {
+        "Loyalty": 9
+      },
+      "ability_grp_ids": [
+        188687,
+        188688,
+        188689,
+        188690,
+        188691,
+        114
+      ],
+      "name": "Ugin, Eye of the Storms",
+      "type_line": "Legendary Planeswalker \u2014 Ugin",
+      "oracle_text": "When you cast this spell, exile up to one target permanent that's one or more colors.\nWhenever you cast a colorless spell, exile up to one target permanent that's one or more colors.\nYou gain 3 life and draw a card.\nAdd {oCoCoC}.\nSearch your library for any number of colorless nonland cards, exile them, then shuffle. Until end of turn, you may cast those cards without paying their mana costs.",
+      "mana_cost": "{7}",
+      "colors": [],
+      "keywords": []
+    },
+    {
+      "instance_id": 521,
+      "grp_id": 97115,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Land"
+      ],
+      "subtypes": [],
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [
+        "SuperType_Legendary"
+      ],
+      "ability_grp_ids": [
+        98346,
+        98347
+      ],
+      "color_production": [
+        "12"
+      ],
+      "name": "Gemstone Caverns",
+      "type_line": "Legendary Land",
+      "oracle_text": "If this card is in your opening hand and you're not the starting player, you may begin the game with Gemstone Caverns on the battlefield with a luck counter on it. If you do, exile a card from your hand.\n{oT}: Add {oC}. If Gemstone Caverns has a luck counter on it, instead add one mana of any color.",
+      "mana_cost": "",
+      "colors": [],
+      "keywords": []
+    },
+    {
+      "instance_id": 508,
+      "grp_id": 96164,
+      "zone_id": 28,
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Land"
+      ],
+      "subtypes": [
+        "Town"
+      ],
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [],
+      "ability_grp_ids": [
+        180111,
+        1002
+      ],
+      "color_production": [
+        "2"
+      ],
+      "name": "Jidoor, Aristocratic Capital",
+      "type_line": "Land \u2014 Town",
+      "oracle_text": "This land enters tapped.\n{oT}: Add {oU}.",
+      "mana_cost": "",
+      "colors": [],
+      "keywords": []
+    },
+    {
+      "instance_id": 500,
+      "grp_id": 98507,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Creature"
+      ],
+      "subtypes": [
+        "Shapeshifter",
+        "AllCreatureTypes"
+      ],
+      "power": 21,
+      "toughness": 21,
+      "is_tapped": false,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [],
+      "keywords": [
+        "haste",
+        "Trample",
+        "Haste",
+        "trample"
+      ],
+      "ability_grp_ids": [
+        74,
+        194014,
+        9,
+        14
+      ],
+      "name": "Mutable Explorer",
+      "type_line": "Creature \u2014 Shapeshifter",
+      "oracle_text": "Changeling\nWhen this creature enters, create a tapped Mutavault token.",
+      "mana_cost": "{2}{G}",
+      "colors": [
+        "G"
+      ]
+    },
+    {
+      "instance_id": 497,
+      "grp_id": 77111,
+      "zone_id": 28,
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Enchantment"
+      ],
+      "subtypes": [
+        "Class"
+      ],
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [],
+      "ability_grp_ids": [
+        133622,
+        143561,
+        146500,
+        143564,
+        146501
+      ],
+      "name": "Cleric Class",
+      "type_line": "Enchantment \u2014 Class",
+      "oracle_text": "If you would gain life, you gain that much life plus 1 instead.\n{o3oW}: Level 2\nCLASSLEVEL [2+] [] [Whenever you gain life, put a +1/+1 counter on target creature you control.]\nWhenever you gain life, put a +1/+1 counter on target creature you control.\n{o4oW}: Level 3\nCLASSLEVEL [3+] [] [When this Class becomes level 3, return target creature card from your graveyard to the battlefield. You gain life equal to that creature's toughness.]\nWhen this Class becomes level 3, return target creature card from your graveyard to the battlefield. You gain life equal to that creature's toughness.",
+      "mana_cost": "{W}",
+      "colors": [
+        "W"
+      ],
+      "keywords": []
+    },
+    {
+      "instance_id": 494,
+      "grp_id": 103376,
+      "zone_id": 28,
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Creature"
+      ],
+      "subtypes": [
+        "Dwarf",
+        "Noble"
+      ],
+      "power": 2,
+      "toughness": 2,
+      "is_tapped": false,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [
+        "SuperType_Legendary"
+      ],
+      "keywords": [
+        "vigilance"
+      ],
+      "ability_grp_ids": [
+        15,
+        408,
+        205060
+      ],
+      "name": "D\u00e1in, Lord of the Iron Hills",
+      "type_line": "Legendary Creature \u2014 Dwarf Noble",
+      "oracle_text": "Vigilance\nStoried\nAs long as you have an enduring story, creatures can't attack you unless their controller pays {o1} for each of those creatures.",
+      "mana_cost": "{1}{W}",
+      "colors": [
+        "W"
+      ]
+    },
+    {
+      "instance_id": 493,
+      "grp_id": 83677,
+      "zone_id": 28,
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Land"
+      ],
+      "subtypes": [
+        "Plains"
+      ],
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [
+        "SuperType_Basic"
+      ],
+      "ability_grp_ids": [
+        1001
+      ],
+      "color_production": [
+        "1"
+      ],
+      "name": "Plains",
+      "type_line": "Basic Land \u2014 Plains",
+      "oracle_text": "",
+      "mana_cost": "",
+      "colors": [],
+      "keywords": []
+    },
+    {
+      "instance_id": 491,
+      "grp_id": 75553,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Land"
+      ],
+      "subtypes": [
+        "Forest"
+      ],
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [
+        "SuperType_Basic"
+      ],
+      "ability_grp_ids": [
+        1005
+      ],
+      "color_production": [
+        "5"
+      ],
+      "name": "Forest",
+      "type_line": "Basic Land \u2014 Forest",
+      "oracle_text": "",
+      "mana_cost": "",
+      "colors": [],
+      "keywords": []
+    },
+    {
+      "instance_id": 479,
+      "grp_id": 103511,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Creature"
+      ],
+      "subtypes": [
+        "Halfling",
+        "Advisor"
+      ],
+      "power": 21,
+      "toughness": 21,
+      "is_tapped": true,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [
+        "SuperType_Legendary"
+      ],
+      "keywords": [
+        "haste",
+        "Trample",
+        "Haste",
+        "trample"
+      ],
+      "ability_grp_ids": [
+        205209,
+        205210,
+        9,
+        14
+      ],
+      "name": "The Notary Hobbits",
+      "type_line": "Legendary Creature \u2014 Halfling Advisor",
+      "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+      "mana_cost": "{3}{G}{G}",
+      "colors": [
+        "G"
+      ]
+    },
+    {
+      "instance_id": 476,
+      "grp_id": 93850,
+      "zone_id": 28,
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Enchantment"
+      ],
+      "subtypes": [],
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [],
+      "ability_grp_ids": [
+        15979,
+        76694
+      ],
+      "name": "Authority of the Consuls",
+      "type_line": "Enchantment",
+      "oracle_text": "Creatures your opponents control enter tapped.\nWhenever a creature an opponent controls enters, you gain 1 life.",
+      "mana_cost": "{W}",
+      "colors": [
+        "W"
+      ],
+      "keywords": []
+    },
+    {
+      "instance_id": 475,
+      "grp_id": 83677,
+      "zone_id": 28,
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Land"
+      ],
+      "subtypes": [
+        "Plains"
+      ],
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [
+        "SuperType_Basic"
+      ],
+      "ability_grp_ids": [
+        1001
+      ],
+      "color_production": [
+        "1"
+      ],
+      "name": "Plains",
+      "type_line": "Basic Land \u2014 Plains",
+      "oracle_text": "",
+      "mana_cost": "",
+      "colors": [],
+      "keywords": []
+    },
+    {
+      "instance_id": 473,
+      "grp_id": 75553,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Land"
+      ],
+      "subtypes": [
+        "Forest"
+      ],
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [
+        "SuperType_Basic"
+      ],
+      "ability_grp_ids": [
+        1005
+      ],
+      "color_production": [
+        "5"
+      ],
+      "name": "Forest",
+      "type_line": "Basic Land \u2014 Forest",
+      "oracle_text": "",
+      "mana_cost": "",
+      "colors": [],
+      "keywords": []
+    },
+    {
+      "instance_id": 472,
+      "grp_id": 75553,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Land"
+      ],
+      "subtypes": [
+        "Forest"
+      ],
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [
+        "SuperType_Basic"
+      ],
+      "ability_grp_ids": [
+        1005
+      ],
+      "color_production": [
+        "5"
+      ],
+      "name": "Forest",
+      "type_line": "Basic Land \u2014 Forest",
+      "oracle_text": "",
+      "mana_cost": "",
+      "colors": [],
+      "keywords": []
+    },
+    {
+      "instance_id": 467,
+      "grp_id": 69600,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Creature"
+      ],
+      "subtypes": [
+        "Sloth",
+        "Beast"
+      ],
+      "power": 20,
+      "toughness": 23,
+      "is_tapped": false,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [],
+      "keywords": [
+        "haste",
+        "Trample",
+        "trample",
+        "reach",
+        "Haste"
+      ],
+      "ability_grp_ids": [
+        13,
+        133133,
+        9,
+        14
+      ],
+      "name": "Arboreal Grazer",
+      "type_line": "Creature \u2014 Sloth Beast",
+      "oracle_text": "Reach\nWhen this creature enters, you may put a land card from your hand onto the battlefield tapped.",
+      "mana_cost": "{G}",
+      "colors": [
+        "G"
+      ]
+    },
+    {
+      "instance_id": 460,
+      "grp_id": 88986,
+      "zone_id": 28,
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Enchantment"
+      ],
+      "subtypes": [],
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [
+        "SuperType_Legendary"
+      ],
+      "ability_grp_ids": [
+        86788,
+        1640,
+        170429
+      ],
+      "name": "Proft's Eidetic Memory",
+      "type_line": "Legendary Enchantment",
+      "oracle_text": "When Proft's Eidetic Memory enters, draw a card.\nYou have no maximum hand size.\nAt the beginning of combat on your turn, if you've drawn more than one card this turn, put X +1/+1 counters on target creature you control, where X is the number of cards you've drawn this turn minus one.",
+      "mana_cost": "{1}{U}",
+      "colors": [
+        "U"
+      ],
+      "keywords": []
+    },
+    {
+      "instance_id": 459,
+      "grp_id": 70762,
+      "zone_id": 28,
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Land"
+      ],
+      "subtypes": [
+        "Island"
+      ],
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [
+        "SuperType_Basic"
+      ],
+      "ability_grp_ids": [
+        1002
+      ],
+      "color_production": [
+        "2"
+      ],
+      "name": "Island",
+      "type_line": "Basic Land \u2014 Island",
+      "oracle_text": "",
+      "mana_cost": "",
+      "colors": [],
+      "keywords": []
+    },
+    {
+      "instance_id": 457,
+      "grp_id": 66487,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Land"
+      ],
+      "subtypes": [],
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [],
+      "ability_grp_ids": [
+        1152,
+        116809
+      ],
+      "color_production": [
+        "12"
+      ],
+      "name": "Field of Ruin",
+      "type_line": "Land",
+      "oracle_text": "{oT}: Add {oC}.\n{o2}, {oT}, Sacrifice this land: Destroy target nonbasic land an opponent controls. Each player searches their library for a basic land card, puts it onto the battlefield, then shuffles.",
+      "mana_cost": "",
+      "colors": [],
+      "keywords": []
+    },
+    {
+      "instance_id": 453,
+      "grp_id": 97444,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Creature"
+      ],
+      "subtypes": [
+        "Badger",
+        "Mole"
+      ],
+      "power": 22,
+      "toughness": 22,
+      "is_tapped": false,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [],
+      "keywords": [
+        "haste",
+        "Trample",
+        "Haste",
+        "trample"
+      ],
+      "ability_grp_ids": [
+        192752,
+        133461,
+        9,
+        14
+      ],
+      "name": "Badgermole Cub",
+      "type_line": "Creature \u2014 Badger Mole",
+      "oracle_text": "When this creature enters, earthbend 1.\nWhenever you tap a creature for mana, add an additional {oG}.",
+      "mana_cost": "{1}{G}",
+      "colors": [
+        "G"
+      ]
+    },
+    {
+      "instance_id": 451,
+      "grp_id": 70762,
+      "zone_id": 28,
+      "owner_seat_id": 1,
+      "controller_seat_id": 1,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Land"
+      ],
+      "subtypes": [
+        "Island"
+      ],
+      "power": null,
+      "toughness": null,
+      "is_tapped": true,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [
+        "SuperType_Basic"
+      ],
+      "ability_grp_ids": [
+        1002
+      ],
+      "color_production": [
+        "2"
+      ],
+      "name": "Island",
+      "type_line": "Basic Land \u2014 Island",
+      "oracle_text": "",
+      "mana_cost": "",
+      "colors": [],
+      "keywords": []
+    },
+    {
+      "instance_id": 448,
+      "grp_id": 87101,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Enchantment"
+      ],
+      "subtypes": [
+        "Aura"
+      ],
+      "power": null,
+      "toughness": null,
+      "is_tapped": false,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [],
+      "ability_grp_ids": [
+        2330,
+        88237,
+        9468
+      ],
+      "name": "Utopia Sprawl",
+      "type_line": "Enchantment \u2014 Aura",
+      "oracle_text": "Enchant Forest\nAs this Aura enters, choose a color.\nWhenever enchanted Forest is tapped for mana, its controller adds an additional one mana of the chosen color.",
+      "mana_cost": "{G}",
+      "colors": [
+        "G"
+      ],
+      "keywords": []
+    },
+    {
+      "instance_id": 447,
+      "grp_id": 75553,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Creature",
+        "CardType_Land"
+      ],
+      "subtypes": [
+        "Forest"
+      ],
+      "power": 21,
+      "toughness": 21,
+      "is_tapped": true,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "CARD",
+      "super_types": [
+        "SuperType_Basic"
+      ],
+      "keywords": [
+        "haste",
+        "Trample",
+        "Haste",
+        "trample"
+      ],
+      "ability_grp_ids": [
+        1005,
+        9,
+        9,
+        14
+      ],
+      "color_production": [
+        "5"
+      ],
+      "name": "Forest",
+      "type_line": "Basic Land \u2014 Forest",
+      "oracle_text": "",
+      "mana_cost": "",
+      "colors": []
+    },
+    {
+      "instance_id": 487,
+      "grp_id": 103511,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Creature"
+      ],
+      "subtypes": [
+        "Halfling",
+        "Advisor"
+      ],
+      "power": 21,
+      "toughness": 21,
+      "is_tapped": true,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "TOKEN",
+      "super_types": [],
+      "parent_instance_id": 486,
+      "keywords": [
+        "haste",
+        "Trample",
+        "Haste",
+        "trample"
+      ],
+      "ability_grp_ids": [
+        205209,
+        205210,
+        9,
+        14
+      ],
+      "token_source_grp_id": 103511,
+      "name": "The Notary Hobbits",
+      "type_line": "Legendary Creature \u2014 Halfling Advisor",
+      "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+      "mana_cost": "{3}{G}{G}",
+      "colors": [
+        "G"
+      ]
+    },
+    {
+      "instance_id": 488,
+      "grp_id": 103511,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Creature"
+      ],
+      "subtypes": [
+        "Halfling",
+        "Advisor"
+      ],
+      "power": 21,
+      "toughness": 21,
+      "is_tapped": true,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "TOKEN",
+      "super_types": [],
+      "parent_instance_id": 486,
+      "keywords": [
+        "haste",
+        "Trample",
+        "Haste",
+        "trample"
+      ],
+      "ability_grp_ids": [
+        205209,
+        205210,
+        9,
+        14
+      ],
+      "token_source_grp_id": 103511,
+      "name": "The Notary Hobbits",
+      "type_line": "Legendary Creature \u2014 Halfling Advisor",
+      "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+      "mana_cost": "{3}{G}{G}",
+      "colors": [
+        "G"
+      ]
+    },
+    {
+      "instance_id": 506,
+      "grp_id": 98606,
+      "zone_id": 28,
+      "owner_seat_id": 2,
+      "controller_seat_id": 2,
+      "visibility": "Visibility_Public",
+      "card_types": [
+        "CardType_Creature",
+        "CardType_Land"
+      ],
+      "subtypes": [
+        "AllCreatureTypes"
+      ],
+      "power": 22,
+      "toughness": 22,
+      "is_tapped": false,
+      "turn_entered_battlefield": 11,
+      "is_attacking": false,
+      "is_blocking": false,
+      "object_kind": "TOKEN",
+      "super_types": [],
+      "parent_instance_id": 505,
+      "keywords": [
+        "haste",
+        "Trample",
+        "Haste",
+        "trample"
+      ],
+      "ability_grp_ids": [
+        1152,
+        15429,
+        9,
+        14
+      ],
+      "color_production": [
+        "5",
+        "12"
+      ],
+      "token_source_grp_id": 98507,
+      "name": "Mutavault",
+      "type_line": "Land",
+      "oracle_text": "{oT}: Add {oC}.\n{o1}: This land becomes a 2/2 creature with all creature types until end of turn. It's still a land.",
+      "mana_cost": "",
+      "colors": []
+    }
+  ],
+  "hand": [],
+  "stack": [],
+  "decision_context": {
+    "type": "declare_attackers",
+    "legal_attacker_ids": [
+      453,
+      467,
+      500,
+      506
+    ],
+    "raw_attackers": [
+      {
+        "attackerInstanceId": 453,
+        "legalDamageRecipients": [
+          {
+            "playerSystemSeatId": 1
+          }
+        ]
+      },
+      {
+        "attackerInstanceId": 467,
+        "legalDamageRecipients": [
+          {
+            "playerSystemSeatId": 1
+          }
+        ]
+      },
+      {
+        "attackerInstanceId": 500,
+        "legalDamageRecipients": [
+          {
+            "playerSystemSeatId": 1
+          }
+        ]
+      },
+      {
+        "attackerInstanceId": 506,
+        "legalDamageRecipients": [
+          {
+            "playerSystemSeatId": 1
+          }
+        ]
+      }
+    ]
+  }
+}

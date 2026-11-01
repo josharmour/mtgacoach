@@ -2284,6 +2284,27 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         creatures — a {12} tax it never counted. This is calculator work,
         not LLM judgment: state the price and the affordable attacker count.
         """
+        if game_state is not None and game_state.get("players"):
+            from arenamcp.attack_tax import AttackBudget
+
+            budget = AttackBudget(game_state)
+            relevant = [t for t in budget.taxes if t.controller != budget.seat]
+            if not relevant:
+                return []
+            costs = [t.amount for t in relevant]
+            if any(c is None for c in costs):
+                return [
+                    "!! ATTACK TAX: public condition or payment is unresolved; "
+                    "no free/lethal attack is established."
+                ]
+            per = sum(costs)
+            mana = sum(n for _iid, n, _creature in budget.sources)
+            return [
+                f"!! ATTACK TAX: {', '.join(t.name for t in relevant)} — attacking the player costs {{{per}}} PER CREATURE.",
+                f"   With {mana} supported mana available, at most {mana // per if per else 0} attacker(s) "
+                "before excluding their mana taps. BUDGET MANA BEFORE CASTING SPELLS; "
+                "attacking mana creatures cannot also pay. Main-phase floating mana clears before combat.",
+            ]
         taxes = self._detect_attack_taxes(opp_cards)
         if not taxes:
             return []
@@ -2366,6 +2387,14 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         opp_block_count = len(opp_blockers)
         opp_life = opponent_player.get("life_total", 20) if opponent_player else 20
         your_attack_power = sum(c.get("power") or 0 for c in valid_attackers)
+        from arenamcp.attack_tax import AttackBudget
+
+        tax_budget = AttackBudget(game_state or {
+            "players": [{**(local_player or {}), "is_local": True}, opponent_player or {}],
+            "battlefield": your_cards + opp_cards,
+            "turn": {"turn_number": turn_num},
+        })  # fmt: skip
+        all_payable = tax_budget.player_payment(valid_attackers) is not None
 
         # bug_20261006_184540: Tetsuko made four attackers unblockable; the
         # prompt only showed blocks that couldn't happen.
@@ -2375,7 +2404,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if valid_attackers:
             lethal = (
                 "LETHAL"
-                if (opp_block_count == 0 and your_attack_power >= opp_life) or unblockable_power >= opp_life
+                if all_payable and (
+                    (opp_block_count == 0 and your_attack_power >= opp_life) or unblockable_power >= opp_life
+                )
                 else f"{opp_block_count}blk"
             )
             attacker_names = [c.get("name", "?") for c in valid_attackers]
@@ -2397,7 +2428,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 lines.append(
                     f"Unblockable ({sources}): "
                     + ", ".join(f"{c.get('name', '?')} {c.get('power') or 0}" for c in unblockable)
-                    + f" = {unblockable_power} damage no blocker can stop"
+                    + f" = {unblockable_power} potential damage no blocker can stop"
+                    + (" (attack tax must be paid; full selection is not funded)" if not all_payable else "")
                 )
             if valid_attackers and opp_blockers:
                 # Each distinct line once (ledger #182: 15 attackers into 33 blockers were 528 lines).
@@ -2501,6 +2533,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 your_remaining_blockers,
                 deadline_s=display_deadline(len(valid_attackers)),
                 caller="coach prompt",
+                attack_budget=tax_budget,
             )
             if solver_plan is not None:
                 lines.append(f"Computed optimal attack: {solver_plan.explanation}")

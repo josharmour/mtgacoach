@@ -912,6 +912,7 @@ class _BridgeSubmitMixin:
         opp_blockers = [c for c in theirs if not c.get("is_tapped")]
         remaining_blockers = [c for c in yours if c not in candidates and not c.get("is_tapped")]
         try:
+            from arenamcp.attack_tax import AttackBudget
             from arenamcp.combat_strategy import loyalty
 
             walkers = tuple(
@@ -930,6 +931,7 @@ class _BridgeSubmitMixin:
                 remaining_blockers,
                 our_walker_loyalties=walkers,
                 caller="bridge solver attack",
+                attack_budget=AttackBudget(game_state),
             )
         except Exception as e:
             logger.debug(f"combat solver attack fallback failed: {e}")
@@ -1020,8 +1022,11 @@ class _BridgeSubmitMixin:
                 your_life,
                 theirs,
             )
+            from arenamcp.attack_tax import AttackBudget
+
             best = optimal_attacks(
-                candidates, opp_blockers, opp_life, your_life, theirs, spare, caller="bridge attack override"
+                candidates, opp_blockers, opp_life, your_life, theirs, spare,
+                caller="bridge attack override", attack_budget=AttackBudget(game_state),
             )
         except Exception as e:
             logger.debug(f"attack override solver failed: {e}")
@@ -1189,6 +1194,19 @@ class _BridgeSubmitMixin:
             pairs.append((label, {"attackerInstanceId": iid, "damageRecipient": recipient}))
             present_ids.add(iid)
             logger.info("Bridge declare_attackers: adding mandatory (mustAttack) attacker %s", label)
+        from arenamcp.attack_tax import affordable_entries
+
+        payable = affordable_entries(state, [entry for _, entry in pairs], pending)
+        payable_by_id = {entry["attackerInstanceId"]: entry for entry in payable}
+        if payable != [entry for _, entry in pairs]:
+            logger.info("Attack-tax budget: retaining payable subset %s", sorted(payable_by_id))
+            pairs = [
+                (name, payable_by_id[entry["attackerInstanceId"]]) for name, entry in pairs
+                if entry["attackerInstanceId"] in payable_by_id
+            ]
+            action = replace(
+                action, reasoning="Attack-tax budget: selected a payable subset of the proposed attack"
+            )
         submitted = replace(
             action,
             action_type=ActionType.DECLARE_ATTACKERS,
@@ -1340,6 +1358,19 @@ class _BridgeSubmitMixin:
         except (ValueError, TypeError, KeyError) as error:
             logger.warning("Bridge declare_attackers: %s; manual choice required", error)
             return None
+
+        # A refreshed request may already hold an older, now-unpayable selection.
+        # UpdateAttacker only adds/changes recipients; an empty submit confirms
+        # the old set. Use the existing acknowledged withdrawal in that case.
+        from arenamcp.attack_tax import taxes
+        from arenamcp.combat_targets import attack_candidates
+
+        held_ids = {
+            c.get("attackerInstanceId") for c in attack_candidates(game_state, pending) or []
+            if c.get("selectedDamageRecipient")
+        }
+        if taxes(game_state) and held_ids - {e["attackerInstanceId"] for e in attacker_entries}:
+            return self._withdraw_taxed_attack(bridge, game_state)
 
         if not attacker_entries:
             # Empty attacker list = "attack with nobody / Done (confirm attackers)".

@@ -469,6 +469,7 @@ class BoardModel:
     our_loss: Any = None
     opponent_loss: Any = None
     has_pending_stack: bool = False
+    attack_tax_notes: tuple[str, ...] = ()
 
     @property
     def unknowns(self) -> list[str]:
@@ -619,6 +620,8 @@ def build_board_model(state: dict) -> BoardModel | None:
     bridge-named bug reports by 2026-10-06), and an unseated creature would be
     counted as the opponent's, ours included.
     """
+    from arenamcp.attack_tax import taxes
+
     local, opponent = _seats(state)
     turn_info = state.get("turn") or {}
     turn = _int(turn_info.get("turn_number")) or 0
@@ -828,6 +831,7 @@ def build_board_model(state: dict) -> BoardModel | None:
         pre_combat=pre_combat, in_combat_before_damage=in_combat_before_damage,
         our_attack_pending=our_attack_pending, their_attack_pending=their_attack_pending,
         has_pending_stack=bool(state.get("stack")),
+        attack_tax_notes=tuple(t.name for t in taxes(state, future=True)),
         first_our_attackers=tuple(able_now(ours)) if our_attack_pending else None,
         first_their_attackers=None if first_their_attackers is None else tuple(first_their_attackers),
         untapped_ours=tuple(untapped_ours), untapped_theirs=tuple(untapped_theirs),

@@ -834,6 +834,8 @@ class MCTSEvaluator:
                 opp_blockers = [c for c in opp_creatures if not c.get("is_tapped")]
                 # The tactical line only shows the pick, on the coaching thread at every state
                 # change of our main 1: a big board gets the short deadline (#162/#182, 15:50).
+                from arenamcp.attack_tax import AttackBudget
+
                 attack_plan = optimal_attacks(
                     candidate_attackers=ready_attackers,
                     opponent_blockers=opp_blockers,
@@ -843,6 +845,7 @@ class MCTSEvaluator:
                     your_remaining_blockers=[c for c in hero_creatures if c not in ready_attackers],
                     deadline_s=display_deadline(len(ready_attackers)),
                     caller="tactical line",
+                    attack_budget=AttackBudget(game_state),
                 )
                 if attack_plan:
                     atk_names = (

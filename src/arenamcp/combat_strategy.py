@@ -118,7 +118,7 @@ def combat_choice(state: dict, *, budget: int = 20000, deadline_s: float = 0.7) 
         return None
     # Board-granted "can't be blocked" (Tetsuko Umezawa) must reach _can_block.
     annotate_cant_be_blocked(state.get("battlefield"))
-    relevant = {key: state.get(key) for key in ("players", "battlefield", "decision_context")}
+    relevant = {key: state.get(key) for key in ("players", "battlefield", "decision_context", "turn")}
     key = ("combat_recipients", json.dumps(relevant, sort_keys=True, default=str), budget, deadline_s)
     return _memoized(key, lambda: _hold_weighed(state, raw, budget, deadline_s))
 
@@ -177,6 +177,11 @@ def _line_search_hold_attack(state: dict, raw: list[dict], best: CombatChoice) -
         except (TypeError, ValueError):
             continue
     allowed.discard(0)
+    from arenamcp.attack_tax import AttackBudget
+
+    budget = AttackBudget(state)
+    if budget.player_payment([{"instance_id": iid} for iid in attack_ids]) is None:
+        return None
     if not attack_ids <= allowed:
         return None
     players = state.get("players") or []
@@ -222,6 +227,9 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
         and (value := loyalty(card)) is not None
         and value > 0
     )
+    from arenamcp.attack_tax import AttackBudget
+
+    tax_budget = AttackBudget(state)
     candidates, choices = [], []
     for entry in raw:
         identity = int(entry.get("attackerInstanceId") or 0)
@@ -241,7 +249,10 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
         if not legal:
             return None
         candidates.append(card)
-        choices.append(legal if entry.get("mustAttack") else [None, *legal])
+        # Paying an attack cost is never mandatory. A free legal recipient
+        # still satisfies mustAttack and cannot be silently skipped.
+        free = any(tax_budget.cost({identity: r}) == 0 for r in legal)
+        choices.append(legal if entry.get("mustAttack") and free else [None, *legal])
     if not candidates:
         return None
     started = time.monotonic()
@@ -278,6 +289,9 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
             for card, recipient in zip(candidates, selection, strict=True)
             if recipient
         }
+        payment = tax_budget.payment(mapping)
+        if payment is None:
+            continue
         block_options = [
             [None, *(card["instance_id"] for card in attacking if _can_block(card, blocker))]
             for blocker in blockers
@@ -320,6 +334,7 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
                 for card in yours
                 if not card.get("is_tapped")
                 and card["instance_id"] not in dead_attackers
+                and card["instance_id"] not in payment.tapped_creatures
                 and (card["instance_id"] not in mapping or _has(card, "vigilance"))
                 and not leaves_at_our_end_step(card)
             ]

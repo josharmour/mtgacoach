@@ -932,6 +932,7 @@ class GameState(_GameStateAnnotationsMixin):
                         life_total=_coerce_int(player_data.get("life_total", 20), 20),
                         lands_played=_coerce_int(player_data.get("lands_played", 0), 0),
                         mana_pool=mana_pool,
+                        has_enduring_story=player_data.get("has_enduring_story"),
                         team_id=_coerce_optional_int(player_data.get("team_id")),
                         status=str(player_data.get("status", "") or ""),
                         controller_seat_id=_coerce_optional_int(player_data.get("controller_seat_id")),
@@ -2946,6 +2947,7 @@ class GameState(_GameStateAnnotationsMixin):
             life_gained_this_turn=existing.life_gained_this_turn if existing else 0,
             life_gained_this_game=existing.life_gained_this_game if existing else 0,
             counters=dict(existing.counters) if existing else {},
+            has_enduring_story=existing.has_enduring_story if existing else None,
         )
 
         self.players[seat_id] = player
