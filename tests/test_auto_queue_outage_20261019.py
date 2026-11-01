@@ -206,12 +206,14 @@ def test_a_restart_without_an_idle_finished_match_does_not_queue(restart_navigat
     restart_navigator.note_match_end.assert_not_called()
 
 
-def test_turning_auto_queue_on_never_starts_a_match(restart_navigator, monkeypatch):
+def test_turning_auto_queue_on_can_resume_verified_idle_completion(restart_navigator, monkeypatch):
+    # Explicit opt-in now arms the existing idle path. It still needs a verified
+    # completion on this non-native fixture; active-match and AP:OFF guards remain.
     runtime, scans = _restarted(monkeypatch, dict(IDLE))
     runtime.set_auto_queue(True)
     runtime._poll_auto_queue({"match_id": None})
-    restart_navigator.note_match_end.assert_not_called()
-    assert scans == []
+    restart_navigator.note_match_end.assert_called_once_with(IDLE, confirmed_match_end=True)
+    assert scans == [1]
 
 
 def test_no_restart_requeue_without_autoplay_driving(restart_navigator, monkeypatch):

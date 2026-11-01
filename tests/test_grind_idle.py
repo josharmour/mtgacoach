@@ -38,6 +38,9 @@ class Runtime(_AutoQueueMixin):
 @pytest.fixture
 def runtime(monkeypatch):
     monkeypatch.setattr(server, "get_completed_match_for_navigation", lambda: {})
+    # Explicit queue opt-in can consult the restart path; never read the user's
+    # live Player.log when this fixture intentionally has no completed match.
+    monkeypatch.setattr(server, "idle_completed_match_from_log", lambda: None)
     monkeypatch.setattr("arenamcp.gre_bridge.get_bridge", Mock(return_value=Mock()))
     monkeypatch.setattr("arenamcp.idle_sleep.SleepInhibitor", Mock())
     # Exercise actual navigation state without starting any desktop workers.
