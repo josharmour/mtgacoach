@@ -1,11 +1,10 @@
 """Exact session misconceptions and their observable corrected paths, offline."""
 
-from types import SimpleNamespace
-
 import pytest
 
 from arenamcp.action_planner import ActionPlanner
 from arenamcp.board_model import build_board_model
+from arenamcp.decisions import PendingDecision
 from arenamcp.line_search_moves import Moves
 from arenamcp.persistent_returns import returned_enchantment
 
@@ -139,7 +138,9 @@ def test_exact_false_explanation_replaced_before_reuse(target, claim, expected):
     planner._last_decision_reasoning = claim
     planner._last_decision_trace = {}
     planner._note_false_claims(
-        dict(local_seat_id=1, battlefield=[target], hand=[]), SimpleNamespace(options=[]), []
+        dict(local_seat_id=1, battlefield=[target], hand=[]),
+        PendingDecision((1, 1), "ActionsAvailable", ()),
+        [],
     )
     assert planner._last_decision_reasoning.startswith("Rules correction:")
     assert expected in planner._last_decision_reasoning

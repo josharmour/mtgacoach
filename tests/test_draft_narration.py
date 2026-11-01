@@ -568,6 +568,9 @@ def test_driver_logs_the_plans_lane_beside_the_pool_estimate(primer, caplog):
         },
         speak_fn=spoken.append,
     )
+    # The pool estimate requires a known retail event. Printing set alone
+    # must not manufacture that identity for unknown events or Cube drafts.
+    driver.run.event_name = "PremierDraft_TST"
     with caplog.at_level(logging.INFO, logger="arenamcp.draft_event"):
         driver._step()
     strategy = next(m for m in caplog.messages if m.startswith("Draft strategy P1p6"))

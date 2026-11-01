@@ -727,7 +727,8 @@ def test_unsupported_synergy_is_stripped_and_logged_but_the_pick_stands(claimed,
     pick = result["recommendations"][0]
     assert pick["grp_id"] == 10 and pick["synergy_with"] == [] and pick["synergy_evidence"] == []
     assert pick["unsupported_synergy"] == flagged
-    assert pick["reason"].endswith("(synergy unverified)")
+    assert "(synergy unverified)" in pick["reason"]
+    assert "Alternative:" in pick["reason"]
     assert any("Draft synergy claim stripped: Card 10" in message for message in caplog.messages)
 
 

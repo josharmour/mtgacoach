@@ -170,3 +170,39 @@ def test_unknown_local_seat_does_not_invent_a_side():
 def test_phased_out_suppression_does_not_disable_return_note():
     suppressor = {"oracle_text": "Creatures dying don't cause abilities to trigger.", "is_phased_out": True}
     assert "retaining its draw engine" in death_trigger_notes([innocence(), suppressor], 2)[0]
+
+
+def test_cached_return_text_does_not_cache_current_types_or_owner():
+    body = innocence()
+    assert returned_enchantment(body)["controller_seat_id"] == 2
+    body["owner_seat_id"] = 1
+    assert returned_enchantment(body)["controller_seat_id"] == 1
+    body["card_types"] = ["CardType_Enchantment"]
+    assert returned_enchantment(body) is None
+    body["card_types"] = ["CardType_Creature"]
+    body["oracle_text"] = "Lifelink"
+    assert returned_enchantment(body) is None
+
+
+def test_each_search_refreshes_death_suppression_from_its_snapshot():
+    from tests.test_session_exact_closure import board
+
+    from arenamcp.board_model import build_board_model
+    from arenamcp.line_search_moves import Moves
+
+    state = board()
+    body = state["battlefield"][2]
+    first = Moves(build_board_model(state), survival=True, lethal_now=False, hard_ms=1e9, opponent=None)
+    assert first.return_engines([body])
+    state["battlefield"].append(
+        {
+            "instance_id": 999,
+            "name": "Suppression",
+            "type_line": "Artifact",
+            "oracle_text": "Creatures dying don't cause abilities to trigger.",
+            "controller_seat_id": 2,
+        }
+    )
+    second = Moves(build_board_model(state), survival=True, lethal_now=False, hard_ms=1e9, opponent=None)
+    assert not second.return_engines([body])
+    assert not second.death_bodies([body])

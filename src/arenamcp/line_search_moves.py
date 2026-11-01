@@ -2086,6 +2086,11 @@ class Moves:
     ) -> None:
         self.model = model
         self._has_nonhand_spells = any(s.zone != "hand" for s in model.spells)
+        from arenamcp.death_bodies import death_is_suppressed
+
+        # Both death projections already consult this fixed input battlefield.
+        # Parse it once per search, not once per death in every projected line.
+        self._death_suppressed = death_is_suppressed(model.battlefield)
         from arenamcp.attack_tax import UnsupportedAttackTaxProjection
 
         if model.attack_tax_notes:
@@ -2436,10 +2441,9 @@ class Moves:
         return tuple(chips)
 
     def return_engines(self, bodies):
-        from arenamcp.death_bodies import death_is_suppressed
         from arenamcp.persistent_returns import returned_enchantment
 
-        if death_is_suppressed(self.model.battlefield):
+        if self._death_suppressed:
             return []
         return [
             engine
@@ -2489,9 +2493,9 @@ class Moves:
         )
 
     def death_bodies(self, bodies) -> list[dict]:
-        from arenamcp.death_bodies import death_is_suppressed, token_specs_on_death
+        from arenamcp.death_bodies import token_specs_on_death
 
-        if death_is_suppressed(self.model.battlefield):
+        if self._death_suppressed:
             return []
         result = []
         for body in bodies:

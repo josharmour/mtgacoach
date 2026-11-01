@@ -188,6 +188,9 @@ def test_model_affordable_or_unknown_kicker_is_preserved(monkeypatch):
     assert planner.plan_decision_options(_decision(), _state(mountains=5)) == ["idx:1"]
     state = _state(mountains=1)
     state["battlefield"][0]["oracle_text"] = "{T}: Add {R} for each creature you control."
+    # Public creature counts are now bounded; this source cannot fund kicker.
+    assert planner.plan_decision_options(_decision(), state) == ["idx:0"]
+    state["battlefield"][0]["oracle_text"] = "{T}: Add {R} for each card in your graveyard."
     assert planner.plan_decision_options(_decision(), state) == ["idx:1"]
 
 

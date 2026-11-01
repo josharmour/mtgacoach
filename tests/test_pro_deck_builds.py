@@ -165,14 +165,10 @@ def test_selesnya_mana_matches_the_pro(selesnya):
     assert sum(selesnya["basic_lands"].values()) == sum(pro_basics.values())
 
 
-@pytest.mark.xfail(
-    strict=True, reason="Ghalta (49.8% GIH) loses its slot to 55%+ cards; the pro's third ramp threat"
-)
 def test_selesnya_runs_the_pros_three_big_threats(selesnya):
     assert _names(selesnya)["Ghalta the Unstoppable"] == 1
 
 
-@pytest.mark.xfail(strict=True, reason="pip-weighted basics give 5 Plains for early W two-drops; pro ran 7/8")
 def test_selesnya_basics_split_like_the_pro(selesnya):
     _cards, pro_basics = _pro(pro1)
     for color, count in pro_basics.items():

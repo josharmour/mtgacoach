@@ -105,7 +105,20 @@ def test_sibling_loyalty_abilities_reach_the_model_with_their_text():
     engine, bridge, backend = jace_engine(
         '{"option_ids": ["idx:2"], "reasoning": "Empty hand; Jace -3 draws a card."}'
     )
-    assert engine._try_typed_decision_path(jace_state(), "decision_required") is True
+    state = jace_state()
+    # Witness costs {2}; give it real mana so this label test does not
+    # accidentally exercise the activation affordability guard.
+    state["battlefield"] += [
+        {
+            "instance_id": iid,
+            "name": "Island",
+            "type_line": "Basic Land — Island",
+            "controller_seat_id": 2,
+            "oracle_text": "{T}: Add {U}.",
+        }
+        for iid in (801, 802)
+    ]
+    assert engine._try_typed_decision_path(state, "decision_required") is True
     prompt = _decision_prompt(backend)
     assert "- idx:1: Activate: Jace [-1: Surveil 1.]" in prompt
     assert "- idx:2: Activate: Jace [-3: Draw a card.]" in prompt

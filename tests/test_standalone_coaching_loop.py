@@ -143,6 +143,9 @@ class FakeServerGameState:
     def game_over_signalled(self):
         return self.game_ended_event.is_set()
 
+    def last_ended_game(self):
+        return getattr(self, "_ended_game", None)
+
 
 @pytest.fixture
 def server_game_state(monkeypatch):

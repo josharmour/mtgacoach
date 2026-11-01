@@ -225,7 +225,7 @@ def test_coach_prompt_shows_unblockable_attackers_not_impossible_blocks():
     context = CoachEngine.__new__(CoachEngine)._format_game_context(_t26(), for_planner=True)
     assert (
         "Unblockable (Tetsuko Umezawa, Fugitive): Rank Rat 1, Theoretical Necromancer 4, "
-        "Tetsuko Umezawa, Fugitive 1, Yuriko, Hope from the Shadows 1 = 7 damage no blocker can stop"
+        "Tetsuko Umezawa, Fugitive 1, Yuriko, Hope from the Shadows 1 = 7 potential damage no blocker can stop"
     ) in context
     assert "  Rank Rat 1/1 [UNBLOCKABLE]" in context
     for name in ("Rank Rat", "Theoretical Necromancer", "Tetsuko Umezawa, Fugitive", "Yuriko"):

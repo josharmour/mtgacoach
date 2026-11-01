@@ -1,14 +1,31 @@
 """Bounded self-returning enchantment engines; never creature stand-ins."""
 
 import re
+from functools import lru_cache
+
+
+@lru_cache(maxsize=2048)
+def _return_rule(oracle, name):
+    """Cache only immutable printed text, never a card's changing game state."""
+    text = oracle.lower().replace("’", "'")
+    if "dies" not in text or "enchantment" not in text:
+        return False, False
+    if name:
+        text = text.replace(name.lower(), "cardname")
+    returns = bool(
+        re.search(
+            r"when (?:cardname|this creature) dies, if it was a creature, return it to the battlefield", text
+        )
+        and re.search(r"it(?:'s| is) an enchantment", text)
+    )
+    return returns, "under its owner's control" in text
 
 
 def returned_enchantment(card):
     raw = card.get("_card") or card
-    text = str(raw.get("oracle_text") or "").lower().replace("’", "'")
-    name = str(raw.get("name") or "").lower()
-    if name:
-        text = text.replace(name, "cardname")
+    returns, to_owner = _return_rule(str(raw.get("oracle_text") or ""), str(raw.get("name") or ""))
+    if not returns:
+        return None
     types = raw.get("card_types")
     creature = (
         any(str(kind).lower().removeprefix("cardtype_") == "creature" for kind in types)
@@ -24,12 +41,6 @@ def returned_enchantment(card):
         or raw.get("face_down")
         or raw.get("is_copy")
     ):
-        return None
-    if not re.search(
-        r"when (?:cardname|this creature) dies, if it was a creature, return it to the battlefield", text
-    ):
-        return None
-    if not re.search(r"it(?:'s| is) an enchantment", text):
         return None
     # This is a fresh permanent, not the dying body with a different label.
     # Current GRE types otherwise override type_line and turn it back into a
@@ -50,7 +61,7 @@ def returned_enchantment(card):
         "damage": 0,
         "damaged_this_turn": False,
     }
-    if "under its owner's control" in text:
+    if to_owner:
         returned["controller_seat_id"] = raw.get("owner_seat_id")
     return returned
 

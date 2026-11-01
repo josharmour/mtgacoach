@@ -131,7 +131,7 @@ def test_source_falls_back_to_our_x_spell_on_the_stack():
 # --- the cap stays out of the way when the mana count is not exact ---------------
 
 
-def test_variable_sources_and_reducers_remain_unknown_but_fixed_output_is_bounded():
+def test_public_count_sources_are_bounded_but_unmodeled_sources_and_reducers_are_unknown():
     rofellos = {
         "instance_id": 560,
         "name": "Rofellos, Llanowar Emissary",
@@ -165,7 +165,11 @@ def test_variable_sources_and_reducers_remain_unknown_but_fixed_output_is_bounde
     fixed_state = _state(lands=1, extra=[sol_ring], hand=[], stack=[_hydra(300)])
     assert exact_mana_total(fixed_state) == 3
     assert [o.meta["numericValue"] for o in filter_play_options(_x_menu(), fixed_state).options] == [1, 2]
-    for extra in (rofellos, medallion, sprawl):
+    count_state = _state(lands=1, extra=[rofellos], hand=[], stack=[_hydra(300)])
+    assert exact_mana_total(count_state) == 2
+    assert [o.meta["numericValue"] for o in filter_play_options(_x_menu(), count_state).options] == [1]
+    unknown_source = {**rofellos, "oracle_text": "{T}: Add {G} for each card in your graveyard."}
+    for extra in (unknown_source, medallion, sprawl):
         state = _state(lands=1, extra=[extra], hand=[], stack=[_hydra(300)])
         assert exact_mana_total(state) is None, extra["name"]
         kept = filter_play_options(_x_menu(), state)

@@ -263,6 +263,7 @@ def arena(monkeypatch):
     monkeypatch.setattr(server, "_completed_match_for_navigation", {})
 
     def complete(match_id):
+        holder._ended_game = {"match_id": match_id, "result": "loss", "taken": True}
         monkeypatch.setattr(
             server,
             "_completed_match_for_navigation",
