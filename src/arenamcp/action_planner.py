@@ -4387,8 +4387,15 @@ class ActionPlanner(_ActionLegalityMixin):
         decision, game_state = bind_offered_casts(decision, game_state)
         chosen = self._plan_decision_options(decision, game_state)
         from arenamcp.decision_consistency import consistent_action
+        from arenamcp.removal_windows import invalid_removal_intent
         from arenamcp.stack_responses import protective_pass
 
+        invalid_target = invalid_removal_intent(decision, game_state, chosen, self._last_decision_reasoning)
+        if invalid_target:
+            chosen = ["pass"]
+            self._last_decision_reasoning = "Pass and reassess: " + invalid_target
+            self._last_decision_option_ids = chosen
+            self._last_decision_trace.update(target_intent_guard=invalid_target, selected_ids=chosen)
         consistency = consistent_action(decision, game_state, chosen, self._last_decision_reasoning)
         if consistency:
             option_id, reason = consistency

@@ -905,6 +905,13 @@ class AutopilotEngine(
             entry for entry in getattr(self, "_self_cancelled_plays", set()) if entry[0] == turn
         }
         self._self_cancelled_plays.add((turn, kind, instance_id, ability_id, name))
+        from arenamcp.removal_windows import plains_cap_targets
+
+        caps = {k: v for k, v in getattr(self, "_self_cancelled_target_caps", {}).items() if k[0] == turn}
+        cap = plains_cap_targets(game_state, instance_id, name) if kind == "ActionType_Cast" else None
+        if cap is not None:
+            caps[(turn, kind, instance_id, ability_id, name)] = cap
+        self._self_cancelled_target_caps = caps
         logger.warning(
             "Self-cancel guard: %s %r was cancelled by the autopilot (%s); withholding it for the rest of turn %d",
             "cast" if kind in ("ActionType_Cast", "ActionType_CastOmen") else "activation",
@@ -1148,6 +1155,17 @@ class AutopilotEngine(
             if ability_id and entry_ability and ability_id != entry_ability:
                 continue
             if (instance_id and entry_iid == instance_id) or (name and entry_name == name):
+                key = (entry_turn, entry_kind, entry_iid, entry_ability, entry_name)
+                before = getattr(self, "_self_cancelled_target_caps", {}).get(key)
+                if before is not None and kind == "ActionType_Cast":
+                    from arenamcp.removal_windows import plains_cap_targets
+
+                    now = plains_cap_targets(game_state, instance_id or entry_iid, name or entry_name)
+                    if now is not None and now[0] > before[0] and now[1] - before[1]:
+                        self._self_cancelled_plays.discard(key)
+                        self._self_cancelled_target_caps.pop(key, None)
+                        logger.info("Self-cancel guard: new Plains cap opens opponent targets for %s", name or entry_name)
+                        return False
                 return True
         return False
 
@@ -3125,6 +3143,7 @@ class AutopilotEngine(
                 self._cast_rollback_totals.clear()
                 self._last_cast_submitted = None
                 self._self_cancelled_plays = set()
+                self._self_cancelled_target_caps = {}
                 self._last_typed_play = None
                 self._runaway_tripped_turn = None
                 self._request_tracker.reset()

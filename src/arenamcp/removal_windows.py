@@ -194,3 +194,63 @@ def invalid_transform_hold(decision, state: dict, chosen: list[str], reasoning: 
                         str(face.get("name") or "transformed"),
                     )
     return None
+
+
+def invalid_removal_intent(decision, state: dict, chosen: list[str], reasoning: str) -> str:
+    """Refute a specifically named illegal removal target before announcing the cast."""
+    if decision.request_type != "ActionsAvailable" or len(chosen) != 1 or decision.find("pass") is None:
+        return ""
+    option = decision.find(chosen[0])
+    if option is None or option.meta.get("actionType") != "ActionType_Cast":
+        return ""
+    source = find_source(state, option.meta)
+    if not source or not _TARGET.search(cast_targeting_text(source)):
+        return ""
+    local = get_local_seat_id(state)
+    for zone in ("battlefield", "stack"):
+        for target in state.get(zone) or []:
+            name = str(target.get("name") or "")
+            if not name or target.get("controller_seat_id") in (None, local):
+                continue
+            intended = re.search(
+                r"\b(?:exil(?:e|ing)|destroy(?:ing)?|remov(?:e|ing)|kill(?:ing)?|target(?:ing)?)\s+"
+                + re.escape(name)
+                + r"(?=$|[\s.,;:#])",
+                str(reasoning or ""),
+                re.I,
+            )
+            if not intended:
+                continue
+            prefix = str(reasoning or "")[: intended.start()].rsplit(".", 1)[-1].rsplit(";", 1)[-1]
+            if re.search(r"\b(?:not|can't|cannot|don't|never|if)\b", prefix, re.I):
+                continue
+            legal = target_eligibility(source, target, state)
+            if zone == "stack" and legal is not None:
+                return f"{name} is still on the stack; {source.get('name')} targets a battlefield permanent, not that spell."
+            if legal is False:
+                return f"{name} is not a legal target for any supported removal mode of {source.get('name')} on this board."
+    return ""
+
+
+def plains_cap_targets(state: dict, instance_id: int, name: str = "") -> tuple[int, frozenset] | None:
+    """Facts that can reopen a cancelled Plains-scaled removal, not unrelated requests."""
+    source = find_source(state, {"instanceId": instance_id}, name=name)
+    if not source or not _PLAINS.search(cast_targeting_text(source)):
+        return None
+    local = get_local_seat_id(state)
+    if local is None:
+        return None
+    battlefield = state.get("battlefield") or []
+    count = sum(
+        c.get("controller_seat_id") == local
+        and bool(re.search(r"\bplains\b", str(c.get("type_line") or ""), re.I))
+        for c in battlefield
+    )
+    targets = frozenset(
+        c["instance_id"]
+        for c in battlefield
+        if c.get("instance_id")
+        and c.get("controller_seat_id") not in (None, local)
+        and target_eligibility(source, c, state) is True
+    )
+    return count, targets
