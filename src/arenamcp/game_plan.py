@@ -810,6 +810,7 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
     commanders = _our_commanders(state)
     command_names = _card_names([c.card for c in commanders])
     command_costs = {id(c.card): c.cost for c in commanders}
+    command_blocks = {id(c.card): c.blocked_by for c in commanders}
     local = state.get("local_seat_id") or next(
         (p.get("seat_id") for p in state.get("players") or [] if isinstance(p, dict) and p.get("is_local")),
         None,
@@ -884,6 +885,23 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
             if card is None and not cycle:
                 card = _named_card(base, command_names)
                 cost_text = command_costs.get(id(card)) if card else None
+                if card is not None:
+                    blocked = next(
+                        (
+                            issue for issue in (replay.issues if replay else [])
+                            if issue.startswith(f"{label}: {card.get('name')} cannot cast from command")
+                        ),
+                        None,
+                    )
+                    if not blocked and index == 0 and command_blocks.get(id(card)):
+                        blocked = (
+                            f"{label}: {card.get('name')} cannot cast from command while "
+                            + ", ".join(command_blocks[id(card)])
+                            + " restricts casting outside the hand"
+                        )
+                    if blocked:
+                        issues.append(blocked)
+                        continue
                 if card is not None and not cost_text:
                     issues.append(
                         f"{label}: cost of {card.get('name')} unknown — not checked against the mana"

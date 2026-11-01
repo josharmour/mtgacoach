@@ -203,6 +203,7 @@ class CommandCast:
     casts: int | None  # previous casts from the command zone; None when unknown
     from_action: bool  # ``cost`` is Arena's own (the cast action's manaCost, tax included)
     text_unknown: bool  # no card data: its rules text (and printed cost) are unknown
+    blocked_by: tuple[str, ...] = ()  # current outside-hand casting restriction sources
 
     @property
     def tax(self) -> int | None:
@@ -344,6 +345,9 @@ def our_commanders(state: dict, local: int | None = None) -> list[CommandCast]:
     } - {None}
     grp_ids = {_int(g) for g in state.get("commander_grp_ids") or []} - {None}
     designated_known = bool(ours_ids or grp_ids)
+    from arenamcp.cast_zones import zone_blockers
+
+    blockers = zone_blockers(state.get("battlefield") or [], local, "command")
     found: list[CommandCast] = []
     for card in cards:
         kind = str(card.get("object_kind") or "").lower()
@@ -381,7 +385,7 @@ def our_commanders(state: dict, local: int | None = None) -> list[CommandCast]:
         found.append(
             CommandCast(
                 card=card, name=_name(card), cost=cost, printed=printed, casts=casts,
-                from_action=bool(action), text_unknown=text_unknown,
+                from_action=bool(action), text_unknown=text_unknown, blocked_by=blockers,
             )
         )  # fmt: skip
     return found
@@ -749,6 +753,7 @@ def build_board_model(state: dict) -> BoardModel | None:
         )
     # Current explicit alternative cast from exile (#322). Keep printed card
     # characteristics intact; only its payment and source zone differ.
+    from arenamcp.cast_zones import zone_blockers
     from arenamcp.offered_casts import free_exile_casts
 
     for card, action, cost in free_exile_casts(state):
@@ -762,6 +767,7 @@ def build_board_model(state: dict) -> BoardModel | None:
                 pips=info.pips,
                 has_x=False,
                 zone="exile",
+                zone_blocked=zone_blockers(battlefield, local, "exile"),
                 uncastable=_cast_gate_unmet(card, our_graveyard) or spell_banned(card, bans),
             )
         )
@@ -782,6 +788,7 @@ def build_board_model(state: dict) -> BoardModel | None:
                 has_x="x" in (commander.printed or commander.cost).lower(),
                 uncastable=_cast_gate_unmet(card, our_graveyard) or spell_banned(card, bans),
                 zone="command",
+                zone_blocked=commander.blocked_by,
             )
         )
     our_stack_bodies = []

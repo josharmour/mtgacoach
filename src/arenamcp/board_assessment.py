@@ -1203,6 +1203,8 @@ class _Spell:
     uncastable: bool = False  # e.g. Threshold "can't cast this spell unless ..." not met
     # "command": our commander, cast from the command zone (``mana_value`` includes the tax).
     zone: str = "hand"
+    # Current restriction only: search re-evaluates it after a source leaves.
+    zone_blocked: tuple[str, ...] = ()
 
 
 @dataclass
@@ -1463,7 +1465,7 @@ class BoardAssessment:
         if not self.commander:
             return ""
         return (
-            "COMMANDER (command zone: cast it like a hand card; each cast from there adds {2} to the next): "
+            "COMMANDER (command zone: casting restrictions apply; each cast from there adds {2} to the next): "
             + " | ".join(self.commander)
         )
 
@@ -2556,6 +2558,13 @@ def _commander_facts(model: Any, lookahead: list[TurnProjection], search: Any) -
     facts: list[str] = []
     for commander in getattr(model, "commanders", ()):
         name = commander.name
+        if commander.blocked_by:
+            facts.append(
+                f"{name}: cannot cast from command while "
+                + ", ".join(commander.blocked_by)
+                + " restricts casting outside the hand; remove the restriction before casting"
+            )
+            continue
         if not commander.cost:
             facts.append(
                 f"{name}: cost unknown (no card data, no cast action from Arena) — judge it yourself"
@@ -2574,6 +2583,8 @@ def _commander_facts(model: Any, lookahead: list[TurnProjection], search: Any) -
         spell = next((s for s in model.spells if s.zone == "command" and s.name == name), None)
         flash_now = (
             spell is not None
+            and not spell.uncastable
+            and not spell.zone_blocked
             and not model.our_turn
             and bool(hand_info(spell.card).instant_speed)
             and spell.mana_value <= len(model.sources_now)
@@ -2643,6 +2654,8 @@ def _unmodelled_castable(
     rows = lookahead[:2]
 
     def payable(spell: _Spell, mana: int, sources: Any = None, colors: str = "") -> bool:
+        if spell.zone_blocked:
+            return False
         need = spell.mana_value + (1 if spell.has_x else 0)  # X = 1 at least to do anything
         if need > mana:
             return False
@@ -2678,7 +2691,7 @@ def _unmodelled_castable(
             first.append(spell.name)
     # Our commander whose cost is unknown is never cast in a line: it may be castable now.
     for commander in getattr(model, "commanders", ()):
-        if commander.cost or commander.name in found:
+        if commander.blocked_by or commander.cost or commander.name in found:
             continue
         found.append(commander.name)
         instant = bool(hand_info(commander.card).instant_speed)
@@ -3277,7 +3290,9 @@ def _schedule(
     """
     for spell in spells:
         spell.value = _spell_value(spell, survival=survival, theirs=theirs, ours=ours)
-    remaining = [s for s in spells if not s.has_x and not s.uncastable and s.value > 0]
+    remaining = [
+        s for s in spells if not s.has_x and not s.uncastable and not s.zone_blocked and s.value > 0
+    ]
     from arenamcp.legend_rule import resolve_legends
 
     projected = list(ours)
@@ -3332,6 +3347,7 @@ def _schedule(
             for s in spells
             if not s.has_x
             and not s.uncastable
+            and not s.zone_blocked
             and (not index or not s.card.get("_current_exile_offer"))
             and s.mana_value <= len(sources)
             and _pip_matching(s.pips, sources)
@@ -3842,7 +3858,7 @@ def _enabled_by_land(
         # Our commanders in the command zone, at what casting them costs now (tax included).
         from arenamcp.board_model import our_commanders
 
-        cards += [(c.card, c.cost) for c in our_commanders(state, local) if c.cost]
+        cards += [(c.card, c.cost) for c in our_commanders(state, local) if c.cost and not c.blocked_by]
     for card, cost in cards:
         if not isinstance(card, dict) or card.get("instance_id") == land.get("instance_id"):
             continue

@@ -1304,7 +1304,7 @@ def test_the_prompts_mark_unmodelled_casts_and_the_pending_choice():
 # --- commanders in the command zone (Brawl, 2026-10-07) ----------------------------------------
 
 _COMMANDER_LINE = (
-    "COMMANDER (command zone: cast it like a hand card; each cast from there adds {2} to the next): "
+    "COMMANDER (command zone: casting restrictions apply; each cast from there adds {2} to the next): "
 )
 
 

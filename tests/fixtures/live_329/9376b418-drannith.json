@@ -1,0 +1,484 @@
+{
+  "source_bundle": "9376b418-2ea3-46d1-87ea-58a4d866f1e5.json.gz",
+  "scope": "Exact raw GRE excerpts. Enriched planner snapshots unavailable; test board is a bounded reconstruction. Requests retain every active action identity and complete inactive actions; payment/target metadata of active actions is omitted.",
+  "objects": [
+    {
+      "game_state_id": 1,
+      "object": {
+        "instanceId": 245,
+        "grpId": 103511,
+        "type": "GameObjectType_Card",
+        "zoneId": 26,
+        "visibility": "Visibility_Public",
+        "ownerSeatId": 2,
+        "controllerSeatId": 2,
+        "superTypes": [
+          "SuperType_Legendary"
+        ],
+        "cardTypes": [
+          "CardType_Creature"
+        ],
+        "subtypes": [
+          "SubType_Halfling",
+          "SubType_Advisor"
+        ],
+        "color": [
+          "CardColor_Green"
+        ],
+        "power": {
+          "value": 1
+        },
+        "toughness": {
+          "value": 1
+        },
+        "name": 1113733,
+        "overlayGrpId": 103511,
+        "uniqueAbilities": [
+          {
+            "id": 375,
+            "grpId": 205209
+          },
+          {
+            "id": 376,
+            "grpId": 205210
+          }
+        ]
+      }
+    },
+    {
+      "game_state_id": 320,
+      "object": {
+        "instanceId": 666,
+        "grpId": 98617,
+        "type": "GameObjectType_Card",
+        "zoneId": 28,
+        "visibility": "Visibility_Public",
+        "ownerSeatId": 1,
+        "controllerSeatId": 1,
+        "cardTypes": [
+          "CardType_Creature"
+        ],
+        "subtypes": [
+          "SubType_Human",
+          "SubType_Wizard"
+        ],
+        "color": [
+          "CardColor_White"
+        ],
+        "power": {
+          "value": 1
+        },
+        "toughness": {
+          "value": 3
+        },
+        "isTapped": true,
+        "name": 427904,
+        "overlayGrpId": 98617,
+        "uniqueAbilities": [
+          {
+            "id": 419,
+            "grpId": 137160
+          }
+        ]
+      }
+    }
+  ],
+  "initial_zones": [
+    {
+      "zoneId": 26,
+      "type": "ZoneType_Command",
+      "visibility": "Visibility_Public",
+      "objectInstanceIds": [
+        244,
+        245
+      ]
+    },
+    {
+      "zoneId": 28,
+      "type": "ZoneType_Battlefield",
+      "visibility": "Visibility_Public"
+    }
+  ],
+  "requests": [
+    {
+      "type": "GREMessageType_ActionsAvailableReq",
+      "systemSeatIds": [
+        2
+      ],
+      "msgId": 451,
+      "gameStateId": 324,
+      "prompt": {
+        "promptId": 2
+      },
+      "actionsAvailableReq": {
+        "actions": [
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 95516,
+            "instanceId": 348,
+            "facetId": 348
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 29589,
+            "instanceId": 351,
+            "facetId": 351
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 79961,
+            "instanceId": 786,
+            "facetId": 786
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 87435,
+            "instanceId": 544,
+            "facetId": 544
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 87435,
+            "instanceId": 544,
+            "facetId": 544
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 75553,
+            "instanceId": 550,
+            "facetId": 550
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 75553,
+            "instanceId": 556,
+            "facetId": 556
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 70387,
+            "instanceId": 655,
+            "facetId": 655
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 70387,
+            "instanceId": 655,
+            "facetId": 655
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 54769,
+            "instanceId": 670,
+            "facetId": 670
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 54769,
+            "instanceId": 670,
+            "facetId": 670
+          },
+          {
+            "actionType": "ActionType_Pass"
+          },
+          {
+            "actionType": "ActionType_FloatMana"
+          },
+          {
+            "actionType": "ActionType_PlayMDFC",
+            "grpId": 90825,
+            "instanceId": 902,
+            "facetId": 903
+          }
+        ],
+        "inactiveActions": [
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 103511,
+            "instanceId": 245,
+            "facetId": 245,
+            "abilityGrpId": 115,
+            "sourceId": 245,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 3,
+                "abilityGrpId": 115
+              },
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 2,
+                "abilityGrpId": 115
+              }
+            ],
+            "disqualifyingSourceId": 666
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 90824,
+            "instanceId": 902,
+            "facetId": 902,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 2
+              },
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 1
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "GREMessageType_ActionsAvailableReq",
+      "systemSeatIds": [
+        2
+      ],
+      "msgId": 456,
+      "gameStateId": 326,
+      "prompt": {
+        "promptId": 2
+      },
+      "actionsAvailableReq": {
+        "actions": [
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 95516,
+            "instanceId": 348,
+            "facetId": 348
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 29589,
+            "instanceId": 351,
+            "facetId": 351
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 79961,
+            "instanceId": 786,
+            "facetId": 786
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 87435,
+            "instanceId": 544,
+            "facetId": 544
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 87435,
+            "instanceId": 544,
+            "facetId": 544
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 75553,
+            "instanceId": 550,
+            "facetId": 550
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 75553,
+            "instanceId": 556,
+            "facetId": 556
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 70387,
+            "instanceId": 655,
+            "facetId": 655
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 70387,
+            "instanceId": 655,
+            "facetId": 655
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 54769,
+            "instanceId": 670,
+            "facetId": 670
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 54769,
+            "instanceId": 670,
+            "facetId": 670
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 90825,
+            "instanceId": 904,
+            "facetId": 904
+          },
+          {
+            "actionType": "ActionType_Pass"
+          },
+          {
+            "actionType": "ActionType_FloatMana"
+          }
+        ],
+        "inactiveActions": [
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 103511,
+            "instanceId": 245,
+            "facetId": 245,
+            "abilityGrpId": 115,
+            "sourceId": 245,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 3,
+                "abilityGrpId": 115
+              },
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 2,
+                "abilityGrpId": 115
+              }
+            ],
+            "disqualifyingSourceId": 666
+          }
+        ]
+      }
+    },
+    {
+      "type": "GREMessageType_ActionsAvailableReq",
+      "systemSeatIds": [
+        2
+      ],
+      "msgId": 466,
+      "gameStateId": 334,
+      "prompt": {
+        "promptId": 2
+      },
+      "actionsAvailableReq": {
+        "actions": [
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 95516,
+            "instanceId": 348,
+            "facetId": 348
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 29589,
+            "instanceId": 351,
+            "facetId": 351
+          },
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 79961,
+            "instanceId": 786,
+            "facetId": 786
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 87435,
+            "instanceId": 544,
+            "facetId": 544
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 87435,
+            "instanceId": 544,
+            "facetId": 544
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 75553,
+            "instanceId": 550,
+            "facetId": 550
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 75553,
+            "instanceId": 556,
+            "facetId": 556
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 70387,
+            "instanceId": 655,
+            "facetId": 655
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 70387,
+            "instanceId": 655,
+            "facetId": 655
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 54769,
+            "instanceId": 670,
+            "facetId": 670
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 54769,
+            "instanceId": 670,
+            "facetId": 670
+          },
+          {
+            "actionType": "ActionType_Activate_Mana",
+            "grpId": 90825,
+            "instanceId": 904,
+            "facetId": 904
+          },
+          {
+            "actionType": "ActionType_Pass"
+          },
+          {
+            "actionType": "ActionType_FloatMana"
+          }
+        ],
+        "inactiveActions": [
+          {
+            "actionType": "ActionType_Cast",
+            "grpId": 103511,
+            "instanceId": 245,
+            "facetId": 245,
+            "abilityGrpId": 115,
+            "sourceId": 245,
+            "manaCost": [
+              {
+                "color": [
+                  "ManaColor_Generic"
+                ],
+                "count": 3,
+                "abilityGrpId": 115
+              },
+              {
+                "color": [
+                  "ManaColor_Green"
+                ],
+                "count": 2,
+                "abilityGrpId": 115
+              }
+            ],
+            "disqualifyingSourceId": 666
+          }
+        ]
+      }
+    }
+  ]
+}

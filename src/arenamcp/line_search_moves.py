@@ -2085,6 +2085,7 @@ class Moves:
         budget: int | None = None,
     ) -> None:
         self.model = model
+        self._has_nonhand_spells = any(s.zone != "hand" for s in model.spells)
         from arenamcp.attack_tax import UnsupportedAttackTaxProjection
 
         if model.attack_tax_notes:
@@ -2846,17 +2847,43 @@ class Moves:
         pays for a body with the rest of the hand. A restriction already on the
         board is ``_Spell.uncastable`` (``board_model.board_cast_bans``).
         """
-        key = ids_of(node.ours)
+        key = (ids_of(node.ours), ids_of(node.theirs))
         found = self._ban_memo.get(key)
         if found is None:
             kinds: set = set()
             for body in node.ours:
                 kinds |= cast_bans(body.get("_card") or body, ours=True)
+            if self.zone_banned(node.ours, node.theirs):
+                kinds.add("outside_hand")
             found = self._ban_memo[key] = frozenset(kinds)
         return found
 
+    def zone_banned(self, ours, theirs) -> bool:
+        if not self._has_nonhand_spells:
+            return False
+        from arenamcp.cast_zones import outside_hand_ban
+
+        # Creature sources track the current node, so removal/combat can unlock
+        # later casts. Noncreature sources are fixed in this bounded search.
+        bodies = {b["instance_id"] for b in (*self.model.ours, *self.model.theirs)}
+        fixed = [c for c in self.model.battlefield if c.get("instance_id") not in bodies]
+        return (
+            any(outside_hand_ban(b, ours=True) for b in ours)
+            or any(outside_hand_ban(b, ours=False) for b in theirs)
+            or any(
+                outside_hand_ban(
+                    c,
+                    ours=(c.get("controller_seat_id") == self.model.local)
+                    if c.get("controller_seat_id") is not None else None,
+                )
+                for c in fixed
+            )
+        )
+
     def banned(self, hs: HandSpell, bans: frozenset) -> bool:
-        return bool(bans) and spell_banned(hs.spell.card, bans)
+        return (hs.spell.zone != "hand" and "outside_hand" in bans) or (
+            bool(bans) and spell_banned(hs.spell.card, bans - {"outside_hand"})
+        )
 
     def material(self, body: dict) -> float:
         """m(b) = power + toughness / 2, +1 if it flies or can't be blocked, + its engine role
@@ -4196,7 +4223,7 @@ class Moves:
             "mana": len(mid.sources),
             "colors": _colors(mid.sources),
             "source_colors": tuple("".join(sorted(s.produces)) for s in mid.base_sources),
-            "castable": self.castable(mid.sources, mid.ours),
+            "castable": self.castable(mid.sources, mid.ours, mid.theirs),
             "opp_life_after": opp_after,
             "greedy": greedy,
             "keys": frozenset(mid.keys | {("attack", frozenset(ids)) if ids else ("noattack",)}),
@@ -4386,12 +4413,14 @@ class Moves:
             )
         return found
 
-    def castable(self, sources, ours=()) -> tuple[str, ...]:
+    def castable(self, sources, ours=(), theirs=None) -> tuple[str, ...]:
         """Every hand spell castable alone with these sources (as ``_schedule`` lists them),
         ``ours`` being the bodies on the battlefield (a cast restriction among them applies)."""
         bans: frozenset = frozenset()
         for body in ours:
             bans |= cast_bans(body.get("_card") or body, ours=True)
+        if self.zone_banned(ours, self.model.theirs if theirs is None else theirs):
+            bans |= {"outside_hand"}
         return tuple(
             hs.name
             for hs in self.spells
@@ -4508,19 +4537,22 @@ class Moves:
             back[found["instance_id"]] = body["instance_id"]
         return out, back
 
-    def _next_turn_spells(self, hand: tuple, sources) -> tuple[int, tuple[int, ...]]:
+    def _next_turn_spells(self, hand: tuple, sources, ours=(), theirs=()) -> tuple[int, tuple[int, ...]]:
         """(damage at their face, spells cast) of our next turn's spells: the hand's face damage
         ('any target' at the opponent) most first, then, with cast triggers of ours, the cheapest
         other noncreature spells, up to three, within the mana and colours of ``sources``."""
         if not hand or not sources:
             return 0, ()
-        key = (hand, tuple(sorted("".join(sorted(s.produces)) for s in sources)))
+        zone_ban = self.zone_banned(ours, theirs)
+        key = (hand, tuple(sorted("".join(sorted(s.produces)) for s in sources)), zone_ban)
         found = self._next_memo.get(key)
         if found is not None:
             return found
         options = []
         for index in hand:
             hs = self.spells[index]
+            if zone_ban and hs.spell.zone != "hand":
+                continue
             casts = [v for v in hs.variants if v.kind == "cast"]
             if not casts:
                 continue
@@ -4580,11 +4612,14 @@ class Moves:
             found = self._strength_memo[id(var.reach)] = _reach_strength(var.reach)
         return found
 
-    def _held(self, hand, spare, life, theirs=()) -> tuple[list[Variant], list[Variant], int]:
+    def _held(self, hand, spare, life, theirs=(), ours=()) -> tuple[list[Variant], list[Variant], int]:
         """Instants we keep up for their turn, affordable together: (removal, flash creatures, mana left)."""
         sources, used_mv, used_pips = spare
+        zone_ban = self.zone_banned(ours, theirs)
         candidates = []
         for index in hand:
+            if zone_ban and self.spells[index].spell.zone != "hand":
+                continue
             instant = [
                 v for v in self.spells[index].variants if v.kind == "cast" and v.instant and v.loss < life
             ]
@@ -4685,7 +4720,7 @@ class Moves:
             theirs = self.anthem_bodies(theirs, opp_life)
             able = self.anthem_bodies(able, opp_life, alive=theirs)
         drain = self.their_drain(theirs, after_upkeep=after_upkeep) if drain_now else 0
-        removal, flash, left = self._held(hand, spare, life, theirs)
+        removal, flash, left = self._held(hand, spare, life, theirs, ours)
         flash_bodies = [b for v in flash for b in _bodies(v)]
         hand_left = tuple(i for i in hand if i not in {v.spell for v in flash})
         entered = dict(entered)
@@ -4912,7 +4947,7 @@ class Moves:
         crack_blockers = [b for b in theirs_after if b["instance_id"] not in their_tapped]
         # Our next turn: the burn in hand at their face and the cast triggers of the spells we
         # cast then (ledger #95: a crackback without them softened a lethal attack of theirs).
-        burn, cast = self._next_turn_spells(hand, crack_sources)
+        burn, cast = self._next_turn_spells(hand, crack_sources, ours_after, theirs_after)
         fighting, crack_tag = crack, ""
         if cast and crack and self.pumps_possible:
             scratch = SimpleNamespace(ours=crack, pumps={})
@@ -5237,7 +5272,7 @@ class Moves:
                     k=node.k, turn=node.abs_turn, label=LABELS[node.k], land=mid.land.name if mid.land else "",
                     casts=tuple(mid.cast_names), modes=tuple(mid.modes), targets=tuple(mid.targets),
                     cycles=tuple(mid.cycles), mana=len(sources), colors=_colors(sources),
-                    source_colors=tuple("".join(sorted(s.produces)) for s in base), castable=self.castable(sources, mid.ours),
+                    source_colors=tuple("".join(sorted(s.produces)) for s in base), castable=self.castable(sources, mid.ours, mid.theirs),
                     greedy=True,
                 )
             )  # fmt: skip

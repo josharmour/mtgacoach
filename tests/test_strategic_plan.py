@@ -502,7 +502,7 @@ def test_the_plan_prompt_and_the_decision_strategy_say_the_commander_is_castable
     manager = GamePlanManager(backend)
     plan = manager.maybe_reform(deepcopy(BRAWL_T7))
     _system, user, _args, _kwargs = backend.calls[0]
-    assert "COMMANDER (command zone: cast it like a hand card" in user and fact in user
+    assert "COMMANDER (command zone: casting restrictions apply" in user and fact in user
     assert "Forest + The Notary Hobbits (not modelled)" in user  # a CANDIDATE LINE casts it
     assert plan.turn_plan[0]["cast"] == ["The Notary Hobbits"]
     # The typed decision's strategy block (the manager's renderer) carries the same fact once.

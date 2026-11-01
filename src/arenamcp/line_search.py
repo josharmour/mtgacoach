@@ -1326,6 +1326,12 @@ def _evaluate_plan(result: LineSearchResult, steps: list[dict]) -> PlanEvaluatio
                 issues.append(f"{label}: {name} is not {where}")
                 continue
             hs = search.spells[index]
+            if hs.spell.zone != "hand" and search.zone_banned(node.ours, node.theirs):
+                issues.append(
+                    f"{label}: {hs.name} cannot cast from {hs.spell.zone} "
+                    "while an outside-hand restriction remains"
+                )
+                continue
             mode = mode or next((str(m) for k, m in noted_modes.items() if _plain(k) == _plain(hs.name)), "")
             var, mode_why = _noted_variant(search, hs, node, mode, aim)
             if var is None:
