@@ -241,7 +241,9 @@ def life_payment_decline(decision: Any, state: dict) -> str:
                 f"Decline paying {cost} life for {card.get('name') or 'this effect'}: at {life} life it "
                 f"would leave us at {after}, {reason}."
             )
-    return ""
+    from arenamcp.land_entry_payment import unused_entry_life_payment
+
+    return unused_entry_life_payment(decision, state, prompt_cards(decision, state))
 
 
 # "Its owner may put it on top of their library. If they do, Clash of Elements deals 2
