@@ -176,6 +176,25 @@ class _GameStateAnnotationsMixin:
                     )
                     is_added = "Added" in ann_type
                     for obj_id in affected_ids:
+                        player = self.players.get(obj_id)
+                        if player is not None and counter_type != "unknown":
+                            ann_id = _coerce_optional_int(ann.get("id"))
+                            key = (ann_id, obj_id, ann_type)
+                            if ann_id is not None and key in self._player_counter_annotation_ids:
+                                continue
+                            if ann_id is not None:
+                                self._player_counter_annotation_ids.add(key)
+                            kind = counter_type.removeprefix("CounterType_")
+                            delta = max(0, counter_count) * (1 if is_added else -1)
+                            player.counters[kind] = max(0, player.counters.get(kind, 0) + delta)
+                            self._add_event({
+                                "type": "player_counter_changed",
+                                "seat_id": obj_id,
+                                "counter_type": kind,
+                                "amount": delta,
+                                "total": player.counters[kind],
+                            })
+                            continue
                         obj = self.game_objects.get(obj_id)
                         if obj:
                             # Update counter state on the object

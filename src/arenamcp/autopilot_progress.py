@@ -111,6 +111,10 @@ def decision_semantics(poll: dict[str, Any], state: dict[str, Any]) -> dict[str,
     library = zones.get("library_count", state.get("library_count"))
     if library is not None and library != "?":
         board["library_count"] = library
+    board["player_counters"] = [
+        {"seat_id": p.get("seat_id"), "counters": p.get("counters") or {}}
+        for p in state.get("players") or [] if isinstance(p, dict)
+    ]
     return _stable(
         {
             "match_id": state.get("match_id"),

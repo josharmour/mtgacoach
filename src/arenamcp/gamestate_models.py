@@ -272,6 +272,7 @@ class Player:
     # life you gained this game"). The turn counter resets on each new turn.
     life_gained_this_turn: int = 0
     life_gained_this_game: int = 0
+    counters: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -279,6 +280,7 @@ class Player:
             "life_total": self.life_total,
             "life_gained_this_turn": self.life_gained_this_turn,
             "life_gained_this_game": self.life_gained_this_game,
+            "counters": dict(self.counters),
             "lands_played": self.lands_played,
             "mana_pool": self.mana_pool,
             "team_id": self.team_id,

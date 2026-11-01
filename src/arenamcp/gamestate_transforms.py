@@ -133,6 +133,7 @@ def _parse_attacker_block_state(value: Any) -> bool | None:
 _DECODED_COUNTER_TYPES = {
     1: "P1P1",
     2: "M1M1",
+    3: "Poison",  # GreProtobuf CounterType.cs
     5: "Time",
     19: "Charge",
     86: "Shield",

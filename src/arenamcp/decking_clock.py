@@ -22,7 +22,7 @@ the life clocks leave out:
 Our library count comes from zone membership (``zones.library_count`` with a
 known ``library_count_source``), exactly like :func:`arenamcp.library_counts.
 observed_library_count`; an unobserved library yields no threat. Poison counters
-are not tracked yet (the snapshot carries none); battles likewise.
+are assessed separately by :mod:`arenamcp.poison_clock`.
 
 No LLM, no I/O; a typical board costs well under a millisecond.
 """

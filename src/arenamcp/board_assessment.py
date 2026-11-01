@@ -1269,13 +1269,16 @@ class BoardAssessment:
     milled_recent: int = 0
     opponent_library_count: int | None = None
     decking_fact: str = ""  # the rendered FACTS-line fact ('we deck in ~N turns (...)')
+    poison_fact: str = ""
+    poison_turns: int | None = None
+    poison_urgent: bool = False
 
     @property
     def survival_mode(self) -> bool:
         """Defending, losing the race, or dead within two turns (and no lethal of our own)."""
         if self.lethal_now:
             return False
-        if self.opp_lethal_on_board or (self.dead_in is not None and self.dead_in <= 2):
+        if self.poison_urgent or self.opp_lethal_on_board or (self.dead_in is not None and self.dead_in <= 2):
             return True
         under_pressure = self.their_clock is not None and self.their_clock <= _HORIZON
         return under_pressure and (self.role in (ROLE_DEFENDER, ROLE_CONTROL) or self.race == "behind")
@@ -1343,6 +1346,8 @@ class BoardAssessment:
             line += " | clock leaves out: " + ", ".join(self.clock_unmodelled[:4])
         if self.decking_fact:
             line += " | " + self.decking_fact
+        if self.poison_fact:
+            line += " | " + self.poison_fact
         if self.flags:
             line += " | !! " + "; ".join(self.flags)
         return line
@@ -1546,6 +1551,7 @@ def _signature(state: dict) -> tuple:
         (
             c.get("instance_id"),
             c.get("name"),
+            c.get("oracle_text"),  # newly resolved poison/proliferate text changes the clock
             c.get("power"),
             c.get("toughness"),
             c.get("is_tapped"),
@@ -1562,7 +1568,10 @@ def _signature(state: dict) -> tuple:
         c.get("instance_id") or c.get("name") for c in state.get("hand") or [] if isinstance(c, dict)
     )
     players = tuple(
-        (p.get("seat_id"), p.get("life_total"), p.get("lands_played"), p.get("is_local"))
+        (
+            p.get("seat_id"), p.get("life_total"), p.get("lands_played"), p.get("is_local"),
+            tuple(sorted((str(k), str(v)) for k, v in (p.get("counters") or {}).items())),
+        )
         for p in state.get("players") or []
         if isinstance(p, dict)
     )
@@ -1607,6 +1616,11 @@ def _signature(state: dict) -> tuple:
         command,
         tuple(sorted((str(k), str(v)) for k, v in casts.items())),
         stack,
+        tuple(
+            (e.get("seat_id"), e.get("turn"), e.get("counter_type"), e.get("amount"))
+            for e in state.get("recent_events") or []
+            if isinstance(e, dict) and e.get("type") == "player_counter_changed"
+        ),
     )
 
 
@@ -2114,11 +2128,16 @@ def _assess(state: dict) -> BoardAssessment | None:
         logger.debug("decking clock failed: %s", error, exc_info=True)
         decking, decking_role_note = None, (lambda threat, our_clock: "")
 
+    from arenamcp.poison_clock import poison_threat
+
+    poison = poison_threat(state)
     our_power = sum(b["power"] for b in ours)
     their_power = sum(b["power"] for b in theirs)
 
     # --- flags ---------------------------------------------------------------
     flags: list[str] = []
+    if poison and poison.urgent:
+        flags.append("POISON LOSS RISK — life total and combat-only survival lines cannot rule it out")
     # An assembled drain loop (Vito + Exquisite Blood, 2026-10-11) kills on the
     # next life change whatever the combat math says: it leads the flags.
     try:
@@ -2282,6 +2301,13 @@ def _assess(state: dict) -> BoardAssessment | None:
     if deck_note:
         reason = f"{reason}; {deck_note}"
 
+    if poison:
+        poison_note = poison.role_note(our_clock)
+        if poison_note:
+            if not lethal_now:
+                role = ROLE_CONTROL
+            reason = f"{reason}; {poison_note}"
+
     commander: list[str] = []
     if model.commanders:
         try:
@@ -2338,6 +2364,9 @@ def _assess(state: dict) -> BoardAssessment | None:
         milled_recent=decking.milled_recent if decking is not None else 0,
         opponent_library_count=_int((zones or {}).get("opponent_library_count")),
         decking_fact=decking.fact() if decking is not None else "",
+        poison_fact=poison.fact() if poison is not None else "",
+        poison_turns=poison.turns if poison is not None else None,
+        poison_urgent=bool(poison and poison.urgent),
         line_search=search,
         lines=list(found.lines) if found is not None else [],
         posture=posture,

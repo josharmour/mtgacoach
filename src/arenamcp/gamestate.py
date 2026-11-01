@@ -320,6 +320,7 @@ class GameState(_GameStateAnnotationsMixin):
         "action_history": list,
         # ModifiedLife annotation ids already counted into life gained
         "_life_annotation_ids": set,
+        "_player_counter_annotation_ids": set,
         "_terminal_life_annotation_ids": set,
         # Timer state from GRE
         "timer_state": dict,
@@ -808,6 +809,7 @@ class GameState(_GameStateAnnotationsMixin):
                 "seat_source": self._seat_source,
                 "turn_info": self.turn_info.to_dict(),
                 "players": [player.to_dict() for player in self.players.values()],
+                "player_counter_annotation_ids": sorted(self._player_counter_annotation_ids),
                 "zones": [zone.to_dict() for zone in self.zones.values()],
                 "game_objects": [obj.to_dict() for obj in self.game_objects.values()],
                 "played_cards": {str(seat_id): list(cards) for seat_id, cards in self.played_cards.items()},
@@ -907,6 +909,11 @@ class GameState(_GameStateAnnotationsMixin):
                         decision_player=_coerce_int(turn_info.get("decision_player", 0), 0),
                     )
 
+                self._player_counter_annotation_ids = {
+                    (int(row[0]), int(row[1]), str(row[2]))
+                    for row in checkpoint.get("player_counter_annotation_ids") or []
+                    if isinstance(row, (list, tuple)) and len(row) == 3
+                }
                 self.players = {}
                 for player_data in checkpoint.get("players") or []:
                     if not isinstance(player_data, dict):
@@ -930,6 +937,10 @@ class GameState(_GameStateAnnotationsMixin):
                         controller_seat_id=_coerce_optional_int(player_data.get("controller_seat_id")),
                         life_gained_this_turn=_coerce_int(player_data.get("life_gained_this_turn", 0), 0),
                         life_gained_this_game=_coerce_int(player_data.get("life_gained_this_game", 0), 0),
+                        counters={
+                            str(k): _coerce_int(v, 0)
+                            for k, v in (player_data.get("counters") or {}).items()
+                        } if isinstance(player_data.get("counters"), dict) else {},
                     )
 
                 self.game_objects = {}
@@ -2933,6 +2944,7 @@ class GameState(_GameStateAnnotationsMixin):
             controller_seat_id=controller_seat_id,
             life_gained_this_turn=existing.life_gained_this_turn if existing else 0,
             life_gained_this_game=existing.life_gained_this_game if existing else 0,
+            counters=dict(existing.counters) if existing else {},
         )
 
         self.players[seat_id] = player

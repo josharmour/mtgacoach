@@ -91,7 +91,6 @@ _ZONE_OP_SKIP = [
 ]
 _PLAYERS_OP_SKIP = [
     *_ENTITY_WEBS,
-    "CounterDatas",
     "Timers",
     "IdToManaMap",
     "PendingEffects",
@@ -231,6 +230,23 @@ def assemble_state(results: list[Any], index: dict[str, int]) -> dict[str, Any]:
             "timeout_count": num(field(player, "TimeoutCount")),
             "entity_id": num(field(player, "InstanceId")),
         }
+        # MtgPlayer inherits MtgEntity.CounterDatas. Only publish a complete
+        # read: a missing/truncated probe must not erase the log's counters.
+        counter_data = field(player, "CounterDatas")
+        counter_items = items(counter_data)
+        if (
+            isinstance(counter_data, dict)
+            and counter_data.get("$n") == len(counter_items)
+            and all(
+                enum_name(field(d, "Type")) and field(d, "Count") is not None
+                for d in counter_items
+            )
+        ):
+            counters: dict[str, int] = {}
+            for datum in counter_items:
+                name = enum_name(field(datum, "Type")).removeprefix("CounterType_")
+                counters[name] = counters.get(name, 0) + num(field(datum, "Count"))
+            row["counters"] = counters
         mana: dict[str, int] = {}
         for entry in items(field(player, "ManaPool")):
             color = enum_name(field(entry, "Color"))

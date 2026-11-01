@@ -1824,6 +1824,8 @@ def _normalize_bridge_players(
         if "is_local" in player:
             merged["is_local"] = bool(player.get("is_local"))
 
+        if isinstance(player.get("counters"), dict):
+            merged["counters"] = dict(player["counters"])
         mana_pool = player.get("mana_pool")
         if isinstance(mana_pool, dict):
             merged["mana_pool"] = dict(mana_pool)
