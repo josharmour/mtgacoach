@@ -634,6 +634,7 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
 
     # --- turn plan ------------------------------------------------------------
     plan.turn_plan = _validate_turns(plan.turn_plan, assessment, state, issues)
+    _check_library_dependencies(plan, library_only, issues)
     _check_keyword_claims(plan, assessment, state, issues)
     _check_kill_claims(plan, assessment, state, issues)
     _check_leaver_blocks(plan, state, issues)
@@ -642,6 +643,56 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
     _check_mana_holds(plan, assessment, state, issues)
     plan.issues = issues
     return plan
+
+
+def _check_library_dependencies(plan: GamePlan, library_only: set[str], issues: list[str]) -> None:
+    """A rejected undrawn win must not survive as an unconditional instruction.
+
+    #240/#272/#287: dropping "Akroma's Will" from wins still left "preserve
+    Leonardo as Will enabler" in the path/holds. Keep explicit draw/tutor
+    conditions and historical/threat descriptions; remove unsupported orders.
+    """
+
+    def checked(text: str, where: str) -> str:
+        needed = sorted(name for name in library_only if _mentions(text, name))
+        if needed and not _DRAW_LABEL.search(text):
+            issues.append(f"{where} rejected: needs {', '.join(needed)} (still in the library): {text}")
+            return ""
+        return text
+
+    for attr in ("path", "develop_next"):
+        setattr(plan, attr, checked(getattr(plan, attr), attr))
+    for attr in ("resource_priorities", "active_mechanisms"):
+        setattr(plan, attr, [value for item in getattr(plan, attr) if (value := checked(item, attr))])
+    for step in plan.turn_plan:
+        for key in ("attack", "hold"):
+            # A generated "if drawn" hold must not shield a separate,
+            # unconditional hold instruction in the same step.
+            step[key] = "; ".join(
+                value
+                for item in str(step.get(key) or "").split(";")
+                if (value := checked(item.strip(), f"{step.get('label', 'T')} {key}"))
+            )
+
+
+def _plan_availability_block(state: dict, prior: GamePlan | None) -> str:
+    names = _library_only_names(state)
+    # The validator also knows short legendary names; list each card only once.
+    names = {name for name in names if not any(other.startswith(name + " ") for other in names)}
+    lines = [
+        "\nPLAN AVAILABILITY (current snapshot):",
+        "Deck cards not seen outside the library: " + (", ".join(sorted(names)) or "none identified") + ".",
+        "These are conditional draw/tutor outs only. Do not base the path, next development, "
+        "resource reservations or holds on obtaining them. Use the available cards and each turn's "
+        "mana budget, including coloured pips and combined costs; castable alone does not mean "
+        "castable together.",
+    ]
+    if prior and prior.issues:
+        lines.append(
+            "PREVIOUS VALIDATION: Recheck against the current snapshot; these are not permanent bans."
+        )
+        lines.extend("  " + issue[:300] for issue in prior.issues[:8])
+    return "\n".join(lines) + "\n"
 
 
 def _grounded_win(assessment: Any, state: dict) -> str:
@@ -4733,6 +4784,7 @@ class GamePlanManager:
         seed = self._seed_text(game_state)
         user_parts = [f"DECK PLAYBOOK / STRATEGY:\n{seed}\n"] if seed else []
         user_parts.append(context)
+        user_parts.append(_plan_availability_block(game_state, self._plan))
         if assessment is not None:
             logger.info(
                 "Board facts (turn %d, %.1fms): %s | %s%s",
