@@ -672,7 +672,9 @@ def _untapped_mana(state: dict, local: dict) -> int:
     return total
 
 
-def _possible_tricks(state: dict, local: dict) -> list[tuple[str, int, str | None, int | None]]:
+def _possible_tricks(
+    state: dict, local: dict, attacker_ids: set[int] | None = None
+) -> list[tuple[str, int, str | None, int | None]]:
     """Instant-speed plays visible to us now, as (source, mana value, effect text, permanent id).
 
     0 means free; the text is None when the effect is unknown (treated as a
@@ -690,6 +692,11 @@ def _possible_tricks(state: dict, local: dict) -> list[tuple[str, int, str | Non
         if "instant" not in _types(card) and not flash:
             continue
         alternative = re.search(r"rather than pay|without paying|\bconvoke\b|\bdelve\b|\bimprovise\b", text)
+        if not alternative:
+            from arenamcp.combat_trick_mana import missing_trick_color
+
+            if missing_trick_color(state, local, card, attacker_ids or set()):
+                continue
         cost = 0 if alternative else _mana_value(card.get("mana_cost") or "")
         tricks.append((card.get("name") or "an instant", cost, text, None))
     for card in state.get("graveyard") or []:
@@ -1435,8 +1442,8 @@ def losing_attackers(
       - no spell we resolved this turn mentions blocking;
       - no instant, flash card, instant flashback, prepared spell or
         activated ability we control is affordable with our untapped mana
-        and could save it (free ones always count; colors are ignored,
-        erring toward keeping).
+        and could save it (free ones always count; ordinary hand tricks
+        with a provably unavailable required color do not count).
     Unknown power/toughness or anything ambiguous keeps the attack.
     """
     players = state.get("players") or []
@@ -1480,7 +1487,7 @@ def losing_attackers(
         return {}
     affordable = [
         (text, cost, identity)
-        for _source, cost, text, identity in _possible_tricks(state, local)
+        for _source, cost, text, identity in _possible_tricks(state, local, set(attacker_ids))
         if cost <= mana
     ]
     # A plain pump is judged per attacker (_doomed): it saves one only if the

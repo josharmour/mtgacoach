@@ -564,6 +564,8 @@ def test_a_tapper_still_counts_when_it_removes_the_only_blocker():
 
 def test_an_affordable_pump_still_counts_as_a_trick():
     state = tetsuko_board([creature(501, "Angel", 1, 3, 3, "Flying"), creature(502, "Bear", 1, 2, 2)])
+    # The pump needs green; this fixture otherwise has only blue sources.
+    state["battlefield"].append({**land(420, "Forest", 2, tapped=False), "oracle_text": "{T}: Add {G}."})
     state["hand"].append(
         {
             "instance_id": 402,

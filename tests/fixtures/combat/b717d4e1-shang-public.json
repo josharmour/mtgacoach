@@ -1,0 +1,659 @@
+{
+  "match_id": "b717d4e1",
+  "turn": {
+    "turn_number": 9,
+    "active_player": 2,
+    "priority_player": 2,
+    "phase": "Combat",
+    "step": "DeclareAttack"
+  },
+  "local_seat_id": 2,
+  "players": [
+    {
+      "seat_id": 2,
+      "is_local": true,
+      "life_total": 25,
+      "mana_pool": {}
+    },
+    {
+      "seat_id": 1,
+      "is_local": false,
+      "life_total": 24,
+      "mana_pool": {}
+    }
+  ],
+  "battlefield": [
+    {
+      "name": "Forest",
+      "oracle_text": "",
+      "type_line": "Basic Land \u2014 Forest",
+      "mana_cost": "",
+      "cmc": 0.0,
+      "colors": [],
+      "arena_id": 75553,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "common",
+      "power": "",
+      "toughness": "",
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 501,
+      "grp_id": 75553,
+      "controller_seat_id": 2,
+      "owner_seat_id": 2,
+      "card_types": [
+        "Land"
+      ],
+      "is_tapped": true,
+      "summoning_sickness": false,
+      "ability_grp_ids": [
+        1005
+      ]
+    },
+    {
+      "name": "Titan of Industry",
+      "oracle_text": "Reach\nTrample\nWhen this creature enters, choose two \u2014 \n\u2022<indent=4%><indent=4%>Destroy target artifact or enchantment. </indent></indent>\n\u2022<indent=4%><indent=4%>Target player gains 5 life. </indent></indent>\n\u2022<indent=4%><indent=4%>Create a 4/4 green Rhino Warrior creature token. </indent></indent>\n\u2022<indent=4%><indent=4%>Put a shield counter on a creature you control.</indent></indent>",
+      "type_line": "Creature \u2014 Elemental",
+      "mana_cost": "{4}{G}{G}{G}",
+      "cmc": 7.0,
+      "colors": [
+        "G"
+      ],
+      "arena_id": 80310,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "mythic",
+      "power": 7,
+      "toughness": 7,
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 487,
+      "grp_id": 80310,
+      "controller_seat_id": 2,
+      "owner_seat_id": 2,
+      "card_types": [
+        "Creature"
+      ],
+      "is_tapped": false,
+      "summoning_sickness": true,
+      "ability_grp_ids": [
+        13,
+        14,
+        149505
+      ]
+    },
+    {
+      "name": "Forest",
+      "oracle_text": "",
+      "type_line": "Basic Land \u2014 Forest",
+      "mana_cost": "",
+      "cmc": 0.0,
+      "colors": [],
+      "arena_id": 75553,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "common",
+      "power": "",
+      "toughness": "",
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 486,
+      "grp_id": 75553,
+      "controller_seat_id": 2,
+      "owner_seat_id": 2,
+      "card_types": [
+        "Land"
+      ],
+      "is_tapped": true,
+      "summoning_sickness": false,
+      "ability_grp_ids": [
+        1005
+      ]
+    },
+    {
+      "name": "Black Widow, Intel Expert",
+      "oracle_text": "First strike\nWhenever Black Widow deals combat damage to an opponent, you and that player each draw two cards.",
+      "type_line": "Legendary Creature \u2014 Human Spy Hero",
+      "mana_cost": "{2}{W}",
+      "cmc": 3.0,
+      "colors": [
+        "W"
+      ],
+      "arena_id": 105521,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "rare",
+      "power": 4,
+      "toughness": 4,
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 478,
+      "grp_id": 105521,
+      "controller_seat_id": 1,
+      "owner_seat_id": 1,
+      "card_types": [
+        "Creature"
+      ],
+      "is_tapped": false,
+      "summoning_sickness": true,
+      "ability_grp_ids": [
+        6,
+        207302
+      ]
+    },
+    {
+      "name": "Library of Alexandria",
+      "oracle_text": "{oT}: Add {oC}.\n{oT}: Draw a card. Activate only if you have exactly seven cards in hand.",
+      "type_line": "Land",
+      "mana_cost": "",
+      "cmc": 0.0,
+      "colors": [],
+      "arena_id": 60275,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "mythic",
+      "power": "",
+      "toughness": "",
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 467,
+      "grp_id": 60275,
+      "controller_seat_id": 2,
+      "owner_seat_id": 2,
+      "card_types": [
+        "Land"
+      ],
+      "is_tapped": false,
+      "summoning_sickness": false,
+      "ability_grp_ids": [
+        1152,
+        5707
+      ]
+    },
+    {
+      "name": "Captain America, Team Leader",
+      "oracle_text": "Whenever another Hero you control enters, it gains vigilance and haste until end of turn. Put a +1/+1 counter on that Hero and a +1/+1 counter on Captain America.",
+      "type_line": "Legendary Creature \u2014 Human Soldier Hero",
+      "mana_cost": "{R}{W}{U}",
+      "cmc": 3.0,
+      "colors": [
+        "W",
+        "U",
+        "R"
+      ],
+      "arena_id": 105387,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "mythic",
+      "power": 4,
+      "toughness": 4,
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 462,
+      "grp_id": 105387,
+      "controller_seat_id": 1,
+      "owner_seat_id": 1,
+      "card_types": [
+        "Creature"
+      ],
+      "is_tapped": false,
+      "summoning_sickness": false,
+      "ability_grp_ids": [
+        207123
+      ]
+    },
+    {
+      "name": "Island",
+      "oracle_text": "",
+      "type_line": "Basic Land \u2014 Island",
+      "mana_cost": "",
+      "cmc": 0.0,
+      "colors": [],
+      "arena_id": 96182,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "common",
+      "power": "",
+      "toughness": "",
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 461,
+      "grp_id": 96182,
+      "controller_seat_id": 1,
+      "owner_seat_id": 1,
+      "card_types": [
+        "Land"
+      ],
+      "is_tapped": true,
+      "summoning_sickness": false,
+      "ability_grp_ids": [
+        1002
+      ]
+    },
+    {
+      "name": "Firdoch Core",
+      "oracle_text": "Changeling\n{oT}: Add one mana of any color.\n{o4}: This artifact becomes a 4/4 artifact creature until end of turn.",
+      "type_line": "Kindred Artifact \u2014 Shapeshifter",
+      "mana_cost": "{3}",
+      "cmc": 3.0,
+      "colors": [],
+      "arena_id": 98577,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "common",
+      "power": "",
+      "toughness": "",
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 456,
+      "grp_id": 98577,
+      "controller_seat_id": 2,
+      "owner_seat_id": 2,
+      "card_types": [
+        "Artifact",
+        "Kindred"
+      ],
+      "is_tapped": true,
+      "summoning_sickness": false,
+      "ability_grp_ids": [
+        74,
+        1055,
+        194115
+      ]
+    },
+    {
+      "name": "Forest",
+      "oracle_text": "",
+      "type_line": "Basic Land \u2014 Forest",
+      "mana_cost": "",
+      "cmc": 0.0,
+      "colors": [],
+      "arena_id": 75553,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "common",
+      "power": "",
+      "toughness": "",
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 455,
+      "grp_id": 75553,
+      "controller_seat_id": 2,
+      "owner_seat_id": 2,
+      "card_types": [
+        "Land"
+      ],
+      "is_tapped": true,
+      "summoning_sickness": false,
+      "ability_grp_ids": [
+        1005
+      ]
+    },
+    {
+      "name": "Plains",
+      "oracle_text": "",
+      "type_line": "Basic Land \u2014 Plains",
+      "mana_cost": "",
+      "cmc": 0.0,
+      "colors": [],
+      "arena_id": 92382,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "common",
+      "power": "",
+      "toughness": "",
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 453,
+      "grp_id": 92382,
+      "controller_seat_id": 1,
+      "owner_seat_id": 1,
+      "card_types": [
+        "Land"
+      ],
+      "is_tapped": true,
+      "summoning_sickness": false,
+      "ability_grp_ids": [
+        1001
+      ]
+    },
+    {
+      "name": "Shang-Chi, Master of Kung Fu",
+      "oracle_text": "You may activate abilities of creatures you control as though those creatures had haste.\n{oT}: Add two mana of any one color. Spend this mana only to activate abilities of creature sources.",
+      "type_line": "Legendary Creature \u2014 Human Warrior Hero",
+      "mana_cost": "{1}{G}",
+      "cmc": 2.0,
+      "colors": [
+        "G"
+      ],
+      "arena_id": 105082,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "mythic",
+      "power": 2,
+      "toughness": 2,
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 449,
+      "grp_id": 105082,
+      "controller_seat_id": 2,
+      "owner_seat_id": 2,
+      "card_types": [
+        "Creature"
+      ],
+      "is_tapped": false,
+      "summoning_sickness": false,
+      "ability_grp_ids": [
+        4498,
+        206281
+      ]
+    },
+    {
+      "name": "Forest",
+      "oracle_text": "",
+      "type_line": "Basic Land \u2014 Forest",
+      "mana_cost": "",
+      "cmc": 0.0,
+      "colors": [],
+      "arena_id": 75553,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "common",
+      "power": "",
+      "toughness": "",
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 448,
+      "grp_id": 75553,
+      "controller_seat_id": 2,
+      "owner_seat_id": 2,
+      "card_types": [
+        "Land"
+      ],
+      "is_tapped": true,
+      "summoning_sickness": false,
+      "ability_grp_ids": [
+        1005
+      ]
+    },
+    {
+      "name": "Stark Industries",
+      "oracle_text": "This land enters tapped.\nWhen this land enters, you gain 1 life.\n{oT}: Add {oU} or {oR}.",
+      "type_line": "Land",
+      "mana_cost": "",
+      "cmc": 0.0,
+      "colors": [],
+      "arena_id": 105168,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "common",
+      "power": "",
+      "toughness": "",
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 445,
+      "grp_id": 105168,
+      "controller_seat_id": 1,
+      "owner_seat_id": 1,
+      "card_types": [
+        "Land"
+      ],
+      "is_tapped": true,
+      "summoning_sickness": false,
+      "ability_grp_ids": [
+        180111,
+        90050,
+        1039
+      ]
+    },
+    {
+      "name": "Forest",
+      "oracle_text": "",
+      "type_line": "Basic Land \u2014 Forest",
+      "mana_cost": "",
+      "cmc": 0.0,
+      "colors": [],
+      "arena_id": 75553,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "common",
+      "power": "",
+      "toughness": "",
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 443,
+      "grp_id": 75553,
+      "controller_seat_id": 2,
+      "owner_seat_id": 2,
+      "card_types": [
+        "Land"
+      ],
+      "is_tapped": true,
+      "summoning_sickness": false,
+      "ability_grp_ids": [
+        1005
+      ]
+    },
+    {
+      "name": "The Notary Hobbits",
+      "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+      "type_line": "Legendary Creature \u2014 Halfling Advisor",
+      "mana_cost": "{3}{G}{G}",
+      "cmc": 5.0,
+      "colors": [
+        "G"
+      ],
+      "arena_id": 103511,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "rare",
+      "power": 1,
+      "toughness": 1,
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 475,
+      "grp_id": 103511,
+      "controller_seat_id": 2,
+      "owner_seat_id": 2,
+      "card_types": [
+        "Creature"
+      ],
+      "is_tapped": true,
+      "summoning_sickness": false,
+      "ability_grp_ids": [
+        205209,
+        205210
+      ]
+    },
+    {
+      "name": "The Notary Hobbits",
+      "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+      "type_line": "Legendary Creature \u2014 Halfling Advisor",
+      "mana_cost": "{3}{G}{G}",
+      "cmc": 5.0,
+      "colors": [
+        "G"
+      ],
+      "arena_id": 103511,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "rare",
+      "power": 1,
+      "toughness": 1,
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 476,
+      "grp_id": 103511,
+      "controller_seat_id": 2,
+      "owner_seat_id": 2,
+      "card_types": [
+        "Creature"
+      ],
+      "is_tapped": true,
+      "summoning_sickness": false,
+      "ability_grp_ids": [
+        205209,
+        205210
+      ]
+    },
+    {
+      "name": "Rhino Warrior",
+      "oracle_text": "",
+      "type_line": "Token Creature \u2014 Rhino Warrior",
+      "mana_cost": "",
+      "cmc": 0.0,
+      "colors": [],
+      "arena_id": 80539,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "",
+      "power": 4,
+      "toughness": 4,
+      "related_faces": [],
+      "is_token": true,
+      "instance_id": 496,
+      "grp_id": 80539,
+      "controller_seat_id": 2,
+      "owner_seat_id": 2,
+      "card_types": [
+        "Creature"
+      ],
+      "is_tapped": false,
+      "summoning_sickness": true,
+      "ability_grp_ids": []
+    }
+  ],
+  "hand": [
+    {
+      "name": "Tamiyo's Safekeeping",
+      "oracle_text": "Target permanent you control gains hexproof and indestructible until end of turn. You gain 2 life.",
+      "type_line": "Instant",
+      "mana_cost": "{G}",
+      "cmc": 1.0,
+      "colors": [
+        "G"
+      ],
+      "arena_id": 79648,
+      "scryfall_uri": "",
+      "source": "mtgadb",
+      "keywords": [],
+      "produced_mana": [],
+      "color_identity": [],
+      "related_tokens": [],
+      "legalities": {},
+      "rarity": "common",
+      "power": "",
+      "toughness": "",
+      "related_faces": [],
+      "is_token": false,
+      "instance_id": 348,
+      "controller_seat_id": 2,
+      "owner_seat_id": 2
+    }
+  ],
+  "graveyard": [],
+  "decision_context": {
+    "type": "declare_attackers",
+    "legal_attacker_ids": [
+      449
+    ],
+    "raw_attackers": [
+      {
+        "attackerInstanceId": 449,
+        "mustAttack": false,
+        "legalDamageRecipients": [
+          {
+            "type": "Player",
+            "playerSystemSeatId": 1
+          }
+        ]
+      }
+    ]
+  }
+}
