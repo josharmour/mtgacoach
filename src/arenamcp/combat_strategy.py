@@ -2298,7 +2298,14 @@ def _refused_chumps(
     return refused
 
 
-def guarded_block_plan(attackers: list[dict], defenders: list[dict], life: int, *, max_options: int = 50_000, defender: LossState = LossState()):
+def guarded_block_plan(
+    attackers: list[dict],
+    defenders: list[dict],
+    life: int,
+    *,
+    max_options: int = 50_000,
+    defender: LossState = LossState(),
+):
     """Our best blocks against ``attackers`` (a crackback forecast) without chumps the chump guard refuses.
 
     2026-10-19 T10 (match c36db3a3): the free-attack rule held Slickshot
@@ -2316,8 +2323,12 @@ def guarded_block_plan(attackers: list[dict], defenders: list[dict], life: int, 
     return _memoized(key, lambda: _guarded_block_plan(attackers, defenders, life, max_options, defender))
 
 
-def _guarded_block_plan(attackers: list[dict], defenders: list[dict], life: int, max_options, defender=LossState()):
-    plan = combat_solver._search_blocks(attackers, defenders, life, max_options=max_options, defender=defender)
+def _guarded_block_plan(
+    attackers: list[dict], defenders: list[dict], life: int, max_options, defender=LossState()
+):
+    plan = combat_solver._search_blocks(
+        attackers, defenders, life, max_options=max_options, defender=defender
+    )
     if any(_resolve_attacker(a, []).poison_given or _resolve_attacker(a, []).cards_milled for a in attackers):
         # Life-only chump pruning cannot disprove a poison/mill-saving block.
         return plan

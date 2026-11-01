@@ -191,12 +191,20 @@ class Line:
         """'lethal on T15' / 'dead on T15' / 'survives (life 7, 5, 8; opponent at 17)'."""
         if self.cls == WIN:
             if self._leaf is not None and self._leaf.opp_life > 0:
-                cause = "poison" if self._leaf.opponent_loss.lost else ("failed draw" if self._leaf.opponent_loss.draw_loses else "combat-hit trigger")
+                cause = (
+                    "poison"
+                    if self._leaf.opponent_loss.lost
+                    else ("failed draw" if self._leaf.opponent_loss.draw_loses else "combat-hit trigger")
+                )
                 return f"win by {cause} on T{self.win_turn}"
             return f"lethal on T{self.win_turn}"
         if self.cls == DEAD:
             if self._leaf is not None and self._leaf.our_life > 0:
-                cause = "poison" if self._leaf.our_loss.lost else ("failed draw" if self._leaf.our_loss.draw_loses else "combat-hit trigger")
+                cause = (
+                    "poison"
+                    if self._leaf.our_loss.lost
+                    else ("failed draw" if self._leaf.our_loss.draw_loses else "combat-hit trigger")
+                )
                 return f"dead to {cause} on T{self.dead_turn}"
             return f"dead on T{self.dead_turn}"
         lives = ", ".join(str(life) for life in self.lives())
@@ -862,7 +870,8 @@ class _Search(Moves):
                 "rocks",
                 "returning",
                 "walkers",
-                "our_loss", "opponent_loss",
+                "our_loss",
+                "opponent_loss",
             )
             if any(getattr(x, field) != getattr(y, field) for field in equal):
                 return False

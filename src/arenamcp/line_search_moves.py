@@ -2647,7 +2647,9 @@ class Moves:
         """``_combat_life`` (lifelink gains too) memoised like ``combat``."""
         return self.combat_detail(attackers, blockers, life, first=first, tag=tag, defender=defender)[:5]
 
-    def combat_detail(self, attackers, blockers, life, *, first=False, tag="", defender=LossState(), defending_player=True):
+    def combat_detail(
+        self, attackers, blockers, life, *, first=False, tag="", defender=LossState(), defending_player=True
+    ):
         """``combat_life`` plus each attacker's damage through, as sorted (id, damage) pairs, and
         the ids of the blockers that blocked."""
         attackers = sorted(attackers, key=lambda b: b["instance_id"])
@@ -2687,8 +2689,15 @@ class Moves:
                 used,
                 remaining,
                 terminal,
-            ) = _combat_life(attackers, blockers, life, detail=True, with_loss=True,
-                             defender=context, defending_player=defending_player)
+            ) = _combat_life(
+                attackers,
+                blockers,
+                life,
+                detail=True,
+                with_loss=True,
+                defender=context,
+                defending_player=defending_player,
+            )
             found = self._memo[key] = CombatDetail((
                 damage, frozenset(dead_att), frozenset(dead_blk), gained, healed, tuple(sorted(through.items())),
                 frozenset(used), ll_gain, ll_heal,
@@ -3831,7 +3840,9 @@ class Moves:
                     _ru,
                     ll_gain,
                     ll_heal,
-                ) = (details := self.combat_detail(rest, spare, mid.opp_life, tag=tag, defender=opponent_loss))
+                ) = (
+                    details := self.combat_detail(rest, spare, mid.opp_life, tag=tag, defender=opponent_loss)
+                )
                 opponent_loss, opponent_terminal = details.loss, details.terminal
                 dead_ours, dead_theirs = dead_ours | w_dead_ours, dead_theirs | w_dead_theirs
                 gained, healed = gained + w_gained, healed + w_healed
@@ -3852,7 +3863,11 @@ class Moves:
                     _u,
                     ll_gain,
                     ll_heal,
-                ) = (details := self.combat_detail(fighting, blockers, mid.opp_life, tag=tag, defender=opponent_loss))
+                ) = (
+                    details := self.combat_detail(
+                        fighting, blockers, mid.opp_life, tag=tag, defender=opponent_loss
+                    )
+                )
                 opponent_loss, opponent_terminal = details.loss, details.terminal
                 swap = self._sneak_swap(mid, fighting, blockers, tag)
                 if swap is not None:  # a Sneak creature in for an unblocked attacker (#156)
@@ -3932,15 +3947,22 @@ class Moves:
         self._end_step(mid)
         carry.update(ours=tuple(mid.ours), hand=tuple(mid.hand))
         if opponent_loss.draw_loses:
-            return dataclasses.replace(node, **carry, history=node.history + (Step(**step),),
-                                       win_at=node.k + 1, win_turn=node.abs_turn + 1, overkill=0)
+            return dataclasses.replace(
+                node,
+                **carry,
+                history=node.history + (Step(**step),),
+                win_at=node.k + 1,
+                win_turn=node.abs_turn + 1,
+                overkill=0,
+            )
         opponent_loss = opponent_loss.draw()
         carry["opponent_loss"] = opponent_loss
         gains = self.their_gains(mid)
         hit = self.their_attack(
             life=mid.our_life,
             opp_life=mid.opp_life,
-            our_loss=node.our_loss, opponent_loss=opponent_loss,
+            our_loss=node.our_loss,
+            opponent_loss=opponent_loss,
             ours=mid.ours,
             theirs=mid.theirs,
             able=[b for b in mid.theirs if b["_can_attack"]],
@@ -3960,9 +3982,14 @@ class Moves:
         )
         carry["our_loss"] = hit["our_loss"]
         if not hit["dead"] and hit["our_loss"].draw_loses:
-            return dataclasses.replace(node, **{**carry, "our_life": hit["life"], "opp_life": hit["opp_life"]},
-                                       history=node.history + (Step(**step, life_after=hit["life"]),),
-                                       dead_at=node.attacks + 1, dead_turn=node.abs_turn + 2, overkill=0)
+            return dataclasses.replace(
+                node,
+                **{**carry, "our_life": hit["life"], "opp_life": hit["opp_life"]},
+                history=node.history + (Step(**step, life_after=hit["life"]),),
+                dead_at=node.attacks + 1,
+                dead_turn=node.abs_turn + 2,
+                overkill=0,
+            )
         if not hit["dead"]:
             carry["our_loss"] = hit["our_loss"].draw()
         after = Step(
@@ -4020,11 +4047,14 @@ class Moves:
         if not sneaks or not fighting:
             return None
         from arenamcp.combat_loss import player_hit
+
         # Sneak's old approximation swaps power after resolving blocks; it cannot
         # also reuse poison/mill triggers of the creature it returned to hand.
         if any(any(player_hit(a, max(0, a["power"]), 1)[1:]) for a in [*fighting, *(v.body for v in sneaks)]):
             return None
-        through = dict(self.combat_detail(fighting, blockers, mid.opp_life, tag=tag, defender=mid.node.opponent_loss)[5])
+        through = dict(
+            self.combat_detail(fighting, blockers, mid.opp_life, tag=tag, defender=mid.node.opponent_loss)[5]
+        )
         open_ = [a for a in fighting if a["power"] > 0 and through.get(a["instance_id"], 0) >= a["power"]]
         if not open_:
             return None
@@ -4388,7 +4418,16 @@ class Moves:
             if ids_of(attackers) not in seen:
                 seen.add(ids_of(attackers))
                 outcomes.append(
-                    self._policy(name, attackers, hand_left, *context, drain=drain, persistent=persistent, our_loss=our_loss, opponent_loss=opponent_loss)
+                    self._policy(
+                        name,
+                        attackers,
+                        hand_left,
+                        *context,
+                        drain=drain,
+                        persistent=persistent,
+                        our_loss=our_loss,
+                        opponent_loss=opponent_loss,
+                    )
                 )
         held = tuple(sorted(self.spells[v.spell].name for v in flash))
         lethal = [o for o in outcomes if o["dead"]]
@@ -4397,7 +4436,16 @@ class Moves:
             return {**worst, "held": held + worst["used"]}
         safe = [o for o in outcomes if not o["suicidal"]]
         if not safe and fixed is None and () not in seen:
-            none = self._policy("none", (), hand_left, *context, drain=drain, persistent=persistent, our_loss=our_loss, opponent_loss=opponent_loss)
+            none = self._policy(
+                "none",
+                (),
+                hand_left,
+                *context,
+                drain=drain,
+                persistent=persistent,
+                our_loss=our_loss,
+                opponent_loss=opponent_loss,
+            )
             outcomes.append(none)
             safe = [] if none["suicidal"] else [none]
         if safe:
@@ -4443,12 +4491,21 @@ class Moves:
         round_tag = tag + ("proxy" if boost else "")
         terminal = our_loss.lost
         last_details = None
+
         def resolve_round(a, b, left):
             nonlocal our_loss, terminal, last_details
-            details = self.combat_detail(a, b, left, first=index == 1, tag=round_tag + ("+atk" if annotated(fighting) else ""), defender=our_loss)
+            details = self.combat_detail(
+                a,
+                b,
+                left,
+                first=index == 1,
+                tag=round_tag + ("+atk" if annotated(fighting) else ""),
+                defender=our_loss,
+            )
             last_details = details
             our_loss, terminal = details.loss, terminal or details.terminal
             return details[:5]
+
         if annotated(fighting):
             # Their pumps, attack-trigger grants and extra combat (ledger #191, #193, #194): the
             # bodies change, so their own memo tag.
@@ -4540,7 +4597,11 @@ class Moves:
             else (0, set(), set(), 0, 0)
         )
         crack_net = crack_damage - crack_healed + self.pinged(ours_after, crack)
-        reply = self.combat_detail(fighting, crack_blockers, opp_life, tag=crack_tag, defender=opponent_loss) if crack else None
+        reply = (
+            self.combat_detail(fighting, crack_blockers, opp_life, tag=crack_tag, defender=opponent_loss)
+            if crack
+            else None
+        )
         suicidal = not our_loss.draw_loses and (
             ((bool(crack) or burn > 0) and crack_net + burn >= opp_life)
             or bool(reply and (reply.terminal or reply.loss.draw_loses))
@@ -4636,14 +4697,17 @@ class Moves:
             returning=tuple(returning),
             walkers=self.walkers0,
             persistent=tuple(persistent),
-            our_loss=model.our_loss or LossState(), opponent_loss=model.opponent_loss or LossState(),
+            our_loss=model.our_loss or LossState(),
+            opponent_loss=model.opponent_loss or LossState(),
         )
 
     def _draw_for_us(self, node: Node) -> Node:
         if node.terminal:
             return node
         if node.our_loss.lost or node.our_loss.draw_loses:
-            return dataclasses.replace(node, dead_at=max(1, node.attacks), dead_turn=node.abs_turn, overkill=0)
+            return dataclasses.replace(
+                node, dead_at=max(1, node.attacks), dead_turn=node.abs_turn, overkill=0
+            )
         return dataclasses.replace(node, our_loss=node.our_loss.draw())
 
     def roots(self) -> list[tuple[str, Node]]:
@@ -4729,7 +4793,8 @@ class Moves:
                 # Their drains this turn: still to come before their attack is declared (#133).
                 drain_now=fixed is None,
                 after_upkeep=fixed is None and after_upkeep,
-                our_loss=node.our_loss, opponent_loss=node.opponent_loss,
+                our_loss=node.our_loss,
+                opponent_loss=node.opponent_loss,
             )
             block = variant if fixed is not None else ""
             if hit["dead"]:

@@ -63,7 +63,10 @@ def test_search_names_alternate_win_and_loss_instead_of_lethal_damage():
 
 def test_assessment_names_failed_draw_without_recommending_lifegain():
     from arenamcp.board_assessment import assess
-    a = creature(1, text="Whenever this creature deals combat damage to a player, that player mills three cards.")
+
+    a = creature(
+        1, text="Whenever this creature deals combat damage to a player, that player mills three cards."
+    )
     assessment = assess(board(theirs=[a], library=3, active=2))
     assert any("LOSS BY FAILED DRAW ON T7" in flag for flag in assessment.flags)
     assert not any("DEAD NEXT ATTACK" in flag for flag in assessment.flags)
@@ -72,6 +75,7 @@ def test_assessment_names_failed_draw_without_recommending_lifegain():
 
 def test_upkeep_failed_draw_precedes_a_potential_poison_attack():
     from arenamcp.line_search import DEAD, WIN
+
     snapshot = board([creature(1, text="Toxic 10")], library=0)
     snapshot["turn"].update(phase="Phase_Beginning", step="Step_Upkeep")
     result = search(snapshot)

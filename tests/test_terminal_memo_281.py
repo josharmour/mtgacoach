@@ -25,9 +25,11 @@ def test_non_mill_combat_reuses_blocks_but_preserves_each_library():
 
 
 def test_mill_threshold_and_known_empty_library_stay_distinct():
-    work, attackers = moves(creature(1, text=(
-        "Whenever this creature deals combat damage to a player, that player mills three cards."
-    )))
+    work, attackers = moves(
+        creature(
+            1, text=("Whenever this creature deals combat damage to a player, that player mills three cards.")
+        )
+    )
     safe = work.combat_detail(attackers, [], 30, defender=LossState(0, 4))
     empty = work.combat_detail(attackers, [], 30, defender=LossState(0, 3))
     unknown = work.combat_detail(attackers, [], 30, defender=LossState())

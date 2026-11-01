@@ -649,8 +649,16 @@ def _combat(attackers: list[dict], blockers: list[dict], life: int) -> tuple[int
     return _combat_life(attackers, blockers, life)[:3]
 
 
-def _combat_life(attackers: list[dict], blockers: list[dict], life: int, *, detail: bool = False,
-                 defender=None, defending_player: bool = True, with_loss: bool = False) -> tuple:
+def _combat_life(
+    attackers: list[dict],
+    blockers: list[dict],
+    life: int,
+    *,
+    detail: bool = False,
+    defender=None,
+    defending_player: bool = True,
+    with_loss: bool = False,
+) -> tuple:
     """``_combat`` plus lifelink: (damage, dead attackers, dead blockers, attacker gain, defender gain).
 
     ``detail``: a sixth item, each attacker's damage through ({instance id: damage}), and a
@@ -693,7 +701,8 @@ def _combat_life(attackers: list[dict], blockers: list[dict], life: int, *, deta
             max(1, life),
             blocker_allowed_attackers=allowed,
             max_options=_MAX_BLOCK_OPTIONS,
-            defender=defender, defending_player=defending_player,
+            defender=defender,
+            defending_player=defending_player,
         )
         by_id = {b["instance_id"]: b for b in blockers}
         for blocker_id, attacker_id in (plan.assignments if plan else {}).items():
@@ -2151,12 +2160,16 @@ def _assess(state: dict) -> BoardAssessment | None:
     flags: list[str] = []
     leaf = getattr(best, "_leaf", None)
     alternate_loss = bool(
-        leaf is not None and leaf.dead_at is not None and leaf.our_life > 0
+        leaf is not None
+        and leaf.dead_at is not None
+        and leaf.our_life > 0
         and (leaf.our_loss.lost or leaf.our_loss.draw_loses)
     )
     if alternate_loss:
         cause = "POISON" if leaf.our_loss.lost else "FAILED DRAW"
-        flags.append(f"LOSS BY {cause} ON T{leaf.dead_turn} in the best modeled line; life gain does not stop it")
+        flags.append(
+            f"LOSS BY {cause} ON T{leaf.dead_turn} in the best modeled line; life gain does not stop it"
+        )
     if poison and poison.urgent:
         flags.append("POISON LOSS RISK — life total and combat-only survival lines cannot rule it out")
     # An assembled drain loop (Vito + Exquisite Blood, 2026-10-11) kills on the

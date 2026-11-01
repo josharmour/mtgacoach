@@ -1965,7 +1965,9 @@ class ActionPlanner(_ActionLegalityMixin):
         if not lethal and life - through > BLOCK_DANGER_LIFE:
             return
         allowed = blocker_options(context.get("raw_blockers") or [], context.get("blocker_options"))
-        survival = optimal_blocks(attackers, blockers, life, blocker_allowed_attackers=allowed or None, defender=loss_state(state))
+        survival = optimal_blocks(
+            attackers, blockers, life, blocker_allowed_attackers=allowed or None, defender=loss_state(state)
+        )
         if survival is None or not survival.assignments:
             return
         survival_through = (

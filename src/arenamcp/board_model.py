@@ -476,6 +476,7 @@ class BoardModel:
         if self.has_x_spells:
             notes.append("X spells are not scheduled")
         from arenamcp.combat_loss import player_hit
+
         if any(player_hit(card, 1, 1)[0] == 0 for card in self.battlefield):
             notes.append("infect damage to creatures and persistent -1/-1 counters are not modeled")
         for commander in self.commanders:
