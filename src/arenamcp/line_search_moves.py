@@ -2667,22 +2667,12 @@ class Moves:
         context = LossState(defender.poison) if library_irrelevant else defender
         from arenamcp.combat_protection import protection_key
 
-        key = (
-            tag,
-            ids_of(attackers),
-            ids_of(blockers),
-            max(1, life),
-            context,
-            defending_player,
-            tuple(protection_key(b) for b in (*attackers, *blockers)),
-        )
-        key += (
-            tuple(
-                (b["instance_id"], b.get("_counter_shift", 0))
-                for b in (*attackers, *blockers)
-                if b.get("_counter_shift")
-            ),
-        )
+        key = (tag, ids_of(attackers), ids_of(blockers), max(1, life), context, defending_player,
+               tuple(protection_key(b) for b in (*attackers, *blockers)))
+        key += (tuple((b["instance_id"], b.get("_counter_shift", 0))
+                      for b in (*attackers, *blockers) if b.get("_counter_shift")),)
+        key += (tuple((b["instance_id"], b.get("_combat_damage", 0), bool(b.get("_track_combat_damage")))
+                      for b in (*attackers, *blockers) if b.get("_combat_damage") or b.get("_track_combat_damage")),)
         if self._scale_base:  # a per-creature body's power follows the board, not its id (#157)
             key += (
                 tuple(
@@ -2721,11 +2711,9 @@ class Moves:
             found = self._memo[key] = CombatDetail((
                 damage, frozenset(dead_att), frozenset(dead_blk), gained, healed, tuple(sorted(through.items())),
                 frozenset(used), ll_gain, ll_heal,
-            ), remaining, terminal, raw_combat.counter_deltas)  # fmt: skip
+            ), remaining, terminal, raw_combat.counter_deltas, raw_combat.damage_deltas)  # fmt: skip
         if library_irrelevant:
-            return CombatDetail(
-                found, LossState(found.loss.poison, defender.library), found.terminal, found.counter_deltas
-            )
+            return CombatDetail(found, LossState(found.loss.poison, defender.library), found.terminal, found.counter_deltas, found.damage_deltas)
         return found
 
     def kills(self, reach: dict, body: dict, ours=(), *, attacking: bool = False, mana: int = 0) -> bool:
@@ -4573,8 +4561,7 @@ class Moves:
             last_details = details
             counter_deltas = add_deltas(counter_deltas, details.counter_deltas)
             our_loss, terminal = details.loss, terminal or details.terminal
-            return CombatDetail(details[:5], details.loss, details.terminal, details.counter_deltas)
-
+            return CombatDetail(details[:5], details.loss, details.terminal, details.counter_deltas, details.damage_deltas)
         if annotated(fighting):
             # Their pumps, attack-trigger grants and extra combat (ledger #191, #193, #194): the
             # bodies change, so their own memo tag.

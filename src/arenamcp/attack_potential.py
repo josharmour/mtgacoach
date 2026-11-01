@@ -828,13 +828,22 @@ def attack_round(
     gain, defender gain) with the attackers' pumps and grants, plus the extra combat it gets: its
     surviving attackers again (all of them untapped by the trigger, the source's vigilance aside)
     into the blockers left alive. Damage and gains add up; the dead sets are the union."""
-    from arenamcp.combat_infect import add_deltas, apply_deltas
+    from arenamcp.combat_infect import add_deltas, apply_deltas, apply_marked_damage
     from arenamcp.combat_loss import CombatDetail, LossState
 
     fighting = attack_bodies(attackers, declared=declared)
+    extra = extra_combats(attackers, declared=declared)
+    if extra is not None:
+        fighting = [{**b, "_track_combat_damage": True} for b in fighting]
     result = once(fighting, blockers, life)
     changes = getattr(result, "counter_deltas", {})
-    extra = extra_combats(attackers, declared=declared)
+    marked = getattr(result, "damage_deltas", {})
+
+    def survivors(cards, dead):
+        return apply_marked_damage(apply_deltas(
+            [b for b in cards if b.get("instance_id") not in dead], changes
+        ), marked)
+
     if extra is None or not fighting:
         return result
     if len(result) < 7:
@@ -842,38 +851,35 @@ def attack_round(
         left = life - damage + healed
         if left <= 0 or getattr(result, "terminal", False):
             return result
-        again = apply_deltas([b for b in fighting if b.get("instance_id") not in dead_att], changes)
+        again = survivors(fighting, dead_att)
         if not extra.untap_all:
             again = [b for b in again if has_combat_keyword(b, "vigilance")]
         if not again:
             return result
-        standing = apply_deltas([b for b in blockers if b.get("instance_id") not in dead_blk], changes)
+        standing = survivors(blockers, dead_blk)
         more = once(again, standing, left)
         damage2, dead_att2, dead_blk2, gain2, healed2 = more[:5]
-        return CombatDetail(
-            (
-                damage + damage2,
-                set(dead_att) | set(dead_att2),
-                set(dead_blk) | set(dead_blk2),
-                gain + gain2,
-                healed + healed2,
-            ),
-            getattr(more, "loss", getattr(result, "loss", LossState())),
-            getattr(more, "terminal", False),
-            add_deltas(changes, getattr(more, "counter_deltas", {})),
-        )
+        return CombatDetail((
+            damage + damage2,
+            set(dead_att) | set(dead_att2),
+            set(dead_blk) | set(dead_blk2),
+            gain + gain2,
+            healed + healed2,
+        ), getattr(more, "loss", getattr(result, "loss", LossState())),
+           getattr(more, "terminal", False), add_deltas(changes, getattr(more, "counter_deltas", {})),
+           add_deltas(marked, getattr(more, "damage_deltas", {})))
     # ``_combat_life``'s separated shape (#199(a)): the lifelink gains (indexes 5/6) compose
     # like the net gains; the extra combat's blockers are the survivors.
     damage, dead_att, dead_blk, gain, healed, ll_gain, ll_heal = result
     left = life - damage + healed
     if left <= 0 or getattr(result, "terminal", False):
         return result
-    again = apply_deltas([b for b in fighting if b.get("instance_id") not in dead_att], changes)
+    again = survivors(fighting, dead_att)
     if not extra.untap_all:
         again = [b for b in again if has_combat_keyword(b, "vigilance")]
     if not again:
         return result
-    standing = apply_deltas([b for b in blockers if b.get("instance_id") not in dead_blk], changes)
+    standing = survivors(blockers, dead_blk)
     (
         damage2,
         dead_att2,
@@ -883,17 +889,14 @@ def attack_round(
         ll_gain2,
         ll_heal2,
     ) = (more := once(again, standing, left))
-    return CombatDetail(
-        (
-            damage + damage2,
-            set(dead_att) | set(dead_att2),
-            set(dead_blk) | set(dead_blk2),
-            gain + gain2,
-            healed + healed2,
-            ll_gain + ll_gain2,
-            ll_heal + ll_heal2,
-        ),
-        getattr(more, "loss", getattr(result, "loss", LossState())),
-        getattr(more, "terminal", False),
-        add_deltas(changes, getattr(more, "counter_deltas", {})),
-    )
+    return CombatDetail((
+        damage + damage2,
+        set(dead_att) | set(dead_att2),
+        set(dead_blk) | set(dead_blk2),
+        gain + gain2,
+        healed + healed2,
+        ll_gain + ll_gain2,
+        ll_heal + ll_heal2,
+    ), getattr(more, "loss", getattr(result, "loss", LossState())),
+       getattr(more, "terminal", False), add_deltas(changes, getattr(more, "counter_deltas", {})),
+       add_deltas(marked, getattr(more, "damage_deltas", {})))

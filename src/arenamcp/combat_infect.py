@@ -52,7 +52,16 @@ def apply_deltas(cards, changes):
     return [counter_change(c, minus=changes.get(c.get("instance_id"), 0)) for c in cards]
 
 
-def resolve_infect(attacker, assigned):
+def apply_marked_damage(cards, changes):
+    """Carry actual ordinary damage only to another combat in the same turn."""
+    return [
+        {**c, "_combat_damage": c.get("_combat_damage", 0) + changes[c["instance_id"]]}
+        if changes.get(c.get("instance_id")) else c
+        for c in cards
+    ]
+
+
+def resolve_damage_steps(attacker, assigned):
     """Two simultaneous damage steps; counters change stats before the next step.
 
     Ordinary damage remains marked damage; infect changes toughness and can
@@ -64,7 +73,7 @@ def resolve_infect(attacker, assigned):
     out = CombatOutcome()
     cards = [attacker, *assigned]
     shrink = {id(c): 0 for c in cards}
-    marked = {id(c): 0 for c in cards}
+    marked = {id(c): int(c.get("_combat_damage") or 0) for c in cards}
     touched = set()
     dead = set()
     infect = {id(c): infect_source(c) for c in cards}
@@ -87,6 +96,9 @@ def resolve_infect(attacker, assigned):
                 out.counter_deltas[iid] = out.counter_deltas.get(iid, 0) + amount
         else:
             marked[id(target)] += amount
+            iid = target.get("instance_id")
+            if iid is not None:
+                out.damage_deltas[iid] = out.damage_deltas.get(iid, 0) + amount
         if _has(source, "deathtouch"):
             touched.add(id(target))
         return amount
@@ -102,7 +114,9 @@ def resolve_infect(attacker, assigned):
             dealt = 0
             targets = alive if trample else [b for b in alive if not prevents_damage(b, attacker)]
             for b in targets:
-                lethal = 1 if _has(attacker, "deathtouch") else max(0, stats(b)[1] - marked[id(b)])
+                lethal = max(0, stats(b)[1] - marked[id(b)])
+                if lethal and _has(attacker, "deathtouch"):
+                    lethal = 1
                 amount = min(left, lethal)
                 dealt += strike(attacker, b, amount, pending)
                 left -= amount

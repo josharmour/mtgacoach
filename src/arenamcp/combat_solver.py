@@ -68,6 +68,8 @@ def _card_key(c: dict) -> tuple:
         source_controller(c),
         protected_players(c),
         protection_key(c),
+        c.get("_combat_damage", 0),
+        bool(c.get("_track_combat_damage")),
     )
 
 
@@ -268,6 +270,7 @@ class CombatOutcome:
     life_gained: int = 0  # a lifelink attacker's damage dealt (to blockers and through)
     blocker_life_gained: int = 0  # actual damage dealt by lifelink blockers
     counter_deltas: dict[int, int] = field(default_factory=dict)
+    damage_deltas: dict[int, int] = field(default_factory=dict)
     first_strike_damage: int = 0
     first_strike_blocker_gain: int = 0
     combat_damage: int = 0  # damage dealt to the recipient before infect changes its result
@@ -298,7 +301,8 @@ def _damage_order(
         if _has(b, "indestructible") or (source is not None and prevents_damage(b, source))
     ]
     killable = [b for b in blockers if b not in unkillable]
-    lethal = {id(b): (1 if deathtouch else _pt(b)[1]) for b in killable}
+    lethal = {id(b): (min(1, max(0, _pt(b)[1] - b.get("_combat_damage", 0))) if deathtouch
+                      else max(0, _pt(b)[1] - b.get("_combat_damage", 0))) for b in killable}
     chosen: tuple[dict, ...] = ()
     if len(killable) <= 8:
         for size in range(len(killable), 0, -1):
@@ -381,10 +385,11 @@ def _resolve_attacker_damage(attacker: dict, assigned: list[dict]) -> CombatOutc
             out.damage_through += int(attacker["combat_hit_bonus"] or 0)
         return out
 
-    if infect_source(attacker) or any(infect_source(b) for b in assigned):
-        from arenamcp.combat_infect import resolve_infect
+    if (attacker.get("_track_combat_damage") or attacker.get("_combat_damage")
+            or infect_source(attacker) or any(b.get("_combat_damage") or infect_source(b) for b in assigned)):
+        from arenamcp.combat_infect import resolve_damage_steps
 
-        return resolve_infect(attacker, assigned)
+        return resolve_damage_steps(attacker, assigned)
     atk_dth = _has(attacker, "deathtouch")
     atk_trample = _has(attacker, "trample")
     atk_fs = _has(attacker, "first strike") or atk_ds

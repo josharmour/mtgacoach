@@ -716,12 +716,15 @@ def _combat_life(
     through: dict[int, int] = {}
     remaining, terminal = defender, False
     counter_deltas = {}
+    damage_deltas = {}
     first_damage = first_gain = 0
     for attacker in attackers:
         group = groups.get(attacker["instance_id"], [])
         outcome = _resolve_attacker(attacker, group, defending_player=defending_player)
         for identity, amount in outcome.counter_deltas.items():
             counter_deltas[identity] = counter_deltas.get(identity, 0) + amount
+        for identity, amount in outcome.damage_deltas.items():
+            damage_deltas[identity] = damage_deltas.get(identity, 0) + amount
         first_damage += outcome.first_strike_damage
         first_gain += outcome.first_strike_blocker_gain
         remaining = remaining.hit(outcome.poison_given, outcome.cards_milled)
@@ -755,23 +758,17 @@ def _combat_life(
             through,
             used,
         )
-        return CombatDetail(
-            result + (remaining, terminal) if with_loss else result, remaining, terminal, counter_deltas
-        )
-    return CombatDetail(
-        (
-            damage,
-            dead_attackers,
-            dead_blockers,
-            attacker_gain,
-            defender_gain,
-            attacker_lifelink,
-            defender_lifelink,
-        ),
-        remaining,
-        terminal,
-        counter_deltas,
-    )
+        return CombatDetail(result + (remaining, terminal) if with_loss else result,
+                            remaining, terminal, counter_deltas, damage_deltas)
+    return CombatDetail((
+        damage,
+        dead_attackers,
+        dead_blockers,
+        attacker_gain,
+        defender_gain,
+        attacker_lifelink,
+        defender_lifelink,
+    ), remaining, terminal, counter_deltas, damage_deltas)
 
 
 def _attack_round(attackers: list[dict], blockers: list[dict], life: int) -> tuple[int, set[int], set[int]]:

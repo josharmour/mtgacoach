@@ -205,7 +205,9 @@ def test_the_concede_check_counts_the_second_combat():
     assert estimate_loss(aurelia_t13()).reason == "not dead next attack"
     loss = estimate_loss(aurelia_t13(life=6))
     assert loss.facts["evasive_power"] == 6
-    assert loss.facts["defensive_life_after"] == 0
+    # The optional defensive margin is absent when the modeled line itself
+    # already preserves every point the most defensive block can save.
+    assert loss.facts.get("defensive_life_after", loss.facts["life_after"]) == 0
 
 
 # --- #194: attack-trigger team grants -------------------------------------------------------------
