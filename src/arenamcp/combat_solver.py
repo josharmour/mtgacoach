@@ -362,7 +362,227 @@ def _resolve_attacker(
     return out
 
 
+# --- Repeated-fight memo ------------------------------------------------------
+#
+# One line search resolves the same attacker/blocker fight thousands of times:
+# the block-plan walk scores every assignment, and each assignment re-resolves
+# fights that differ only in which other attackers were chosen. On the slow
+# real boards 9,955 resolutions collapse to 762 distinct fights (~13x). The
+# resolution is a pure function of the fields below, so memoize it by content.
+#
+# The cached value stores dead blockers as indices into ``assigned`` and the
+# delta dicts as item tuples: callers get fresh objects and the current card
+# dicts, so later scoring (swing_of, material) still reads the live bodies.
+
+_RESOLVE_CACHE: OrderedDict[tuple, _FightSnapshot] = OrderedDict()
+_RESOLVE_LOCK = threading.Lock()
+_RESOLVE_CACHE_SIZE = 4096
+
+
+@dataclass(frozen=True)
+class _FightSnapshot:
+    damage_through: int
+    attacker_died: bool
+    dead_indices: tuple[int, ...]
+    life_gained: int
+    blocker_life_gained: int
+    counter_deltas: tuple[tuple[int, int], ...]
+    damage_deltas: tuple[tuple[int, int], ...]
+    first_strike_damage: int
+    first_strike_blocker_gain: int
+    combat_damage: int
+    player_hits: int
+    poison_given: int
+    cards_milled: int
+    player_loses: bool
+
+
+def _tuple_field(obj: dict, field: str) -> tuple | None:
+    value = obj.get(field)
+    return None if value is None else tuple(value)
+
+
+def _counters_key(obj: dict) -> tuple | None:
+    """Hashable counter state, or ``None`` when the memo cannot key it.
+
+    ``is_creature_modified`` rejects bool counters, so True and 1 are not
+    interchangeable even though Python considers them equal keys. Counter
+    values the resolver ignores (a list, say) are not hashable; rather than
+    inventing a semantic for them, the caller bypasses the memo and resolves
+    exactly as it did before the cache existed.
+    """
+    counters = obj.get("counters")
+    if isinstance(counters, dict):
+        parts = []
+        for kind, amount in counters.items():
+            if not isinstance(amount, (int, float, str)):
+                return None
+            parts.append((str(kind), type(amount).__name__, amount))
+        return tuple(sorted(parts))
+    if isinstance(counters, (list, tuple)):
+        return tuple(str(counter) for counter in counters)
+    return ()
+
+
+def _colors_key(card: dict) -> tuple | None:
+    """The first color field ``source_colors`` would read, card before ``_card``."""
+    raw = card.get("_card")
+    inner = raw if isinstance(raw, dict) else {}
+    for name in ("_source_colors", "modified_colors", "colors"):
+        for obj in (card, inner):
+            value = obj.get(name)
+            if value is not None:
+                return tuple(str(color) for color in value)
+    return None
+
+
+def _players_key(card: dict) -> tuple | None:
+    raw = card.get("_card")
+    value = card.get("protection_from_players")
+    if value is None and isinstance(raw, dict):
+        value = raw.get("protection_from_players")
+    return None if not value else tuple(str(player) for player in value)
+
+
+def _controller_key(card: dict) -> object:
+    raw = card.get("_card")
+    inner = raw if isinstance(raw, dict) else {}
+    for obj in (card, inner):
+        for name in ("_source_controller_seat_id", "controller_seat_id"):
+            value = obj.get(name)
+            if value:
+                return value
+    return None
+
+
+def _fight_key(card: dict) -> tuple | None:
+    """Every field ``_resolve_attacker_damage`` reads from one body.
+
+    Plain field reads only: this runs on every resolution, so it must stay
+    cheaper than the resolution it replaces.
+    """
+    raw = card.get("_card")
+    # ``combat_protection._raw`` is ``card.get("_card") or card``: an empty
+    # ``_card`` falls back to the top-level body, so its fields must be keyed
+    # from the top level too.
+    inner = raw if isinstance(raw, dict) and raw and raw is not card else None
+    counters = _counters_key(card)
+    if counters is None:
+        return None
+    parts = [
+        card.get("instance_id"),
+        card.get("name"),
+        card.get("power"),
+        card.get("toughness"),
+        card.get("oracle_text"),
+        _tuple_field(card, "keywords"),
+        _tuple_field(card, "ability_grp_ids"),
+        _tuple_field(card, "granted_abilities"),
+        bool(card.get("_protection_future")),
+        _colors_key(card),
+        bool(card.get("damage_cant_be_prevented")),
+        _players_key(card),
+        _controller_key(card),
+        counters,
+        card.get("_combat_damage", 0),
+        bool(card.get("_track_combat_damage")),
+        card.get("combat_hit_bonus"),
+        card.get("_counter_shift", 0),
+    ]
+    if inner is not None:
+        inner_counters = _counters_key(inner)
+        if inner_counters is None:
+            return None
+        parts.extend(
+            (
+                inner.get("oracle_text"),
+                inner.get("power"),
+                inner.get("toughness"),
+                _tuple_field(inner, "keywords"),
+                _tuple_field(inner, "ability_grp_ids"),
+                _tuple_field(inner, "granted_abilities"),
+                _tuple_field(inner, "removed_abilities"),
+                inner_counters,
+                bool(inner.get("damage_cant_be_prevented")),
+                inner.get("_combat_damage", 0),
+            )
+        )
+    else:
+        parts.append(_tuple_field(card, "removed_abilities"))
+    return tuple(parts)
+
+
+def _fight_snapshot(out: CombatOutcome, assigned: list[dict]) -> _FightSnapshot:
+    dead_indices = []
+    for dead in out.blockers_died:
+        for index, body in enumerate(assigned):
+            if body is dead:
+                dead_indices.append(index)
+                break
+    return _FightSnapshot(
+        damage_through=out.damage_through,
+        attacker_died=out.attacker_died,
+        dead_indices=tuple(dead_indices),
+        life_gained=out.life_gained,
+        blocker_life_gained=out.blocker_life_gained,
+        counter_deltas=tuple(out.counter_deltas.items()),
+        damage_deltas=tuple(out.damage_deltas.items()),
+        first_strike_damage=out.first_strike_damage,
+        first_strike_blocker_gain=out.first_strike_blocker_gain,
+        combat_damage=out.combat_damage,
+        player_hits=out.player_hits,
+        poison_given=out.poison_given,
+        cards_milled=out.cards_milled,
+        player_loses=out.player_loses,
+    )
+
+
+def _outcome_from_snapshot(snapshot: _FightSnapshot, assigned: list[dict]) -> CombatOutcome:
+    return CombatOutcome(
+        damage_through=snapshot.damage_through,
+        attacker_died=snapshot.attacker_died,
+        blockers_died=[assigned[index] for index in snapshot.dead_indices],
+        life_gained=snapshot.life_gained,
+        blocker_life_gained=snapshot.blocker_life_gained,
+        counter_deltas=dict(snapshot.counter_deltas),
+        damage_deltas=dict(snapshot.damage_deltas),
+        first_strike_damage=snapshot.first_strike_damage,
+        first_strike_blocker_gain=snapshot.first_strike_blocker_gain,
+        combat_damage=snapshot.combat_damage,
+        player_hits=snapshot.player_hits,
+        poison_given=snapshot.poison_given,
+        cards_milled=snapshot.cards_milled,
+        player_loses=snapshot.player_loses,
+    )
+
+
 def _resolve_attacker_damage(attacker: dict, assigned: list[dict]) -> CombatOutcome:
+    if not assigned:
+        # Unblocked damage is the cheap fast path and has no blocker-dependent
+        # work to reuse; keying it would cost more than resolving it.
+        return _resolve_attacker_damage_uncached(attacker, assigned)
+    attacker_key = _fight_key(attacker)
+    if attacker_key is None:
+        return _resolve_attacker_damage_uncached(attacker, assigned)
+    blocker_keys = tuple(_fight_key(body) for body in assigned)
+    if None in blocker_keys:
+        return _resolve_attacker_damage_uncached(attacker, assigned)
+    key = (attacker_key, blocker_keys)
+    with _RESOLVE_LOCK:
+        snapshot = _RESOLVE_CACHE.get(key)
+        if snapshot is not None:
+            _RESOLVE_CACHE.move_to_end(key)
+    if snapshot is not None:
+        return _outcome_from_snapshot(snapshot, assigned)
+    out = _resolve_attacker_damage_uncached(attacker, assigned)
+    with _RESOLVE_LOCK:
+        _RESOLVE_CACHE[key] = _fight_snapshot(out, assigned)
+        while len(_RESOLVE_CACHE) > _RESOLVE_CACHE_SIZE:
+            _RESOLVE_CACHE.popitem(last=False)
+    return out
+
+
+def _resolve_attacker_damage_uncached(attacker: dict, assigned: list[dict]) -> CombatOutcome:
     """Resolve one attacker against its assigned blockers.
 
     Simplified damage model:

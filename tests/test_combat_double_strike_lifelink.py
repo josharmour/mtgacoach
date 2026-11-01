@@ -50,6 +50,80 @@ def test_first_strike_blockers_strike_simultaneously_with_a_first_strike_attacke
     assert outcome.attacker_died and outcome.blockers_died == [duelist]
 
 
+def test_fight_memo_distinguishes_bool_counters_from_one():
+    """``is_creature_modified`` rejects bool counters, so True and 1 differ.
+
+    The fight memo keys counters by value; Python treats ``True == 1``, so a
+    bool counter must not alias an integer counter that turns on double strike.
+    A blocker keeps this on the memoized path: unblocked fights bypass the memo.
+    """
+    from arenamcp.combat_solver import (
+        _RESOLVE_CACHE,
+        _resolve_attacker_damage,
+        _resolve_attacker_damage_uncached,
+    )
+
+    attacker = {
+        "instance_id": 811,
+        "name": "Conditional",
+        "type_line": "Creature — Test",
+        "power": 3,
+        "toughness": 3,
+        "oracle_text": "This creature has double strike as long as it's modified.",
+        "counters": {"test": True},
+    }
+    blocker = {
+        "instance_id": 812,
+        "name": "Wall",
+        "type_line": "Creature — Test",
+        "power": 1,
+        "toughness": 4,
+    }
+    _RESOLVE_CACHE.clear()
+    first = _resolve_attacker_damage(attacker, [blocker])
+    assert _RESOLVE_CACHE, "blocked fight must exercise the memo"
+    # Bool counter: not modified, no double strike; three damage leaves a 1/4.
+    assert first.blockers_died == [] and first.damage_through == 0
+    attacker["counters"]["test"] = 1
+    second = _resolve_attacker_damage(attacker, [blocker])
+    uncached = _resolve_attacker_damage_uncached(attacker, [blocker])
+    # Integer counter: modified, double strike kills the 1/4 before it strikes back.
+    assert second.blockers_died == uncached.blockers_died == [blocker]
+    assert second.damage_through == uncached.damage_through == 0
+
+
+def test_fight_memo_bypasses_unhashable_counter_values():
+    """A list counter value is ignored by the resolver, not a memo key error."""
+    from arenamcp.combat_solver import (
+        _RESOLVE_CACHE,
+        _resolve_attacker_damage,
+        _resolve_attacker_damage_uncached,
+    )
+
+    attacker = {
+        "instance_id": 813,
+        "name": "Conditional",
+        "type_line": "Creature — Test",
+        "power": 3,
+        "toughness": 3,
+        "oracle_text": "This creature has double strike as long as it's modified.",
+        "counters": {"test": []},
+    }
+    blocker = {
+        "instance_id": 814,
+        "name": "Wall",
+        "type_line": "Creature — Test",
+        "power": 1,
+        "toughness": 4,
+    }
+    _RESOLVE_CACHE.clear()
+    cached = _resolve_attacker_damage(attacker, [blocker])
+    assert not _RESOLVE_CACHE, "unkeyable counters must bypass the memo"
+    uncached = _resolve_attacker_damage_uncached(attacker, [blocker])
+    assert cached.blockers_died == uncached.blockers_died == []
+    assert cached.damage_through == uncached.damage_through == 0
+
+
 def test_lifelink_damage_is_life_for_the_crackback():
     # Unblocked Dina gains 6: at 20 life a 24-power crackback is survivable (26).
     attackers_next_turn = [_creature(900 + i, f"Giant {i}", 8, 8) for i in range(3)]

@@ -70,6 +70,36 @@ def test_multiple_printed_colors_and_removed_abilities():
     assert not can_be_blocked_by(card, body(2, colors=["U"]))
 
 
+def test_formatted_oracle_text_still_finds_protection():
+    """``_printed`` strips markup before matching; a raw-text fast path must not."""
+    assert protection_qualities({"oracle_text": "Pro<b>tection</b> from red"}) == {"R"}
+    assert protection_qualities({"oracle_text": "<i>Flying</i>"}) == frozenset()
+
+
+def test_fight_memo_keys_top_level_fields_when_card_is_empty():
+    """An empty ``_card`` falls back to the top-level body (combat_protection._raw).
+
+    The fight memo must key the same fields the resolver reads: with
+    ``_card={}`` the resolver reads top-level ``removed_abilities``, so a
+    cached fight may not survive that field changing.
+    """
+    from arenamcp.combat_solver import (
+        _RESOLVE_CACHE,
+        _resolve_attacker_damage,
+        _resolve_attacker_damage_uncached,
+    )
+
+    attacker = body(801, 4, 4, colors=["R"])
+    blocker = body(802, 2, 2, "Protection from red", keywords=[], _card={})
+    _RESOLVE_CACHE.clear()
+    first = _resolve_attacker_damage(attacker, [blocker])
+    assert not first.blockers_died
+    blocker["removed_abilities"] = ["protection"]
+    second = _resolve_attacker_damage(attacker, [blocker])
+    uncached = _resolve_attacker_damage_uncached(attacker, [blocker])
+    assert len(second.blockers_died) == len(uncached.blockers_died) == 1
+
+
 def test_current_source_colors_override_printed_and_color_identity():
     card = body(1, text="Protection from white")
     assert protected_from_source(card, body(2, colors=["R", "W"]))
