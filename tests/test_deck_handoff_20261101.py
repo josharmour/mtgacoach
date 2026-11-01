@@ -51,7 +51,7 @@ def test_hosted_discovery_and_compile_do_not_burn_budget_in_hidden_reasoning(mod
     discovery = _playbook_call_options(backend, True)
     compile = _playbook_call_options(backend, False)
     assert discovery == dict(
-        enable_thinking=False, reasoning_effort="none", max_tokens=4096, request_timeout_s=60.0
+        enable_thinking=False, reasoning_effort="none", max_tokens=1536, request_timeout_s=60.0
     )
     assert compile["enable_thinking"] is False and compile["reasoning_effort"] == "none"
     assert compile["max_tokens"] == 12288  # full audited schema retained
@@ -75,12 +75,13 @@ def test_lane_timeout_does_not_start_unadmitted_model_call(monkeypatch):
     lane.release(owner)
 
 
-def test_hosted_two_pass_pipeline_still_publishes_only_audited_playbook(monkeypatch, tmp_path):
+@pytest.mark.parametrize("kind", ["replay", "preserve", "spells"])
+def test_hosted_two_pass_pipeline_still_publishes_only_audited_playbook(monkeypatch, tmp_path, kind):
     import json
 
     from tests.deck_fakes import deck_case
 
-    state, catalog, response = deck_case()
+    state, catalog, response = deck_case(kind)
     monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, epoch: catalog[gid])
     backend = Mock(model="current")
     backend.complete.side_effect = [
@@ -93,7 +94,7 @@ def test_hosted_two_pass_pipeline_still_publishes_only_audited_playbook(monkeypa
     assert playbook.data["mechanisms"] == response["mechanisms"]
     calls = backend.complete.call_args_list
     assert len(calls) == 2
-    assert calls[0].kwargs["max_tokens"] == 4096 and calls[0].kwargs["request_timeout_s"] == 60
+    assert calls[0].kwargs["max_tokens"] == 1536 and calls[0].kwargs["request_timeout_s"] == 60
     assert calls[1].kwargs["max_tokens"] == 12288 and "response_format" in calls[1].kwargs
     assert all(c.kwargs["reasoning_effort"] == "none" for c in calls)
     assert "Concise mechanisms grounded" in calls[1].args[1]
@@ -138,3 +139,17 @@ def test_retry_backoff_starts_after_failure_not_before_long_request(monkeypatch,
     assert backend.complete.call_count == 1
     clock[0] += 31
     assert runtime._maybe_analyze_deck(state)
+
+
+def test_hosted_brief_keeps_rules_and_conditional_tradeoffs_without_exhaustive_essay():
+    from arenamcp.coach import _playbook_discovery_prompt
+    from arenamcp.deck_strategy import DECK_DISCOVERY_PROMPT
+
+    prompt = _playbook_discovery_prompt(SimpleNamespace(model="current"))
+    assert "at most 600 tokens" in prompt
+    assert "every possible pairing" in prompt
+    assert "COMMANDER ACCESS RULE" in prompt
+    assert "RESOURCE CONSERVATION EXAMPLE" in prompt
+    assert "surviving resources" in prompt
+    assert "Keep under 4000 tokens" not in prompt
+    assert _playbook_discovery_prompt(SimpleNamespace(model="glm-5.3-flash")) == DECK_DISCOVERY_PROMPT

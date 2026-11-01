@@ -219,3 +219,38 @@ def test_a_request_that_never_answers_still_degrades_health(monkeypatch):
     with pytest.raises(proxy.BackendError):
         be.complete("s", "u", request_timeout_s=12, raise_on_error=True)
     assert BackendHealth.instance().state is HealthState.DEGRADED
+
+
+def test_failed_stream_retains_metadata_without_logging_partial_content(monkeypatch, caplog):
+    clock = FakeClock()
+    first = chunk(reasoning="private reasoning")
+    first.id = "chatcmpl-fixture-123"
+    stream = FakeStream(
+        clock,
+        [
+            (1, first),
+            (1, chunk("private partial answer")),
+            (11, chunk("late")),
+        ],
+    )
+    be, _, _ = backend(monkeypatch, clock, [stream])
+    with caplog.at_level("DEBUG", logger=proxy.__name__):
+        with pytest.raises(proxy.BackendError):
+            be.complete("private prompt", "private state", request_timeout_s=12, raise_on_error=True)
+    metrics = be.last_request_metrics
+    assert metrics["status"] == "error"
+    assert metrics["streamed"] is True
+    assert metrics["response_id"] == "chatcmpl-fixture-123"
+    assert metrics["served_model"] == "glm-5.3-flash-local"
+    assert metrics["ttft_ms"] == 1000
+    assert metrics["first_content_ms"] == 2000
+    assert metrics["stream_content_chars"] == len("private partial answer")
+    assert metrics["stream_reasoning_chars"] == len("private reasoning")
+    assert metrics["request_started_unix_s"] > 0
+    assert metrics["first_reasoning_ms"] == 1000
+    assert metrics["stream_chunks"] == 2
+    assert metrics["lane_wait_ms"] == 0
+    assert metrics["client_setup_ms"] == 0
+    assert stream.closed
+    for private in ("private prompt", "private state", "private reasoning", "private partial answer"):
+        assert private not in caplog.text

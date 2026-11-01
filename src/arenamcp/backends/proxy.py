@@ -11,7 +11,7 @@ import socket
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from arenamcp.backend_health import BACKEND_ERROR_PREFIX, BackendHealth
 from arenamcp.backends.health import (
@@ -930,6 +930,17 @@ class _CallContext:
     first_token_timeout_s: float | None = None
     priority: int | None = None
     first_token_at: float | None = None
+    started_unix_s: float = field(default_factory=time.time)
+    first_content_at: float | None = None
+    first_reasoning_at: float | None = None
+    stream_chunks: int = 0
+    client_setup_ms: float = 0.0
+    lane_wait_ms: float = 0.0
+    stream_started: bool = False
+    served_model: str | None = None
+    response_id: str | None = None
+    content_chars: int = 0
+    reasoning_chars: int = 0
     # Background work at low priority can be preempted by vLLM and resume
     # later: no stall limit for it (its budget still applies).
     background: bool = False
@@ -1357,7 +1368,9 @@ class ProxyBackend:
                 )
             admitted_failures = breaker.failure_seq()
 
+            client_setup_started = time.perf_counter()
             client = self._get_client()
+            call.client_setup_ms = (time.perf_counter() - client_setup_started) * 1000
             if self.model.lower() == "current" or any(
                 name in self.model.lower() for name in ("deepseek", "dsv4")
             ):
@@ -1391,7 +1404,9 @@ class ProxyBackend:
                 ).start()
 
             if is_background and (background_lane_enabled() or is_commentary):
+                lane_wait_started = time.perf_counter()
                 outcome = _BACKGROUND_LANE.acquire(call.handle, _lane_wait_s(lane_wait_s, deadline))
+                call.lane_wait_ms = (time.perf_counter() - lane_wait_started) * 1000
                 if outcome != "acquired":
                     return self._finish_cancelled(
                         outcome,
@@ -1817,6 +1832,10 @@ class ProxyBackend:
         first_token_timeout_s), "cancelled", "dropped" (background lane
         busy), "circuit_open" or "backend_down" (skipped, nothing sent).
         """
+        if call is not None:
+            streamed = streamed or call.stream_started
+            served_model = served_model or call.served_model
+            first_content_at = first_content_at or call.first_content_at
         cached = _token_count(_field(_field(usage, "prompt_tokens_details"), "cached_tokens"))
         if cached is None:
             cached = _token_count(_field(usage, "cache_read_input_tokens"))
@@ -1827,6 +1846,16 @@ class ProxyBackend:
             max_tokens = params.get("max_tokens") or params.get("max_completion_tokens")
         metrics = {
             "model": self.model,
+            "request_started_unix_s": call.started_unix_s if call is not None else None,
+            "response_id": call.response_id if call is not None else None,
+            "client_setup_ms": round(call.client_setup_ms, 1) if call is not None else None,
+            "lane_wait_ms": round(call.lane_wait_ms, 1) if call is not None else None,
+            "stream_chunks": call.stream_chunks if call is not None else None,
+            "first_reasoning_ms": round((call.first_reasoning_at - request_started) * 1000, 1)
+            if call is not None and call.first_reasoning_at is not None
+            else None,
+            "stream_content_chars": call.content_chars if call is not None else None,
+            "stream_reasoning_chars": call.reasoning_chars if call is not None else None,
             "served_model": served_model,
             "status": status,
             "streamed": streamed,
@@ -1897,6 +1926,14 @@ class ProxyBackend:
         ftt = call.first_token_timeout_s if call is not None else None
         if call is not None:
             call.first_token_at = None
+            call.first_content_at = None
+            call.first_reasoning_at = None
+            call.stream_chunks = 0
+            call.stream_started = False
+            call.served_model = None
+            call.response_id = None
+            call.content_chars = 0
+            call.reasoning_chars = 0
 
         def check_cancelled():
             reason = handle.cancelled() if handle is not None else None
@@ -1939,6 +1976,8 @@ class ProxyBackend:
                 self._stream_usage_supported = False
                 logger.info("[PROXY] Endpoint rejects streamed usage; retaining streaming without usage")
                 stream = request(stream=True)
+            if call is not None:
+                call.stream_started = True
             if handle is not None:
                 handle.attach_stream(stream)
             chunks: list[str] = []
@@ -1957,6 +1996,12 @@ class ProxyBackend:
                     raise FirstTokenTimeout(f"no first token within {ftt:.1f}s")
                 if served_model is None and getattr(chunk, "model", None):
                     served_model = chunk.model
+                if call is not None:
+                    call.stream_chunks += 1
+                    call.served_model = served_model
+                    response_id = getattr(chunk, "id", None)
+                    if isinstance(response_id, str):
+                        call.response_id = response_id
                 if getattr(chunk, "usage", None) is not None:
                     usage = chunk.usage
                 if not chunk.choices:
@@ -1975,10 +2020,18 @@ class ProxyBackend:
                 token = getattr(delta, "content", None)
                 if isinstance(reasoning_token, str) and reasoning_token:
                     reasoning_chunks.append(reasoning_token)
+                    if call is not None:
+                        call.reasoning_chars += len(reasoning_token)
+                        if call.first_reasoning_at is None:
+                            call.first_reasoning_at = now
                     if first_token_at is None:
                         first_token_at = now
                 if isinstance(token, str) and token:
                     chunks.append(token)
+                    if call is not None:
+                        call.content_chars += len(token)
+                        if call.first_content_at is None:
+                            call.first_content_at = now
                     if first_token_at is None:
                         first_token_at = now
                     if first_content_at is None:

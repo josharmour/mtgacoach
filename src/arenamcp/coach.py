@@ -124,8 +124,29 @@ _PLAYBOOK_COMPILE_MAX_TOKENS = 12288
 # exhausted its 120s cap without usable discovery notes. Keep analysis in the visible notes,
 # then retain the full audited JSON budget; do not change legacy GLM policy.
 _HOSTED_PLAYBOOK_SETTINGS = {"enable_thinking": False, "reasoning_effort": "none"}
-_HOSTED_DISCOVERY_MAX_TOKENS = 4096
+_HOSTED_DISCOVERY_MAX_TOKENS = 1536
 _HOSTED_DISCOVERY_TIMEOUT_S = 60.0
+
+
+_HOSTED_DISCOVERY_BRIEF = (
+    "Write only a compact handoff to the audited JSON pass, at most 600 tokens. "
+    "Consider every supplied card but report only the 2-4 mechanisms that most affect winning, "
+    "with their source IDs, costs, prerequisites and failure conditions. Include each designated "
+    "commander's preserve-versus-recover tradeoff and resource arithmetic. Give the main win plan, "
+    "fallback plan and key sequencing constraint. Fewer mechanisms are appropriate for a simple deck. "
+    "Do not restate Oracle text, the instructions or every possible pairing. Missing information "
+    "stays unknown. The next pass has all original rules and produces the complete playbook."
+)
+
+
+def _playbook_discovery_prompt(backend):
+    from arenamcp.deck_strategy import DECK_DISCOVERY_PROMPT
+
+    if _playbook_call_options(backend, True)["reasoning_effort"] == "none":
+        # Keep all rules/tradeoff checks; bound the visible handoff rather than
+        # requesting a 4000-token essay before the independently audited pass.
+        return DECK_DISCOVERY_PROMPT.split("Write concise analytical notes", 1)[0] + _HOSTED_DISCOVERY_BRIEF
+    return DECK_DISCOVERY_PROMPT
 
 
 def _playbook_call_options(backend, discovery):
@@ -158,6 +179,7 @@ def _playbook_prompt_fingerprint() -> str:
             json.dumps(_PLAYBOOK_PASS_SETTINGS, sort_keys=True),
             json.dumps(_HOSTED_PLAYBOOK_SETTINGS, sort_keys=True),
             str(_HOSTED_DISCOVERY_MAX_TOKENS),
+            _HOSTED_DISCOVERY_BRIEF,
         )
     )
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
@@ -844,7 +866,6 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
     ):
         """The two model calls: discovery notes, then the audited JSON playbook."""
         from arenamcp.deck_strategy import (
-            DECK_DISCOVERY_PROMPT,
             DeckPlaybook,
             analysis_reference,
             commander_ids,
@@ -935,7 +956,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
             if progress:
                 progress("discovery")
-            notes = complete(DECK_DISCOVERY_PROMPT, user_message, discovery=True)
+            notes = complete(_playbook_discovery_prompt(be), user_message, discovery=True)
             user_message += _PLAYBOOK_AUDIT_INSTRUCTIONS + notes
             playbook = None
             for attempt in range(2):
