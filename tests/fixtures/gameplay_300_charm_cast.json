@@ -1,0 +1,72 @@
+{
+  "pending_decision": {
+    "request_id": [
+      135,
+      178
+    ],
+    "request_type": "ActionsAvailable",
+    "options": [
+      {
+        "option_id": "idx:1",
+        "label": "Cast Archdruid's Charm",
+        "payable": true,
+        "meta": {
+          "actionType": "ActionType_Cast",
+          "grpId": 89065,
+          "instanceId": 343,
+          "abilityGrpId": 0,
+          "manaCost": [
+            {
+              "color": "[ \"Green\" ]",
+              "count": 3
+            }
+          ],
+          "autoTapActions": [
+            {
+              "instanceId": 541,
+              "manaId": 0
+            },
+            {
+              "instanceId": 558,
+              "manaId": 0
+            },
+            {
+              "instanceId": 652,
+              "manaId": 0
+            }
+          ],
+          "hasAutoTap": true
+        }
+      },
+      {
+        "option_id": "pass",
+        "label": "Pass",
+        "payable": null,
+        "meta": {}
+      }
+    ],
+    "min_select": 1,
+    "max_select": 1,
+    "can_pass": true,
+    "can_cancel": false,
+    "source_label": "",
+    "min_weight": null,
+    "max_weight": null,
+    "slots": []
+  },
+  "chosen_options": [
+    "idx:1"
+  ],
+  "reasoning": "Charm's land mode fetches a land to hand/board for ramp toward Notary Hobbits and big threats, and its fight mode can kill Kinnan; it's the only payable play and advances our mana engine.",
+  "card": {
+    "instance_id": 343,
+    "grp_id": 89065,
+    "name": "Archdruid's Charm",
+    "oracle_text": "Choose one \u2014 \n\u2022<indent=4%><indent=4%>Search your library for a creature or land card and reveal it. Put it onto the battlefield tapped if it's a land card. Otherwise, put it into your hand. Then shuffle. </indent></indent>\n\u2022<indent=4%><indent=4%>Put a +1/+1 counter on target creature you control. It deals damage equal to its power to target creature you don't control. </indent></indent>\n\u2022<indent=4%><indent=4%>Exile target artifact or enchantment.</indent></indent>",
+    "type_line": "Instant",
+    "mana_cost": "{G}{G}{G}",
+    "owner_seat_id": 2,
+    "controller_seat_id": 2
+  },
+  "provenance": "Exact request135/178 and rationale from task-2/monitoring/3d69785b-charm-candidate.json. Hand card reconstructed with offered instance343/grp89065 and rules from saved greaves_20261031.json same grp89065; original enriched cast snapshot not retained here."
+}

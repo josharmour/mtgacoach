@@ -441,11 +441,107 @@ def correct_mode_reasoning(text: str, decision: Any) -> tuple[str, list[str]]:
     return corrected, [fact]
 
 
+def correct_cast_mode_reasoning(
+    text: str, state: dict, decision: Any, chosen: list[str]
+) -> tuple[str, list[str]]:
+    """Correct a cast's potential counter/bite mode, never assert it was selected.
+
+    #300 request135/178: use only the selected cast's current hand-instance
+    rules. Missing/mismatched text, actual fights and ambiguous references
+    abstain. This describes rules, not kill feasibility or tactical value.
+    """
+    if getattr(decision, "request_type", "") != "ActionsAvailable" or len(chosen) != 1:
+        return text, []
+    options = [o for o in decision.options if o.option_id == chosen[0]]
+    if len(options) != 1:
+        return text, []
+    meta = options[0].meta or {}
+    iid = _int(meta.get("instanceId"))
+    if meta.get("actionType") != "ActionType_Cast" or not iid:
+        return text, []
+    cards = [c for c in state.get("hand") or [] if isinstance(c, dict) and _int(c.get("instance_id")) == iid]
+    if len(cards) != 1:
+        return text, []
+    card = cards[0]
+    if meta.get("grpId") is not None and _int(meta["grpId"]) != _int(card.get("grp_id")):
+        return text, []
+    name = str(card.get("name") or "").strip()
+    rules = str(card.get("oracle_text") or "").replace("’", "'")
+    modes = [" ".join(b.split()) for b in bullets(rules)]
+    clean_rules = re.sub(r"<[^>]*>", "", rules)
+    segments = clean_rules.split("•")
+    if not re.fullmatch(r"\s*choose one\s*[—–-]\s*", segments[0], re.I):
+        return text, []
+    if [" ".join(segment.split()) for segment in segments[1:]] != modes:
+        return text, []  # extra/unparsed rules could change the effect
+    if not name or len(modes) < 2 or re.search(r"\bfights?\b|\beach other\b", rules, re.I):
+        return text, []
+    if sum(bool(_COUNTER_THEN_DAMAGE.fullmatch(mode)) for mode in modes) != 1:
+        return text, []
+    # A distinctive last word supports the retained "Charm's ... and its ..."
+    # reference only if no other visible card shares it.
+    names = [name]
+    short = name.split()[-1]
+    others = [
+        str(c.get("name") or "")
+        for zone in ("hand", "battlefield", "stack", "command")
+        for c in state.get(zone) or []
+        if isinstance(c, dict) and c.get("name") != name
+    ]
+    if len(short) >= 4 and not any(re.search(rf"\b{re.escape(short)}\b", n, re.I) for n in others):
+        names.append(short)
+    possessive = r"(?:" + "|".join(re.escape(n) for n in names) + r")[’']s"
+    explicit = re.compile(rf"\b{re.escape(name)}[’']s\s+fight mode\b", re.I)
+    fact = (
+        f"{name} has an available mode that puts a +1/+1 counter on the friendly target before "
+        "it deals one-way damage equal to its power to the opposing target. "
+        "That effect causes no reciprocal damage; the cast recommendation does not establish the selected mode."
+    )
+    parts = re.split(r"([;.!?]\s*)", str(text or ""))
+    changed = False
+    for index in range(0, len(parts), 2):
+        clause = parts[index]
+        if re.search(
+            r"\b(?:if|unless|would|could|might|suppose|assuming|not|never|isn[’']t|doesn[’']t|don[’']t)\b",
+            clause,
+            re.I,
+        ):
+            continue
+        match = explicit.search(clause) or re.match(rf"\s*{possessive}\s+fight mode\b", clause, re.I)
+        if match is None:
+            # Bind "its" only to this card's own earlier mode in this clause.
+            anchor = re.match(rf"\s*{possessive}\s+\w+ mode\b", clause, re.I)
+            if anchor and not re.search(r"\b\w+[’']s\b", clause[anchor.end() :], re.I):
+                match = re.search(r"\bits fight mode\b", clause, re.I)
+        if match is None or re.match(r"\s+(?:of|from|on|with)\b", clause[match.end() :], re.I):
+            continue
+        if re.search(
+            r"\breciprocal damage\b|\bdamage (?:back|in return)\b|\bboth\b.*\bdeal\b.*\bdamage\b",
+            clause,
+            re.I,
+        ):
+            parts[index] = fact.rstrip(".")
+        else:
+            parts[index] = (
+                clause[: match.start()]
+                + f"{name}'s mode that adds a counter and deals one-way damage"
+                + clause[match.end() :]
+            )
+        changed = True
+    if not changed:
+        return text, []
+    corrected = "".join(parts)
+    if fact.rstrip(".") not in corrected:
+        corrected = corrected.rstrip() + " Rules correction: " + fact
+    return corrected, [fact]
+
+
 __all__ = [
     "ModeKillCheck",
     "ModeKills",
     "ModeMenu",
     "correct_mode_reasoning",
+    "correct_cast_mode_reasoning",
     "describe_mode",
     "modal_options",
     "mode_kill_check",

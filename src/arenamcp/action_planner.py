@@ -10088,7 +10088,7 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         try:
             from arenamcp.game_plan import decision_claim_notes
-            from arenamcp.mode_claims import correct_mode_reasoning
+            from arenamcp.mode_claims import correct_cast_mode_reasoning, correct_mode_reasoning
             from arenamcp.selection_claims import correct_return_claims
 
             cast_ids = [
@@ -10099,10 +10099,14 @@ class ActionPlanner(_ActionLegalityMixin):
             selection_reasoning, selection_notes = correct_return_claims(
                 self._last_decision_reasoning, decision, chosen
             )
-            mode_reasoning, mode_notes = correct_mode_reasoning(selection_reasoning, decision)
+            cast_reasoning, cast_notes = correct_cast_mode_reasoning(
+                selection_reasoning, game_state, decision, chosen
+            )
+            mode_reasoning, mode_notes = correct_mode_reasoning(cast_reasoning, decision)
             notes = decision_claim_notes(self._last_decision_reasoning, game_state, cast_ids=cast_ids)
             notes.extend(selection_notes)
             notes.extend(mode_notes)
+            notes.extend(cast_notes)
         except Exception as error:  # never cost the decision
             logger.debug("typed-decision claim check failed: %s", error)
             return
