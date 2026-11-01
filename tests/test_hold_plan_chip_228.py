@@ -174,14 +174,21 @@ def test_the_plan_says_chip_so_the_hold_yields_and_hazard_goes():
     assert model.efforts  # the model was asked: the hold no longer answers for it
 
 
-def test_a_generic_chip_directive_releases_every_held_damage_spell():
+def test_a_generic_chip_directive_releases_every_held_spell_for_model_evaluation():
     state = _f5169733_t11()
     menu = _menu(state, (222, True), (223, True), (224, True))
-    model = _Model(_reply(_option(menu, 223), "Chipping with Iroh's mode 1."))
+    # Check release separately from the advisory line/second-look policy:
+    # releasing a hold does not make Iroh's creature-only mode hit a player.
+    model = _Model(_reply(_option(menu, 222), "Hazard hits the opponent."))
     planner = _planner(model)
     planner.set_game_plan("ROLE: aggressor\nChip their life each turn with burn.")
+    offered, forced = planner._hold_main_phase_burn(menu, state)
+    assert [option.option_id for option in offered.options] == [option.option_id for option in menu.options]
+    assert forced == []
     chosen = planner.plan_decision_options(menu, state)
-    assert chosen == [_option(menu, 223)], planner.get_decision_reasoning(chosen)
+    assert not planner._held_instants
+    assert model.efforts  # the hold yields to model evaluation, rather than forcing pass
+    assert chosen == [_option(menu, 222)], planner.get_decision_reasoning(chosen)
 
 
 def test_a_conditional_chip_mention_does_not_release_the_hold():
