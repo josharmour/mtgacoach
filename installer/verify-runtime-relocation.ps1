@@ -297,9 +297,12 @@ for module in (
     check(runtime in module_file.parents, f"{module.__name__} imported from {module_file}, expected under {runtime}")
 
 # Stdlib extension modules prove the copied DLLs/ directory is complete.
-for stdlib_module in (encodings_idna, ssl, sqlite3, zlib, ctypes, decimal):
+# ``zlib`` is built into python.exe on Windows and has no ``__file__``; its
+# round-trip below proves the codec works without a path to check.
+for stdlib_module in (encodings_idna, ssl, sqlite3, ctypes, decimal):
     module_file = Path(stdlib_module.__file__).resolve()
     check(runtime in module_file.parents, f"stdlib {stdlib_module.__name__} imported from {module_file}, expected under {runtime}")
+check(zlib.decompress(zlib.compress(b"relocation")) == b"relocation", "zlib round-trip failed")
 
 # Native third-party dependencies must load from the bundled site-packages.
 for dependency in (numpy, onnxruntime, soundfile):
