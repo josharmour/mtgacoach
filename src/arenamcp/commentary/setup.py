@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sys
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -82,10 +83,11 @@ def discover(settings, *, home=None, repository=None):
     except ChatterboxError:
         pass
     if not values["chatterbox_local_python"]:
+        interpreter = "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
         for candidate in (
-            home / "venvs/coach-chatterbox/bin/python",
-            repository / "runtime/chatterbox/.venv/bin/python",
-            source / ".venv/bin/python",
+            home / "venvs/coach-chatterbox" / interpreter,
+            repository / "runtime/chatterbox/.venv" / interpreter,
+            source / ".venv" / interpreter,
         ):
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 values["chatterbox_local_python"] = str(candidate)

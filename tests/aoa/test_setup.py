@@ -69,3 +69,37 @@ def test_catalog_errors_are_redacted():
     with pytest.raises(ChatterboxError) as error:
         setup.server_voices("https://speech.example", opener=opener)
     assert "PRIVATE_SECRET" not in str(error.value)
+
+
+@pytest.mark.parametrize("platform,interpreter", [("win32", "Scripts/python.exe"), ("darwin", "bin/python")])
+@pytest.mark.parametrize("location", ["home", "runtime", "aoa"])
+def test_discovers_native_local_interpreter(monkeypatch, tmp_path, platform, interpreter, location):
+    home = tmp_path / "home"
+    repo = tmp_path / "repos/coach"
+    source = repo.parent / "arenaonair"
+    (source / "src/arenaonair").mkdir(parents=True)
+    (source / "src/arenaonair/llm_booth.py").touch()
+    roots = {
+        "home": home / "venvs/coach-chatterbox",
+        "runtime": repo / "runtime/chatterbox/.venv",
+        "aoa": source / ".venv",
+    }
+    python = roots[location] / interpreter
+    python.parent.mkdir(parents=True)
+    python.touch(mode=0o700)
+    revision = "749d1c1a46eb10492095d68fbcf55691ccf137cd"
+    (home / "models/coach-chatterbox" / revision).mkdir(parents=True)
+    monkeypatch.setattr(setup.sys, "platform", platform)
+    result = setup.discover({}, home=home, repository=repo)
+    assert result.values["chatterbox_local_python"] == str(python)
+    assert result.local_configured
+
+
+def test_windows_does_not_select_shared_unix_venv(monkeypatch, tmp_path):
+    python = tmp_path / "venvs/coach-chatterbox/bin/python"
+    python.parent.mkdir(parents=True)
+    python.touch(mode=0o700)
+    monkeypatch.setattr(setup.sys, "platform", "win32")
+    result = setup.discover({}, home=tmp_path, repository=tmp_path / "repo")
+    assert not result.values["chatterbox_local_python"]
+    assert not result.local_configured
