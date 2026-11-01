@@ -623,6 +623,11 @@ def build_board_model(state: dict) -> BoardModel | None:
     if any(_is_creature(c) for c in unseated) or (battlefield and len(unseated) == len(battlefield)):
         return None
 
+    # Arena may expose both copies while its legend-rule choice is pending.
+    # Forecast only one survivor; retain the raw state for the actual choice UI.
+    from arenamcp.legend_rule import resolve_legends
+
+    battlefield = resolve_legends(battlefield, battlefield=battlefield)
     attached: dict[int, list[dict]] = {}
     for card in battlefield:
         target = _int(card.get("attached_to_id"))

@@ -951,6 +951,9 @@ class GameState(_GameStateAnnotationsMixin):
                             else str(obj_data.get("visibility"))
                         ),
                         card_types=[str(item) for item in obj_data.get("card_types", []) if item is not None],
+                        super_types=_coerce_str_list(obj_data["super_types"])
+                        if "super_types" in obj_data
+                        else None,
                         subtypes=[str(item) for item in obj_data.get("subtypes", []) if item is not None],
                         power=_coerce_optional_int(obj_data.get("power")),
                         toughness=_coerce_optional_int(obj_data.get("toughness")),
@@ -2366,6 +2369,7 @@ class GameState(_GameStateAnnotationsMixin):
             toughness = existing_obj.toughness
             is_tapped = existing_obj.is_tapped
             card_types = existing_obj.card_types
+            super_types = existing_obj.super_types
             subtypes = existing_obj.subtypes
             parent_instance_id = existing_obj.parent_instance_id
             turn_entered_battlefield = existing_obj.turn_entered_battlefield
@@ -2393,6 +2397,7 @@ class GameState(_GameStateAnnotationsMixin):
             toughness = None
             is_tapped = False
             card_types = []
+            super_types = None
             subtypes = []
             parent_instance_id = None
             turn_entered_battlefield = -1
@@ -2520,6 +2525,10 @@ class GameState(_GameStateAnnotationsMixin):
 
         if "cardTypes" in obj_data:
             card_types = _coerce_str_list(obj_data["cardTypes"])
+        if "superTypes" in obj_data:
+            super_types = _coerce_str_list(obj_data["superTypes"])
+        elif full_info:
+            super_types = []  # protobuf omits an empty repeated field
 
         if "subtypes" in obj_data:
             subtypes = []
@@ -2582,6 +2591,7 @@ class GameState(_GameStateAnnotationsMixin):
             controller_seat_id=controller_seat_id,
             visibility=visibility,
             card_types=card_types,
+            super_types=super_types,
             subtypes=subtypes,
             power=power,
             toughness=toughness,

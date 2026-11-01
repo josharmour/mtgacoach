@@ -2030,6 +2030,7 @@ def _assess(state: dict) -> BoardAssessment | None:
         theirs=theirs,
         ours=ours,
         instant_only_first=model.t_instant_only,
+        battlefield=battlefield,
     )
     lookahead, dead_in, now_life = _project(
         schedule=schedule,
@@ -2044,6 +2045,7 @@ def _assess(state: dict) -> BoardAssessment | None:
         first_their_attackers=first_their_attackers,
         untapped_ours=our_first_blockers,
         their_declared=model.any_theirs_attacking,
+        battlefield=battlefield,
     )
     dead_in_greedy = dead_in
 
@@ -3091,6 +3093,7 @@ def _schedule(
     theirs: list[dict],
     ours: list[dict] | tuple = (),
     instant_only_first: bool = False,
+    battlefield: list[dict] | tuple = (),
 ) -> list[list[_Spell]]:
     """Per-turn knapsack: the highest-value affordable set (<=3 spells) each turn.
 
@@ -3101,6 +3104,9 @@ def _schedule(
     for spell in spells:
         spell.value = _spell_value(spell, survival=survival, theirs=theirs, ours=ours)
     remaining = [s for s in spells if not s.has_x and not s.uncastable and s.value > 0]
+    from arenamcp.legend_rule import resolve_legends
+
+    projected = list(ours)
     schedule: list[list[_Spell]] = []
     extra: list[SimpleNamespace] = []
     for index, budget in enumerate(budgets):
@@ -3117,10 +3123,32 @@ def _schedule(
                     continue
                 if not _pip_matching(tuple(p for s in combo for p in s.pips), sources):
                     continue
-                key = (round(sum(s.value for s in combo), 3), total)
-                if key > best_key:
+                together = projected + [s.card for s in combo if s.role == "creature"]
+                survivors = resolve_legends(
+                    together, battlefield=battlefield, prefer_ids=[b.get("instance_id") for b in projected]
+                )
+                lost_value = 0.0
+                for lost in together:
+                    if not any(lost is kept for kept in survivors):
+                        raw = {
+                            **(lost.get("_card") or lost),
+                            "power": lost.get("power"),
+                            "toughness": lost.get("toughness"),
+                        }
+                        lost_value += _spell_value(
+                            _Spell(raw, _name(raw), "creature", 0, (), False),
+                            survival=survival,
+                            theirs=theirs,
+                        )
+                key = (round(sum(s.value for s in combo) - lost_value, 3), total)
+                if key[0] > 0 and key > best_key:
                     best, best_key = combo, key
         schedule.append(list(best))
+        projected = resolve_legends(
+            projected + [s.card for s in best if s.role == "creature"],
+            battlefield=battlefield,
+            prefer_ids=[b.get("instance_id") for b in projected],
+        )
         remaining = [s for s in remaining if s not in best]
         for spell in best:
             if spell.role == "ramp":
@@ -3152,6 +3180,7 @@ def _project(
     first_their_attackers: list[dict] | None,
     untapped_ours: list[dict],
     their_declared: bool = False,
+    battlefield: list[dict] | tuple = (),
 ) -> tuple[list[TurnProjection], int | None, int | None]:
     """Our life if we deploy the schedule and they attack after each of our turns
     (``their_declared``: the attack pending now is under way, ``_attack_round_life``)."""
@@ -3182,8 +3211,13 @@ def _project(
             if spell.role == "creature" and _is_creature(spell.card):
                 body = _body(spell.card, turn + 2 * k + 1, our_rules)
                 if body is not None:
-                    board.append(body)
-                    blockers_first.append(body)
+                    from arenamcp.legend_rule import resolve_legends
+
+                    prior_ids = {b["instance_id"] for b in board}
+                    board = resolve_legends(board + [body], battlefield=battlefield, prefer_ids=prior_ids)
+                    blockers_first = [
+                        b for b in blockers_first + [body] if any(b is alive for alive in board)
+                    ]
             elif spell.role in ("removal", "bounce"):
                 killable = [b for b in enemy if _kills(spell.card, b, ours=board)]
                 if killable:

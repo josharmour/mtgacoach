@@ -141,6 +141,9 @@ class GameObject:
     token_creator_ability_grp_id: int | None = None
     token_creator_id: int | None = None
 
+    # None means absent in an old snapshot; [] is authoritative nonlegendary.
+    super_types: list[str] | None = None
+
     def to_dict(self) -> dict:
         """Convert to simple dict for snapshot serialization."""
         result = {
@@ -160,6 +163,8 @@ class GameObject:
             "is_blocking": self.is_blocking,
             "object_kind": self.object_kind.name,
         }
+        if self.super_types is not None:
+            result["super_types"] = list(self.super_types)
         if self.counters:
             result["counters"] = self.counters
         if self.is_attacking and self.attack_target_id is not None:

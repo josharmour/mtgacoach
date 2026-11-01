@@ -9070,6 +9070,11 @@ class ActionPlanner(_ActionLegalityMixin):
 
             lines.insert(1, prompt_note(decision, game_state))
         if decision.request_type == "SelectN":
+            from arenamcp.legend_rule import keep_note as legend_keep_note
+
+            legend_note = legend_keep_note(game_state, decision)
+            if legend_note:
+                lines.insert(1, legend_note)
             # #313: two triggers from the same source can share a name but
             # have different effects. Retain exact offered ability text.
             offered_ids = {option.option_id for option in decision.options}
@@ -9122,6 +9127,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 note += channel_land_note(find_source(game_state, o.meta) or {})
             if o.meta.get("actionType") == "ActionType_Cast":
                 source_card = find_source(game_state, o.meta) or {}
+                from arenamcp.legend_rule import cast_note as legend_cast_note
+
+                note += legend_cast_note(game_state, source_card)
                 note += combat_cast_note(game_state, source_card)
                 note += trick_timing_note(game_state, source_card)
                 note += graveyard_flashback_note(game_state, source_card, o.meta)

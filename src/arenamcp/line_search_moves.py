@@ -115,6 +115,7 @@ from arenamcp.combat_solver import walker_value
 from arenamcp.combat_strategy import loyalty
 from arenamcp.cost_reduction import parse_cost_reduction, reduced_mana_value, reduction_amount
 from arenamcp.land_mana import land_colors, mana_source, refresh_sources
+from arenamcp.legend_rule import resolve_legends
 from arenamcp.mulligan_policy import _mana_value, _pip_matching, hand_card
 
 # Outcome classes, compared before timing and value.
@@ -1690,6 +1691,8 @@ def token_specs(
             following = after.split(".")[1] if "." in after else ""
             if _TOKEN_HASTE_NOW.search(following):
                 keywords.add("haste")
+            if "legendary" in match.group("desc").split():
+                keywords.add("_legendary")  # token-spec metadata, not a combat keyword
             if named:
                 name = named.group(1).strip().title()
             else:
@@ -1760,8 +1763,9 @@ def make_tokens(specs, turn: int, rules, first_id: int) -> tuple[dict, ...]:
         for _ in range(count):
             card = {
                 "instance_id": first_id + len(bodies), "name": name, "power": power, "toughness": toughness,
-                "keywords": list(keywords), "oracle_text": "\n".join(k.capitalize() for k in keywords),
-                "type_line": "Token Creature", "card_types": ["CardType_Creature"], "object_kind": "TOKEN",
+                "keywords": [k for k in keywords if k != "_legendary"],
+                "oracle_text": "\n".join(k.capitalize() for k in keywords if k != "_legendary"),
+                "type_line": "Legendary Token Creature" if "_legendary" in keywords else "Token Creature", "card_types": ["CardType_Creature"], "object_kind": "TOKEN",
             }  # fmt: skip
             body = _body(card, turn, rules)
             if body is not None:
@@ -2240,6 +2244,9 @@ class Moves:
 
     def rescale(self, bodies: list[dict]) -> list[dict]:
         """``bodies`` (all our creatures) with every per-creature bonus recomputed for their count."""
+        bodies = resolve_legends(
+            bodies, battlefield=self.model.battlefield, prefer_ids=[b["instance_id"] for b in self.model.ours]
+        )
         if not self._scale_base or not bodies:
             return bodies
         count = len(bodies)
@@ -2424,13 +2431,19 @@ class Moves:
         """Token bodies for ``token_specs`` output, each with a fresh id (unique within the search)."""
         bodies = make_tokens(specs, self.model.turn, self.model.our_rules, self._token_id)
         self._token_id += len(bodies)
+        for body in bodies:
+            body["_card"]["controller_seat_id"] = self.model.local
         return bodies
 
     def _variants(self, hs: HandSpell) -> tuple[tuple, Variant | None]:
         spell, card = hs.spell, hs.spell.card
         info = hand_info(card)
         creature = spell.role == "creature" and _is_creature(card)
-        body = _body(card, self.model.turn, self.model.our_rules) if creature else None
+        body = (
+            _body(dict(card, controller_seat_id=self.model.local), self.model.turn, self.model.our_rules)
+            if creature
+            else None
+        )
         counters = enters_counters(card) if body is not None and self.enters_triggers else 0
         if counters:  # its enters trigger puts its +1/+1 counters on itself
             body = {**body, "power": body["power"] + counters, "toughness": body["toughness"] + counters}
@@ -2970,12 +2983,33 @@ class Moves:
         before it plus what the rest of the set gains (``_apply_casts`` casts the gains first);
         a board-counted one (Hare Apparent) counts ``ours`` plus the set's bodies before it."""
         value = sum(self.item_value(v, t, theirs) for v, t in choice)
+        # Bodies lost to the legend rule are not extra development. Preserve
+        # the other variant value (ETB tokens, removal, life, damage).
+        board = list(ours)
+        for var, _target in choice:
+            if var.kind != "cast":
+                continue
+            entering = _bodies(var)
+            together = board + entering
+            after = resolve_legends(
+                together, battlefield=self.model.battlefield, prefer_ids=[b["instance_id"] for b in board]
+            )
+            for lost in together:
+                if not any(lost is kept for kept in after):
+                    raw = {
+                        **(lost.get("_card") or lost),
+                        "power": lost["power"],
+                        "toughness": lost["toughness"],
+                    }
+                    pseudo = _Spell(raw, lost["name"], "creature", 0, (), False)
+                    value -= _spell_value(pseudo, survival=self.survival, theirs=list(theirs))
+            board = after
         if any(v.named_tokens for v, _ in choice):
             board = list(ours)
             for var, _target in choice:
                 if var.kind != "cast":
                     continue
-                board += [var.body] if var.body is not None else []
+                board = self.rescale(board + ([var.body] if var.body is not None else []))
                 for token in self._named_bodies(var, board):
                     pseudo = _Spell(token["_card"], token["name"], "creature", 0, (), False)
                     value += _spell_value(pseudo, survival=self.survival, theirs=list(theirs))
@@ -3032,7 +3066,8 @@ class Moves:
         if not reducing:
             return total
         others = [v for v, _ in choice if self.spells[v.spell].reduction is None]
-        powers = [b["power"] for b in ours] + [b["power"] for v in others for b in _bodies(v)]
+        board = self.rescale(list(ours) + [b for v in others for b in _bodies(v)])
+        powers = [b["power"] for b in board]
         counters = sum(v.counter for v in others)
         if counters and powers:
             powers[powers.index(max(powers))] += counters
@@ -3296,7 +3331,7 @@ class Moves:
             marking,
             node.walkers,
             self.gained_at_start(node),
-            ids_of(node.ours) if self.any_named else (),
+            ids_of(node.ours),  # legend replacements and named-token counts depend on our board
         )
         found = self._cast_memo.get(key)
         if found is not None:
@@ -3525,11 +3560,19 @@ class Moves:
                 mid.entered[body["instance_id"]] = mid.node.abs_turn
                 if self.consuls:
                     mid.opp_life += self._enters_under_them(body, mid.our_tapped)
-            for body in self._named_bodies(var, mid.ours):  # counted with its own body in (#157)
+            # A board-counted ETB resolves after legend-rule state actions.
+            mid.ours = self.rescale(mid.ours)
+            for body in self._named_bodies(var, mid.ours):
                 mid.ours.append(body)
                 mid.entered[body["instance_id"]] = mid.node.abs_turn
                 if self.consuls:
                     mid.opp_life += self._enters_under_them(body, mid.our_tapped)
+            # State-based actions precede the next cast/combat; entry effects
+            # above remain even when the entering legend is the copy lost.
+            mid.ours = self.rescale(mid.ours)
+            alive = {b["instance_id"] for b in mid.ours}
+            mid.entered = {iid: turn for iid, turn in mid.entered.items() if iid in alive}
+            mid.our_tapped.intersection_update(alive)
             if target is not None and var.walker:  # burn at one of their planeswalkers
                 iid = target["instance_id"]
                 if iid in mid.walkers:
@@ -3954,7 +3997,9 @@ class Moves:
         var = sneaks[0]
         hs = self.spells[var.spell]
         ours = self.rescale([b for b in mid.ours if b["instance_id"] != returned["instance_id"]] + [var.body])
-        entered = ours[-1]
+        entered = next((b for b in ours if b["instance_id"] == var.body["instance_id"]), None)
+        if entered is None:
+            return None  # no modeled attacking body survives this optional Sneak
         mid.ours = ours
         mid.hand.remove(var.spell)
         mid.entered[entered["instance_id"]] = mid.node.abs_turn
@@ -4280,13 +4325,17 @@ class Moves:
         entered = dict(entered)
         for body in flash_bodies:
             entered[body["instance_id"]] = turn
-        ours_all = list(ours) + flash_bodies
+        ours_all = self.rescale(list(ours) + flash_bodies)
         # Under their Authority of the Consuls a flash creature enters tapped (no block) and
         # gains them life.
         tapped_in = bool(flash_bodies) and self.consuls and self.engines.enter_tapped
         if flash_bodies and self.consuls:
             opp_life += sum(self._enters_under_them(b, set()) for b in flash_bodies)
-        defenders = list(blockers) + ([] if blocks_locked or tapped_in else flash_bodies)
+        defenders = [
+            b
+            for b in list(blockers) + ([] if blocks_locked or tapped_in else flash_bodies)
+            if any(b is alive for alive in ours_all)
+        ]
         if variant == "none":
             defenders = []
         elif variant == "crackback":
@@ -4500,6 +4549,10 @@ class Moves:
             entered[body["instance_id"]] = model.turn
             if self.consuls:  # their Authority of the Consuls: enters tapped, they gain life
                 consuls_life += self._enters_under_them(body, tapped_in)
+            ours = self.rescale(ours)
+        alive = {b["instance_id"] for b in ours}
+        entered = {iid: turn for iid, turn in entered.items() if iid in alive}
+        tapped_in.intersection_update(alive)
         returning = []
         if effect.get("target") is not None:
             theirs = [b for b in theirs if b is not effect["target"]]
