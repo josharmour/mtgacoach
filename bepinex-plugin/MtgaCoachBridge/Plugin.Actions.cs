@@ -213,6 +213,11 @@ namespace MtgaCoachBridge
                     cmd.SetResponse(BotBattleBridge.Start(cmd.Json, _log));
                     break;
 
+                case "get_match_end":
+                    cmd.SetResponse(PracticeMatchBridge.GetMatchEndState(_log));
+                    break;
+
+                case "leave_match":
                 case "return_to_home":
                     cmd.SetResponse(PracticeMatchBridge.ReturnToHome(_log));
                     break;

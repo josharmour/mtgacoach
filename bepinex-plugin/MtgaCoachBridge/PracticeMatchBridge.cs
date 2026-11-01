@@ -123,6 +123,45 @@ namespace MtgaCoachBridge
             }
         }
 
+        // LeaveMatch is a no-op until Arena subscribes ExitMatchCompleted after
+        // its result/rank animation and optional survey. Read the actual gate,
+        // rather than treating a successful method invocation as navigation.
+        public static JObject GetMatchEndState(ManualLogSource log)
+        {
+            try
+            {
+                return MatchEndState(UnityEngine.Object.FindObjectOfType<MatchEndScene>());
+            }
+            catch (Exception ex)
+            {
+                return Fail(log, $"Result readiness unavailable: {ex.Message}");
+            }
+        }
+
+        private static JObject MatchEndState(MatchEndScene scene)
+        {
+            bool exitReady = false;
+            bool clickReady = false;
+            if (scene != null)
+            {
+                const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+                var listener = typeof(MatchEndScene).GetField("ExitMatchCompleted", flags);
+                if (listener == null)
+                    throw new MissingFieldException("MatchEndScene", "ExitMatchCompleted");
+                exitReady = listener.GetValue(scene) is Delegate;
+                var background = typeof(MatchEndScene).GetField("_exitMatchBackgroundButton", flags)
+                    ?.GetValue(scene) as Component;
+                clickReady = background != null && background.gameObject.activeInHierarchy;
+            }
+            return new JObject
+            {
+                ["ok"] = true,
+                ["is_open"] = scene != null,
+                ["exit_ready"] = exitReady,
+                ["click_ready"] = clickReady,
+            };
+        }
+
         // Returns to the Home screen from the post-match result screen by
         // invoking the same call the "Leave Match" button fires
         // (MatchEndScene.LeaveMatch -> ExitMatchCompleted). Lets the harness
@@ -142,6 +181,8 @@ namespace MtgaCoachBridge
                     }
                     return Fail(log, "no MatchEndScene or HomePageContentController active — not on the match-result screen");
                 }
+                if (!MatchEndState(endScene).Value<bool>("exit_ready"))
+                    return new JObject { ["ok"] = true, ["waiting"] = true };
                 endScene.LeaveMatch();
                 log?.LogInfo("[PracticeMatchBridge] ReturnToHome: LeaveMatch() invoked");
                 return new JObject { ["ok"] = true };

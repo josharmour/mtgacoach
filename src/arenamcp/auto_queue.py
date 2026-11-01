@@ -1809,6 +1809,11 @@ class AutoQueueNavigator:
 
             # Stage 1: Results screen -> return to home
             if self._stage == "results":
+                # Windows LeaveMatch also does nothing until Arena installs its
+                # exit callback. Keep polling readiness (and the actual scene
+                # closure) instead of mistaking invocation for arrival at Home.
+                if self._leave_result_via_bridge(bridge, generation, aborted):
+                    return
                 self._status("Dismissing match results via bridge...")
                 ok = bridge.return_to_home()
                 if ok:
