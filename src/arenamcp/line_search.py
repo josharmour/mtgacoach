@@ -501,6 +501,13 @@ def _after_our_pending(model: BoardModel) -> BoardModel:
 
 class _Search(Moves):
     def __init__(self, model: BoardModel, *, groups: int, width: int, k_next: int, **kwargs: Any) -> None:
+        from arenamcp.entry_draw_projection import model_reasons as entry_draw_reasons
+        from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+        # Check before aggregate pending damage removes a draw punisher without
+        # resolving its order relative to a creature entering from the stack.
+        if reasons := entry_draw_reasons(model):
+            raise UnsupportedContinuation("; ".join(reasons))
         model = _after_our_pending(model)
         super().__init__(model, **kwargs)
         self.groups, self.width, self.k_next = max(1, groups), max(1, width), max(0, k_next)

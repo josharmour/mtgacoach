@@ -2159,19 +2159,25 @@ def _assess(state: dict) -> BoardAssessment | None:
     # truncated search keeps its facts.
     search = _run_line_search(model, survival=survival_hint and not lethal_now, lethal_now=lethal_now)
     unsupported_search = tuple(getattr(search, "unsupported", ())) if search is not None else ()
+    from arenamcp.entry_draw_projection import model_reasons as entry_draw_reasons
+
+    entry_draw_unknowns = entry_draw_reasons(model)
     if search is None:
         from arenamcp.sacrifice_continuation import relevant
 
         if relevant(model.battlefield):
             unsupported_search = ("sacrifice continuation requires an available line search",)
+        unsupported_search += entry_draw_unknowns
     if model.attack_tax_notes:
         unsupported_search += ("attack-tax payment and source tapping across future turns",)
     if unsupported_search:
-        # The legacy fallback omits the same public sacrifice effects/taxes. It must
+        # The legacy fallback omits the same public effects/taxes. It must
         # not become a fabricated lethal/survival verdict when search declines.
         unsupported_label = (
             "attack-tax projection unsupported"
             if model.attack_tax_notes
+            else "entry-draw continuation unsupported"
+            if entry_draw_unknowns
             else "sacrifice continuation unsupported"
         )
         unknowns.extend(unsupported_label + ": " + note for note in unsupported_search)
