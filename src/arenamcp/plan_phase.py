@@ -43,7 +43,7 @@ def phase_claim_notes(text: str, state: dict) -> list[str]:
         ):
             continue
         if re.search(
-            r"\b(?:can|will|could)\s+(?:now\s+)?attack\b|"
+            r"\b(?:can|will)\s+(?:now\s+)?attack\b|"
             r"\battack(?:s|ing)?\s+(?:now|immediately|this turn|this combat)\b",
             sentence,
         ):

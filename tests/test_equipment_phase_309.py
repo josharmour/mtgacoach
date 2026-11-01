@@ -47,6 +47,7 @@ def test_postcombat_haste_attack_claim_is_flagged(phase):
         "Vorinclex cannot attack now, but shroud protects it.",
         "Vorinclex can't attack this turn.",
         "Haste lets the mana creature tap now.",
+        "Vorinclex could attack last turn.",
         "After creating an additional combat phase Vorinclex can attack this turn.",
     ],
 )

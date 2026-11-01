@@ -91,3 +91,37 @@ def test_library_constraints_refresh_when_the_card_is_drawn():
     prompt = backend.requests[0][0]
     availability = prompt.split("PLAN AVAILABILITY", 1)[1].split("\n\n", 1)[0]
     assert "akroma s will" not in availability.lower()
+
+
+def test_explicit_unavailability_notes_are_not_removed():
+    game = state()
+    plan = GamePlan(
+        win_conditions=["Creature combat"],
+        path="Do not wait for Akroma's Will",
+        active_mechanisms=["Akroma's Will unavailable"],
+        resource_priorities=["Do not hold Leonardo back for Akroma's Will"],
+    )
+    validate_plan(plan, assess(game), game)
+    assert plan.path == "Do not wait for Akroma's Will"
+    assert plan.active_mechanisms == ["Akroma's Will unavailable"]
+    assert plan.resource_priorities == ["Do not hold Leonardo back for Akroma's Will"]
+
+
+def test_rejected_library_win_falls_back_to_the_visible_mill_deadline():
+    # #272 mechanism replay, not a reconstruction of the entire bed0e3fd match.
+    game = state()
+    game["zones"] = {"library_count": 20, "library_count_source": "log_zone_membership"}
+    game["battlefield"] = [
+        {
+            "name": "Restless Reef",
+            "instance_id": 90,
+            "controller_seat_id": 2,
+            "owner_seat_id": 2,
+            "type_line": "Land",
+            "oracle_text": "Whenever Restless Reef attacks, target player mills four cards.",
+        }
+    ]
+    plan = GamePlan(win_conditions=["Akroma's Will alpha strike"], path="Hold Leonardo for Akroma's Will")
+    validate_plan(plan, assess(game), game)
+    assert "Remove Restless Reef" in plan.win_conditions[0]
+    assert "Akroma's Will" not in plan.as_planner_block()

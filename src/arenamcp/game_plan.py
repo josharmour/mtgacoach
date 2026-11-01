@@ -707,7 +707,13 @@ def _check_library_dependencies(plan: GamePlan, library_only: set[str], issues: 
 
     def checked(text: str, where: str) -> str:
         needed = sorted(name for name in library_only if _mentions(text, name))
-        if needed and not _DRAW_LABEL.search(text):
+        explicitly_unavailable = re.search(
+            r"\b(?:not in hand|still in (?:the )?library|unavailable|not applicable)\b|"
+            r"\b(?:do not|don't) (?:wait|rely|plan|hold|save)\b",
+            text,
+            re.I,
+        )
+        if needed and not _DRAW_LABEL.search(text) and not explicitly_unavailable:
             issues.append(f"{where} rejected: needs {', '.join(needed)} (still in the library): {text}")
             return ""
         return text
