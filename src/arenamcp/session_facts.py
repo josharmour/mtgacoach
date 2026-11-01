@@ -6,6 +6,7 @@ They accompany fresh board math even when no model-authored plan exists.
 
 import re
 
+from arenamcp.claim_language import conditional_claim
 from arenamcp.combat_keywords import has_combat_keyword
 from arenamcp.combat_solver import leaves_at_our_end_step
 
@@ -95,8 +96,11 @@ def claim_notes(text, state):
                 lower,
             ):
                 found.append(fact)
-        elif "has reach and is untapped" in fact and re.search(
-            r"\b(?:no reach|no (?:flying |flyer |untapped )?blockers|unblockable flyers?)\b", lower
+        elif "has reach and is untapped" in fact and any(
+            not conditional_claim(lower, match.start(), match.end())
+            for match in re.finditer(
+                r"\b(?:no reach|no (?:flying |flyer |untapped )?blockers|unblockable flyers?)\b", lower
+            )
         ):
             found.append(fact)
         elif (

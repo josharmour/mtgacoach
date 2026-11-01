@@ -1529,6 +1529,7 @@ def _claim_corrections(
     our_turn: bool,
 ) -> tuple[str, list[str]]:
     """``text`` with its false creature claims rewritten, and what was corrected."""
+    from arenamcp.claim_language import conditional_claim
     from arenamcp.combat_keywords import annotate_cant_be_blocked, has_combat_keyword
     from arenamcp.combat_solver import _can_block
 
@@ -1571,6 +1572,13 @@ def _claim_corrections(
                 begin = offset + item.start() + item.group(0).index(word)
                 claims.append((begin, begin + len(word), word, True))
         for begin, finish, keyword, positive in claims:
+            qualifier_end = end + finish
+            if listing and listing.start("items") <= begin < listing.end("items"):
+                qualifier_end = end + listing.end()
+                if lowered[qualifier_end : qualifier_end + 1] == ")":
+                    qualifier_end += 1
+            if conditional_claim(lowered, start, qualifier_end):
+                continue
             truth = _keyword_truth(cards, keyword, battlefield)
             if truth is None or truth == positive:
                 continue
