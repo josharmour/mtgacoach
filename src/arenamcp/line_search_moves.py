@@ -3979,25 +3979,64 @@ class Moves:
             if isinstance(card, dict) and "planeswalker" in str(card.get("type_line") or "").lower()
         )
 
+    def _entry_draw_engines(self, mid: Mid) -> list[dict]:
+        """Draw engines currently on our battlefield, including returned noncreature ones."""
+        engines = list(mid.ours)
+        engines.extend(engine for engine in mid.persistent if _controller(engine) == self.model.local)
+        engines.extend(
+            card
+            for card in self.model.our_permanents
+            if not _is_creature(card) and _controller(card) == self.model.local
+        )
+        return engines
+
     def _preexisting_entry_draw(self, mid: Mid, body: dict) -> bool:
         """True when ``body`` qualifies for a draw engine already on the battlefield.
 
-        Such an engine was not cast in this line, so its once-per-turn use is
-        unknown.  Resolving the trigger would invent availability; the caller
-        abstains instead.
+        "Already" includes an engine cast earlier in this line and a returned
+        noncreature engine; an engine cast later does not trigger this entry.
+        Such an engine's once-per-turn use is unknown, so resolving the trigger
+        would invent availability; the caller abstains instead.
         """
         power = body.get("power")
         if power is None:
             return False
-        engines = list(mid.ours)
-        engines.extend(engine for engine in mid.persistent if _controller(engine) == self.model.local)
-        for engine in engines:
-            if engine["instance_id"] == body["instance_id"]:
+        seen = set()
+        for engine in self._entry_draw_engines(mid):
+            iid = engine.get("instance_id")
+            if iid in seen or iid == body["instance_id"]:
                 continue
+            seen.add(iid)
             rule = draw_engine(engine)
             if rule is not None and power <= rule[0]:
                 return True
         return False
+
+    def _token_entry_draw_reason(self, mid: Mid, var: Variant, bodies: tuple[dict, ...]) -> str | None:
+        """Reason a token entry cannot be resolved soundly, or ``None`` when it can."""
+        engines = self._entry_draw_engines(mid)
+        if var.body is not None:
+            engines.append(var.body)
+        seen = set()
+        for engine in engines:
+            iid = engine.get("instance_id")
+            if iid in seen or iid in mid.entry_draw_used:
+                continue
+            seen.add(iid)
+            rule = draw_engine(engine)
+            if rule is None:
+                continue
+            if any(body.get("power") is not None and body["power"] <= rule[0] for body in bodies):
+                return "token-producing entry in an entry-draw chain unmodelled"
+        return None
+
+    def _abstain_token_entry(self, mid: Mid, reason: str) -> None:
+        from arenamcp.sacrifice_continuation import UnsupportedContinuation
+
+        if getattr(self, "replay", False):
+            raise UnsupportedContinuation(reason)
+        self._unmodelled_response(mid.casts, reason)
+        mid.entry_draw_blocked = True
 
     def _entry_draw(self, mid: Mid, body: dict) -> None:
         """Resolve the supported entry -> draw -> opposing ping/amass chain for ``body``."""
@@ -4153,10 +4192,10 @@ class Moves:
                 if old["instance_id"] in mid.our_tapped:
                     mid.our_tapped.add(new["instance_id"])
             made = list(var.tokens) + list(self._life_bodies(var, mid.gained))
-            if made and not mid.entry_draw_blocked and self._entry_draw_pair(mid.casts) is not None:
-                from arenamcp.sacrifice_continuation import UnsupportedContinuation
-
-                raise UnsupportedContinuation("token-producing entry in an entry-draw chain unmodelled")
+            if made and not mid.entry_draw_blocked:
+                reason = self._token_entry_draw_reason(mid, var, tuple(made))
+                if reason:
+                    self._abstain_token_entry(mid, reason)
             for body in ([var.body] if var.body is not None else []) + made:
                 mid.ours.append(body)
                 mid.entered[body["instance_id"]] = mid.node.abs_turn
@@ -4166,7 +4205,12 @@ class Moves:
                     self._entry_draw(mid, body)
             # A board-counted ETB resolves after legend-rule state actions.
             mid.ours = self.rescale(mid.ours)
-            for body in self._named_bodies(var, mid.ours):
+            named = self._named_bodies(var, mid.ours)
+            if named and not mid.entry_draw_blocked:
+                reason = self._token_entry_draw_reason(mid, var, named)
+                if reason:
+                    self._abstain_token_entry(mid, reason)
+            for body in named:
                 mid.ours.append(body)
                 mid.entered[body["instance_id"]] = mid.node.abs_turn
                 if self.consuls:

@@ -9,10 +9,12 @@ The card text exercised here is the real Enduring Innocence / Orcish Bowmasters
 text. Simplified creatures in tests are labelled fictional: this reconstructs
 mechanics, it does not replay a historical game.
 
-Search integration is deliberately absent from this slice. An earlier draft that
-reordered the hand list was withdrawn: changing list order does not demonstrate
-that the same-state search compares alternative spell orders, so it was not
-evidence of a search-level acceptance case.
+Search integration lives in :mod:`arenamcp.line_search_moves`: the same-state
+cast-set enumeration compares legal spell orders, and ``_entry_draw`` resolves
+this helper's branches adversarially through the following attack. The helper
+itself stays pure: it never picks or scores a branch and never mutates caller
+state. Token-producing entries are not resolved here; the search abstains
+explicitly for those rather than modelling a generic token entry.
 
 Trigger availability is explicit input, never inferred from absence:
 

@@ -11,6 +11,7 @@ from tests.test_tactical_timing_backlog import card
 
 from arenamcp.board_model import build_board_model
 from arenamcp.line_search import evaluate_plan, search_lines
+from arenamcp.persistent_returns import returned_enchantment
 
 
 def answer() -> dict:
@@ -29,7 +30,51 @@ def maker() -> dict:
     )
 
 
-def state(*, hand=None, extra=(), punisher=True) -> dict:
+def token_spell() -> dict:
+    return card(
+        75,
+        "Test Token Spell",
+        "create a 1/1 white Soldier creature token.",
+        "Sorcery",
+        "{W}",
+    )
+
+
+def big_token_spell() -> dict:
+    return card(
+        76,
+        "Test Big Token Spell",
+        "create a 3/3 green Beast creature token.",
+        "Sorcery",
+        "{W}",
+    )
+
+
+def germinate() -> dict:
+    return card(
+        77,
+        "Germinate Recruits",
+        "create x 2/2 colorless Wizard Soldier creature tokens named Cadet, where x is the amount "
+        "of life you gained this turn.",
+        "Instant",
+        "{2}{W}",
+    )
+
+
+def hare_apparent() -> dict:
+    return card(
+        78,
+        "Hare Apparent",
+        "when this creature enters, create a number of 1/1 white Rabbit creature tokens equal to "
+        "the number of other creatures you control named Hare Apparent.",
+        "Creature — Rabbit Noble",
+        "{1}{W}",
+        power=2,
+        toughness=2,
+    )
+
+
+def state(*, hand=None, extra=(), punisher=True, life_gained_turn=0) -> dict:
     battlefield = [card(i, "Plains", "{T}: Add {W}.", "Basic Land — Plains") for i in range(1, 7)]
     if punisher:
         battlefield.append(bowmasters())
@@ -38,7 +83,13 @@ def state(*, hand=None, extra=(), punisher=True) -> dict:
         "local_seat_id": 1,
         "turn": {"turn_number": 12, "active_player": 1, "phase": "Main1"},
         "players": [
-            {"seat_id": 1, "is_local": True, "life_total": 8, "lands_played": 1},
+            {
+                "seat_id": 1,
+                "is_local": True,
+                "life_total": 8,
+                "lands_played": 1,
+                "life_gained_this_turn": life_gained_turn,
+            },
             {"seat_id": 2, "life_total": 20},
         ],
         "battlefield": battlefield,
@@ -196,6 +247,83 @@ def test_token_producing_entry_in_a_chain_abstains():
         result,
         [{"label": "T", "cast": ["Enduring Innocence", "Test Maker"], "attack": "none"}],
     )
+    assert replay.line is None
+    assert any("token-producing entry" in item for item in replay.unmodelled)
+
+
+def test_token_before_engine_is_legal_and_triggers_nothing():
+    result = search(hand=[token_spell(), innocence()])
+    replay = plan(result, ["Test Token Spell", "Enduring Innocence"])
+    assert replay.line is not None
+    assert replay.line.complete is True
+    leaf = replay.line._leaf
+    assert leaf.draws == 0
+    assert not any(body["name"] == "Orc Army" for body in leaf.theirs)
+
+
+def test_token_spell_without_engine_is_modelled():
+    result = search(hand=[token_spell()], punisher=False)
+    replay = plan(result, ["Test Token Spell"])
+    assert replay.line is not None
+    assert replay.line.complete is True
+    assert replay.line._leaf.draws == 0
+    assert any(body["name"] == "Soldier token" for body in replay.line._leaf.ours)
+
+
+def test_nonqualifying_token_with_new_engine_is_modelled():
+    result = search(hand=[innocence(), big_token_spell()])
+    replay = plan(result, ["Enduring Innocence", "Test Big Token Spell"])
+    assert replay.line is not None
+    assert replay.line.complete is True
+    assert replay.line._leaf.draws == 0
+    assert not any(body["name"] == "Orc Army" for body in replay.line._leaf.theirs)
+
+
+def test_returned_enchantment_engine_with_token_spell_abstains():
+    returned = returned_enchantment(innocence())
+    assert returned is not None
+    result = search(hand=[token_spell()], extra=(returned,))
+    replay = plan(result, ["Test Token Spell"])
+    assert replay.line is None
+    assert any("token-producing entry" in item for item in replay.unmodelled)
+
+
+def test_preexisting_engine_with_token_spell_abstains():
+    result = search(hand=[token_spell()], extra=(innocence(),))
+    replay = plan(result, ["Test Token Spell"])
+    assert replay.line is None
+    assert any("token-producing entry" in item for item in replay.unmodelled)
+
+
+def test_nonqualifying_token_with_preexisting_engine_is_modelled():
+    result = search(hand=[big_token_spell()], extra=(innocence(),), punisher=False)
+    replay = plan(result, ["Test Big Token Spell"])
+    assert replay.line is not None
+    assert replay.line.complete is True
+    assert replay.line._leaf.draws == 0
+    assert any(body["name"] == "Beast token" for body in replay.line._leaf.ours)
+
+
+def test_life_token_entry_with_new_engine_abstains():
+    result = search(hand=[innocence(), germinate()], life_gained_turn=1)
+    replay = plan(result, ["Enduring Innocence", "Germinate Recruits"])
+    assert replay.line is None
+    assert any("token-producing entry" in item for item in replay.unmodelled)
+
+
+def test_named_token_entry_with_new_engine_abstains():
+    existing = card(
+        79,
+        "Hare Apparent",
+        "when this creature enters, create a number of 1/1 white Rabbit creature tokens equal to "
+        "the number of other creatures you control named Hare Apparent.",
+        "Creature — Rabbit Noble",
+        "{1}{W}",
+        power=2,
+        toughness=2,
+    )
+    result = search(hand=[innocence(), hare_apparent()], extra=(existing,))
+    replay = plan(result, ["Enduring Innocence", "Hare Apparent"])
     assert replay.line is None
     assert any("token-producing entry" in item for item in replay.unmodelled)
 
