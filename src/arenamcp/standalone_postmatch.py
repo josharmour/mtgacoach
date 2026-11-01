@@ -267,14 +267,14 @@ class _PostMatchMixin:
             recorded.popitem(last=False)
 
     def _watched_games(self) -> OrderedDict:
-        """Match ids this loop watched in play -> their last seen game number, oldest first."""
+        """Match ids observed live (including before turn 1) -> last seen game number."""
         watched = getattr(self, "_watched_match_games", None)
         if watched is None:
             watched = self._watched_match_games = OrderedDict()
         return watched
 
     def _note_watched_game(self, match_id: str | None, game_number: int | None) -> None:
-        """The loop saw *match_id* in play: its game ends are this coach's to record."""
+        """The loop saw *match_id* live: its game ends are this coach's to record."""
         if not match_id:
             return
         watched = self._watched_games()
@@ -287,7 +287,8 @@ class _PostMatchMixin:
         """Take the parser's game-end record and, when it is a watched game's, record that game.
 
         The record names its match and game. It is recorded only for a match
-        this loop watched in play: a record from the log catch-up on startup
+        this loop observed live, including its pre-turn room/mulligan state:
+        a record from the log catch-up on startup
         (a game that ended before the coach watched it) is discarded, and a
         record is never applied to another match. Each game is recorded
         once; a later finalMatchResult that disagrees corrects the record.

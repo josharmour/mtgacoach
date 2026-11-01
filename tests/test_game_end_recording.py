@@ -242,6 +242,66 @@ def packets(game_id: str) -> list[dict]:
     ]
 
 
+@pytest.mark.parametrize("winning_team,expected", [(OUR_TEAM, "win"), (THEIR_TEAM, "loss")])
+@pytest.mark.parametrize("room_only", [False, True])
+def test_tracked_match_ending_before_turn_one_is_recorded_promptly(
+    monkeypatch, arena, bundles, caplog, winning_team, expected, room_only
+):
+    """#5 recurrence, 15b43f5b: a pre-turn concession is ours, not startup history."""
+    match_id, next_id = "15b43f5b-preturn", "next-match"
+    coach = loop_coach(arena)
+    seen = {}
+
+    def start():
+        arena.start_match(match_id, "Early opponent")
+        if not room_only:
+            arena.play(match_id, 1, 0)
+
+    def after_end():
+        seen["packets"] = packets(match_id)
+        seen["history"] = history()
+        seen["bundles"] = list(bundles)
+        arena.complete_match(match_id, "Early opponent", [result_row(winning_team)])
+
+    script(
+        coach,
+        {
+            1: start,
+            2: lambda: arena.end_game(match_id, 1, winning_team),
+            3: after_end,
+            5: lambda: (arena.start_match(next_id, "Next opponent"), arena.play(next_id, 1, 1)),
+        },
+    )
+    with caplog.at_level(logging.INFO):
+        run_loop(monkeypatch, coach, iterations=6)
+
+    assert seen["history"] == {match_id: (expected, "Early opponent")}
+    assert seen["bundles"] == [(match_id, expected)]
+    assert [p["result"] for p in seen["packets"]] == [expected]
+    assert packets(match_id) == seen["packets"]  # Ending time does not wait for the next match.
+    assert bundles == [(match_id, expected)]
+    assert "Discarded stale" not in caplog.text
+    assert match_packets.get_current_packet().match_id == next_id
+
+
+def test_finished_preturn_match_from_startup_is_not_marked_watched(monkeypatch, arena, bundles, caplog):
+    match_id = "finished-preturn-before-startup"
+    arena.start_match(match_id, "Past opponent")
+    arena.play(match_id, 1, 0)
+    arena.end_game(match_id, 1, OUR_TEAM)
+    arena.complete_match(match_id, "Past opponent", [result_row(OUR_TEAM)])
+    coach = loop_coach(arena)
+    # A correction to that same finished match must not acquire ownership just
+    # because MatchCompleted re-bound its ID during startup catch-up.
+    script(coach, {2: lambda: arena.gs.apply_final_match_result(match_id, "loss")})
+    with caplog.at_level(logging.INFO):
+        run_loop(monkeypatch, coach, iterations=3)
+    assert match_id not in coach._watched_games()
+    assert history() == {}
+    assert bundles == []
+    assert caplog.text.count("Discarded stale game-end event") == 2
+
+
 def test_an_autopilot_game_end_is_recorded_and_never_lands_on_the_next_game(
     monkeypatch, arena, bundles, caplog
 ):

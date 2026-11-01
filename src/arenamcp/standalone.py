@@ -2278,8 +2278,14 @@ class StandaloneCoach(
                         # Packet and bundle for this match's current game (game
                         # 2/3 of a Bo3 after the between-games reset included).
                         self._start_game_recording(curr_match_id, curr_state.get("game_number"))
-                # A match seen in play: the game-end signal for it is ours.
-                if curr_match_id is not None and turn_num > 0:
+                # A room/mulligan observed before turn 1 is already our match:
+                # an opponent can concede there (15b43f5b, #5 recurrence).
+                # MatchCompleted also re-binds old IDs during startup catch-up;
+                # that finished match must not acquire ownership after its end
+                # was discarded above merely because its ID is visible again.
+                if curr_match_id is not None and (
+                    turn_num > 0 or (gs.last_ended_game() or {}).get("match_id") != curr_match_id
+                ):
                     self._note_watched_game(curr_match_id, curr_state.get("game_number"))
 
                 # Debug: Log if turn_num is 0 (every 30 seconds)
