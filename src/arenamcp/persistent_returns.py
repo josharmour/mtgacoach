@@ -110,6 +110,54 @@ def engine_value(card):
     return 2.0
 
 
+def return_value(card):
+    """Bounded residual engine value, independent of whether return is prevented."""
+    raw = card.get("_card") or card
+    # Ordinary creatures dominate combat searches. Avoid return parsing there.
+    if "dies, if it was a creature" not in str(raw.get("oracle_text") or "").lower():
+        return 0
+    engine = returned_enchantment(card)
+    return int(engine_value(engine)) if engine is not None else 0
+
+
+def return_credit(card):
+    """Material retained by the dying controller (negative when the opponent gets it).
+
+    Unknown ownership earns no credit. Visible death-trigger suppression or
+    potential graveyard-exile replacement withholds credit rather than guessing
+    how that replacement resolves. This is not an alternate-zone interpreter.
+    """
+    raw = card.get("_card") or card
+    if raw.get("_return_credit_blocked") or card.get("_return_credit_blocked"):
+        return 0
+    amount = return_value(card)
+    if not amount:
+        return 0
+    controller = raw.get("controller_seat_id", raw.get("owner_seat_id"))
+    returned = returned_enchantment(card)
+    recipient = returned.get("controller_seat_id", returned.get("owner_seat_id"))
+    if controller is None or recipient is None:
+        return 0
+    return amount if controller == recipient else -amount
+
+
+def annotate_return_credit(battlefield):
+    """Refresh the visible interference that affects combat return valuation."""
+    from arenamcp.death_bodies import death_is_suppressed
+
+    cards = [c for c in battlefield if not c.get("is_phased_out") and not c.get("face_down")]
+    blocked = death_is_suppressed(cards) or any(
+        "exile" in (text := str(c.get("oracle_text") or "").lower())
+        and "instead" in text and ("graveyard" in text or "die" in text)
+        for c in cards
+    )
+    for card in battlefield:
+        if blocked:
+            card["_return_credit_blocked"] = True
+        else:
+            card.pop("_return_credit_blocked", None)
+
+
 def gain_drain(cards, gained, life):
     """Known unconditional gain -> that-much loss, including the visible return loop."""
     if gained <= 0:

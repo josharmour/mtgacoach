@@ -259,6 +259,9 @@ def annotate_death_swings(battlefield: list | None) -> list[DeathTrigger]:
     Removes a stale mark, so it is safe to call again on the same board.
     """
     cards = [card for card in battlefield or [] if isinstance(card, dict)]
+    from arenamcp.persistent_returns import annotate_return_credit
+
+    annotate_return_credit(cards)
     triggers = death_triggers(cards)
     for card in cards:
         swing = death_swing(card, triggers) if triggers and _is_creature(card) else (0, 0)

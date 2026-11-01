@@ -36,6 +36,7 @@ from arenamcp.combat_keywords import can_be_blocked_by, has_combat_keyword
 from arenamcp.combat_loss import LossState, infect_source, loss_state, player_hit
 from arenamcp.combat_protection import future_protection, prevents_damage, protection_key
 from arenamcp.death_triggers import swing_of
+from arenamcp.persistent_returns import return_credit, return_value
 from arenamcp.player_protection import protected_players, source_controller
 from arenamcp.token_lifetime import token_expires
 
@@ -70,6 +71,7 @@ def _card_key(c: dict) -> tuple:
         protection_key(c),
         c.get("_combat_damage", 0),
         bool(c.get("_track_combat_damage")),
+        return_credit(c),
     )
 
 
@@ -160,7 +162,13 @@ def _material(card: dict) -> int:
         return 0
     power, toughness = _pt(card)
     engine = int(round(float(card.get("_engine_value") or 0)))
-    return max(1, power + toughness) + 2 + 3 * len(combat_resource_roles(card)) + engine
+    resources = max(3 * len(combat_resource_roles(card)) + engine, return_value(card))
+    return max(1, power + toughness) + 2 + resources
+
+
+def _death_material(card: dict) -> int:
+    """Loss from dying, after the bounded retained engine credit (#270/#307)."""
+    return max(0, _material(card) - return_credit(card))
 
 
 def _can_block(attacker: dict, blocker: dict) -> bool:
@@ -683,8 +691,8 @@ def _with_keyword(card: dict, keyword: str) -> dict:
 
 def _fight_value(attacker: dict, outcome: CombatOutcome) -> int:
     """Material the blocking side nets in one fight: the attacker if it dies, minus dead blockers."""
-    killed = _material(attacker) if outcome.attacker_died else 0
-    return killed - sum(_material(dead) for dead in outcome.blockers_died)
+    killed = _death_material(attacker) if outcome.attacker_died else 0
+    return killed - sum(_death_material(dead) for dead in outcome.blockers_died)
 
 
 def _blowout_loss(attacker: dict, assigned: list[dict], outcome: CombatOutcome) -> int:
@@ -937,8 +945,8 @@ def _search_blocks(
                 outcome = _resolve_attacker(attackers[a_idx], assigned, defending_player=defending_player)
                 fight = (
                     outcome.damage_through,
-                    _material(attackers[a_idx]) if outcome.attacker_died else 0,
-                    sum(_material(dead) for dead in outcome.blockers_died),
+                    _death_material(attackers[a_idx]) if outcome.attacker_died else 0,
+                    sum(_death_material(dead) for dead in outcome.blockers_died),
                     frozenset(dead.get("instance_id", 0) for dead in outcome.blockers_died),
                     _blowout_loss(attackers[a_idx], assigned, outcome) if trick_p > 0 else 0,
                     *_death_life(attackers[a_idx], outcome),
@@ -1174,10 +1182,10 @@ def _rebuild_block_plan(
         plan.attacker_life_gained += attacking
         if assigned:
             if outcome.attacker_died:
-                plan.attackers_killed_material += _material(atk)
+                plan.attackers_killed_material += _death_material(atk)
                 killed_attackers.append(atk)
             for dead in outcome.blockers_died:
-                plan.blockers_lost_material += _material(dead)
+                plan.blockers_lost_material += _death_material(dead)
                 lost_blockers.append(dead)
             if trick_p > 0:
                 blowout += _blowout_loss(atk, assigned, outcome)
@@ -1420,8 +1428,8 @@ def _greedy_block_plan(
             if not _can_block_this_attacker(atk, blk, allowed):
                 continue
             outcome = _resolve_attacker(atk, [blk], defending_player=defending_player)
-            killed = _material(atk) if outcome.attacker_died else 0
-            lost = sum(_material(dead) for dead in outcome.blockers_died)
+            killed = _death_material(atk) if outcome.attacker_died else 0
+            lost = sum(_death_material(dead) for dead in outcome.blockers_died)
             blocking, attacking = _death_life(atk, outcome)
             fatal, pressure = risk(outcome)
             score = (
@@ -1475,10 +1483,10 @@ def _greedy_block_plan(
         if trick_p > 0:
             trick_cost += trick_p * _blowout_loss(atk, [chosen], outcome)
         if outcome.attacker_died:
-            atk_killed_material += _material(atk)
+            atk_killed_material += _death_material(atk)
             killed_attackers.append(atk)
         for dead in outcome.blockers_died:
-            blocker_lost_material += _material(dead)
+            blocker_lost_material += _death_material(dead)
             lost_blockers.append(dead)
 
     choice = tuple(
@@ -1831,7 +1839,7 @@ def gang_block_kill(
             if power >= cost:
                 power -= cost
                 lost.append(blocker)
-        return sum(_material(b) for b in lost), lost
+        return sum(_death_material(b) for b in lost), lost
 
     def key(b: dict) -> int:
         return b.get("instance_id") or 0

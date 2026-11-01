@@ -2415,7 +2415,9 @@ class Moves:
 
         if death_is_suppressed(self.model.battlefield):
             return []
-        return [engine for body in bodies if (engine := returned_enchantment(body)) is not None]
+        return [engine for body in bodies
+                if not (body.get("_card") or body).get("_return_credit_blocked")
+                and (engine := returned_enchantment(body)) is not None]
 
     def death_bodies(self, bodies) -> list[dict]:
         from arenamcp.death_bodies import death_is_suppressed, token_specs_on_death
@@ -2788,7 +2790,8 @@ class Moves:
             - sum(self.material(b) for b in theirs)
             + 0.3 * sum(self.spells[i].hand_value for i in hand)
             - sum(walker_value(loyal) for _iid, _name, loyal in walkers)
-            - sum(engine_value(c) for c in persistent)
+            + sum(engine_value(c) * (1 if _controller(c) == self.model.local else -1)
+                  for c in persistent if _controller(c) in (self.model.local, self.model.opponent))
         )
 
     def score(self, node: Node) -> tuple:
@@ -3927,11 +3930,8 @@ class Moves:
             mid.our_life += gained
             mid.gained += ll_gain
             opp_after = mid.opp_life
-            mid.ours = self.rescale(
-                self._combat_counters(
-                    [b for b in mid.ours if b["instance_id"] not in dead_ours], counter_deltas
-                )
-            )
+            mid.persistent.extend(self.return_engines([b for b in mid.ours if b["instance_id"] in dead_ours]))
+            mid.ours = self.rescale(self._combat_counters([b for b in mid.ours if b["instance_id"] not in dead_ours], counter_deltas))
             died = [b for b in mid.theirs if b["instance_id"] in dead_theirs]
             replacement = self.death_bodies(died)
             mid.persistent.extend(self.return_engines(died))
@@ -4593,10 +4593,12 @@ class Moves:
                 for c in self.model.battlefield
                 if not _is_creature(c) and _controller(c) == self.model.opponent
             ]
-            engines += [b for b in theirs if b["instance_id"] not in removed] + persistent
+            engines += [b for b in theirs if b["instance_id"] not in removed]
+            engines += [c for c in persistent if _controller(c) == self.model.opponent]
             after -= gain_drain(engines, ll_gain, after)
         opp_life += gained
         persistent.extend(self.return_engines([b for b in theirs if b["instance_id"] in dead_att]))
+        persistent.extend(self.return_engines([b for b in ours if b["instance_id"] in dead_blk]))
         # Their token engines' tokens of this turn (#172): sick now, they block our next attack.
         made = (
             self.their_tokens(
