@@ -5989,10 +5989,13 @@ class ActionPlanner(_ActionLegalityMixin):
 
         attribution = damage_attribution_notes(reasoning, game_state)
         if attribution and chosen and decision.request_type in {"ActionsAvailable", "SelectTargets"}:
-            return [(
-                "damage_attribution",
-                " ".join(attribution) + " Re-evaluate the play and target without attributing extra damage to this effect.",
-            )]
+            return [
+                (
+                    "damage_attribution",
+                    " ".join(attribution)
+                    + " Re-evaluate the play and target without attributing extra damage to this effect.",
+                )
+            ]
         if (
             decision.request_type != "ActionsAvailable"
             or len(chosen or []) != 1
@@ -7570,7 +7573,8 @@ class ActionPlanner(_ActionLegalityMixin):
         # be represented by board search. Absence of a winning line here is
         # not evidence of nonlethal damage (#323, kicked Burst at two life).
         if game_state.get("stack") or getattr(decision, "request_type", "") in {
-            "CastingTimeOptions", "SelectTargets",
+            "CastingTimeOptions",
+            "SelectTargets",
         }:
             return
         reasoning = self._last_decision_reasoning
@@ -9769,9 +9773,7 @@ class ActionPlanner(_ActionLegalityMixin):
         from arenamcp.game_plan import corrected_decision_reasoning
 
         original = self._last_decision_reasoning
-        self._last_decision_reasoning = corrected_decision_reasoning(
-            original, game_state, cast_ids=cast_ids
-        )
+        self._last_decision_reasoning = corrected_decision_reasoning(original, game_state, cast_ids=cast_ids)
         trace = getattr(self, "_last_decision_trace", None)
         if isinstance(trace, dict) and original != self._last_decision_reasoning:
             trace["uncorrected_reasoning"] = original
