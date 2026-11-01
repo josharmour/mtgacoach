@@ -2161,6 +2161,8 @@ class Moves:
         self._ping_memo: dict = {}
         self._growth_memo: dict = {}
         self._spell_growth_memo: dict = {}
+        self._protection_memo: dict = {}  # protection_signature -> protection_key
+        self._mill_memo: dict = {}  # oracle text -> whether its combat damage can mill
         self._pump_memo: dict = {}
         self._cast_pump_memo: dict = {}  # id(body) -> its cast pumps (``cast_triggers.cast_pumps``)
         self._cast_pumped_memo: dict = {}  # (id(body), power, toughness) -> (body, its pumped copy)
@@ -2761,12 +2763,8 @@ class Moves:
         # Ordinary draws change the library each turn, but cannot change this combat's
         # blocks unless an attacker mills. Keep zero distinct: a pending failed draw
         # already affects survival scoring. Never discard poison from the context.
-        library_irrelevant = defender.library not in (None, 0) and not any(
-            "mill" in str(b.get("oracle_text") or "").lower() for b in attackers
-        )
+        library_irrelevant = defender.library not in (None, 0) and not any(self._mills(b) for b in attackers)
         context = LossState(defender.poison) if library_irrelevant else defender
-        from arenamcp.combat_protection import protection_key
-
         key = (
             tag,
             ids_of(attackers),
@@ -2774,7 +2772,7 @@ class Moves:
             max(1, life),
             context,
             defending_player,
-            tuple(protection_key(b) for b in (*attackers, *blockers)),
+            tuple(self._protection_key(b) for b in (*attackers, *blockers)),
         )
         key += (
             tuple(
@@ -4855,6 +4853,37 @@ class Moves:
         found = self._growth_memo.get(id(body))
         if found is None:
             found = self._growth_memo[id(body)] = landfall_growth(body.get("_card") or body)
+        return found
+
+    def _protection_key(self, body: dict) -> tuple:
+        """``protection_key`` of a body, memoised for this search by its inputs.
+
+        The combat memo rebuilds this for every attacker and blocker on every
+        lookup; the same bodies recur across thousands of lookups. The memo is
+        keyed by ``protection_signature`` rather than by identity: a nested
+        ``_card`` refresh (``modified_colors``, abilities, removal, future
+        state) must invalidate it, and the signature is cheaper than the key.
+        """
+        from arenamcp.combat_protection import protection_key, protection_signature
+
+        signature = protection_signature(body)
+        try:
+            found = self._protection_memo.get(signature)
+        except TypeError:  # an unhashable field value: no memo, still correct
+            return protection_key(body)
+        if found is None:
+            found = self._protection_memo[signature] = protection_key(body)
+        return found
+
+    def _mills(self, body: dict) -> bool:
+        """Whether a body's combat damage can mill (its oracle text mentions it), memoised.
+
+        Keyed by the oracle text itself so an in-place text refresh invalidates it.
+        """
+        text = str(body.get("oracle_text") or "")
+        found = self._mill_memo.get(text)
+        if found is None:
+            found = self._mill_memo[text] = "mill" in text.lower()
         return found
 
     def spell_growth(self, body: dict) -> int:

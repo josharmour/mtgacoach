@@ -336,9 +336,13 @@ def _damage_order(
 
 
 def _resolve_attacker(
-    attacker: dict, assigned: list[dict], *, defending_player: bool = True
+    attacker: dict,
+    assigned: list[dict],
+    *,
+    defending_player: bool = True,
+    keys: dict[int, tuple | None] | None = None,
 ) -> CombatOutcome:
-    out = _resolve_attacker_damage(attacker, assigned)
+    out = _resolve_attacker_damage(attacker, assigned, keys=keys)
     out.combat_damage = out.damage_through
     if defending_player and out.player_hits:
         text = str(attacker.get("oracle_text") or "").lower()
@@ -512,6 +516,26 @@ def _fight_key(card: dict) -> tuple | None:
     return tuple(parts)
 
 
+_MISSING = object()
+
+
+def _fight_key_cached(card: dict, keys: dict[int, tuple | None] | None) -> tuple | None:
+    """``_fight_key`` from a per-search cache of unchanged bodies, or computed once.
+
+    ``keys`` is local to one ``_search_blocks`` call (see there): the same
+    handful of bodies recur in hundreds of fights, and their content cannot
+    change while the call holds them. ``id`` is only the lookup handle; the
+    value is always the content key ``_fight_key`` would return now.
+    """
+    if keys is None:
+        return _fight_key(card)
+    key = keys.get(id(card), _MISSING)
+    if key is _MISSING:
+        key = _fight_key(card)
+        keys[id(card)] = key
+    return key
+
+
 def _fight_snapshot(out: CombatOutcome, assigned: list[dict]) -> _FightSnapshot:
     dead_indices = []
     for dead in out.blockers_died:
@@ -556,15 +580,17 @@ def _outcome_from_snapshot(snapshot: _FightSnapshot, assigned: list[dict]) -> Co
     )
 
 
-def _resolve_attacker_damage(attacker: dict, assigned: list[dict]) -> CombatOutcome:
+def _resolve_attacker_damage(
+    attacker: dict, assigned: list[dict], *, keys: dict[int, tuple | None] | None = None
+) -> CombatOutcome:
     if not assigned:
         # Unblocked damage is the cheap fast path and has no blocker-dependent
         # work to reuse; keying it would cost more than resolving it.
         return _resolve_attacker_damage_uncached(attacker, assigned)
-    attacker_key = _fight_key(attacker)
+    attacker_key = _fight_key_cached(attacker, keys)
     if attacker_key is None:
         return _resolve_attacker_damage_uncached(attacker, assigned)
-    blocker_keys = tuple(_fight_key(body) for body in assigned)
+    blocker_keys = tuple(_fight_key_cached(body, keys) for body in assigned)
     if None in blocker_keys:
         return _resolve_attacker_damage_uncached(attacker, assigned)
     key = (attacker_key, blocker_keys)
@@ -1130,6 +1156,9 @@ def _search_blocks(
     # An attacker's fight depends only on which blockers it gets, and the
     # same (attacker, blockers) pairs recur across thousands of choices.
     fights: dict[tuple[int, tuple[int, ...]], tuple[int, int, int, frozenset[int], int, int, int]] = {}
+    # Content keys for the bodies this search resolves, built once per body:
+    # the same attacker/blocker recurs in hundreds of fights (``_fight_key_cached``).
+    keys: dict[int, tuple | None] = {}
 
     best_score: float | None = None
     best_choice: tuple = ()
@@ -1172,7 +1201,9 @@ def _search_blocks(
             fight = fights.get(key)
             if fight is None:
                 assigned = [blockers[b] for b in key[1]]
-                outcome = _resolve_attacker(attackers[a_idx], assigned, defending_player=defending_player)
+                outcome = _resolve_attacker(
+                    attackers[a_idx], assigned, defending_player=defending_player, keys=keys
+                )
                 fight = (
                     outcome.damage_through,
                     _death_material(attackers[a_idx]) if outcome.attacker_died else 0,
@@ -1241,6 +1272,7 @@ def _search_blocks(
         defending_player=defending_player,
         recovery_credit=recovery_credit,
         trick_p=trick_p,
+        keys=keys,
     )
     plan.evaluated = evaluated
     if cut:
@@ -1280,6 +1312,7 @@ def _search_blocks(
             trick_p=trick_p,
             defender=defender,
             defending_player=defending_player,
+            keys=keys,
         )
         if rejected.trick_cost > 0:
             plan.trick_rejected = (
@@ -1377,6 +1410,7 @@ def _rebuild_block_plan(
     trick_p: float = 0.0,
     defender: LossState = LossState(),
     defending_player: bool = True,
+    keys: dict[int, tuple | None] | None = None,
 ) -> BlockPlan:
     """One block assignment in full: plan, kills, losses, score (trick cost included) and explanation."""
     assigned_to_atk: dict[int, list[dict]] = {}
@@ -1396,7 +1430,7 @@ def _rebuild_block_plan(
     first_damage = first_gain = 0
     for a_idx, atk in enumerate(attackers):
         assigned = assigned_to_atk.get(a_idx, [])
-        outcome = _resolve_attacker(atk, assigned, defending_player=defending_player)
+        outcome = _resolve_attacker(atk, assigned, defending_player=defending_player, keys=keys)
         plan.player_loses |= outcome.player_loses
         plan.poison_given += outcome.poison_given
         plan.cards_milled += outcome.cards_milled

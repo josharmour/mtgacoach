@@ -128,6 +128,50 @@ def protection_key(card):
     )
 
 
+def _sig(value):
+    """Hashable form of one field value (a list becomes a tuple)."""
+    return tuple(value) if isinstance(value, list) else value
+
+
+def protection_signature(card):
+    """Every input ``protection_key`` reads, as a cheap hashable fingerprint.
+
+    ``protection_key`` is memoised per search; this lets the memo notice an
+    in-place refresh of the body or of its nested ``_card`` backing dict (a
+    ``modified_colors`` change must not serve a stale key). It reads the same
+    fields ``protection_key`` does, without the parsing and set work.
+    """
+    inner = card.get("_card")
+    if not isinstance(inner, dict) or not inner or inner is card:
+        inner = None
+    raw = inner if inner is not None else card
+    parts = [
+        _sig(card.get("_source_colors")),
+        _sig(card.get("modified_colors")),
+        _sig(card.get("colors")),
+        bool(card.get("_protection_future")),
+        _sig(card.get("ability_grp_ids")),
+        _sig(card.get("keywords")),
+        _sig(card.get("granted_abilities")),
+        bool(card.get("damage_cant_be_prevented")),
+        raw.get("oracle_text"),
+        _sig(raw.get("removed_abilities")),
+    ]
+    if inner is not None:
+        parts.extend(
+            (
+                _sig(inner.get("_source_colors")),
+                _sig(inner.get("modified_colors")),
+                _sig(inner.get("colors")),
+                _sig(inner.get("ability_grp_ids")),
+                _sig(inner.get("keywords")),
+                _sig(inner.get("granted_abilities")),
+                bool(inner.get("damage_cant_be_prevented")),
+            )
+        )
+    return tuple(parts)
+
+
 def future_protection(card):
     """Copy a projected body; never mutate the live snapshot or its _card."""
     if protection_qualities(card) <= _printed(str(_raw(card).get("oracle_text") or "")):
