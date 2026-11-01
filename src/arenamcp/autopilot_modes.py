@@ -77,6 +77,13 @@ class _AutopilotModesMixin:
         optional_mana = bool(re.search(r"\bmay pay\s+\{(?:o)?[0-9WUBRGCX]", oracle, re.IGNORECASE))
         if not harmful and not optional_mana:
             return None
+        if optional_mana:
+            from arenamcp.optional_reservation import reserved_optional_mana
+
+            reserved = reserved_optional_mana(self._planner, game_state, oracle)
+            if reserved:
+                logger.info("Optional payment reservation: %s", reserved)
+                return reserved
         cost_kind = "harmful optional cost" if harmful else "optional mana cost"
         verdict: bool | None = None
         try:
