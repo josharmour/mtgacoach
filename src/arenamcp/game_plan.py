@@ -2815,6 +2815,15 @@ def _with_progress(step: dict, assessment: Any, state: dict | None) -> dict:
             entry = f"{entry}{_DONE}"
         casts.append(entry)
     marked["cast"] = casts
+    # A successful optional payment can consume the last reserved source
+    # without changing this turn's strategic plan. Render against confirmed
+    # current mana once the step's planned land/casts are complete; never
+    # erase the saved plan or treat a submitted payment as already resolved.
+    pending_land = marked.get("land") and not str(marked["land"]).endswith(_DONE)
+    if not pending_land and all(str(entry).endswith(_DONE) for entry in casts):
+        from arenamcp.resource_hold import current_mana_hold
+
+        marked["hold"] = current_mana_hold(str(marked.get("hold") or ""), state)
     return marked
 
 
