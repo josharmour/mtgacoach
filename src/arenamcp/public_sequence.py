@@ -64,6 +64,17 @@ def _cast_source(decision, state, chosen):
     return find_source(state, option.meta)
 
 
+def _claims_another_draw(name, rationale):
+    # Bind the acknowledgement to the clause about this engine. An earlier
+    # "we used Helix" does not acknowledge that Innocence's draw was used.
+    return any(
+        re.search(re.escape(name), clause, re.I)
+        and re.search(r"\b(?:draw|draws|drawing)\b", clause, re.I)
+        and not re.search(r"\b(?:already|used|spent|cannot|can't|no draw)\b", clause, re.I)
+        for clause in re.split(r"[.;!?]", rationale)
+    )
+
+
 def public_sequence_concerns(decision, state, chosen, reasoning, *, used_draw_triggers=frozenset()):
     """Factual challenges for one recheck; acknowledged tradeoffs remain available."""
     source = _cast_source(decision, state, chosen)
@@ -110,11 +121,7 @@ def public_sequence_concerns(decision, state, chosen, reasoning, *, used_draw_tr
             continue
         name = str(engine.get("name") or "draw engine")
         if engine.get("instance_id") in used_draw_triggers:
-            if (
-                re.search(re.escape(name), rationale, re.I)
-                and re.search(r"\b(?:draw|draws|drawing)\b", rationale, re.I)
-                and not re.search(r"\b(?:already|used|spent|cannot|can't|no draw)\b", rationale, re.I)
-            ):
+            if _claims_another_draw(name, rationale):
                 concerns.append(
                     f"{name}'s once-per-turn draw trigger was already observed this turn. This entry cannot trigger that same object again; compare the creature without another draw."
                 )

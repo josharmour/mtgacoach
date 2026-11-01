@@ -1,5 +1,6 @@
 """Mechanism regressions for audit G04/#308; original packet is unavailable."""
 
+import pytest
 from tests.test_tactical_timing_backlog import board, card, cast, menu
 
 from arenamcp.public_sequence import TriggerUseMemory, public_sequence_concerns
@@ -139,6 +140,38 @@ def test_spent_trigger_does_not_project_draw_punishment_without_draw_claim():
     assert not public_sequence_concerns(
         menu(cast(31)), state(), ["idx:31"], "Deploy a useful blocker.", used_draw_triggers={70}
     )
+
+
+@pytest.mark.parametrize("prefix", ["", "We used Helix to gain life. ", "Mana is already spent; "])
+def test_retained_sentinel_draw_claim_is_checked_despite_unrelated_acknowledgement(prefix):
+    # Exact explanation retained in gameplay-ultra-audit.json G04, request356/551.
+    # The matching observed-trigger state is a mechanic fixture, not a packet replay.
+    s = state()
+    s["battlefield"][0]["name"] = "Enduring Innocence"
+    s["hand"][1]["name"] = "Esper Sentinel"
+    s["graveyard"] = [s["hand"].pop()]  # the offered Paragon replay is still a cast
+    reason = (
+        "Casting Esper Sentinel. Replaying Esper Sentinel via Paragon adds a blocker and triggers "
+        "Enduring Innocence for a free draw, improving survival at no extra mana."
+    )
+    concerns = public_sequence_concerns(
+        menu(cast(31)), s, ["idx:31"], prefix + reason, used_draw_triggers={70}
+    )
+    assert len(concerns) == 1 and "already observed" in concerns[0]
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Draw engine already used its draw trigger. Deploy a blocker.",
+        "Draw engine's draw is spent; deploy a blocker.",
+        "Draw engine gives no draw this turn. Deploy a blocker.",
+        "Draw engine cannot draw again. Deploy a blocker.",
+        "Draw engine can't draw again; deploy a blocker.",
+    ],
+)
+def test_explicit_spent_draw_acknowledgement_still_preserves_the_cast(reason):
+    assert not public_sequence_concerns(menu(cast(31)), state(), ["idx:31"], reason, used_draw_triggers={70})
 
 
 def test_visible_activation_lock_abstains_from_protection_availability_claim():
