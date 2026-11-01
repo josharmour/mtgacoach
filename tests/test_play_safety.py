@@ -13,6 +13,13 @@ from arenamcp.play_safety import filter_play_options, tutor_has_target, unsafe_p
 from arenamcp.rules_engine import RulesEngine
 
 
+@pytest.fixture(autouse=True)
+def _offline_executor_bridge(monkeypatch):
+    # Inject before construction: replacing _gre_bridge afterward leaves the
+    # real singleton's keepalive thread running even though tests use mocks.
+    monkeypatch.setattr("arenamcp.autopilot.get_bridge", lambda: Mock(connected=False))
+
+
 def _card(name, instance_id, type_line, seat=1, **fields):
     return dict(
         name=name,

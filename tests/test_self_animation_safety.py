@@ -9,7 +9,7 @@ import pytest
 from arenamcp.action_planner import ActionPlanner
 from arenamcp.coach import CoachEngine
 from arenamcp.decisions import build_pending_decision
-from arenamcp.play_safety import filter_play_options, unsafe_play_reason
+from arenamcp.play_safety import filter_play_options, pointless_self_animation, unsafe_play_reason
 
 
 def board(*, tapped=True):
@@ -303,6 +303,21 @@ def test_redundant_crew_is_filtered_but_ambiguous_activations_are_left_to_planne
     wagon["card_types"].append("CardType_Creature")
     assert "already a creature" in unsafe_play_reason(state, wagon, "Activate", action)
     wagon["oracle_text"] += "\n{1}: Scry 1."
+    assert pointless_self_animation(state, wagon, action) == ""
+    # Ambiguous animation is not proof of a pointless activation. Payment
+    # guards still apply independently: fund the alternative mana ability.
+    state["battlefield"].append(
+        {
+            "instance_id": 800,
+            "name": "Island",
+            "type_line": "Basic Land — Island",
+            "card_types": ["CardType_Land"],
+            "oracle_text": "{T}: Add {U}.",
+            "owner_seat_id": 2,
+            "controller_seat_id": 2,
+            "is_tapped": False,
+        }
+    )
     assert unsafe_play_reason(state, wagon, "Activate", action) == ""
 
 
