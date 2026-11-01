@@ -9,7 +9,21 @@ def returned_enchantment(card):
     name = str(raw.get("name") or "").lower()
     if name:
         text = text.replace(name, "cardname")
-    if "creature" not in str(raw.get("type_line") or "").lower() or raw.get("is_token"):
+    types = raw.get("card_types")
+    creature = (
+        any(str(kind).lower().removeprefix("cardtype_") == "creature" for kind in types)
+        if types is not None
+        else "creature" in str(raw.get("type_line") or "").lower()
+    )
+    if (
+        not creature
+        or raw.get("is_token")
+        or "token" in str(raw.get("object_kind") or "").lower()
+        or "token" in str(raw.get("type_line") or "").lower()
+        or raw.get("is_phased_out")
+        or raw.get("face_down")
+        or raw.get("is_copy")
+    ):
         return None
     if not re.search(
         r"when (?:cardname|this creature) dies, if it was a creature, return it to the battlefield", text
@@ -17,7 +31,73 @@ def returned_enchantment(card):
         return None
     if not re.search(r"it(?:'s| is) an enchantment", text):
         return None
-    return {**raw, "type_line": "Enchantment", "power": None, "toughness": None, "is_tapped": False}
+    # This is a fresh permanent, not the dying body with a different label.
+    # Current GRE types otherwise override type_line and turn it back into a
+    # creature; old counters/combat state and a thief's control also cannot
+    # survive the zone change (#270/#307).
+    returned = {
+        **raw,
+        "type_line": "Enchantment",
+        "card_types": ["CardType_Enchantment"],
+        "subtypes": [],
+        "power": None,
+        "toughness": None,
+        "is_tapped": False,
+        "is_attacking": False,
+        "is_blocking": False,
+        "counters": {},
+        "attachments": [],
+        "damage": 0,
+        "damaged_this_turn": False,
+    }
+    if "under its owner's control" in text:
+        returned["controller_seat_id"] = raw.get("owner_seat_id")
+    return returned
+
+
+def return_notes(battlefield, local_seat):
+    """Conditional combat facts, not a promise that a trigger resolves.
+
+    Body value and engine value are separate: losing Innocence's body may
+    still be costly, while killing Tenacity's body does not remove its drain.
+    These facts belong beside ordinary death-trigger warnings in the prompt.
+    """
+    from arenamcp.death_bodies import death_is_suppressed
+
+    cards = [
+        c
+        for c in battlefield or []
+        if isinstance(c, dict) and not c.get("is_phased_out") and not c.get("face_down")
+    ]
+    suppressed = death_is_suppressed(cards)
+    notes = []
+    for card in cards:
+        engine = returned_enchantment(card)
+        if engine is None:
+            continue
+        label = f"{card.get('name', 'Creature')} [id:{card.get('instance_id')}]"
+        if suppressed:
+            notes.append(f"{label}: visible death-trigger suppression prevents its return trigger")
+            continue
+        owner = engine.get("controller_seat_id")
+        side = (
+            "its owner's"
+            if owner is None or local_seat is None
+            else "your"
+            if owner == local_seat
+            else "their"
+        )
+        text = str(engine.get("oracle_text") or "").lower()
+        role = "draw engine" if "draw a card" in text else "engine"
+        if "whenever you gain life" in text and "loses that much life" in text:
+            role = "lifegain-drain engine"
+        notes.append(
+            f"{label}: if it dies as a creature and its return trigger resolves, it returns under "
+            f"{side} control as a noncreature enchantment retaining its {role}. "
+            "The creature body is lost, but the engine is not removed; exile, graveyard interference "
+            "or countering the trigger can prevent the return. Compare the body cost separately"
+        )
+    return notes
 
 
 def engine_value(card):

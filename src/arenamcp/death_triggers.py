@@ -288,4 +288,7 @@ def death_trigger_notes(battlefield: list | None, local_seat: int | None) -> lis
         note = trigger.describe(local_seat)
         if note not in notes:
             notes.append(note)
+    from arenamcp.persistent_returns import return_notes
+
+    notes.extend(return_notes(battlefield, local_seat))
     return notes
