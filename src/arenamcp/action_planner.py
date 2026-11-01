@@ -9129,6 +9129,9 @@ class ActionPlanner(_ActionLegalityMixin):
 
         lines.extend(commander_sacrifice_context(game_state, decision))
         lines.extend(timing_notes(decision, game_state))
+        from arenamcp.land_intent import land_payment_notes
+
+        lines.extend(land_payment_notes(decision, game_state))
         if any(o.meta.get("choiceKind") == "selection" for o in decision.options):
             lines.append(
                 "CASTING-COST SELECTION: choose only among these offered battlefield creatures, "
@@ -9780,6 +9783,7 @@ class ActionPlanner(_ActionLegalityMixin):
         data, chosen = self._repair_invalid_transform_hold(
             decision, tag_state, data, chosen, ask, parse, user_message
         )
+        data, chosen = self._repair_land_claim(decision, tag_state, data, chosen, ask, parse, user_message)
         reason = data.get("reasoning")
         self._last_decision_target_controllers = (
             data.get("target_controllers") if isinstance(data.get("target_controllers"), dict) else {}
@@ -9799,6 +9803,38 @@ class ActionPlanner(_ActionLegalityMixin):
             "typed-decision choice %s: %s", chosen, self._last_decision_reasoning or "reason not supplied"
         )
         return chosen
+
+    def _repair_land_claim(self, decision, state, data, chosen, ask, parse, message):
+        """Recheck false entry/payment claims without forcing every untapped land."""
+        from arenamcp.land_intent import land_claim_mismatch
+
+        mismatch = land_claim_mismatch(decision, state, chosen, data.get("reasoning", ""))
+        if mismatch is None:
+            return data, chosen
+        repair = {"first": chosen, "evidence": mismatch.reason}
+        try:
+            revised, picks = parse(ask(
+                message + "\n\nLAND PAYMENT RECHECK: " + mismatch.reason,
+                effort="high", budget=min(self._timeout, 12.0),
+                cancel_event=getattr(self, "_decision_cancel_event", None),
+            ))
+            if land_claim_mismatch(decision, state, picks, revised.get("reasoning", "")) is None:
+                repair["final"] = picks
+                self._last_decision_trace["land_payment_recheck"] = repair
+                return revised, picks
+        except Exception as error:
+            repair["error"] = str(error)[:120]
+        # Preserve the explicitly stated plan with a verified offered land.
+        # If none satisfies it, do not silently execute the disproved plan.
+        fallback = next(iter(mismatch.alternatives), None)
+        if fallback is None and decision.find("pass") is not None:
+            fallback = "pass"
+        picks = [fallback] if fallback else chosen
+        reason = (f"{decision.find(fallback).label}: this offered land satisfies the stated entry/payment plan. "
+                  if fallback and fallback != "pass" else "Reassess the land plan. ") + mismatch.reason
+        repair.update(final=picks, fallback=True)
+        self._last_decision_trace["land_payment_recheck"] = repair
+        return {"option_ids": picks, "reasoning": reason}, picks
 
     def _repair_invalid_transform_hold(self, decision, state, data, chosen, ask, parse, message):
         """Reconsider a proven impossible future answer once, then take its current window.
