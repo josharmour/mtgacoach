@@ -5476,7 +5476,9 @@ class AutopilotEngine(
         to target creature" was chosen against a 7/7; its target was declined,
         the cast cancelled and the spell hidden for the turn, prowess and
         Slickshot pumps with it. "1 damage to each creature your opponents
-        control" keeps the cast (cast_triggers.untargeted_mode_instead).
+        control" keeps the cast (cast_triggers.untargeted_mode_instead), but
+        only while a cast trigger on one of our attackers makes that payoff
+        real (#329); otherwise the selected mode stands.
         """
         from arenamcp.cast_triggers import untargeted_mode_instead
 

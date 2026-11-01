@@ -118,7 +118,27 @@ def test_8021c5be_numeric_mode_still_reaches_the_no_kill_guard(modal_poll, answe
     behavior, not force the claimed removal or imply that this cast wins.
     """
     state = modal_state()
+    state["turn"]["active_player"] = 1
     state["battlefield"][0].update(name="Craterclaw Colossus", power=5, toughness=5, oracle_text="")
+    # The #65 rewrite needs a cast trigger that feeds this turn's attack (#329).
+    state["battlefield"].append(
+        {
+            "instance_id": 351,
+            "name": "Slickshot Show-Off",
+            "type_line": "Creature — Bird Wizard",
+            "card_types": ["CardType_Creature"],
+            "oracle_text": (
+                "Flying, haste\nWhenever you cast a noncreature spell, "
+                "Slickshot Show-Off gets +2/+0 until end of turn."
+            ),
+            "power": 1,
+            "toughness": 2,
+            "owner_seat_id": 1,
+            "controller_seat_id": 1,
+            "is_tapped": False,
+            "turn_entered_battlefield": 1,
+        }
+    )
     reason = (
         "Mode 2 kills the tapped 5/5 Craterclaw Colossus, removing their only threat and clock; "
         "the sweeper mode kills nothing."

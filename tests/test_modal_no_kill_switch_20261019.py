@@ -48,41 +48,54 @@ def modes(*texts):
 
 IROH = modes(MODE_TEXT[87912], MODE_TEXT[21773])
 
+SLICKSHOT_TEXT = (
+    "Flying, haste\nWhenever you cast a noncreature spell, Slickshot Show-Off gets +2/+0 until end of turn."
+)
+
+
+def with_payoff(state):
+    """The historical board's Slickshot Show-Offs pump on the cast (#65)."""
+    for card in state["battlefield"]:
+        if card.get("name") == "Slickshot Show-Off":
+            card["oracle_text"] = SLICKSHOT_TEXT
+            card["keywords"] = ["flying", "haste"]
+    return state
+
 
 def test_four_damage_into_a_seven_seven_takes_the_untargeted_mode():
-    swap = untargeted_mode_instead(IROH, ["idx:1"], board_state())
+    swap = untargeted_mode_instead(IROH, ["idx:1"], with_payoff(board_state()))
     assert swap is not None
     assert swap[0] == "idx:0"
     assert "Trostani, Three Whispers 7/7" in swap[1]
 
 
 def test_a_kill_keeps_the_targeted_mode():
-    state = board_state()
+    state = with_payoff(board_state())
     state["battlefield"].append(creature(400, "Hired Claw", 1, 1, 2))
     assert untargeted_mode_instead(IROH, ["idx:1"], state) is None
 
 
 def test_damage_already_marked_or_combat_keeps_the_targeted_mode():
-    state = board_state()
+    state = with_payoff(board_state())
     state["battlefield"][0]["damaged_this_turn"] = True  # 4 more might finish it
     assert untargeted_mode_instead(IROH, ["idx:1"], state) is None
 
 
 def test_only_a_one_sided_untargeted_mode_is_taken():
     sweeper = modes("CARDNAME deals 2 damage to each creature.", MODE_TEXT[21773])
-    assert untargeted_mode_instead(sweeper, ["idx:1"], board_state()) is None
+    assert untargeted_mode_instead(sweeper, ["idx:1"], with_payoff(board_state())) is None
     other_target = modes("Target player draws a card.", MODE_TEXT[21773])
-    assert untargeted_mode_instead(other_target, ["idx:1"], board_state()) is None
+    assert untargeted_mode_instead(other_target, ["idx:1"], with_payoff(board_state())) is None
     hazard = modes(
         "CARDNAME deals 1 damage to each opponent and each creature they control.", MODE_TEXT[21773]
     )
-    assert untargeted_mode_instead(hazard, ["idx:1"], board_state())[0] == "idx:0"
+    assert untargeted_mode_instead(hazard, ["idx:1"], with_payoff(board_state()))[0] == "idx:0"
 
 
 def test_the_untargeted_mode_and_other_requests_are_left_alone():
-    assert untargeted_mode_instead(IROH, ["idx:0"], board_state()) is None
+    assert untargeted_mode_instead(IROH, ["idx:0"], with_payoff(board_state())) is None
     targets = SimpleNamespace(request_type="SelectTargets", options=IROH.options)
-    assert untargeted_mode_instead(targets, ["idx:1"], board_state()) is None
+    assert untargeted_mode_instead(targets, ["idx:1"], with_payoff(board_state())) is None
 
 
 def test_the_autopilot_submits_mode_one(iroh_engine, monkeypatch, caplog):
@@ -94,7 +107,7 @@ def test_the_autopilot_submits_mode_one(iroh_engine, monkeypatch, caplog):
     engine, bridge, planner = iroh_engine  # its planner picks "idx:1" (4 damage)
     bridge.get_pending_actions.return_value = modes_poll()
     with caplog.at_level(logging.WARNING, logger="arenamcp.autopilot"):
-        assert engine._try_typed_decision_path(board_state(stack=True), "decision_required")
+        assert engine._try_typed_decision_path(with_payoff(board_state(stack=True)), "decision_required")
     (index,) = bridge.submit_action_by_index.call_args.args
     assert index == 0
     assert bridge.submit_action_by_index.call_args.kwargs["expected"]["grpId"] == 87912

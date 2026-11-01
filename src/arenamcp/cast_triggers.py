@@ -13,7 +13,7 @@ damage to each creature they control) needs no target.
   no reason to give the spell back.
 - :func:`untargeted_mode_instead` — for a modal spell, the one-sided mode
   without a target to choose when the chosen targeted damage mode kills
-  nothing.
+  nothing and a cast trigger still feeds this turn's attack (#329).
 """
 
 from __future__ import annotations
@@ -159,8 +159,9 @@ def untargeted_mode_instead(decision: Any, chosen: list[str], state: dict) -> tu
     ``decision`` is a CastingTimeOptions decision whose modal options carry
     the mode's rules text in their label ("Mode 2: CARDNAME deals 4 damage to
     target creature."). Only a single chosen "N damage to target creature"
-    mode that kills no opposing creature on the board gives way, and only to
-    a mode that targets nothing and spares our side.
+    mode that kills no opposing creature on the board gives way, only while a
+    cast trigger on one of our attackers makes the cast's payoff real, and
+    only to a mode that targets nothing and spares our side.
     """
     from arenamcp.combat_keywords import is_creature_now
     from arenamcp.play_safety import damage_would_kill, fixed_damage_removal, our_stack_damage
@@ -178,6 +179,12 @@ def untargeted_mode_instead(decision: Any, chosen: list[str], state: dict) -> tu
     damage = parsed[0]
     local = _local_seat(state)
     if local is None:
+        return None
+    # #329: this rewrite exists to keep a cast whose triggers feed this turn's
+    # attack. Without such a supported payoff, leave the selected mode for
+    # ordinary target/cancellation evaluation instead of inventing value for
+    # the untargeted mode.
+    if not cast_trigger_attackers(state):
         return None
     # With incomplete type facts we cannot prove that the chosen mode kills
     # nothing. Keep the explicit choice until Arena supplies its target menu.

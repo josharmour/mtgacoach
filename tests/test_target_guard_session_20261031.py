@@ -208,8 +208,14 @@ def hall():
     )
 
 
+def _with_payoff(state):
+    """A cast-trigger attacker makes the untargeted mode's cast payoff real (#65/#329)."""
+    state["battlefield"].append(_creature(300, "Slickshot Show-Off", LOCAL, 1, 2, keywords=["prowess"]))
+    return state
+
+
 def test_336_animated_land_keeps_four_damage_mode_and_creature_removal_annotation():
-    state = _state([hall()])
+    state = _with_payoff(_state([hall()]))
     assert untargeted_mode_instead(IROH, ["idx:1"], state) is None
     assert not analyze("Spell deals 4 damage to target creature.", state["battlefield"])[1]
     # A targeted removal request sees the same live creature type.
@@ -225,7 +231,7 @@ def test_336_animated_land_keeps_four_damage_mode_and_creature_removal_annotatio
 def test_live_noncreature_type_overrides_stale_printed_creature_and_pt():
     card = hall()
     card.update(type_line="Land Creature", card_types=["CardType_Land"])
-    state = _state([card])
+    state = _with_payoff(_state([card]))
     assert untargeted_mode_instead(IROH, ["idx:1"], state)[0] == "idx:0"
     assert analyze("Spell deals 4 damage to target creature.", [card])[1] == {"Spell"}
     state["stack"] = [{**_spell(366, "Shock", "Instant", "{R}", SHOCK), "targeting": [285]}]
@@ -234,12 +240,12 @@ def test_live_noncreature_type_overrides_stale_printed_creature_and_pt():
 
 def test_unknown_current_creature_toughness_or_type_does_not_force_mode_change():
     for card in (dict(hall(), toughness=None), {"instance_id": 285, "controller_seat_id": OPP}):
-        assert untargeted_mode_instead(IROH, ["idx:1"], _state([card])) is None
+        assert untargeted_mode_instead(IROH, ["idx:1"], _with_payoff(_state([card]))) is None
 
 
 def test_indestructible_or_too_large_land_still_allows_cast_trigger_mode_fallback():
     for card in (dict(hall(), toughness=7), dict(hall(), keywords=["indestructible"])):
-        assert untargeted_mode_instead(IROH, ["idx:1"], _state([card]))[0] == "idx:0"
+        assert untargeted_mode_instead(IROH, ["idx:1"], _with_payoff(_state([card])))[0] == "idx:0"
 
 
 def test_untargeted_damage_ignores_hexproof_but_not_protection_or_contested_state():
@@ -284,7 +290,7 @@ def test_an_already_doomed_five_five_does_not_justify_a_redundant_strike():
 def test_land_with_live_stats_but_missing_current_types_cannot_prove_no_creatures():
     card = hall()
     card.pop("card_types")
-    assert untargeted_mode_instead(IROH, ["idx:1"], _state([card])) is None
+    assert untargeted_mode_instead(IROH, ["idx:1"], _with_payoff(_state([card]))) is None
 
 
 @pytest.mark.parametrize("creature_now", [True, False])
