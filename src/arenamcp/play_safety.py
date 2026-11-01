@@ -1531,8 +1531,8 @@ def _kill_claim_patterns(creature: dict) -> list[str]:
     return [
         rf"\b(?:kill\w*|finish\w* off|destroy\w*)\s+(?:(?:the|their|that|a|an|its|his|her)\s+)?"
         rf"(?:[\w'’/+-]+\s+){{0,3}}"
-        rf"(?:[\w'’/+-]+,\s+(?:the|their|that|its)\s+(?:[\w'’/+-]+\s+){{0,3}})?{re.escape(name)}"
-        rf"|{re.escape(name)}\b[^.;]{{0,40}}\b(?:dies|die)\b"
+        rf"(?:[\w'’/+-]+,\s+(?:the|their|that|its)\s+(?:[\w'’/+-]+\s+){{0,3}})?{re.escape(name)}\b"
+        rf"|\b{re.escape(name)}\b[^.;]{{0,40}}\b(?:dies|die)\b"
         for name in names
     ]
 

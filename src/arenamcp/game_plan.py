@@ -1642,7 +1642,6 @@ def _kill_corrections(
 # or prowess trigger from casting a creature, and a summoning-sick creature attacking,
 # pinging or tapping this turn.
 
-_HASTE_CLAIM = re.compile(r"\bhast(?:e|y)\b")
 _NONCREATURE_TRIGGER = re.compile(r"\bnon-?creature[- ]spell\b|\bprowess\b|\bspell trigger\b")
 # The cast doing it (ledger #108): "grows Slickshot via the noncreature-spell trigger" is a
 # claim; "the hasty attacker with Prowess/Valiant upside" or "a hasty prowess engine" names
@@ -1657,7 +1656,7 @@ _ATTACK_CLAIM = re.compile(
 # Not this turn, or not a claim: "next turn", "later", "can't attack", "T13".
 _NOT_NOW = re.compile(
     r"\b(?:next|later|future|following|eventually|can't|cannot|won't|not|no|until|after this turn)\b"
-    r"|\bt\d+\b|\bturn \d+\b"
+    r"|\blacks? haste\b|\bt\d+\b|\bturn \d+\b"
 )
 _CLAUSE_END = re.compile(r"[;.|\n]|\bthen\b|\bwhile\b|\band then\b")
 # The card's own ability described, not a this-turn claim (ledger #117, 2026-10-19 12:52:10:
@@ -1758,7 +1757,16 @@ def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[
         before = lowered[max(0, start - 12) : start]
         # Close by and in the same phrase: "gives haste", "two hasty trampling attackers".
         near = window(index)[:30].split(",")[0]
-        claimed = _HASTE_CLAIM.search(near) or re.search(r"\bhasty\s+(?:the\s+)?$", before)
+        # Require a property/deployment predicate, not any nearby mention:
+        # "Claw lacks haste", "Claw digs toward hasty creatures", or a removal
+        # target followed by "and pumps it to a hasty flier" are not haste claims.
+        claimed = re.search(r"\bhasty(?:-ish)?\s+(?:the\s+)?$", before) or re.match(
+            r"^\s*(?:\([^()]*\)\s*)?(?:[,—–-]\s*)?"
+            r"(?:is|has|gains?|gives?|adds?|adding|provides?|becomes?)\b"
+            r"(?:(?!\b(?:no|not|without|lacks?|loses?|needs?|gives?)\b)[^.;]){0,28}"
+            r"\bhast(?:e|y)(?:-ish)?\b",
+            near,
+        )
         if claimed and _keyword_truth(cards, "haste", battlefield) is False:
             fact = f"{name} has no haste"
             if fact not in notes and not any(n.startswith(f"{name} has no haste") for n in notes):
@@ -1796,6 +1804,19 @@ def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[
         name = str(card.get("name"))
         if not _is_creature_card(card):
             continue
+        # A single selected creature supplies the subject of an unnamed cast
+        # description (#321: "Curve out with the cheapest hasty attacker").
+        if (
+            len(cast) == 1
+            and not spans
+            and re.match(
+                r"^(?:curve out with|cast|deploy|play)\s+(?:(?:the|a|an)\s+)?"
+                r"(?:(?:cheapest|another|second|third)\s+)?hasty(?:-ish)?\s+(?:attacker|creature|body)\b",
+                lowered,
+            )
+            and _keyword_truth([card], "haste", battlefield) is False
+        ):
+            notes.append(f"{name} has no haste")
         for sentence in re.split(r"[;.\n]", lowered):
             keys = {key for key, owner in _claim_keys([card]) if owner == name}
             if not any(re.search(rf"(?<![a-z0-9]){re.escape(key)}(?![a-z0-9])", sentence) for key in keys):
@@ -1807,10 +1828,20 @@ def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[
                 and c.get("instance_id") not in cast_ids
                 and _named_creatures(sentence, [str(c.get("name"))])
             ]
-            cast_trigger = any(
-                not _EVERY_SPELL.search(sentence[verb.end() : verb.end() + 30])
-                for verb in _CAST_TRIGGER_VERB.finditer(sentence)
-            )
+            # "burn triggers", "a growing threat", and "prowess growth" are
+            # nouns/descriptions. Require an asserted cast effect on an ability
+            # or another named creature, rather than an arbitrary nearby verb.
+            trigger_targets = [key for key, owner in _claim_keys(creatures) if owner != name]
+            target_pattern = "|".join(re.escape(key) for key in trigger_targets)
+            cast_trigger = False
+            for verb in _CAST_TRIGGER_VERB.finditer(sentence):
+                tail = sentence[verb.end() :]
+                if _EVERY_SPELL.search(tail[:30]):
+                    continue
+                if re.match(
+                    r"\s+(?:(?:the|its|their|a)\s+)?(?:non-?creature|prowess|spell trigger)\b", tail
+                ) or (target_pattern and re.match(rf"\s+(?:{target_pattern})(?![a-z0-9])", tail)):
+                    cast_trigger = True
             if _NONCREATURE_TRIGGER.search(sentence) and cast_trigger and not other_spells:
                 fact = (
                     f"{name} is a creature spell: casting it triggers no noncreature-spell ability (prowess)"
@@ -1866,6 +1897,25 @@ def _decision_claim_notes(text: str, state: dict | None, cast_ids: set) -> list[
                 if fact not in notes:
                     notes.append(fact)
     return notes
+
+
+def corrected_decision_reasoning(text: str, state: dict, *, cast_ids: Any = ()) -> str:
+    """Remove contradicted sentences instead of repeating them beside a correction.
+
+    Sentence-local checking preserves independent intent (e.g. a chosen target)
+    while keeping rejected claims out of narration and subsequent decision memory.
+    """
+    sentences = re.split(r"(?<=[.!?])\s+", str(text or ""))
+    kept, facts = [], []
+    for sentence in sentences:
+        notes = decision_claim_notes(sentence, state, cast_ids=cast_ids)
+        if notes:
+            facts.extend(notes)
+        else:
+            kept.append(sentence)
+    if facts:
+        kept.append("Rules correction: " + "; ".join(dict.fromkeys(facts)) + ".")
+    return " ".join(kept)
 
 
 def _last_clause_start(text: str) -> int:

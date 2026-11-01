@@ -4976,7 +4976,7 @@ class ActionPlanner(_ActionLegalityMixin):
             return reused
         try:
             chosen = self._llm_decision_options(decision, game_state)
-            self._correct_false_lethal_claim(game_state)
+            self._correct_false_lethal_claim(game_state, decision)
             from arenamcp.basic_land_choice import is_basic_land_choice
 
             if is_basic_land_choice(decision) and not decision.selection_is_valid(chosen):
@@ -5333,7 +5333,11 @@ class ActionPlanner(_ActionLegalityMixin):
         kinds = [kind for kind, _text in concerns]
         trace = self._last_decision_trace if isinstance(self._last_decision_trace, dict) else {}
         if answered_high:
-            hard = [(kind, text) for kind, text in concerns if kind in ("false_lethal", "attack_only")]
+            hard = [
+                (kind, text)
+                for kind, text in concerns
+                if kind in ("false_lethal", "attack_only", "damage_attribution")
+            ]
             if not hard:
                 logger.info(
                     "typed-decision: the high-effort pick %s stands despite %s", chosen, ", ".join(kinds)
@@ -5382,6 +5386,18 @@ class ActionPlanner(_ActionLegalityMixin):
                 "error": str(error)[:120],
             }
             raise SecondLookError(f"second look failed ({error}); {concerns[0][1][:160]}") from error
+        # Even a different target cannot stand on the same disproven multiplier.
+        from arenamcp.session_facts import damage_attribution_notes
+
+        attribution = damage_attribution_notes(str(new_data.get("reasoning") or ""), game_state)
+        if attribution:
+            trace["second_look"] = {
+                "concerns": [text for _kind, text in concerns],
+                "first": chosen,
+                "final": "fallback",
+                "refuted_claims": attribution,
+            }
+            raise SecondLookError(f"second-look damage attribution refuted: {attribution[0]}")
         if new_chosen == chosen:
             from arenamcp.game_plan import decision_claim_notes
 
@@ -5967,6 +5983,16 @@ class ActionPlanner(_ActionLegalityMixin):
           that is not lethal, tagged ``LINE_GUARD_MARGIN`` or more below the best
           line; without a high-effort answer the fallback passes.
         """
+        # A false damage multiplier changes target/play evaluation, not just
+        # wording. Reconsider it before accepting either the cast or its target.
+        from arenamcp.session_facts import damage_attribution_notes
+
+        attribution = damage_attribution_notes(reasoning, game_state)
+        if attribution and chosen and decision.request_type in {"ActionsAvailable", "SelectTargets"}:
+            return [(
+                "damage_attribution",
+                " ".join(attribution) + " Re-evaluate the play and target without attributing extra damage to this effect.",
+            )]
         if (
             decision.request_type != "ActionsAvailable"
             or len(chosen or []) != 1
@@ -6005,6 +6031,8 @@ class ActionPlanner(_ActionLegalityMixin):
         _tags: dict,
     ) -> str:
         """The pick's reason is a "we win this turn" claim the board math contradicts (ledger #57)."""
+        if game_state.get("stack"):
+            return ""  # unresolved effects are not a proven nonlethal board (#323)
         claims = self._lethal_claims(reasoning)
         if not claims or _lethal_this_turn(game_state) is not False:
             return ""
@@ -7525,7 +7553,7 @@ class ActionPlanner(_ActionLegalityMixin):
             if cls._LETHAL_NOW.search(sentence) and not cls._LETHAL_LATER.search(sentence)
         ]
 
-    def _correct_false_lethal_claim(self, game_state: dict[str, Any]) -> None:
+    def _correct_false_lethal_claim(self, game_state: dict[str, Any], decision: Any = None) -> None:
         """Strip a "lethal this turn" claim the deterministic board facts contradict.
 
         2026-10-09 08:05:01 (bug_20261009_080525): "putting the +1/+1 counter on
@@ -7538,6 +7566,13 @@ class ActionPlanner(_ActionLegalityMixin):
         claim that WE kill them THIS turn counts (``_LETHAL_NOW`` without
         ``_LETHAL_LATER``); the decision memory keeps the original reasoning.
         """
+        # A pending cast has already left hand; its mode/targets may not yet
+        # be represented by board search. Absence of a winning line here is
+        # not evidence of nonlethal damage (#323, kicked Burst at two life).
+        if game_state.get("stack") or getattr(decision, "request_type", "") in {
+            "CastingTimeOptions", "SelectTargets",
+        }:
+            return
         reasoning = self._last_decision_reasoning
         if not reasoning:
             return
@@ -9704,7 +9739,7 @@ class ActionPlanner(_ActionLegalityMixin):
         }, ["pass"]
 
     def _note_false_claims(self, game_state: dict[str, Any], decision: Any, chosen: list[str]) -> None:
-        """Annotate the reasoning's claims the board contradicts (ledger #84; no model call).
+        """Replace reasoning's contradicted claims with facts (ledger #84/#321; no model call).
 
         2026-10-19: "Casting Giant Cindermaw gives haste trample pressure" (it has
         no haste), Fleeting Effigy "grows Slickshot via the noncreature-spell
@@ -9731,19 +9766,15 @@ class ActionPlanner(_ActionLegalityMixin):
             "; ".join(notes),
             self._last_decision_reasoning,
         )
-        # Never feed a proven false session claim back as the accepted explanation.
-        from arenamcp.session_facts import corrected_reasoning
+        from arenamcp.game_plan import corrected_decision_reasoning
 
         original = self._last_decision_reasoning
-        self._last_decision_reasoning = corrected_reasoning(original, game_state)
+        self._last_decision_reasoning = corrected_decision_reasoning(
+            original, game_state, cast_ids=cast_ids
+        )
         trace = getattr(self, "_last_decision_trace", None)
         if isinstance(trace, dict) and original != self._last_decision_reasoning:
             trace["uncorrected_reasoning"] = original
-        # After a full stop: reasoning_choice_conflict reads only the lead sentence.
-        stop = "" if self._last_decision_reasoning.rstrip().endswith((".", "!", "?")) else "."
-        self._last_decision_reasoning = (
-            f"{self._last_decision_reasoning.rstrip()}{stop} [checked: {'; '.join(notes)}]"
-        )
         trace = getattr(self, "_last_decision_trace", None)
         if isinstance(trace, dict):
             trace["false_claims"] = list(notes)

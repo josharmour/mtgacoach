@@ -215,7 +215,7 @@ def _answering(monkeypatch, planner: ActionPlanner, chosen: list[str], reasoning
         return chosen
 
     monkeypatch.setattr(planner, "_llm_decision_options", answer)
-    monkeypatch.setattr(planner, "_correct_false_lethal_claim", lambda state: None)
+    monkeypatch.setattr(planner, "_correct_false_lethal_claim", lambda state, decision=None: None)
     return planner
 
 

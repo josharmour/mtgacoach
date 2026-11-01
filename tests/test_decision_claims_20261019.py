@@ -134,7 +134,7 @@ def test_true_claims_pass():
         assert decision_claim_notes(text, board, cast_ids=cast) == [], text
 
 
-def test_the_planner_logs_and_annotates_without_changing_the_pick(caplog):
+def test_the_planner_logs_and_replaces_false_reasoning_without_changing_the_pick(caplog):
     planner = ActionPlanner.__new__(ActionPlanner)
     planner._last_decision_reasoning = (
         "Casting Giant Cindermaw gives haste trample pressure alongside Slickshot (6 damage this combat "
@@ -154,9 +154,8 @@ def test_the_planner_logs_and_annotates_without_changing_the_pick(caplog):
     with caplog.at_level(logging.WARNING, logger="arenamcp.action_planner"):
         planner._note_false_claims(board, decision, ["idx:0"])
     assert "typed-decision reasoning contradicts the board (Giant Cindermaw has no haste)" in caplog.text
-    assert planner._last_decision_reasoning.endswith(
-        "locks out any lifegain. [checked: Giant Cindermaw has no haste]"
-    )
+    assert planner._last_decision_reasoning == "Rules correction: Giant Cindermaw has no haste."
+    assert "gives haste" in planner._last_decision_trace["uncorrected_reasoning"]
     assert planner._last_decision_trace["false_claims"] == ["Giant Cindermaw has no haste"]
     # Nothing to say: nothing changes.
     planner._last_decision_reasoning = "Cast Giant Cindermaw to add a big trampler for next turn."

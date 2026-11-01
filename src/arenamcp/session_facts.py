@@ -16,7 +16,7 @@ def public_rules_notes(state):
     local = state.get("local_seat_id") or next(
         (p.get("seat_id") for p in state.get("players", []) if p.get("is_local")), None
     )
-    notes = []
+    notes = [fact for _, fact, _ in _turn_loss_multipliers(state)]
     for card in state.get("battlefield", []) + state.get("hand", []):
         if not isinstance(card, dict) or card.get("is_phased_out") or card.get("face_down"):
             continue
@@ -66,7 +66,7 @@ def claim_notes(text, state):
     if not lower:
         return []
     notes = public_rules_notes(state)
-    found = []
+    found = damage_attribution_notes(text, state)
     for fact in notes:
         name = (
             fact.split(" has a death trigger:", 1)[0]
@@ -119,3 +119,74 @@ def corrected_reasoning(text, state):
     """Replace proven rules contradictions; preserve raw text separately in diagnostics."""
     notes = claim_notes(text, state)
     return "Rules correction: " + " ".join(notes) if notes else str(text or "")
+
+
+def _turn_loss_multipliers(state):
+    """Public, controller-relative facts for Bloodletter's exact replacement rule.
+
+    Ownership is deliberately not a substitute for control of a permanent.
+    Unknown control/turn and hidden cards cannot establish a contradiction.
+    """
+    if not isinstance(state, dict):
+        return []
+    local = state.get("local_seat_id") or next(
+        (p.get("seat_id") for p in state.get("players", []) if p.get("is_local")), None
+    )
+    active = (state.get("turn") or {}).get("active_player")
+    if local is None or active is None:
+        return []
+    result = []
+    for card in state.get("battlefield") or []:
+        if not isinstance(card, dict) or card.get("is_phased_out") or card.get("face_down"):
+            continue
+        controller = card.get("controller_seat_id")
+        name = str(card.get("name") or "")
+        oracle = " ".join(str(card.get("oracle_text") or "").lower().split())
+        if (
+            controller is None
+            or not name
+            or not re.search(
+                r"if an opponent would lose life during your turn, they lose twice that much life instead",
+                oracle,
+            )
+        ):
+            continue
+        ours = controller == local
+        applies = ours and active == controller
+        fact = (
+            f"{name} is controlled by {'you' if ours else 'the opponent'}: it doubles life loss only "
+            "for that controller's opponents during that controller's turn. "
+            + (
+                "It applies to the opponent's life loss now."
+                if applies
+                else "It does not double life loss dealt to the opponent now."
+            )
+        )
+        result.append((name, fact, applies))
+    return result
+
+
+def damage_attribution_notes(text, state):
+    """Contradicted claims that a controller-relative effect boosts our face burn."""
+    lower = str(text or "").lower().replace("’", "'")
+    multipliers = _turn_loss_multipliers(state)
+    found = []
+    for name, fact, applies in multipliers:
+        # Two copies under different controllers make an abbreviated name ambiguous.
+        if applies or any(other == name and active for other, _, active in multipliers):
+            continue
+        keys = [name.lower(), name.lower().split()[0]]
+        for sentence in re.split(r"(?<=[.!?])\s+", lower):
+            if not any(re.search(rf"\b{re.escape(key)}\b", sentence) for key in keys):
+                continue
+            if not re.search(r"\bdoubl(?:e|es|ed|ing)\b", sentence):
+                continue
+            if re.search(r"\b(?:not|no|doesn't|cannot|can't|won't|without|if|would|unless)\b", sentence):
+                continue
+            if re.search(
+                r"\b(?:my turn|our turn|my damage|our damage|our burn|my burn|to (?:the |their )?face|face burn)\b",
+                sentence,
+            ):
+                found.append(fact)
+                break
+    return list(dict.fromkeys(found))
