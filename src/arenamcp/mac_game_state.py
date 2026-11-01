@@ -447,13 +447,14 @@ def _card_entry(node: dict[str, Any], seats: _PlayerSeats | None = None) -> dict
 
     attack_state = enum_name(field(node, "AttackState"))
     block_state = enum_name(field(node, "BlockState"))
+    if field(node, "AttackState") is not None:
+        entry["is_attacking"] = attack_state in _ATTACK_STATES
     if attack_state in _ATTACK_STATES:
-        entry["is_attacking"] = True
         target_id = num(field(node, "AttackTargetId"))
         if target_id:
             entry["attack_target_id"] = target_id
-    if block_state in _BLOCK_STATES:
-        entry["is_blocking"] = True
+    if field(node, "BlockState") is not None:
+        entry["is_blocking"] = block_state in _BLOCK_STATES
     blocked_by_ids = _uint_list(field(node, "BlockedByIds"))
     blocking_ids = _uint_list(field(node, "BlockingIds"))
     if blocked_by_ids:
@@ -467,14 +468,17 @@ def _card_entry(node: dict[str, Any], seats: _PlayerSeats | None = None) -> dict
     if enum_name(field(zone_ref_of_card, "Type")) == "PhasedOut":
         entry["is_phased_out"] = True
 
-    damage = num(field(node, "Damage"))
-    if damage:
+    # Explicit zero/False clears earlier log facts. Missing reflection fields
+    # stay absent so the server can retain its fallback (#288 producer gap).
+    damage = field(node, "Damage")
+    if type(damage) is int:
         entry["damage"] = damage
-    if bool(field(node, "IsDamagedThisTurn")):
-        entry["damaged_this_turn"] = True
+    damaged = field(node, "IsDamagedThisTurn")
+    if isinstance(damaged, bool):
+        entry["damaged_this_turn"] = damaged
 
-    class_level = num(field(node, "ClassLevel"))
-    if class_level:
+    class_level = field(node, "ClassLevel")
+    if type(class_level) is int:
         entry["class_level"] = class_level
 
     copy_grp = num(field(node, "CopyObjectGrpId"))
@@ -494,12 +498,17 @@ def _card_entry(node: dict[str, Any], seats: _PlayerSeats | None = None) -> dict
         entry["colors"] = colors
 
     counters: dict[str, int] = {}
-    for datum in items(field(node, "CounterDatas")):
-        name = enum_name(field(datum, "Type"))
-        if name:
-            counters[name] = counters.get(name, 0) + num(field(datum, "Count"))
-    if counters:
-        entry["counters"] = counters
+    counter_items = _complete_items(field(node, "CounterDatas"))
+    if counter_items is not None:
+        for datum in counter_items:
+            name = enum_name(field(datum, "Type"))
+            count = field(datum, "Count")
+            if not name or type(count) is not int:
+                counters.clear()
+                break
+            counters[name] = counters.get(name, 0) + count
+        else:
+            entry["counters"] = counters
 
     # Loyalty IS the loyalty counter (the client itself keeps it in
     # Counters[CounterType.Loyalty]). The reflected Nullable<uint> Loyalty
@@ -513,9 +522,11 @@ def _card_entry(node: dict[str, Any], seats: _PlayerSeats | None = None) -> dict
     elif loyalty is not None and not (loyalty <= 0 and "Planeswalker" in card_types):
         entry["loyalty"] = loyalty
 
-    production = _enum_list(field(node, "ColorProduction"))
-    if production:
-        entry["color_production"] = production
+    production = _complete_items(field(node, "ColorProduction"))
+    if production is not None:
+        names = [enum_name(value) for value in production]
+        if all(names):
+            entry["color_production"] = names
 
     target_ids = _uint_list(field(node, "TargetIds"))
     if target_ids:
@@ -581,3 +592,11 @@ def _enum_list(node: Any) -> list[str]:
 def _uint_list(node: Any) -> list[int]:
     """List<uint>/HashSet<uint> dump -> [n, ...]."""
     return [num(v) for v in items(node)]
+
+
+def _complete_items(node: Any) -> list[Any] | None:
+    """Unknown/truncated collections must never clear an authoritative log fact."""
+    if not isinstance(node, dict) or not isinstance(node.get("$items"), list):
+        return None
+    values = node["$items"]
+    return values if type(node.get("$n")) is int and node["$n"] == len(values) else None

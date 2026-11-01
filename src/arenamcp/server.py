@@ -1683,7 +1683,9 @@ def _serialize_bridge_card(
         "object_kind": _normalize_object_kind(
             card.get("object_type"), fallback.get("object_kind", "UNKNOWN")
         ),
-        "counters": dict(card.get("counters") or fallback.get("counters") or {}),
+        "counters": dict(
+            card["counters"] if isinstance(card.get("counters"), dict) else fallback.get("counters") or {}
+        ),
     }
 
     if card.get("parent_instance_id") is not None or fallback.get("parent_instance_id") is not None:
