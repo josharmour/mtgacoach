@@ -1,0 +1,564 @@
+{
+  "provenance": {
+    "match": "4159449e",
+    "request": [
+      206,
+      264
+    ],
+    "build": "5d591446",
+    "sources": [
+      "4159449e-ugin-candidate.json",
+      "4159449e-ugin-board.json",
+      "4159449e-ugin-oracles.json"
+    ],
+    "note": "Exact saved typed decision and reason; reconstructed GRE board normalized to planner fields. Only Ugin hand rules needed for this mechanism; other hand rules omitted. Not a full-game replay."
+  },
+  "decision": {
+    "request_id": [
+      206,
+      264
+    ],
+    "request_type": "ActionsAvailable",
+    "options": [
+      {
+        "option_id": "idx:0",
+        "label": "Cast Finale of Devastation",
+        "payable": true,
+        "meta": {
+          "actionType": "ActionType_Cast",
+          "grpId": 69611,
+          "instanceId": 350,
+          "abilityGrpId": 0,
+          "manaCost": [
+            {
+              "color": "[ \"X\" ]",
+              "count": 1
+            },
+            {
+              "color": "[ \"Green\" ]",
+              "count": 2
+            }
+          ],
+          "autoTapActions": [
+            {
+              "instanceId": 447,
+              "manaId": 0
+            },
+            {
+              "instanceId": 0,
+              "manaId": 1116
+            },
+            {
+              "instanceId": 0,
+              "manaId": 1115
+            }
+          ],
+          "hasAutoTap": true
+        }
+      },
+      {
+        "option_id": "idx:1",
+        "label": "Cast Ugin, Eye of the Storms",
+        "payable": true,
+        "meta": {
+          "actionType": "ActionType_Cast",
+          "grpId": 95516,
+          "instanceId": 478,
+          "abilityGrpId": 0,
+          "manaCost": [
+            {
+              "color": "[ \"Generic\" ]",
+              "count": 7
+            }
+          ],
+          "autoTapActions": [
+            {
+              "instanceId": 447,
+              "manaId": 0
+            },
+            {
+              "instanceId": 479,
+              "manaId": 0
+            },
+            {
+              "instanceId": 0,
+              "manaId": 1125
+            },
+            {
+              "instanceId": 0,
+              "manaId": 1125
+            },
+            {
+              "instanceId": 0,
+              "manaId": 1125
+            },
+            {
+              "instanceId": 0,
+              "manaId": 1125
+            }
+          ],
+          "hasAutoTap": true
+        }
+      },
+      {
+        "option_id": "idx:2",
+        "label": "Activate: Mutavault [{1}: this becomes a 2/2 creature with all creature types until end of turn. It's still a land.]",
+        "payable": true,
+        "meta": {
+          "actionType": "ActionType_Activate",
+          "grpId": 98606,
+          "instanceId": 506,
+          "abilityGrpId": 15429,
+          "manaCost": [
+            {
+              "color": "[ \"Generic\" ]",
+              "count": 1
+            }
+          ],
+          "autoTapActions": [
+            {
+              "instanceId": 457,
+              "manaId": 0
+            }
+          ],
+          "hasAutoTap": true
+        }
+      },
+      {
+        "option_id": "pass",
+        "label": "Pass",
+        "payable": null,
+        "meta": {}
+      }
+    ],
+    "min_select": 1,
+    "max_select": 1,
+    "can_pass": true,
+    "can_cancel": false,
+    "source_label": "",
+    "min_weight": null,
+    "max_weight": null,
+    "slots": []
+  },
+  "reason": "Finale at X<10 wastes the win-con and Ugin's 7 mana isn't payable without tapping out our whole board for no immediate payoff; hold both and keep mana up.",
+  "line_evidence": {
+    "summary": "LINES (2-turn search, greedy 3rd; their new cards/tricks not modelled): best no play \u2014 survives (life 25, 25, 25) | alt attack with Forest, Badgermole Cub, Arboreal\u2026 \u2014 survives (life 23, 23, 23; opponent at 19) | alt attack with Forest, Badgermole Cub, Arboreal\u2026 \u2014 survives (life 23, 23, 23; opponent at 21) | not modelled, judge these yourself: Finale of Devastation (its X cost); Ugin, Eye of the Storms (its trigg\u2026",
+    "tags": {
+      "idx:0": "[LINE: effect not modelled]",
+      "idx:1": "[LINE: effect not modelled]"
+    },
+    "unmodelled": {
+      "idx:0": "Finale of Devastation (its X cost)",
+      "idx:1": "Ugin, Eye of the Storms (its triggered ability)"
+    }
+  },
+  "state": {
+    "local_seat_id": 2,
+    "turn": {
+      "turn_number": 9,
+      "phase": "Phase_Main1",
+      "step": "",
+      "active_player": 2
+    },
+    "players": [
+      {
+        "seat_id": 2,
+        "is_local": true,
+        "life_total": 25
+      },
+      {
+        "seat_id": 1,
+        "is_local": false,
+        "life_total": 26
+      }
+    ],
+    "battlefield": [
+      {
+        "instance_id": 500,
+        "grp_id": 98507,
+        "name": "Mutable Explorer",
+        "controller_seat_id": 2,
+        "owner_seat_id": 2,
+        "card_types": [
+          "CardType_Creature"
+        ],
+        "colors": [
+          "CardColor_Green"
+        ],
+        "is_tapped": true,
+        "summoning_sickness": true,
+        "object_kind": "CARD",
+        "oracle_text": "",
+        "type_line": "Creature",
+        "power": 1,
+        "toughness": 1
+      },
+      {
+        "instance_id": 497,
+        "grp_id": 77111,
+        "name": "Cleric Class",
+        "controller_seat_id": 1,
+        "owner_seat_id": 1,
+        "card_types": [
+          "CardType_Enchantment"
+        ],
+        "colors": [
+          "CardColor_White"
+        ],
+        "is_tapped": false,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "(Gain the next level as a sorcery to add its ability.) If you would gain life, you gain that much life plus 1 instead. {3}{W}: Level 2 Whenever you gain life, put a +1/+1 counter on target creature you control. {4}{W}: Level 3 When this Class becomes level 3, return target creature card from your graveyard to the battlefield. You gain life equal to that creature's toughness.",
+        "type_line": "Enchantment \u2014 Class"
+      },
+      {
+        "instance_id": 494,
+        "grp_id": 103376,
+        "name": "D\u00e1in, Lord of the Iron Hills",
+        "controller_seat_id": 1,
+        "owner_seat_id": 1,
+        "card_types": [
+          "CardType_Creature"
+        ],
+        "colors": [
+          "CardColor_White"
+        ],
+        "is_tapped": false,
+        "summoning_sickness": true,
+        "object_kind": "CARD",
+        "oracle_text": "Vigilance\nStoried\nAs long as you have an enduring story, creatures can't attack you unless their controller pays {o1} for each of those creatures.",
+        "type_line": "Creature",
+        "power": 2,
+        "toughness": 2
+      },
+      {
+        "instance_id": 493,
+        "grp_id": 83677,
+        "name": "Plains",
+        "controller_seat_id": 1,
+        "owner_seat_id": 1,
+        "card_types": [
+          "CardType_Land"
+        ],
+        "colors": [],
+        "is_tapped": true,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "",
+        "type_line": "Land"
+      },
+      {
+        "instance_id": 491,
+        "grp_id": 75553,
+        "name": "Forest",
+        "controller_seat_id": 2,
+        "owner_seat_id": 2,
+        "card_types": [
+          "CardType_Land"
+        ],
+        "colors": [],
+        "is_tapped": true,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "",
+        "type_line": "Land"
+      },
+      {
+        "instance_id": 479,
+        "grp_id": 103511,
+        "name": "The Notary Hobbits",
+        "controller_seat_id": 2,
+        "owner_seat_id": 2,
+        "card_types": [
+          "CardType_Creature"
+        ],
+        "colors": [
+          "CardColor_Green"
+        ],
+        "is_tapped": false,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "",
+        "type_line": "Creature",
+        "power": 1,
+        "toughness": 1
+      },
+      {
+        "instance_id": 476,
+        "grp_id": 93850,
+        "name": "Authority of the Consuls",
+        "controller_seat_id": 1,
+        "owner_seat_id": 1,
+        "card_types": [
+          "CardType_Enchantment"
+        ],
+        "colors": [
+          "CardColor_White"
+        ],
+        "is_tapped": false,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "Creatures your opponents control enter tapped. Whenever a creature an opponent controls enters, you gain 1 life.",
+        "type_line": "Enchantment"
+      },
+      {
+        "instance_id": 475,
+        "grp_id": 83677,
+        "name": "Plains",
+        "controller_seat_id": 1,
+        "owner_seat_id": 1,
+        "card_types": [
+          "CardType_Land"
+        ],
+        "colors": [],
+        "is_tapped": true,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "",
+        "type_line": "Land"
+      },
+      {
+        "instance_id": 473,
+        "grp_id": 75553,
+        "name": "Forest",
+        "controller_seat_id": 2,
+        "owner_seat_id": 2,
+        "card_types": [
+          "CardType_Land"
+        ],
+        "colors": [],
+        "is_tapped": true,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "",
+        "type_line": "Land"
+      },
+      {
+        "instance_id": 472,
+        "grp_id": 75553,
+        "name": "Forest",
+        "controller_seat_id": 2,
+        "owner_seat_id": 2,
+        "card_types": [
+          "CardType_Land"
+        ],
+        "colors": [],
+        "is_tapped": true,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "",
+        "type_line": "Land"
+      },
+      {
+        "instance_id": 467,
+        "grp_id": 69600,
+        "name": "Arboreal Grazer",
+        "controller_seat_id": 2,
+        "owner_seat_id": 2,
+        "card_types": [
+          "CardType_Creature"
+        ],
+        "colors": [
+          "CardColor_Green"
+        ],
+        "is_tapped": false,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "",
+        "type_line": "Creature",
+        "power": 0,
+        "toughness": 3
+      },
+      {
+        "instance_id": 460,
+        "grp_id": 88986,
+        "name": "Proft's Eidetic Memory",
+        "controller_seat_id": 1,
+        "owner_seat_id": 1,
+        "card_types": [
+          "CardType_Enchantment"
+        ],
+        "colors": [
+          "CardColor_Blue"
+        ],
+        "is_tapped": false,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "When Proft's Eidetic Memory enters, draw a card. You have no maximum hand size. At the beginning of combat on your turn, if you've drawn more than one card this turn, put X +1/+1 counters on target creature you control, where X is the number of cards you've drawn this turn minus one.",
+        "type_line": "Legendary Enchantment"
+      },
+      {
+        "instance_id": 459,
+        "grp_id": 70762,
+        "name": "Island",
+        "controller_seat_id": 1,
+        "owner_seat_id": 1,
+        "card_types": [
+          "CardType_Land"
+        ],
+        "colors": [],
+        "is_tapped": false,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "",
+        "type_line": "Land"
+      },
+      {
+        "instance_id": 457,
+        "grp_id": 66487,
+        "name": "Field of Ruin",
+        "controller_seat_id": 2,
+        "owner_seat_id": 2,
+        "card_types": [
+          "CardType_Land"
+        ],
+        "colors": [],
+        "is_tapped": false,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "",
+        "type_line": "Land"
+      },
+      {
+        "instance_id": 453,
+        "grp_id": 97444,
+        "name": "Badgermole Cub",
+        "controller_seat_id": 2,
+        "owner_seat_id": 2,
+        "card_types": [
+          "CardType_Creature"
+        ],
+        "colors": [
+          "CardColor_Green"
+        ],
+        "is_tapped": false,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "",
+        "type_line": "Creature",
+        "power": 2,
+        "toughness": 2
+      },
+      {
+        "instance_id": 451,
+        "grp_id": 70762,
+        "name": "Island",
+        "controller_seat_id": 1,
+        "owner_seat_id": 1,
+        "card_types": [
+          "CardType_Land"
+        ],
+        "colors": [],
+        "is_tapped": true,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "",
+        "type_line": "Land"
+      },
+      {
+        "instance_id": 448,
+        "grp_id": 87101,
+        "name": "Utopia Sprawl",
+        "controller_seat_id": 2,
+        "owner_seat_id": 2,
+        "card_types": [
+          "CardType_Enchantment"
+        ],
+        "colors": [
+          "CardColor_Green"
+        ],
+        "is_tapped": false,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "",
+        "type_line": "Enchantment"
+      },
+      {
+        "instance_id": 447,
+        "grp_id": 75553,
+        "name": "Forest",
+        "controller_seat_id": 2,
+        "owner_seat_id": 2,
+        "card_types": [
+          "CardType_Creature",
+          "CardType_Land"
+        ],
+        "colors": [],
+        "is_tapped": false,
+        "summoning_sickness": false,
+        "object_kind": "CARD",
+        "oracle_text": "",
+        "type_line": "Creature Land",
+        "power": 1,
+        "toughness": 1
+      },
+      {
+        "instance_id": 487,
+        "grp_id": 103511,
+        "name": "The Notary Hobbits",
+        "controller_seat_id": 2,
+        "owner_seat_id": 2,
+        "card_types": [
+          "CardType_Creature"
+        ],
+        "colors": [
+          "CardColor_Green"
+        ],
+        "is_tapped": false,
+        "summoning_sickness": false,
+        "object_kind": "TOKEN",
+        "oracle_text": "",
+        "type_line": "Creature",
+        "power": 1,
+        "toughness": 1
+      },
+      {
+        "instance_id": 488,
+        "grp_id": 103511,
+        "name": "The Notary Hobbits",
+        "controller_seat_id": 2,
+        "owner_seat_id": 2,
+        "card_types": [
+          "CardType_Creature"
+        ],
+        "colors": [
+          "CardColor_Green"
+        ],
+        "is_tapped": false,
+        "summoning_sickness": false,
+        "object_kind": "TOKEN",
+        "oracle_text": "",
+        "type_line": "Creature",
+        "power": 1,
+        "toughness": 1
+      },
+      {
+        "instance_id": 506,
+        "grp_id": 98606,
+        "name": "Mutavault",
+        "controller_seat_id": 2,
+        "owner_seat_id": 2,
+        "card_types": [
+          "CardType_Land"
+        ],
+        "colors": [],
+        "is_tapped": true,
+        "summoning_sickness": true,
+        "object_kind": "TOKEN",
+        "oracle_text": "",
+        "type_line": "Land"
+      }
+    ],
+    "hand": [
+      {
+        "instance_id": 478,
+        "grp_id": 95516,
+        "name": "Ugin, Eye of the Storms",
+        "type_line": "Legendary Planeswalker \u2014 Ugin",
+        "oracle_text": "When you cast this spell, exile up to one target permanent that's one or more colors. Whenever you cast a colorless spell, exile up to one target permanent that's one or more colors. +2: You gain 3 life and draw a card. 0: Add {C}{C}{C}. \u221211: Search your library for any number of colorless nonland cards, exile them, then shuffle. Until end of turn, you may cast those cards without paying their mana costs.",
+        "mana_cost": "{7}",
+        "colors": []
+      }
+    ]
+  }
+}

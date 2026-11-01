@@ -6021,8 +6021,12 @@ class ActionPlanner(_ActionLegalityMixin):
         ):
             return []
         found: list[tuple[str, str]] = []
+        from arenamcp.cast_payoffs import cast_payoff_concern
         from arenamcp.equipment_opportunities import equipment_pass_concern
 
+        payoff_concern = cast_payoff_concern(decision, game_state, chosen, reasoning)
+        if payoff_concern:
+            found.append(("cast_payoff", payoff_concern))
         equipment_concern = equipment_pass_concern(decision, game_state, chosen, reasoning)
         if equipment_concern:
             found.append(("equipment_haste", equipment_concern))
@@ -9337,8 +9341,12 @@ class ActionPlanner(_ActionLegalityMixin):
             if note:
                 lines.insert(lines.index("OPTIONS:"), note)
         from arenamcp.activation_intent import activation_intent_note
+        from arenamcp.cast_payoffs import cast_payoff_note
         from arenamcp.equipment_opportunities import equipment_opportunity_note
 
+        payoff_note = cast_payoff_note(decision, game_state)
+        if payoff_note:
+            lines.insert(lines.index("OPTIONS:"), payoff_note)
         equipment_note = equipment_opportunity_note(decision, game_state)
         if equipment_note:
             lines.insert(lines.index("OPTIONS:"), equipment_note)
@@ -9764,6 +9772,9 @@ class ActionPlanner(_ActionLegalityMixin):
         data, chosen = review_commander_decline(
             decision, game_state, data, chosen, ask, parse, user_message, self._last_decision_trace
         )
+        from arenamcp.cast_payoffs import correct_cast_payoff_claim
+
+        data = correct_cast_payoff_claim(decision, game_state, chosen, data, self._last_decision_trace)
         reason = data.get("reasoning")
         self._last_decision_target_controllers = (
             data.get("target_controllers") if isinstance(data.get("target_controllers"), dict) else {}
