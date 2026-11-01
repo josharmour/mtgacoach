@@ -1,0 +1,508 @@
+{
+  "source_report": "bug_20261101_000440.json",
+  "source_bundle": "4ba2e0cd-2ca1-4a21-a62f-ff617468f94b.json.gz",
+  "scope": "Exact request/menu/reason and selected GRE facts; state is a bounded reconstruction at request209, not the post-choice report snapshot. Card rules from report; irrelevant lands and hand omitted.",
+  "request": {
+    "type": "GREMessageType_OptionalActionMessage",
+    "systemSeatIds": [
+      2
+    ],
+    "msgId": 292,
+    "gameStateId": 209,
+    "prompt": {
+      "promptId": 135,
+      "parameters": [
+        {
+          "parameterName": "CardId",
+          "type": "ParameterType_Number",
+          "numberValue": 686
+        },
+        {
+          "parameterName": "CardId",
+          "type": "ParameterType_Number",
+          "numberValue": 1
+        }
+      ]
+    },
+    "optionalActionMessage": {
+      "sourceId": 686,
+      "optionalActionTypes": [
+        "CardMechanicType_ZoneTransfer"
+      ],
+      "recipientIds": [
+        686
+      ]
+    },
+    "allowCancel": "AllowCancel_No"
+  },
+  "pending_decision": {
+    "request_id": [
+      209,
+      292
+    ],
+    "request_type": "OptionalAction",
+    "options": [
+      {
+        "option_id": "optional:accept",
+        "label": "Accept the optional effect",
+        "payable": null,
+        "meta": {
+          "sourceId": 686,
+          "mechanics": [
+            "ZoneTransfer"
+          ],
+          "recipients": [
+            686
+          ],
+          "promptCardIds": [
+            686,
+            1
+          ],
+          "promptCards": [
+            "The Notary Hobbits"
+          ],
+          "recipientCards": [
+            "The Notary Hobbits"
+          ],
+          "promptText": "Put The Notary Hobbits in the command zone or in your library?"
+        }
+      },
+      {
+        "option_id": "optional:decline",
+        "label": "Decline the optional effect",
+        "payable": null,
+        "meta": {
+          "sourceId": 686,
+          "mechanics": [
+            "ZoneTransfer"
+          ],
+          "recipients": [
+            686
+          ],
+          "promptCardIds": [
+            686,
+            1
+          ],
+          "promptCards": [
+            "The Notary Hobbits"
+          ],
+          "recipientCards": [
+            "The Notary Hobbits"
+          ],
+          "promptText": "Put The Notary Hobbits in the command zone or in your library?"
+        }
+      }
+    ],
+    "min_select": 1,
+    "max_select": 1,
+    "can_pass": false,
+    "can_cancel": false,
+    "source_label": "The Notary Hobbits",
+    "min_weight": null,
+    "max_weight": null,
+    "slots": [],
+    "prompt_text": "Put The Notary Hobbits in the command zone or in your library?"
+  },
+  "chosen_options": [
+    "optional:accept"
+  ],
+  "reasoning": "Memory Lapse counters the commander, so accept putting it back in the command zone rather than into the library, keeping it recastable.",
+  "state": {
+    "match_id": "4ba2e0cd-2ca1-4a21-a62f-ff617468f94b",
+    "local_seat_id": 2,
+    "opponent_seat_id": 1,
+    "turn": {
+      "turn_number": 9,
+      "active_player": 2,
+      "priority_player": 1,
+      "phase": "Main1"
+    },
+    "players": [
+      {
+        "seat_id": 1,
+        "is_local": false,
+        "life_total": 25
+      },
+      {
+        "seat_id": 2,
+        "is_local": true,
+        "life_total": 14
+      }
+    ],
+    "commander_grp_ids": [
+      103511
+    ],
+    "commander_casts": {
+      "103511": 1
+    },
+    "stack": [
+      {
+        "name": "The Notary Hobbits",
+        "oracle_text": "When The Notary Hobbits enter, if they're not a token, create two tokens that are copies of them, except the tokens aren't legendary.\n{oT}: Add {oC} for each Halfling you control.",
+        "type_line": "Legendary Creature \u2014 Halfling Advisor",
+        "mana_cost": "{3}{G}{G}",
+        "instance_id": 686,
+        "grp_id": 103511,
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "object_kind": "CARD",
+        "card_types": [
+          "Creature"
+        ],
+        "is_tapped": false
+      },
+      {
+        "name": "Memory Lapse",
+        "oracle_text": "Counter target spell. If that spell is countered this way, put it on top of its owner's library instead of into that player's graveyard.",
+        "type_line": "Instant",
+        "mana_cost": "{1}{U}",
+        "instance_id": 691,
+        "grp_id": 77495,
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "object_kind": "CARD",
+        "card_types": [
+          "Instant"
+        ],
+        "is_tapped": false
+      }
+    ],
+    "battlefield": [
+      {
+        "name": "Sheoldred, the Apocalypse",
+        "oracle_text": "Deathtouch\nWhenever you draw a card, you gain 2 life.\nWhenever an opponent draws a card, they lose 2 life.",
+        "type_line": "Legendary Creature \u2014 Phyrexian Praetor",
+        "mana_cost": "{2}{B}{B}",
+        "instance_id": 663,
+        "grp_id": 82159,
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "object_kind": "CARD",
+        "card_types": [
+          "Creature"
+        ],
+        "is_tapped": true
+      }
+    ],
+    "hand": [],
+    "command": [],
+    "graveyard": [],
+    "exile": [],
+    "decision_context": {
+      "type": "optional_action",
+      "prompt": "Put The Notary Hobbits in the command zone or in your library?",
+      "prompt_id": 135,
+      "prompt_source_id": 686,
+      "recipient_ids": [
+        686
+      ],
+      "commander_return": false,
+      "raw": {
+        "systemSeatIds": [
+          2
+        ],
+        "msgId": 292,
+        "gameStateId": 209,
+        "prompt": {
+          "promptId": 135,
+          "parameters": [
+            {
+              "parameterName": "CardId",
+              "type": "ParameterType_Number",
+              "numberValue": 686
+            },
+            {
+              "parameterName": "CardId",
+              "type": "ParameterType_Number",
+              "numberValue": 1
+            }
+          ]
+        },
+        "optionalActionMessage": {
+          "sourceId": 686,
+          "optionalActionTypes": [
+            "CardMechanicType_ZoneTransfer"
+          ],
+          "recipientIds": [
+            686
+          ]
+        },
+        "allowCancel": "AllowCancel_No"
+      }
+    }
+  },
+  "raw_objects": [
+    {
+      "instanceId": 686,
+      "grpId": 103511,
+      "type": "GameObjectType_Card",
+      "zoneId": 27,
+      "visibility": "Visibility_Public",
+      "ownerSeatId": 2,
+      "controllerSeatId": 2,
+      "superTypes": [
+        "SuperType_Legendary"
+      ],
+      "cardTypes": [
+        "CardType_Creature"
+      ],
+      "subtypes": [
+        "SubType_Halfling",
+        "SubType_Advisor"
+      ],
+      "color": [
+        "CardColor_Green"
+      ],
+      "power": {
+        "value": 1
+      },
+      "toughness": {
+        "value": 1
+      },
+      "name": 1113733,
+      "overlayGrpId": 103511,
+      "uniqueAbilities": [
+        {
+          "id": 471,
+          "grpId": 205209
+        },
+        {
+          "id": 472,
+          "grpId": 205210
+        }
+      ]
+    },
+    {
+      "instanceId": 691,
+      "grpId": 77495,
+      "type": "GameObjectType_Card",
+      "zoneId": 27,
+      "visibility": "Visibility_Public",
+      "ownerSeatId": 1,
+      "controllerSeatId": 1,
+      "cardTypes": [
+        "CardType_Instant"
+      ],
+      "color": [
+        "CardColor_Blue"
+      ],
+      "name": 6167,
+      "overlayGrpId": 77495,
+      "uniqueAbilities": [
+        {
+          "id": 473,
+          "grpId": 88558
+        }
+      ]
+    },
+    {
+      "instanceId": 663,
+      "grpId": 82159,
+      "type": "GameObjectType_Card",
+      "zoneId": 28,
+      "visibility": "Visibility_Public",
+      "ownerSeatId": 1,
+      "controllerSeatId": 1,
+      "superTypes": [
+        "SuperType_Legendary"
+      ],
+      "cardTypes": [
+        "CardType_Creature"
+      ],
+      "subtypes": [
+        "SubType_Phyrexian",
+        "SubType_Praetor"
+      ],
+      "color": [
+        "CardColor_Black"
+      ],
+      "power": {
+        "value": 4
+      },
+      "toughness": {
+        "value": 5
+      },
+      "isTapped": true,
+      "name": 614894,
+      "overlayGrpId": 82159,
+      "uniqueAbilities": [
+        {
+          "id": 453,
+          "grpId": 1
+        },
+        {
+          "id": 454,
+          "grpId": 147082
+        },
+        {
+          "id": 455,
+          "grpId": 152800
+        }
+      ]
+    }
+  ],
+  "result_annotations": [
+    {
+      "id": 551,
+      "affectorId": 691,
+      "affectedIds": [
+        686
+      ],
+      "type": [
+        "AnnotationType_ObjectIdChanged"
+      ],
+      "details": [
+        {
+          "key": "orig_id",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            686
+          ]
+        },
+        {
+          "key": "new_id",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            694
+          ]
+        }
+      ]
+    },
+    {
+      "id": 552,
+      "affectorId": 691,
+      "affectedIds": [
+        694
+      ],
+      "type": [
+        "AnnotationType_ZoneTransfer"
+      ],
+      "details": [
+        {
+          "key": "zone_src",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            27
+          ]
+        },
+        {
+          "key": "zone_dest",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            26
+          ]
+        },
+        {
+          "key": "category",
+          "type": "KeyValuePairValueType_string",
+          "valueString": [
+            "Countered"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 553,
+      "affectorId": 691,
+      "affectedIds": [
+        691
+      ],
+      "type": [
+        "AnnotationType_ResolutionComplete"
+      ],
+      "details": [
+        {
+          "key": "grpid",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            77495
+          ]
+        }
+      ]
+    },
+    {
+      "id": 554,
+      "affectorId": 1,
+      "affectedIds": [
+        691
+      ],
+      "type": [
+        "AnnotationType_ObjectIdChanged"
+      ],
+      "details": [
+        {
+          "key": "orig_id",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            691
+          ]
+        },
+        {
+          "key": "new_id",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            695
+          ]
+        }
+      ]
+    },
+    {
+      "id": 555,
+      "affectorId": 1,
+      "affectedIds": [
+        695
+      ],
+      "type": [
+        "AnnotationType_ZoneTransfer"
+      ],
+      "details": [
+        {
+          "key": "zone_src",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            27
+          ]
+        },
+        {
+          "key": "zone_dest",
+          "type": "KeyValuePairValueType_int32",
+          "valueInt32": [
+            33
+          ]
+        },
+        {
+          "key": "category",
+          "type": "KeyValuePairValueType_string",
+          "valueString": [
+            "Resolve"
+          ]
+        }
+      ]
+    }
+  ],
+  "result_command_cost": {
+    "actionType": "ActionType_Cast",
+    "instanceId": 694,
+    "abilityGrpId": 115,
+    "sourceId": 694,
+    "manaCost": [
+      {
+        "color": [
+          "ManaColor_Generic"
+        ],
+        "count": 5,
+        "abilityGrpId": 115
+      },
+      {
+        "color": [
+          "ManaColor_Green"
+        ],
+        "count": 2,
+        "abilityGrpId": 115
+      }
+    ]
+  },
+  "report_casts": {
+    "103511": 1
+  }
+}
