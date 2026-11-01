@@ -2261,11 +2261,12 @@ class Moves:
                 continue
             base_p, base_t, per_p, per_t, other = base
             counted = max(0, count - (1 if other else 0))
-            power, toughness = max(0, base_p + per_p * counted), max(0, base_t + per_t * counted)
+            shift = body.get("_counter_shift", 0)
+            power, toughness = base_p + per_p * counted + shift, base_t + per_t * counted + shift
             if (power, toughness) == (body["power"], body["toughness"]):
                 out.append(body)
                 continue
-            key = (body["instance_id"], power, toughness)
+            key = (body["instance_id"], body.get("_counter_shift", 0), power, toughness)
             found = self._scaled_memo.get(key)
             if found is None:
                 found = self._scaled_memo[key] = {**body, "power": power, "toughness": toughness}
@@ -2666,8 +2667,22 @@ class Moves:
         context = LossState(defender.poison) if library_irrelevant else defender
         from arenamcp.combat_protection import protection_key
 
-        key = (tag, ids_of(attackers), ids_of(blockers), max(1, life), context, defending_player,
-               tuple(protection_key(b) for b in (*attackers, *blockers)))
+        key = (
+            tag,
+            ids_of(attackers),
+            ids_of(blockers),
+            max(1, life),
+            context,
+            defending_player,
+            tuple(protection_key(b) for b in (*attackers, *blockers)),
+        )
+        key += (
+            tuple(
+                (b["instance_id"], b.get("_counter_shift", 0))
+                for b in (*attackers, *blockers)
+                if b.get("_counter_shift")
+            ),
+        )
         if self._scale_base:  # a per-creature body's power follows the board, not its id (#157)
             key += (
                 tuple(
@@ -2692,21 +2707,25 @@ class Moves:
                 used,
                 remaining,
                 terminal,
-            ) = _combat_life(
-                attackers,
-                blockers,
-                life,
-                detail=True,
-                with_loss=True,
-                defender=context,
-                defending_player=defending_player,
+            ) = (
+                raw_combat := _combat_life(
+                    attackers,
+                    blockers,
+                    life,
+                    detail=True,
+                    with_loss=True,
+                    defender=context,
+                    defending_player=defending_player,
+                )
             )
             found = self._memo[key] = CombatDetail((
                 damage, frozenset(dead_att), frozenset(dead_blk), gained, healed, tuple(sorted(through.items())),
                 frozenset(used), ll_gain, ll_heal,
-            ), remaining, terminal)  # fmt: skip
+            ), remaining, terminal, raw_combat.counter_deltas)  # fmt: skip
         if library_irrelevant:
-            return CombatDetail(found, LossState(found.loss.poison, defender.library), found.terminal)
+            return CombatDetail(
+                found, LossState(found.loss.poison, defender.library), found.terminal, found.counter_deltas
+            )
         return found
 
     def kills(self, reach: dict, body: dict, ours=(), *, attacking: bool = False, mana: int = 0) -> bool:
@@ -3141,7 +3160,7 @@ class Moves:
             toughness = sum(self.their_anthems[i][2][2] for i in want - had) - sum(
                 self.their_anthems[i][2][2] for i in had - want
             )
-            key = (body["instance_id"], want)
+            key = (body["instance_id"], body.get("_counter_shift", 0), want)
             found = self._anthem_memo.get(key)
             if found is None:
                 found = self._anthem_memo[key] = {
@@ -3158,14 +3177,14 @@ class Moves:
 
     def _countered(self, body: dict, n: int) -> dict:
         """``body`` with ``n`` more +1/+1 counters: a fresh id (the combat memo keys on ids)."""
-        key = (body["instance_id"], n)
+        key = (body["instance_id"], body.get("_counter_shift", 0), n)
         found = self._counter_memo.get(key)
         if found is None:
+            from arenamcp.combat_infect import counter_change
+
             found = self._counter_memo[key] = {
-                **body,
+                **counter_change(body, plus=n),
                 "instance_id": _COUNTER_IDS + len(self._counter_memo),
-                "power": body["power"] + n,
-                "toughness": body["toughness"] + n,
             }
         return found
 
@@ -3203,6 +3222,15 @@ class Moves:
             out.append(future)
         return out
 
+    def _combat_counters(self, bodies, changes):
+        from arenamcp.combat_infect import apply_deltas
+
+        out = apply_deltas(bodies, changes)
+        for old, new in zip(bodies, out, strict=True):
+            if new is not old and id(old) in self._body_spell:
+                self._body_spell[id(new)] = self._body_spell[id(old)]
+        return out
+
     def _end_step(self, mid: Mid) -> None:
         """Our end step: a creature that returns to its owner's hand then (Fleeting Effigy) is no
         blocker on their turn; one cast from our hand in this line goes back to the hand.
@@ -3218,6 +3246,9 @@ class Moves:
                 mid.hand = sorted([*mid.hand, *back], key=lambda i: self._hand_pos.get(i, i))
         mid.ours = self._future_bodies(mid.ours)
         mid.theirs = self._future_bodies(mid.theirs)
+        # Cast pumps expire here; permanent -1/-1 counters do not.
+        mid.ours = self.rescale([b for b in mid.ours if b["toughness"] > 0])
+        mid.theirs = [b for b in mid.theirs if b["toughness"] > 0]
 
     def their_gains(self, mid: Mid) -> int:
         """Their life-gain events on their turn after our turn ``mid``: their gain triggers, their
@@ -3277,7 +3308,7 @@ class Moves:
             return {}
         origins = {_int((b.get("_card") or b).get("instance_id")) for b in theirs}
         team = tuple(t for t in engines.team if t[0] in origins or t[0] not in self._their_creature_ids)
-        key = (ids_of(theirs), gains, team, combat_only)
+        key = (ids_of(theirs), tuple(b.get("_counter_shift", 0) for b in theirs), gains, team, combat_only)
         found = self._turn_growth_memo.get(key)
         if found is None:
             combat_grow = engines.combat_targets(theirs, alive_origins=origins)
@@ -3371,6 +3402,7 @@ class Moves:
             node.walkers,
             self.gained_at_start(node),
             ids_of(node.ours),  # legend replacements and named-token counts depend on our board
+            tuple(b.get("_counter_shift", 0) for b in (*node.ours, *theirs)),
         )
         found = self._cast_memo.get(key)
         if found is not None:
@@ -3815,6 +3847,9 @@ class Moves:
             at = {int(i): int(walker) for i in sent.split(",") if i}
         at_walkers: list[tuple[str, str]] = []
         if attackers:
+            from arenamcp.combat_infect import add_deltas, apply_deltas
+
+            counter_deltas = {}
             # Attack triggers that ping the opponent (Hired Claw) resolve before blocks.
             if attack[0] != "declared":
                 mid.opp_life -= self.pinged(mid.ours, attackers)
@@ -3842,7 +3877,11 @@ class Moves:
                     used,
                     w_ll_gain,
                     w_ll_heal,
-                ) = self.combat_detail(sent, blockers, loyal, tag=tag + "walker", defending_player=False)
+                ) = (
+                    walker_details := self.combat_detail(
+                        sent, blockers, loyal, tag=tag + "walker", defending_player=False
+                    )
+                )
                 rest = [b for b in fighting if b["instance_id"] not in at]
                 spare = [b for b in blockers if b["instance_id"] not in used]
                 (
@@ -3859,6 +3898,7 @@ class Moves:
                     details := self.combat_detail(rest, spare, mid.opp_life, tag=tag, defender=opponent_loss)
                 )
                 opponent_loss, opponent_terminal = details.loss, details.terminal
+                counter_deltas = add_deltas(walker_details.counter_deltas, details.counter_deltas)
                 dead_ours, dead_theirs = dead_ours | w_dead_ours, dead_theirs | w_dead_theirs
                 gained, healed = gained + w_gained, healed + w_healed
                 ll_gain, ll_heal = ll_gain + w_ll_gain, ll_heal + w_ll_heal
@@ -3884,6 +3924,7 @@ class Moves:
                     )
                 )
                 opponent_loss, opponent_terminal = details.loss, details.terminal
+                counter_deltas = details.counter_deltas
                 swap = self._sneak_swap(mid, fighting, blockers, tag)
                 if swap is not None:  # a Sneak creature in for an unblocked attacker (#156)
                     gain, returned, entered = swap
@@ -3898,11 +3939,18 @@ class Moves:
             mid.our_life += gained
             mid.gained += ll_gain
             opp_after = mid.opp_life
-            mid.ours = self.rescale([b for b in mid.ours if b["instance_id"] not in dead_ours])
+            mid.ours = self.rescale(
+                self._combat_counters(
+                    [b for b in mid.ours if b["instance_id"] not in dead_ours], counter_deltas
+                )
+            )
             died = [b for b in mid.theirs if b["instance_id"] in dead_theirs]
             replacement = self.death_bodies(died)
             mid.persistent.extend(self.return_engines(died))
-            mid.theirs = [b for b in mid.theirs if b["instance_id"] not in dead_theirs] + replacement
+            mid.theirs = (
+                apply_deltas([b for b in mid.theirs if b["instance_id"] not in dead_theirs], counter_deltas)
+                + replacement
+            )
             # Non-vigilance attackers stay tapped through their turn.
             mid.our_tapped |= {b["instance_id"] for b in attackers if not has_combat_keyword(b, "vigilance")}
         post_combat: tuple[str, ...] = ()
@@ -4229,7 +4277,7 @@ class Moves:
             if not (power or toughness or doubles):
                 out.append(body)
                 continue
-            key = (body["instance_id"], entries)
+            key = (body["instance_id"], body.get("_counter_shift", 0), entries)
             found = self._pump_memo.get(key)
             if found is None:
                 found = self._pump_memo[key] = {
@@ -4508,9 +4556,12 @@ class Moves:
         round_tag = tag + ("proxy" if boost else "")
         terminal = our_loss.lost
         last_details = None
+        counter_deltas = {}
 
         def resolve_round(a, b, left):
-            nonlocal our_loss, terminal, last_details
+            from arenamcp.combat_infect import add_deltas
+
+            nonlocal our_loss, terminal, last_details, counter_deltas
             details = self.combat_detail(
                 a,
                 b,
@@ -4520,8 +4571,9 @@ class Moves:
                 defender=our_loss,
             )
             last_details = details
+            counter_deltas = add_deltas(counter_deltas, details.counter_deltas)
             our_loss, terminal = details.loss, terminal or details.terminal
-            return details[:5]
+            return CombatDetail(details[:5], details.loss, details.terminal, details.counter_deltas)
 
         if annotated(fighting):
             # Their pumps, attack-trigger grants and extra combat (ledger #191, #193, #194): the
@@ -4534,6 +4586,11 @@ class Moves:
         else:
             damage, dead_att, dead_blk, gained, healed = resolve_round(fighting, defenders, life)
         dead_att = {abs(back.get(i, i)) for i in dead_att}
+        from arenamcp.combat_infect import add_deltas, apply_deltas
+
+        # Landfall/attack-trigger proxies use temporary ids; the counters
+        # belong to the original permanent after the pump expires.
+        counter_deltas = add_deltas(*({abs(back.get(i, i)): n} for i, n in counter_deltas.items()))
         # Lifelink lands with the damage: our lifelink blockers heal us, their lifelink
         # attackers heal them (match 41753907 T7: Dawnwing Marshal's 4 a turn). Their attack
         # triggers' pings hit us too (unless the attack was declared before the snapshot), and
@@ -4579,9 +4636,11 @@ class Moves:
                 "suicidal": False,
                 "v": 0.0,
             }
-        ours_after = [b for b in ours if b["instance_id"] not in dead_blk]
+        ours_after = apply_deltas([b for b in ours if b["instance_id"] not in dead_blk], counter_deltas)
         theirs_after = (
-            [b for b in theirs if b["instance_id"] not in dead_att | removed] + list(returning) + bounced
+            apply_deltas([b for b in theirs if b["instance_id"] not in dead_att | removed], counter_deltas)
+            + list(returning)
+            + bounced
         )
         theirs_after += made + self.death_bodies([b for b in theirs if b["instance_id"] in dead_att])
         alive = {b["instance_id"] for b in theirs_after}
@@ -4597,6 +4656,9 @@ class Moves:
         theirs_after, their_tapped = self._lifelink_growth(
             theirs_after, their_tapped, gained, [b for b in theirs if b["instance_id"] not in removed]
         )
+        # Temporary attack/landfall pumps have expired by the next turn.
+        theirs_after = [b for b in theirs_after if b["toughness"] > 0]
+        ours_after = [b for b in ours_after if b["toughness"] > 0]
         crack = [b for b in ours_after if b["_can_attack"] and not self.sick(b, next_k, next_abs, entered)]
         crack_blockers = [b for b in theirs_after if b["instance_id"] not in their_tapped]
         # Our next turn: the burn in hand at their face and the cast triggers of the spells we
@@ -4609,8 +4671,13 @@ class Moves:
                 self._cast_triggers(scratch, spell)
             fighting, crack_tag = self.cast_pumped(crack, scratch.pumps)
         crack_damage, crack_dead_ours, crack_dead_theirs, crack_gained, crack_healed = (
-            self.combat_life(self._future_bodies(fighting), self._future_bodies(crack_blockers),
-                             opp_life, tag=crack_tag, defender=opponent_loss)
+            self.combat_life(
+                self._future_bodies(fighting),
+                self._future_bodies(crack_blockers),
+                opp_life,
+                tag=crack_tag,
+                defender=opponent_loss,
+            )
             if crack
             else (0, set(), set(), 0, 0)
         )

@@ -33,7 +33,7 @@ from typing import Any
 
 from arenamcp.combat_hit import loses_on_combat_hit
 from arenamcp.combat_keywords import can_be_blocked_by, has_combat_keyword
-from arenamcp.combat_loss import LossState, loss_state, player_hit
+from arenamcp.combat_loss import LossState, infect_source, loss_state, player_hit
 from arenamcp.combat_protection import future_protection, prevents_damage, protection_key
 from arenamcp.death_triggers import swing_of
 from arenamcp.player_protection import protected_players, source_controller
@@ -267,6 +267,7 @@ class CombatOutcome:
     blockers_died: list[dict] = field(default_factory=list)
     life_gained: int = 0  # a lifelink attacker's damage dealt (to blockers and through)
     blocker_life_gained: int = 0  # actual damage dealt by lifelink blockers
+    counter_deltas: dict[int, int] = field(default_factory=dict)
     first_strike_damage: int = 0
     first_strike_blocker_gain: int = 0
     combat_damage: int = 0  # damage dealt to the recipient before infect changes its result
@@ -380,6 +381,10 @@ def _resolve_attacker_damage(attacker: dict, assigned: list[dict]) -> CombatOutc
             out.damage_through += int(attacker["combat_hit_bonus"] or 0)
         return out
 
+    if infect_source(attacker) or any(infect_source(b) for b in assigned):
+        from arenamcp.combat_infect import resolve_infect
+
+        return resolve_infect(attacker, assigned)
     atk_dth = _has(attacker, "deathtouch")
     atk_trample = _has(attacker, "trample")
     atk_fs = _has(attacker, "first strike") or atk_ds
@@ -2029,6 +2034,18 @@ def evaluate_attack(
     # opponent will attack with next turn.
     killed = opp_block.blockers_lost_ids if opp_block is not None else frozenset()
     lost = opp_block.attackers_killed_ids if opp_block is not None else frozenset()
+    counter_deltas = {}
+    if opp_block and any(infect_source(c) for c in (*attacking, *opponent_blockers)):
+        from arenamcp.combat_infect import add_deltas
+
+        by_id = {b.get("instance_id"): b for b in opponent_blockers}
+        groups = {}
+        for blocker_id, attacker_id in opp_block.assignments.items():
+            if blocker_id in by_id:
+                groups.setdefault(attacker_id, []).append(by_id[blocker_id])
+        counter_deltas = add_deltas(*(
+            _resolve_attacker(a, groups.get(a.get("instance_id"), [])).counter_deltas for a in attacking
+        ))
     died = True if (atk_lost_mat > 0 or blk_killed_mat > 0) else creature_died_this_turn
     crackers = [
         future_protection(card)
@@ -2042,6 +2059,11 @@ def evaluate_attack(
         if not leaves_at_our_end_step(card)
         and not (card.get("instance_id") and card in attacking and card.get("instance_id") in lost)
     ]
+    if counter_deltas:
+        from arenamcp.combat_infect import apply_deltas
+
+        crackers = apply_deltas(crackers, counter_deltas)
+        defenders = apply_deltas(defenders, counter_deltas)
     from arenamcp.combat_strategy import guarded_block_plan
 
     drain = 0

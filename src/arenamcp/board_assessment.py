@@ -682,12 +682,12 @@ def _combat_life(
     (``line_search_moves``' token scalers, ledger #195) — a death-trigger
     drain is not life gained.
     """
-    from arenamcp.combat_loss import LossState
+    from arenamcp.combat_loss import CombatDetail, LossState
 
     defender = defender or LossState()
     if not attackers:
         empty = (0, set(), set(), 0, 0, 0, 0, {}, set()) if detail else (0, set(), set(), 0, 0, 0, 0)
-        return empty + (defender, defender.lost) if with_loss else empty
+        return CombatDetail(empty + (defender, defender.lost) if with_loss else empty, defender, defender.lost)
     blockers = [b for b in blockers if b["_can_block"]]
     groups: dict[int, list[dict]] = {}
     if blockers:
@@ -713,9 +713,15 @@ def _combat_life(
     attacker_lifelink = defender_lifelink = 0
     through: dict[int, int] = {}
     remaining, terminal = defender, False
+    counter_deltas = {}
+    first_damage = first_gain = 0
     for attacker in attackers:
         group = groups.get(attacker["instance_id"], [])
         outcome = _resolve_attacker(attacker, group, defending_player=defending_player)
+        for identity, amount in outcome.counter_deltas.items():
+            counter_deltas[identity] = counter_deltas.get(identity, 0) + amount
+        first_damage += outcome.first_strike_damage
+        first_gain += outcome.first_strike_blocker_gain
         remaining = remaining.hit(outcome.poison_given, outcome.cards_milled)
         terminal |= outcome.player_loses or (defending_player and remaining.lost)
         damage += outcome.damage_through
@@ -731,6 +737,9 @@ def _combat_life(
         dead_blockers.update(dead["instance_id"] for dead in outcome.blockers_died)
         defender_lifelink += outcome.blocker_life_gained
         defender_gain += outcome.blocker_life_gained
+    if defending_player and first_damage - first_gain >= life:
+        defender_gain -= defender_lifelink - first_gain
+        defender_lifelink = first_gain
     if detail:
         used = {b["instance_id"] for group in groups.values() for b in group}
         result = (
@@ -744,8 +753,9 @@ def _combat_life(
             through,
             used,
         )
-        return result + (remaining, terminal) if with_loss else result
-    return (
+        return CombatDetail(result + (remaining, terminal) if with_loss else result,
+                            remaining, terminal, counter_deltas)
+    return CombatDetail((
         damage,
         dead_attackers,
         dead_blockers,
@@ -753,7 +763,7 @@ def _combat_life(
         defender_gain,
         attacker_lifelink,
         defender_lifelink,
-    )
+    ), remaining, terminal, counter_deltas)
 
 
 def _attack_round(attackers: list[dict], blockers: list[dict], life: int) -> tuple[int, set[int], set[int]]:

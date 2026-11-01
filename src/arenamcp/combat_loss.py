@@ -113,11 +113,19 @@ def player_hit(card: dict, damage: int, hits: int) -> tuple[int, int, int]:
     )
 
 
+def infect_source(card: dict) -> bool:
+    if "infect" in (str(k).lower() for k in card.get("keywords") or ()):
+        return True
+    text = str(card.get("oracle_text") or "")
+    return "infect" in text.lower() and _printed(str(card.get("name") or ""), text)[1]
+
+
 class CombatDetail(tuple):
     """Existing combat tuple plus the defending player's alternate-loss state."""
 
-    def __new__(cls, values, loss: LossState, terminal: bool):
+    def __new__(cls, values, loss: LossState = LossState(), terminal: bool = False, counter_deltas=None):
         result = super().__new__(cls, values)
         result.loss = loss
         result.terminal = terminal
+        result.counter_deltas = dict(counter_deltas or {})
         return result
