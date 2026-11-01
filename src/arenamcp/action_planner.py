@@ -3851,11 +3851,31 @@ class ActionPlanner(_ActionLegalityMixin):
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError as e:
+            from arenamcp.action_diagnostics import record_parse_failure
             from arenamcp.action_json import recover_action_json
+
+            decode_error = e
+
+            def record_failure(recovery: str) -> None:
+                state = game_state if isinstance(game_state, dict) else {}
+                request = state.get("_bridge_request_payload")
+                request_id = (
+                    (request.get("gameStateId"), request.get("msgId")) if isinstance(request, dict) else ()
+                )
+                record_parse_failure(
+                    response,
+                    parse_input=json_str,
+                    error=decode_error,
+                    recovery=recovery,
+                    legal_action_count=len(legal_actions or []),
+                    request_type=bridge_request,
+                    request_id=request_id,
+                    origin_logger=logger,
+                )
 
             recovered = recover_action_json(json_str)
             if recovered is not None:
-                logger.warning("Recovered action payload before malformed/truncated trailing text: %s", e)
+                record_failure("action_payload")
                 return self._parse_response(
                     json.dumps(recovered), legal_actions, decision_context, bridge_request, game_state
                 )
@@ -3870,16 +3890,12 @@ class ActionPlanner(_ActionLegalityMixin):
                 if 0 <= idx < len(self._last_menu):
                     action = self._legal_action_to_action(self._last_menu[idx])
                     if action is not None:
-                        logger.warning(
-                            f"Malformed plan JSON ({e}); salvaged pick "
-                            f"{m.group(1)} → {self._last_menu[idx]!r}"
-                        )
+                        record_failure("pick")
                         plan.actions = [action]
                         plan.overall_strategy = f"[pick-salvage] {self._last_menu[idx]}"
                         plan.voice_advice = self._humanize_legal_action(self._last_menu[idx])
                         return plan
-            logger.error(f"Failed to parse action plan JSON: {e}")
-            logger.debug(f"Raw response: {response[:500]}")
+            record_failure("none")
             return plan
 
         # Accept the two shapes models emit besides {"actions": [...]}: a bare
