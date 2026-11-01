@@ -635,6 +635,7 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
     # --- turn plan ------------------------------------------------------------
     plan.turn_plan = _validate_turns(plan.turn_plan, assessment, state, issues)
     _check_library_dependencies(plan, library_only, issues)
+    _check_dropped_cast_dependencies(plan, state, issues)
     _check_keyword_claims(plan, assessment, state, issues)
     _check_kill_claims(plan, assessment, state, issues)
     _check_leaver_blocks(plan, state, issues)
@@ -643,6 +644,57 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
     _check_mana_holds(plan, assessment, state, issues)
     plan.issues = issues
     return plan
+
+
+def _check_dropped_cast_dependencies(plan: GamePlan, state: dict, issues: list[str]) -> None:
+    """Do not retain unconditional prose/attacks around casts removed for mana.
+
+    Leave conditional future draws and existing same-name bodies alone. This
+    is the deterministic fallback when a whole-plan repair cannot run.
+    """
+    removed: dict[str, set[str]] = {}
+    for issue in list(issues):
+        match = re.match(r"(T(?:\+\d)?): dropped (.+?) — not mana-legal", issue)
+        if match:
+            name = match[2].split(" (")[0]
+            removed.setdefault(match[1], set()).update((_plain(name), _plain(name.split(",")[0])))
+    if not removed:
+        return
+    board = _card_names(
+        [
+            card
+            for card in state.get("battlefield") or []
+            if isinstance(card, dict)
+            and (card.get("controller_seat_id") or card.get("owner_seat_id")) == _local_seat(state)
+        ]
+    )
+    planned = " ".join(name for step in plan.turn_plan for name in step.get("cast") or [])
+    unavailable = {
+        name
+        for names in removed.values()
+        for name in names
+        if name not in board and not _mentions(planned, name)
+    }
+
+    def checked(text: str, names: set[str], where: str) -> str:
+        if any(_mentions(text, name) for name in names) and not (
+            _DRAW_LABEL.search(text) or re.search(r"\b(?:if|when|until|wait)\b", text, re.I)
+        ):
+            issues.append(f"{where} removed after mana-illegal cast: {text}")
+            return ""
+        return text
+
+    for attr in ("path", "develop_next"):
+        setattr(plan, attr, checked(getattr(plan, attr), unavailable, attr))
+    plan.resource_priorities = [
+        value
+        for item in plan.resource_priorities
+        if (value := checked(item, unavailable, "resource priority"))
+    ]
+    for step in plan.turn_plan:
+        names = removed.get(step.get("label"), set()) - board.keys()
+        for attr in ("attack", "hold"):
+            step[attr] = checked(str(step.get(attr) or ""), names, f"{step.get('label')} {attr}")
 
 
 def _check_library_dependencies(plan: GamePlan, library_only: set[str], issues: list[str]) -> None:
@@ -4867,7 +4919,9 @@ class GamePlanManager:
             return None
 
         plan = self._usable_plan(response, turn_num, cancel=cancel, effort=effort)
+        json_retried = False
         if plan is None and self._reform_failure == "no usable plan from the model":
+            json_retried = True
             retry_effort = "none" if fast_initial else "low"
             plan = self._retry_for_json(
                 user_message, turn_num, cancel=cancel, deadline=deadline, effort=retry_effort
@@ -4885,6 +4939,19 @@ class GamePlanManager:
             validate_plan(plan, assessment, game_state)
         except Exception as error:  # a validator bug must not discard the plan
             logger.warning("game-plan validation failed (plan kept unvalidated): %s", error)
+        if not json_retried and assessment is not None:
+            plan = self._repair_mana_plan(
+                plan,
+                assessment,
+                game_state,
+                user_message,
+                turn_num,
+                cancel=cancel,
+                deadline=deadline,
+                effort="none" if fast_initial else "low",
+            )
+            if plan is None:
+                return None
         if assessment is not None:
             plan.facts = assessment.as_payload()
         for issue in plan.issues:
@@ -4897,6 +4964,60 @@ class GamePlanManager:
             plan.path,
             " | ".join(f"T{step['turn']}: {step_text(step)}" for step in plan.turn_plan) or "-",
         )
+        return plan
+
+    def _repair_mana_plan(
+        self,
+        plan: GamePlan,
+        assessment: Any,
+        state: dict,
+        user_message: str,
+        turn_num: int,
+        *,
+        cancel: threading.Event | None,
+        deadline: float,
+        effort: str = "low",
+    ) -> GamePlan | None:
+        """#235: repair a broken schedule once, within the first call's budget.
+
+        A parse retry uses this opportunity up. A live decision, cancellation,
+        exhausted budget or unhealthy backend must not start extra work. Keep
+        the validated fallback when repair fails, and retain rejected evidence.
+        """
+        rejected = [issue for issue in plan.issues if "not mana-legal" in issue]
+        remaining = deadline - time.monotonic()
+        if not rejected or remaining <= 0 or _decision_pending(state) or critical_decision_call_inflight():
+            return plan
+        if cancel is not None and cancel.is_set():
+            return None
+        if not background_llm_allowed(self._backend):
+            return plan
+        logger.info("GamePlan before mana repair (turn %d): %s | raw=%s", turn_num, rejected, plan.raw)
+        nudge = (
+            "\nVALIDATION REPAIR: the first plan lost casts to the mana check:\n"
+            + "\n".join(rejected)
+            + "\nReturn one corrected full JSON plan. Rebuild dependent attacks, holds and path; "
+            "do not sequence around a dropped spell. Respect coloured pips and combined costs."
+        )
+        try:
+            response = self._complete(
+                GAME_PLAN_PROMPT, user_message + nudge, cancel=cancel, effort=effort, deadline=deadline
+            )
+            repaired = self._usable_plan(response, turn_num, cancel=cancel, effort=effort)
+            if cancel is not None and cancel.is_set():
+                return None
+            if repaired is not None:
+                validate_plan(repaired, assessment, state)
+                if not any("not mana-legal" in issue for issue in repaired.issues):
+                    repaired.basis = plan.basis
+                    repaired.effort = effort
+                    repaired.issues = [f"Initial validation: {issue}" for issue in rejected] + repaired.issues
+                    return repaired
+        except Exception as error:
+            logger.warning("GamePlan mana repair failed (keeping validated fallback): %s", error)
+        if cancel is not None and cancel.is_set():
+            return None
+        self._reform_failure = ""
         return plan
 
     # 2026-10-19 ladder: "game-plan answer had no usable plan (keeping prior
