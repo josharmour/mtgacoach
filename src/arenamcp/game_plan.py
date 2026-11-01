@@ -178,6 +178,19 @@ class StrategicLane:
         self._token: object | None = None
         self._job = ""
         self._since = 0.0
+        self._reserved_job = ""
+        self._reserved_until = 0.0
+
+    def reserve_next(self, job: str, seconds: float) -> None:
+        """Bounded handoff: the cancelled owner must still release its own token."""
+        with self._cond:
+            self._reserved_job = job
+            self._reserved_until = time.monotonic() + max(0.0, seconds)
+            self._cond.notify_all()
+
+    def _available_locked(self, job: str) -> bool:
+        reserved = self._reserved_job and time.monotonic() < self._reserved_until
+        return self._free_locked() and (not reserved or self._reserved_job == job)
 
     @property
     def holder(self) -> str | None:
@@ -197,18 +210,20 @@ class StrategicLane:
     def _take_locked(self, job: str) -> object:
         token = object()
         self._token, self._job, self._since = token, job, time.monotonic()
+        if self._reserved_job == job or self._since >= self._reserved_until:
+            self._reserved_job, self._reserved_until = "", 0.0
         return token
 
     def try_acquire(self, job: str) -> object | None:
         """Take the lane now, or return None when another job holds it."""
         with self._cond:
-            return self._take_locked(job) if self._free_locked() else None
+            return self._take_locked(job) if self._available_locked(job) else None
 
     def acquire(self, job: str, timeout: float, *, abort: Callable[[], bool] | None = None) -> object | None:
         """Wait up to ``timeout`` seconds for the lane (None on timeout or abort)."""
         deadline = time.monotonic() + max(0.0, timeout)
         with self._cond:
-            while not self._free_locked():
+            while not self._available_locked(job):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or (abort is not None and abort()):
                     return None

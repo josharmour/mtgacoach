@@ -120,6 +120,29 @@ _PLAYBOOK_PASS_SETTINGS = {
 }
 _PLAYBOOK_DISCOVERY_MAX_TOKENS = 12000
 _PLAYBOOK_COMPILE_MAX_TOKENS = 12288
+# The hosted current/DeepSeek path requested high reasoning and repeatedly
+# exhausted its 120s cap without usable discovery notes. Keep analysis in the visible notes,
+# then retain the full audited JSON budget; do not change legacy GLM policy.
+_HOSTED_PLAYBOOK_SETTINGS = {"enable_thinking": False, "reasoning_effort": "none"}
+_HOSTED_DISCOVERY_MAX_TOKENS = 4096
+_HOSTED_DISCOVERY_TIMEOUT_S = 60.0
+
+
+def _playbook_call_options(backend, discovery):
+    model = str(getattr(backend, "model", "")).lower()
+    hosted = model == "current" or any(name in model for name in ("deepseek", "dsv4"))
+    settings = (
+        _HOSTED_PLAYBOOK_SETTINGS
+        if hosted
+        else _PLAYBOOK_PASS_SETTINGS["discovery" if discovery else "compile"]
+    )
+    return dict(
+        **settings,
+        max_tokens=(_HOSTED_DISCOVERY_MAX_TOKENS if hosted else _PLAYBOOK_DISCOVERY_MAX_TOKENS)
+        if discovery
+        else _PLAYBOOK_COMPILE_MAX_TOKENS,
+        request_timeout_s=(_HOSTED_DISCOVERY_TIMEOUT_S if hosted else 300.0) if discovery else 120.0,
+    )
 
 
 def _playbook_prompt_fingerprint() -> str:
@@ -133,6 +156,8 @@ def _playbook_prompt_fingerprint() -> str:
             DECK_ANALYSIS_PROMPT,
             _PLAYBOOK_AUDIT_INSTRUCTIONS,
             json.dumps(_PLAYBOOK_PASS_SETTINGS, sort_keys=True),
+            json.dumps(_HOSTED_PLAYBOOK_SETTINGS, sort_keys=True),
+            str(_HOSTED_DISCOVERY_MAX_TOKENS),
         )
     )
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
@@ -657,7 +682,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             if self._game_plan_mgr is not None:
                 self._game_plan_mgr.reset()
 
-    _PLAN_WAITS_FOR_DECK_ANALYSIS_S = 45.0
+    _PLAN_WAITS_FOR_DECK_ANALYSIS_S = 12.0
 
     def _deck_analysis_blocks_plan(self) -> bool:
         """True only for the first seconds of a deck analysis; after that the plan forms without it."""
@@ -682,6 +707,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 and not getattr(self, "_deck_yielded_for_first_plan", False)
             ):
                 self._deck_yielded_for_first_plan = True
+                if manager is not None:
+                    STRATEGIC_LANE.reserve_next("game_plan", 30.0)
                 logger.info(
                     "Deck playbook yields its occupied lane: first game plan has waited %.0fs",
                     time.monotonic() - since,
@@ -849,8 +876,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if lane is None:
             if not wanted():
                 raise ValueError("Deck changed during analysis")
-            logger.info(
-                "Deck playbook: strategic lane still held by %s; analysing anyway", STRATEGIC_LANE.holder
+            raise ValueError(
+                f"Deck analysis deferred: strategic lane held or reserved for {STRATEGIC_LANE.holder or 'a game plan'}"
             )
         cancel = threading.Event()
         with self._deck_analysis_lock:
@@ -865,11 +892,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             # to omitted branches and repeated invalid/truncated JSON.
             def complete(system, message, *, discovery=False):
                 options = dict(
-                    max_tokens=_PLAYBOOK_DISCOVERY_MAX_TOKENS if discovery else _PLAYBOOK_COMPILE_MAX_TOKENS,
                     temperature=0.0,
-                    request_timeout_s=300.0 if discovery else 120.0,
                     background=True,
-                    **_PLAYBOOK_PASS_SETTINGS["discovery" if discovery else "compile"],
+                    **_playbook_call_options(be, discovery),
                     **labels,
                 )
                 if not discovery:

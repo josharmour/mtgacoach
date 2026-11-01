@@ -136,3 +136,15 @@ def test_current_game_plan_bounds_reasoning_without_changing_defaults(captured):
 )
 def test_priority_requires_endpoint_capability_for_moving_alias(model, capability, expected):
     assert ProxyBackend(model=model, supports_priority=capability)._priority_supported() is expected
+
+
+def test_current_deck_playbook_overrides_legacy_high_reasoning(captured):
+    backend = ProxyBackend(model="current", base_url="http://127.0.0.1:9/v1", api_key="test")
+    backend.complete(
+        "Analyze deck",
+        "Synthetic rules",
+        call_class="background.deck_playbook",
+        enable_thinking=True,
+        reasoning_effort="high",
+    )
+    assert captured["extra_body"]["chat_template_kwargs"] == {"thinking": False, "reasoning_effort": "none"}

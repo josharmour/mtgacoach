@@ -169,6 +169,10 @@ class _DeckAnalysisMixin:
                 with coach._deck_analysis_lock:
                     if generation == coach._deck_analysis_generation:
                         coach._deck_strategy_pending = False
+                        if not self._deck_analyzed:
+                            # Back off from completion, not request start: a 120s
+                            # timeout must not immediately launch an identical retry.
+                            self._last_deck_analysis_attempt = time.monotonic()
                 if backend is not None and hasattr(backend, "close"):
                     backend.close()
 

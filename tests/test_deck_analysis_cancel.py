@@ -89,9 +89,12 @@ def test_autopilot_init_wires_the_bounded_game_plan_gate():
     assert "background_suspended_fn = lambda" not in source
 
 
-def test_retry_preserves_plan_and_original_deadline():
+def test_retry_preserves_plan_and_original_deadline(monkeypatch):
     import threading
 
+    from arenamcp.game_plan import StrategicLane
+
+    monkeypatch.setattr("arenamcp.coach.STRATEGIC_LANE", StrategicLane())
     coach = CoachEngine(backend=Mock())
     coach._game_plan_mgr = Mock()
     coach._game_plan_mgr._plan = None

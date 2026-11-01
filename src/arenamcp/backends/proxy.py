@@ -1363,6 +1363,7 @@ class ProxyBackend:
             ):
                 if call.call_class.startswith("decision.") or call.call_class in {
                     "background.commentary",
+                    "background.deck_playbook",
                     "probe",
                 }:
                     reasoning_effort = "none"
