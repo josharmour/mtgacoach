@@ -443,7 +443,7 @@ class StandaloneCoach(
         if self._voice_output:
             try:
                 extra = (
-                    {"category": speech_category or "workflow"}
+                    {"category": speech_category or "advice"}
                     if hasattr(self.ui, "emit_speech_request")
                     else {}
                 )
@@ -884,7 +884,7 @@ class StandaloneCoach(
         self._record_advice(advice, trigger, game_state=game_state)
         with contextlib.suppress(Exception):
             self.ui.advice(advice, "AUTOPILOT" if source == "autopilot plan" else "LOCAL")
-        self.speak_advice(advice, blocking=False)
+        self.speak_advice(advice, blocking=False, speech_category="routine")
 
     def _maybe_refresh_game_plan(self, state: dict[str, Any]) -> None:
         """Start a due game-plan reform while no decision is pending (no-op when none is due).
@@ -3085,7 +3085,7 @@ class StandaloneCoach(
                                     self._record_advice(local, trigger, game_state=curr_state)
                                     with contextlib.suppress(Exception):
                                         self.ui.advice(local, "THREAT")
-                                    self.speak_advice(local, blocking=False)
+                                    self.speak_advice(local, blocking=False, speech_category="essential")
                                 continue
                             advice = (
                                 self._coach.get_advice(

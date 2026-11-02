@@ -322,6 +322,21 @@ def test_advice_is_visible_without_narration_and_narration_does_not_duplicate_fe
     assert panel.log_view.toPlainText().count("Hold removal for the attacker.") == 1
 
 
+def test_markdown_advice_and_stripped_narration_do_not_duplicate_feed(panel):
+    advice = (
+        "**Put both Emrakuls onto the battlefield.** Tooth and Nail is entwined, so grab "
+        "Emrakul, the Aeons Torn and Emrakul, the World Anew from your hand."
+    )
+    panel.session.adviceReceived.emit(advice, "Visual Analysis")
+    panel.session.spokenLine.emit(
+        "Put both Emrakuls onto the battlefield. Tooth and Nail is entwined, so grab "
+        "Emrakul, the Aeons Torn and Emrakul, the World Anew from your hand."
+    )
+    assert panel.log_view.toPlainText().count("Put both Emrakuls onto the battlefield.") == 1
+    panel.session.spokenLine.emit("Attack with the team.")
+    assert "Attack with the team." in panel.log_view.toPlainText()
+
+
 def test_startup_pipe_events_reach_the_panel(panel):
     panel.session._handle_process_event(
         {

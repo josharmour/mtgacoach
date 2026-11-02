@@ -39,6 +39,18 @@ from .theme import block, span
 
 logger = logging.getLogger(__name__)
 
+
+def _plain_feed_text(text: str) -> str:
+    """Collapse the markdown/TTS differences that make one line look like two."""
+    plain = text.replace("**", "").replace("*", "").replace("#", "").replace("`", "")
+    return " ".join(plain.replace("...", " ").split())
+
+
+def _same_feed_line(previous: str, spoken: str) -> bool:
+    """True when a spoken line repeats the advice already shown in the feed."""
+    return _plain_feed_text(previous) == _plain_feed_text(spoken)
+
+
 # Where MTGA runs; "android" = a phone tethered over adb (arenamcp.android_link).
 GAME_DEVICES = ("desktop", "android")
 
@@ -1442,8 +1454,11 @@ class CompactCoachPanel(QWidget):
                 display_text = detailed
         self._now = (datetime.datetime.now().strftime("%H:%M"), display_text)
         self._render_now()
-        if not self._activity_history or self._activity_history[-1][1] != text:
-            self.append_log(text, role="spoken")
+        if self._activity_history:
+            _, previous, role = self._activity_history[-1]
+            if role in {"advice", "spoken"} and _same_feed_line(previous, text):
+                return
+        self.append_log(text, role="spoken")
 
     def _render_now(self) -> None:
         if self._now is None:

@@ -18,6 +18,7 @@ TERMINAL_STATES = frozenset({"finished", "stopped", "superseded", "failed", "mut
 
 class SpeechCategory(str, Enum):
     ESSENTIAL = "essential"
+    ADVICE = "advice"
     WORKFLOW = "workflow"
     COMMENTARY = "commentary"
     ROUTINE = "routine"

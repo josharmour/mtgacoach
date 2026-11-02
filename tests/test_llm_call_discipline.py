@@ -306,7 +306,7 @@ def make_loop(state: dict, triggers: list[str], *, autopilot: bool, engine=None,
     coach._original_backend = None
     coach._original_model = None
     coach.spoken: list[str] = []
-    coach.speak_advice = lambda text, blocking=True: coach.spoken.append(text)
+    coach.speak_advice = lambda text, blocking=True, *, speech_category=None: coach.spoken.append(text)
     coach._record_advice = lambda *args, **kwargs: None
     coach._inject_library_summary_if_needed = lambda s: None
     coach._has_actionable_priority_window = lambda s: False

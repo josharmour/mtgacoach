@@ -82,7 +82,10 @@ class CommentaryController(QObject):
         if item.utterance_id in self.preview_settings:
             return True
         if item.category != SpeechCategory.COMMENTARY:
-            return item.category == SpeechCategory.ESSENTIAL or self.config.mode == "actions"
+            return (
+                item.category in {SpeechCategory.ESSENTIAL, SpeechCategory.ADVICE}
+                or self.config.mode == "actions"
+            )
         return bool(self.config.enabled and self.observation and valid_for(item, self.observation))
 
     def proposal(self, payload):
@@ -121,7 +124,6 @@ class CommentaryController(QObject):
             if engine_id:
                 self.send({"cmd": "speech_status", "speech_id": engine_id, "state": "failed"})
             return
-        self.spoken(text)
         uid = engine_id or "desktop:" + uuid.uuid4().hex
         if uid in self.arbiter._states:
             return
@@ -131,9 +133,13 @@ class CommentaryController(QObject):
             category = SpeechCategory(event.get("speech_category") or "workflow")
         except ValueError:
             category = SpeechCategory.WORKFLOW  # Urgent alerts must be explicitly categorized.
-        if category != SpeechCategory.ESSENTIAL and self.config.mode != "actions":
+        if (
+            category not in {SpeechCategory.ESSENTIAL, SpeechCategory.ADVICE}
+            and self.config.mode != "actions"
+        ):
             self._status(uid, "superseded")
             return
+        self.spoken(text)
         self.arbiter.set_muted(muted)
         settings = get_settings()
         provider = str(settings.get("tts_provider") or "kokoro")

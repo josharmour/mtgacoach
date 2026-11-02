@@ -454,7 +454,7 @@ class _StandaloneHotkeysMixin:
                 self.ui.status("VOICE", desc)
                 self.ui.status("VOICE_ID", desc)
                 self.ui.log(f"\n[VOICE] Changed to: {desc}\n")
-                self.speak_advice("Voice changed.", blocking=False)
+                self.speak_advice("Voice changed.", blocking=False, speech_category="workflow")
             except Exception as e:
                 self.ui.log(f"Error changing voice: {e}")
 

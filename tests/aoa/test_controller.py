@@ -174,6 +174,41 @@ def test_shared_speed_applies_to_advice_narration_and_preview(controller, monkey
     assert settings["speech_speed"] == 1.5
 
 
+def test_advice_speaks_in_every_mode_but_routine_stays_gated(controller):
+    c, tts, sent, state = controller
+    c.speech(
+        {
+            "text": "Put both Emrakuls onto the battlefield.",
+            "speech_category": "advice",
+            "speech_id": "a1",
+        }
+    )
+    assert tts.request_speech.call_count == 1
+    assert tts.request_speech.call_args.kwargs["category"] == "advice"
+    tts.speechStatus.emit("a1", "started")
+    tts.speechStatus.emit("a1", "finished")
+    c.speech({"text": "Playing a card.", "speech_category": "routine", "speech_id": "r1"})
+    assert sent[-1] == {"cmd": "speech_status", "speech_id": "r1", "state": "superseded"}
+    assert tts.request_speech.call_count == 1
+    c.configure(CommentaryConfig(mode="essential").to_wire())
+    c.speech({"text": "Cast the spell.", "speech_category": "advice", "speech_id": "a2"})
+    assert tts.request_speech.call_count == 2
+
+
+def test_advice_survives_mode_change_and_suppressed_speech_is_not_logged(controller):
+    c, tts, sent, state = controller
+    spoken = []
+    c.spoken = spoken.append
+    c.configure(CommentaryConfig(mode="actions").to_wire())
+    c.speech({"text": "Cast the spell.", "speech_category": "advice", "speech_id": "a1"})
+    assert spoken == ["Cast the spell."]
+    c.configure(CommentaryConfig(mode="commentary").to_wire())
+    assert c.arbiter.active is not None
+    assert c.arbiter.active.category.value == "advice"
+    c.speech({"text": "Playing a card.", "speech_category": "routine", "speech_id": "r1"})
+    assert spoken == ["Cast the spell."]
+
+
 def test_uncategorized_guidance_cannot_bypass_announcers(controller):
     c, tts, sent, state = controller
     c.speech({"text": "Play Forest."})

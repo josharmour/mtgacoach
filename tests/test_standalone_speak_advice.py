@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from arenamcp.standalone import StandaloneCoach
@@ -38,6 +39,16 @@ def test_speak_advice_filtering():
     coach._voice_output.reset_mock()
     coach.speak_advice("Mulligan this hand.")
     assert coach._voice_output.speak.call_count == 1
+
+
+def test_speak_advice_defaults_to_the_advice_category():
+    coach = StandaloneCoach(register_hotkeys=False, backend="proxy")
+    coach._voice_output = MagicMock()
+    coach.ui = SimpleNamespace(emit_speech_request=lambda **kwargs: None)
+    coach.speak_advice("Cast Lightning Bolt.")
+    coach._voice_output.speak.assert_called_once_with(
+        "Cast Lightning Bolt.", blocking=True, category="advice"
+    )
 
 
 def test_is_passive_advice():
