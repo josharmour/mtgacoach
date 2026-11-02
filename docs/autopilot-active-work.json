@@ -165,14 +165,24 @@
         "backlog-evidence-2026-11-01.md: #141"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "DeepSeek",
+        "session": "session-965ac31a-2db0-4fef-8510-105b967c83cf",
+        "base_commit": "636459f627d4a0677eeb88831e62b8f436455992",
+        "source_commits": [
+          "264334b"
+        ],
+        "master_commits": [
+          "264334b"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-141/README.md",
+          "docs/backlog-receipts/BUG-141/replay-before.txt",
+          "docs/backlog-receipts/BUG-141/replay-after.txt",
+          "docs/backlog-receipts/BUG-141/focused-tests.txt",
+          "docs/backlog-receipts/BUG-141/replay_timeline.py"
+        ],
+        "note": "Repaired in an isolated worktree (/tmp/wt-141-base at 636459f, patched copy /tmp/wt-141-patched) and merged to local master as f72c411 (fix commit 264334b). b352b8a had already bounded the first hosted plan; the remaining gap was every reform after a cancellation, which still ran at full effort with the full 75 s budget and so always outlived its turn. _reform now treats a hosted reform with no plan or one supersede in a row as a recovery reform (effort none, min(timeout, 20 s) shared deadline), and a late answer after one supersede is kept instead of discarded; reforms that follow no cancellation keep full effort and budget, and the threat-supersede rule is unchanged. Scaled-time replay of turns 3-22 with turn and threat changes: baseline landed 1-3 plans in 20 turns (worst staleness 3 turns, twice ending mid-reform), patched lands a plan every four turns one turn after it is requested and ends idle with a plan. Focused regressions: 116 game-plan tests, then 473 in the wider batch; ruff clean. LIMIT: no live qualification and no Linux CI receipt (this session may not push), so the item stays merged_awaiting_review."
       },
       "independent_verification": {
         "state": "not_reviewed",

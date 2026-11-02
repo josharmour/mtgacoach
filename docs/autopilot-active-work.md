@@ -111,6 +111,19 @@ was stopped at a sandbox/worktree setup blocker; no candidate was produced. Read
 DeepSeek task with the implementation prompt and explicitly authorize all 40 items.
 There is no dependency on this chat or any particular reviewer/provider.
 
+### Progress (2026-11-02, session-965ac31a)
+
+Sequential implementation is under way on local master; nothing is pushed or
+deployed.
+
+| Order | Item | State | Master commit | Receipts |
+|---|---|---|---|---|
+| 1 | CI-PERF | merged_awaiting_review | c66155c (queue 636459f) | docs/backlog-receipts/CI-PERF/ |
+| 2 | BUG-141 | merged_awaiting_review | 264334b (merge f72c411) | docs/backlog-receipts/BUG-141/ |
+
+Next item: BUG-210. Both merged items still need an independent review pass and a
+real Linux CI receipt; the implementer may not claim either as verified.
+
 ## Queue entries
 
 The JSON contains per-item evidence, acceptance criteria, implementation and review
