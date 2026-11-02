@@ -1,0 +1,36 @@
+BUG-275 focused checks — 2026-11-02
+venv: .venv_mac_311 (Python 3.11.15)   repo: /Volumes/repos/mtgacoach
+
+== 1. latency / trace regression set (14 files) ==
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest -q tests/test_llm_latency_222.py tests/test_proxy_request_metrics.py tests/test_typed_budget_253.py tests/test_latency_budget_222_followup.py tests/test_action_plan_cancellation_222.py tests/test_latency_231_decision_trace.py tests/test_latency_248_budget_cut.py tests/test_latency_249_first_token.py tests/test_latency_223_background_contention.py tests/test_latency_232_combat_declaration.py tests/test_declaration_budget_232.py tests/test_critical_decision_budget.py tests/test_integrated_plan_repair_budget.py tests/test_recovery_trace.py
+........................................................................ [ 71%]
+.............................                                            [100%]
+101 passed in 22.03s
+
+== 2. post-cast priority hop limit (#266) ==
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest -q tests/test_priority_after_cast_206.py
+..................                                                       [100%]
+18 passed in 7.41s
+
+== 3. the 14 audit-listed node IDs (docs/latency-222-id-audit-20261101.json, id 275) ==
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest -q \
+    tests/test_llm_latency_222.py::test_budget_cut_stream_records_a_backend_health_failure \
+    tests/test_llm_latency_222.py::test_our_own_budget_cut_is_never_retried \
+    tests/test_proxy_request_metrics.py::test_retries_share_budget_and_metrics_include_retry_delay \
+    tests/test_proxy_request_metrics.py::test_exhausted_budget_does_not_start_another_request \
+    tests/test_proxy_request_metrics.py::test_continuously_streaming_model_stops_on_budget_and_closes \
+    tests/test_llm_latency_222.py::test_usable_low_answer_never_waits_for_high \
+    tests/test_llm_latency_222.py::test_doubted_low_answer_hands_over_after_a_bounded_wait \
+    tests/test_typed_budget_253.py::test_second_opinion_only_receives_remaining_budget \
+    tests/test_typed_budget_253.py::test_slow_legacy_typed_backend_is_bounded \
+    tests/test_latency_budget_222_followup.py::test_first_hosted_plan_gets_a_fast_answer_before_deep_refreshes \
+    tests/test_latency_budget_222_followup.py::test_first_hosted_plan_repair_keeps_fast_mode_and_shared_budget \
+    tests/test_latency_budget_222_followup.py::test_fast_initial_plan_reaches_proxy_without_hidden_reasoning \
+    tests/test_action_plan_cancellation_222.py::test_action_plan_timeout_cancels_its_cooperative_backend \
+    tests/test_action_plan_cancellation_222.py::test_successful_initial_call_does_not_cancel_the_repairs_fresh_token
+.....................                                                    [100%]
+21 passed in 14.62s
+
+== notes ==
+No source file changed for this item, so ruff has nothing new to check; the
+receipt commit is documentation only.
