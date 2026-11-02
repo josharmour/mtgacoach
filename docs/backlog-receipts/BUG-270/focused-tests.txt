@@ -1,0 +1,7 @@
+$ .venv_mac_311/bin/python -m pytest tests/test_retained_engine_value_284.py tests/test_combat_persistence_284.py -q
+.....................................                                    [100%]
+37 passed in 6.63s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_session_exact_closure.py tests/test_entry_draw_search_308.py tests/test_gain_drain_fast_path_20261101.py -q
+..................................                                       [100%]
+34 passed in 1.32s
