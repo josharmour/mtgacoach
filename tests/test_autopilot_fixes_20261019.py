@@ -609,7 +609,7 @@ def test_late_game_sparse_hand_and_consecutive_supersedes_use_low_effort():
     assert plan is not None and plan.effort == "low"
     assert efforts == ["low"]
 
-    # After 2 supersedes in a row, the next reform runs at low effort and is not superseded again.
+    # After one supersede in a row, the next reform runs at low effort and is not superseded again.
     cancel1 = threading.Event()
     mgr._inflight = True
     mgr._inflight_cancel = cancel1
@@ -622,14 +622,64 @@ def test_late_game_sparse_hand_and_consecutive_supersedes_use_low_effort():
     mgr._inflight_cancel = cancel2
     mgr._inflight_plan_turn = 11
     mgr._supersede_stale_inflight_locked({"turn": {"turn_number": 12}})
-    assert cancel2.is_set() and mgr._consecutive_supersedes == 2
+    assert not cancel2.is_set()
 
-    cancel3 = threading.Event()
+
+def test_reform_after_a_cancelled_reform_is_bounded_and_kept():
+    """#141 replay 2026-11-02: at full effort/budget every reform outlived its turn and was superseded
+    again, so two calls were wasted before a third landed three turns late. The replacement for a
+    cancelled reform must be cheap and bounded, and its late answer must be kept."""
+    import threading
+
+    from arenamcp.game_plan import GamePlan, GamePlanManager
+
+    calls: list[tuple[str, float]] = []
+
+    class Backend:
+        model = "current"
+
+        def complete(self, system, user, max_tokens, **kwargs):
+            calls.append((str(kwargs.get("reasoning_effort")), kwargs.get("request_timeout_s")))
+            return '{"win_conditions": ["Burn"], "path": "topdeck", "role": "aggressor", "turns": []}'
+
+    mgr = GamePlanManager(Backend())
+    mgr._plan = GamePlan(win_conditions=["Burn"], path="old", turn_formed=8, effort="high")
+    board_t6 = state(
+        [card(901, "Grizzly Bears", ME, power=2, toughness=2)],
+        match="d9a33232",
+        local=ME,
+        life=18,
+        opp_life=18,
+        turn=6,
+        active=OPP,
+        phase="Phase_Main1",
+        step="",
+        their_hand=3,
+        hand=[
+            card(902, "Shock", ME, text="Shock deals 2 damage to any target."),
+            card(903, "Mountain", ME),
+            card(904, "Goblin Arsonist", ME, power=1, toughness=1),
+        ],
+    )
+
+    # A reform that has not been cancelled keeps the deep budget.
+    assert mgr._reform(board_t6, 6) is not None
+    assert calls[0][0] == "high"
+    assert calls[0][1] == pytest.approx(mgr._timeout, abs=0.5)
+
+    cancel = threading.Event()
     mgr._inflight = True
-    mgr._inflight_cancel = cancel3
-    mgr._inflight_plan_turn = 12
-    mgr._supersede_stale_inflight_locked({"turn": {"turn_number": 13}})
-    assert not cancel3.is_set()
+    mgr._inflight_cancel = cancel
+    mgr._inflight_plan_turn = 6
+    mgr._supersede_stale_inflight_locked({"turn": {"turn_number": 7}})
+    assert cancel.is_set() and mgr._consecutive_supersedes == 1
+
+    # The replacement is cheap and bounded instead of another full-budget call...
+    assert mgr._reform(board_t6, 6) is not None
+    assert calls[-1][0] == "none"
+    assert calls[-1][1] == pytest.approx(mgr._INITIAL_HOSTED_PLAN_TIMEOUT_S, abs=0.5)
+    # ...and its late answer is kept rather than discarded when the turn passes.
+    assert mgr._keep_late_after_supersede()
 
 
 def test_one_supersede_with_a_sparse_late_hand_keeps_the_late_plan():
