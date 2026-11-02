@@ -696,14 +696,20 @@
         "backlog-evidence-2026-11-01.md: #254"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-254",
+        "base_commit": "d313338",
+        "source_commits": [
+          "6cddacc"
+        ],
+        "master_commits": [
+          "712db15"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-254/focused-tests.txt"
+        ],
+        "note": "No production change: both reported boards are closed on master by the counted subtype mana and Channel self-discount controls in exact_mana_total. Added replay tests through filter_play_options (Hydra {X}{G} on 8 mana keeps X=1..7, withholds the reported X=10; Nature's Rhythm {X}{G}{G} on 2 mana keeps X=0 only). Bounded gap recorded: an activated ability whose cost contains {X} is still uncapped because affordable_x reads the printed mana_cost."
       },
       "independent_verification": {
         "state": "not_reviewed",

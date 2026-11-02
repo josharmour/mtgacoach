@@ -131,8 +131,9 @@ deployed.
 | 11 | BUG-248 | merged_awaiting_review | 87faace (merge acee2d6, tests only) | docs/backlog-receipts/BUG-248/ |
 | 12 | BUG-249 | merged_awaiting_review | 93bd0bf (merge 6a40f07, tests only) | docs/backlog-receipts/BUG-249/ |
 | 13 | BUG-253 | merged_awaiting_review | 813f252 (merge 43679e3, tests only) | docs/backlog-receipts/BUG-253/ |
+| 14 | BUG-254 | merged_awaiting_review | 6cddacc (merge 712db15, tests only) | docs/backlog-receipts/BUG-254/ |
 
-Next item: BUG-254. All thirteen merged items still need an independent review pass
+Next item: BUG-256. All fourteen merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -213,6 +214,17 @@ regression that pins those four answers and the reported reason. The archived
 transcript could not be replayed — both cited commits are absent from this
 checkout and the queue's evidence-document pointer has no #253 row — so the
 receipt records the mechanism reproduction instead.
+BUG-254 also needed no production source change: both reported boards are already
+closed on master by the counted subtype mana (`{T}: Add {C} for each Halfling you
+control`, one per ready source) and the Channel self-discount strip in
+`exact_mana_total`, so `affordable_x` prices Goldvein Hydra `{X}{G}` at X=7 on the
+recorded 8 mana and Nature's Rhythm `{X}{G}{G}` at X=0 on the recorded 2 mana, and
+`filter_play_options` withholds the reported X=10 and X=1 before the model sees them.
+The remaining scope was the regression that replays both boards through that live
+withholding path; a mutation check confirms either counting control is load-bearing.
+One bounded gap is recorded rather than fixed: an activated ability whose cost
+contains {X} is still uncapped because `affordable_x` reads the permanent's printed
+`mana_cost`, and no reported case has that shape.
 
 ## Queue entries
 

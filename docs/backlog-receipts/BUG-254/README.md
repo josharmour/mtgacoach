@@ -12,7 +12,7 @@ for Goldvein Hydra on 8 mana (the reported pick was X=10) and 0 for Nature's
 Rhythm on 2 mana (the reported pick was X=1). What was missing was a regression
 that pins those two boards through the live withholding path. Test-only change:
 `tests/test_mana_recurrence_254.py`. No source commit; merged to local master as
-`<merge>` (source commit `<source>`).
+`712db15` (source commit `6cddacc`).
 
 ## Symptom and evidence
 
