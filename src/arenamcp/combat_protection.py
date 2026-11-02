@@ -137,6 +137,8 @@ def _colors_signature(card, inner):
     """The first color field ``source_colors`` would read, as a hashable value."""
     for field in ("_source_colors", "modified_colors", "colors"):
         for obj in (card, inner):
+            if obj is None:
+                continue
             value = obj.get(field)
             if value is not None:
                 return _sig(value)
@@ -149,7 +151,10 @@ def _may_have_protection(card, raw):
         return True
     # Every English printing of the ability contains this stem; checking it
     # without ``lower()`` keeps the common no-protection body allocation-free.
-    if "rotection" in str(raw.get("oracle_text") or ""):
+    # ``damage_is_unpreventable`` also reads two printed lines, so a body that
+    # says damage can't be prevented must take the slow path too.
+    text = str(raw.get("oracle_text") or "")
+    if "rotection" in text or "prevented" in text:
         return True
     objects = (card,) if raw is card else (card, raw)
     for obj in objects:
@@ -161,6 +166,20 @@ def _may_have_protection(card, raw):
                 if "rotection" in str(value):
                     return True
     return False
+
+
+def protection_matters(card) -> bool:
+    """Whether ``protection_key`` of this card can differ from the plain default.
+
+    A fight whose bodies all answer False cannot be changed by protection at
+    all: every key would be ``(colors, (), False)`` and colors only matter to a
+    body that has a protection quality.
+    """
+    inner = card.get("_card")
+    raw = inner if isinstance(inner, dict) and inner and inner is not card else card
+    if card.get("damage_cant_be_prevented") or raw.get("damage_cant_be_prevented"):
+        return True
+    return _may_have_protection(card, raw)
 
 
 def protection_signature(card):

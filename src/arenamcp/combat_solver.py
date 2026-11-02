@@ -171,6 +171,30 @@ def _death_material(card: dict) -> int:
     return max(0, _material(card) - return_credit(card))
 
 
+def _material_of(body: dict, mats: dict[int, int] | None) -> int:
+    """``_death_material`` from a per-search cache of unchanged bodies.
+
+    A block search scores hundreds of fights over the same handful of bodies,
+    and a body's material cannot change while the search holds it.
+    """
+    if mats is None:
+        return _death_material(body)
+    found = mats.get(id(body))
+    if found is None:
+        found = mats[id(body)] = _death_material(body)
+    return found
+
+
+def _swing_of(body: dict, swings: dict[int, tuple[int, int]] | None) -> tuple[int, int]:
+    """``swing_of`` from a per-search cache of unchanged bodies (see ``_material_of``)."""
+    if swings is None:
+        return swing_of(body)
+    found = swings.get(id(body))
+    if found is None:
+        found = swings[id(body)] = swing_of(body)
+    return found
+
+
 def _can_block(attacker: dict, blocker: dict) -> bool:
     """Return True iff the blocker can legally block the attacker.
 
@@ -335,25 +359,37 @@ def _damage_order(
     return first + rest + unkillable
 
 
+def _hit_flags(attacker: dict) -> tuple[bool, bool]:
+    """(a player hit needs ``player_hit``, a player hit ends the game) for one attacker."""
+    text = str(attacker.get("oracle_text") or "").lower()
+    keywords = attacker.get("keywords") or ()
+    relevant = any(word in text for word in ("toxic", "poisonous", "infect", "mills"))
+    relevant |= any(str(k).lower().startswith(("toxic", "poisonous", "infect")) for k in keywords)
+    terminal = (
+        "loses the game" in text
+        or any(str(a) == "19443" for a in (attacker.get("ability_grp_ids") or ()))
+        or any(str(a) == "19443" for a in (attacker.get("granted_abilities") or ()))
+    )
+    return relevant, terminal
+
+
 def _resolve_attacker(
     attacker: dict,
     assigned: list[dict],
     *,
     defending_player: bool = True,
     keys: dict[int, tuple | None] | None = None,
+    flags: dict[int, tuple[bool, bool]] | None = None,
 ) -> CombatOutcome:
     out = _resolve_attacker_damage(attacker, assigned, keys=keys)
     out.combat_damage = out.damage_through
     if defending_player and out.player_hits:
-        text = str(attacker.get("oracle_text") or "").lower()
-        keywords = attacker.get("keywords") or ()
-        relevant = any(word in text for word in ("toxic", "poisonous", "infect", "mills"))
-        relevant |= any(str(k).lower().startswith(("toxic", "poisonous", "infect")) for k in keywords)
-        terminal = (
-            "loses the game" in text
-            or any(str(a) == "19443" for a in (attacker.get("ability_grp_ids") or ()))
-            or any(str(a) == "19443" for a in (attacker.get("granted_abilities") or ()))
-        )
+        found = None if flags is None else flags.get(id(attacker))
+        if found is None:
+            found = _hit_flags(attacker)
+            if flags is not None:
+                flags[id(attacker)] = found
+        relevant, terminal = found
         if not relevant and not terminal:
             return out
         bonus = int(attacker.get("combat_hit_bonus") or 0)
@@ -817,15 +853,17 @@ class BlockPlan:
 DEATH_LIFE_WEIGHT = 0.5
 
 
-def _death_life(attacker: dict, outcome: CombatOutcome) -> tuple[int, int]:
+def _death_life(
+    attacker: dict, outcome: CombatOutcome, swings: dict[int, tuple[int, int]] | None = None
+) -> tuple[int, int]:
     """(blocking side's life change, attacking side's) from one fight's deaths (``death_swing``)."""
     blocking = attacking = 0
     if outcome.attacker_died:
-        own, other = swing_of(attacker)
+        own, other = _swing_of(attacker, swings)
         attacking += own
         blocking += other
     for dead in outcome.blockers_died:
-        own, other = swing_of(dead)
+        own, other = _swing_of(dead, swings)
         blocking += own
         attacking += other
     return blocking, attacking
@@ -1155,10 +1193,49 @@ def _search_blocks(
     menace = [_has(a, "menace") for a in attackers]
     # An attacker's fight depends only on which blockers it gets, and the
     # same (attacker, blockers) pairs recur across thousands of choices.
-    fights: dict[tuple[int, tuple[int, ...]], tuple[int, int, int, frozenset[int], int, int, int]] = {}
+    # Keyed by ``attacker << n_blockers | blocker bitmask``: an int costs less to
+    # build and hash than the tuple of indices it replaces.
+    fights: dict[int, tuple[int, int, int, frozenset[int], int, int, int]] = {}
+
+    def fight_of(a_idx: int, assigned: list[dict]) -> tuple:
+        outcome = _resolve_attacker(
+            attackers[a_idx], assigned, defending_player=defending_player, keys=keys, flags=flags
+        )
+        return (
+            outcome.damage_through,
+            _material_of(attackers[a_idx], mats) if outcome.attacker_died else 0,
+            sum(_material_of(dead, mats) for dead in outcome.blockers_died),
+            frozenset(dead.get("instance_id", 0) for dead in outcome.blockers_died),
+            _blowout_loss(attackers[a_idx], assigned, outcome) if trick_p > 0 else 0,
+            *_death_life(attackers[a_idx], outcome, swings),
+            outcome.poison_given,
+            outcome.cards_milled,
+            outcome.player_loses,
+            outcome.blocker_life_gained if defending_player else 0,
+            outcome.first_strike_damage,
+            outcome.first_strike_blocker_gain if defending_player else 0,
+        )
+
     # Content keys for the bodies this search resolves, built once per body:
     # the same attacker/blocker recurs in hundreds of fights (``_fight_key_cached``).
     keys: dict[int, tuple | None] = {}
+    # Material and death-trigger swings of those same bodies, likewise once each.
+    mats: dict[int, int] = {}
+    swings: dict[int, tuple[int, int]] = {}
+    flags: dict[int, tuple[bool, bool]] = {}
+
+    # Every assignment starts from "nobody blocks": one fight per attacker that no
+    # choice has to look up again. Only damage through, first-strike damage, poison,
+    # mill and "loses the game" can be non-zero there; every other field is a
+    # blocked-fight result and is added as it comes.
+    unblocked = [fight_of(a_idx, []) for a_idx in range(n_attackers)]
+    base_damage = base_first_damage = base_poison = base_mill = base_loses = 0
+    for fight in unblocked:
+        base_damage += fight[0]
+        base_first_damage += fight[11]
+        base_poison += fight[7]
+        base_mill += fight[8]
+        base_loses += fight[9]
 
     best_score: float | None = None
     best_choice: tuple = ()
@@ -1168,71 +1245,87 @@ def _search_blocks(
     started = time.monotonic()
     seen = 0
     cut = False
+    # Per-choice scratch: which blockers each attacker got this assignment.
+    buckets: list[list[int]] = [[] for _ in range(n_attackers)]
+    masks = [0] * n_attackers
+    touched = [0] * n_attackers
+    any_menace = any(menace)
+    offsets = [a_idx << n_blockers for a_idx in range(n_attackers)]
+    bits = [1 << b_idx for b_idx in range(n_blockers)]
+    fights_get = fights.get
+    hit = defender.hit
+    clock = time.monotonic
     for choice in choices:
         # Wall-clock backstop (ledger #192): the canonical enumeration keeps big boards fast;
         # distinct bodies by the dozen still could not be searched to the end in time.
         seen += 1
-        if seen % 256 == 0 and best_score is not None and time.monotonic() - started > deadline_s:
+        if seen % 256 == 0 and best_score is not None and clock() - started > deadline_s:
             cut = True
             break
         # choice[b] is either None or an attacker index
-        assigned_to_atk: dict[int, list[int]] = {}
+        n_touched = 0
         for b_idx, atk_idx in enumerate(choice):
             if atk_idx is None:
                 continue
-            assigned_to_atk.setdefault(atk_idx, []).append(b_idx)
-
+            blks = buckets[atk_idx]
+            if not blks:
+                touched[n_touched] = atk_idx
+                n_touched += 1
+            blks.append(b_idx)
+            masks[atk_idx] |= bits[b_idx]
         # Menace check — attackers with menace need >=2 blockers or none.
-        if any(menace[atk_idx] and len(blks) == 1 for atk_idx, blks in assigned_to_atk.items()):
-            continue
+        if any_menace:
+            illegal = False
+            for i in range(n_touched):
+                a_idx = touched[i]
+                if menace[a_idx] and len(buckets[a_idx]) == 1:
+                    illegal = True
+                    break
+            if illegal:
+                for i in range(n_touched):
+                    a_idx = touched[i]
+                    buckets[a_idx].clear()
+                    masks[a_idx] = 0
+                continue
 
         evaluated += 1
-        total_damage = 0
-        player_loses = False
-        poison = mill = 0
+        total_damage = base_damage
+        first_damage = base_first_damage
+        poison = base_poison
+        mill = base_mill
+        loses = base_loses
         atk_killed_material = 0
         blocker_lost_material = 0
         blowout = 0
-        death_blocking = death_attacking = blocker_gain = 0
-        first_damage = first_gain = 0
-        lost_ids: set[int] = set()
-        for a_idx in range(n_attackers):
-            key = (a_idx, tuple(assigned_to_atk.get(a_idx, ())))
-            fight = fights.get(key)
+        death_blocking = death_attacking = blocker_gain = first_gain = 0
+        lost_ids: set[int] | None = set() if recovery_credit is not None else None
+        for i in range(n_touched):
+            a_idx = touched[i]
+            blks = buckets[a_idx]
+            key = offsets[a_idx] | masks[a_idx]
+            fight = fights_get(key)
             if fight is None:
-                assigned = [blockers[b] for b in key[1]]
-                outcome = _resolve_attacker(
-                    attackers[a_idx], assigned, defending_player=defending_player, keys=keys
-                )
-                fight = (
-                    outcome.damage_through,
-                    _death_material(attackers[a_idx]) if outcome.attacker_died else 0,
-                    sum(_death_material(dead) for dead in outcome.blockers_died),
-                    frozenset(dead.get("instance_id", 0) for dead in outcome.blockers_died),
-                    _blowout_loss(attackers[a_idx], assigned, outcome) if trick_p > 0 else 0,
-                    *_death_life(attackers[a_idx], outcome),
-                    outcome.poison_given,
-                    outcome.cards_milled,
-                    outcome.player_loses,
-                    outcome.blocker_life_gained if defending_player else 0,
-                    outcome.first_strike_damage,
-                    outcome.first_strike_blocker_gain if defending_player else 0,
-                )
+                fight = fight_of(a_idx, [blockers[b] for b in blks])
                 fights[key] = fight
-            poison += fight[7]
-            mill += fight[8]
-            player_loses |= fight[9]
-            blocker_gain += fight[10]
-            first_damage += fight[11]
-            first_gain += fight[12]
-            total_damage += fight[0]
+            blks.clear()
+            masks[a_idx] = 0
+            plain = unblocked[a_idx]
+            total_damage += fight[0] - plain[0]
+            first_damage += fight[11] - plain[11]
+            poison += fight[7] - plain[7]
+            mill += fight[8] - plain[8]
+            loses += fight[9] - plain[9]
             atk_killed_material += fight[1]
             blocker_lost_material += fight[2]
-            lost_ids.update(fight[3])
             blowout += fight[4]
             death_blocking += fight[5]
             death_attacking += fight[6]
+            blocker_gain += fight[10]
+            first_gain += fight[12]
+            if lost_ids is not None:
+                lost_ids.update(fight[3])
 
+        player_loses = loses > 0
         remaining = defender.hit(poison, mill)
         if first_damage - first_gain >= your_life:
             blocker_gain = first_gain  # a later damage step cannot rescue a dead player
@@ -1273,6 +1366,9 @@ def _search_blocks(
         recovery_credit=recovery_credit,
         trick_p=trick_p,
         keys=keys,
+        mats=mats,
+        swings=swings,
+        flags=flags,
     )
     plan.evaluated = evaluated
     if cut:
@@ -1313,6 +1409,9 @@ def _search_blocks(
             defender=defender,
             defending_player=defending_player,
             keys=keys,
+            mats=mats,
+            swings=swings,
+            flags=flags,
         )
         if rejected.trick_cost > 0:
             plan.trick_rejected = (
@@ -1411,6 +1510,9 @@ def _rebuild_block_plan(
     defender: LossState = LossState(),
     defending_player: bool = True,
     keys: dict[int, tuple | None] | None = None,
+    mats: dict[int, int] | None = None,
+    swings: dict[int, tuple[int, int]] | None = None,
+    flags: dict[int, tuple[bool, bool]] | None = None,
 ) -> BlockPlan:
     """One block assignment in full: plan, kills, losses, score (trick cost included) and explanation."""
     assigned_to_atk: dict[int, list[dict]] = {}
@@ -1430,7 +1532,7 @@ def _rebuild_block_plan(
     first_damage = first_gain = 0
     for a_idx, atk in enumerate(attackers):
         assigned = assigned_to_atk.get(a_idx, [])
-        outcome = _resolve_attacker(atk, assigned, defending_player=defending_player, keys=keys)
+        outcome = _resolve_attacker(atk, assigned, defending_player=defending_player, keys=keys, flags=flags)
         plan.player_loses |= outcome.player_loses
         plan.poison_given += outcome.poison_given
         plan.cards_milled += outcome.cards_milled
@@ -1440,16 +1542,16 @@ def _rebuild_block_plan(
             plan.blocker_life_gained += outcome.blocker_life_gained
             first_gain += outcome.first_strike_blocker_gain
         first_damage += outcome.first_strike_damage
-        blocking, attacking = _death_life(atk, outcome)
+        blocking, attacking = _death_life(atk, outcome, swings)
         plan.death_drain -= blocking
         plan.attacker_death_life += attacking
         plan.attacker_life_gained += attacking
         if assigned:
             if outcome.attacker_died:
-                plan.attackers_killed_material += _death_material(atk)
+                plan.attackers_killed_material += _material_of(atk, mats)
                 killed_attackers.append(atk)
             for dead in outcome.blockers_died:
-                plan.blockers_lost_material += _death_material(dead)
+                plan.blockers_lost_material += _material_of(dead, mats)
                 lost_blockers.append(dead)
             if trick_p > 0:
                 blowout += _blowout_loss(atk, assigned, outcome)
@@ -1652,8 +1754,16 @@ def _greedy_block_plan(
     exactly lethal trade into open mana is charged its trick risk (#74).
     """
     trick_p = trick_probability(trick_exposure)
+    # Material, death-trigger swings and full material of the bodies this plan
+    # scores, computed once each instead of once per candidate block.
+    mats: dict[int, int] = {}
+    swings: dict[int, tuple[int, int]] = {}
+    values: dict[int, int] = {}
+    flags: dict[int, tuple[bool, bool]] = {}
     sorted_atk = sorted(enumerate(attackers), key=lambda ia: (not loses_on_combat_hit(ia[1]), -_pt(ia[1])[0]))
-    unblocked_hits = {i: _resolve_attacker(a, [], defending_player=defending_player) for i, a in sorted_atk}
+    unblocked_hits = {
+        i: _resolve_attacker(a, [], defending_player=defending_player, flags=flags) for i, a in sorted_atk
+    }
     pending_poison = sum(o.poison_given for o in unblocked_hits.values())
     pending_mill = sum(o.cards_milled for o in unblocked_hits.values())
     remaining_blockers = list(blockers)
@@ -1691,10 +1801,10 @@ def _greedy_block_plan(
             )
             if not _can_block_this_attacker(atk, blk, allowed):
                 continue
-            outcome = _resolve_attacker(atk, [blk], defending_player=defending_player)
-            killed = _death_material(atk) if outcome.attacker_died else 0
-            lost = sum(_death_material(dead) for dead in outcome.blockers_died)
-            blocking, attacking = _death_life(atk, outcome)
+            outcome = _resolve_attacker(atk, [blk], defending_player=defending_player, flags=flags)
+            killed = _material_of(atk, mats) if outcome.attacker_died else 0
+            lost = sum(_material_of(dead, mats) for dead in outcome.blockers_died)
+            blocking, attacking = _death_life(atk, outcome, swings)
             fatal, pressure = risk(outcome)
             score = (
                 _block_score(
@@ -1712,7 +1822,10 @@ def _greedy_block_plan(
             if trick_p > 0:
                 score -= trick_p * _blowout_loss(atk, [blk], outcome)
             # Ties: the cheapest surviving body, then the tougher one.
-            key = (score, -_material(blk), _pt(blk)[1])
+            value = values.get(id(blk))
+            if value is None:
+                value = values[id(blk)] = _material(blk)
+            key = (score, -value, _pt(blk)[1])
             if best is None or key > best[:3]:
                 best = (*key, blk, outcome)
         fatal, pressure = risk(unblocked)
@@ -1741,16 +1854,16 @@ def _greedy_block_plan(
         total_damage += outcome.damage_through
         if defending_player:
             blocker_gain += outcome.blocker_life_gained
-        blocking, attacking = _death_life(atk, outcome)
+        blocking, attacking = _death_life(atk, outcome, swings)
         death_drain -= blocking
         attacker_death_life += attacking
         if trick_p > 0:
             trick_cost += trick_p * _blowout_loss(atk, [chosen], outcome)
         if outcome.attacker_died:
-            atk_killed_material += _death_material(atk)
+            atk_killed_material += _material_of(atk, mats)
             killed_attackers.append(atk)
         for dead in outcome.blockers_died:
-            blocker_lost_material += _death_material(dead)
+            blocker_lost_material += _material_of(dead, mats)
             lost_blockers.append(dead)
 
     choice = tuple(
@@ -1772,6 +1885,9 @@ def _greedy_block_plan(
         defender=defender,
         defending_player=defending_player,
         trick_p=trick_p,
+        mats=mats,
+        swings=swings,
+        flags=flags,
     )
     no_blocks = _rebuild_block_plan(
         attackers,
@@ -1780,6 +1896,9 @@ def _greedy_block_plan(
         your_life,
         defender=defender,
         defending_player=defending_player,
+        mats=mats,
+        swings=swings,
+        flags=flags,
     )
     chosen = no_blocks if no_blocks.score >= plan.score else plan
     chosen.explanation = "greedy: " + chosen.explanation

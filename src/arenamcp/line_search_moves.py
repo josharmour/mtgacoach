@@ -2772,7 +2772,7 @@ class Moves:
             max(1, life),
             context,
             defending_player,
-            tuple(self._protection_key(b) for b in (*attackers, *blockers)),
+            self._protection_part((*attackers, *blockers)),
         )
         key += (
             tuple(
@@ -4854,6 +4854,21 @@ class Moves:
         if found is None:
             found = self._growth_memo[id(body)] = landfall_growth(body.get("_card") or body)
         return found
+
+    def _protection_part(self, bodies: tuple[dict, ...]) -> tuple:
+        """``protection_key`` of each fight body, or ``()`` when none can matter.
+
+        Protection changes a fight only through a body that has a protection
+        quality or unpreventable damage; when no body in the fight has either,
+        every key would be the plain default and the tuple would only split the
+        memo across fights that resolve identically.
+        """
+        from arenamcp.combat_protection import protection_matters
+
+        for body in bodies:
+            if protection_matters(body):
+                return tuple(self._protection_key(b) for b in bodies)
+        return ()
 
     def _protection_key(self, body: dict) -> tuple:
         """``protection_key`` of a body, memoised for this search by its inputs.
