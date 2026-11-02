@@ -1,0 +1,16 @@
+$ .venv_mac_311/bin/python -m pytest tests/test_attack_protection_273.py -q
+.......                                                                  [100%]
+7 passed in 6.66s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_attack_protection_273.py tests/test_losing_attack_guard.py tests/test_attack_holds_20261019.py tests/test_combat_guards_20261019.py tests/test_color_protection_273.py -q
+..........................                                               [100%]
+98 passed in 4.63s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_all_in.py tests/test_attack_push_20261019.py tests/test_cant_be_blocked.py tests/test_oops_emote.py tests/test_pinger_attack_20261019.py tests/test_session_land_and_mobilize.py tests/test_shang_attack_120_replay.py tests/test_sneak_all_in_20261019.py tests/test_walker_attack_guard_20261019.py tests/test_wide_attack_guard_20261019.py -q
+........................................................................ [ 75%]
+...............................................                          [100%]
+191 passed in 27.61s
+
+$ .venv_mac_311/bin/python -m ruff check tests/test_attack_protection_273.py && .venv_mac_311/bin/python -m ruff format --check tests/test_attack_protection_273.py
+All checks passed!
+1 file already formatted
