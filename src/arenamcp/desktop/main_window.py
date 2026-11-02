@@ -135,7 +135,14 @@ class MainWindow(QMainWindow):
         self.access_badge = AccessBadge(self)
         self.access_badge.setup_requested.connect(self._show_repair_view)
         self.repair_tab.license_changed.connect(lambda: self.access_badge.refresh(force=True))
+        self._session.backendHealthChanged.connect(self._on_backend_health_for_badge)
         self.statusBar().addPermanentWidget(self.access_badge)
+
+    def _on_backend_health_for_badge(self, snapshot: dict) -> None:
+        if not isinstance(snapshot, dict):
+            return
+        if snapshot.get("last_status_code") in (401, 402, 403):
+            self.access_badge.refresh(force=True)
 
     def _build_menus(self) -> None:
         menu_bar = self.menuBar()

@@ -66,6 +66,22 @@ def test_inference_probe_then_failure_and_recovery_update_the_banner(boot_ok):
         BackendHealth.reset_instance()
 
 
+def test_startup_complete_with_expired_key_shows_subscribe_message():
+    runtime = _StartupMixin()
+    runtime.ui = Mock()
+    runtime._startup_connection_error = (
+        "current: inference probe failed after 120ms: Error code: 401 - "
+        "{'error': {'message': 'Authentication Error, Key is expired'}}"
+    )
+    runtime._startup_complete()
+    payload = runtime.ui.emit_startup_status.call_args.args[0]
+    assert payload["phase"] == "error"
+    assert not payload["ready"]
+    assert "expired" in payload["message"].lower()
+    assert "mtgacoach.com/subscribe" in payload["message"]
+    assert "retry automatically" not in payload["message"]
+
+
 def test_running_arena_waits_for_bridge_and_never_relaunches_it(monkeypatch):
     now = [100.0]
     monkeypatch.setattr("arenamcp.standalone_startup.time.monotonic", lambda: now[0])

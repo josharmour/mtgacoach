@@ -47,10 +47,10 @@ def test_trial_countdown_falls_back_to_provisioned_iso_expiry():
 def test_trial_ended_needs_subscription():
     st = SubscriptionStatus("expired", kind="trial", expires_at=NOW - 10)
     text, tone, _, needs = describe_access("sk-trial", st, now=NOW)
-    assert (text, tone, needs) == ("Trial ended — Subscribe", "bad", True)
+    assert (text, tone, needs) == ("Trial expired — Subscribe", "bad", True)
     # Locally lapsed before the server has been asked again.
     text, _, _, needs = describe_access("sk-trial", None, "2020-01-01T00:00:00Z", now=NOW)
-    assert text == "Trial ended — Subscribe" and needs
+    assert text == "Trial expired — Subscribe" and needs
 
 
 def test_invalid_and_unknown():

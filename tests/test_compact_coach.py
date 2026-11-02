@@ -447,6 +447,28 @@ def test_backend_down_mid_match_never_reopens_the_startup_card(panel):
     assert panel.startup_banner.isHidden()
 
 
+def test_backend_auth_expired_shows_expired_notice_and_marks_model_chip_bad(panel):
+    panel._on_startup_status({"phase": "ready", "ready": True})
+    panel._on_status_changed("MODEL", "current")
+    panel.session._handle_process_event(
+        {
+            "type": "backend_health",
+            "state": "degraded",
+            "detail": "Error code: 401 - {'error': {'message': 'Authentication Error, Key is expired'}}",
+            "data": {
+                "state": "degraded",
+                "last_status_code": 401,
+                "detail": "Error code: 401 - {'error': {'message': 'Authentication Error, Key is expired'}}",
+            },
+        }
+    )
+    assert not panel.backend_status_label.isHidden()
+    assert "expired" in panel.backend_status_label.text().lower()
+    assert "mtgacoach.com/subscribe" in panel.backend_status_label.text()
+    assert "Model slow" not in panel.backend_status_label.text()
+    assert "expired" in panel.model_chip.toolTip().lower()
+
+
 def test_startup_card_owns_the_sidebar_while_it_is_up(panel):
     """During startup (or a real startup failure) the card wins; no double banner."""
     panel._on_startup_status({"phase": "starting", "message": "Starting coach…", "ready": False})

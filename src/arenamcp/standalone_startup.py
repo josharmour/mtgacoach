@@ -75,10 +75,25 @@ class _StartupMixin:
         self._startup_finished = True
         error = getattr(self, "_startup_connection_error", "")
         if error:
-            self._startup_status(
-                "error",
-                f"Coach loaded. {error}. Advice requests will retry automatically.",
-            )
+            lower = error.lower()
+            if (
+                "key is expired" in lower
+                or "trial_expired" in lower
+                or "trial expired" in lower
+                or "error code: 401" in lower
+                or "error code: 403" in lower
+                or "http 401" in lower
+                or "http 403" in lower
+            ):
+                self._startup_status(
+                    "error",
+                    "Trial or license key expired — subscribe at mtgacoach.com/subscribe and enter your key in Setup & Repair.",
+                )
+            else:
+                self._startup_status(
+                    "error",
+                    f"Coach loaded. {error}. Advice requests will retry automatically.",
+                )
         else:
             self._startup_status(
                 "ready", "Coach ready — waiting for an actionable game decision.", ready=True

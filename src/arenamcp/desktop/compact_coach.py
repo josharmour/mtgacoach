@@ -856,6 +856,26 @@ class CompactCoachPanel(QWidget):
             return
         self._backend_health = dict(snapshot)
         self._render_backend_status()
+        self._refresh_status_dots()
+
+    def _is_backend_auth_expired(self) -> bool:
+        status_code = self._backend_health.get("last_status_code")
+        detail = str(
+            self._backend_health.get("detail") or self._backend_health.get("last_error") or ""
+        ).lower()
+        return status_code in (401, 403, 402) or any(
+            marker in detail
+            for marker in (
+                "key is expired",
+                "trial_expired",
+                "trial expired",
+                "subscription expired",
+                "error code: 401",
+                "error code: 403",
+                "http 401",
+                "http 403",
+            )
+        )
 
     def _render_backend_status(self) -> None:
         """Transient backend trouble as a small status line (#215).
@@ -871,12 +891,16 @@ class CompactCoachPanel(QWidget):
             self.backend_status_label.hide()
             return
         detail = str(self._backend_health.get("detail") or "").strip()
-        if state == "down":
-            text, tone = "Model unavailable — playing from board math until it is back", "bad"
+        if self._is_backend_auth_expired():
+            text = "Trial or license key expired — subscribe at mtgacoach.com/subscribe (Setup & Repair)"
+            tone = "bad"
         else:
-            text, tone = "Model slow, retrying…", "warn"
-        if detail:
-            text = f"{text} ({detail[:120]})"
+            if state == "down":
+                text, tone = "Model unavailable — playing from board math until it is back", "bad"
+            else:
+                text, tone = "Model slow, retrying…", "warn"
+            if detail:
+                text = f"{text} ({detail[:120]})"
         self.backend_status_label.setText(block(span(text, tone), size="caption"))
         self.backend_status_label.show()
 
@@ -1572,9 +1596,13 @@ class CompactCoachPanel(QWidget):
 
         startup_phase = self._startup_status.get("phase")
         preparing = bool(self._startup_status) and not self._startup_status.get("ready")
+        auth_expired = (
+            self._backend_health.get("state") in ("degraded", "down")
+            and self._is_backend_auth_expired()
+        )
         model_tone = (
             "bad"
-            if startup_phase in ("error", "stopped")
+            if startup_phase in ("error", "stopped") or auth_expired
             else "warn"
             if preparing
             else "good"
@@ -1583,7 +1611,9 @@ class CompactCoachPanel(QWidget):
         )
         self.model_chip.setText(span("●", model_tone) + "&nbsp;" + span(model, "text", weight=600))
         self.model_chip.setToolTip(
-            "Coaching is not ready yet; see the startup status below."
+            "Trial or license key expired — subscribe at mtgacoach.com/subscribe and enter your key in Setup & Repair."
+            if auth_expired
+            else "Coaching is not ready yet; see the startup status below."
             if preparing
             else "Coach ready. Model used for advice."
             if self._startup_status.get("ready")

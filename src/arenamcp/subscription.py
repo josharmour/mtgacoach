@@ -248,9 +248,9 @@ def describe_access(
     if is_trial:
         if st in (SubscriptionStatus.EXPIRED, SubscriptionStatus.INVALID) or (expires and expires <= now):
             return (
-                "Trial ended — Subscribe",
+                "Trial expired — Subscribe",
                 "bad",
-                f"Your 7-day free trial has ended. Subscribe at {SUBSCRIBE_URL} and paste your key in Setup & Repair.",
+                f"Your 7-day free trial has expired. Subscribe at {SUBSCRIBE_URL} and paste your key in Setup & Repair.",
                 True,
             )
         if expires:

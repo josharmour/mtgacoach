@@ -299,7 +299,7 @@ class RepairEngine:
                         "license",
                         "License / online backend",
                         "action_needed",
-                        "Your free trial key was rejected by the gateway — the trial has most likely ended.",
+                        "Your free trial key was rejected by the gateway — the trial has expired.",
                         "Subscribe at https://mtgacoach.com/subscribe to keep "
                         "coaching, or enter a license key below.",
                     )
