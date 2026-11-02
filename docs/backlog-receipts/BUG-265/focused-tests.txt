@@ -1,0 +1,7 @@
+$ .venv_mac_311/bin/python -m pytest <the 10 audit node IDs for #265> -q
+..............                                                           [100%]
+14 passed in 8.61s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_latency_budget_222_followup.py tests/test_declaration_budget_232.py -q
+...........................                                              [100%]
+27 passed in 7.81s
