@@ -1,0 +1,30 @@
+BUG-278 focused tests — captured 2026-11-02T19:54:17Z on Darwin arm64, Python 3.11.15
+
+== 1. new regression file
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest -q tests/test_defender_hold_278.py
+...                                                                      [100%]
+3 passed in 7.36s
+
+== 2. combat/attack guard regression set
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest -q tests/test_defender_hold_278.py tests/test_crackback_guard.py tests/test_attack_push_20261019.py tests/test_race_role_20261019.py tests/test_lifelink_crackback_20261025.py tests/test_attack_line_guard_20261019.py tests/test_line_guard.py
+........................................................................ [ 58%]
+....................................................                     [100%]
+124 passed in 10.75s
+
+== 3. board assessment + protection credit (adjacent consumers)
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest -q tests/test_color_protection_273.py tests/test_board_assessment.py
+........................................................................ [ 73%]
+.....................................................                    [100%]
+197 passed in 12.41s
+
+== 4. role prompt text
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest -q tests/test_role_text_20261019.py
+..                                                                       [100%]
+2 passed in 6.89s
+
+== 5. ruff (CI pins 0.15.22; local version below)
+ruff 0.15.22
+$ .venv_mac_311/bin/python -m ruff check tests/test_defender_hold_278.py
+All checks passed!
+$ .venv_mac_311/bin/python -m ruff format --check tests/test_defender_hold_278.py
+1 file already formatted
