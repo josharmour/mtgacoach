@@ -1,0 +1,7 @@
+$ .venv_mac_311/bin/python -m pytest <the 17 audit node IDs for #256> -q
+...........................                                              [100%]
+27 passed in 15.01s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_latency_231_decision_trace.py tests/test_llm_down_fallback.py -q
+......................................                                   [100%]
+38 passed in 13.64s
