@@ -1,34 +1,64 @@
 # Backlog triage — 2026-11-01
 
+Working scope and per-item implementation/review state now live in
+[the portable 40-item queue](autopilot-active-work.md). This document retains
+dispositions/evidence; it is not an additional implementation queue.
+
+## User-accepted closure — 2026-11-02
+
+The user accepts the following **18 scoped repairs as FIXED BY ASSUMPTION**
+(`FIX_ASSUMED`) and closes their reports: #84, #121, #162, #205, #222, #237, #242, #246, #267, #274, #279, #311, #322, #325, #328, #342, #345, #349.
+These are assumed fixed, **not newly reproduced, independently qualified or
+live-verified**. Existing evidence and limits remain retained. Reopen the same
+report if its edge case recurs; do not keep it active awaiting that opportunity.
+
+**39 partial/open records remain active.** The 20 user-obsolete records remain
+obsolete. This is a disposition change, not new implementation or test evidence.
+Statements below about pending verification are historical qualification limits,
+not a requirement to keep these 18 reports open.
+
+
 This reconciles the frozen 14:20 UTC ledger audit with the 17:44 UTC cumulative scoped
 closure review against published source `0b33a56b58a50b4d0144d756e15aaa35f7124961`.
 
-**77 canonical numbered records remain unresolved. This is not a count of 77
-demonstrated current bugs.** The original ledger contains 350 historical incidents.
+**39 canonical numbered records remain active after the 2026-11-02 user
+dispositions. This is not a count of 39 demonstrated current bugs.** The original ledger contains 350 historical incidents.
 Source repair, offline qualification, deployment and matching live outcomes are
 separate claims. GitHub issues #709/#711 use a different namespace; unnumbered
 Greaves and commander-choice work is outside this count.
 
 The source inventory excludes 192 historical fix records, 72 bounded offline
-closures, five withdrawn reports, three exact live cases, and duplicate alias
+closures, five withdrawn reports, three exact live cases, 20 user-obsolete records, 18 user-assumed fixes, and duplicate alias
 #346 → #5. Every original ID remains in the inventory below. The original private
 reports and ledger are retained locally and are not published here.
 
-## Exclusive audit categories
+## User disposition — 2026-11-02
+
+By explicit user decision, these **20 records are OBSOLETE** and removed from
+active follow-up. This is a prioritization decision, **not a claim that they were
+fixed, disproven or live-verified**. Historical reports, source/test receipts and
+incident text are retained. This disposition supersedes older open/partial labels
+for these IDs; any future reopening requires an explicit new decision.
+
+- Evidence/platform/evaluation-prerequisite group (18): #3, #183, #201, #214, #219, #230, #243, #244, #245, #250, #268, #272, #280, #281, #288, #294, #303, #305.
+- Ambiguous incidents (2): #257, #282.
+
+That initial retirement left 57 active records. The subsequent user-accepted
+closure above closes the separate 18 scoped repairs, leaving **39 active records**.
+
+## Active categories
 
 | Category | Count |
 |---|---:|
-| Scoped fix recorded, pending closure verification | 18 |
 | Partial or open mixed scope | 39 |
-| Evidence, platform or evaluation prerequisites | 18 |
-| Ambiguous incident | 2 |
-| **Total** | **77** |
+| **Total active** | **39** |
 
-These categories classify each unresolved canonical record once. They do not count
+These categories classify each active canonical record once. They do not count
 independent current defects or replace the historical disposition inventory below.
 The cumulative overlays close 39 bounded scopes: #292/#337 (116 to 114),
 #293/#297 (114 to 112), then 35 further offline qualifications (112 to 77).
-#308, #244, #294 and #329 remain open after narrower repairs or unresolved evaluation.
+#308 and #329 remain active after narrower repairs. #244 and #294 were subsequently
+marked obsolete by user decision; their historical repair/evaluation limits remain recorded.
 #84 now has a published final-declaration diagnostic correction; broader strategic
 scope and closure verification remain.
 
@@ -102,20 +132,24 @@ documents does not update it or restart either application.
 
 | Disposition | Count |
 |---|---:|
-| AMBIGUOUS | 2 |
-| FIX_PENDING | 23 |
+| FIX_ASSUMED | 18 |
+| FIX_PENDING | 1 |
 | FIX_RECORDED | 192 |
 | LIVE_CASE | 3 |
+| OBSOLETE | 20 |
 | OFFLINE_CLOSED | 72 |
-| OPEN | 22 |
-| PARTIAL | 31 |
+| OPEN | 20 |
+| PARTIAL | 19 |
 | WITHDRAWN | 5 |
 
-`OFFLINE_CLOSED` means the bounded incident scope passed source qualification.
-`FIX_RECORDED` preserves an older explicit repair claim; it is not fresh certification.
-`FIX_PENDING`, `PARTIAL`, `OPEN` and `AMBIGUOUS` retain unresolved work. `LIVE_CASE`
-means one exact matching success, not general correctness. `WITHDRAWN` records a
-misclassified/nonbug report rather than a repair.
+`FIX_ASSUMED` means user-accepted closure without new reproduction or live
+verification; reopen on recurrence. `OFFLINE_CLOSED` records bounded source
+qualification. `FIX_RECORDED` preserves an older repair claim, not fresh certification.
+The 20 `OPEN` and 19 `PARTIAL` rows are the **39 active records**. The sole
+`FIX_PENDING` row is duplicate alias #346 → #5, not an extra active bug.
+`LIVE_CASE` means one exact matching success, not general correctness. `WITHDRAWN`
+records a misclassified/nonbug report. `OBSOLETE` means retired by user decision,
+not repaired or disproven. All historical reports and evidence are retained.
 
 ## Complete ID inventory
 
@@ -125,7 +159,7 @@ Descriptions identify historical issue topics, not newly reproduced defects.
 |---|---|---|
 | #1 | FIX_RECORDED | Autopilot / blocks |
 | #2 | FIX_RECORDED | Autopilot / blocks |
-| #3 | FIX_PENDING | Mac bridge / concede |
+| #3 | OBSOLETE | Mac bridge / concede |
 | #4 | FIX_RECORDED | Auto-queue |
 | #5 | OFFLINE_CLOSED | Game-end records |
 | #6 | FIX_RECORDED | Auto-queue |
@@ -206,7 +240,7 @@ Descriptions identify historical issue topics, not newly reproduced defects.
 | #81 | FIX_RECORDED | Autopilot |
 | #82 | FIX_RECORDED | Line search |
 | #83 | FIX_RECORDED | Effort gate |
-| #84 | FIX_PENDING | Prompts |
+| #84 | FIX_ASSUMED | Prompts |
 | #85 | FIX_RECORDED | Auto-queue |
 | #86 | FIX_RECORDED | Guards |
 | #87 | FIX_RECORDED | Line search |
@@ -243,7 +277,7 @@ Descriptions identify historical issue topics, not newly reproduced defects.
 | #118 | FIX_RECORDED | Hedge |
 | #119 | FIX_RECORDED | Narration |
 | #120 | OFFLINE_CLOSED | Combat |
-| #121 | FIX_PENDING | Outage fallback |
+| #121 | FIX_ASSUMED | Outage fallback |
 | #122 | FIX_RECORDED | Effort gate / #80 |
 | #123 | FIX_RECORDED | Game state |
 | #124 | FIX_RECORDED | Hedge |
@@ -284,7 +318,7 @@ Descriptions identify historical issue topics, not newly reproduced defects.
 | #159 | FIX_RECORDED | Effort |
 | #160 | FIX_RECORDED | Prompts |
 | #161 | FIX_RECORDED | Board facts |
-| #162 | FIX_PENDING | Planner latency |
+| #162 | FIX_ASSUMED | Planner latency |
 | #163 | FIX_RECORDED | Playbook |
 | #164 | FIX_RECORDED | Game plan |
 | #165 | FIX_RECORDED | Records |
@@ -305,7 +339,7 @@ Descriptions identify historical issue topics, not newly reproduced defects.
 | #180 | FIX_RECORDED | Threat model |
 | #181 | FIX_RECORDED | Line search |
 | #182 | FIX_RECORDED | Latency |
-| #183 | OPEN | MTGA crash |
+| #183 | OBSOLETE | MTGA crash |
 | #184 | FIX_RECORDED | Combat solver |
 | #185 | FIX_RECORDED | Combat solver |
 | #186 | FIX_RECORDED | Decisions |
@@ -323,11 +357,11 @@ Descriptions identify historical issue topics, not newly reproduced defects.
 | #198 | FIX_RECORDED | Threat model |
 | #199 | OFFLINE_CLOSED | Review follow-ups |
 | #200 | FIX_RECORDED | Mac bridge |
-| #201 | FIX_PENDING | Windows plugin |
+| #201 | OBSOLETE | Windows plugin |
 | #202 | FIX_RECORDED | Fallback |
 | #203 | FIX_RECORDED | SelectFromGroups |
 | #204 | FIX_RECORDED | Feature: decks over the bridge |
-| #205 | FIX_PENDING | Game plan / new deck |
+| #205 | FIX_ASSUMED | Game plan / new deck |
 | #206 | OFFLINE_CLOSED | Priority after own cast |
 | #207 | FIX_RECORDED | Autopilot (reopens #174) |
 | #208 | FIX_RECORDED | All-in attack |
@@ -336,15 +370,15 @@ Descriptions identify historical issue topics, not newly reproduced defects.
 | #211 | FIX_RECORDED | Concede outs |
 | #212 | OFFLINE_CLOSED | Big-board attacks |
 | #213 | FIX_RECORDED | Concede timing |
-| #214 | PARTIAL | Model output parsing |
+| #214 | OBSOLETE | Model output parsing |
 | #215 | OFFLINE_CLOSED | Desktop / health banner |
 | #216 | FIX_RECORDED | Mac bridge / attacks |
 | #217 | OFFLINE_CLOSED | Decisions / SearchFromGroups |
 | #218 | FIX_RECORDED | Draft / 17lands |
-| #219 | FIX_PENDING | Limited play |
+| #219 | OBSOLETE | Limited play |
 | #220 | FIX_RECORDED | Combat guards / blocks |
 | #221 | OFFLINE_CLOSED | Strategy / clock |
-| #222 | FIX_PENDING | Autopilot / LLM latency |
+| #222 | FIX_ASSUMED | Autopilot / LLM latency |
 | #223 | PARTIAL | Decision latency / background contention |
 | #224 | FIX_RECORDED | Decision latency / prompt bulk |
 | #225 | FIX_RECORDED | Decision latency / macOS log watcher |
@@ -352,34 +386,34 @@ Descriptions identify historical issue topics, not newly reproduced defects.
 | #227 | OFFLINE_CLOSED | Autopilot / hold policy |
 | #228 | OFFLINE_CLOSED | Strategy / hold policy |
 | #229 | OFFLINE_CLOSED | Line search / threat model |
-| #230 | PARTIAL | Autopilot / attacks |
+| #230 | OBSOLETE | Autopilot / attacks |
 | #231 | OPEN | Autopilot / LLM latency |
 | #232 | PARTIAL | Autopilot / LLM latency |
 | #233 | OFFLINE_CLOSED | Planner / JSON |
 | #234 | WITHDRAWN | Autopilot / search |
 | #235 | PARTIAL | Planner / game plan |
 | #236 | WITHDRAWN | Autopilot / attacks |
-| #237 | FIX_PENDING | Autopilot / blocks |
+| #237 | FIX_ASSUMED | Autopilot / blocks |
 | #238 | OFFLINE_CLOSED | Autopilot / plan execution |
 | #239 | OPEN | Autopilot / LLM latency |
 | #240 | OFFLINE_CLOSED | Planner / game plan |
 | #241 | PARTIAL | Autopilot / LLM latency |
-| #242 | FIX_PENDING | Autopilot / LLM latency |
-| #243 | PARTIAL | Autopilot / LLM latency |
-| #244 | PARTIAL | Strategy / aura deployment |
-| #245 | PARTIAL | Parser / model output |
-| #246 | FIX_PENDING | Autopilot / combat |
+| #242 | FIX_ASSUMED | Autopilot / LLM latency |
+| #243 | OBSOLETE | Autopilot / LLM latency |
+| #244 | OBSOLETE | Strategy / aura deployment |
+| #245 | OBSOLETE | Parser / model output |
+| #246 | FIX_ASSUMED | Autopilot / combat |
 | #247 | PARTIAL | Strategy / blocks |
 | #248 | OPEN | Autopilot / LLM latency |
 | #249 | OPEN | Autopilot / LLM latency |
-| #250 | PARTIAL | Autopilot / bridge |
+| #250 | OBSOLETE | Autopilot / bridge |
 | #251 | OFFLINE_CLOSED | Autopilot / targeting guard |
 | #252 | OFFLINE_CLOSED | Strategy / blink timing |
 | #253 | PARTIAL | Autopilot / LLM latency |
 | #254 | PARTIAL | P1 / mana affordability |
 | #255 | OFFLINE_CLOSED | P1 / cancellation retry |
 | #256 | OPEN | Autopilot / LLM latency |
-| #257 | AMBIGUOUS | Strategy / attacks |
+| #257 | OBSOLETE | Strategy / attacks |
 | #258 | OFFLINE_CLOSED | Autopilot / blocks |
 | #259 | OFFLINE_CLOSED | Autopilot / planner |
 | #260 | OPEN | Autopilot / LLM latency |
@@ -389,34 +423,34 @@ Descriptions identify historical issue topics, not newly reproduced defects.
 | #264 | OPEN | Autopilot / LLM latency |
 | #265 | OPEN | Autopilot / LLM latency |
 | #266 | OPEN | Autopilot / LLM latency |
-| #267 | FIX_PENDING | Records / match end |
-| #268 | PARTIAL | Autopilot / blocks |
+| #267 | FIX_ASSUMED | Records / match end |
+| #268 | OBSOLETE | Autopilot / blocks |
 | #269 | OPEN | Autopilot / LLM latency |
 | #270 | PARTIAL | Strategy / blocks |
 | #271 | WITHDRAWN | Autopilot / blocks |
-| #272 | PARTIAL | Autopilot / planner |
+| #272 | OBSOLETE | Autopilot / planner |
 | #273 | OPEN | Strategy / attacks |
-| #274 | FIX_PENDING | Autopilot / targeting |
+| #274 | FIX_ASSUMED | Autopilot / targeting |
 | #275 | OPEN | Autopilot / LLM latency |
 | #276 | OPEN | Autopilot / LLM latency |
 | #277 | OPEN | Autopilot / LLM latency |
 | #278 | PARTIAL | Strategy / attacks |
-| #279 | FIX_PENDING | Strategy / removal |
-| #280 | PARTIAL | Strategy / attacks |
-| #281 | PARTIAL | Strategy / clock |
-| #282 | AMBIGUOUS | Autopilot / blocks |
+| #279 | FIX_ASSUMED | Strategy / removal |
+| #280 | OBSOLETE | Strategy / attacks |
+| #281 | OBSOLETE | Strategy / clock |
+| #282 | OBSOLETE | Autopilot / blocks |
 | #283 | OPEN | Autopilot / LLM latency |
 | #284 | OPEN | Strategy / combat math |
 | #285 | OPEN | Autopilot / LLM latency |
 | #286 | OPEN | Autopilot / LLM latency |
 | #287 | OFFLINE_CLOSED | Game plan / validator |
-| #288 | PARTIAL | Autopilot / combat |
+| #288 | OBSOLETE | Autopilot / combat |
 | #289 | OPEN | Autopilot / LLM latency |
 | #290 | OFFLINE_CLOSED | Autopilot / concede |
 | #291 | OFFLINE_CLOSED | Autopilot / target timing |
 | #292 | OFFLINE_CLOSED | Runtime / auto-reload |
 | #293 | OFFLINE_CLOSED | Draft / Cube format |
-| #294 | OPEN | Draft / opening quality |
+| #294 | OBSOLETE | Draft / opening quality |
 | #295 | OFFLINE_CLOSED | Draft / false artifact mechanisms |
 | #296 | OFFLINE_CLOSED | Draft / missing rules relationships |
 | #297 | OFFLINE_CLOSED | Draft / unrated fallback |
@@ -425,15 +459,15 @@ Descriptions identify historical issue topics, not newly reproduced defects.
 | #300 | PARTIAL | Draft / factual rationale errors |
 | #301 | OFFLINE_CLOSED | Gameplay / chosen-player protection |
 | #302 | OFFLINE_CLOSED | Gameplay / lifelink crackback veto |
-| #303 | PARTIAL | Gameplay / colored land sequencing |
+| #303 | OBSOLETE | Gameplay / colored land sequencing |
 | #304 | OFFLINE_CLOSED | Draft / free reusable mana absent from fallback value |
-| #305 | FIX_PENDING | Gameplay / optional put effect throws away X creature |
+| #305 | OBSOLETE | Gameplay / optional put effect throws away X creature |
 | #306 | PARTIAL | Gameplay / optional payment ignores mana reservation |
 | #307 | PARTIAL | Gameplay / death-return engine undervalued in blocks |
 | #308 | OPEN | Gameplay / removal and draw-trigger sequencing |
 | #309 | PARTIAL | Gameplay / phase lost across equipment selection |
 | #310 | OFFLINE_CLOSED | Gameplay / false Cold-target veto |
-| #311 | FIX_PENDING | Gameplay / Shrine blink rules and stack identity |
+| #311 | FIX_ASSUMED | Gameplay / Shrine blink rules and stack identity |
 | #312 | OFFLINE_CLOSED | Draft / rejected recommendation leaks into persisted plan |
 | #313 | OFFLINE_CLOSED | P2 / triggered-ability selection |
 | #314 | OFFLINE_CLOSED | P2 / revealed library selection identity |
@@ -444,13 +478,13 @@ Descriptions identify historical issue topics, not newly reproduced defects.
 | #319 | OFFLINE_CLOSED | P2 / Outlook consistency |
 | #320 | OFFLINE_CLOSED | P2 / Role with missing deck data |
 | #321 | OFFLINE_CLOSED | P2 / contradictory accepted-action narration |
-| #322 | FIX_PENDING | P2 / plotted creature and burn sequencing |
+| #322 | FIX_ASSUMED | P2 / plotted creature and burn sequencing |
 | #323 | OFFLINE_CLOSED | P2 / false nonlethal narration during pending burn |
 | #324 | OFFLINE_CLOSED | P2 / opposing Bloodletter effect attributed to us |
-| #325 | FIX_PENDING | P1 / combat_blockers triggers detected but never consumed — idle through lethal attack |
+| #325 | FIX_ASSUMED | P1 / combat_blockers triggers detected but never consumed — idle through lethal attack |
 | #326 | OFFLINE_CLOSED | P2 / no frozen-client detector — autopilot stall-thrashes ~5 min when Arena main thread hangs |
 | #327 | WITHDRAWN | P2 / autopilot lets Arena's active-player timer expire — client makes unauthorized default plays |
-| #328 | FIX_PENDING | P2 / development spends removal-plus-ward mana; narration falsely promises both |
+| #328 | FIX_ASSUMED | P2 / development spends removal-plus-ward mana; narration falsely promises both |
 | #329 | PARTIAL | Session / accepted cast contradicts its explicit hold/pass rationale; modal repair preserves a no-kill spell |
 | #330 | OFFLINE_CLOSED | Session / false NO TARGETS annotation suppresses player burn and untargeted damage |
 | #331 | OFFLINE_CLOSED | Session / visible activated counter doubling omitted from incoming-damage forecast |
@@ -464,12 +498,12 @@ Descriptions identify historical issue topics, not newly reproduced defects.
 | #339 | OFFLINE_CLOSED | Session / losing-attack guard suppresses Mobilize and assumes prohibited spell tricks |
 | #340 | OFFLINE_CLOSED | Session / line search preserves duplicate legendary creatures and spends development mana on a redundant Belladonna |
 | #341 | LIVE_CASE | Session / triggered-ability SelectN changes to scry, stale fallback loses Group card IDs and stalls |
-| #342 | FIX_PENDING | Session / holds sorcery-speed removal for a craft transformation that removes its legal target |
+| #342 | FIX_ASSUMED | Session / holds sorcery-speed removal for a craft transformation that removes its legal target |
 | #343 | LIVE_CASE | Session / commander relocation declined under a false belief that it preserves the battlefield creature |
 | #344 | OFFLINE_CLOSED | Session / opponent-reanimation selection explained as adding our defensive creature |
-| #345 | FIX_PENDING | Session / Optional MDFC life payment buys unused immediate mana (P2, open). |
+| #345 | FIX_ASSUMED | Session / Optional MDFC life payment buys unused immediate mana (P2, open). |
 | #346 | FIX_PENDING | Session / Pre-turn concession win discarded, packet saved unknown (P3, open). |
 | #347 | OFFLINE_CLOSED | Session / restart anchors an active match but Auto Queue treats it as ended and searches Recent Match |
 | #348 | OFFLINE_CLOSED | Session / same land-animation ability activated repeatedly while its first activation is pending |
-| #349 | FIX_PENDING | Session / payable Ugin dismissed as having no immediate payoff despite cast-trigger removal |
+| #349 | FIX_ASSUMED | Session / payable Ugin dismissed as having no immediate payoff despite cast-trigger removal |
 | #350 | PARTIAL | Session / permanent hexproof used as if it could protect a creature spell from a counterspell |

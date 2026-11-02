@@ -1,5 +1,23 @@
 # Backlog evidence index — 2026-11-01
 
+Working scope and per-item implementation/review state now live in
+[the portable 40-item queue](autopilot-active-work.md). This document retains
+dispositions/evidence; it is not an additional implementation queue.
+
+## User-accepted closure — 2026-11-02
+
+The user accepts the following **18 scoped repairs as FIXED BY ASSUMPTION**
+(`FIX_ASSUMED`) and closes their reports: #84, #121, #162, #205, #222, #237, #242, #246, #267, #274, #279, #311, #322, #325, #328, #342, #345, #349.
+These are assumed fixed, **not newly reproduced, independently qualified or
+live-verified**. Existing evidence and limits remain retained. Reopen the same
+report if its edge case recurs; do not keep it active awaiting that opportunity.
+
+**39 partial/open records remain active.** The 20 user-obsolete records remain
+obsolete. This is a disposition change, not new implementation or test evidence.
+Statements below about pending verification are historical qualification limits,
+not a requirement to keep these 18 reports open.
+
+
 This index accompanies the [canonical triage](backlog-triage-2026-11-01.md).
 It preserves 263 historical source/test locator rows from the audit, reconciled to
 current dispositions. The other 87 records have no row in this historical locator
@@ -7,6 +25,20 @@ matrix; absence here neither proves a missing implementation nor closes an issue
 A filename or reachable revision is a lead to inspect, not proof that a scenario
 passed. Private captured reports, local task metadata and raw diagnostic transcripts
 are deliberately excluded.
+
+## User disposition — 2026-11-02
+
+By explicit user decision, these **20 records are OBSOLETE** and removed from
+active follow-up. This is a prioritization decision, **not a claim that they were
+fixed, disproven or live-verified**. Historical reports, source/test receipts and
+incident text are retained. This disposition supersedes older open/partial labels
+for these IDs; any future reopening requires an explicit new decision.
+
+- Evidence/platform/evaluation-prerequisite group (18): #3, #183, #201, #214, #219, #230, #243, #244, #245, #250, #268, #272, #280, #281, #288, #294, #303, #305.
+- Ambiguous incidents (2): #257, #282.
+
+That initial retirement left 57 active records. The subsequent user-accepted
+closure above closes the separate 18 scoped repairs, leaving **39 active records**.
 
 ## Current integration receipts
 
@@ -77,19 +109,21 @@ same source revision without production edits:
 
 The audit's **23 existing tests and four retained-event replays passed**. Source
 and test hashes matched the pinned revision. The canonical unresolved-record count
-was **114** after those two closures; the final overlay below reduces it to **77**.
-#267 remains pending because its
-original delayed-result sequence was not recovered; no #267 closure is counted.
+was **114** after those two closures; the historical final overlay below reduced it
+to **77**. The subsequent user dispositions above leave **39 active records**.
+#267 was still pending at that audit because its original delayed-result sequence
+was not recovered. It is now closed by user assumption, without new verification.
 Private incident identifiers, captures and local task paths remain unpublished.
 
-## Final cumulative offline qualification
+## Historical cumulative offline qualification — before user disposition
 
 The final audit, pinned to `0b33a56` at 17:44 UTC, adds the two #293/#297
 qualifications and 35 further scoped closures. Together with #292/#337, these are
 **39 new bounded offline closures**, reducing unresolved canonical records from
 116 to **77**. Remaining categories: **18** scoped repairs needing broader or
 missing-evidence verification, **39** partial/open scopes, **18** prerequisite
-blocks and **2** ambiguous incidents. #294 ranking quality remains open.
+blocks and **2** ambiguous incidents. The latter 20 records, including #294, are
+now obsolete by user decision; no additional repair or qualification is claimed.
 
 The #293/#297 audit passed **18 existing tests** with original probes retained.
 The final six batches passed **382 distinct existing tests**, plus two saved-data
@@ -155,7 +189,7 @@ the auditor's published-source ancestry check, not a new test run.
 |---|---|---|---|---|
 | #1 | FIX_RECORDED | all cited revisions reachable | a6ce8a0 (reachable), e1b74ba (reachable) | `tests/test_action_planner_legality.py`, `tests/test_all_in_labels_20261020.py`, `tests/test_attack_line_guard_20261019.py`, `tests/test_attack_override.py`, `tests/test_big_board_planner_20261019.py`, `tests/test_block_assignment_completeness.py`, `tests/test_block_declaration_20261019.py`, `tests/test_coach_engine_castability.py`, `tests/test_combat_identity.py`, `tests/test_compact_coach.py`, `tests/test_game_plan_unusable_and_kills_20261019.py`, `tests/test_narration.py`, `tests/test_prompt_compaction_20261019.py`, `tests/test_prompt_duplication.py`, `tests/test_target_selection_grounding.py`, `tests/test_target_state_facts.py` |
 | #2 | FIX_RECORDED | all cited revisions reachable | a6ce8a0 (reachable), e1b74ba (reachable) | `tests/race_boards_20261019.py`, `tests/test_action_planner_legality.py`, `tests/test_attack_line_guard_20261019.py`, `tests/test_attack_override.py`, `tests/test_big_board_planner_20261019.py`, `tests/test_block_declaration_20261019.py`, `tests/test_cast_pumps_20261019.py`, `tests/test_coach_engine_castability.py`, `tests/test_combat_identity.py`, `tests/test_decisions.py`, `tests/test_game_plan_unusable_and_kills_20261019.py`, `tests/test_narration.py`, `tests/test_planner_combat_voice.py`, `tests/test_prompt_compaction_20261019.py`, `tests/test_prompt_duplication.py`, `tests/test_target_selection_grounding.py`, `tests/test_target_state_facts.py`, `tests/test_targeting_fallback_decline.py` |
-| #3 | FIX_PENDING | all cited revisions reachable | 4904bd3 (reachable), a6ce8a0 (reachable) | `tests/test_action_planner_legality.py`, `tests/test_attack_override.py`, `tests/test_big_board_planner_20261019.py`, `tests/test_block_declaration_20261019.py`, `tests/test_prompt_compaction_20261019.py` |
+| #3 | OBSOLETE | all cited revisions reachable | 4904bd3 (reachable), a6ce8a0 (reachable) | `tests/test_action_planner_legality.py`, `tests/test_attack_override.py`, `tests/test_big_board_planner_20261019.py`, `tests/test_block_declaration_20261019.py`, `tests/test_prompt_compaction_20261019.py` |
 | #4 | FIX_RECORDED | all cited revisions reachable | 129e2bc (reachable), a6ce8a0 (reachable) | `tests/test_autopilot_bridge_blockers.py`, `tests/test_big_board_planner_20261019.py`, `tests/test_block_declaration_20261019.py`, `tests/test_creature_type_choice_20261019.py`, `tests/test_prompt_compaction_20261019.py` |
 | #5 | OFFLINE_CLOSED | all cited revisions reachable | 9c7dae5 (reachable), a6ce8a0 (reachable) | `tests/test_big_board_planner_20261019.py`, `tests/test_block_declaration_20261019.py`, `tests/test_draft_unrated_rares.py`, `tests/test_prompt_compaction_20261019.py` |
 | #6 | FIX_RECORDED | all cited revisions reachable | 129e2bc (reachable), a6ce8a0 (reachable) | `tests/test_big_board_planner_20261019.py`, `tests/test_draft_pick_two_fra.py`, `tests/test_prompt_compaction_20261019.py` |
@@ -236,7 +270,7 @@ the auditor's published-source ancestry check, not a new test run.
 | #81 | FIX_RECORDED | all cited revisions reachable | 086d6f1 (reachable) | `tests/test_screen_read_under_autopilot_20261019.py` |
 | #82 | FIX_RECORDED | all cited revisions reachable | 95ffce2 (reachable) | `tests/test_cast_growth_20261019.py` |
 | #83 | FIX_RECORDED | all cited revisions reachable | 08979c3 (reachable) | `tests/test_decision_layer_20261019.py` |
-| #84 | FIX_PENDING | all cited revisions reachable | ea50d1d (reachable), a8aaec9 (reachable) | `tests/test_claim_descriptions_20261019.py`, `tests/test_decision_claims_20261019.py` |
+| #84 | FIX_ASSUMED | all cited revisions reachable | ea50d1d (reachable), a8aaec9 (reachable) | `tests/test_claim_descriptions_20261019.py`, `tests/test_decision_claims_20261019.py` |
 | #85 | FIX_RECORDED | all cited revisions reachable | 5ae13d5 (reachable) | `tests/test_auto_queue_stall.py`, `tests/test_autopilot_fixes_20261019.py` |
 | #86 | FIX_RECORDED | all cited revisions reachable | 268f8bc (reachable) | `tests/test_false_kill_claim_20261019.py`, `tests/test_follow_up_burn_kill_20261019.py` |
 | #87 | FIX_RECORDED | all cited revisions reachable | ee186e9 (reachable) | `tests/test_modal_sweep_20261019.py`, `tests/test_mode_kill_claim_20261019.py` |
@@ -271,7 +305,7 @@ the auditor's published-source ancestry check, not a new test run.
 | #118 | FIX_RECORDED | all cited revisions reachable | 7b9cdbe (reachable) | `tests/test_action_planner_legality.py`, `tests/test_line_gap_20261019.py` |
 | #119 | FIX_RECORDED | all cited revisions reachable | 1aee0d9 (reachable) | `tests/test_casting_options_fallback_20261019.py` |
 | #120 | OFFLINE_CLOSED | all cited revisions reachable | a2dc983 (reachable) | `tests/test_attack_holds_20261019.py` |
-| #121 | FIX_PENDING | all cited revisions reachable | 1aee0d9 (reachable) | `tests/test_casting_option_id_aliases.py`, `tests/test_casting_options_fallback_20261019.py`, `tests/test_llm_down_fallback.py` |
+| #121 | FIX_ASSUMED | all cited revisions reachable | 1aee0d9 (reachable) | `tests/test_casting_option_id_aliases.py`, `tests/test_casting_options_fallback_20261019.py`, `tests/test_llm_down_fallback.py` |
 | #122 | FIX_RECORDED | all cited revisions reachable | 58ccbf7 (reachable) | `tests/test_pending_stack_damage_20261019.py`, `tests/test_stack_and_solver_prompt.py` |
 | #123 | FIX_RECORDED | all cited revisions reachable | 58ccbf7 (reachable) | `tests/test_card_db_type_lines.py`, `tests/test_face_down_20261019.py` |
 | #124 | FIX_RECORDED | all cited revisions reachable | 58ccbf7 (reachable) | `tests/test_pending_stack_damage_20261019.py` |
@@ -311,7 +345,7 @@ the auditor's published-source ancestry check, not a new test run.
 | #159 | FIX_RECORDED | all cited revisions reachable | b574434 (reachable) | `tests/leonardo_boards_20261019.py`, `tests/test_big_board_planner_20261019.py` |
 | #160 | FIX_RECORDED | all cited revisions reachable | b574434 (reachable) | `tests/test_leonardo_sneak_20261019.py` |
 | #161 | FIX_RECORDED | all cited revisions reachable | 976e434 (reachable) | `tests/leonardo_boards_20261019.py`, `tests/test_race_role_20261019.py`, `tests/valkyrie_boards_20261019.py` |
-| #162 | FIX_PENDING | all cited revisions reachable | b574434 (reachable) | `tests/test_attack_push_20261019.py`, `tests/test_big_board_combat_20261019.py`, `tests/test_big_board_planner_20261019.py`, `tests/test_big_board_tactical_line_20261019.py` |
+| #162 | FIX_ASSUMED | all cited revisions reachable | b574434 (reachable) | `tests/test_attack_push_20261019.py`, `tests/test_big_board_combat_20261019.py`, `tests/test_big_board_planner_20261019.py`, `tests/test_big_board_tactical_line_20261019.py` |
 | #163 | FIX_RECORDED | all cited revisions reachable | 8bed177 (reachable) | `tests/test_autopilot_fixes_20261019.py` |
 | #164 | FIX_RECORDED | issue referenced in reachable commit subject | 6056fed | `tests/test_plan_duplicate_copies_20261019.py` |
 | #165 | FIX_RECORDED | all cited revisions reachable | 92d814c (reachable) | `tests/test_autopilot_fixes_20261019.py`, `tests/test_land_drop_timing_20261019.py` |
@@ -349,11 +383,11 @@ the auditor's published-source ancestry check, not a new test run.
 | #198 | FIX_RECORDED | all cited revisions reachable | 0803998 (reachable) | `tests/test_attack_potential_20261019.py`, `tests/test_autopilot_fixes_20261019.py`, `tests/test_combat_counters_root_20261020.py`, `tests/test_counted_drain_20261019.py` |
 | #199 | OFFLINE_CLOSED | all cited revisions reachable | 8b13cb7 (reachable), 3a5f516 (reachable) | `tests/test_auto_queue_stall.py`, `tests/test_combat_followups_199_220_212.py`, `tests/test_prompt_bulk_224.py`, `tests/test_race_math_20261019.py` |
 | #200 | FIX_RECORDED | all cited revisions reachable | 1741d60 (reachable) | Semantic candidates: `tests/test_mac_bridge_adapter.py` |
-| #201 | FIX_PENDING | all cited revisions reachable | 7a1df5c (reachable), d7232af (reachable), 7f4dafb (reachable) | Semantic/platform inspection required |
+| #201 | OBSOLETE | all cited revisions reachable | 7a1df5c (reachable), d7232af (reachable), 7f4dafb (reachable) | Semantic/platform inspection required |
 | #202 | FIX_RECORDED | all cited revisions reachable | 9eae73b (reachable), 7f4dafb (reachable) | Semantic candidates: `tests/test_prompt_content_207_202.py`, `tests/test_manual_required_20261025.py` |
 | #203 | FIX_RECORDED | all cited revisions reachable | c760260 (reachable), 8a8b8c7 (reachable), 21687e9 (reachable), 7f4dafb (reachable) | `tests/test_select_from_groups_203.py` |
 | #204 | FIX_RECORDED | all cited revisions reachable | d668c19 (reachable) | `tests/test_desktop_deck_editor.py`, `tests/test_mac_bridge_deck_ops.py` |
-| #205 | FIX_PENDING | all cited revisions reachable | aa9475c (reachable) | `tests/test_deck_analysis_cancel.py`, `tests/test_game_plan.py` |
+| #205 | FIX_ASSUMED | all cited revisions reachable | aa9475c (reachable) | `tests/test_deck_analysis_cancel.py`, `tests/test_game_plan.py` |
 | #206 | OFFLINE_CLOSED | all cited revisions reachable | 1adc79d (reachable), 7f4dafb (reachable) | `tests/test_priority_after_cast_206.py` |
 | #207 | FIX_RECORDED | all cited revisions reachable | 3143b8c (reachable), 9eae73b (reachable), 7f4dafb (reachable) | `tests/test_autopilot_search_stall.py`, `tests/test_log_summary_marker_20261020.py`, `tests/test_prompt_content_207_202.py` |
 | #208 | FIX_RECORDED | all cited revisions reachable | 2ca1675 (reachable) | `tests/test_all_in_labels_20261020.py` |
@@ -365,10 +399,10 @@ the auditor's published-source ancestry check, not a new test run.
 | #216 | FIX_RECORDED | all cited revisions reachable | 3370a6d (reachable) | Semantic candidates: `tests/test_mac_bridge_adapter.py::test_must_attack_goblin_token_shapes_and_submits_with_qualified_attackers` |
 | #217 | OFFLINE_CLOSED | all cited revisions reachable | 95498d0 (reachable) | Semantic/platform inspection required |
 | #218 | FIX_RECORDED | all cited revisions reachable | 1f9a7f9 (reachable) | `tests/test_seventeenlands_catalog.py` |
-| #219 | FIX_PENDING | all cited revisions reachable | 8b13cb7 (reachable) | `tests/test_prompt_bulk_224.py` |
+| #219 | OBSOLETE | all cited revisions reachable | 8b13cb7 (reachable) | `tests/test_prompt_bulk_224.py` |
 | #220 | FIX_RECORDED | all cited revisions reachable | 3a5f516 (reachable) | `tests/test_blocker_caps_20261021.py`, `tests/test_combat_followups_199_220_212.py` |
 | #221 | OFFLINE_CLOSED | all cited revisions reachable | 1fc3866 (reachable) | `tests/test_decking_clock_221.py` |
-| #222 | FIX_PENDING | all cited revisions reachable | d27b878 (reachable) | `tests/test_backend_circuit_breaker.py`, `tests/test_llm_latency_222.py`, `tests/test_proxy_request_metrics.py` |
+| #222 | FIX_ASSUMED | all cited revisions reachable | d27b878 (reachable) | `tests/test_backend_circuit_breaker.py`, `tests/test_llm_latency_222.py`, `tests/test_proxy_request_metrics.py` |
 | #224 | FIX_RECORDED | all cited revisions reachable | 8b13cb7 (reachable) | `tests/test_prompt_bulk_224.py` |
 | #225 | FIX_RECORDED | all cited revisions reachable | 51047f3 (reachable) | Semantic candidates: `tests/test_decision_wakeup.py` |
 | #226 | OFFLINE_CLOSED | all cited revisions reachable | 277e81b (reachable), d27b878 (reachable) | `tests/test_autopilot_progress.py`, `tests/test_llm_latency_222.py`, `tests/test_planner_micro_wins_226.py` |
@@ -397,7 +431,7 @@ the auditor's published-source ancestry check, not a new test run.
 | #301 | OFFLINE_CLOSED | no direct commit locator | Not recorded | `tests/test_stack_responses.py` |
 | #302 | OFFLINE_CLOSED | no direct commit locator | Not recorded | `tests/test_assign_damage_split.py` |
 | #304 | OFFLINE_CLOSED | no direct commit locator | Not recorded | `tests/test_stack_order_20261019.py` |
-| #305 | FIX_PENDING | no direct commit locator | Not recorded | `tests/test_land_drop_timing_20261019.py` |
+| #305 | OBSOLETE | no direct commit locator | Not recorded | `tests/test_land_drop_timing_20261019.py` |
 | #310 | OFFLINE_CLOSED | no direct commit locator | Not recorded | Semantic/platform inspection required |
 | #312 | OFFLINE_CLOSED | no direct commit locator | Not recorded | `tests/test_draft_plan_acceptance.py`, `tests/test_target_state_facts.py` |
 | #313 | OFFLINE_CLOSED | no direct commit locator | Not recorded | `tests/test_trigger_selection_context_313.py` |
