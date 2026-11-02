@@ -619,10 +619,13 @@ def test_code_requests_are_rate_limited_per_machine(env):
     events = _events(proxy_db)
     assert events[-1]["event"] == "code_rate_limited"
 
+
 def test_expired_trial_with_email_sends_expiration_email_once(env, monkeypatch):
     _, proxy_db, patreon, _, client = env
     sent_expired: list[str] = []
-    monkeypatch.setattr(patreon, "send_trial_expired_email", lambda to_addr, **kw: sent_expired.append(to_addr))
+    monkeypatch.setattr(
+        patreon, "send_trial_expired_email", lambda to_addr, **kw: sent_expired.append(to_addr)
+    )
 
     now = datetime.now(timezone.utc)
     proxy_db.create_trial(
@@ -655,6 +658,7 @@ def test_expired_trial_with_email_sends_expiration_email_once(env, monkeypatch):
     r3 = client.post("/api/trial", json={"machine_id": MACHINE_ID})
     assert r3.status_code == 403
     import asyncio
+
     assert asyncio.run(patreon.sweep_expired_trial_emails()) == 0
     assert sent_expired == ["user@example.com"]
 
@@ -662,7 +666,9 @@ def test_expired_trial_with_email_sends_expiration_email_once(env, monkeypatch):
 def test_sweep_expired_trial_emails_notifies_only_expired_trials_with_email(env, monkeypatch):
     _, proxy_db, patreon, _, _ = env
     sent_expired: list[str] = []
-    monkeypatch.setattr(patreon, "send_trial_expired_email", lambda to_addr, **kw: sent_expired.append(to_addr))
+    monkeypatch.setattr(
+        patreon, "send_trial_expired_email", lambda to_addr, **kw: sent_expired.append(to_addr)
+    )
 
     now = datetime.now(timezone.utc)
     # 1. Expired with email -> should receive email
@@ -691,6 +697,7 @@ def test_sweep_expired_trial_emails_notifies_only_expired_trials_with_email(env,
     )
 
     import asyncio
+
     count = asyncio.run(patreon.sweep_expired_trial_emails())
     assert count == 1
     assert sent_expired == ["expired1@example.com"]

@@ -1597,8 +1597,7 @@ class CompactCoachPanel(QWidget):
         startup_phase = self._startup_status.get("phase")
         preparing = bool(self._startup_status) and not self._startup_status.get("ready")
         auth_expired = (
-            self._backend_health.get("state") in ("degraded", "down")
-            and self._is_backend_auth_expired()
+            self._backend_health.get("state") in ("degraded", "down") and self._is_backend_auth_expired()
         )
         model_tone = (
             "bad"
