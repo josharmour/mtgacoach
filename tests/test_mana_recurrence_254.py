@@ -7,7 +7,14 @@ from unittest.mock import Mock
 import pytest
 
 from arenamcp.autopilot import AutopilotEngine
-from arenamcp.play_safety import affordable_x, exact_mana_total, unsafe_play_reason, x_choice_reason
+from arenamcp.decisions import DecisionOption, PendingDecision
+from arenamcp.play_safety import (
+    affordable_x,
+    exact_mana_total,
+    filter_play_options,
+    unsafe_play_reason,
+    x_choice_reason,
+)
 
 
 def board():
@@ -308,3 +315,159 @@ def test_visible_subtype_mana_count_counts_each_ready_source_once():
         {"controller_seat_id": 2, "type_line": "Creature — Shapeshifter", "oracle_text": "Changeling"}
     )
     assert exact_mana_total(state) is None
+
+
+# --- the two recorded boards, replayed through the live withholding path -----
+#
+# The counting fixes above were verified against offline replays of the two
+# reported games; these tests keep that closure on the current path, where the
+# model only ever sees the options ``filter_play_options`` leaves behind.
+
+
+def _x_menu(card: dict, values) -> PendingDecision:
+    return PendingDecision(
+        request_id=(335, 499),
+        request_type="CastingTimeOptions",
+        options=tuple(
+            DecisionOption(
+                f"cto:{value}",
+                f"X = {value}",
+                meta={
+                    "choiceKind": "numeric_input",
+                    "childIndex": 0,
+                    "numericValue": value,
+                    "sourceId": card["instance_id"],
+                },
+            )
+            for value in values
+        ),
+        can_cancel=True,
+    )
+
+
+def _hydra() -> dict:
+    return {
+        "instance_id": 300,
+        "controller_seat_id": 2,
+        "type_line": "Creature — Hydra",
+        "name": "Goldvein Hydra",
+        "mana_cost": "{X}{G}",
+        "power": 0,
+        "toughness": 0,
+        "oracle_text": (
+            "Vigilance\nTrample\nHaste\nThis creature enters with X +1/+1 counters on it.\n"
+            "When this creature dies, create a number of tapped Treasure tokens equal to its power."
+        ),
+    }
+
+
+def test_recorded_notary_board_prices_hydra_x_at_seven():
+    """match 566912c9 gsid335: two Notary Hobbits, four Forests, tapped Boseiju.
+
+    Live PayCosts capacity was 8; the model had picked X=10 ({X}{G}) and the
+    cast was cancelled. The counted Halfling mana and the Channel self-discount
+    both have to hold for the ceiling to land on 7.
+    """
+    state = {
+        "local_seat_id": 2,
+        "turn": {"turn_number": 12},
+        "battlefield": [
+            {
+                "instance_id": i,
+                "controller_seat_id": 2,
+                "type_line": "Basic Land — Forest",
+                "name": "Forest",
+                "oracle_text": "{T}: Add {G}.",
+            }
+            for i in range(1, 5)
+        ]
+        + [
+            {
+                "instance_id": i,
+                "controller_seat_id": 2,
+                "type_line": "Creature — Halfling Advisor",
+                "name": "The Notary Hobbits",
+                "turn_entered_battlefield": 8,
+                "oracle_text": (
+                    "When this enters, create two tokens.\n{T}: Add {C} for each Halfling you control."
+                ),
+            }
+            for i in (5, 6)
+        ]
+        + [
+            {
+                "instance_id": 7,
+                "controller_seat_id": 2,
+                "type_line": "Legendary Land",
+                "name": "Boseiju, Who Endures",
+                "is_tapped": True,
+                "oracle_text": (
+                    "{T}: Add {G}.\nChannel — {1}{G}, Discard this card: Destroy target artifact. "
+                    "This ability costs {1} less to activate for each legendary creature you control."
+                ),
+            }
+        ],
+    }
+    hydra = _hydra()
+    assert exact_mana_total(state) == 8
+    assert affordable_x(state, hydra) == 7
+    kept = filter_play_options(_x_menu(hydra, range(0, 12)), {**state, "stack": [hydra]})
+    assert [option.meta["numericValue"] for option in kept.options] == [1, 2, 3, 4, 5, 6, 7]
+
+
+def test_recorded_fetch_board_prices_natures_rhythm_at_zero():
+    """match 566912c9 gsid65: two Forests, an untapped Misty Rainforest, Kami.
+
+    The fetch land cannot pay for a spell already being cast, so the budget is
+    2 and {X}{G}{G} is payable at X=0 only; X=1 was the reported pick.
+    """
+    state = {
+        "local_seat_id": 2,
+        "turn": {"turn_number": 12},
+        "battlefield": [
+            {
+                "instance_id": i,
+                "controller_seat_id": 2,
+                "type_line": "Basic Land — Forest",
+                "name": "Forest",
+                "oracle_text": "{T}: Add {G}.",
+            }
+            for i in (11, 12)
+        ]
+        + [
+            {
+                "instance_id": 13,
+                "controller_seat_id": 2,
+                "type_line": "Land",
+                "name": "Misty Rainforest",
+                "oracle_text": (
+                    "{T}, Pay 1 life, Sacrifice Misty Rainforest: Search your library for a Forest "
+                    "or Island card, put it onto the battlefield, then shuffle."
+                ),
+            },
+            {
+                "instance_id": 14,
+                "controller_seat_id": 2,
+                "type_line": "Enchantment Creature — Spirit",
+                "name": "Kami of Bamboo Groves",
+                "turn_entered_battlefield": 8,
+                "oracle_text": (
+                    "When this creature enters, you may put a land card from your hand onto the "
+                    "battlefield tapped.\nChannel — {2}{G}, Discard this card: Conjure two cards "
+                    "named Forest into your hand."
+                ),
+            },
+        ],
+    }
+    rhythm = {
+        "instance_id": 301,
+        "controller_seat_id": 2,
+        "type_line": "Sorcery",
+        "name": "Nature's Rhythm",
+        "mana_cost": "{X}{G}{G}",
+        "oracle_text": "",
+    }
+    assert exact_mana_total(state) == 2
+    assert affordable_x(state, rhythm) == 0
+    kept = filter_play_options(_x_menu(rhythm, range(0, 4)), {**state, "stack": [rhythm]})
+    assert [option.meta["numericValue"] for option in kept.options] == [0]
