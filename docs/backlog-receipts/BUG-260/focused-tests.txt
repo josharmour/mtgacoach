@@ -1,0 +1,7 @@
+$ .venv_mac_311/bin/python -m pytest <the 6 audit node IDs for #260> -q
+........                                                                 [100%]
+8 passed in 13.77s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_latency_231_decision_trace.py tests/test_llm_down_fallback.py::test_decision_calls_carry_call_class_and_first_token_timeout -q
+........                                                                 [100%]
+8 passed in 10.80s
