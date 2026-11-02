@@ -257,14 +257,21 @@
         "backlog-evidence-2026-11-01.md: #223"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "DeepSeek",
+        "session": "session-965ac31a-2db0-4fef-8510-105b967c83cf",
+        "base_commit": "78fa1826629da1a6b0292241a0ce6b64412c53a5",
+        "source_commits": [
+          "409749f"
+        ],
+        "master_commits": [
+          "a46ed56"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-223/README.md",
+          "docs/backlog-receipts/BUG-223/focused-tests.txt"
+        ],
+        "note": "Verified on master 78fa182 that the scheduling mechanism already exists (shared background lane, supersede/drop, foreground bypass, priority 10 for background vs server default 0 for decisions, ARENAMCP_LLM_BACKGROUND_LANE kill switch). The remaining scope was the acceptance-required measurement fixture, added in tests/test_latency_223_background_contention.py: one metrics record separates lane_wait_ms (263.2) from client_setup_ms (0.0) and generation (0.2 ms); an urgent decision keeps its 1 s budget with lane_wait_ms 0 while a game plan holds the lane; a superseded plan is cancelled and its replacement completes; a dropped call reports its queue delay and sends nothing. No production source change. LIMIT: no live qualification (this session may not push/deploy) and no Linux CI receipt, so the item stays merged_awaiting_review. Priority only reorders vLLM's waiting queue, so a game plan already generating is not evicted by an urgent decision."
       },
       "independent_verification": {
         "state": "not_reviewed",
