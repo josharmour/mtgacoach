@@ -124,8 +124,9 @@ deployed.
 | 4 | BUG-223 | merged_awaiting_review | 409749f (merge a46ed56, tests only) | docs/backlog-receipts/BUG-223/ |
 | 5 | BUG-231 | merged_awaiting_review | 429fac1 (merge cd578a0) | docs/backlog-receipts/BUG-231/ |
 | 6 | BUG-232 | merged_awaiting_review | ec4836b (merge b63ff82, tests only) | docs/backlog-receipts/BUG-232/ |
+| 7 | BUG-235 | merged_awaiting_review | a69830e (merge ac32e8a, tests only) | docs/backlog-receipts/BUG-235/ |
 
-Next item: BUG-235. All six merged items still need an independent review pass
+Next item: BUG-239. All seven merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -142,7 +143,15 @@ retained c63678d8 mechanism is already repaired by b352b8a (a parser-usable
 declaration wins and the other leg is cancelled) and 70d9e2f (per-leg cancel
 events reach the backend call site), so the remaining scope was the combat
 regression plus the planner's effort/elapsed timing record. The harmful
-fallback strategy stays a separate cause.
+fallback strategy stays a separate cause. BUG-235 also needed no production
+source change: 6194d8a already added the one bounded repair inside the first
+call's deadline and the deterministic dependent-step cleanup, and 11a5f19 put
+the per-turn mana budget into generation; coloured pips, commander tax and
+sequential spending were already validated. The uncovered half was the cleanup
+itself, now pinned by tests/test_plan_mana_dependencies_235.py together with the
+evidence loop that returns drop issues as PREVIOUS VALIDATION. Restricted mana
+("spend only to cast artifacts") is still unmodelled and counts as ordinary
+coloured mana — over-permissive, not the #235 symptom.
 
 ## Queue entries
 

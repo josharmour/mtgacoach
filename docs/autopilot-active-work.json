@@ -389,14 +389,21 @@
         "backlog-evidence-2026-11-01.md: #235"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "DeepSeek",
+        "session": "session-965ac31a-2db0-4fef-8510-105b967c83cf",
+        "base_commit": "23dd4c5f4d2901a331e29af39728f05f6a9506d0",
+        "source_commits": [
+          "a69830e"
+        ],
+        "master_commits": [
+          "ac32e8a"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-235/README.md",
+          "docs/backlog-receipts/BUG-235/focused-tests.txt"
+        ],
+        "note": "No production source change: the merged mechanisms cover the acceptance. 6194d8a (2026-10-31) added _repair_mana_plan (one bounded repair inside the first call's deadline, skipped when a JSON retry already used the opportunity) and _check_dropped_cast_dependencies (clears unconditional path/develop_next/resource priorities and the dropped turn's attack/hold, keeps conditional waits and same-name bodies); 11a5f19 put the per-turn mana budget and 'castable alone does not mean castable together' into generation. Coloured pips (_pip_matching), commander tax (command_costs) and sequential spending (one used set, per-turn sources from the plan's own land drops, rocks/reducers from their next turn) were already validated. The uncovered half was the dependent cleanup: tests/test_plan_mana_dependencies_235.py now pins it plus the evidence loop (drop issues return as PREVIOUS VALIDATION). Both halves mutation-checked (no-op cleanup and removed conditional guard each fail a test). LIMIT: restricted mana ('spend only to cast artifacts') is not modelled and counts as ordinary coloured mana - over-permissive, not the #235 symptom; {X} costs use printed mana value; untyped floating pools are not counted; no live replay of trace 89f64a23; no Linux CI receipt."
       },
       "independent_verification": {
         "state": "not_reviewed",
