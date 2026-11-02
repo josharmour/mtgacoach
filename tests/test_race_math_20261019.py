@@ -248,9 +248,13 @@ def test_a_plan_aiming_two_burn_spells_at_one_creature_replays_the_kill():
 def test_a_burn_heavy_hand_stays_within_the_latency_target():
     # Seven burn spells against four creatures no single spell kills: the combined-kill
     # pieces are pruned (two targets per spell, completable sets only) so the work budget,
-    # not the clock, ends the search (~45 ms on an idle M-series core, 2026-10-19).
+    # not the clock, ends the search (~45 ms on an idle M-series core, 2026-10-19). The
+    # hard cap is a clock, so it is lifted here: a loaded runner must not truncate the
+    # search this test pins (CI run 41396351219 did).
     model = build_board_model(deepcopy(BURN_HAND))
     results = []
-    elapsed = cpu_ms(lambda: results.append(search_lines(model, survival=True, lethal_now=False)))
+    elapsed = cpu_ms(
+        lambda: results.append(search_lines(model, survival=True, lethal_now=False, hard_ms=1e9))
+    )
     assert all(not result.truncated for result in results)
     assert elapsed < latency_bound(80), elapsed
