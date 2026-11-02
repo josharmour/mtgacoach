@@ -68,33 +68,34 @@
     <section id="release" aria-labelledby="release-title">
         <div class="wrap">
             <div class="section-head">
-                <p class="label">Version 3.8.0 · November 2026</p>
-                <h2 id="release-title">Better recovery. More careful decisions.</h2>
-                <p class="lede">This release works on the moments that interrupt a game:
-                queue transitions, tricky rules interactions, and advice that doesn't
-                match the cards in front of you.</p>
+                <p class="label">Version 3.8.1 · November 2026</p>
+                <h2 id="release-title">Advice you can hear in every mode.</h2>
+                <p class="lede">A small follow-up to 3.8.0 with the fixes that landed after
+                it was tagged: coaching advice now speaks in Coach and Announcer modes
+                alike, and trial or license problems say what they are.</p>
             </div>
             <div class="features">
                 <article class="feature">
-                    <h3>Keep the match moving</h3>
-                    <p>Queue the featured Recent Match through the Mac bridge, and keep
-                    restart recovery from navigating away while a match is still unfinished.
-                    Equipment plans retain useful equip opportunities and recognize planned
-                    haste grants; commander choices check the actual destination zone.</p>
+                    <h3>Advice speaks in every mode</h3>
+                    <p>Coaching advice used to be dropped in Announcer mode, so a line could
+                    appear in the feed and never be heard. Advice now has its own speech
+                    category between urgent alerts and workflow: it plays in both modes,
+                    stays interruptible by urgent gameplay, and survives a mode change while
+                    it is queued. Suppressed speech is no longer logged as spoken, and
+                    markdown advice no longer appears twice in the feed.</p>
                 </article>
                 <article class="feature">
-                    <h3>Check the play against the board</h3>
-                    <p>Combat forecasts account for blocker lifelink, infect and damage
-                    carried into extra combats. Mana checks preserve reserved resources
-                    and account for activation costs and known attack taxes. Commentary
-                    checks more target, mode and damage claims against the card's rules.</p>
+                    <h3>Trial and license state is visible</h3>
+                    <p>An expired trial or a rejected license key now shows up in the sidebar
+                    and the startup health line instead of a generic failure, and verified
+                    trial users receive one email when their trial ends.</p>
                 </article>
             </div>
             <p class="hero-note">These are targeted fixes. Some rules interactions and live
             platform checks remain open; this update does not establish Windows gameplay
             validation. See the release notes for the current validation limits.</p>
             <div class="hero-actions">
-                <a class="button primary" href="https://github.com/josharmour/mtgacoach/releases/tag/v3.8.0">Release notes &amp; downloads</a>
+                <a class="button primary" href="https://github.com/josharmour/mtgacoach/releases/tag/v3.8.1">Release notes &amp; downloads</a>
                 <a class="button" href="#get-started">Installation guide</a>
             </div>
         </div>
