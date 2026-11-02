@@ -565,14 +565,21 @@
         "backlog-evidence-2026-11-01.md: #248"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "DeepSeek",
+        "session": "session-965ac31a2db04fef8510105b967c83cf",
+        "base_commit": "cfeafa8",
+        "source_commits": [
+          "87faace"
+        ],
+        "master_commits": [
+          "acee2d6"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-248/README.md",
+          "docs/backlog-receipts/BUG-248/focused-tests.txt"
+        ],
+        "note": "No production change needed: the merged controls already answer this ID. Reproduced on current master: a stream that yields a first token then keeps generating past a 0.4 s budget is cut once at the budget (metrics status=error, ttft_ms=0.2, total_ms=416.9, attempts=1, budget_s=0.4), classified as a slow-but-alive timeout (first_token_seen=True, circuit stays closed, health degrades), never retried; the planner turns it into llm_unavailable inside its own deadline (blocked-stream run: 'Action planning timed out after 1192ms (limit 0.4s)', one backend call, diag failure='timeout'), and the autopilot plays the board-math line with zero consecutive plan failures and the planning timeout still 15.0 s (contrast: a plain empty plan escalates to 22.5 s). Added tests/test_latency_248_budget_cut.py (5 tests) pinning the #231 trace decomposition (lane_wait_ms, ttft_ms, generation cut at the budget, attempts, budget_s), the single bounded call, and the legal fallback. References d27b878/9f0a328 (#222 budget-cut health and no-retry), 70d9e2f and b352b8a (F5 cancellation/bounded wait), 1adc79d (#206 post-cast priority polling) and 9a321bc (#243 live-window classification) instead of duplicating a patch. LIMITS: no live replay of the retained window; the post-cast six-second waits in the same trace are #206/#243 and are not re-opened; which side wins the deadline race depends on whether generation blocks inside next() (both outcomes pinned); no Linux CI receipt."
       },
       "independent_verification": {
         "state": "not_reviewed",

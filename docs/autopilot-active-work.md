@@ -128,8 +128,9 @@ deployed.
 | 8 | BUG-239 | merged_awaiting_review | 66e2d16 (merge 9018179) | docs/backlog-receipts/BUG-239/ |
 | 9 | BUG-241 | merged_awaiting_review | e972314 (merge 895d9fa, tests only) | docs/backlog-receipts/BUG-241/ |
 | 10 | BUG-247 | merged_awaiting_review | 3e0f415 (merge 2c0691f) | docs/backlog-receipts/BUG-247/ |
+| 11 | BUG-248 | merged_awaiting_review | 87faace (merge acee2d6, tests only) | docs/backlog-receipts/BUG-248/ |
 
-Next item: BUG-248. All ten merged items still need an independent review pass
+Next item: BUG-249. All eleven merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -173,6 +174,15 @@ regression, which also pins that the re-check's budget is clamped to the first
 call's deadline and so cannot renew it. A malformed answer (`bad_answer`) still
 counts as a hold by design; only a model-server failure makes a pass non-strategic.
 BUG-247 did need a production change, but not in the solver: `combat_solver.evaluate_attack` already scored a tenth poison counter and an emptied library as a win, while `combat_strategy._search` scored life damage only, so a toxic attacker at nine poison or a miller with three cards left was valued at one damage and could be held (reproduced: score 0.00, assignments `{}`). The declaration search now reads both `LossState`s, counts poison and mill only for player recipients, scores a new loss as 10000 and a newly losing crackback as -1000 + material, passes our loss state into the crackback `guarded_block_plan`, and includes the `zones` library counts in its memo key. Abstentions are deliberate: an unknown library count cannot score a mill win, damage to a planeswalker is not a player hit, and only printed unconditional toxic/poisonous/infect and mill text is recognized — activated grants, conditional triggers and replacement effects stay out, so obsolete #281 is not revived.
+BUG-248 also needed no production source change: the retained "LLM streaming
+time budget exhausted" is the proxy's own cut, which is already one attempt at
+the budget, never retried, classified as slow-but-alive (circuit closed, health
+degraded), turned into `llm_unavailable` by the planner inside its deadline and
+replaced by the board-math line without escalating. The remaining scope was the
+regression that pins that composition on this exact error, including the #231
+trace decomposition (queue wait, first token, generation cut at the budget,
+attempts). The post-cast six-second waits in the same trace are #206/#243 and
+are not re-opened.
 
 ## Queue entries
 
