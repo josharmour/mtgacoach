@@ -1255,14 +1255,20 @@
         "backlog-evidence-2026-11-01.md: #283"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-283",
+        "base_commit": "7401915",
+        "source_commits": [
+          "dde78f7"
+        ],
+        "master_commits": [
+          "fa0e292"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-283/focused-tests.txt"
+        ],
+        "note": "Verification-only: no production source change. The retained 15\u201318 s stall is the 15 s decision budget plus prompt construction, not an unbounded stream: action_planner.py:1486 anchors model_deadline after prompt build, _bounded_call/_wait_for_model (action_planner.py:1133/:1150) raise TimeoutError at that deadline and shut the pool down with wait=False, proxy.py:1995\u20131996 cuts a streaming request per chunk at its budget, and proxy.py:1618\u20131625 plus _budget_cut_stream make that cut non-retryable; the except chain then returns fallback llm_unavailable with the deterministic board-math plan (an empty declaration is a legal hold). Probe against the real ActionPlanner/ProxyBackend with a stream that yields a first token then sleeps 0.4 s per chunk: timeout 3 s \u2192 elapsed 3.87 s = prompt build 0.87 s + the full 3.0 s budget, fallback llm_unavailable, actions []. New tests/test_latency_283_stream_stall.py pins both legs streaming past a 1 s budget returning at the deadline with a legal hold, and re-pins #277's hedge fix (low wins in 27 ms, high cancelled) as this item's regression reference. Regression set of eight latency files: 28 passed in 10.84s; ruff check and format clean. Remaining: live timing distribution unqualified (audit disposition PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED stands), prompt construction still sits outside the model deadline (~16 s worst case), and a bounded-wait decision can still show requests=0 in the trace (#275 gap); retained traces absent from this checkout; independent review and Linux CI still required."
       },
       "independent_verification": {
         "state": "not_reviewed",

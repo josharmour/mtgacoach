@@ -1,0 +1,13 @@
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest tests/test_latency_283_stream_stall.py -q
+..                                                                       [100%]
+2 passed in 5.04s
+
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest tests/test_latency_248_budget_cut.py tests/test_latency_249_first_token.py tests/test_proxy_request_metrics.py tests/test_action_plan_cancellation_222.py tests/test_latency_276_declaration_budget.py tests/test_latency_277_delayed_winner.py tests/test_latency_283_stream_stall.py tests/test_coaching_stall_watchdog.py -q
+............................                                             [100%]
+28 passed in 10.84s
+
+$ PYTHONPATH=. .venv_mac_311/bin/python -m ruff check tests/test_latency_283_stream_stall.py
+All checks passed!
+
+$ PYTHONPATH=. .venv_mac_311/bin/python -m ruff format --check tests/test_latency_283_stream_stall.py
+1 file already formatted

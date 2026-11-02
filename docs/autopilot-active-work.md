@@ -144,8 +144,9 @@ deployed.
 | 24 | BUG-276 | merged_awaiting_review | 8ff78b7 (merge 855129d, no source change) | docs/backlog-receipts/BUG-276/ |
 | 25 | BUG-277 | merged_awaiting_review | cde678c (merge 4da04b3, no source change) | docs/backlog-receipts/BUG-277/ |
 | 26 | BUG-278 | merged_awaiting_review | c00bfad (merge cb60432, no source change) | docs/backlog-receipts/BUG-278/ |
+| 27 | BUG-283 | merged_awaiting_review | dde78f7 (merge fa0e292, no source change) | docs/backlog-receipts/BUG-283/ |
 
-Next item: BUG-283. All twenty-six merged items still need an independent review pass
+Next item: BUG-284. All twenty-seven merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -420,6 +421,8 @@ and one probe artifact is noted — reusing a mutated state dict across several 
 on the third decision, while fresh state per decision hedged every time.
 
 BUG-278 also needed no production source change. The defender label never reaches a consumer that can veto a declaration: `_role` returns `ROLE_AGGRESSOR` for an all-in line before the behind branch, `role_guard` only replaces non-board `ActionsAvailable` picks, `line_search._posture` ranks hold against attack from simulated lines (net lifelink and crackback are inside those numbers) with no role input, `attack_push`/`attack_line_note` follow that posture, and `_check_attack_crackback` trims by life math only; the `survival_mode` consumers trim card draw or annotate a plan but cannot touch a declaration. The new regression pins the contrast on reconstructed boards: 2x 4/4 against 2x 3/3 at 11-12 life versus 10 is labelled `defender` yet the search says `attack`, the prompt note ends `Verdict: ATTACK.`, the push applies with both attackers and the crackback guard keeps them; 2x 1/1 against 4x 2/2 at 6 versus 20 is `hold` (`dead on T9` versus `dead on T11`), nothing is pushed and the guard empties the declaration with `planner_crackback_guard`. A grid over those boards found 1199 defender-labelled boards, 24 whose posture says attack, 2 that push an empty declaration and none where the guard empties an all-in attack. The historical packet is missing (`docs/BACKLOG_STAGE_2026-11-01.md:136`) and the push guard's conservative band (`ATTACK_PUSH_MARGIN = 6.0` against `POSTURE_MARGIN = 3.0`) is unchanged, so a hold standing where the search prefers attacking by less than that gap remains a separate tuning question.
+
+BUG-283 also needed no production source change. The retained 15–18 s stall is the 15 s decision budget plus prompt construction, not an unbounded stream: `model_deadline` is anchored after prompt build (`action_planner.py:1486`), `_bounded_call`/`_wait_for_model` raise at that deadline and shut the pool down with `wait=False`, the proxy cuts a streaming request per chunk at its budget (`proxy.py:1995–1996`) and marks that cut non-retryable (`proxy.py:1618–1625`, `_budget_cut_stream`), and the except chain returns `llm_unavailable` with the deterministic board-math plan (an empty declaration holds every attacker). A probe against the real planner and proxy with a stream that yields a first token then sleeps 0.4 s per chunk returned at 3.87 s for a 3 s budget — 0.87 s of prompt build plus the full budget — with fallback `llm_unavailable` and no actions. The new regression pins both legs streaming past a 1 s budget returning at the deadline with a legal hold, and re-pins #277's hedge fix (low wins in 27 ms, high cancelled) as this item's reference. Prompt construction still sits outside the model deadline (~16 s worst case), a bounded-wait decision can still show `requests=0` in the trace (#275's recorded gap), and live timing distribution remains unqualified.
 
 ## Queue entries
 
