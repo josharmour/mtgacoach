@@ -34,7 +34,7 @@ def test_critical_typed_decision_uses_one_low_call_and_completed_plan(monkeypatc
     cancel_plan.assert_not_called()
 
 
-def test_action_finishes_while_high_effort_strategy_is_inflight():
+def test_action_finishes_while_high_effort_strategy_is_inflight(plan_threads):
     entered, release, updated = threading.Event(), threading.Event(), threading.Event()
     requests = []
 

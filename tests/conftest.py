@@ -423,6 +423,22 @@ def _isolate_llm_gates(monkeypatch):
     _reset_llm_gates()
 
 
+@pytest.fixture(autouse=True)
+def _strategic_lane_is_free_between_tests():
+    """One background strategy job runs at a time, process-wide.
+
+    A plan refresh still running when a test ends would make the next test's
+    ``request_reform`` return False (the lane is held), which reads as an
+    unrelated assertion failure. Wait it out, and name the holder if it never
+    finishes.
+    """
+    from arenamcp.game_plan import STRATEGIC_LANE
+
+    assert STRATEGIC_LANE.wait_idle(10), f"{STRATEGIC_LANE.holder} still holds the strategic lane"
+    yield
+    assert STRATEGIC_LANE.wait_idle(10), f"a test leaked the strategic lane to {STRATEGIC_LANE.holder}"
+
+
 @pytest.fixture(scope="session")
 def qapp_args():
     """Arguments passed to QApplication when created for testing."""
