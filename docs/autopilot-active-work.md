@@ -127,8 +127,9 @@ deployed.
 | 7 | BUG-235 | merged_awaiting_review | a69830e (merge ac32e8a, tests only) | docs/backlog-receipts/BUG-235/ |
 | 8 | BUG-239 | merged_awaiting_review | 66e2d16 (merge 9018179) | docs/backlog-receipts/BUG-239/ |
 | 9 | BUG-241 | merged_awaiting_review | e972314 (merge 895d9fa, tests only) | docs/backlog-receipts/BUG-241/ |
+| 10 | BUG-247 | merged_awaiting_review | 3e0f415 (merge 2c0691f) | docs/backlog-receipts/BUG-247/ |
 
-Next item: BUG-247. All nine merged items still need an independent review pass
+Next item: BUG-248. All ten merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -140,7 +141,9 @@ BUG-231 added instrumentation only: one decision-scoped trace now ties its
 requests (queue/first-token/generation/cancellation) to the action that was
 submitted, so a masked land/pass fallback names its delay. No deadline,
 freshness or fallback logic changed; live qualification of the historical stall
-is still outstanding. BUG-232 also needed no production source change: the
+is still outstanding. A follow-up repair (cf7ad72) makes `_decision_suffix` tolerate engines built
+without `__init__`; eight block-declaration tests had failed on master because
+the suffix read attributes only `__init__` sets. BUG-232 also needed no production source change: the
 retained c63678d8 mechanism is already repaired by b352b8a (a parser-usable
 declaration wins and the other leg is cancelled) and 70d9e2f (per-leg cancel
 events reach the backend call site), so the remaining scope was the combat
@@ -169,6 +172,7 @@ choice can no longer happen. The remaining scope was the end-to-end planner
 regression, which also pins that the re-check's budget is clamped to the first
 call's deadline and so cannot renew it. A malformed answer (`bad_answer`) still
 counts as a hold by design; only a model-server failure makes a pass non-strategic.
+BUG-247 did need a production change, but not in the solver: `combat_solver.evaluate_attack` already scored a tenth poison counter and an emptied library as a win, while `combat_strategy._search` scored life damage only, so a toxic attacker at nine poison or a miller with three cards left was valued at one damage and could be held (reproduced: score 0.00, assignments `{}`). The declaration search now reads both `LossState`s, counts poison and mill only for player recipients, scores a new loss as 10000 and a newly losing crackback as -1000 + material, passes our loss state into the crackback `guarded_block_plan`, and includes the `zones` library counts in its memo key. Abstentions are deliberate: an unknown library count cannot score a mill win, damage to a planeswalker is not a player hit, and only printed unconditional toxic/poisonous/infect and mill text is recognized — activated grants, conditional triggers and replacement effects stay out, so obsolete #281 is not revived.
 
 ## Queue entries
 

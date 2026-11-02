@@ -69,3 +69,20 @@ $ .venv_mac_311/bin/python -m ruff format --check <same files>
 
 BLOCKER: independent review and a real Linux CI run are still required before
 this item can be called verified; the implementer may not claim either.
+
+## Follow-up repair (cf7ad72)
+
+The suffix read `_last_decision_trace` and `last_plan_fallback_reason` directly.
+Both are set in `AutopilotEngine.__init__`, so the twenty test files that build an
+engine with `AutopilotEngine.__new__` raised `AttributeError` from
+`_log_execution_path`; eight block-declaration tests failed on master after this
+merge. `_decision_suffix` now reads both attributes defensively — the suffix is
+log decoration and must never break a submission. Production still sets them in
+`__init__`.
+
+```
+$ .venv_mac_311/bin/python -m pytest -q tests/test_block_declaration_20261019.py \
+    tests/test_attack_tax_loop_210.py tests/test_combat_safe_defaults.py \
+    tests/test_select_from_groups_203.py tests/test_stack_order_20261019.py
+88 passed in 10.81s
+```
