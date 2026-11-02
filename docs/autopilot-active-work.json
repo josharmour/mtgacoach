@@ -782,14 +782,20 @@
         "backlog-evidence-2026-11-01.md: #260"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-260",
+        "base_commit": "85df188",
+        "source_commits": [
+          "507de46"
+        ],
+        "master_commits": [
+          "dae4f06"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-260/focused-tests.txt"
+        ],
+        "note": "No production change: the reported '15-21 s stalls without first-token timeout' mechanism is closed on master because every decision path now passes a first-token timeout (typed decisions first_token_budget(8.0, prompt chars) at action_planner.py:9644/9589, plan and declarations _plan_first_token_timeout at 1038/1505, advice at coach.py:4629), and the proxy's stall guard only applies after the first token (proxy.py:708 read_limit). The typed hedge returns the first usable answer with a bounded doubt allowance, and a planner call whose waiter gives up has its cancel token set. Verified the 6 audit node IDs (8 passed) plus the decision-trace file and the first-token-timeout wiring test (8 passed). Bounded gaps recorded: PayCosts/AutoTap mismatch belongs to execution, contradictory fallback rationale to the claims/fallback owner, decision-chain accumulation to execution f9b88c8; traces 6bef1efb/06bbdd81/b5f55777 are absent from this checkout so no exact replay was possible."
       },
       "independent_verification": {
         "state": "not_reviewed",

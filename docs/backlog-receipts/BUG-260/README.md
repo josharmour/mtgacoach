@@ -12,8 +12,8 @@ PayCosts/AutoTap request mismatch belongs to execution, and the contradictory
 fallback rationale belongs to the claims/fallback owner. Verification only: the
 6 audit node IDs for this ID pass on master (`8 passed`), together with the
 decision-trace file and the test that pins the first-token timeout on decision
-calls (`8 passed`). No source commit; merged to local master as `<merge>`
-(receipt commit `<source>`).
+calls (`8 passed`). No source commit; merged to local master as `dae4f06`
+(receipt commit `507de46`).
 
 ## Symptom and evidence
 

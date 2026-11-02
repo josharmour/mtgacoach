@@ -133,8 +133,9 @@ deployed.
 | 13 | BUG-253 | merged_awaiting_review | 813f252 (merge 43679e3, tests only) | docs/backlog-receipts/BUG-253/ |
 | 14 | BUG-254 | merged_awaiting_review | 6cddacc (merge 712db15, tests only) | docs/backlog-receipts/BUG-254/ |
 | 15 | BUG-256 | merged_awaiting_review | dadd9bc (merge 5a38627, no source change) | docs/backlog-receipts/BUG-256/ |
+| 16 | BUG-260 | merged_awaiting_review | 507de46 (merge dae4f06, no source change) | docs/backlog-receipts/BUG-260/ |
 
-Next item: BUG-260. All fifteen merged items still need an independent review pass
+Next item: BUG-264. All sixteen merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -242,6 +243,23 @@ fixed: the unavailable-card strategy half belongs to #240 and the closed attack 
 to #230/#243 (neither is in this queue), and decision-chain accumulation belongs to
 execution follow-up f9b88c8. The retained trace `9dc1c55c` is absent from this
 checkout, so this is mechanism verification on current master, not an exact replay.
+BUG-260 also needed no production source change: its reported mechanism is
+"15–21 s stalls without a first-token timeout", and on master every decision path
+passes one — typed decisions use `first_token_budget(8.0, prompt chars)` with the
+budget sized to keep answer time, plan and combat declarations use
+`_plan_first_token_timeout`, and advice calls keep 2 s inside their API timeout.
+That wiring is what closes the stall, because the proxy's post-first-token stall
+guard deliberately does not apply before the first token (`read_limit` only adds
+`stall_s` once `token_seen`), so without a first-token deadline a stream that never
+starts waits out the whole budget. The typed hedge returns the first usable answer
+with a bounded doubt allowance, and a planner call whose waiter gives up has its own
+cancel token set. The remaining scope was verification: the 6 audit node IDs pass
+(8 passed), and the decision-trace file plus the test pinning the first-token timeout
+on decision calls pass (8 passed). Three bounded gaps are recorded rather than fixed:
+the PayCosts/AutoTap request mismatch belongs to execution, the contradictory fallback
+rationale to the claims/fallback owner, and decision-chain accumulation to execution
+follow-up f9b88c8. The retained traces `6bef1efb`, `06bbdd81` and `b5f55777` are
+absent from this checkout, so this is mechanism verification, not an exact replay.
 
 ## Queue entries
 
