@@ -129,8 +129,9 @@ deployed.
 | 9 | BUG-241 | merged_awaiting_review | e972314 (merge 895d9fa, tests only) | docs/backlog-receipts/BUG-241/ |
 | 10 | BUG-247 | merged_awaiting_review | 3e0f415 (merge 2c0691f) | docs/backlog-receipts/BUG-247/ |
 | 11 | BUG-248 | merged_awaiting_review | 87faace (merge acee2d6, tests only) | docs/backlog-receipts/BUG-248/ |
+| 12 | BUG-249 | merged_awaiting_review | 93bd0bf (merge 6a40f07, tests only) | docs/backlog-receipts/BUG-249/ |
 
-Next item: BUG-249. All eleven merged items still need an independent review pass
+Next item: BUG-253. All twelve merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -183,6 +184,19 @@ regression that pins that composition on this exact error, including the #231
 trace decomposition (queue wait, first token, generation cut at the budget,
 attempts). The post-cast six-second waits in the same trace are #206/#243 and
 are not re-opened.
+BUG-249 also needed no production source change: the retained "no first token /
+budget timeout" pair is the proxy's own cut on a stream that was alive but never
+produced an answer, and the first plan that outlived its turn is already bounded.
+On current master that cut is one attempt at the budget, never retried,
+classified as slow-but-alive (circuit closed, health degraded), and every hosted
+plan attempt made while no plan exists runs at effort `none` inside the 20 s
+initial budget, so repeated cuts cannot escalate into another full-effort call
+that will be cancelled again. The remaining scope was the regression that pins
+the distinction the trace turns on — reasoning satisfies the first-token deadline
+while producing no content (`ttft_ms` set, `first_content_ms` null, zero content
+characters) — plus the no-escalation invariant across three consecutive cuts.
+The malformed blocker JSON in the same trace belongs to the parser stream and is
+not re-opened.
 
 ## Queue entries
 

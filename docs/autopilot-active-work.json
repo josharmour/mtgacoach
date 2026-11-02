@@ -609,14 +609,21 @@
         "backlog-evidence-2026-11-01.md: #249"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "DeepSeek",
+        "session": "session-965ac31a2db04fef8510105b967c83cf",
+        "base_commit": "705ca16",
+        "source_commits": [
+          "93bd0bf"
+        ],
+        "master_commits": [
+          "6a40f07"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-249/README.md",
+          "docs/backlog-receipts/BUG-249/focused-tests.txt"
+        ],
+        "note": "No production change needed: the merged controls already answer this ID. Reproduced on current master: a stream that yields only reasoning and keeps generating past a 0.4 s budget is cut once at the budget (metrics status=error, attempts=1, budget_s=0.4, ttft_ms=25.9, first_content_ms=None, stream_content_chars=0, stream_reasoning_chars=285, total_ms=409.6), classified as a slow-but-alive timeout (first_token_seen=True, circuit consecutive_failures=0, health DEGRADED) and never retried; the plan manager with no plan formed ran three consecutive failed reforms at effort 'none' inside the 20 s initial hosted budget (calls [('none', 20.0)] x3, deep budget 75.0 untouched), while the same backend under a non-hosted model name takes the deep path (calls [('low', 75.0)]), so repeated cuts cannot escalate into another full-effort call that will be cancelled again. Added tests/test_latency_249_first_token.py (2 tests) pinning the first-token-vs-first-answer distinction the retained trace turns on (650ae555: 45.3 s, 12,439 reasoning characters, zero content) and the no-escalation invariant. References d27b878/9f0a328 (#222 budget-cut health and no-retry), 70d9e2f and b352b8a (F5 cancellation/bounded wait), and the merged #141/#223 fast bounded first-plan controls instead of duplicating a patch. LIMITS: no replay of the retained live windows; gateway TTFT under real load is live qualification, not a code path; the malformed blocker JSON in the same trace belongs to the parser stream and is not re-opened; no Linux CI receipt."
       },
       "independent_verification": {
         "state": "not_reviewed",
