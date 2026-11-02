@@ -1,0 +1,8 @@
+$ .venv_mac_311/bin/python -m pytest tests/test_attack_tax.py tests/test_attack_tax_loop_210.py tests/test_attack_tax_planning_210.py tests/test_pay_costs_flow.py tests/test_pay_costs_race.py tests/test_autopilot_bridge_attackers.py tests/test_combat_strategy.py tests/test_explicit_no_attack.py -q
+
+........................................................................ [ 93%]
+.....                                                                    [100%]
+77 passed in 7.30s
+
+$ git rev-parse HEAD
+abc898c64065371fff067707156b9caa878f0f02
