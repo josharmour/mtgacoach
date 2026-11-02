@@ -345,14 +345,21 @@
         "backlog-evidence-2026-11-01.md: #232"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "DeepSeek",
+        "session": "session-965ac31a-2db0-4fef-8510-105b967c83cf",
+        "base_commit": "f91dabf424755714fe922ecb8f5152460c27d4f7",
+        "source_commits": [
+          "ec4836b"
+        ],
+        "master_commits": [
+          "b63ff82"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-232/README.md",
+          "docs/backlog-receipts/BUG-232/focused-tests.txt"
+        ],
+        "note": "No production source change. The retained c63678d8 mechanism is already repaired on master by b352b8a (first parser-usable declaration wins and the other leg is cancelled) and 70d9e2f (per-leg cancel events reach the backend call site); #222 budget repairs d27b878/9f0a328 cover the no-first-token half. Added tests/test_latency_232_combat_declaration.py: a ready low block declaration is submitted in <1.5 s with the high leg cancelled and the planner diagnostic recording effort/elapsed_ms, and both legs stalling still returns at the original deadline with FALLBACK_LLM_UNAVAILABLE so the autopilot's legal safe-default blocks run. LIMIT: no live replay of c63678d8 against api.mtgacoach.com; the harmful fallback strategy is a separate cause and out of scope; no Linux CI receipt."
       },
       "independent_verification": {
         "state": "not_reviewed",

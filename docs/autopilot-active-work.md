@@ -123,8 +123,9 @@ deployed.
 | 3 | BUG-210 | merged_awaiting_review | 5194398 (merge 39fc230, no source change) | docs/backlog-receipts/BUG-210/ |
 | 4 | BUG-223 | merged_awaiting_review | 409749f (merge a46ed56, tests only) | docs/backlog-receipts/BUG-223/ |
 | 5 | BUG-231 | merged_awaiting_review | 429fac1 (merge cd578a0) | docs/backlog-receipts/BUG-231/ |
+| 6 | BUG-232 | merged_awaiting_review | ec4836b (merge b63ff82, tests only) | docs/backlog-receipts/BUG-232/ |
 
-Next item: BUG-232. All five merged items still need an independent review pass
+Next item: BUG-235. All six merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -136,7 +137,12 @@ BUG-231 added instrumentation only: one decision-scoped trace now ties its
 requests (queue/first-token/generation/cancellation) to the action that was
 submitted, so a masked land/pass fallback names its delay. No deadline,
 freshness or fallback logic changed; live qualification of the historical stall
-is still outstanding.
+is still outstanding. BUG-232 also needed no production source change: the
+retained c63678d8 mechanism is already repaired by b352b8a (a parser-usable
+declaration wins and the other leg is cancelled) and 70d9e2f (per-leg cancel
+events reach the backend call site), so the remaining scope was the combat
+regression plus the planner's effort/elapsed timing record. The harmful
+fallback strategy stays a separate cause.
 
 ## Queue entries
 
