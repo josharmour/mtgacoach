@@ -1126,14 +1126,20 @@
         "backlog-evidence-2026-11-01.md: #276"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-276",
+        "base_commit": "7ea8b35",
+        "source_commits": [
+          "8ff78b7"
+        ],
+        "master_commits": [
+          "855129d"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-276/focused-tests.txt"
+        ],
+        "note": "Verification-only; no production source change. The retained recurrence is covered on master by the bounded declaration hedge (action_planner.py:1162, b352b8a, per-leg cancel events 70d9e2f) and the proxy budget cut (proxy.py:1340, d27b878/9f0a328). New regression tests/test_latency_276_declaration_budget.py drives the real ProxyBackend with a high leg that streams a reasoning chunk at once then one content chunk every 50 ms: with a ready low answer the low leg wins in 27 ms and the streaming high leg is cancelled at 58.7 ms total; with an unparseable low answer the streaming leg is cut at 1014.9 ms against a 1.0 s budget and the deterministic planner_free_attack line is returned instead of an empty plan. The decision trace records queue/first-token/generation/cancellation timing per request (#231). Verification: new file 2 passed, nine-file latency/trace regression set 48 passed, ruff check/format clean. Bounded gaps recorded, not fixed: both retained hashes (228fed6f/750806ad) exist only in the audit and triage rows with no trace to replay; the historical ~22 s loop resume is not fully explained by the planner (15 s budget plus ~1 s prompt construction leaves ~6 s, matching the post-cast priority waits already attributed to #206/#243 in the BUG-248 receipt); prompt construction sits outside the model deadline; live timing distribution and total loop timing remain unqualified, which is the audit's own unresolved prerequisite."
       },
       "independent_verification": {
         "state": "not_reviewed",

@@ -141,8 +141,9 @@ deployed.
 | 21 | BUG-270 | merged_awaiting_review | a87c21a (merge 8c3d7bf, no source change) | docs/backlog-receipts/BUG-270/ |
 | 22 | BUG-273 | merged_awaiting_review | 2ad966e (merge ca5ef9f, no source change) | docs/backlog-receipts/BUG-273/ |
 | 23 | BUG-275 | merged_awaiting_review | 618ec02 (merge 7693b3c, no source change) | docs/backlog-receipts/BUG-275/ |
+| 24 | BUG-276 | merged_awaiting_review | 8ff78b7 (merge 855129d, no source change) | docs/backlog-receipts/BUG-276/ |
 
-Next item: BUG-276. All twenty-three merged items still need an independent review pass
+Next item: BUG-277. All twenty-four merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -380,6 +381,20 @@ retained hashes exist only in `docs/latency-222-id-audit-20261101.json:530` and
 19 s stall cannot be replayed; setup time sits outside the model budget by design; a timed-out decision
 records `requests=0` because the cancelled call's metrics land after `llm_trace.finish()`; and live timing
 distribution plus hop progression remain unqualified, which is the audit's own unresolved prerequisite.
+BUG-276 also needed no production source change. Its signature — a high-effort `decision.plan` that used
+its full 15 s budget after its first token had already arrived at 5.4 s — is covered by the bounded
+declaration hedge (`action_planner.py:1162`, `b352b8a`, per-leg cancel events from `70d9e2f`) and the proxy
+budget cut (`proxy.py:1340`, `d27b878`/`9f0a328`). The new regression drives the real `ProxyBackend` with a
+high leg that streams a reasoning chunk at once and then one content chunk every 50 ms: with a ready low
+answer the low leg wins in 27 ms and the streaming high leg is cancelled at 58.7 ms total, and with an
+unparseable low answer the streaming leg is cut at 1014.9 ms against a 1.0 s budget and the deterministic
+`planner_free_attack` line is returned instead of an empty plan. Verification: the new file passes (2 passed),
+the nine-file latency/trace regression set passes (48 passed) and ruff check/format are clean. Bounded gaps
+are recorded rather than fixed: both retained hashes exist only in the audit and triage rows with no trace to
+replay; the historical ~22 s loop resume is not fully explained by the planner (15 s budget plus ~1 s of
+prompt construction leaves ~6 s, matching the post-cast priority waits already attributed to #206/#243 in the
+BUG-248 receipt); prompt construction sits outside the model deadline; and live timing distribution remains
+unqualified, which is the audit's own unresolved prerequisite.
 
 ## Queue entries
 

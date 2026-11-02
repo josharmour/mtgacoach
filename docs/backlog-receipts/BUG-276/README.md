@@ -12,7 +12,7 @@ streaming cannot hold a ready low declaration, and when no leg yields a usable
 answer the streaming leg is cut at its own budget and replaced by the
 deterministic legal fallback.
 
-Merged to local master as MERGE COMMIT; receipt commit SOURCE COMMIT.
+Merged to local master as 855129d; receipt commit 8ff78b7.
 
 ## Symptom and evidence
 
