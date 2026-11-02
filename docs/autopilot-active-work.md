@@ -130,8 +130,9 @@ deployed.
 | 10 | BUG-247 | merged_awaiting_review | 3e0f415 (merge 2c0691f) | docs/backlog-receipts/BUG-247/ |
 | 11 | BUG-248 | merged_awaiting_review | 87faace (merge acee2d6, tests only) | docs/backlog-receipts/BUG-248/ |
 | 12 | BUG-249 | merged_awaiting_review | 93bd0bf (merge 6a40f07, tests only) | docs/backlog-receipts/BUG-249/ |
+| 13 | BUG-253 | merged_awaiting_review | 813f252 (merge 43679e3, tests only) | docs/backlog-receipts/BUG-253/ |
 
-Next item: BUG-253. All twelve merged items still need an independent review pass
+Next item: BUG-254. All thirteen merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -197,6 +198,21 @@ while producing no content (`ttft_ms` set, `first_content_ms` null, zero content
 characters) — plus the no-escalation invariant across three consecutive cuts.
 The malformed blocker JSON in the same trace belongs to the parser stream and is
 not re-opened.
+BUG-253 also needed no production source change: a schema-valid answer that carries
+a role and no plan content is already rejected by `_usable_plan` exactly like an
+unparseable one, so the prior plan survives, the rejected text is logged, and the
+reason reaches both `plan_status()` and the prompt as `PLAN NOT REFRESHED: … (no
+usable plan from the model)`. A call the background lane never made (server down,
+circuit open, dropped/superseded) is classified separately as `call not made
+(model server unavailable)` and is never retried, and a reform whose turn passed
+discards its answer instead of overwriting the plan. The "initial plan is
+missing" half is bounded by the fast first-plan path: while no plan exists every
+hosted attempt runs at effort `none` inside the 20 s initial budget, so a missing
+first plan cannot escalate into a 75 s deep call. The remaining scope was the
+regression that pins those four answers and the reported reason. The archived
+transcript could not be replayed — both cited commits are absent from this
+checkout and the queue's evidence-document pointer has no #253 row — so the
+receipt records the mechanism reproduction instead.
 
 ## Queue entries
 

@@ -653,14 +653,20 @@
         "backlog-evidence-2026-11-01.md: #253"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "deepseek-harness",
+        "session": "session-965ac31a",
+        "base_commit": "951dfe9",
+        "source_commits": [
+          "813f252"
+        ],
+        "master_commits": [
+          "43679e3"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-253/focused-tests.txt"
+        ],
+        "note": "No production source change: the merged controls already reject a schema-valid empty plan, keep the prior plan, classify a skipped call as 'call not made' without retrying, discard a superseded answer, and bound every hosted attempt made while no plan exists to effort none inside the 20 s initial budget. Remaining scope was the regression pinning those answers and the reported reason (tests/test_game_plan_empty_and_busy_253.py). The archived transcript could not be replayed: cd0b1978/e53b79f6 are absent from this checkout and backlog-evidence-2026-11-01.md has no #253 row."
       },
       "independent_verification": {
         "state": "not_reviewed",
