@@ -143,8 +143,9 @@ deployed.
 | 23 | BUG-275 | merged_awaiting_review | 618ec02 (merge 7693b3c, no source change) | docs/backlog-receipts/BUG-275/ |
 | 24 | BUG-276 | merged_awaiting_review | 8ff78b7 (merge 855129d, no source change) | docs/backlog-receipts/BUG-276/ |
 | 25 | BUG-277 | merged_awaiting_review | cde678c (merge 4da04b3, no source change) | docs/backlog-receipts/BUG-277/ |
+| 26 | BUG-278 | merged_awaiting_review | c00bfad (merge cb60432, no source change) | docs/backlog-receipts/BUG-278/ |
 
-Next item: BUG-278. All twenty-five merged items still need an independent review pass
+Next item: BUG-283. All twenty-six merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -417,6 +418,8 @@ planner's 15 s budget plus ~1 s of prompt construction leaves ~6 s matching the 
 already attributed to #206/#243 in the BUG-248 receipt); prompt construction sits outside the model deadline;
 and one probe artifact is noted — reusing a mutated state dict across several decisions suppressed the high leg
 on the third decision, while fresh state per decision hedged every time.
+
+BUG-278 also needed no production source change. The defender label never reaches a consumer that can veto a declaration: `_role` returns `ROLE_AGGRESSOR` for an all-in line before the behind branch, `role_guard` only replaces non-board `ActionsAvailable` picks, `line_search._posture` ranks hold against attack from simulated lines (net lifelink and crackback are inside those numbers) with no role input, `attack_push`/`attack_line_note` follow that posture, and `_check_attack_crackback` trims by life math only; the `survival_mode` consumers trim card draw or annotate a plan but cannot touch a declaration. The new regression pins the contrast on reconstructed boards: 2x 4/4 against 2x 3/3 at 11-12 life versus 10 is labelled `defender` yet the search says `attack`, the prompt note ends `Verdict: ATTACK.`, the push applies with both attackers and the crackback guard keeps them; 2x 1/1 against 4x 2/2 at 6 versus 20 is `hold` (`dead on T9` versus `dead on T11`), nothing is pushed and the guard empties the declaration with `planner_crackback_guard`. A grid over those boards found 1199 defender-labelled boards, 24 whose posture says attack, 2 that push an empty declaration and none where the guard empties an all-in attack. The historical packet is missing (`docs/BACKLOG_STAGE_2026-11-01.md:136`) and the push guard's conservative band (`ATTACK_PUSH_MARGIN = 6.0` against `POSTURE_MARGIN = 3.0`) is unchanged, so a hold standing where the search prefers attacking by less than that gap remains a separate tuning question.
 
 ## Queue entries
 

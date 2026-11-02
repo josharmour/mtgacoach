@@ -1212,14 +1212,20 @@
         "backlog-evidence-2026-11-01.md: #278"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-278",
+        "base_commit": "a988551",
+        "source_commits": [
+          "c00bfad"
+        ],
+        "master_commits": [
+          "cb60432"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-278/focused-tests.txt"
+        ],
+        "note": "Verification-only: no production source change. The defender label is not wired to any consumer that can veto a declaration: _role (board_assessment.py:3448) returns ROLE_AGGRESSOR for all_in before the behind branch, role_guard (:3733) only replaces non-board ActionsAvailable picks, line_search._posture (:966) ranks hold against attack from simulated lines with net lifelink/crackback and no role input, attack_push/attack_line_note (line_guard.py:780/:907) are posture-driven, and _check_attack_crackback (action_planner.py:2170) trims by life math only; survival_mode consumers (game_plan.py:598/:951/:2615, line_search_guard.py:326-400) trim or annotate but cannot veto a declaration. New tests/test_defender_hold_278.py pins the contrast: 2x4/4 vs 2x3/3 at 11-12 life vs 10 is labelled defender yet posture 'attack', the prompt note ends 'Verdict: ATTACK.', attack_push applies with ids [100,101] and the crackback guard keeps both attackers; 2x1/1 vs 4x2/2 at 6 vs 20 is posture 'hold' ('dead on T9' vs 'dead on T11'), nothing is pushed and the guard empties the declaration with fallback planner_crackback_guard. Grid over reconstructed boards: 1199 defender boards, 24 with an attacking posture, 2 pushed, 0 where the guard empties an all-in declaration. Remaining limits: historical packet missing (BACKLOG_STAGE_2026-11-01.md:136), reconstructed boards only, no live qualification, and the push guard's conservative band (ATTACK_PUSH_MARGIN=6.0 vs POSTURE_MARGIN=3.0) is unchanged."
       },
       "independent_verification": {
         "state": "not_reviewed",
