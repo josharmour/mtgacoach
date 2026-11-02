@@ -14,7 +14,7 @@ New regression: `tests/test_latency_277_delayed_winner.py` (3 tests) drives the
 real `ProxyBackend` so queue/first-token/generation/cancellation timing is
 recorded by `llm_trace` (#231) exactly as in production.
 
-Merged to local master as MERGE COMMIT; receipt commit SOURCE COMMIT.
+Merged to local master as 4da04b3; receipt commit cde678c.
 
 ## Symptom and evidence
 

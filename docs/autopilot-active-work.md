@@ -142,8 +142,9 @@ deployed.
 | 22 | BUG-273 | merged_awaiting_review | 2ad966e (merge ca5ef9f, no source change) | docs/backlog-receipts/BUG-273/ |
 | 23 | BUG-275 | merged_awaiting_review | 618ec02 (merge 7693b3c, no source change) | docs/backlog-receipts/BUG-275/ |
 | 24 | BUG-276 | merged_awaiting_review | 8ff78b7 (merge 855129d, no source change) | docs/backlog-receipts/BUG-276/ |
+| 25 | BUG-277 | merged_awaiting_review | cde678c (merge 4da04b3, no source change) | docs/backlog-receipts/BUG-277/ |
 
-Next item: BUG-277. All twenty-four merged items still need an independent review pass
+Next item: BUG-278. All twenty-five merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -395,6 +396,27 @@ replay; the historical ~22 s loop resume is not fully explained by the planner (
 prompt construction leaves ~6 s, matching the post-cast priority waits already attributed to #206/#243 in the
 BUG-248 receipt); prompt construction sits outside the model deadline; and live timing distribution remains
 unqualified, which is the audit's own unresolved prerequisite.
+
+BUG-277 also needed no production source change. Its delayed-winner signature — the high-effort declaration
+leg exhausting its budget before the low-effort answer stood and the attack executed — is the same bounded
+declaration hedge (`action_planner.py:1162`, `b352b8a`, per-leg cancel events from `70d9e2f`) plus the proxy
+budget cut (`proxy.py:1340`, `d27b878`/`9f0a328`) that closed BUG-276, so this item references those commits
+instead of duplicating a patch. The new regression drives the real `ProxyBackend` through three shapes of the
+same decision (Odin's five power against their five life, so `declaration_effort` says high): a slow but
+*valid* high answer that would have been usable at ~1.2 s loses to a ready low answer in 0.012 s of model time
+with the high request cancelled at ttft 0.8 ms / total 1203.8 ms; a fast unparseable high answer does not
+displace the valid low answer (both requests `ok`, 0.018 s); and a streaming high leg is cut at 54.0 ms while
+the low answer stands (0.001 s). All three submit `declare_attackers` with attacker Odin and an empty
+`fallback_reason`, so a silent fallback cannot pass as success. Running the new file before BUG-276's file also
+exposed a scheduling-dependent leg-order assertion there (both legs go to a two-worker pool), now compared
+sorted without weakening the behaviour under test. Verification: the new file passes (3 passed), the nine-file
+latency/trace regression set passes (63 passed) and ruff check/format are clean. Bounded gaps are recorded
+rather than fixed: both retained hashes exist only in the audit and triage rows with no trace to replay; live
+first-valid-winner/cancel confirmation and the audit's residual 33 s chain timing remain unqualified (the
+planner's 15 s budget plus ~1 s of prompt construction leaves ~6 s matching the post-cast priority waits
+already attributed to #206/#243 in the BUG-248 receipt); prompt construction sits outside the model deadline;
+and one probe artifact is noted — reusing a mutated state dict across several decisions suppressed the high leg
+on the third decision, while fresh state per decision hedged every time.
 
 ## Queue entries
 

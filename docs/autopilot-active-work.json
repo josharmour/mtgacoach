@@ -1169,14 +1169,20 @@
         "backlog-evidence-2026-11-01.md: #277"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-277",
+        "base_commit": "9f394b9",
+        "source_commits": [
+          "cde678c"
+        ],
+        "master_commits": [
+          "4da04b3"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-277/focused-tests.txt"
+        ],
+        "note": "Verification-only: no production source change. The delayed-winner signature is already fixed on master by the bounded declaration hedge (action_planner.py:1162, b352b8a) with per-leg cancel events (70d9e2f), the proxy budget cut (proxy.py:1340, d27b878/9f0a328) and the deterministic free-attack fallback (action_planner.py:2775); this item references those commits instead of duplicating a patch. New regression tests/test_latency_277_delayed_winner.py drives the real ProxyBackend so llm_trace (#231) records queue/first-token/generation/cancellation timing: a slow-but-valid high leg (usable at ~1.2 s) loses to a ready low answer in 0.012 s model time with the high request cancelled at ttft 0.8 ms / total 1203.8 ms; a fast invalid high answer does not displace the valid low answer (both ok, 0.018 s); a streaming high leg is cut at 54.0 ms while low stands (0.001 s). All three submit declare_attackers with attacker Odin and an empty fallback_reason. Also corrected a scheduling-dependent leg-order assertion in tests/test_latency_276_declaration_budget.py (sorted legs; behaviour unchanged). Regression set of nine latency files: 63 passed in 18.98s; ruff check and format clean. Remaining: live first-valid-winner/cancel confirmation and the residual 33 s chain timing are unqualified (audit disposition PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED stands); retained traces absent from this checkout; independent review and Linux CI still required."
       },
       "independent_verification": {
         "state": "not_reviewed",
