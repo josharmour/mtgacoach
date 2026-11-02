@@ -954,14 +954,20 @@
         "backlog-evidence-2026-11-01.md: #269"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-269",
+        "base_commit": "a86d204",
+        "source_commits": [
+          "33e93e4"
+        ],
+        "master_commits": [
+          "34f12f8"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-269/focused-tests.txt"
+        ],
+        "note": "No production change: the retained mechanism is the intended behaviour, not a stall. A low answer doubted for a false lethal claim waits for the high leg only for the bounded doubt allowance (_DOUBT_AFTER_LOW_S = 6.0 at action_planner.py:8843, doubt_deadline = min(high_deadline, now + 6) at 8955) and without a high answer raises SecondLookError at 9023 so the caller's board-math fallback decides (last_llm_failure = 'set_aside' at 5140; docstring at 5357). T is ec4836b/b352b8a, P is d27b878/87faace, F5 is 4359d67. Verified the 11 audit node IDs (13 passed) plus both hedge files (12 passed). Bounded gaps recorded: no exact board replay because traces 211d4ccc/87cac475 are absent from this checkout, fallback time versus the Arena clock is not qualified live, and the false-lethal guard must not be removed to reduce latency per the triage."
       },
       "independent_verification": {
         "state": "not_reviewed",

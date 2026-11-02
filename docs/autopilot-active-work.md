@@ -137,8 +137,9 @@ deployed.
 | 17 | BUG-264 | merged_awaiting_review | 3ef8919 (merge 3303c4d, no source change) | docs/backlog-receipts/BUG-264/ |
 | 18 | BUG-265 | merged_awaiting_review | c6eb3d7 (merge d94cf56, no source change) | docs/backlog-receipts/BUG-265/ |
 | 19 | BUG-266 | merged_awaiting_review | 03c6439 (merge 2c49ed9, no source change) | docs/backlog-receipts/BUG-266/ |
+| 20 | BUG-269 | merged_awaiting_review | 33e93e4 (merge 34f12f8, no source change) | docs/backlog-receipts/BUG-269/ |
 
-Next item: BUG-269. All nineteen merged items still need an independent review pass
+Next item: BUG-270. All twenty merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -310,6 +311,19 @@ stalling silently, and library-only strategy rejection belongs to the strategy o
 pass (24 passed) and the reform-budget plus post-cast priority files pass (37 passed).
 The retained traces `04314b21`, `8d26e22e` and `c06d3a82` are absent from this
 checkout, so this is mechanism verification, not an exact replay.
+BUG-269 also needed no production source change, and its retained mechanism is the
+intended behaviour rather than a stall: the low answer was doubted for a false lethal
+claim, the high leg never arrived, and the hedge fell over to board math instead of
+firing the unsafe low answer. On master a doubted low answer waits only for the bounded
+doubt allowance (`_DOUBT_AFTER_LOW_S = 6.0`, clamped by the high leg's own deadline) and
+then raises `SecondLookError`, which the caller records as `set_aside` and hands to the
+board-math fallback. The triage forbids removing the false-lethal guard to reduce
+latency, so that constraint is recorded rather than traded away — the pinned test passes
+a face-burn doubt reason, which means it cannot pass with the guard deleted. The
+remaining scope was verification: the 11 audit node IDs pass (13 passed) and both hedge
+files pass (12 passed). Two bounded gaps are recorded rather than fixed: there is no
+exact board replay because traces `211d4ccc` and `87cac475` are absent from this
+checkout, and fallback time versus a real Arena rope is not qualified live.
 
 ## Queue entries
 

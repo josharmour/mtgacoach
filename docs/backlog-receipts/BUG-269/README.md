@@ -11,8 +11,8 @@ for the bounded doubt allowance (`_DOUBT_AFTER_LOW_S = 6.0`, clamped by the high
 leg's own deadline), and without a high answer it raises `SecondLookError` so the
 caller's board-math fallback decides. Verification only: the 11 audit node IDs
 for this ID pass on master (`13 passed`), together with the two hedge files
-(`12 passed`). No source commit; merged to local master as `<merge>` (receipt
-commit `<source>`).
+(`12 passed`). No source commit; merged to local master as `34f12f8` (receipt
+commit `33e93e4`).
 
 ## Symptom and evidence
 
