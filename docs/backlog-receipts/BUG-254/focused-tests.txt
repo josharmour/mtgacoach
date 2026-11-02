@@ -1,0 +1,7 @@
+........................................                                 [100%]
+40 passed in 6.99s
+
+$ .venv_mac_311/bin/python -m ruff check tests/test_mana_recurrence_254.py
+All checks passed!
+$ .venv_mac_311/bin/python -m ruff format --check tests/test_mana_recurrence_254.py
+1 file already formatted
