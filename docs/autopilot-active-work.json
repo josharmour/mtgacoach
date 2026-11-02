@@ -477,14 +477,21 @@
         "backlog-evidence-2026-11-01.md: #241"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "DeepSeek",
+        "session": "session-965ac31a2db04fef8510105b967c83cf",
+        "base_commit": "c03524f",
+        "source_commits": [
+          "e972314"
+        ],
+        "master_commits": [
+          "895d9fa"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-241/README.md",
+          "docs/backlog-receipts/BUG-241/focused-tests.txt"
+        ],
+        "note": "No production change: DecisionMemory provenance (70d9e2f) and the board signature (eb72e38) already answer this ID on master. tests/test_reversal_recheck_241.py pins the end-to-end planner path: an outage pass sends no re-check and the fresh legal choice stands; a genuine hold still gets its high-effort re-check; a changed board is not a reversal; the re-check's budget is clamped to the first call's deadline. With pre-fix behaviour restored two of the four tests fail with the logged symptom. LIMITS: no replay of the original Gaea's Gift window; bad_answer passes still count as holds by design; total decision-chain elapsed time unqualified; no Linux CI receipt."
       },
       "independent_verification": {
         "state": "not_reviewed",

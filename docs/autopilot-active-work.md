@@ -126,8 +126,9 @@ deployed.
 | 6 | BUG-232 | merged_awaiting_review | ec4836b (merge b63ff82, tests only) | docs/backlog-receipts/BUG-232/ |
 | 7 | BUG-235 | merged_awaiting_review | a69830e (merge ac32e8a, tests only) | docs/backlog-receipts/BUG-235/ |
 | 8 | BUG-239 | merged_awaiting_review | 66e2d16 (merge 9018179) | docs/backlog-receipts/BUG-239/ |
+| 9 | BUG-241 | merged_awaiting_review | e972314 (merge 895d9fa, tests only) | docs/backlog-receipts/BUG-241/ |
 
-Next item: BUG-241. All eight merged items still need an independent review pass
+Next item: BUG-247. All nine merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -160,7 +161,14 @@ now keeps the identity of the question its last safe default answered and
 escalates a repeat inside `SAME_PROMPT_GUARD_S` to its alert instead of
 submitting again; a stuck prompt still gets a bounded retry after the window and
 any different question still gets its safe default. No typed OptionalAction
-handler was added — deciding an optional effect stays with the model.
+handler was added — deciding an optional effect stays with the model. BUG-241 also
+needed no production source change: a pass recorded while the model was unavailable
+is never a strategic hold (70d9e2f) and a pass only counts on the board it was made
+on (eb72e38), so the timed-out re-check that kept a fallback pass over a fresh legal
+choice can no longer happen. The remaining scope was the end-to-end planner
+regression, which also pins that the re-check's budget is clamped to the first
+call's deadline and so cannot renew it. A malformed answer (`bad_answer`) still
+counts as a hold by design; only a model-server failure makes a pass non-strategic.
 
 ## Queue entries
 
