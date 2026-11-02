@@ -132,8 +132,9 @@ deployed.
 | 12 | BUG-249 | merged_awaiting_review | 93bd0bf (merge 6a40f07, tests only) | docs/backlog-receipts/BUG-249/ |
 | 13 | BUG-253 | merged_awaiting_review | 813f252 (merge 43679e3, tests only) | docs/backlog-receipts/BUG-253/ |
 | 14 | BUG-254 | merged_awaiting_review | 6cddacc (merge 712db15, tests only) | docs/backlog-receipts/BUG-254/ |
+| 15 | BUG-256 | merged_awaiting_review | dadd9bc (merge 5a38627, no source change) | docs/backlog-receipts/BUG-256/ |
 
-Next item: BUG-256. All fourteen merged items still need an independent review pass
+Next item: BUG-260. All fifteen merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -225,6 +226,22 @@ withholding path; a mutation check confirms either counting control is load-bear
 One bounded gap is recorded rather than fixed: an activated ability whose cost
 contains {X} is still uncapped because `affordable_x` reads the permanent's printed
 `mana_cost`, and no reported case has that shape.
+BUG-256 also needed no production source change: the five controls its triage row
+names are merged and pinned on master — the proxy clamps the call budget to the
+client hard timeout and closes a cut stream, a first-token timeout is never retried
+and is recorded as `ttft_timeout`, the typed hedge returns the first usable answer
+with a bounded doubt allowance, the declaration hedge returns the first answer the
+parser accepts as legal actions and cancels the other leg, every hosted attempt made
+while no plan exists runs at effort `none` inside the 20 s initial budget, and a
+planner call whose waiter gives up has its own cancel token set so it stops competing
+with the next live request. The remaining scope was verification: the 17 audit node
+IDs pass (27 passed), and the decision-trace and model-down fallback files pass (38
+passed), covering the queue/first-token/generation/cancellation timing record and the
+legal fallback after a stalled decision. Two bounded gaps are recorded rather than
+fixed: the unavailable-card strategy half belongs to #240 and the closed attack window
+to #230/#243 (neither is in this queue), and decision-chain accumulation belongs to
+execution follow-up f9b88c8. The retained trace `9dc1c55c` is absent from this
+checkout, so this is mechanism verification on current master, not an exact replay.
 
 ## Queue entries
 

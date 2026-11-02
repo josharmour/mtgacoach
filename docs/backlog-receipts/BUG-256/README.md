@@ -13,7 +13,7 @@ so it stops competing with the next live request. The two strategy halves are
 owned by #240 and #230/#243, which are not in this queue. Verification only:
 the 17 audit node IDs for this ID pass on master (`27 passed`), together with
 the decision-trace and model-down fallback files (`38 passed`). No source
-commit; merged to local master as `<merge>` (receipt commit `<source>`).
+commit; merged to local master as `5a38627` (receipt commit `dadd9bc`).
 
 ## Symptom and evidence
 

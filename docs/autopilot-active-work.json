@@ -739,14 +739,20 @@
         "backlog-evidence-2026-11-01.md: #256"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-256",
+        "base_commit": "ac5ac4f",
+        "source_commits": [
+          "dadd9bc"
+        ],
+        "master_commits": [
+          "5a38627"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-256/focused-tests.txt"
+        ],
+        "note": "No production change: the five controls this ID names are merged and pinned on master (proxy budget clamp and cut-stream closure, first-token timeout never retried, typed hedge first-usable-answer with bounded doubt, declaration hedge first legal answer, fast initial hosted plan, and the planner cancel token set when its waiter gives up). Verified the 17 audit node IDs (27 passed) plus the decision-trace and model-down fallback files (38 passed). Bounded gaps recorded: the unavailable-card strategy half belongs to #240 and the closed attack window to #230/#243 (neither in this queue), decision-chain accumulation belongs to execution f9b88c8, and the retained trace 9dc1c55c is absent from this checkout so no exact historical replay was possible."
       },
       "independent_verification": {
         "state": "not_reviewed",
