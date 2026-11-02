@@ -1,0 +1,41 @@
+BUG-239 focused verification (local master ac32e8a + this branch)
+
+$ .venv_mac_311/bin/python -m pytest tests/test_watchdog__239__duplicate__answers.py -q
+..........                                                               [100%]
+10 passed in 6.55s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_decision_watchdog.py \
+    tests/test_watchdog__239__duplicate__answers.py tests/test_deadline_recovery_327.py \
+    tests/test_execution_recovery_backlog.py tests/test_priority_after_cast_206.py \
+    tests/test_standalone_coaching_loop.py -q
+........................................................................ [ 87%]
+..........                                                               [100%]
+82 passed in 10.42s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_standalone_auto_queue.py \
+    tests/test_standalone_autopilot_capture.py tests/test_standalone_coaching_loop.py \
+    tests/test_standalone_draft_hud.py tests/test_standalone_generic_selection.py \
+    tests/test_standalone_hotkeys.py tests/test_standalone_match_completion.py \
+    tests/test_standalone_speak_advice.py -q
+....................................                                     [100%]
+36 passed in 10.02s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_autopilot_stale_vs_bridge.py \
+    tests/test_autopilot_window_identity.py tests/test_bridge_decision_transitions.py \
+    tests/test_autopilot_search_stall.py tests/test_casting_optional_decisions.py \
+    tests/test_commander_return.py -q
+........................................................................ [ 59%]
+.................................................                        [100%]
+121 passed in 11.16s
+
+$ .venv_mac_311/bin/python -m ruff check src/arenamcp/decision_watchdog.py \
+    tests/test_watchdog__239__duplicate__answers.py
+All checks passed!
+
+$ .venv_mac_311/bin/python -m ruff format --check src/arenamcp/decision_watchdog.py \
+    tests/test_watchdog__239__duplicate__answers.py
+2 files already formatted
+
+Pre-fix control (SAME_PROMPT_GUARD_S = -1 restores old behaviour):
+4 failed, 6 passed in 6.37s — including eight AutoResponds in twenty seconds in
+test_the_coaching_loop_submits_one_answer_and_then_alerts.
