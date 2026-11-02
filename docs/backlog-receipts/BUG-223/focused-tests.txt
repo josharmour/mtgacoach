@@ -1,0 +1,15 @@
+$ .venv_mac_311/bin/python -m pytest \
+    tests/test_latency_223_background_contention.py \
+    tests/test_proxy_call_classes.py tests/test_proxy_cancellation.py \
+    tests/test_proxy_request_metrics.py tests/test_proxy_priority.py \
+    tests/test_proxy_backend_timeout.py -q
+........................................................................ [ 94%]
+....                                                                     [100%]
+76 passed in 40.70s
+
+$ .venv_mac_311/bin/python -m ruff check tests/test_latency_223_background_contention.py
+All checks passed!
+$ .venv_mac_311/bin/python -m ruff format --check tests/test_latency_223_background_contention.py
+1 file already formatted
+
+HEAD before commit: 78fa182 (Queue: record BUG-210 merged to local master awaiting review)
