@@ -25,7 +25,10 @@ Any answer sent to Arena (``GREBridge.last_submission_at``) restarts the
 count; a different request (type, class, game state / message id, offered
 choices) starts a new one. Combat declarations with a known turn window keep
 their deadline across request-ID churn (#237); safe defaults still read the
-fresh request and board. The clock is injected, so tests need no waits.
+fresh request and board. A prompt Arena re-offers unchanged within
+``SAME_PROMPT_GUARD_S`` of our safe default is that answer coming back, not a
+new question: it escalates to the alert instead of being answered again
+(#239). The clock is injected, so tests need no waits.
 """
 
 from __future__ import annotations
@@ -55,6 +58,46 @@ def request_key(resp: dict[str, Any] | None, *, window: tuple | None = None) -> 
         resp.get("msg_id"),
         BridgeDecisionPoller._compute_request_sig(resp),
     )
+
+
+def prompt_key(resp: dict[str, Any] | None, *, window: tuple | None = None) -> tuple | None:
+    """What Arena is asking, ignoring its per-message ids (#239).
+
+    Arena re-offers an unanswered prompt as a new GRE message, so ``msg_id``
+    (and usually ``game_state_id``) change while the question does not. On
+    2026-10-24 10:43:12 (match 18975f2b) that made one OptionalAction look
+    like three new requests, and the watchdog answered it three times in six
+    seconds. This identity is what tells "a new question" from "my own answer
+    coming back".
+    """
+    key = request_key(resp, window=window)
+    if key is None:
+        return None
+    if len(key) == 4 and key[2] == "combat":
+        return key
+    return (key[0], key[1], key[4], _question(resp))
+
+
+def _question(resp: dict[str, Any]) -> tuple | None:
+    """Which question this is, as far as the payload says (None when it says nothing).
+
+    Two OptionalActions from different cards are different questions even when
+    neither offers a choice; the prompt id and its parameters separate them.
+    """
+    prompt = resp.get("prompt")
+    if isinstance(prompt, dict):
+        params = prompt.get("parameters")
+        digest = None
+        if isinstance(params, list):
+            digest = tuple(
+                sorted(
+                    (str(item.get("parameterName")), item.get("numberValue"), item.get("stringValue"))
+                    for item in params
+                    if isinstance(item, dict)
+                )
+            )
+        return (prompt.get("promptId"), digest)
+    return resp.get("source_instance_id")
 
 
 def request_label(resp: dict[str, Any] | None) -> str:
@@ -92,6 +135,9 @@ class DecisionWatchdog:
     # A safe default reported as submitted must change the request by then.
     VERIFY_AFTER_S = 4.0
     REALERT_EVERY_S = 15.0
+    # Arena re-offering the same question inside this window means our answer
+    # did not take; answering it again only repeats the submission (#239).
+    SAME_PROMPT_GUARD_S = 10.0
 
     def __init__(self, monotonic: Callable[[], float] = time.monotonic) -> None:
         self._now = monotonic
@@ -102,6 +148,11 @@ class DecisionWatchdog:
         self._defaulted_at: float | None = None
         self._default_failed = False
         self._alerted_at: float | None = None
+        # The question our last safe default answered, kept across the request
+        # churn Arena causes by re-issuing it (see prompt_key).
+        self._answered_prompt: tuple | None = None
+        self._answered_at: float | None = None
+        self._answer_failed = False
 
     def reset(self) -> None:
         self._key = None
@@ -158,8 +209,24 @@ class DecisionWatchdog:
         if key is None:
             self.reset()
             return None
+        prompt = prompt_key(resp, window=window)
+        repeat = (
+            prompt is not None
+            and prompt == self._answered_prompt
+            and self._answered_at is not None
+            and now - self._answered_at <= self.SAME_PROMPT_GUARD_S
+        )
         if key != self._key:
-            self.reset()
+            if not repeat:
+                self.reset()
+                self._answered_prompt = None
+                self._answered_at = None
+                self._answer_failed = False
+            elif self._defaulted_at is None:
+                # Arena re-offered the question our safe default answered:
+                # resume its verification instead of submitting it again.
+                self._defaulted_at = self._answered_at
+                self._default_failed = self._answer_failed
             self._key = key
             self._since = now
             self.first_seen_wall = time.time() if wall_now is None else wall_now
@@ -177,6 +244,8 @@ class DecisionWatchdog:
             limit = self.HANDOFF_SAFE_DEFAULT_AFTER_S if handed_to_user else self.SAFE_DEFAULT_AFTER_S
             if urgent or age >= limit:
                 self._defaulted_at = now
+                self._answered_prompt = prompt
+                self._answered_at = now
                 return made("safe_default")
             return None
         if not self._default_failed and now - self._defaulted_at < self.VERIFY_AFTER_S:
@@ -189,7 +258,10 @@ class DecisionWatchdog:
     def note_safe_default(self, submitted: bool) -> None:
         """Record the outcome of the safe default the last step asked for."""
         self._default_failed = not submitted
+        self._answer_failed = not submitted
 
     def retry_safe_default(self) -> None:
         """The safe default could not run yet (engine busy): ask again on the next step."""
         self._defaulted_at = None
+        self._answered_prompt = None
+        self._answered_at = None
