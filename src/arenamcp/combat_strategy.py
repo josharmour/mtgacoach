@@ -89,6 +89,8 @@ class CombatChoice:
     score: float = 0
     explanation: str = ""
     bounded: bool = False
+    poison_given: int = 0
+    cards_milled: int = 0
 
 
 def loyalty(card: dict) -> int | None:
@@ -119,6 +121,18 @@ def combat_choice(state: dict, *, budget: int = 20000, deadline_s: float = 0.7) 
     # Board-granted "can't be blocked" (Tetsuko Umezawa) must reach _can_block.
     annotate_cant_be_blocked(state.get("battlefield"))
     relevant = {key: state.get(key) for key in ("players", "battlefield", "decision_context", "turn")}
+    # Alternate-loss clocks live in ``zones`` (#247): without them a milled
+    # library or a fresh poison count reuses the previous board's answer.
+    zones = state.get("zones") or {}
+    relevant["loss"] = {
+        key: zones.get(key, state.get(key))
+        for key in (
+            "library_count",
+            "library_count_source",
+            "opponent_library_count",
+            "opponent_library_count_source",
+        )
+    }
     key = ("combat_recipients", json.dumps(relevant, sort_keys=True, default=str), budget, deadline_s)
     return _memoized(key, lambda: _hold_weighed(state, raw, budget, deadline_s))
 
@@ -200,6 +214,16 @@ def _line_search_hold_attack(state: dict, raw: list[dict], best: CombatChoice) -
     )
 
 
+def _finishes(before: LossState, after: LossState) -> bool:
+    """Whether this combat's hits end the game for ``before``'s player (#247).
+
+    Only a *new* loss counts: a state that already shows ten poison or an empty
+    library is not something this attack line caused, and scoring it as a win
+    would make every option terminal.
+    """
+    return (after.lost and not before.lost) or (after.draw_loses and not before.draw_loses)
+
+
 def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> CombatChoice | None:
     players = state.get("players") or []
     local = next((player for player in players if player.get("is_local")), None)
@@ -218,6 +242,12 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
         card for card in creatures if card.get("controller_seat_id", card.get("owner_seat_id")) == opponent_id
     ]
     blockers = [card for card in theirs if not card.get("is_tapped")]
+    # Alternate-loss clocks (#247): a toxic/infect hit wins at ten poison and
+    # combat mill can empty a known library, so the race is not life-only. The
+    # same states feed the crackback forecast so its blocks can stop a poison
+    # or mill death instead of only life damage.
+    our_loss = loss_state(state)
+    their_loss = loss_state(state, opponent=True)
     # Our planeswalkers: their crackback may finish one instead of hitting us.
     our_walkers = tuple(
         value
@@ -315,6 +345,9 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
             if any(_has(card, "menace") and counts[card["instance_id"]] == 1 for card in attacking):
                 continue
             damage = Counter()
+            poison_given = 0
+            cards_milled = 0
+            ends_game = False
             dead_attackers, dead_blockers = set(), set()
             for attacker in attacking:
                 assigned = [
@@ -323,7 +356,12 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
                     if identity == attacker["instance_id"]
                 ]
                 outcome = _resolve_attacker(attacker, assigned)
-                damage[recipient_key(mapping[attacker["instance_id"]])] += outcome.damage_through
+                recipient = recipient_key(mapping[attacker["instance_id"]])
+                damage[recipient] += outcome.damage_through
+                if recipient == ("player", opponent_id):
+                    poison_given += outcome.poison_given
+                    cards_milled += outcome.cards_milled
+                    ends_game |= outcome.player_loses
                 if outcome.attacker_died:
                     dead_attackers.add(attacker["instance_id"])
                 dead_blockers.update(card["instance_id"] for card in outcome.blockers_died)
@@ -344,8 +382,13 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
                 for card in theirs
                 if card["instance_id"] not in dead_blockers and can_attack_next_turn(card, creature_died=died)
             ]
-            response = guarded_block_plan(survivors, defenders, your_life, max_options=2000)
+            response = guarded_block_plan(
+                survivors, defenders, your_life, max_options=2000, defender=our_loss
+            )
             crackback = response.damage_through if response else 0
+            crack_poison = response.poison_given if response else 0
+            crack_milled = response.cards_milled if response else 0
+            crackback_loses = bool(response and response.player_loses)
             player_damage = damage[("player", opponent_id)]
             removed = []
             walker_value = 0.0
@@ -369,11 +412,27 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
                 - crackback * 5 / max(1, your_life - crackback)
                 - walker_crackback_cost(crackback, your_life, our_walkers)
             )
-            if player_damage >= opponent_life:
+            if (
+                player_damage >= opponent_life
+                or ends_game
+                or _finishes(their_loss, their_loss.hit(poison_given, cards_milled))
+            ):
                 score = 10000
-            elif crackback >= your_life:
+            elif (
+                crackback >= your_life
+                or crackback_loses
+                or _finishes(our_loss, our_loss.hit(crack_poison, crack_milled))
+            ):
                 score = -1000 + material
-            evaluated = CombatChoice(mapping, player_damage, removed, crackback, score)
+            evaluated = CombatChoice(
+                mapping,
+                player_damage,
+                removed,
+                crackback,
+                score,
+                poison_given=poison_given,
+                cards_milled=cards_milled,
+            )
             if worst is None or evaluated.score < worst.score:
                 worst = evaluated
         if worst is not None:
@@ -402,7 +461,10 @@ def _search(state: dict, raw: list[dict], budget: int, deadline_s: float) -> Com
         removed_names = (
             ", ".join(cards[identity]["name"] for identity in best.planeswalkers_removed) or "none"
         )
-        best.explanation = f"{attacks}; {best.player_damage} damage to player, planeswalkers removed: {removed_names}; counterattack {best.crackback}. Approximate visible-board search; unknown tricks and triggers excluded."
+        hits = f"{best.player_damage} damage to player"
+        if best.poison_given or best.cards_milled:
+            hits += f", {best.poison_given} poison, {best.cards_milled} milled"
+        best.explanation = f"{attacks}; {hits}, planeswalkers removed: {removed_names}; counterattack {best.crackback}. Approximate visible-board search; unknown tricks and triggers excluded."
     return best
 
 
