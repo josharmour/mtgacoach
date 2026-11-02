@@ -301,14 +301,21 @@
         "backlog-evidence-2026-11-01.md: #231"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "DeepSeek",
+        "session": "session-965ac31a-2db0-4fef-8510-105b967c83cf",
+        "base_commit": "ab374f5cc2192393886b6063c5b088a4ba53e396",
+        "source_commits": [
+          "429fac1"
+        ],
+        "master_commits": [
+          "cd578a0"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-231/README.md",
+          "docs/backlog-receipts/BUG-231/focused-tests.txt"
+        ],
+        "note": "Bounded instrumentation, no decision-logic change. The retained recurrence is a 15-31 s whole-loop stall that per-request [PROXY] metrics could not attribute: one decision can issue a hedged pair, a repair retry and a second opinion, interleaved with background work. src/arenamcp/llm_trace.py keeps one open trace; proxy _record_request_metrics appends lane_wait/client_setup/ttft/first_content/total/status per request; AutopilotEngine._plan_with_trace logs the decision line and _log_execution_path appends fallback/decision-ms/requests/cancelled to every submitted action. The merged #222 repairs (hedged declaration, shared repair deadline, reform cooldown, hosted first-plan effort) are reused unchanged. LIMIT: no live qualification - the historical stall (d90d0eae, e276ca14) was not replayed against the gateway, so the audit's unresolved prerequisite (matching request spans and chain waits to that stall) still needs a loaded live session; the trace makes that match possible from one log line but does not perform it. The trace is single-slot (one decision at a time) and only sees background work that lands inside the decision window. No Linux CI receipt."
       },
       "independent_verification": {
         "state": "not_reviewed",

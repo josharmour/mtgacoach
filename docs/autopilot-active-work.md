@@ -122,8 +122,9 @@ deployed.
 | 2 | BUG-141 | merged_awaiting_review | 264334b (merge f72c411) | docs/backlog-receipts/BUG-141/ |
 | 3 | BUG-210 | merged_awaiting_review | 5194398 (merge 39fc230, no source change) | docs/backlog-receipts/BUG-210/ |
 | 4 | BUG-223 | merged_awaiting_review | 409749f (merge a46ed56, tests only) | docs/backlog-receipts/BUG-223/ |
+| 5 | BUG-231 | merged_awaiting_review | 429fac1 (merge cd578a0) | docs/backlog-receipts/BUG-231/ |
 
-Next item: BUG-231. All four merged items still need an independent review pass
+Next item: BUG-232. All five merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -131,6 +132,11 @@ conservative limits. BUG-223 also needed no production source change: the lane,
 supersede/drop and priority mechanisms already existed, so the remaining scope
 was the acceptance-required measurement fixture (queue vs setup vs generation in
 one metrics record, urgent budget, cancellation, replacement completion).
+BUG-231 added instrumentation only: one decision-scoped trace now ties its
+requests (queue/first-token/generation/cancellation) to the action that was
+submitted, so a masked land/pass fallback names its delay. No deadline,
+freshness or fallback logic changed; live qualification of the historical stall
+is still outstanding.
 
 ## Queue entries
 
