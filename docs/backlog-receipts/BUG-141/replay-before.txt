@@ -1,0 +1,230 @@
+=== baseline (636459f, /tmp/wt-141-base) run 1 ===
+Game plan reform (first plan): turn 3, plan for turn 3
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 3, 18.4ms): AGGRESSOR — our clock 5 beats their none (2 vs 0 creatures, 4 vs 0 power) — we're the beatdown; attack with Mine0, Mine1: survives (life 20, 20, 20; opponent at 8); hold: survives (life 20, 20, 20; opponent at 12) | they kill us in — attack(s), we kill them in 5 | race AHEAD (we kill in 5, they get nothing through) | life 20 vs 20 | line: attack with Mine0, Mine1; then attack with Mine0, Mine1 — survives (life 20, 20, 20; opponent at 8) (nodes=17, 3.0 ms)
+Game plan: first hosted plan without hidden reasoning (0.2s budget)
+Game plan reform for turn 3 keeps running on turn 4 (0s in): no plan exists yet
+Game plan reform for turn 3 keeps running on turn 4 (0s in): no plan exists yet
+GamePlan (turn 3): role=aggressor | win=['aggro beatdown'] | path=race for lethal ~T6 | turns=T3: no cast; attack: all | T5: no cast; attack: all | T7: no cast; attack: all
+Keeping the late game plan for turn 3 (arrived on turn 4): there was no plan
+Game plan reform (plan our next turn): turn 6, plan for turn 7
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 6, 7.0ms): AGGRESSOR — our clock 5 beats their none (2 vs 0 creatures, 4 vs 0 power) — we're the beatdown; attack with Mine0, Mine1: survives (life 20, 20, 20, 20; opponent at 8); hold: survives (life 20, 20, 20, 20; opponent at 12) | they kill us in — attack(s), we kill them in 5 | race AHEAD (we kill in 5, they get nothing through) | life 20 vs 20 | line: attack with Mine0, Mine1; then attack with Mine0, Mine1 — survives (life 20, 20, 20, 20; opponent at 8) (nodes=18, 5.4 ms)
+Superseding the in-flight game plan for turn 7 (now turn 8); its answer will be discarded
+Game plan reform (stale plan): turn 8, plan for turn 9
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 8, 11.9ms): RACE — slow clocks (ours none, theirs none; 2 vs 1 creatures, 4 vs 3 power) — find evasion or removal to break the stall; attack with Mine0, Mine1: survives (life 20, 17, 14, 11; opponent at 14); hold: survives (life 20, 20, 20, 20) | they kill us in — attack(s), we kill them in — | race STALLED (neither side gets damage through the other's blocks) | life 20 vs 20 | line: no play — survives (life 20, 20, 20, 20) (nodes=27, 8.6 ms)
+Discarded a superseded game plan (turn 6); keeping the prior plan
+Superseding the in-flight game plan for turn 9 (now turn 10); its answer will be discarded
+Game plan reform (stale plan): turn 10, plan for turn 11
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 10, 11.2ms): RACE — slow clocks (ours none, theirs none; 2 vs 1 creatures, 4 vs 3 power) — find evasion or removal to break the stall; attack with Mine0, Mine1: survives (life 20, 17, 14, 11; opponent at 14); hold: survives (life 20, 20, 20, 20) | they kill us in — attack(s), we kill them in — | race STALLED (neither side gets damage through the other's blocks) | life 20 vs 20 | line: no play — survives (life 20, 20, 20, 20) (nodes=27, 8.4 ms)
+Game plan: reform at low effort for speed
+Discarded a superseded game plan (turn 8); keeping the prior plan
+Game plan reform for turn 11 keeps running on turn 12 (0s in): after 2 consecutive supersedes
+Game plan reform for turn 11 keeps running on turn 12 (0s in): after 2 consecutive supersedes
+Game plan reform for turn 11 keeps running on turn 13 (0s in): after 2 consecutive supersedes
+GamePlan validation (turn 10): role aggressor differs from the assessed race without a concrete reason
+GamePlan validation (turn 10): plan line survives (life 20, 17, 14, 11; opponent at 14) trails the best line by 11.4 in value: no play — survives (life 20, 20, 20, 20)
+GamePlan (turn 10): role=race | win=['aggro beatdown'] | path=race for lethal ~T6 | turns=T11: no cast; attack: all | T13: no cast; attack: all | T15: no cast; attack: all
+Keeping the late game plan for turn 11 (arrived on turn 13): after 2 consecutive supersedes
+GamePlan for turn 11 predates changes on the opponent's board (Theirs1 3/4 entered); prompts flag its stale lines
+Game plan reform (stale plan): turn 14, plan for turn 15
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 14, 5.7ms): DEFENDER — slow clocks (ours none, theirs 8; 2 vs 2 creatures, 4 vs 6 power) — hold blockers, develop bigger threats | they kill us in 8 attack(s) (their next attack: 3 -> you at 17), we kill them in — | race BEHIND (they kill in 8, we get nothing through) | life 20 vs 20 | line: no play — survives (life 17, 14, 11, 11) (nodes=18, 3.8 ms)
+Superseding the in-flight game plan for turn 15 (now turn 16); its answer will be discarded
+Game plan reform (stale plan): turn 16, plan for turn 17
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 16, 8.9ms): DEFENDER — their clock 4 vs ours none (2 vs 3 creatures, 4 vs 9 power) — behind: block, trade, deploy bodies | they kill us in 4 attack(s) (their next attack: 6 -> you at 14), we kill them in — | race BEHIND (they kill in 4, we get nothing through) | life 20 vs 20 | line: no play — dead on T22 (nodes=13, 5.2 ms)
+Discarded a superseded game plan (turn 14); keeping the prior plan
+Superseding the in-flight game plan for turn 17 (now turn 18); its answer will be discarded
+Game plan reform (stale plan): turn 18, plan for turn 19
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 18, 4.7ms): DEFENDER — their clock 4 vs ours none (2 vs 3 creatures, 4 vs 9 power) — behind: block, trade, deploy bodies | they kill us in 4 attack(s) (their next attack: 6 -> you at 14), we kill them in — | race BEHIND (they kill in 4, we get nothing through) | life 20 vs 20 | line: no play — dead on T24 (nodes=13, 3.2 ms)
+Game plan: reform at low effort for speed
+Discarded a superseded game plan (turn 16); keeping the prior plan
+Game plan reform for turn 19 keeps running on turn 20 (0s in): after 2 consecutive supersedes
+Game plan reform for turn 19 keeps running on turn 20 (0s in): after 2 consecutive supersedes
+Game plan reform for turn 19 keeps running on turn 21 (0s in): after 2 consecutive supersedes
+GamePlan validation (turn 18): role aggressor differs from the assessed defender without a concrete reason
+GamePlan (turn 18): role=defender | win=['aggro beatdown'] | path=race for lethal ~T6 | turns=T19: no cast; attack: all | T21: no cast; attack: all | T23: no cast; attack: all
+Keeping the late game plan for turn 19 (arrived on turn 21): after 2 consecutive supersedes
+GamePlan for turn 19 predates changes on the opponent's board (Theirs3 3/4 entered); prompts flag its stale lines
+Game plan reform (stale plan): turn 22, plan for turn 23
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 22, 10.2ms): DEFENDER — their clock 3 vs ours none (2 vs 4 creatures, 4 vs 12 power) — behind: block, trade, deploy bodies | they kill us in 3 attack(s) (their next attack: 9 -> you at 11), we kill them in — | race BEHIND (they kill in 3, we get nothing through) | life 20 vs 20 | line: no play — dead on T26 (nodes=8, 5.6 ms)
+ 0.04s T3: reform started
+ 0.04s T3: plan=None/None attempts=1 cancels=0 inflight=True
+ 0.27s T4: plan=3/none attempts=1 cancels=0 inflight=False
+ 0.46s T6: reform started
+ 0.46s T6: plan=3/none attempts=2 cancels=0 inflight=True
+ 0.77s T8: reform started
+ 0.77s T8: plan=3/none attempts=3 cancels=1 inflight=True
+ 1.08s T10: reform started
+ 1.08s T10: plan=3/none attempts=4 cancels=2 inflight=True
+ 1.55s T13: plan=10/low attempts=4 cancels=2 inflight=False
+ 1.62s T14: reform started
+ 1.62s T14: plan=10/low attempts=5 cancels=2 inflight=True
+ 1.92s T16: reform started
+ 1.92s T16: plan=10/low attempts=6 cancels=3 inflight=True
+ 2.21s T18: reform started
+ 2.21s T18: plan=10/low attempts=7 cancels=4 inflight=True
+ 2.70s T21: plan=18/low attempts=7 cancels=4 inflight=False
+ 2.79s T22: reform started
+ 2.79s T22: plan=18/low attempts=8 cancels=4 inflight=True
+
+calls: [('none', 0.2), ('high', 0.75), ('high', 0.75), ('low', 0.75), ('high', 0.75), ('high', 0.75), ('low', 0.75), ('high', 0.75)]
+first plan landed on turn 4; fresh plan (formed this turn) on None
+plans landed (formed turn -> landing turn): [(3, 4), (10, 13), (18, 21)]
+attempts=8 cancels=4 supersedes=0 outcome=ok
+
+=== baseline (636459f, /tmp/wt-141-base) run 2 ===
+Game plan reform (first plan): turn 3, plan for turn 3
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 3, 18.6ms): AGGRESSOR — our clock 5 beats their none (2 vs 0 creatures, 4 vs 0 power) — we're the beatdown; attack with Mine0, Mine1: survives (life 20, 20, 20; opponent at 8); hold: survives (life 20, 20, 20; opponent at 12) | they kill us in — attack(s), we kill them in 5 | race AHEAD (we kill in 5, they get nothing through) | life 20 vs 20 | line: attack with Mine0, Mine1; then attack with Mine0, Mine1 — survives (life 20, 20, 20; opponent at 8) (nodes=17, 3.0 ms)
+Game plan: first hosted plan without hidden reasoning (0.2s budget)
+Game plan reform for turn 3 keeps running on turn 4 (0s in): no plan exists yet
+Game plan reform for turn 3 keeps running on turn 4 (0s in): no plan exists yet
+GamePlan (turn 3): role=aggressor | win=['aggro beatdown'] | path=race for lethal ~T6 | turns=T3: no cast; attack: all | T5: no cast; attack: all | T7: no cast; attack: all
+Keeping the late game plan for turn 3 (arrived on turn 4): there was no plan
+Game plan reform (plan our next turn): turn 6, plan for turn 7
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 6, 6.1ms): AGGRESSOR — our clock 5 beats their none (2 vs 0 creatures, 4 vs 0 power) — we're the beatdown; attack with Mine0, Mine1: survives (life 20, 20, 20, 20; opponent at 8); hold: survives (life 20, 20, 20, 20; opponent at 12) | they kill us in — attack(s), we kill them in 5 | race AHEAD (we kill in 5, they get nothing through) | life 20 vs 20 | line: attack with Mine0, Mine1; then attack with Mine0, Mine1 — survives (life 20, 20, 20, 20; opponent at 8) (nodes=18, 4.6 ms)
+Superseding the in-flight game plan for turn 7 (now turn 8); its answer will be discarded
+Game plan reform (stale plan): turn 8, plan for turn 9
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 8, 9.9ms): RACE — slow clocks (ours none, theirs none; 2 vs 1 creatures, 4 vs 3 power) — find evasion or removal to break the stall; attack with Mine0, Mine1: survives (life 20, 17, 14, 11; opponent at 14); hold: survives (life 20, 20, 20, 20) | they kill us in — attack(s), we kill them in — | race STALLED (neither side gets damage through the other's blocks) | life 20 vs 20 | line: no play — survives (life 20, 20, 20, 20) (nodes=27, 7.3 ms)
+Discarded a superseded game plan (turn 6); keeping the prior plan
+Superseding the in-flight game plan for turn 9 (now turn 10); its answer will be discarded
+Game plan reform (stale plan): turn 10, plan for turn 11
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 10, 8.1ms): RACE — slow clocks (ours none, theirs none; 2 vs 1 creatures, 4 vs 3 power) — find evasion or removal to break the stall; attack with Mine0, Mine1: survives (life 20, 17, 14, 11; opponent at 14); hold: survives (life 20, 20, 20, 20) | they kill us in — attack(s), we kill them in — | race STALLED (neither side gets damage through the other's blocks) | life 20 vs 20 | line: no play — survives (life 20, 20, 20, 20) (nodes=27, 5.0 ms)
+Game plan: reform at low effort for speed
+Discarded a superseded game plan (turn 8); keeping the prior plan
+Game plan reform for turn 11 keeps running on turn 12 (0s in): after 2 consecutive supersedes
+Game plan reform for turn 11 keeps running on turn 12 (0s in): after 2 consecutive supersedes
+Superseding the in-flight game plan for turn 11 (now turn 13); its answer will be discarded
+Discarded a superseded game plan (turn 10); keeping the prior plan
+Game plan reform (stale plan): turn 14, plan for turn 15
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 14, 7.0ms): DEFENDER — slow clocks (ours none, theirs 8; 2 vs 2 creatures, 4 vs 6 power) — hold blockers, develop bigger threats | they kill us in 8 attack(s) (their next attack: 3 -> you at 17), we kill them in — | race BEHIND (they kill in 8, we get nothing through) | life 20 vs 20 | line: no play — survives (life 17, 14, 11, 11) (nodes=18, 4.6 ms)
+Game plan: reform at low effort for speed
+Game plan reform for turn 15 keeps running on turn 16 (0s in): after 3 consecutive supersedes
+Game plan reform for turn 15 keeps running on turn 16 (0s in): after 3 consecutive supersedes
+Superseding the in-flight game plan for turn 15 (now turn 17); its answer will be discarded
+Discarded a superseded game plan (turn 14); keeping the prior plan
+Game plan reform (stale plan): turn 18, plan for turn 19
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 18, 8.3ms): DEFENDER — their clock 4 vs ours none (2 vs 3 creatures, 4 vs 9 power) — behind: block, trade, deploy bodies | they kill us in 4 attack(s) (their next attack: 6 -> you at 14), we kill them in — | race BEHIND (they kill in 4, we get nothing through) | life 20 vs 20 | line: no play — dead on T24 (nodes=13, 5.6 ms)
+Game plan: reform at low effort for speed
+Game plan reform for turn 19 keeps running on turn 20 (0s in): after 4 consecutive supersedes
+Game plan reform for turn 19 keeps running on turn 20 (0s in): after 4 consecutive supersedes
+GamePlan validation (turn 18): role aggressor differs from the assessed defender without a concrete reason
+Superseding the in-flight game plan for turn 19 (now turn 21); its answer will be discarded
+GamePlan (turn 18): role=defender | win=['aggro beatdown'] | path=race for lethal ~T6 | turns=T19: no cast; attack: all | T21: no cast; attack: all | T23: no cast; attack: all
+Game plan reform (stale plan): turn 22, plan for turn 23
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 22, 10.4ms): DEFENDER — their clock 3 vs ours none (2 vs 4 creatures, 4 vs 12 power) — behind: block, trade, deploy bodies | they kill us in 3 attack(s) (their next attack: 9 -> you at 11), we kill them in — | race BEHIND (they kill in 3, we get nothing through) | life 20 vs 20 | line: no play — dead on T26 (nodes=8, 5.5 ms)
+Game plan: reform at low effort for speed
+ 0.04s T3: reform started
+ 0.04s T3: plan=None/None attempts=1 cancels=0 inflight=True
+ 0.27s T4: plan=3/none attempts=1 cancels=0 inflight=False
+ 0.45s T6: reform started
+ 0.45s T6: plan=3/none attempts=2 cancels=0 inflight=True
+ 0.76s T8: reform started
+ 0.76s T8: plan=3/none attempts=3 cancels=1 inflight=True
+ 1.06s T10: reform started
+ 1.06s T10: plan=3/none attempts=4 cancels=2 inflight=True
+ 1.52s T13: plan=3/none attempts=4 cancels=3 inflight=False
+ 1.67s T14: reform started
+ 1.67s T14: plan=3/none attempts=5 cancels=3 inflight=True
+ 2.12s T17: plan=3/none attempts=5 cancels=4 inflight=False
+ 2.27s T18: reform started
+ 2.27s T18: plan=3/none attempts=6 cancels=4 inflight=True
+ 2.75s T21: plan=3/none attempts=6 cancels=5 inflight=False
+ 2.91s T22: reform started
+ 2.91s T22: plan=3/none attempts=7 cancels=5 inflight=True
+
+calls: [('none', 0.2), ('high', 0.75), ('high', 0.75), ('low', 0.75), ('low', 0.75), ('low', 0.75), ('low', 0.75)]
+first plan landed on turn 4; fresh plan (formed this turn) on None
+plans landed (formed turn -> landing turn): [(3, 4)]
+attempts=7 cancels=5 supersedes=5 outcome=superseded by a newer turn
+
+=== baseline (636459f, /tmp/wt-141-base) run 3 ===
+Game plan reform (first plan): turn 3, plan for turn 3
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 3, 18.2ms): AGGRESSOR — our clock 5 beats their none (2 vs 0 creatures, 4 vs 0 power) — we're the beatdown; attack with Mine0, Mine1: survives (life 20, 20, 20; opponent at 8); hold: survives (life 20, 20, 20; opponent at 12) | they kill us in — attack(s), we kill them in 5 | race AHEAD (we kill in 5, they get nothing through) | life 20 vs 20 | line: attack with Mine0, Mine1; then attack with Mine0, Mine1 — survives (life 20, 20, 20; opponent at 8) (nodes=17, 3.0 ms)
+Game plan: first hosted plan without hidden reasoning (0.2s budget)
+Game plan reform for turn 3 keeps running on turn 4 (0s in): no plan exists yet
+Game plan reform for turn 3 keeps running on turn 4 (0s in): no plan exists yet
+GamePlan (turn 3): role=aggressor | win=['aggro beatdown'] | path=race for lethal ~T6 | turns=T3: no cast; attack: all | T5: no cast; attack: all | T7: no cast; attack: all
+Keeping the late game plan for turn 3 (arrived on turn 4): there was no plan
+Game plan reform (plan our next turn): turn 6, plan for turn 7
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 6, 6.1ms): AGGRESSOR — our clock 5 beats their none (2 vs 0 creatures, 4 vs 0 power) — we're the beatdown; attack with Mine0, Mine1: survives (life 20, 20, 20, 20; opponent at 8); hold: survives (life 20, 20, 20, 20; opponent at 12) | they kill us in — attack(s), we kill them in 5 | race AHEAD (we kill in 5, they get nothing through) | life 20 vs 20 | line: attack with Mine0, Mine1; then attack with Mine0, Mine1 — survives (life 20, 20, 20, 20; opponent at 8) (nodes=18, 4.7 ms)
+Superseding the in-flight game plan for turn 7 (now turn 8); its answer will be discarded
+Game plan reform (stale plan): turn 8, plan for turn 9
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 8, 11.1ms): RACE — slow clocks (ours none, theirs none; 2 vs 1 creatures, 4 vs 3 power) — find evasion or removal to break the stall; attack with Mine0, Mine1: survives (life 20, 17, 14, 11; opponent at 14); hold: survives (life 20, 20, 20, 20) | they kill us in — attack(s), we kill them in — | race STALLED (neither side gets damage through the other's blocks) | life 20 vs 20 | line: no play — survives (life 20, 20, 20, 20) (nodes=27, 8.0 ms)
+Discarded a superseded game plan (turn 6); keeping the prior plan
+Superseding the in-flight game plan for turn 9 (now turn 10); its answer will be discarded
+Game plan reform (stale plan): turn 10, plan for turn 11
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 10, 13.3ms): RACE — slow clocks (ours none, theirs none; 2 vs 1 creatures, 4 vs 3 power) — find evasion or removal to break the stall; attack with Mine0, Mine1: survives (life 20, 17, 14, 11; opponent at 14); hold: survives (life 20, 20, 20, 20) | they kill us in — attack(s), we kill them in — | race STALLED (neither side gets damage through the other's blocks) | life 20 vs 20 | line: no play — survives (life 20, 20, 20, 20) (nodes=27, 8.9 ms)
+Game plan: reform at low effort for speed
+Discarded a superseded game plan (turn 8); keeping the prior plan
+Game plan reform for turn 11 keeps running on turn 12 (0s in): after 2 consecutive supersedes
+Game plan reform for turn 11 keeps running on turn 12 (0s in): after 2 consecutive supersedes
+Game plan reform for turn 11 keeps running on turn 13 (0s in): after 2 consecutive supersedes
+GamePlan validation (turn 10): role aggressor differs from the assessed race without a concrete reason
+GamePlan validation (turn 10): plan line survives (life 20, 17, 14, 11; opponent at 14) trails the best line by 11.4 in value: no play — survives (life 20, 20, 20, 20)
+GamePlan (turn 10): role=race | win=['aggro beatdown'] | path=race for lethal ~T6 | turns=T11: no cast; attack: all | T13: no cast; attack: all | T15: no cast; attack: all
+Keeping the late game plan for turn 11 (arrived on turn 13): after 2 consecutive supersedes
+GamePlan for turn 11 predates changes on the opponent's board (Theirs1 3/4 entered); prompts flag its stale lines
+Game plan reform (stale plan): turn 14, plan for turn 15
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 14, 8.4ms): DEFENDER — slow clocks (ours none, theirs 8; 2 vs 2 creatures, 4 vs 6 power) — hold blockers, develop bigger threats | they kill us in 8 attack(s) (their next attack: 3 -> you at 17), we kill them in — | race BEHIND (they kill in 8, we get nothing through) | life 20 vs 20 | line: no play — survives (life 17, 14, 11, 11) (nodes=18, 5.7 ms)
+Superseding the in-flight game plan for turn 15 (now turn 16); its answer will be discarded
+Game plan reform (stale plan): turn 16, plan for turn 17
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 16, 9.6ms): DEFENDER — their clock 4 vs ours none (2 vs 3 creatures, 4 vs 9 power) — behind: block, trade, deploy bodies | they kill us in 4 attack(s) (their next attack: 6 -> you at 14), we kill them in — | race BEHIND (they kill in 4, we get nothing through) | life 20 vs 20 | line: no play — dead on T22 (nodes=13, 5.7 ms)
+Discarded a superseded game plan (turn 14); keeping the prior plan
+Superseding the in-flight game plan for turn 17 (now turn 18); its answer will be discarded
+Game plan reform (stale plan): turn 18, plan for turn 19
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 18, 10.7ms): DEFENDER — their clock 4 vs ours none (2 vs 3 creatures, 4 vs 9 power) — behind: block, trade, deploy bodies | they kill us in 4 attack(s) (their next attack: 6 -> you at 14), we kill them in — | race BEHIND (they kill in 4, we get nothing through) | life 20 vs 20 | line: no play — dead on T24 (nodes=13, 6.6 ms)
+Game plan: reform at low effort for speed
+Discarded a superseded game plan (turn 16); keeping the prior plan
+Game plan reform for turn 19 keeps running on turn 20 (0s in): after 2 consecutive supersedes
+Game plan reform for turn 19 keeps running on turn 20 (0s in): after 2 consecutive supersedes
+Superseding the in-flight game plan for turn 19 (now turn 21); its answer will be discarded
+Discarded a superseded game plan (turn 18); keeping the prior plan
+Game plan reform (stale plan): turn 22, plan for turn 23
+Mana: {'W': 0, 'U': 0, 'B': 0, 'R': 0, 'G': 0, 'C': 0, 'Any': 0} (Total: 0)
+Board facts (turn 22, 9.7ms): DEFENDER — their clock 3 vs ours none (2 vs 4 creatures, 4 vs 12 power) — behind: block, trade, deploy bodies | they kill us in 3 attack(s) (their next attack: 9 -> you at 11), we kill them in — | race BEHIND (they kill in 3, we get nothing through) | life 20 vs 20 | line: no play — dead on T26 (nodes=8, 5.8 ms)
+Game plan: reform at low effort for speed
+ 0.04s T3: reform started
+ 0.04s T3: plan=None/None attempts=1 cancels=0 inflight=True
+ 0.26s T4: plan=3/none attempts=1 cancels=0 inflight=False
+ 0.46s T6: reform started
+ 0.46s T6: plan=3/none attempts=2 cancels=0 inflight=True
+ 0.76s T8: reform started
+ 0.76s T8: plan=3/none attempts=3 cancels=1 inflight=True
+ 1.06s T10: reform started
+ 1.06s T10: plan=3/none attempts=4 cancels=2 inflight=True
+ 1.53s T13: plan=10/low attempts=4 cancels=2 inflight=False
+ 1.66s T14: reform started
+ 1.66s T14: plan=10/low attempts=5 cancels=2 inflight=True
+ 1.97s T16: reform started
+ 1.97s T16: plan=10/low attempts=6 cancels=3 inflight=True
+ 2.28s T18: reform started
+ 2.28s T18: plan=10/low attempts=7 cancels=4 inflight=True
+ 2.72s T21: plan=10/low attempts=7 cancels=5 inflight=False
+ 2.88s T22: reform started
+ 2.88s T22: plan=10/low attempts=8 cancels=5 inflight=True
+
+calls: [('none', 0.2), ('high', 0.75), ('high', 0.75), ('low', 0.75), ('high', 0.75), ('high', 0.75), ('low', 0.75), ('low', 0.75)]
+first plan landed on turn 4; fresh plan (formed this turn) on None
+plans landed (formed turn -> landing turn): [(3, 4), (10, 13)]
+attempts=8 cancels=5 supersedes=3 outcome=superseded by a newer turn
+

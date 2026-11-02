@@ -4444,21 +4444,27 @@ class GamePlanManager:
         return castable <= 1
 
     def _low_effort_reform(self, game_state: dict[str, Any], turn_num: int) -> bool:
-        """True when this reform should run at low effort (#141: first plan, after 2 supersedes in a row,
+        """True when this reform should run at low effort (#141: first plan, after a supersede in a row,
         or in the late game with <=1 castable card in hand)."""
         return (
             self._plan is None
-            or self._consecutive_supersedes >= 2
+            or self._consecutive_supersedes >= 1
             or self._sparse_late_hand(game_state, turn_num)
         )
 
     def _keep_late_plan(self, game_state: dict[str, Any], turn: int) -> bool:
-        """#141: after two supersedes in a row, or one in the late game with a sparse hand, the
-        in-flight reform runs on and its late answer is kept (the supersede and discard paths use
-        this one rule; review 2026-10-20: they disagreed, so the late plan was still discarded)."""
+        """#141: after two supersedes in a row, or one in the late game with a sparse hand, a
+        threat-superseded reform runs on and its late answer is kept (review 2026-10-20: the
+        keep-running and discard paths disagreed, so the late plan was still discarded)."""
         return self._consecutive_supersedes >= 2 or (
             self._consecutive_supersedes >= 1 and self._sparse_late_hand(game_state, turn)
         )
+
+    def _keep_late_after_supersede(self) -> bool:
+        """#141 replay 2026-11-02: after one supersede in a row, a reform whose turn has passed runs
+        on instead of being cancelled again (its replacement is a cheap bounded call), and the late
+        answer it produces is kept rather than discarded."""
+        return self._consecutive_supersedes >= 1
 
     def _supersede_stale_inflight_locked(self, game_state: dict[str, Any]) -> None:
         """Cancel the in-flight reform once the turn it plans for has passed."""
@@ -4469,13 +4475,14 @@ class GamePlanManager:
         started = getattr(self, "_inflight_started_at", None)
         running = time.monotonic() - float(started) if started else 0.0
         if (
-            self._plan is None or self._keep_late_plan(game_state, turn)
+            self._plan is None or self._keep_late_after_supersede()
         ) and running <= self._FIRST_PLAN_PATIENCE_S:
             # 2026-10-10 Brawl, turn 20 after a restart: the first plan's call
             # (73k-character prompt) outlived the turn and was superseded, then
-            # the next one too. With no plan at all (or after repeated late-game
-            # supersedes, #141), a late plan is kept (see the apply path), so the
-            # call runs on; only a request stuck past the patience bound is cancelled.
+            # the next one too. With no plan at all, or after a supersede in a
+            # row (#141 replay 2026-11-02: the replacement is a cheap bounded
+            # call), a late plan is kept (see the apply path), so the call runs
+            # on; only a request stuck past the patience bound is cancelled.
             logger.info(
                 "Game plan reform for turn %d keeps running on turn %d (%.0fs in): %s",
                 self._inflight_plan_turn,
@@ -4621,7 +4628,7 @@ class GamePlanManager:
                 plan is not None
                 and self._observed_turn > plan_turn
                 and self._plan is not None
-                and not self._keep_late_plan(game_state, self._observed_turn)
+                and not self._keep_late_after_supersede()
             ):
                 logger.info(
                     "Discarded the game plan for turn %d: it arrived on turn %d",
@@ -5006,26 +5013,34 @@ class GamePlanManager:
 
         self._reform_failure = ""
         model = str(getattr(self._backend, "model", "")).lower()
-        fast_initial = self._plan is None and (
-            model == "current" or any(name in model for name in ("deepseek", "dsv4"))
-        )
-        budget = min(self._timeout, self._INITIAL_HOSTED_PLAN_TIMEOUT_S) if fast_initial else self._timeout
+        hosted = model == "current" or any(name in model for name in ("deepseek", "dsv4"))
+        # #141 replay 2026-11-02: a reform that follows a cancellation must land
+        # inside the turn it was asked for. At full effort/budget it outlives its
+        # turn and is superseded again, so two calls were wasted before a third
+        # landed three turns late. Recovery attempts therefore use the same fast,
+        # bounded mode as the first plan, and their late answer is kept.
+        fast_recovery = hosted and (self._plan is None or self._consecutive_supersedes >= 1)
+        budget = min(self._timeout, self._INITIAL_HOSTED_PLAN_TIMEOUT_S) if fast_recovery else self._timeout
         # Parsing repair is part of this reform, not a second full occupation
         # of the background lane (#141/#223). Share one wall-clock deadline.
         deadline = time.monotonic() + budget
         try:
             # 2026-10-10 Brawl: the first plan after a mid-game restart took 35 s
             # at high effort on a 21k-token prompt. With no plan at all, a quick
-            # low-effort plan comes first; the next reform (their turn, a role
-            # flip, staleness) runs at high effort as usual.
+            # low-effort plan comes first; a reform that follows a cancellation is
+            # bounded the same way (#141); any other reform runs at high effort.
             effort = (
                 "low"
                 if not self.separate_strategy_planning and self._low_effort_reform(game_state, turn_num)
                 else self._PLAN_REASONING_EFFORT
             )
-            if fast_initial:
+            if fast_recovery:
                 effort = "none"
-                logger.info("Game plan: first hosted plan without hidden reasoning (%.1fs budget)", budget)
+                logger.info(
+                    "Game plan: %s without hidden reasoning (%.1fs budget)",
+                    "first hosted plan" if self._plan is None else "recovery plan after a cancelled reform",
+                    budget,
+                )
             elif effort == "low":
                 logger.info("Game plan: reform at low effort for speed")
             response = self._complete(
@@ -5040,7 +5055,7 @@ class GamePlanManager:
         json_retried = False
         if plan is None and self._reform_failure == "no usable plan from the model":
             json_retried = True
-            retry_effort = "none" if fast_initial else "low"
+            retry_effort = "none" if fast_recovery else "low"
             plan = self._retry_for_json(
                 user_message, turn_num, cancel=cancel, deadline=deadline, effort=retry_effort
             )
@@ -5066,7 +5081,7 @@ class GamePlanManager:
                 turn_num,
                 cancel=cancel,
                 deadline=deadline,
-                effort="none" if fast_initial else "low",
+                effort="none" if fast_recovery else "low",
             )
             if plan is None:
                 return None
