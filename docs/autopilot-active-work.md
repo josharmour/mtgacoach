@@ -134,8 +134,9 @@ deployed.
 | 14 | BUG-254 | merged_awaiting_review | 6cddacc (merge 712db15, tests only) | docs/backlog-receipts/BUG-254/ |
 | 15 | BUG-256 | merged_awaiting_review | dadd9bc (merge 5a38627, no source change) | docs/backlog-receipts/BUG-256/ |
 | 16 | BUG-260 | merged_awaiting_review | 507de46 (merge dae4f06, no source change) | docs/backlog-receipts/BUG-260/ |
+| 17 | BUG-264 | merged_awaiting_review | 3ef8919 (merge 3303c4d, no source change) | docs/backlog-receipts/BUG-264/ |
 
-Next item: BUG-264. All sixteen merged items still need an independent review pass
+Next item: BUG-265. All seventeen merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -260,6 +261,21 @@ the PayCosts/AutoTap request mismatch belongs to execution, the contradictory fa
 rationale to the claims/fallback owner, and decision-chain accumulation to execution
 follow-up f9b88c8. The retained traces `6bef1efb`, `06bbdd81` and `b5f55777` are
 absent from this checkout, so this is mechanism verification, not an exact replay.
+BUG-264 also needed no production source change, and its mechanism is the opposite
+of #256/#260: the retained stalls have no first-token or budget failure, so the model
+call finished inside its limits and the wall clock went somewhere else. A watchdog
+warning alone cannot prove a service delay, which is why this ID asks for client
+versus backend timing separation — and that is what `llm_trace` records on master:
+`client_setup_ms` and `lane_wait_ms` are kept apart from `ttft_ms` and `total_ms` per
+request, scoped to one decision, next to what was finally submitted. The one
+first-plan-start lag in the trace is covered by the fast initial plan (effort `none`
+inside the 20 s initial budget), and the hedge and planner cancel token cover T/F5.
+The remaining scope was verification: the 9 audit node IDs pass (16 passed) and the
+decision-trace file passes (7 passed). Two bounded gaps are recorded rather than
+fixed: end-to-end spans that explain a client-side stall without a failed model call
+are not in this queue, and first-plan live completion is still pending. The retained
+traces `90b6a56c`, `94f1043a` and `edfd8db0` are absent from this checkout, so this is
+mechanism verification, not an exact replay.
 
 ## Queue entries
 

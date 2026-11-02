@@ -12,8 +12,8 @@ decision. That is what `llm_trace` records on master: `client_setup_ms` and
 decision, next to what was finally submitted. The one first-plan-start lag in the
 trace is covered by the fast initial plan. Verification only: the 9 audit node
 IDs for this ID pass on master (`16 passed`), together with the decision-trace
-file (`7 passed`). No source commit; merged to local master as `<merge>`
-(receipt commit `<source>`).
+file (`7 passed`). No source commit; merged to local master as `3303c4d`
+(receipt commit `3ef8919`).
 
 ## Symptom and evidence
 

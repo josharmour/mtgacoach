@@ -825,14 +825,20 @@
         "backlog-evidence-2026-11-01.md: #264"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-264",
+        "base_commit": "31d76c4",
+        "source_commits": [
+          "3ef8919"
+        ],
+        "master_commits": [
+          "3303c4d"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-264/focused-tests.txt"
+        ],
+        "note": "No production change: this trace has no first-token or budget failure, so the stall cannot be attributed to the service; the client-versus-backend separation it needs is llm_trace on master (client_setup_ms and lane_wait_ms kept apart from ttft_ms/total_ms per request, scoped to one decision, plus the submission line), merged as 429fac1 (#231). The one first-plan-start lag is covered by the fast initial plan (game_plan.py:3733 _INITIAL_HOSTED_PLAN_TIMEOUT_S = 20.0 with effort none, 264334b/409749f), and T/F5 by the typed hedge (ec4836b/b352b8a) and the planner cancel token (4359d67). Verified the 9 audit node IDs (16 passed) plus the decision-trace file (7 passed). Bounded gaps recorded: end-to-end spans for a client-side stall without a failed call are not in this queue, first-plan live completion is still pending, and traces 90b6a56c/94f1043a/edfd8db0 are absent from this checkout."
       },
       "independent_verification": {
         "state": "not_reviewed",
