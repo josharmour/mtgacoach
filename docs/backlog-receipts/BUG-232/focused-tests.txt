@@ -1,0 +1,26 @@
+BUG-232 focused verification on master f91dabf (branch fix/bug-232-combat-declaration)
+Python: .venv_mac_311/bin/python (3.11.15)
+
+$ .venv_mac_311/bin/python -m pytest tests/test_latency_232_combat_declaration.py -q
+..                                                                       [100%]
+2 passed in 7.08s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_latency_232_combat_declaration.py \
+    tests/test_declaration_budget_232.py tests/test_latency_budget_222_followup.py \
+    tests/test_action_plan_cancellation_222.py tests/test_block_assignment_completeness.py -q
+.............................................                            [100%]
+45 passed in 8.20s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_commander_combat.py \
+    tests/test_latency_231_decision_trace.py -q
+.......................                                                  [100%]
+23 passed in 7.39s
+
+$ .venv_mac_311/bin/python -m ruff check tests/test_latency_232_combat_declaration.py
+All checks passed!
+
+$ .venv_mac_311/bin/python -m ruff format --check tests/test_latency_232_combat_declaration.py
+1 file already formatted
+
+No production source change: b352b8a (ready declaration wins, other leg cancelled)
+and 70d9e2f (per-leg cancel events) already carry the repair on master.
