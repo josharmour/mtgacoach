@@ -125,8 +125,9 @@ deployed.
 | 5 | BUG-231 | merged_awaiting_review | 429fac1 (merge cd578a0) | docs/backlog-receipts/BUG-231/ |
 | 6 | BUG-232 | merged_awaiting_review | ec4836b (merge b63ff82, tests only) | docs/backlog-receipts/BUG-232/ |
 | 7 | BUG-235 | merged_awaiting_review | a69830e (merge ac32e8a, tests only) | docs/backlog-receipts/BUG-235/ |
+| 8 | BUG-239 | merged_awaiting_review | 66e2d16 (merge 9018179) | docs/backlog-receipts/BUG-239/ |
 
-Next item: BUG-239. All seven merged items still need an independent review pass
+Next item: BUG-241. All eight merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -151,7 +152,15 @@ sequential spending were already validated. The uncovered half was the cleanup
 itself, now pinned by tests/test_plan_mana_dependencies_235.py together with the
 evidence loop that returns drop issues as PREVIOUS VALIDATION. Restricted mana
 ("spend only to cast artifacts") is still unmodelled and counts as ordinary
-coloured mana — over-permissive, not the #235 symptom.
+coloured mana — over-permissive, not the #235 symptom. BUG-239 did need a
+production change: Arena re-offers an unanswered prompt as a new GRE message, so
+`request_key` saw three new requests in the 10:43:12 trace and the urgent-clock
+branch answered the same OptionalAction three times in six seconds. The watchdog
+now keeps the identity of the question its last safe default answered and
+escalates a repeat inside `SAME_PROMPT_GUARD_S` to its alert instead of
+submitting again; a stuck prompt still gets a bounded retry after the window and
+any different question still gets its safe default. No typed OptionalAction
+handler was added — deciding an optional effect stays with the model.
 
 ## Queue entries
 

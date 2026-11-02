@@ -433,14 +433,21 @@
         "backlog-evidence-2026-11-01.md: #239"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "DeepSeek",
+        "session": "session-965ac31a-2db0-4fef-8510-105b967c83cf",
+        "base_commit": "90d001b6bc9b0d93d9a720deae486b2350bcdb82",
+        "source_commits": [
+          "66e2d16"
+        ],
+        "master_commits": [
+          "9018179"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-239/README.md",
+          "docs/backlog-receipts/BUG-239/focused-tests.txt"
+        ],
+        "note": "Watchdog keeps the identity of the question its last safe default answered (prompt_key ignores Arena's per-message ids) and escalates a repeat inside SAME_PROMPT_GUARD_S to the alert instead of submitting again; a stuck prompt still gets a bounded retry after the window and any different question still gets its safe default. LIMITS: no typed OptionalAction handler (the model still decides the effect); guard window is a heuristic; no live replay of match 18975f2b; no Linux CI receipt."
       },
       "independent_verification": {
         "state": "not_reviewed",
