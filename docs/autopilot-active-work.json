@@ -213,14 +213,21 @@
         "| #210 | PARTIAL | all cited revisions reachable | b914f12 (reachable), f917975 (reachable), fa20953 (reachable), 7f4dafb (reachable) | `tests/test_attack_tax_loop_210.py` |"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "DeepSeek",
+        "session": "session-965ac31a-2db0-4fef-8510-105b967c83cf",
+        "base_commit": "abc898c64065371fff067707156b9caa878f0f02",
+        "source_commits": [
+          "5194398"
+        ],
+        "master_commits": [
+          "5194398"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-210/README.md",
+          "docs/backlog-receipts/BUG-210/focused-tests.txt"
+        ],
+        "note": "Verified on current master abc898c and closed with no source change: the merged #210 repairs (b914f12 detect the tax behind an unpayable PayCosts cancel, f917975 withdraw instead of re-declaring, fa20953 finalize the withdraw on the refreshed request, 5ccc99e budget public taxes before projecting or submitting) already cover every acceptance point, and all 46 attack-tax tests plus 31 adjacent bridge/combat tests pass on that tree. Receipt docs/backlog-receipts/BUG-210/README.md maps each acceptance point to its code site and test, records the edge-case probes (own/phased-out/face-down prison, third-seat controller, unknown {X} cost, battle recipient, restricted mana sources) and states the remaining conservative limits: {X} taxes defined by a public count (Sphere of Safety, Collective Restraint), phyrexian costs, untyped floating pools, restricted/costed/sacrifice payment sources and vigilance-payment timing stay unknown, so the autopilot can attack with fewer creatures than another legal sequence but never submits an army it cannot pay for. LIMIT: no live qualification and no Linux CI receipt (this session may not push), so the item stays merged_awaiting_review."
       },
       "independent_verification": {
         "state": "not_reviewed",

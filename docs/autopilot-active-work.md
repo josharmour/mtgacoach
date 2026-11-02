@@ -120,9 +120,13 @@ deployed.
 |---|---|---|---|---|
 | 1 | CI-PERF | merged_awaiting_review | c66155c (queue 636459f) | docs/backlog-receipts/CI-PERF/ |
 | 2 | BUG-141 | merged_awaiting_review | 264334b (merge f72c411) | docs/backlog-receipts/BUG-141/ |
+| 3 | BUG-210 | merged_awaiting_review | 5194398 (merge 39fc230, no source change) | docs/backlog-receipts/BUG-210/ |
 
-Next item: BUG-210. Both merged items still need an independent review pass and a
-real Linux CI receipt; the implementer may not claim either as verified.
+Next item: BUG-223. All three merged items still need an independent review pass
+and a real Linux CI receipt; the implementer may not claim any as verified.
+BUG-210 needed no source change: the merged repairs already cover its acceptance
+points, and the receipt records the current-source evidence plus the remaining
+conservative limits.
 
 ## Queue entries
 
