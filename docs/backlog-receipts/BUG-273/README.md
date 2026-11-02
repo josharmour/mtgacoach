@@ -10,7 +10,7 @@ takes before it is sent — and contrasts it with the hold control, two unavaila
 controls (land tapped, wrong colour) and a sorcery-speed control, without ever forcing an
 all-in. Verification only: `7 passed` for the new file, `98 passed` for the guard/protection
 regression set, `191 passed` for the other consumers of the same guard. No source commit;
-merged to local master as `MERGE_COMMIT` (receipt commit `SOURCE_COMMIT`).
+merged to local master as `ca5ef9f` (receipt commit `2ad966e`).
 
 ## Symptom and evidence
 

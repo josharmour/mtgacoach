@@ -139,8 +139,9 @@ deployed.
 | 19 | BUG-266 | merged_awaiting_review | 03c6439 (merge 2c49ed9, no source change) | docs/backlog-receipts/BUG-266/ |
 | 20 | BUG-269 | merged_awaiting_review | 33e93e4 (merge 34f12f8, no source change) | docs/backlog-receipts/BUG-269/ |
 | 21 | BUG-270 | merged_awaiting_review | a87c21a (merge 8c3d7bf, no source change) | docs/backlog-receipts/BUG-270/ |
+| 22 | BUG-273 | merged_awaiting_review | 2ad966e (merge ca5ef9f, no source change) | docs/backlog-receipts/BUG-273/ |
 
-Next item: BUG-273. All twenty-one merged items still need an independent review pass
+Next item: BUG-275. All twenty-two merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -339,6 +340,24 @@ reconstruct its recorded combat facts rather than replaying hidden responses. Ve
 the two #270/#307 files pass (37 passed) and the three other consumers of the same helper
 pass (34 passed). #307 covers the same subsystem later in the queue; this receipt is the
 block/hold comparison it asks for.
+BUG-273 also needed no production source change. Its protection half is already merged: an
+attack that only feeds an untapped blocker is held unless an affordable instant-speed play
+could change that combat, and "affordable" means the mana is untapped and the card is
+castable in the window (`_possible_tricks` filters hand instants/flash by
+`missing_trick_color`; `losing_attackers` keeps the whole attack only for tricks whose text
+matches `_SAVES_ATTACKER`, while plain pumps are judged per attacker by `_doomed`). The new
+file drives the supported precombat sequence through `_prepare_attack_submission`, the pass
+every attack takes before it is sent, and contrasts it with the hold control, two
+unavailable-protection controls (land tapped, wrong colour) and a sorcery-speed control;
+the partial-attack cases show it thins a doomed attacker instead of forcing an all-in or a
+full hold. Verification: the new file passes (7 passed), the guard/protection regression set
+passes (98 passed) and the other consumers of the same guard pass (191 passed). Two bounded
+gaps are recorded rather than fixed: nothing deterministically casts the trick in the
+precombat main (`cast_notes.trick_timing_note` only fires for `gets +N/+N until end of turn`
+pumps, so a protection spell gets no timing note), and a "protection from <quality>" trick is
+credited without checking that the quality covers the answering group, so a colourless or
+two-colour group can still answer it. The historical #273 packet is absent from this
+checkout, so the tests reconstruct a precombat main rather than replaying hidden responses.
 
 ## Queue entries
 

@@ -1040,14 +1040,20 @@
         "backlog-evidence-2026-11-01.md: #273"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-273",
+        "base_commit": "217e500",
+        "source_commits": [
+          "2ad966e"
+        ],
+        "master_commits": [
+          "ca5ef9f"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-273/focused-tests.txt"
+        ],
+        "note": "No production change: the protection half of this ID is merged. combat_strategy._possible_tricks (737) lists only instant-speed plays we can pay for (hand instants/flash filtered by combat_trick_mana.missing_trick_color, plus graveyard flashback/jump-start/retrace/escape, prepared creatures and activated abilities); losing_attackers (1449) builds affordable = cost <= untapped mana (1552) and keeps the whole attack when any affordable trick's text matches _SAVES_ATTACKER (1566), while plain pumps are judged per attacker by _doomed. autopilot_bridge._prepare_attack_submission (1166) applies that guard at 1195 unless action.line_push, then thins by attack_tax.affordable_entries (1243). New tests/test_attack_protection_273.py drives the supported precombat sequence (untapped Plains + Gods Willing) through that submission pass and contrasts the hold control, tapped land, wrong colour and sorcery-speed controls, plus partial-attack cases that thin only the doomed attacker. Verified 7 passed (new file), 98 passed (guard/protection regression set), 191 passed (other guard consumers), ruff clean. Bounded gaps recorded: nothing deterministically casts the trick in the precombat main (cast_notes.trick_timing_note at 99 only fires for 'gets +N/+N until end of turn' pumps at 89, so protection gets no timing note), and a 'protection from <quality>' trick is credited without checking that the quality covers the answering group. The historical #273 packet is absent from this checkout (BACKLOG_STAGE line 136), so the tests reconstruct a precombat main."
       },
       "independent_verification": {
         "state": "not_reviewed",
