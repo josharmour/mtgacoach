@@ -138,8 +138,9 @@ deployed.
 | 18 | BUG-265 | merged_awaiting_review | c6eb3d7 (merge d94cf56, no source change) | docs/backlog-receipts/BUG-265/ |
 | 19 | BUG-266 | merged_awaiting_review | 03c6439 (merge 2c49ed9, no source change) | docs/backlog-receipts/BUG-266/ |
 | 20 | BUG-269 | merged_awaiting_review | 33e93e4 (merge 34f12f8, no source change) | docs/backlog-receipts/BUG-269/ |
+| 21 | BUG-270 | merged_awaiting_review | a87c21a (merge 8c3d7bf, no source change) | docs/backlog-receipts/BUG-270/ |
 
-Next item: BUG-270. All twenty merged items still need an independent review pass
+Next item: BUG-273. All twenty-one merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -324,6 +325,20 @@ remaining scope was verification: the 11 audit node IDs pass (13 passed) and bot
 files pass (12 passed). Two bounded gaps are recorded rather than fixed: there is no
 exact board replay because traces `211d4ccc` and `87cac475` are absent from this
 checkout, and fallback time versus a real Arena rope is not qualified live.
+BUG-270 is the first non-latency item in this stretch and also needed no production
+source change. The block search already values a dying return creature as two separate
+things: the body it loses and the residual engine it keeps as a noncreature enchantment.
+`_death_material` is `max(0, _material - return_credit)`, so an equal body trade that keeps
+a draw engine is affordable while the same trade with the return text removed is not — the
+pinned test drives both sides of that comparison at a tiny and a huge option budget. The
+returned permanent is built fresh (no power/toughness, counters, attachments, damage or
+combat state, owner control), visible suppression or "exile … instead" withholds the credit,
+and tokens, copies, face-down cards and lost ability text earn nothing. The retained packet
+(`gameplay-ultra-audit.json` G03, `d1bad78e`) is absent from this checkout, so the tests
+reconstruct its recorded combat facts rather than replaying hidden responses. Verification:
+the two #270/#307 files pass (37 passed) and the three other consumers of the same helper
+pass (34 passed). #307 covers the same subsystem later in the queue; this receipt is the
+block/hold comparison it asks for.
 
 ## Queue entries
 

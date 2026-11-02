@@ -9,7 +9,7 @@ and death-trigger suppression withhold the credit, counters and combat state do 
 survive the zone change, and an ineligible or unknown identity earns nothing. Verification
 only: the two #270/#307 files pass on master (`37 passed`), together with the three other
 files that consume the same helper (`34 passed`). No source commit; merged to local master
-as `<merge>` (receipt commit `<source>`).
+as `8c3d7bf` (receipt commit `a87c21a`).
 
 ## Symptom and evidence
 

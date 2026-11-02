@@ -997,14 +997,20 @@
         "backlog-evidence-2026-11-01.md: #270"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-270",
+        "base_commit": "728dc90",
+        "source_commits": [
+          "a87c21a"
+        ],
+        "master_commits": [
+          "8c3d7bf"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-270/focused-tests.txt"
+        ],
+        "note": "No production change: the body-versus-engine split is merged. persistent_returns.returned_enchantment (1df203b/7403b0f) builds a fresh Enchantment with no power/toughness, counters, attachments, damage or combat state and owner control; return_value gates on the printed 'dies, if it was a creature' text; return_credit signs the value by ownership; annotate_return_credit withholds it for visible suppression or 'exile ... instead'. combat_solver._death_material (169) = max(0, _material - return_credit), so the block search compares body-minus-engine against the full body (51e26ac/bacac2d/6a62c78). Verified tests/test_retained_engine_value_284.py + tests/test_combat_persistence_284.py (37 passed) and the three other consumers (34 passed). Bounded gaps recorded: the retained packet gameplay-ultra-audit.json G03 / d1bad78e is absent from this checkout so the tests reconstruct recorded facts, engine value is a fixed small number rather than a simulation, interference detection is textual, and there is no live qualification. #307 covers the same subsystem later in the queue; this receipt is the block/hold comparison it asks for."
       },
       "independent_verification": {
         "state": "not_reviewed",
