@@ -11,8 +11,8 @@ reform starts no second request at all. The hop limit is deliberate bounded work
 per cast and belongs to execution; the library-only strategy rejection belongs to
 the strategy owner. Verification only: the 15 audit node IDs for this ID pass on
 master (`24 passed`), together with the reform-budget file and the post-cast
-priority file (`37 passed`). No source commit; merged to local master as `<merge>`
-(receipt commit `<source>`).
+priority file (`37 passed`). No source commit; merged to local master as `2c49ed9`
+(receipt commit `03c6439`).
 
 ## Symptom and evidence
 

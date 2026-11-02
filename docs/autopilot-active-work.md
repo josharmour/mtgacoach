@@ -136,8 +136,9 @@ deployed.
 | 16 | BUG-260 | merged_awaiting_review | 507de46 (merge dae4f06, no source change) | docs/backlog-receipts/BUG-260/ |
 | 17 | BUG-264 | merged_awaiting_review | 3ef8919 (merge 3303c4d, no source change) | docs/backlog-receipts/BUG-264/ |
 | 18 | BUG-265 | merged_awaiting_review | c6eb3d7 (merge d94cf56, no source change) | docs/backlog-receipts/BUG-265/ |
+| 19 | BUG-266 | merged_awaiting_review | 03c6439 (merge 2c49ed9, no source change) | docs/backlog-receipts/BUG-266/ |
 
-Next item: BUG-266. All eighteen merged items still need an independent review pass
+Next item: BUG-269. All nineteen merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -293,6 +294,22 @@ of a faster accepted declaration is still pending, and malformed typed output pl
 illegal declarations stay with the parser/legality owner. The retained traces
 `e756afa4` and `15eaac1a` are absent from this checkout, so this is mechanism
 verification, not an exact replay.
+BUG-266 also needed no production source change. Its retained window had two budget
+exhaustions, and the second is the one that matters: a malformed strategy answer used
+to start a fresh model request with a fresh budget, so one reform could spend twice its
+allowance. On master the JSON retry receives only what is left of the original reform
+budget — 3.0 s of 10 s in the pinned reproduction — and an expired reform starts no
+second request at all. The audit's prerequisite ("identify whether exhausted calls were
+hedge or serial work") is answered by the decision trace, which records `call_class`,
+`status`, `attempts` and `budget_s` per request, so a hedged pair is distinguishable
+from serial retries inside one decision. Two mechanisms are recorded rather than fixed
+because they belong to other owners: the hop limit (`_MAX_POST_CAST_PRIORITY_HOPS = 1`)
+is deliberate bounded work per cast and logs explicitly when it trips instead of
+stalling silently, and library-only strategy rejection belongs to the strategy owner
+(#240, out of queue scope). The remaining scope was verification: the 15 audit node IDs
+pass (24 passed) and the reform-budget plus post-cast priority files pass (37 passed).
+The retained traces `04314b21`, `8d26e22e` and `c06d3a82` are absent from this
+checkout, so this is mechanism verification, not an exact replay.
 
 ## Queue entries
 

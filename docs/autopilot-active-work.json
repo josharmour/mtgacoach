@@ -911,14 +911,20 @@
         "backlog-evidence-2026-11-01.md: #266"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-266",
+        "base_commit": "03bd9ac",
+        "source_commits": [
+          "03c6439"
+        ],
+        "master_commits": [
+          "2c49ed9"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-266/focused-tests.txt"
+        ],
+        "note": "No production change: the second budget exhaustion in the retained window is fixed by the shared reform budget on master (game_plan.py:5209 _retry_for_json; a malformed answer's retry gets only the remainder, 3.0 s of 10 s, and an expired reform starts no second request), merged as 70d9e2f/b352b8a. P is d27b878/87faace (budget cut never retried, retries share one budget), T is ec4836b/b352b8a, F4 is 264334b/409749f and F5 is 4359d67. The audit prerequisite 'identify whether exhausted calls were hedge or serial work' is answered by the decision trace recording call_class, status, attempts and budget_s per request. Verified the 15 audit node IDs (24 passed) plus the reform-budget and post-cast priority files (37 passed). Bounded gaps recorded: the hop limit (_MAX_POST_CAST_PRIORITY_HOPS = 1, autopilot.py:5172) is deliberate bounded work owned by execution and logs when it trips, library-only strategy rejection belongs to the strategy owner (#240, out of queue scope), and traces 04314b21/8d26e22e/c06d3a82 are absent from this checkout."
       },
       "independent_verification": {
         "state": "not_reviewed",
