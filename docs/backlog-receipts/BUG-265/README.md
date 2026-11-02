@@ -11,7 +11,7 @@ invalid answer does not displace the valid other leg, and if neither is usable a
 response is retained for the caller's bounded repair path instead of raising.
 Verification only: the 10 audit node IDs for this ID pass on master (`14 passed`),
 together with the two declaration files (`27 passed`). No source commit; merged to
-local master as `<merge>` (receipt commit `<source>`).
+local master as `d94cf56` (receipt commit `c6eb3d7`).
 
 ## Symptom and evidence
 

@@ -868,14 +868,20 @@
         "backlog-evidence-2026-11-01.md: #265"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-265",
+        "base_commit": "2bc6814",
+        "source_commits": [
+          "c6eb3d7"
+        ],
+        "master_commits": [
+          "d94cf56"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-265/focused-tests.txt"
+        ],
+        "note": "No production change: the reported mechanism (high-effort declaration fails at budget while low could stand) is fixed by _hedged_declaration on master (action_planner.py:1162, docstring cites #222/#265/#277), merged as 70d9e2f/b352b8a. Both legs are submitted at once; the first answer the ordinary parser accepts as legal actions wins and logs 'other effort not awaited'; a fast but invalid answer cannot displace the valid leg; if neither is usable a response is retained for the bounded repair path; the finally block sets every cancel token so the losing leg stops. F5 is 4359d67 and P (budget cut never retried, retries share one budget) is d27b878/87faace. Verified the 10 audit node IDs (14 passed) plus both declaration files (27 passed). Bounded gaps recorded: live qualification of a faster accepted declaration is pending, malformed typed output and illegal declarations stay with the parser/legality owner, and traces e756afa4/15eaac1a are absent from this checkout."
       },
       "independent_verification": {
         "state": "not_reviewed",

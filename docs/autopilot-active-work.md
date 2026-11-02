@@ -135,8 +135,9 @@ deployed.
 | 15 | BUG-256 | merged_awaiting_review | dadd9bc (merge 5a38627, no source change) | docs/backlog-receipts/BUG-256/ |
 | 16 | BUG-260 | merged_awaiting_review | 507de46 (merge dae4f06, no source change) | docs/backlog-receipts/BUG-260/ |
 | 17 | BUG-264 | merged_awaiting_review | 3ef8919 (merge 3303c4d, no source change) | docs/backlog-receipts/BUG-264/ |
+| 18 | BUG-265 | merged_awaiting_review | c6eb3d7 (merge d94cf56, no source change) | docs/backlog-receipts/BUG-265/ |
 
-Next item: BUG-265. All seventeen merged items still need an independent review pass
+Next item: BUG-266. All eighteen merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -276,6 +277,22 @@ fixed: end-to-end spans that explain a client-side stall without a failed model 
 are not in this queue, and first-plan live completion is still pending. The retained
 traces `90b6a56c`, `94f1043a` and `edfd8db0` are absent from this checkout, so this is
 mechanism verification, not an exact replay.
+BUG-265 also needed no production source change. Its mechanism is the declaration
+hedge: the high-effort leg ran out its budget while the low-effort leg had an answer
+that could stand, and the old hedge waited for high anyway, so the combat window
+closed with a usable answer already in hand. On master both legs are submitted at
+once and the first answer the ordinary parser accepts as legal actions wins — the
+call site passes a parser-based predicate over the effective legal actions, so
+"usable" means legal, not merely non-empty — and the losing leg's cancel token is set
+in the `finally` block so its network work stops instead of running on. A fast but
+invalid answer cannot displace the valid leg, and if neither is usable a response is
+retained for the caller's bounded repair path rather than raising. The remaining scope
+was verification: the 10 audit node IDs pass (14 passed) and both declaration files
+pass (27 passed). Two bounded gaps are recorded rather than fixed: live qualification
+of a faster accepted declaration is still pending, and malformed typed output plus
+illegal declarations stay with the parser/legality owner. The retained traces
+`e756afa4` and `15eaac1a` are absent from this checkout, so this is mechanism
+verification, not an exact replay.
 
 ## Queue entries
 
