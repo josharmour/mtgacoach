@@ -14,6 +14,14 @@ Real-time AI coaching for Magic: The Gathering Arena. MTGA Coach tracks your liv
 - **Grounded Gameplay Planning**: More precise handling of legal choices, commander restrictions and tax, legend-rule replacements, combat protection, mana reservations, optional costs, and action/explanation consistency.
 - **Online AI Backend**: Hosted coaching uses the active backend via **`current`** through `api.mtgacoach.com`. Get your Patreon key at [mtgacoach.com/subscribe](https://mtgacoach.com/subscribe); the same key also works with [ArenaOnAir](https://arenaonair.com). Hosted clients discover `current` through authenticated `/v1/models`; LiteLLM selects the active backend. The gateway exposes only `current`; saved legacy aliases are migrated to it.
 
+### What's new in 3.8.1
+
+Coaching advice is now spoken in every speech mode, including Announcer mode, and
+suppressed speech is no longer logged as if it had been read aloud. The desktop
+shows expired-trial and license-key state instead of a generic failure, and
+verified trial users get one expiration email when their trial ends. See
+[the 3.8.1 release notes](docs/releases/v3.8.1.md).
+
 ### What's new in 3.8.0
 
 ArenaOnAir now shares the normal speech controls, with two distinct announcers and
