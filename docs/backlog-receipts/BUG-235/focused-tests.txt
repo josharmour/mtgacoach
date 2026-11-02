@@ -1,0 +1,27 @@
+BUG-235 focused verification — local master 23dd4c5f4d2901a331e29af39728f05f6a9506d0
+Python 3.11.15 (.venv_mac_311), macOS dev machine.
+
+$ .venv_mac_311/bin/python -m pytest tests/test_plan_mana_dependencies_235.py -q
+...                                                                      [100%]
+3 passed in 6.68s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_plan_mana_dependencies_235.py \
+    tests/test_plan_mana_repair.py tests/test_plan_availability_feedback.py \
+    tests/test_plan_cost_reducers_20261019.py -q
+...............................                                          [100%]
+31 passed in 6.84s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_strategic_plan.py tests/test_plan_lines.py -q
+........................................................................ [ 84%]
+.............                                                            [100%]
+85 passed in 18.97s
+
+$ .venv_mac_311/bin/python -m ruff check tests/test_plan_mana_dependencies_235.py
+All checks passed!
+
+$ .venv_mac_311/bin/python -m ruff format --check tests/test_plan_mana_dependencies_235.py
+1 file already formatted
+
+Mutation checks (source restored afterwards, no source change committed):
+- _check_dropped_cast_dependencies -> no-op: test_a_colored_pip... FAILED (path kept)
+- conditional guard removed in checked(): test_a_conditional_wait... FAILED (path removed)
