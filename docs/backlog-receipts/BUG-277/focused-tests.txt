@@ -1,0 +1,17 @@
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest tests/test_latency_277_delayed_winner.py -q
+...                                                                      [100%]
+3 passed in 8.40s
+
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest -q tests/test_latency_277_delayed_winner.py tests/test_latency_276_declaration_budget.py tests/test_latency_budget_222_followup.py tests/test_declaration_budget_232.py tests/test_action_plan_cancellation_222.py tests/test_llm_latency_222.py tests/test_proxy_request_metrics.py tests/test_latency_231_decision_trace.py tests/test_latency_232_combat_declaration.py
+...............................................................          [100%]
+63 passed in 18.98s
+
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest -q tests/test_latency_277_delayed_winner.py tests/test_latency_276_declaration_budget.py
+.....                                                                    [100%]
+5 passed in 9.61s
+
+$ .venv_mac_311/bin/python -m ruff check tests/test_latency_277_delayed_winner.py tests/test_latency_276_declaration_budget.py
+All checks passed!
+
+$ .venv_mac_311/bin/python -m ruff format --check tests/test_latency_277_delayed_winner.py tests/test_latency_276_declaration_budget.py
+2 files already formatted

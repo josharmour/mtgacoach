@@ -107,7 +107,10 @@ def test_a_streaming_high_leg_cannot_hold_a_ready_low_declaration():
     be = backend()
     result, model_time, summary = plan(be, timeout=2.0)
 
-    assert be._client.efforts == ["high", "low"], f"expected a high/low hedge, got {be._client.efforts}"
+    # Both legs are submitted to a two-worker pool, so their arrival order is scheduling-dependent.
+    assert sorted(be._client.efforts) == ["high", "low"], (
+        f"expected a high/low hedge, got {be._client.efforts}"
+    )
     assert result.actions and result.actions[0].action_type is ActionType.DECLARE_ATTACKERS
     assert result.actions[0].attacker_names == ["Odin"]
     assert result.fallback_reason == "", (
