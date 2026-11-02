@@ -20,6 +20,7 @@ from collections import deque
 from collections.abc import Callable
 from typing import Any
 
+from arenamcp import llm_trace
 from arenamcp.action_planner import (
     FALLBACK_AUTO_PICK,
     FALLBACK_LLM_UNAVAILABLE,
@@ -266,6 +267,9 @@ class AutopilotEngine(
 
         # Execution path tracking
         self._path_stats: dict[str, int] = {}
+        # The LLM requests behind the last plan (#231): queue/first-token/
+        # generation/cancellation timings, logged with the submitted action.
+        self._last_decision_trace: dict[str, Any] | None = None
 
         # Consecutive planning failure tracking (timeout/empty plan escalation)
         self._consecutive_plan_failures: int = 0
@@ -2943,8 +2947,44 @@ class AutopilotEngine(
 
     def _log_execution_path(self, path: str, action_desc: str) -> None:
         """Log which execution path was used for an action."""
-        logger.info(f"[{path}] {action_desc}")
+        logger.info(f"[{path}] {action_desc}{self._decision_suffix()}")
         self._path_stats[path] = self._path_stats.get(path, 0) + 1
+
+    def _decision_suffix(self) -> str:
+        """The decision behind a submission: its fallback and request timings (#231).
+
+        A land play or a pass after a stalled model call looks identical to a
+        deliberate one in the log; this names the fallback and how long the
+        decision took, so a masked delay is visible where it was submitted.
+        """
+        trace = self._last_decision_trace or {}
+        parts: list[str] = []
+        if self.last_plan_fallback_reason:
+            parts.append(f"fallback={self.last_plan_fallback_reason}")
+        if trace.get("elapsed_ms") is not None:
+            parts.append(f"decision={trace['elapsed_ms']}ms")
+            parts.append(f"requests={len(trace.get('requests') or [])}")
+            if trace.get("cancelled"):
+                parts.append(f"cancelled={trace['cancelled']}")
+        return f" ({', '.join(parts)})" if parts else ""
+
+    def _plan_with_trace(self, *args: Any, **kwargs: Any) -> ActionPlan:
+        """Plan one decision and record the LLM requests that made it up (#231)."""
+        trace = llm_trace.start()
+        try:
+            plan = self._planner.plan_actions(*args, **kwargs)
+        finally:
+            llm_trace.finish(trace)
+        summary = trace.summary()
+        self._last_decision_trace = summary
+        if summary["requests"]:
+            logger.info(
+                "[AUTOPILOT] Decision trace: %s fallback=%r actions=%d",
+                llm_trace.describe(summary),
+                getattr(plan, "fallback_reason", "") or "",
+                len(getattr(plan, "actions", None) or []),
+            )
+        return plan
 
     @staticmethod
     def _progress_poll_from_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -4117,7 +4157,7 @@ class AutopilotEngine(
             if callable(set_cancel):
                 set_cancel(cancel)
             try:
-                plan = self._planner.plan_actions(game_state, trigger, legal_actions, decision_context)
+                plan = self._plan_with_trace(game_state, trigger, legal_actions, decision_context)
             finally:
                 if callable(set_cancel):
                     set_cancel(None)
@@ -5080,7 +5120,7 @@ class AutopilotEngine(
                 logger.info(f"Stuck recovery: found pending decision '{pending}', re-planning")
                 self._notify("AUTOPILOT", f"Re-planning for: {pending}")
                 legal = self._get_legal_actions(fresh_state)
-                plan = self._planner.plan_actions(fresh_state, "decision_required", legal)
+                plan = self._plan_with_trace(fresh_state, "decision_required", legal)
                 if plan.actions:
                     for action in plan.actions:
                         self._execute_action(action, fresh_state)
