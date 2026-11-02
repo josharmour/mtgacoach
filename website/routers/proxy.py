@@ -194,6 +194,7 @@ async def request_trial(request: Request):
                 "expires_at": existing["expires_at"],
                 "status": "existing",
             }
+        await _get_patreon().maybe_email_expired_trial(existing)
         _record_trial_event(request, "expired", machine_id, app_version)
         raise HTTPException(403, "trial_expired")
 

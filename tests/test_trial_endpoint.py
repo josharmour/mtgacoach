@@ -618,3 +618,82 @@ def test_code_requests_are_rate_limited_per_machine(env):
     assert int(r.headers["Retry-After"]) > 0
     events = _events(proxy_db)
     assert events[-1]["event"] == "code_rate_limited"
+
+def test_expired_trial_with_email_sends_expiration_email_once(env, monkeypatch):
+    _, proxy_db, patreon, _, client = env
+    sent_expired: list[str] = []
+    monkeypatch.setattr(patreon, "send_trial_expired_email", lambda to_addr, **kw: sent_expired.append(to_addr))
+
+    now = datetime.now(timezone.utc)
+    proxy_db.create_trial(
+        MACHINE_ID,
+        "sk-expired-with-email",
+        _iso(now - timedelta(days=8)),
+        _iso(now - timedelta(hours=1)),
+        email="user@example.com",
+    )
+
+    # First check via /v1/subscription/check returns 402 and sends the email.
+    r1 = client.post(
+        "/v1/subscription/check",
+        headers={"Authorization": "Bearer sk-expired-with-email"},
+        json={"license_key": "sk-expired-with-email"},
+    )
+    assert r1.status_code == 402
+    assert r1.json()["status"] == "expired"
+    assert sent_expired == ["user@example.com"]
+    row = proxy_db.get_trial(MACHINE_ID)
+    assert row["expired_email_sent_at"]
+
+    # Repeat check or /api/trial hit or background sweep never re-sends.
+    r2 = client.post(
+        "/v1/subscription/check",
+        headers={"Authorization": "Bearer sk-expired-with-email"},
+        json={"license_key": "sk-expired-with-email"},
+    )
+    assert r2.status_code == 402
+    r3 = client.post("/api/trial", json={"machine_id": MACHINE_ID})
+    assert r3.status_code == 403
+    import asyncio
+    assert asyncio.run(patreon.sweep_expired_trial_emails()) == 0
+    assert sent_expired == ["user@example.com"]
+
+
+def test_sweep_expired_trial_emails_notifies_only_expired_trials_with_email(env, monkeypatch):
+    _, proxy_db, patreon, _, _ = env
+    sent_expired: list[str] = []
+    monkeypatch.setattr(patreon, "send_trial_expired_email", lambda to_addr, **kw: sent_expired.append(to_addr))
+
+    now = datetime.now(timezone.utc)
+    # 1. Expired with email -> should receive email
+    proxy_db.create_trial(
+        _machine(1),
+        "sk-exp-1",
+        _iso(now - timedelta(days=8)),
+        _iso(now - timedelta(minutes=5)),
+        email="expired1@example.com",
+    )
+    # 2. Expired without email (legacy trial) -> skipped
+    proxy_db.create_trial(
+        _machine(2),
+        "sk-exp-2",
+        _iso(now - timedelta(days=8)),
+        _iso(now - timedelta(minutes=5)),
+        email="",
+    )
+    # 3. Still active with email -> skipped
+    proxy_db.create_trial(
+        _machine(3),
+        "sk-act-3",
+        _iso(now - timedelta(days=1)),
+        _iso(now + timedelta(days=6)),
+        email="active3@example.com",
+    )
+
+    import asyncio
+    count = asyncio.run(patreon.sweep_expired_trial_emails())
+    assert count == 1
+    assert sent_expired == ["expired1@example.com"]
+    assert proxy_db.get_trial(_machine(1))["expired_email_sent_at"]
+    assert not proxy_db.get_trial(_machine(2)).get("expired_email_sent_at")
+    assert not proxy_db.get_trial(_machine(3)).get("expired_email_sent_at")

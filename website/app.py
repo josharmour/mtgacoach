@@ -42,13 +42,39 @@ mimetypes.add_type("image/webp", ".webp")
 state.init_app_state()
 
 
+TRIAL_EXPIRED_EMAIL_SWEEP_SECONDS = 300.0
+
+
+async def _expired_trial_email_loop() -> None:
+    import asyncio
+    import sys
+
+    while True:
+        try:
+            _patreon = sys.modules.get("patreon", patreon)
+            await _patreon.sweep_expired_trial_emails()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Expired trial email sweep failed: {e}")
+        await asyncio.sleep(TRIAL_EXPIRED_EMAIL_SWEEP_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
+
     state.http_client = httpx.AsyncClient(timeout=120.0)
     logger.info(f"Proxy server started with {len(state.router.providers)} providers")
+    sweep_task = asyncio.create_task(_expired_trial_email_loop())
     try:
         yield
     finally:
+        sweep_task.cancel()
+        try:
+            await sweep_task
+        except asyncio.CancelledError:
+            pass
         if state.http_client:
             await state.http_client.aclose()
 

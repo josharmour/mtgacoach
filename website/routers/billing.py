@@ -73,6 +73,10 @@ async def check_subscription(request: Request):
             })
         response = _trial_status(trial)
         event = "check" if response.status_code == 200 else "check_expired"
+        if event == "check_expired":
+            import sys
+            _patreon = sys.modules.get("patreon", patreon)
+            await _patreon.maybe_email_expired_trial(trial)
         state._record_trial_event(request, event, trial["machine_id"])
         return response
 

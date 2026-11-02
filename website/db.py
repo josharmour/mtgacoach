@@ -138,6 +138,8 @@ def init_db():
             conn.execute("ALTER TABLE trials ADD COLUMN email TEXT")
         if trial_cols and "email_verified" not in trial_cols:
             conn.execute("ALTER TABLE trials ADD COLUMN email_verified INTEGER DEFAULT 0")
+        if trial_cols and "expired_email_sent_at" not in trial_cols:
+            conn.execute("ALTER TABLE trials ADD COLUMN expired_email_sent_at TEXT")
 
 
 # --- Proxy config (provider overrides + default_model) ---
@@ -302,6 +304,44 @@ def set_trial_email(machine_id: str, email: str) -> None:
         conn.execute(
             "UPDATE trials SET email = ?, email_verified = 1 WHERE machine_id = ?",
             (email, machine_id),
+        )
+
+
+def list_expired_trials_needing_email(now_iso: str) -> list[dict]:
+    """Return expired trial rows that have a verified email address and haven't been emailed yet."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM trials "
+            "WHERE email IS NOT NULL AND trim(email) != '' "
+            "AND email_verified = 1 "
+            "AND (expired_email_sent_at IS NULL OR expired_email_sent_at = '') "
+            "AND expires_at IS NOT NULL AND trim(expires_at) != '' "
+            "AND expires_at <= ?",
+            (now_iso,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def claim_trial_expired_email(machine_id: str, sent_at: str) -> bool:
+    """Atomically claim the one-time expiration email for a machine_id."""
+    with get_db() as conn:
+        cursor = conn.execute(
+            "UPDATE trials SET expired_email_sent_at = ? "
+            "WHERE machine_id = ? "
+            "AND email IS NOT NULL AND trim(email) != '' "
+            "AND email_verified = 1 "
+            "AND (expired_email_sent_at IS NULL OR expired_email_sent_at = '')",
+            (sent_at, machine_id),
+        )
+    return cursor.rowcount > 0
+
+
+def clear_trial_expired_email_claim(machine_id: str) -> None:
+    """Release an expiration-email claim if SMTP delivery failed."""
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE trials SET expired_email_sent_at = NULL WHERE machine_id = ?",
+            (machine_id,),
         )
 
 

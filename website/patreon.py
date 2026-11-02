@@ -309,6 +309,76 @@ def send_trial_code_email(to_addr: str, code: str, *, product: str = "mtgacoach"
         smtp.send_message(msg)
 
 
+def send_trial_expired_email(to_addr: str, *, product: str = "mtgacoach") -> None:
+    """Notify a trial user who signed up with an email address that their free trial has expired."""
+    msg = EmailMessage()
+    msg["Subject"] = f"Your {product} free trial has expired"
+    msg["From"] = SMTP_FROM
+    msg["To"] = to_addr
+    msg.set_content(
+        f"Your 7-day {product} free trial has expired.\n\n"
+        "To keep coaching, subscribe on Patreon at:\n\n"
+        "    https://mtgacoach.com/subscribe\n\n"
+        "Once subscribed, your license key will be emailed to you (or you can "
+        'retrieve it at https://mtgacoach.com/subscribe via "Already a patron? '
+        'Get your license key") and paste it in the app under Setup & Repair.\n\n'
+        f"Thanks for trying {product}!\n"
+    )
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as smtp:
+        smtp.starttls()
+        if SMTP_USER:
+            smtp.login(SMTP_USER, SMTP_PASS)
+        smtp.send_message(msg)
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+async def maybe_email_expired_trial(trial: dict) -> bool:
+    """Send a one-time expiration email if this trial has a verified email and hasn't been notified yet."""
+    if not trial or not SMTP_HOST:
+        return False
+    email = str(trial.get("email") or "").strip().lower()
+    machine_id = str(trial.get("machine_id") or "").strip()
+    if (
+        not email
+        or not int(trial.get("email_verified") or 0)
+        or not machine_id
+        or trial.get("expired_email_sent_at")
+    ):
+        return False
+    # Skip if this email already belongs to an active subscriber.
+    sub = _subscriber_by_email(email)
+    if sub and sub.get("status") == "active":
+        return False
+    sent_at = _now_iso()
+    if not db.claim_trial_expired_email(machine_id, sent_at):
+        return False
+    try:
+        await asyncio.to_thread(send_trial_expired_email, email)
+        logger.info(f"Emailed trial expiration notice to {email} (machine {machine_id[:12]}...)")
+        return True
+    except Exception as e:
+        db.clear_trial_expired_email_claim(machine_id)
+        logger.error(f"Failed to email trial expiration notice to {email}: {e}")
+        return False
+
+
+async def sweep_expired_trial_emails() -> int:
+    """Find any expired trials with a verified email that haven't been emailed yet and notify them."""
+    if not SMTP_HOST:
+        return 0
+    rows = db.list_expired_trials_needing_email(_now_iso())
+    sent = 0
+    for row in rows:
+        if await maybe_email_expired_trial(row):
+            sent += 1
+    return sent
+
+
 # ---------------------------------------------------------------------------
 # Webhook
 # ---------------------------------------------------------------------------
