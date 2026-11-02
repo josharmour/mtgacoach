@@ -1,0 +1,14 @@
+=== BASELINE master c310005 (worktree /private/tmp/mtgacoach-ci-performance-20261102) ===
+SLOW_212608: 103.2ms nodes=90 combats=396 bounded=True truncated=False
+SLOW_202111: 101.5ms nodes=185 combats=310 bounded=True truncated=False
+SLOW_212608: 103.3ms nodes=90 combats=396 bounded=True truncated=False
+SLOW_202111: 102.3ms nodes=185 combats=310 bounded=True truncated=False
+SLOW_212608: 103.5ms nodes=90 combats=396 bounded=True truncated=False
+SLOW_202111: 101.9ms nodes=185 combats=310 bounded=True truncated=False
+=== PATCHED (worktree /tmp/wt-ciperf) ===
+SLOW_212608: 87.6ms nodes=90 combats=396 bounded=True truncated=False
+SLOW_202111: 87.4ms nodes=185 combats=310 bounded=True truncated=False
+SLOW_212608: 87.1ms nodes=90 combats=396 bounded=True truncated=False
+SLOW_202111: 88.0ms nodes=185 combats=310 bounded=True truncated=False
+SLOW_212608: 86.7ms nodes=90 combats=396 bounded=True truncated=False
+SLOW_202111: 86.9ms nodes=185 combats=310 bounded=True truncated=False

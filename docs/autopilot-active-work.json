@@ -119,14 +119,23 @@
         "backlog-ci-handoff.md"
       ],
       "implementation": {
-        "state": "needs_follow_up",
+        "state": "merged_awaiting_review",
         "owner": "DeepSeek",
         "session": "session-ad6cc501-1520-4a4d-b6c6-91c64c5af4b4",
-        "note": "Headless attempt stopped after sandbox denied worktree creation and no escalation channel was available; no accepted candidate. Desktop session bea7a22d-5761-41c1-a93b-a2c2988fd0a5 preserved. An isolated workspace must be prepared before continuing.",
+        "note": "Repaired in an isolated worktree (/tmp/wt-ciperf) at master 34ee704 and merged to local master as c66155c. The block search now caches per-body fight keys, material, death-trigger swings and hit flags per search, starts every assignment from a precomputed unblocked baseline and adds only the deltas of the attackers a choice touches, reuses its per-choice scratch, and skips the menace check when no attacker has menace; combat_detail keys protection through _protection_part, which collapses to () when no fight body can be affected by protection, and protection_signature has a plain fast path that still takes the slow path for printed unpreventable damage. SLOW_212608 103.3 -> 87.1 ms and SLOW_202111 101.9 -> 87.4 ms on this machine with identical node/combat counts (90/396 and 185/310). Differential replay of all 2,771 block searches across 29 strategic boards against c310005: 0 mismatches. Focused regressions: 501 passed; ruff clean. BLOCKER: acceptance criterion 3 needs a real Linux CI receipt and this session may not push or deploy, so CI green is unconfirmed; extrapolating the failing run's own CI/local ratio predicts ~415/~424 ms against the unchanged 480 ms bound.",
         "base_commit": "c31000589d5a0f38680855ac07c3f16580635694",
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": []
+        "source_commits": [
+          "c66155cc775403496282597f9270b278db0a5057"
+        ],
+        "master_commits": [
+          "c66155cc775403496282597f9270b278db0a5057"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/CI-PERF/README.md",
+          "docs/backlog-receipts/CI-PERF/bench.txt",
+          "docs/backlog-receipts/CI-PERF/differential-block-search.txt",
+          "docs/backlog-receipts/CI-PERF/focused-tests.txt"
+        ]
       },
       "independent_verification": {
         "state": "not_reviewed",

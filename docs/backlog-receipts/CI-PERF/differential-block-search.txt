@@ -1,0 +1,36 @@
+boards: 34
+BRAWL_COMMANDER_SAVES: calls=15 mismatched=0
+BRAWL_SECOND_CAST: calls=15 mismatched=0
+BRAWL_T7: calls=252 mismatched=0
+BRAWL_TAXED_OUT: calls=0 mismatched=0
+BRIDGE_TRAITS: calls=0 mismatched=0
+BUG_135027: calls=5 mismatched=0
+BUG_174855: calls=54 mismatched=0
+BUG_180436: calls=14 mismatched=0
+BUG_182945: calls=328 mismatched=0
+BUG_182945_T13_UPKEEP: calls=331 mismatched=0
+BUG_183358: calls=162 mismatched=0
+BUG_183358_ON_STACK: calls=258 mismatched=0
+BUG_183358_T16_MAIN1: calls=308 mismatched=0
+BUG_183539: calls=28 mismatched=0
+BUG_212848: calls=25 mismatched=0
+CARDS: calls=0 mismatched=0
+DECK_CATALOG: calls=0 mismatched=0
+ENTERS_REMOVAL: calls=10 mismatched=0
+G1_T10: calls=59 mismatched=0
+G1_T12: calls=73 mismatched=0
+G1_T12_AFTER_VOLUME: calls=43 mismatched=0
+G1_T14: calls=14 mismatched=0
+G1_T14_MODE_STATE: calls=14 mismatched=0
+G1_T14_ON_STACK: calls=4 mismatched=0
+G1_T15_FROM_OPPONENT: calls=40 mismatched=0
+G1_T8: calls=33 mismatched=0
+G3_T10_BLOCKS: calls=69 mismatched=0
+G3_T10_BLOCKS_CHOSEN: calls=0 mismatched=0
+HASTE_TOKENS_LETHAL: calls=4 mismatched=0
+HASTE_TOKENS_UNREAD: calls=2 mismatched=0
+SLOW_202111: calls=270 mismatched=0
+SLOW_212608: calls=341 mismatched=0
+SYNTHETIC_CARDS: calls=0 mismatched=0
+UB_EVENT: calls=0 mismatched=0
+TOTAL calls 2771 mismatched 0
