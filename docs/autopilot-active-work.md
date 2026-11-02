@@ -140,8 +140,9 @@ deployed.
 | 20 | BUG-269 | merged_awaiting_review | 33e93e4 (merge 34f12f8, no source change) | docs/backlog-receipts/BUG-269/ |
 | 21 | BUG-270 | merged_awaiting_review | a87c21a (merge 8c3d7bf, no source change) | docs/backlog-receipts/BUG-270/ |
 | 22 | BUG-273 | merged_awaiting_review | 2ad966e (merge ca5ef9f, no source change) | docs/backlog-receipts/BUG-273/ |
+| 23 | BUG-275 | merged_awaiting_review | 618ec02 (merge 7693b3c, no source change) | docs/backlog-receipts/BUG-275/ |
 
-Next item: BUG-275. All twenty-two merged items still need an independent review pass
+Next item: BUG-276. All twenty-three merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -358,6 +359,27 @@ pumps, so a protection spell gets no timing note), and a "protection from <quali
 credited without checking that the quality covers the answering group, so a colourless or
 two-colour group can still answer it. The historical #273 packet is absent from this
 checkout, so the tests reconstruct a precombat main rather than replaying hidden responses.
+BUG-275 also needed no production source change. The audit's three signatures are each covered by
+merged work: a per-call budget and deadline with a between-chunk cancellation check and a socket-level
+cancel watcher (`proxy.py:1340`, `_TrackingNetworkBackend` at `proxy.py:880`) so a stalled read cannot
+outlive the decision, plus `_wait_for_model`/`_bounded_call` (`action_planner.py:1133`/`1150`) and
+`_llm_unavailable_plan` (`1233`) for the fallback; a fast 20 s hosted first plan
+(`game_plan.py:3733`) with a prompt-sized first-token limit inside the planner budget
+(`action_planner.py:1038`/`1045`); and a one-hop post-cast priority cap that hands off to the watchdog
+(`autopilot.py:5172`, warning at `6107`). The acceptance's timing record already exists (#231):
+`llm_trace` is started around every plan (`autopilot.py:2974`), fed by the proxy (`proxy.py:1887`) and
+carried on the submitted action line by `_decision_suffix` (`2953`). Probes against real code paths show
+a healthy slow first token recording per-request lane/first-token/total timings with
+`(decision=1390.2ms, requests=2)`, and a budget cut falling back to `llm_unavailable` with
+`(decision=255.8ms, requests=0)`; a timestamped wrapper probe measures ~1.04 s of prompt construction
+before the model call starts, so the production 15 s cap leaves ~14 s of model time. Verification: the
+14-file latency/trace regression set passes (101 passed), the post-cast hop-limit file passes (18 passed)
+and the audit's exact 14 node IDs pass (21 passed). Bounded gaps are recorded rather than fixed: both
+retained hashes exist only in `docs/latency-222-id-audit-20261101.json:530` and
+`docs/latency-222-triage-20261101.md:150` with no trace or replay fixture in this checkout, so the exact
+19 s stall cannot be replayed; setup time sits outside the model budget by design; a timed-out decision
+records `requests=0` because the cancelled call's metrics land after `llm_trace.finish()`; and live timing
+distribution plus hop progression remain unqualified, which is the audit's own unresolved prerequisite.
 
 ## Queue entries
 

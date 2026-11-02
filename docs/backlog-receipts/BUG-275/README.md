@@ -8,8 +8,8 @@ cannot be replayed; the audit's own disposition for this ID is
 `PARTIAL MECHANISM COVERED / LIVE UNQUALIFIED`.
 
 - Source commit: none (receipt only)
-- Merged to local master as: `MERGE_COMMIT`
-- Receipt commit: `SOURCE_COMMIT`
+- Merged to local master as: `7693b3c`
+- Receipt commit: `618ec02`
 - Independent verification: **not reviewed** (author cannot close this)
 - Live qualification: **not exercised**
 

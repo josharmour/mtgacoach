@@ -1083,14 +1083,20 @@
         "backlog-evidence-2026-11-01.md: #275"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-275",
+        "base_commit": "dbcd4bc",
+        "source_commits": [
+          "618ec02"
+        ],
+        "master_commits": [
+          "7693b3c"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-275/focused-tests.txt"
+        ],
+        "note": "No production change: verification only. The audit's three signatures are each covered by merged master work. (1) Budget exhaustion / 19 s loop stall: proxy.py:1340 computes a per-call budget and deadline, the stream loop raises TimeoutError('LLM streaming time budget exhausted') between chunks, and the cancel watcher closes the socket (_TrackingNetworkBackend, proxy.py:880-900) so a stalled read is interrupted instead of outliving the decision; action_planner._wait_for_model (1133) / _bounded_call (1150) stop waiting without joining a slow backend and fall back through _llm_unavailable_plan (1233). (2) First-plan lag: game_plan._INITIAL_HOSTED_PLAN_TIMEOUT_S = 20.0 (3733) gives the hosted first plan a fast mode with a deep refresh behind it, and action_planner._plan_first_token_timeout (1038) / _sized_budget (1045) scale the plan call's first-token limit with prompt size inside the planner budget. (3) Hop-limit signature: autopilot._MAX_POST_CAST_PRIORITY_HOPS = 1 (5172) hands off to the watchdog with a named warning (6107). The acceptance's timing record already exists (#231): llm_trace is started around every plan (autopilot._plan_with_trace, 2974), fed by the proxy (proxy.py:1887), and carried on the submitted action line by _decision_suffix (2953). Probes against real code paths: a healthy slow first token records per-request lane/ttft/total timings and suffix '(decision=1390.2ms, requests=2)'; a budget cut falls back to llm_unavailable with '(decision=255.8ms, requests=0)'. A timestamped wrapper probe shows ~1.04 s of prompt construction before the model call starts, so the production 15 s planner cap leaves ~14 s of model time; a profile attributes setup to _build_action_prompt -> coach._format_game_context -> mcts_evaluator.evaluate -> board_assessment.assess plus cold imports. Verified 101 passed (14-file latency/trace regression set), 18 passed (post-cast hop limit), 21 passed (the audit's exact 14 node IDs). Bounded gaps recorded: both retained hashes (788e9968, a2b16e80) exist only in docs/latency-222-id-audit-20261101.json:530 and docs/latency-222-triage-20261101.md:150 with no trace or replay fixture in the repo, so the exact 19 s stall cannot be replayed; setup time sits outside the model budget by design (model_deadline starts after prompt construction, so a decision can take setup + budget); a timed-out decision records requests=0 because the cancelled call's metrics land after llm_trace.finish() while the proxy log still carries status=cancelled and total_ms; live timing distribution and hop progression remain unqualified (the audit's unresolved prerequisite) and there is no Linux CI receipt."
       },
       "independent_verification": {
         "state": "not_reviewed",
