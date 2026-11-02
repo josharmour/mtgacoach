@@ -1,0 +1,28 @@
+BUG-241 focused verification (2026-11-02, session-965ac31a)
+base commit: c03524f (queue record for BUG-239)
+
+$ .venv_mac_311/bin/python -m pytest tests/test_reversal_recheck_241.py -q
+....                                                                     [100%]
+4 passed in 8.07s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_reversal_recheck_241.py tests/test_decision_memory.py tests/test_reversal_recheck_failure_20261019.py tests/test_optional_reservation_306.py -q
+.................................                                        [100%]
+33 passed in 6.21s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_burn_timing_20261019.py -q
+.............................                                            [100%]
+29 passed in 7.20s
+
+$ .venv_mac_311/bin/python -m ruff check tests/test_reversal_recheck_241.py
+All checks passed!
+
+$ .venv_mac_311/bin/python -m ruff format --check tests/test_reversal_recheck_241.py
+1 file already formatted
+
+pre-fix control run (throwaway plugin clearing model_unavailable and equalising signatures):
+2 failed, 2 passed in 8.64s
+FAILED test_an_outage_pass_is_not_a_reversal_and_the_fresh_choice_stands
+FAILED test_a_changed_board_is_not_a_reversal
+
+No production source change: DecisionMemory provenance (70d9e2f) and board signature (eb72e38)
+already answer this ID on master.
