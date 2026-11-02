@@ -2957,10 +2957,13 @@ class AutopilotEngine(
         deliberate one in the log; this names the fallback and how long the
         decision took, so a masked delay is visible where it was submitted.
         """
-        trace = self._last_decision_trace or {}
+        # Engines built without __init__ (test doubles) have no trace yet; the
+        # suffix is log decoration and must never break a submission.
+        trace = getattr(self, "_last_decision_trace", None) or {}
         parts: list[str] = []
-        if self.last_plan_fallback_reason:
-            parts.append(f"fallback={self.last_plan_fallback_reason}")
+        fallback = getattr(self, "last_plan_fallback_reason", "")
+        if fallback:
+            parts.append(f"fallback={fallback}")
         if trace.get("elapsed_ms") is not None:
             parts.append(f"decision={trace['elapsed_ms']}ms")
             parts.append(f"requests={len(trace.get('requests') or [])}")
