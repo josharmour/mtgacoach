@@ -13,6 +13,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from arenamcp import llm_trace
 from arenamcp.backend_health import BACKEND_ERROR_PREFIX, BackendHealth
 from arenamcp.backends.health import (
     CIRCUIT_FAILURE_STATUS_CODES,
@@ -1883,6 +1884,7 @@ class ProxyBackend:
         }
         self.last_request_metrics = metrics
         logger.info("[PROXY] Request metrics: %s", metrics)
+        llm_trace.record(metrics)
 
     def _complete_once(
         self,

@@ -1,0 +1,24 @@
+BUG-231 focused verification (macOS, .venv_mac_311, Python 3.11.15)
+
+HEAD before commit: ab374f5cc2192393886b6063c5b088a4ba53e396
+
+$ .venv_mac_311/bin/python -m pytest tests/test_latency_231_decision_trace.py -q
+.......                                                                  [100%]
+7 passed in 1.55s
+
+$ .venv_mac_311/bin/python -m pytest tests/test_latency_231_decision_trace.py \
+    tests/test_proxy_request_metrics.py tests/test_proxy_cancellation.py \
+    tests/test_action_plan_cancellation_222.py tests/test_llm_latency_222.py \
+    tests/test_latency_223_background_contention.py tests/test_proxy_call_classes.py -q
+.........................................                                [100%]
+60 passed in 49.85s
+
+$ .venv_mac_311/bin/python -m ruff check src/arenamcp/llm_trace.py \
+    src/arenamcp/autopilot.py src/arenamcp/backends/proxy.py \
+    tests/test_latency_231_decision_trace.py
+All checks passed!
+
+$ .venv_mac_311/bin/python -m ruff format --check src/arenamcp/llm_trace.py \
+    src/arenamcp/autopilot.py src/arenamcp/backends/proxy.py \
+    tests/test_latency_231_decision_trace.py
+4 files already formatted
