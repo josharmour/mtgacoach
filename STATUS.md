@@ -1,6 +1,6 @@
 # MTGA Coach — integration status
 
-Last updated: 2026-11-01T22:12:00-08:00 (America/Los_Angeles)
+Last updated: 2026-11-01T22:52:00-08:00 (America/Los_Angeles)
 
 This is the durable operational checkpoint for the current maintenance window.
 It records verified facts only; do not treat planned work as complete.
@@ -8,9 +8,12 @@ It records verified facts only; do not treat planned work as complete.
 ## Source and CI
 
 - Repository: `/Volumes/repos/mtgacoach`, branch `master`.
-- Local and `origin/master` HEAD: `0a5c1f6` (`Lift the hard cap in the
-  burn-heavy latency test`).
+- Local and `origin/master` HEAD: `429418c` (`Website: point the landing page
+  at 3.8.1`).
 - Recent commits:
+  - `429418c` Website: point the landing page at 3.8.1
+  - `e655ef9` v3.8.1: speak advice in every mode and show trial state
+  - `7704c54` Record the final reconciliation audit and green master
   - `0a5c1f6` Lift the hard cap in the burn-heavy latency test
   - `49765ac` Keep a leaked plan refresh from failing the next test
   - `613e146` Speak coaching advice in every speech mode
@@ -41,6 +44,19 @@ It records verified facts only; do not treat planned work as complete.
 - CI run for `0a5c1f6`: https://github.com/josharmour/mtgacoach/actions/runs/41397271654
   - `ruff`: success; `Hosted trials and Patreon keys`: success; `pytest`: success
     (4m41s). Master is green at `0a5c1f6`.
+- CI run for `7704c54` (STATUS.md only): https://github.com/josharmour/mtgacoach/actions/runs/41398227544
+  - `ruff`: success; `Hosted trials and Patreon keys`: success
+  - `pytest`: **failure** — both cases of
+    `test_the_slowest_real_boards_stay_within_the_latency_target` measured
+    483.16 ms and 486.92 ms against the CI bound of 480 ms (6 × 80). The
+    deterministic invariants in the same test passed (`bounded`, not
+    `truncated`, identical node counts), so this is runner speed, not a search
+    regression: the same boards measure 130-137 ms on this Mac at load ~5.
+    No test or bound was changed; the next run passed.
+- CI run for `e655ef9` (v3.8.1 release commit):
+  https://github.com/josharmour/mtgacoach/actions/runs/41399639749 — success.
+- CI run for `429418c` (landing page): https://github.com/josharmour/mtgacoach/actions/runs/41401765642
+  — in progress at the time of writing.
 - Installer validation run on `36a21d2` (no release attachment):
   https://github.com/josharmour/mtgacoach/actions/runs/41370990361
   - Dispatched with no `release_tag`, so it builds and verifies the installer
@@ -70,6 +86,22 @@ It records verified facts only; do not treat planned work as complete.
   (`1db7896`, `7ab802a`, `36a21d2`). Do not mutate the published tag/assets;
   if those changes must ship to users, cut a new version/release after Windows
   verification.
+
+## Release v3.8.1
+
+- GitHub release published (not draft/prerelease), marked latest:
+  https://github.com/josharmour/mtgacoach/releases/tag/v3.8.1
+  (`publishedAt` 2026-11-02T06:40:48Z).
+- Tag `v3.8.1` points at `e655ef9`.
+- Assets verified live:
+  - `mtgacoach-Setup.exe`, 293,359,666 bytes,
+    sha256 `da24635156d8f90cf347f23ec5652a4f07f1b0ca3d01c4b06df79bf55a29292d`
+  - `arenamcp-3.8.1-py3-none-any.wheel`, 3,717,512 bytes; contains
+    `arenamcp/resources/MtgaCoachBridge.dll` and `arenamcp/desktop/app.py`
+- `releases/latest` returns HTTP 302 to the `v3.8.1` tag; the installer URL
+  returns HTTP 302 then HTTP 200 with content length 293,359,666.
+- Release notes cover speech, trial/license state, tests, the installer model
+  and the known limits (Windows autopilot still needs the BepInEx bridge).
 
 ## Website deployment (trial-expiration email)
 
@@ -107,7 +139,64 @@ Deployed to production blackwell (`10.0.0.100`) on 2026-11-02T01:04:08Z.
   `fc165c3` is an exact duplicate of master commit `cb91703`
   (identical patch-id), so no second deploy was needed.
 
+### Landing page 3.8.1 (template-only, deployed 2026-11-02T06:44Z)
+
+- Commit `429418c` rewrites only the release section of
+  `website/templates/landing.html`: label "Version 3.8.1 · November 2026",
+  heading "Advice you can hear in every mode.", two feature cards (advice
+  speaks in every mode; trial and license state is visible) and the release
+  link now points at `releases/tag/v3.8.1`.
+- Deployed by copying that one file into the build context
+  `/home/joshu/docker-stack/appdata/mtgacoach/templates/landing.html`
+  (production runs the pre-router app, so no Python file was touched).
+- Pre-deploy image tagged `trash-guides-mtgacoach:pre-deploy-20261101`.
+- Rebuilt and recreated only the `mtgacoach` service; container `Up`.
+- Post-deploy verification: `https://mtgacoach.com/` serves "Version 3.8.1"
+  and links `releases/tag/v3.8.1`; `/health` returns HTTP 200;
+  `POST /v1/subscription/check` with an empty body returns HTTP 401 as before.
+
 ## Windows state (verified this session)
+
+### v3.8.1 installer acceptance (2026-11-02T06:20Z)
+
+- Installer copied to the VM and hash-matched the Mac download exactly:
+  293,359,666 bytes,
+  sha256 `DA24635156D8F90CF347F23EC5652A4F07F1B0CA3D01C4B06DF79BF55A29292D`.
+- First silent install passed `/DIR=<path with spaces>` as a separate
+  PowerShell array element, so it split at the spaces and installed into
+  `C:\Users\joshu\MTGA`. That tree was removed; the retry passed one quoted
+  argument string (`/DIR="..." LOG="..."`) and exited 0.
+- Installed location under test:
+  `C:\Users\joshu\MTGA Coach 3.8.1 Verify`
+- Installed runtime receipt:
+  - `arenamcp 3.8.1`, imported from
+    `...\MTGA Coach 3.8.1 Verify\runtime\Lib\site-packages\arenamcp\__init__.py`
+    with `sys.executable` = `...\runtime\python.exe` — no build-machine source
+    path leaked into the installed runtime.
+  - packaged bridge DLL
+    `...\runtime\Lib\site-packages\arenamcp\resources\MtgaCoachBridge.dll`,
+    156,160 bytes,
+    sha256 `49D8354208F9E8B884DE17711F17EE1ECDDEDC64CC02BDBC2CFA358A0CBF8B4E`
+    — identical to the DLL deployed in
+    `C:\Program Files\Wizards of the Coast\MTGA\BepInEx\plugins`.
+  - Qt platform plugins present under
+    `runtime\Lib\site-packages\PySide6\plugins\platforms`: `qwindows.dll`,
+    `qoffscreen.dll`, `qminimal.dll`, `qdirect2d.dll`.
+  - gateway probe from the installed runtime:
+    `api.mtgacoach.com reachable (HTTP 401)`.
+- Launch from the installed location produced three processes, all rooted at
+  the install directory:
+  - `runtime\pythonw.exe -I -X utf8 -m arenamcp.desktop`
+  - `runtime\python.exe -I -X utf8 -u -m arenamcp.desktop.tts_worker`
+  - `runtime\python.exe -I -X utf8 -u -m arenamcp.__main__ --pipe`
+    (the standalone coach child process)
+- `desktop.log` recorded
+  `app_root=C:\Users\joshu\MTGA Coach 3.8.1 Verify`; `standalone.log` showed a
+  healthy startup (`backend_name=online`, `model=current`,
+  `base_url=https://api.mtgacoach.com/v1`, card database ready).
+- The app was stopped cleanly afterwards; no python process remained.
+
+### Earlier v3.8.0 checks
 
 - Apps are **stopped** as of the latest process scan (no MTGA/Arena/python/
   pythonw/mtgacoach processes).
@@ -136,8 +225,15 @@ Deployed to production blackwell (`10.0.0.100`) on 2026-11-02T01:04:08Z.
 
 ## Mac state
 
-- No MTGA/Arena/Coach/ArenaMCP processes running.
-- Editable Python points at `/Volumes/repos/mtgacoach/src`.
+- MTGA and Coach are **running** (the user reopened them to play after the
+  maintenance window): MTGA pid 57360, desktop pid 57343 (started 19:28:33),
+  TTS worker pid 57348, coach subprocess pid 22125 (restarted 22:24:00).
+- Editable Python points at `/Volumes/repos/mtgacoach/src`; the venv reports
+  `arenamcp 3.8.1`.
+- The coach subprocess restarted at 22:24, after `613e146` (20:55) and
+  `e655ef9` (22:23), so it already runs the speech fix. The **desktop**
+  process started at 19:28 and therefore still runs the pre-fix
+  `commentary_controller.py`; restart Coach between matches to load it.
 - Do not overwrite the live editable checkout while either Coach runs.
 
 ## Audit / sessions
@@ -184,16 +280,25 @@ and suppressed in commentary mode.
 
 ## Next actions
 
-1. Reconnect Windows to the NAS share, then verify it sees master `0a5c1f6`.
-2. Decide whether the post-release fixes (`1db7896`, `7ab802a`, `36a21d2`,
-   `613e146`, `49765ac`, `0a5c1f6`) ship as a new version/release; do not
-   mutate v3.8.0 assets.
-3. Re-run Windows installed-path smoke checks after any new install.
-4. Resume dual monitoring only after rollout; record stalls in
-   `autopilot-improvements.md`.
-5. Continue the evidence-backed backlog from the reconciliation's
+1. Restart Mac Coach between matches so the desktop process loads `613e146`
+   (the mode gate and feed dedupe live in the desktop process); confirm the
+   window reports 3.8.1.
+2. Windows: reconnect the NAS share so `Z:\mtgacoach` resolves, confirm it sees
+   master `429418c`, then launch Coach from the installed 3.8.1 location for
+   gameplay.
+3. Resume dual monitoring with fresh baselines: Mac account `armour`, Windows
+   account `armour.tv`; record stalls and actionable mistakes in
+   `autopilot-improvements.md` with evidence, distinguishing manual or
+   restarted games.
+4. Continue the evidence-backed backlog from the reconciliation's
    ready-unmerged list (currently empty) and the incomplete task
    (`qualification-trial`).
+5. Known CI flake to watch, not to paper over:
+   `test_the_slowest_real_boards_stay_within_the_latency_target` measures a
+   clock bound that a slow shared runner can cross (483/487 ms against 480 ms
+   on run 41398227544) while its deterministic invariants pass. A principled
+   fix would normalise the bound by a calibration workload measured on the same
+   runner; do not simply raise the multiplier.
 
 ## Resume commands
 
