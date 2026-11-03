@@ -4,6 +4,8 @@
 2. Enable **Options → Account → Detailed Logs (Plugin Support)** in Arena and restart Arena.
 3. Open **MTGA Coach** from the new installation. Choose **Tools → Setup & Repair**. For a trial, verify your email with the code Coach sends. Subscribers can enter their existing key there.
 
+New Mac installs go into your account’s Applications folder (`~/Applications`). Launch that copy for updates without an administrator prompt. Existing shared copies in `/Applications` can ask for macOS authorization when replacing the app.
+
 The managed app includes Python and connects to the hosted coaching model through `https://api.mtgacoach.com/v1`. A standard installation needs no local model server or environment file. Arena’s game log supports manual coaching. Autoplay also requires the appropriate platform bridge.
 
 - [Mac first-open instructions](README.md#if-macos-says-the-package-was-not-opened)

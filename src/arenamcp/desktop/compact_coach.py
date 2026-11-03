@@ -656,6 +656,11 @@ class CompactCoachPanel(QWidget):
         self.restart_btn.setToolTip("Reload the Coach app and coaching engine. MTGA stays open.")
         self.restart_btn.clicked.connect(self.restart_requested.emit)
         recovery_controls.addWidget(self.restart_btn)
+
+        self.update_btn = QPushButton("Update")
+        self.update_btn.setStyleSheet("padding: 5px 6px;")
+        self.update_btn.hide()  # The managed host enables the update controls.
+        recovery_controls.addWidget(self.update_btn)
         root.addLayout(recovery_controls)
 
         self._build_voice_style_popover()

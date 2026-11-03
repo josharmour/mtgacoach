@@ -97,6 +97,13 @@ jobs:
           python scripts/verify_bridge_release.py
           python -m build --wheel
           python installer/velopack/package.py "$RID" "$LANE" "$VERSION"
+          if [[ "$RID" == osx-* ]]; then
+            /usr/sbin/installer -pkg dist/publish/*-Setup.pkg -target CurrentUserHomeDirectory
+            app="$HOME/Applications/MTGA Coach.app"
+            if [[ "$LANE" == master ]]; then app="$HOME/Applications/MTGA Coach (master).app"; fi
+            test -O "$app" && test -w "$app/Contents/MacOS"
+            "$app/Contents/MacOS/MTGACoach" --version
+          fi
           if [[ "$LANE" == stable && "$RID" == win-x64 ]]; then cp dist/*.whl dist/publish/; fi
       - uses: actions/upload-artifact@v4
         with:

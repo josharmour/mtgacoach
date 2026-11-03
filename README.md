@@ -22,7 +22,7 @@ Coach uses the hosted model `current` at `https://api.mtgacoach.com/v1`. Trial a
 
 ### How updates work
 
-Coach checks its channel at launch and downloads an update in the background. A compatible update can apply after the match and its post-match work finish, or on the next launch. For a runtime or Arena bridge change, Coach offers a restart under **Help**. The title bar shows the channel, package build, and Git commit.
+Coach checks its channel at launch and downloads an update in the background. A compatible update can apply after the match and its post-match work finish, or on the next launch. For a runtime or Arena bridge change, click **Update** beside **Restart Coach** after your match. macOS may ask for permission to replace the app. The title bar shows the channel, package build, and Git commit.
 
 If you used the older Windows installer, pip, or a Git checkout, close the old copy and install the managed app once. Start it from the new shortcut. Coach uses your existing per-user settings and trial credentials. [Installation, update, and release guide](RELEASE.md) · [3.8.3 release notes](docs/releases/v3.8.3.md)
 

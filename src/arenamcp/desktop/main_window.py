@@ -263,6 +263,8 @@ class MainWindow(QMainWindow):
         if os.environ.get(PENDING_ENV):
             self._update_action = help_menu.addAction("No Coach update staged")
             self._update_action.triggered.connect(self._approve_release)
+            self.coach_panel.update_btn.clicked.connect(self._update_action.trigger)
+            self.coach_panel.update_btn.show()
             self._update_timer = QTimer(self)
             self._update_timer.timeout.connect(self._show_pending_release)
             self._update_timer.start(3000)
@@ -489,18 +491,29 @@ class MainWindow(QMainWindow):
             self.decks_tab.refresh()
 
     def _show_pending_release(self):
-        from .release_updates import pending_update
+        from .release_updates import update_status
 
-        update = pending_update()
-        self._update_action.setEnabled(bool(update))
-        if update:
+        update = update_status()
+        ready = bool(update and update[1] is not None)
+        self._update_action.setEnabled(ready)
+        button = self.coach_panel.update_btn
+        button.setEnabled(ready)
+        if not ready:
+            self._update_action.setText("No Coach update staged")
+            button.setText(f"Downloading {update[0]}…" if update else "Update")
+            button.setToolTip(
+                "Coach is downloading an update." if update else "No update is ready to install."
+            )
+        else:
             text = f"Restart to install Coach {update[0]}…"
+            button.setText(f"Update to {update[0]}")
+            button.setToolTip(text)
             if self._update_action.text() != text:
                 self._update_action.setText(text)
                 message = (
                     "Coach will restart between matches."
                     if update[1]
-                    else "A runtime or bridge update is ready. Choose Help to install it."
+                    else "A runtime or bridge update is ready. Click Update to install it."
                 )
                 self.statusBar().showMessage(message)
 
