@@ -181,3 +181,64 @@ def test_correction_and_comparison_survive_short_narration_once():
     )
     assert reason in line
     assert line.count("Rules check:") == line.count("Alternative:") == 1
+
+
+ENLIGHTENED = dict(
+    grp_id=4,
+    name="Enlightened Tutor",
+    mana_cost="{W}",
+    type_line="Instant",
+    oracle_text=(
+        "Search your library for an artifact or enchantment card, reveal it, put it into your hand, then shuffle."
+    ),
+)
+FINALE = dict(
+    grp_id=5,
+    name="Finale of Devastation",
+    mana_cost="{X}{G}{G}",
+    type_line="Sorcery",
+    oracle_text=(
+        "Search your library and/or graveyard for a creature card with mana value X or less and put it onto "
+        "the battlefield. If X is 10 or more, creatures you control get +X/+X and gain haste until end of turn."
+    ),
+)
+
+
+def test_restricted_tutor_outcome_is_corrected_from_supplied_rules():
+    assert reason_corrections("Enlightened Tutor finds our best creature.", ENLIGHTENED, [ENLIGHTENED]) == [
+        "Enlightened Tutor's search finds artifact or enchantment cards; it cannot find creature cards."
+    ]
+    assert reason_corrections("Finale of Devastation finds a land.", FINALE, [FINALE]) == [
+        "Finale of Devastation's search finds creature cards; it cannot find land cards."
+    ]
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Enlightened Tutor finds our best enchantment.",
+        "Enlightened Tutor finds an artifact or enchantment.",
+        "Enlightened Tutor could find a creature if we splash blue.",
+        "Enlightened Tutor doesn't find creatures.",
+        "Enlightened Tutor finds our best creature removal.",
+        "Demonic Tutor finds our best creature.",
+        "Finale of Devastation finds our best creature.",
+    ],
+)
+def test_supported_qualified_or_unrestricted_tutor_claims_are_not_rewritten(reason):
+    cards = [ENLIGHTENED, FINALE, TUTOR]
+    subject = next(card for card in cards if reason.startswith(card["name"]))
+    assert not reason_corrections(reason, subject, cards)
+
+
+def test_tutor_correction_keeps_the_pick_and_original_diagnostic():
+    payload = dict(
+        picks=[dict(grp_id=4, reason="Enlightened Tutor finds our best creature.")],
+        plan="Stay open.",
+        lane="",
+        needs=[],
+    )
+    pick = DraftAdvisor._validate(payload, [ENLIGHTENED], [], 1)["recommendations"][0]
+    assert pick["grp_id"] == 4
+    assert pick["original_reason"] == "Enlightened Tutor finds our best creature."
+    assert "cannot find creature" in pick["reason"]
