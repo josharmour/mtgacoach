@@ -40,7 +40,6 @@ jobs:
         run: |
           if [[ "$LANE" == stable ]]; then
             [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
-            gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json tagName >/dev/null
             COMMIT=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
             version=${TAG#v}
           else
@@ -127,6 +126,10 @@ jobs:
           if [[ "$LANE" == master && "$SHA" != "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)" ]]; then
             echo "A newer master revision superseded this build"
             exit 0
+          fi
+          if [[ "$LANE" == stable ]]; then
+            # Draft releases are visible to this publishing token.
+            gh release view -R "$GITHUB_REPOSITORY" "v$VERSION" --json tagName >/dev/null
           fi
           feed="coach-$LANE-feed"
           if ! gh release view -R "$GITHUB_REPOSITORY" "$feed" >/dev/null 2>&1; then
