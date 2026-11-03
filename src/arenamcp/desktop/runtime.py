@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
 import re
@@ -864,6 +865,44 @@ def _find_mac_app_bundle(mtga_dir: str) -> Path | None:
     if candidate.is_dir():
         return candidate
     return None
+
+
+def launch_windows_arena() -> str | None:
+    """Start the detected Windows client, handing Steam and Wizards installs to their launchers."""
+    from arenamcp.android_link import game_device
+    from arenamcp.platform_integration import MTGA_STEAM_APPID, find_mtga
+
+    if game_device() == "android":
+        return None
+    # Fail closed if tasklist itself fails. Do not launch over a game or patcher.
+    running = subprocess.run(
+        ["tasklist", "/FO", "CSV", "/NH"],
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=True,
+        timeout=5,
+        creationflags=_NO_WINDOW_FLAGS,
+    )
+    processes = {row[0].casefold() for row in csv.reader(running.stdout.splitlines()) if row}
+    if "mtga.exe" in processes:
+        return "Arena is already open."
+    if "mtgalauncher.exe" in processes:
+        return "Arena’s launcher is already open."
+    install = find_mtga()
+    if not install:
+        raise FileNotFoundError("Arena installation not found")
+    directory = install.install_dir
+    if (
+        directory.parent.name.casefold() == "common"
+        and directory.parent.parent.name.casefold() == "steamapps"
+    ):
+        os.startfile(f"steam://rungameid/{MTGA_STEAM_APPID}")
+    else:
+        launcher = directory / "MTGALauncher" / "MTGALauncher.exe"
+        executable = launcher if launcher.is_file() else directory / "MTGA.exe"
+        subprocess.Popen([str(executable)], cwd=str(executable.parent))
+    return "Starting Arena."
 
 
 def launch_mtga(mtga_dir: str, *, on_status: Callable[[str], None] | None = None) -> str:

@@ -27,8 +27,19 @@ if (!manager.IsInstalled || args.Length > 0 || Environment.GetEnvironmentVariabl
 // One host owns the pending update and the child lifecycle.
 FileStream hostLock;
 try { hostLock = new FileStream(Path.Combine(state, "host.lock"), FileMode.OpenOrCreate, FileAccess.Write, FileShare.None); }
-catch (IOException) { return 0; }
+catch (IOException) {
+    // A second shortcut click asks the active Windows desktop to start Arena.
+    if (OperatingSystem.IsWindows()) {
+        using var request = File.Open(Path.Combine(state, "launch-arena"), FileMode.OpenOrCreate,
+            FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+    }
+    return 0;
+}
 using var owner = hostLock;
+if (OperatingSystem.IsWindows()) {
+    start.Environment["MTGACOACH_WINDOWS_LAUNCH_REQUEST"] = Path.Combine(state, "launch-arena");
+    start.Environment["MTGACOACH_WINDOWS_APP_ID"] = Velopack.Locators.VelopackLocator.Current.AppUserModelId;
+}
 start.Environment["MTGACOACH_BUILD_LABEL"] = $"{channel} {manager.CurrentVersion} ({config.GetProperty("commit").GetString()![..8]})";
 var marker = Path.Combine(state, "pending.json");
 bool CanAuto(VelopackAsset asset) => asset.NotesMarkdown?.Split('\n').Any(line => line.Trim() == compatibility) == true;

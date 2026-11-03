@@ -84,6 +84,8 @@ def verify_launcher(rid):
             with zipfile.ZipFile(next(RELEASES.glob("*Portable.zip"))) as archive:
                 archive.extractall(temp)
             launcher = next(temp.rglob("MTGACoach.exe"))
+            if (launcher.parent / "mtga_coach.ico").read_bytes() != (ROOT / "mtga_coach.ico").read_bytes():
+                raise RuntimeError("Packaged desktop window icon differs from the Coach icon")
         run(launcher, "--version", cwd=temp, timeout=90)
 
 
@@ -149,6 +151,7 @@ def main():
     )
     runtime = STAGE / "runtime"
     if rid.startswith("win"):
+        shutil.copyfile(ROOT / "mtga_coach.ico", STAGE / "mtga_coach.ico")
         run(
             "pwsh",
             "-NoProfile",
