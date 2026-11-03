@@ -1643,14 +1643,20 @@
         "backlog-evidence-2026-11-01.md: #309"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-309",
+        "base_commit": "bd56f34",
+        "source_commits": [
+          "7fcca7f1ff83fdf9692c7024cdfbfced7abaab3e"
+        ],
+        "master_commits": [
+          "5ff82b94a60c3f50bf2bb73367f82dbf9d864e8d"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-309/focused-tests.txt"
+        ],
+        "note": "Verification-only for production code: both acceptance halves are already merged (activation_intent.py carries ability/source/turn/phase/lifetime through nested requests; equipment_opportunity_note is phase-aware; game_plan.decision_claim_notes plus corrected_decision_reasoning disallow a Main2 haste attack promise and keep shroud/mana-relay/next-turn reasons). The unpinned hop was ActionPlanner._note_false_claims (action_planner.py:10163, called from the typed path at :9818), which stores the corrected reasoning. Added tests/test_equipment_phase_planner_309.py (6 tests) driving that hop with a real ActionsAvailable equip menu: Main2 attack claim replaced with the timing fact and trace keys recorded; mana tap, shroud, next-turn attack and explicit 'combat has passed' reasons unchanged; Main1 attack claim unchanged. Verification: new file 6 passed; six-file equipment/intent set 107 passed; ruff check and format clean. Limits: retained packet not bundled (equivalent board regressions), text-level claim check, no live qualification, no Linux CI receipt."
       },
       "independent_verification": {
         "state": "not_reviewed",

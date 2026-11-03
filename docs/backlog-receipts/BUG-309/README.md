@@ -5,7 +5,7 @@ already merged on master; the only unpinned hop was the planner call that stores
 the corrected reasoning for a *chosen* equip. This receipt adds that regression
 and changes no `src/` file.
 
-Merged to local master as MERGE COMMIT (receipt commit SOURCE COMMIT).
+Merged to local master as 5ff82b9 (receipt commit 7fcca7f).
 
 ## Symptom and evidence
 

@@ -153,8 +153,9 @@ deployed.
 | 33 | BUG-306 | merged_awaiting_review | 44a81f7 (merge 8ddeda1, submission-leg regression only) | docs/backlog-receipts/BUG-306/ |
 | 34 | BUG-307 | merged_awaiting_review | 2d058c6 (merge 407441d, removal valuation keeps the returning engine) | docs/backlog-receipts/BUG-307/ |
 | 35 | BUG-308 | merged_awaiting_review | 5758e9b (merge f0f50c8, verification only: both orders, enemy response, once-per-turn and protection already pinned) | docs/backlog-receipts/BUG-308/ |
+| 36 | BUG-309 | merged_awaiting_review | 5ff82b9 (merge 7fcca7f, verification only: intent carry, phase note and Main2 claim check already merged; planner hop pinned) | docs/backlog-receipts/BUG-309/ |
 
-Next item: BUG-309. All thirty-five merged items still need an independent review pass
+Next item: BUG-317. All thirty-six merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -576,3 +577,20 @@ clean. Bounded gaps recorded rather than fixed: the search abstains outside the 
 prompt vector projects only fixed-damage removal and only us-or-entrant ping targets,
 `TriggerUseMemory` needs the full draw clause in the stack ability text, the historical packet is not
 bundled, and there is no live qualification or Linux CI receipt.
+
+BUG-309 needed no production source change either. The intent carry across nested requests
+(`activation_intent.py`), the phase-aware equipment note ("Combat has passed: haste can enable a tap
+ability, not an attack this turn") and the Main2 attack-promise claim check
+(`game_plan.decision_claim_notes` plus `corrected_decision_reasoning`) were all merged already. The
+unpinned hop was the planner call that stores the corrected reasoning: `ActionPlanner._note_false_claims`
+(`action_planner.py:10163`, called from the typed path at `:9818`). A probe on master bd56f34 with a real
+`ActionsAvailable` equip menu (Lightning Greaves, summoning-sick Notary Hobbits, Main2) showed the claim
+note firing, the sentence being replaced by "Rules correction: The normal attack declaration window has
+passed…", and the trace recording `uncorrected_reasoning` plus `false_claims`. The new
+`tests/test_equipment_phase_planner_309.py` pins that hop: the Main2 attack promise is replaced, while a
+mana-tap reason, a shroud reason, a next-turn attack and an explicit "combat has passed" reason stay as
+written, and a Main1 attack promise is left alone. Verification: 6 passed in the new file, 107 passed
+across the six equipment/intent files, ruff check and format clean. Bounded gaps recorded rather than
+fixed: the retained packet is not bundled (equivalent board regressions), the claim check is text-level
+and abstains on negations/future turns/explicit additional combat, and there is no live qualification or
+Linux CI receipt.
