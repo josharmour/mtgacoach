@@ -324,7 +324,7 @@ def main() -> int:
             daemon=True,
         ).start()
     exit_code = app.exec()
-    if exit_code == RESTART_EXIT_CODE:
+    if exit_code == RESTART_EXIT_CODE and not os.environ.get("MTGACOACH_VELOPACK_PENDING"):
         relaunch_application()
     return exit_code
 

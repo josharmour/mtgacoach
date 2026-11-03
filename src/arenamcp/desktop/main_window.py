@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 
 from PySide6.QtCore import QPoint, Qt, QTimer
@@ -76,12 +77,13 @@ class MainWindow(QMainWindow):
         self._theme_actions: dict[str, QAction] = {}
         self._debug_logging_action: QAction | None = None
 
-        self.setWindowTitle(f"mtgacoach v{read_version()}")
+        build = os.environ.get("MTGACOACH_BUILD_LABEL", "")
+        self.setWindowTitle(f"mtgacoach v{read_version()}" + (f" | {build}" if build else ""))
 
         # Session & Controller
         self._session = CoachSession(self)
         # The engine's own between-matches request takes the button's path.
-        self._session.engineReloadRequested.connect(self._reload_engine)
+        self._session.engineReloadRequested.connect(self._safe_engine_reload)
 
         # Setup & Repair sub-interface
         self.repair_tab = RepairTab()
@@ -256,6 +258,15 @@ class MainWindow(QMainWindow):
         from arenamcp.support import contact_josh
 
         help_menu = menu_bar.addMenu("Help")
+        from .release_updates import PENDING_ENV
+
+        if os.environ.get(PENDING_ENV):
+            self._update_action = help_menu.addAction("No Coach update staged")
+            self._update_action.triggered.connect(self._approve_release)
+            self._update_timer = QTimer(self)
+            self._update_timer.timeout.connect(self._show_pending_release)
+            self._update_timer.start(3000)
+            self._show_pending_release()
         contact_act = help_menu.addAction("Contact Josh…")
         contact_act.triggered.connect(lambda: contact_josh(self))
         keys_act = help_menu.addAction("Keyboard Shortcuts")
@@ -476,6 +487,55 @@ class MainWindow(QMainWindow):
         self._stack.setCurrentIndex(3)
         if not self.decks_tab._decks:
             self.decks_tab.refresh()
+
+    def _show_pending_release(self):
+        from .release_updates import pending_update
+
+        update = pending_update()
+        self._update_action.setEnabled(bool(update))
+        if update:
+            text = f"Restart to install Coach {update[0]}…"
+            if self._update_action.text() != text:
+                self._update_action.setText(text)
+                message = (
+                    "Coach will restart between matches."
+                    if update[1]
+                    else "A runtime or bridge update is ready. Choose Help to install it."
+                )
+                self.statusBar().showMessage(message)
+
+    def _approve_release(self):
+        from .release_updates import pending_update
+
+        update = pending_update()
+        if (
+            update
+            and QMessageBox.question(
+                self,
+                "Install Coach update",
+                f"Restart Coach to install {update[0]}? Finish your match first.",
+            )
+            == QMessageBox.Yes
+        ):
+            self._apply_release(approved=True)
+
+    def _safe_engine_reload(self, reason):
+        from .release_updates import pending_update
+
+        update = pending_update()
+        if update and update[1]:
+            self._apply_release()
+        else:
+            self._reload_engine(reason)
+
+    def _apply_release(self, approved=False):
+        from .release_updates import APPLY_APPROVED_EXIT, APPLY_UPDATE_EXIT
+
+        # Shut down engine, TTS, and the UI normally before the host applies.
+        app = QApplication.instance()
+        if app and not self._closed:
+            self.close()
+            app.exit(APPLY_APPROVED_EXIT if approved else APPLY_UPDATE_EXIT)
 
     def _reload_engine(self, *_args) -> None:
         """Apply engine code fixes without closing this UI or restarting MTGA."""

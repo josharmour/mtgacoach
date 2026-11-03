@@ -113,6 +113,8 @@ def auto_reload_default(pkg: Path | None = None) -> tuple[bool, str]:
         return False, f"{AUTO_RELOAD_ENV}=0"
     if os.environ.get("MTGACOACH_DEV", "").strip().lower() in _TRUE:
         return True, "MTGACOACH_DEV=1"
+    if os.environ.get("MTGACOACH_VELOPACK_PENDING"):
+        return True, "installed Velopack release"
     if getattr(sys, "frozen", False):
         return False, "packaged app; its code changes only through the installer"
     checkout = source_checkout(pkg)
@@ -188,6 +190,12 @@ def compute_fingerprint(pkg: Path | None = None, kind: str | None = None) -> Cod
     files themselves. A later failure of the same kind returns None, never a
     different kind (that would read as a change).
     """
+    if os.environ.get("MTGACOACH_VELOPACK_PENDING") and kind in (None, "release"):
+        from .desktop.release_updates import pending_update
+
+        pending = pending_update() if kind else None
+        version = pending[0] if pending and pending[1] else "running"
+        return CodeFingerprint("release", version, version)
     pkg = Path(pkg or package_dir())
     if kind == "git" or (kind is None and source_checkout(pkg) is not None):
         found = _git_fingerprint(pkg)

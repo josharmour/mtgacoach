@@ -78,6 +78,8 @@ def _is_app_root(path: Path) -> bool:
     # Installed layout: the app root owns the bundled runtime and its manifest,
     # but intentionally has no checkout src/pyproject markers.
     runtime_dir = path / "runtime"
+    if (path / "coach-release.json").is_file() and (runtime_dir / "bin/python3").is_file():
+        return True
     runtime_python = runtime_dir / ("pythonw.exe" if sys.platform == "win32" else "python")
     if runtime_python.exists() and (runtime_dir / "runtime-manifest.json").exists():
         return True
@@ -304,11 +306,13 @@ def is_packaged_runtime(python_exe: str | None, app_root: str | Path | None = No
     original PYTHONPATH/-m launch behavior; only this verified packaged runtime
     gets isolated flags.
     """
-    if sys.platform != "win32" or not python_exe:
+    if not python_exe:
         return False
     root = Path(app_root) if app_root is not None else Path(get_app_root())
     runtime_dir = (root / "runtime").resolve()
     exe = Path(python_exe).resolve()
+    if sys.platform != "win32":
+        return (root / "coach-release.json").is_file() and exe == (runtime_dir / "bin/python3").resolve()
     return exe == (runtime_dir / "python.exe").resolve() and (runtime_dir / "runtime-manifest.json").is_file()
 
 

@@ -1,0 +1,122 @@
+name: Managed desktop releases
+on:
+  release:
+    types: [published]
+  workflow_run:
+    workflows: [tests]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      lane:
+        type: choice
+        options: [master, stable]
+        default: master
+      version:
+        description: Existing stable release tag (stable lane only)
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: managed-desktop-${{ inputs.lane || (github.event_name == 'release' && 'stable') || 'master' }}
+  cancel-in-progress: false
+jobs:
+  select:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && !github.event.release.prerelease && startsWith(github.event.release.tag_name, 'v')) || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.pick.outputs.sha }}
+      version: ${{ steps.pick.outputs.version }}
+      lane: ${{ steps.pick.outputs.lane }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LANE: ${{ inputs.lane || (github.event_name == 'release' && 'stable') || 'master' }}
+          TAG: ${{ inputs.version || github.event.release.tag_name }}
+          COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          if [[ "$LANE" == stable ]]; then
+            [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json tagName >/dev/null
+            COMMIT=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
+            version=${TAG#v}
+          else
+            version="1.0.$GITHUB_RUN_NUMBER"
+          fi
+          echo "lane=$LANE" >> "$GITHUB_OUTPUT"
+          echo "sha=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+  build:
+    needs: select
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-latest, rid: win-x64}
+          - {os: ubuntu-22.04, rid: linux-x64}
+          - {os: macos-latest, rid: osx-arm64}
+          - {os: macos-15-intel, rid: osx-x64}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.select.outputs.sha }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build and qualify package
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RID: ${{ matrix.rid }}
+          LANE: ${{ needs.select.outputs.lane }}
+          VERSION: ${{ needs.select.outputs.version }}
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          if [[ "$RID" == linux-* ]]; then
+            sudo apt-get update && sudo apt-get install -y libportaudio2 libfuse2 squashfs-tools
+          fi
+          dotnet tool install --global vpk --version 1.2.161
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          python -m pip install build uv
+          python scripts/verify_bridge_release.py
+          python -m build --wheel
+          python installer/velopack/package.py "$RID" "$LANE" "$VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: managed-${{ matrix.rid }}
+          path: dist/publish/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
+  publish:
+    needs: [select, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: managed-*
+          path: packages
+      - name: Publish packages before channel indexes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LANE: ${{ needs.select.outputs.lane }}
+          SHA: ${{ needs.select.outputs.sha }}
+        run: |
+          feed="coach-$LANE-feed"
+          if ! gh release view -R "$GITHUB_REPOSITORY" "$feed" >/dev/null 2>&1; then
+            gh release create -R "$GITHUB_REPOSITORY" "$feed" --target "$SHA" --prerelease --latest=false --title "Coach $LANE update feed" --notes "Install the package for your platform once. Coach checks this channel on launch."
+          fi
+          for dir in packages/*; do
+            find "$dir" -maxdepth 1 -type f ! -name '*.json' -exec gh release upload -R "$GITHUB_REPOSITORY" "$feed" --clobber {} +
+          done
+          for dir in packages/*; do
+            gh release upload -R "$GITHUB_REPOSITORY" "$feed" --clobber "$dir"/releases.*.json
+          done
