@@ -1514,14 +1514,20 @@
         "backlog-evidence-2026-11-01.md: #306"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-306",
+        "base_commit": "db82bf2",
+        "source_commits": [
+          "8ddeda1"
+        ],
+        "master_commits": [
+          "44a81f7"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-306/focused-tests.txt"
+        ],
+        "note": "Verification-only for production code: the merged reservation guard already holds on both PayCosts submission routes (autopilot_bridge.py:2774-2792 safe-default net and autopilot.py:3546-3575 process_trigger), and the post-spend hold refresh from ecc168d/c5d62fa is pinned by test_post_payment_commitment_306.py. The unpinned hop was the final submission: nothing asserted that a reserved PayCosts is answered with MTGA's cancel instead of an AutoTap solution. Added tests/test_optional_reservation_submission_306.py driving both real handlers with a recording bridge: reserved mana cancels once with no auto-tap and no pay/decline model call; spare mana and unrelated payments still auto-tap; a decline without can_cancel returns False and never pays. 6 passed for the new file, 62 passed across the seven reservation/payment files, ruff check and format clean. Bounded limits: the guard needs a recorded pass decision stating a same-turn hold (a fresh board or another explicit priority decision supersedes it by design), numeric shortfall proof only, historical raw packet not bundled, no live qualification."
       },
       "independent_verification": {
         "state": "not_reviewed",

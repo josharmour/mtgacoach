@@ -150,8 +150,9 @@ deployed.
 | 30 | BUG-286 | merged_awaiting_review | 0cdf55e (merge 78acf87, regression test only) | docs/backlog-receipts/BUG-286/ |
 | 31 | BUG-289 | merged_awaiting_review | 6c43157 (merge 46ffe24, regression test only) | docs/backlog-receipts/BUG-289/ |
 | 32 | BUG-300 | merged_awaiting_review | 1b1443c (merge ed82854, draft tutor-outcome fact check) | docs/backlog-receipts/BUG-300/ |
+| 33 | BUG-306 | merged_awaiting_review | 44a81f7 (merge 8ddeda1, submission-leg regression only) | docs/backlog-receipts/BUG-306/ |
 
-Next item: BUG-306. All thirty-two merged items still need an independent review pass
+Next item: BUG-307. All thirty-three merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -519,3 +520,20 @@ unrestricted tutor ("Demonic Tutor finds our best creature") all stay as written
 Bounded gaps recorded rather than fixed: only the first restricted clause is read, claims about
 "permanent"/"spell" or mana-value-only restrictions abstain, and there is no live qualification
 or Linux CI receipt.
+
+BUG-306 needed no production change either: the reservation guard was already wired into both
+PayCosts submission routes. `optional_reservation.reserved_optional_mana` feeds
+`AutopilotEngine._should_decline_optional_cost`, which `autopilot_bridge.py:2774-2792` (the
+safe-default net) and `autopilot.py:3546-3575` (`process_trigger`) both consult before any
+auto-tap, and `resource_hold.current_mana_hold` already refreshes the rendered hold after
+confirmed spending. What was missing was the last hop's regression: nothing asserted that a
+reserved PayCosts is answered with MTGA's cancel rather than an AutoTap solution, so a future
+regression could have spent the reserved mana while every existing test still passed. The new
+`tests/test_optional_reservation_submission_306.py` drives both real handlers with a recording
+bridge: the sole reserved mana ({1} optional against a {W} Rescue) cancels once with no auto-tap
+and no pay/decline model call, spare mana and an unrelated payment still auto-tap, and a decline
+without `can_cancel` returns False without paying. Verification: 6 passed for the new file and 62
+passed across the seven reservation/payment files, ruff clean. Bounded gaps recorded rather than
+fixed: the guard needs a recorded pass decision that states a same-turn hold (a fresh board or
+another explicit priority decision supersedes it by design), the proof is numeric shortfall only,
+the historical raw packet is not bundled, and there is no live qualification or Linux CI receipt.

@@ -2,7 +2,7 @@
 
 Verdict: verification-only for production code; the merged guard already holds
 on both submission routes. This item adds the missing submission-leg regression.
-Merged to local master as MERGE COMMIT (receipt commit SOURCE COMMIT).
+Merged to local master as 44a81f7 (receipt commit 8ddeda1).
 
 ## Symptom
 Queue row: "An optional trigger spends mana that the current plan explicitly
