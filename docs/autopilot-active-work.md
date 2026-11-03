@@ -147,8 +147,9 @@ deployed.
 | 27 | BUG-283 | merged_awaiting_review | dde78f7 (merge fa0e292, no source change) | docs/backlog-receipts/BUG-283/ |
 | 28 | BUG-284 | merged_awaiting_review | e78789a (merge 4be2eaf, no source change) | docs/backlog-receipts/BUG-284/ |
 | 29 | BUG-285 | merged_awaiting_review | 8f595f3 (merge 6ad4b01, trace scoping) | docs/backlog-receipts/BUG-285/ |
+| 30 | BUG-286 | merged_awaiting_review | 0cdf55e (merge 78acf87, regression test only) | docs/backlog-receipts/BUG-286/ |
 
-Next item: BUG-286. All twenty-nine merged items still need an independent review pass
+Next item: BUG-289. All thirty merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -477,3 +478,15 @@ receipts. The compact index below preserves exact membership and initial scopes.
 | 38 | BUG-318 | Sideboarding is confused with mulligan/gameplay and can submit or mutate the wrong deck. | Exercise same-request registered pool, deck constraints, dedup, short timer and resume ownership; preserve unsupported companion/commander/constructed paths visibly instead of blind submission. |
 | 39 | BUG-329 | Chosen actions contradict hold/pass reasoning or stale beliefs contaminate later choices. | Reproduce one remaining accepted-action/trace/memory contradiction across the actual final submission path; preserve legal selections and distinguish corrected prose from improved strategy. |
 | 40 | BUG-350 | Permanent hexproof is chosen as if it protects a spell from a counterspell. | Prevent a cast chosen solely for impossible spell protection while retaining deliberate life-gain or real permanent protection; test recheck failure, legal alternatives and original deadlines. |
+
+BUG-286 needed no production source change: the deterministic Sneak guard runs before any
+model call (action_planner.py:4970), the declaration hedge is bounded by the planner deadline
+(action_planner.py:1486/1537), and the bridge's authoritative attack override recovers the
+lethal Sneak line in milliseconds after a failed declaration (autopilot_bridge.py:807/830).
+The new tests/test_latency_286_sneak_guard.py pins the regression on the ledger #156/#159
+Leonardo board: a failed high declaration returns llm_unavailable at its 0.6 s budget and the
+guard still declares all fifteen attackers with Sneak reasoning; a timely low declaration is
+not overridden with fewer attackers; at 60/40 life the guard declines, so the recovery is not
+an unconditional all-in. The audit's unresolved prerequisite stands: an illegal pass/fallback
+retry is a distinct case needing its own exact-case reproduction, and live timing remains
+unqualified.

@@ -1384,14 +1384,20 @@
         "backlog-evidence-2026-11-01.md: #286"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-286",
+        "base_commit": "dbcd4bc",
+        "source_commits": [
+          "0cdf55e"
+        ],
+        "master_commits": [
+          "78acf87"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-286/focused-tests.txt"
+        ],
+        "note": "Verification-only for the latency mechanism plus one regression test file; no production source change. The deterministic Sneak guard runs before any model call (action_planner.py:4970), the declaration hedge is bounded by the planner deadline (action_planner.py:1486/1537), and the bridge's authoritative attack override (autopilot_bridge.py:807/830) recovers the lethal Sneak line after a failed declaration. Probe on current master (Leonardo T12 board, ledger #156/#159): a timely low declaration wins in 25 ms and declares all fifteen attackers; a failed high declaration returns llm_unavailable at its 0.60 s budget with no actions and the guard then returns all fifteen attackers with Sneak reasoning in 2 ms; at 60/40 life the guard declines; a cancelled proxy leg is recorded as decision.plan cancelled (ttft=None, total=505 ms) beside the ok leg. tests/test_latency_286_sneak_guard.py pins those three cases; the ten audit node IDs plus the new file give 17 passed in 9.37 s and ruff is clean. Remaining gap: an illegal pass/fallback retry is a distinct case needing its own exact-case reproduction and owner qualification; live timing distribution is unqualified and there is no Linux CI receipt."
       },
       "independent_verification": {
         "state": "not_reviewed",

@@ -18,7 +18,7 @@ the specific regression with a new test file:
    `src/arenamcp/autopilot_bridge.py:807` → `_all_in_attack_action` at
    `autopilot_bridge.py:830`) recovers the lethal Sneak line in milliseconds.
 
-Merged to local master as MERGE COMMIT (receipt commit SOURCE COMMIT).
+Merged to local master as 78acf87 (receipt commit 0cdf55e).
 
 ## Symptom and evidence
 
