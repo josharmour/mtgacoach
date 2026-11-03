@@ -158,7 +158,7 @@ deployed.
 | 39 | BUG-329 | merged_awaiting_review | d8fc11f | docs/backlog-receipts/BUG-329/ |
 | 40 | BUG-350 | merged_awaiting_review | 83f1fbf | docs/backlog-receipts/BUG-350/ |
 
-Implementation queue complete. All 40 items await independent review. Live qualification is recorded separately.
+Implementation queue complete. See the [independent review results](backlog-receipts/review-2026-11-03.md) and the per-item JSON status for the current verification disposition. Live qualification is recorded separately.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
 conservative limits. BUG-223 also needed no production source change: the lane,
