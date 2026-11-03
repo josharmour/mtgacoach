@@ -1,7 +1,7 @@
 # ArenaOnAir hosted service
 
 `arenaonair.py` mounts `/api/arenaonair` in the website app. It is independent of
-MTGA Coach's existing seven-day trial. Both products use `glm-5.3-flash`.
+MTGA Coach's existing seven-day trial. Coach requests the gateway alias `current`. The ArenaOnAir trial router selects its model server-side using `ARENAONAIR_MODEL`.
 
 - `POST /trial/request-code`: request an emailed six-digit code, bound to the
   device, email, and client possession token. Codes expire after 15 minutes,
@@ -28,34 +28,10 @@ The server accepts only the chat route and a request-field allowlist. LiteLLM
 admin credentials stay inside the website service and are never issued as trial
 credentials. Patreon customers use scoped LiteLLM keys directly at the gateway.
 
-## Deployment
+## Deployment and verification
 
-The live website is the `mtgacoach` container on blackwell, with build context
-`/home/joshu/docker-stack/appdata/mtgacoach`. The deployed app is older than the
-repository's router refactor. Copy the standalone module, add its router to the
-live app, and update `PATRON_KEY_MODELS` to `["glm-5.3-flash"]`; avoid replacing the
-whole live app with a refactored version as part of this change. Back up source
-files first, copy the same files into the container, restart `mtgacoach`, and
-rebuild `mtgacoach-site` from that context so recreations retain the change.
+Use the [website guide](SETUP.md) for the service and test environment. Confirm the deployed router configuration and scoped key grants before applying a change. Preserve the persistent website database across deployments.
 
-Tables are added idempotently to the existing website DB. Do not delete trial
-rows to reset customer usage. Keep the DB volume and credentials across deploys.
-Rollback removes the router include; additive trial tables can remain safely.
+Exercise `tests/test_arenaonair_trial.py` and the Patreon/key tests. Use a synthetic trial to verify the public TLS endpoint, email-code flow, and match accounting. Delete only the synthetic test data.
 
-Validation: `tests/test_arenaonair_trial.py`, Patreon/key tests, then a synthetic
-trial through the public TLS endpoint. Remove only the synthetic test trial.
-The September 2026 migration changed 341 Patreon/Coach trial key model grants;
-its rollback record is on the website data volume, never in Git.
-
-
-The email-verification update requires deploying `arenaonair.py` together with
-its `abuse_protection.py` dependency and the updated `patreon.send_trial_code_email`
-helper (now accepts `product="ArenaOnAir"`). Configure SMTP as for MTGA Coach.
-Deploy the backend before distributing the updated desktop client. Pending codes
-and additive `email`/`email_verified` columns are initialized idempotently; existing
-five-match allowances are preserved. This repository change does not deploy the
-live service or send real verification emails during tests.
-
-Live commentary requests now default to `thinking: false`. Clients may explicitly
-request reasoning with `chat_template_kwargs.thinking: true`; the server then uses
-low reasoning effort. The request allowlist and match limits are unchanged.
+The router initializes its trial tables and preserves existing allowances. Keep the router and mail helpers compatible when changing the email flow. The server bounds reply size and controls the model and reasoning options; see [arenaonair.py](arenaonair.py) for the current limits.

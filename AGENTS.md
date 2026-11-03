@@ -1,7 +1,8 @@
 # ArenaMCP — Agent Guidance
 
 ## Project
-Real-time AI coaching for MTG Arena with in-game overlay (BepInEx-driven ground-truth card positions).  
+Real-time desktop coaching for MTG Arena. Coach reads Arena’s game log; autoplay also uses the platform bridge.
+
 Python package `arenamcp` under `src/arenamcp/`, desktop PySide6 GUI at `src/arenamcp/desktop/`, BepInEx C# plugin at `bepinex-plugin/MtgaCoachBridge/`.
 
 ## Key Architecture
@@ -9,15 +10,15 @@ Python package `arenamcp` under `src/arenamcp/`, desktop PySide6 GUI at `src/are
 - **`windows_integration.py`** — Windows install/repair helpers (stdlib-only)
 - **`src/arenamcp/desktop/app.py`** — PySide6 desktop app entrypoint (main entry for users)
 - **`src/arenamcp/server.py`** — FastMCP server bridging MTGA logs to LLM
-- **`src/arenamcp/coach.py`** — Coach engine with pluggable LLM backends
+- **`src/arenamcp/coach.py`** — Coach engine using the hosted online backend
 - **`src/arenamcp/standalone.py`** — TUI/"standalone" client (voice + MCP client)
 - **`src/arenamcp/autopilot.py`** — AI autoplay engine
-- **`tests/`** — pytest test suite (600+ tests)
+- **`tests/`** — pytest regression suite
 
 ## Developer Commands
 ```bash
 # Install (editable, with all extras)
-pip install -e .[dev,full]
+python -m pip install -e ".[dev,full]" -r website/requirements.txt
 
 # Run tests (isolated log file via ARENAMCP_LOG_FILE env var)
 pytest tests -q
@@ -35,12 +36,11 @@ python -m arenamcp.standalone --backend online
 ## Local venvs (macOS dev machine)
 - `.venv_mac_311/` — Python 3.11, the working macOS venv (pip, pytest, editable arenamcp). Use this on mac.
 - `.venv/` — Linux/WSL-era venv; pip shebang broken on macOS (points at old ArenaMCP path).
-- Deleted 2026-07-22: `.venv_mac/`, `test_env/` (Python 3.9 — below requires-python >=3.10).
 
-## Tooling (added 2026-07-22)
+## Tooling
 - **ruff** (lint + format) and **mypy** (advisory) — configs in `pyproject.toml`.
 - **pre-commit** — `.pre-commit-config.yaml`; `pre-commit install` to enable.
-- **CI** — `.github/workflows/tests.yml` runs ruff + pytest on push/PR (installer.yml unchanged).
+- **CI** — `.github/workflows/tests.yml` runs ruff + pytest on push/PR.
 - Version single-sourced in `src/arenamcp/__init__.py` (`__version__`); pyproject reads it via hatch dynamic versioning.
 
 ## BepInEx C# Plugin (Linux dev)
@@ -55,13 +55,13 @@ python -m arenamcp.standalone --backend online
 
 ## Testing Quirks
 - `conftest.py` redirects `ARENAMCP_LOG_FILE` to `/tmp/arenamcp-pytest.log` so test noise doesn't pollute `~/.arenamcp/standalone.log`.
-- No linter/formatter config in `pyproject.toml` (only pytest dependency). No pre-commit, no typechecker configured.
-- CI only builds Windows installer via GitHub Actions (`.github/workflows/installer.yml`).
+- Run the focused regression for the feature, then use the lint and test commands in [DEV.md](DEV.md).
+- GitHub runs lint, hosted trial checks, and pytest. Successful master tests qualify a build for managed packaging.
 
 ## Packaging
-- **`hatchling`** build backend, single package `src/arenamcp`
-- GUI entrypoint: `mtgacoach-desktop = "arenamcp.desktop.app:main"`
-- Installer: Inno Setup script at `installer/mtgacoach.iss`, built only on `windows-latest` runner (tag push `v*` or `workflow_dispatch`).
+- `hatchling` builds the `arenamcp` Python package. The GUI entrypoint is `mtgacoach-desktop`.
+- Velopack distributes the managed desktop for Windows, Linux, and Mac. See [RELEASE.md](RELEASE.md) for both channels and the GitHub workflow.
+- The old Inno workflow is manual recovery for earlier installations.
 
 ## Log Locations (Windows)
 | Log | Path |
@@ -74,5 +74,5 @@ python -m arenamcp.standalone --backend online
 
 ## Development Flow
 - Edits under `src/arenamcp/` take effect on next launch (no C# rebuild needed).
-- `launch.bat` is the canonical Windows entrypoint for repo/manual installs.
+- Use [DEV.md](DEV.md) for source development and [INSTALL.md](INSTALL.md) for managed desktop installs.
 - The coaching engine runs as a subprocess over a JSON pipe protocol (separate from the UI process).

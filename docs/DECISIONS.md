@@ -1,9 +1,6 @@
-# Decision & Verification Log
+# Historical decision and verification log
 
-Standing log of architectural decisions, their rationale, the evidence behind
-them, and falsifiable claims other agents can re-verify. Companion to
-[PLATFORM_PARITY.md](PLATFORM_PARITY.md) (the gap tables live there; this doc
-records *why* and *how we know*). Newest entries first.
+Entries below describe the code, models, and installations observed on their recorded dates. For current behavior, use the [development index](README.md), [active work queue](autopilot-active-work.md), and [release guide](../RELEASE.md).
 
 ---
 

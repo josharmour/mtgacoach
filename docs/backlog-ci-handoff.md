@@ -1,5 +1,7 @@
 # CI-PERF continuation receipt — 2026-11-02
 
+Historical evidence for the [active work queue](autopilot-active-work.md). The commands, installed revisions, and pending items below describe this checkpoint. Consult the current ledger for ownership and verification status.
+
 Only one queue item covers both failures. This is a durable summary, not a new test run.
 
 - Baseline/local and GitHub master last independently checked: `c31000589d5a0f38680855ac07c3f16580635694`.

@@ -15,8 +15,7 @@ on recurrence. Reopening an obsolete scope requires an explicit user decision.
 
 Active bug IDs: #141, #210, #223, #231, #232, #235, #239, #241, #247, #248, #249, #253, #254, #256, #260, #264, #265, #266, #269, #270, #273, #275, #276, #277, #278, #283, #284, #285, #286, #289, #300, #306, #307, #308, #309, #317, #318, #329, #350.
 
-The original reports remain in the clearly labelled archive in
-[autopilot-improvements.md](../autopilot-improvements.md). The source/test locator
+The maintainer keeps the original reports in the historical `autopilot-improvements.md` ledger outside this repository. The source/test locator
 index is [backlog-evidence-2026-11-01.md](backlog-evidence-2026-11-01.md).
 Old ledger statuses are history; they cannot expand this queue. Do not read the
 entire archive into every task: find the selected ID and its later recurrences.
