@@ -1947,6 +1947,8 @@ class StandaloneCoach(
                 # Check for active draft/sealed first
                 draft_pack = self._mcp.get_draft_pack()
                 self._emit_pipe_snapshots(draft_state=draft_pack)
+                if draft_pack.get("is_active") or draft_pack.get("is_building"):
+                    self._poll_deck_preparation(False)
 
                 # Autoplay of a joined draft event owns its picks, deck and
                 # event screens; advice-only draft handling stays out of its way.
@@ -2368,6 +2370,7 @@ class StandaloneCoach(
                     prev_state = curr_state
                     time.sleep(0.3)
                     continue
+                self._poll_deck_preparation(not curr_match_id or match_finished, curr_state)
                 navigating = self._poll_auto_queue(curr_state)
                 # Engine code changed on disk? Reload now if this is between matches.
                 self._maybe_request_auto_reload(curr_state)
@@ -3589,6 +3592,7 @@ class StandaloneCoach(
         """
         # First, even when a shutdown path already cleared _running (stdin
         # EOF, restart): a countdown must never outlive the coach.
+        self._poll_deck_preparation(False)
         self.abort_concede("the coach stopped")
         self._oops_clear("the coach stopped")
         if not self._running:

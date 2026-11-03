@@ -824,7 +824,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 if generation == self._deck_analysis_generation:
                     self._deck_strategy_pending = False
 
-    def prepare_playbook(self, game_state: dict, backend=None, *, refresh: bool = False, progress=None):
+    def prepare_playbook(
+        self, game_state: dict, backend=None, *, refresh: bool = False, progress=None, cancel=None
+    ):
         """Build (or load) the playbook for ``game_state``'s deck without publishing it.
 
         The Decks window uses this between matches: the result is stored in
@@ -852,7 +854,13 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             return playbook
         try:
             playbook = self._build_playbook(
-                game_state, be, identity, -1, wanted=lambda: True, progress=progress
+                game_state,
+                be,
+                identity,
+                -1,
+                wanted=lambda: cancel is None or not cancel.is_set(),
+                progress=progress,
+                cancel=cancel,
             )
             self._store_playbook(playbook)
             if progress:
@@ -862,7 +870,15 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             self._finish_playbook_run(identity, run)
 
     def _build_playbook(
-        self, game_state: dict, be: Any, identity: str, generation: int, *, wanted=None, progress=None
+        self,
+        game_state: dict,
+        be: Any,
+        identity: str,
+        generation: int,
+        *,
+        wanted=None,
+        progress=None,
+        cancel=None,
     ):
         """The two model calls: discovery notes, then the audited JSON playbook."""
         from arenamcp.deck_strategy import (
@@ -900,7 +916,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             raise ValueError(
                 f"Deck analysis deferred: strategic lane held or reserved for {STRATEGIC_LANE.holder or 'a game plan'}"
             )
-        cancel = threading.Event()
+        cancel = cancel or threading.Event()
         with self._deck_analysis_lock:
             self._playbook_cancels[identity] = cancel
         try:

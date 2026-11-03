@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from typing import Any
 from unittest.mock import Mock
 
@@ -137,7 +138,7 @@ class FakeCoach:
     def _cached_playbook(self, identity, state):
         return self.cached
 
-    def prepare_playbook(self, state, backend=None, *, refresh=False, progress=None):
+    def prepare_playbook(self, state, backend=None, *, refresh=False, progress=None, cancel=None):
         self.prepared.append((state["deck_name"], refresh))
         if progress:
             progress("discovery")
@@ -261,3 +262,63 @@ def test_prepare_playbook_builds_and_caches_without_publishing(monkeypatch, tmp_
     assert again.identity == playbook.identity and stages[-1] == "cache"
     with pytest.raises(ValueError):
         coach.prepare_playbook({"deck_cards": []}, backend=backend)
+
+
+def test_pregame_prepares_only_selected_deck_and_skips_cached_version(library, monkeypatch):
+    from arenamcp.deck_library import DeckRecord
+
+    coach = FakeCoach()
+    records = {k: DeckRecord(k, k, main=[(gid, 60)]) for k, gid in [("a", 100), ("b", 200)]}
+    lib = library(coach, log_decks=records)
+    monkeypatch.setattr("arenamcp.server.get_last_queue_selection", lambda: {"deck_id": "b"})
+    lib._prepare_selected_deck(threading.Event())
+    assert coach.prepared == [("b", False)]
+    coach.cached = FakePlaybook()
+    lib._prepare_selected_deck(threading.Event())
+    assert coach.prepared == [("b", False)]
+
+
+def test_pregame_worker_hands_same_deck_to_match_and_cancels_a_different_deck(library):
+    from arenamcp.deck_library import DeckRecord
+
+    lib = library(FakeCoach())
+    record = DeckRecord("a", "First", main=[(100, 60)])
+    lib._auto_deck_strategy = True
+    lib._deck_prep_identity = record.identity()
+    lib._deck_prep_thread = Mock()
+    lib._deck_prep_thread.is_alive.return_value = True
+    lib._deck_prep_cancel = threading.Event()
+    lib._poll_deck_preparation(False, record.game_state())
+    assert not lib._deck_prep_cancel.is_set()
+    lib._poll_deck_preparation(False, DeckRecord("b", "Next", main=[(200, 60)]).game_state())
+    assert lib._deck_prep_cancel.is_set()
+
+
+def test_idle_poll_starts_only_one_worker_and_wakes_for_a_different_selection(library, monkeypatch):
+    lib = library(FakeCoach())
+    lib._auto_deck_strategy = True
+    selection = {"deck_id": "one"}
+    monkeypatch.setattr("arenamcp.server.get_last_queue_selection", lambda: selection)
+    entered = threading.Event()
+    releases = []
+
+    def prepare(cancel):
+        releases.append(cancel)
+        entered.set()
+        cancel.wait(2)
+
+    monkeypatch.setattr(lib, "_prepare_selected_deck", prepare)
+    lib._poll_deck_preparation(True)
+    assert entered.wait(1)
+    lib._poll_deck_preparation(True)
+    assert len(releases) == 1
+    selection["deck_id"] = "two"
+    lib._poll_deck_preparation(True)
+    assert releases[0].is_set()
+    lib._deck_prep_thread.join(1)
+    entered.clear()
+    lib._poll_deck_preparation(True)
+    assert entered.wait(1)
+    lib._poll_deck_preparation(False)
+    lib._deck_prep_thread.join(1)
+    assert len(releases) == 2 and releases[1].is_set()

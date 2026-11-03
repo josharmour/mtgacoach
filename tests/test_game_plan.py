@@ -424,7 +424,7 @@ def test_an_unchanged_board_reforms_once_per_opponent_turn_whatever_the_phase(mo
     first = int(board["turn"]["turn_number"])
     calls = []
 
-    def fake_reform(self, game_state, turn_num, cancel=None):
+    def fake_reform(self, game_state, turn_num, cancel=None, reason=""):
         side = "me" if game_state["turn"]["active_player"] == local else "op"
         calls.append(f"T{turn_num}{side}")
         return GamePlan(win_conditions=["x"], path="p", turn_formed=turn_num)
@@ -606,3 +606,77 @@ def test_the_first_plan_runs_at_low_effort_and_later_ones_at_high():
     deeper = mgr._reform(state, 4)
     assert deeper is not None and deeper.effort == "high"
     assert calls == ["low", "high"]
+
+
+def test_compact_opening_uses_playbook_then_reuses_a_covered_turn():
+    from arenamcp.game_plan import LIVE_PLAN_PROMPT
+
+    class Capture(FakeBackend):
+        model = "current"
+
+        def complete(self, system, user, max_tokens, **kwargs):
+            self.caps.append(max_tokens)
+            return super().complete(system, user, max_tokens, **kwargs)
+
+    reply = json.dumps(
+        {
+            "win_conditions": ["Attack with Bears"],
+            "develop_next": "Deploy Bears",
+            "turns": [{"turn": "T", "attack": "none"}, {"turn": "T+1", "hold": "leave a blocker"}],
+            "switch_if": ["Defend if the opponent threatens lethal"],
+        }
+    )
+    backend = Capture([reply, reply, reply])
+    backend.caps = []
+    mgr = GamePlanManager(backend, separate_strategy_planning=True)
+    mgr.seed("Use early creatures to enable the finishing attack.")
+    opening = _state(turn=1)
+    plan = mgr.maybe_reform(opening)
+    assert plan.step_for(3) and plan.switch_if
+    assert backend.requests[0][0] == LIVE_PLAN_PROMPT
+    assert "early creatures" in backend.requests[0][1]
+    assert backend.requests[0][2]["reasoning_effort"] == "none"
+    assert backend.caps == [512]
+    assert backend.requests[0][2]["response_format"] == {"type": "json_object"}
+    their_turn = _state(turn=2)
+    their_turn["turn"]["active_player"] = 2
+    assert mgr.maybe_reform(their_turn) is plan
+    assert backend.caps == [512]
+
+    # Once the playbook line runs out, adapt it in the same short format.
+    later = _state(turn=4)
+    later["turn"]["active_player"] = 2
+    assert mgr.maybe_reform(later) is not plan
+    assert backend.requests[-1][0] == LIVE_PLAN_PROMPT
+    assert "Attack with Bears" in backend.requests[-1][1]
+    assert backend.caps == [512, 512]
+
+
+def test_covered_step_cannot_hide_missing_cards_or_a_lethal_flip():
+    mgr = GamePlanManager(FakeBackend([]))
+    mgr._plan = GamePlan(win_conditions=["Attack"], turn_plan=[{"turn": 3, "cast": ["Shock (on a blocker)"]}])
+    mgr._last_sig = (1,)
+    mgr._last_reform_turn = 1
+    old = (("aggressor", False, False, False), (), (), frozenset())
+    mgr._last_key = old
+    board = _state(turn=2)
+    assert mgr._should_reform((2,), key=old, state=board) == "plan our next turn"
+    board["hand"] = [{"name": "Shock"}]
+    assert mgr._should_reform((2,), key=old, state=board) == ""
+    danger = (("defender", False, True, False), (), (), frozenset())
+    assert mgr._should_reform((2,), key=danger, state=board) == "lethal flip"
+
+
+def test_hosted_lethal_flip_still_requests_a_full_strategic_review(monkeypatch):
+    from arenamcp.game_plan import GAME_PLAN_PROMPT, LIVE_PLAN_PROMPT
+
+    backend = FakeBackend([_plan_json("attack"), _plan_json("defend")])
+    backend.model = "current"
+    manager = GamePlanManager(backend, separate_strategy_planning=True)
+    facts = [("aggressor", False, False, False)]
+    monkeypatch.setattr(manager, "_strategic_key", lambda *args: (facts[0], (), (), frozenset()))
+    manager.maybe_reform(_state(turn=3))
+    facts[0] = ("defender", False, True, False)
+    manager.maybe_reform(_state(turn=3))
+    assert [call[0] for call in backend.requests] == [LIVE_PLAN_PROMPT, GAME_PLAN_PROMPT]
+    assert backend.requests[-1][2]["reasoning_effort"] == "high"

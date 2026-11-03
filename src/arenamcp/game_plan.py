@@ -288,6 +288,20 @@ Respond with ONLY a JSON object, no prose, no markdown:
 }"""
 
 
+# A short update uses the same validated GamePlan fields as a full strategic review.
+LIVE_PLAN_PROMPT = """Choose the line from the supplied deck playbook that fits this match.
+Use BOARD FACTS, the current hand, the mana available and the prior plan. Keep a sound line.
+Give one win condition, our next play or hold, and the specific opposing play or draw that
+would change it. Follow a feasible candidate line when one is supplied. Cast only cards
+available from hand, graveyard or command zone at their actual cost. Treat draws as conditional.
+Return only this compact JSON, using short phrases. T is our next actionable turn and T+1
+is our following turn. Use exact card names and leave unavailable actions empty.
+{"role":"assessed role","win_conditions":["line"],"path":"how we win","develop_next":"next priority",
+ "turns":[{"turn":"T","land":"","cast":[],"attack":"","hold":""},
+          {"turn":"T+1","land":"","cast":[],"attack":"","hold":""}],
+ "switch_if":["specific change"]}"""
+
+
 # The assessed race reasons that attacking is what survives (``board_assessment._role``, ledger #161).
 _RACE_TO_SURVIVE = re.compile(
     r"\bonly attacking survives\b|\battacking survives\b|\bnone of ours can block it\b"
@@ -4345,7 +4359,11 @@ class GamePlanManager:
                 reason = "plan stalled"
             else:
                 reason = self._should_reform(
-                    sig, our_turn=our_turn, key=self._strategic_key(game_state, sig), board=self._live_basis
+                    sig,
+                    our_turn=our_turn,
+                    key=self._strategic_key(game_state, sig),
+                    board=self._live_basis,
+                    state=game_state,
                 )
             if not reason:
                 return False
@@ -4599,17 +4617,20 @@ class GamePlanManager:
                 self.observe(game_state)
             generation = self._generation
             stalled = self._stall_count >= self._STALL_REFORM_THRESHOLD
-            if not (
-                force
-                or stalled
-                or self._should_reform(sig, our_turn=self._our_turn(game_state), key=key, board=board)
-            ):
+            reason = (
+                "plan stalled"
+                if stalled
+                else self._should_reform(
+                    sig, our_turn=self._our_turn(game_state), key=key, board=board, state=game_state
+                )
+            )
+            if not force and not reason:
                 return self._plan
             seed = self._seed
             stall_count = self._stall_count
             plan_turn = self._plan_turn(game_state)
 
-        plan = self._reform(game_state, turn_num, cancel=_cancel)
+        plan = self._reform(game_state, turn_num, cancel=_cancel, reason=reason)
         with self._lock:
             if generation != self._generation:
                 return self._plan
@@ -4682,7 +4703,13 @@ class GamePlanManager:
             return self._plan
 
     def _should_reform(
-        self, sig: tuple, *, our_turn: bool = False, key: tuple | None = None, board: dict | None = None
+        self,
+        sig: tuple,
+        *,
+        our_turn: bool = False,
+        key: tuple | None = None,
+        board: dict | None = None,
+        state: dict | None = None,
     ) -> str:
         """Why the plan should be re-formed now ("" = keep it).
 
@@ -4705,22 +4732,49 @@ class GamePlanManager:
         if getattr(self, "_resume_after_yield", False):
             return "resumed after a decision"
         turn_num = sig[0]
-        if turn_num - self._last_reform_turn >= self._STALE_TURNS:
-            return "stale plan"
-        # Plan our coming turn during the opponent's turn, so it is ready when
-        # our turn starts (a plan call takes ~30 s on a busy gateway).
-        if not our_turn and turn_num > self._last_reform_turn:
-            return "plan our next turn"
-        # The opponent-turn plan never formed (failed, deferred or skipped).
-        if our_turn and turn_num > self._last_reform_turn + 1:
-            return "no plan for this turn"
-        if key is not None and self._last_key is not None:
-            reason = self._key_change_reason(self._last_key, key)
-            if reason:
-                return reason
+        change = (
+            self._key_change_reason(self._last_key, key)
+            if key is not None and self._last_key is not None
+            else ""
+        )
+        if change and change != "new opposing permanent":
+            return change
         if board and board_changes(self._plan.basis, board, threats_only=True):
             return "new opposing threat"
+        if change:
+            return change
+        # A validated future step already covers an uneventful turn. Still refresh
+        # when a card the step relies on has left its playable zones.
+        target = turn_num if our_turn else turn_num + 1
+        if state is not None and self._planned_step_available(state, target):
+            return ""
+        if turn_num - self._last_reform_turn >= self._STALE_TURNS:
+            return "stale plan"
+        if not our_turn and turn_num > self._last_reform_turn:
+            return "plan our next turn"
+        if our_turn and turn_num > self._last_reform_turn + 1:
+            return "no plan for this turn"
         return ""
+
+    def _planned_step_available(self, state: dict, turn: int) -> bool:
+        step = self._plan.step_for(turn) if self._plan else None
+        if not step:
+            return False
+        local = state.get("local_seat_id") or self._local_seat(state)
+        cards = _castable_cards(state) + [
+            card
+            for card in state.get("graveyard") or []
+            if isinstance(card, dict) and card.get("owner_seat_id", local) == local and _flashback_cost(card)
+        ]
+        available = _card_names(cards)
+
+        def known(name):
+            return _named_card(name, available)
+
+        for entry in [*step.get("cast", []), step.get("land")]:
+            if entry and not known(_cast_parts(entry, known)[0]):
+                return False
+        return True
 
     def _key_change_reason(self, old: tuple, new: tuple) -> str:
         """Why the strategic key moved enough to re-form the plan ("" = it didn't)."""
@@ -4946,7 +5000,12 @@ class GamePlanManager:
         )
 
     def _reform(
-        self, game_state: dict[str, Any], turn_num: int, *, cancel: threading.Event | None = None
+        self,
+        game_state: dict[str, Any],
+        turn_num: int,
+        *,
+        cancel: threading.Event | None = None,
+        reason: str = "",
     ) -> GamePlan | None:
         from arenamcp.board_assessment import assess
         from arenamcp.match_context import prepare_match_context, with_deck_reference
@@ -5014,13 +5073,14 @@ class GamePlanManager:
         self._reform_failure = ""
         model = str(getattr(self._backend, "model", "")).lower()
         hosted = model == "current" or any(name in model for name in ("deepseek", "dsv4"))
-        # #141 replay 2026-11-02: a reform that follows a cancellation must land
-        # inside the turn it was asked for. At full effort/budget it outlives its
-        # turn and is superseded again, so two calls were wasted before a third
-        # landed three turns late. Recovery attempts therefore use the same fast,
-        # bounded mode as the first plan, and their late answer is kept.
-        fast_recovery = hosted and (self._plan is None or self._consecutive_supersedes >= 1)
-        budget = min(self._timeout, self._INITIAL_HOSTED_PLAN_TIMEOUT_S) if fast_recovery else self._timeout
+        compact = hosted and (
+            self._plan is None
+            or self._consecutive_supersedes >= 1
+            or reason
+            in {"plan our next turn", "no plan for this turn", "stale plan", "new opposing permanent"}
+        )
+        prompt = LIVE_PLAN_PROMPT if compact else GAME_PLAN_PROMPT
+        budget = min(self._timeout, self._INITIAL_HOSTED_PLAN_TIMEOUT_S) if compact else self._timeout
         # Parsing repair is part of this reform, not a second full occupation
         # of the background lane (#141/#223). Share one wall-clock deadline.
         deadline = time.monotonic() + budget
@@ -5034,18 +5094,16 @@ class GamePlanManager:
                 if not self.separate_strategy_planning and self._low_effort_reform(game_state, turn_num)
                 else self._PLAN_REASONING_EFFORT
             )
-            if fast_recovery:
+            if compact:
                 effort = "none"
                 logger.info(
-                    "Game plan: %s without hidden reasoning (%.1fs budget)",
-                    "first hosted plan" if self._plan is None else "recovery plan after a cancelled reform",
+                    "Game plan: compact %s without hidden reasoning (%.1fs budget)",
+                    reason or "update",
                     budget,
                 )
             elif effort == "low":
                 logger.info("Game plan: reform at low effort for speed")
-            response = self._complete(
-                GAME_PLAN_PROMPT, user_message, cancel=cancel, effort=effort, deadline=deadline
-            )
+            response = self._complete(prompt, user_message, cancel=cancel, effort=effort, deadline=deadline)
         except Exception as e:
             logger.warning("game-plan LLM call failed (keeping prior plan): %s", e)
             self._reform_failure = "call failed"
@@ -5055,9 +5113,9 @@ class GamePlanManager:
         json_retried = False
         if plan is None and self._reform_failure == "no usable plan from the model":
             json_retried = True
-            retry_effort = "none" if fast_recovery else "low"
+            retry_effort = "none" if compact else "low"
             plan = self._retry_for_json(
-                user_message, turn_num, cancel=cancel, deadline=deadline, effort=retry_effort
+                user_message, turn_num, cancel=cancel, deadline=deadline, effort=retry_effort, prompt=prompt
             )
             if plan is not None:
                 effort = retry_effort
@@ -5072,7 +5130,9 @@ class GamePlanManager:
             validate_plan(plan, assessment, game_state)
         except Exception as error:  # a validator bug must not discard the plan
             logger.warning("game-plan validation failed (plan kept unvalidated): %s", error)
-        if not json_retried and assessment is not None:
+        # A compact update can use the validated legal fallback immediately.
+        # Keep the optional second mana-repair call for deeper strategic reviews.
+        if not compact and not json_retried and assessment is not None:
             plan = self._repair_mana_plan(
                 plan,
                 assessment,
@@ -5081,7 +5141,7 @@ class GamePlanManager:
                 turn_num,
                 cancel=cancel,
                 deadline=deadline,
-                effort="none" if fast_recovery else "low",
+                effort="low",
             )
             if plan is None:
                 return None
@@ -5214,6 +5274,7 @@ class GamePlanManager:
         cancel: threading.Event | None,
         deadline: float | None = None,
         effort: str = "low",
+        prompt: str = GAME_PLAN_PROMPT,
     ) -> GamePlan | None:
         """One cheap retry within this reform's budget, unless cancelled or the server is down."""
         if (cancel is not None and cancel.is_set()) or not background_llm_allowed(self._backend):
@@ -5227,7 +5288,7 @@ class GamePlanManager:
         )
         try:
             response = self._complete(
-                GAME_PLAN_PROMPT,
+                prompt,
                 user_message + self._RETRY_NUDGE,
                 cancel=cancel,
                 effort=effort,
@@ -5260,7 +5321,11 @@ class GamePlanManager:
         those keywords.
         """
         labels = accepted_call_kwargs(
-            self._backend, call_class=self._CALL_CLASS, priority=BACKGROUND_PRIORITY, cancel_event=cancel
+            self._backend,
+            call_class=self._CALL_CLASS,
+            priority=BACKGROUND_PRIORITY,
+            cancel_event=cancel,
+            response_format={"type": "json_object"} if system_prompt == LIVE_PLAN_PROMPT else None,
         )
         remaining = self._timeout if deadline is None else min(self._timeout, deadline - time.monotonic())
         if remaining <= 0:
@@ -5268,7 +5333,7 @@ class GamePlanManager:
         return self._backend.complete(
             system_prompt,
             user_message,
-            self._PLAN_MAX_TOKENS,
+            512 if system_prompt == LIVE_PLAN_PROMPT else self._PLAN_MAX_TOKENS,
             temperature=0.0,
             request_timeout_s=remaining,
             background=True,

@@ -155,6 +155,97 @@ class _DeckLibraryMixin:
 
         return create_backend(self._backend_name, model=self.model_name)
 
+    def _prepare_selected_deck(self, cancel: threading.Event) -> None:
+        """Warm the exact deck selected for Grind, Recent Match or the last queue request."""
+        from arenamcp.server import _queue_selection_from_log, get_last_queue_selection
+
+        quest = getattr(self, "_auto_quest", None)
+        if quest:
+            target = quest.get("target") or {}
+        else:
+            bridge = self._deck_library_bridge()
+            if bridge is not None and getattr(bridge, "client_runtime", "") == "il2cpp-macos":
+                target = bridge.get_recent_match()
+            else:
+                target = get_last_queue_selection() or _queue_selection_from_log() or {}
+        deck_id = target.get("deck_id")
+        if not deck_id or cancel.is_set():
+            return
+        record = self.collect_decks()[0].get(deck_id)
+        if (
+            not record
+            or not record.complete
+            or record.snapshot
+            or cancel.is_set()
+            or self._deck_library_in_match()
+        ):
+            return
+        state = record.game_state()
+        self._deck_prep_identity = record.identity()
+        if self._coach._cached_playbook(self._deck_prep_identity, state) is not None or cancel.is_set():
+            return
+        backend = self._deck_library_backend()
+        try:
+            self._coach.prepare_playbook(state, backend=backend, cancel=cancel)
+            logger.info("Pre-match playbook ready for %s", record.name)
+        finally:
+            close = getattr(backend, "close", None)
+            if callable(close):
+                close()
+
+    def _poll_deck_preparation(self, idle: bool, state: dict | None = None) -> None:
+        """Run at most one idle lookup off the coaching thread; live play takes precedence."""
+        worker = getattr(self, "_deck_prep_thread", None)
+        if not idle or not self._auto_deck_strategy:
+            cancel = getattr(self, "_deck_prep_cancel", None)
+            if cancel is not None and not cancel.is_set() and worker is not None and worker.is_alive():
+                from arenamcp.deck_strategy import deck_identity
+
+                # The live worker joins a build for its own deck. Let that build
+                # finish, subject to the existing first-plan handoff deadline.
+                if (
+                    not self._auto_deck_strategy
+                    or not state
+                    or (not self._deck_prep_identity or deck_identity(state) != self._deck_prep_identity)
+                ):
+                    cancel.set()
+            self._deck_prep_next_check = 0.0
+            return
+        from arenamcp.server import get_last_queue_selection
+
+        # Grind may choose its target after the first Home poll. A new queue
+        # selection should wake the worker without waiting out the idle timer.
+        quest = getattr(self, "_auto_quest", None)
+        hint = (
+            ("grind", (quest.get("target") or {}).get("deck_id"))
+            if quest
+            else ("queue", get_last_queue_selection().get("deck_id"))
+        )
+        if hint != getattr(self, "_deck_prep_selection", None):
+            self._deck_prep_selection = hint
+            self._deck_prep_next_check = 0.0
+            if worker is not None and worker.is_alive():
+                self._deck_prep_cancel.set()
+                return
+        if self._coach is None or (worker is not None and worker.is_alive()):
+            return
+        now = time.monotonic()
+        if now < getattr(self, "_deck_prep_next_check", 0.0):
+            return
+        self._deck_prep_next_check = now + 60
+        self._deck_prep_identity = ""
+        cancel = self._deck_prep_cancel = threading.Event()
+
+        def prepare():
+            try:
+                self._prepare_selected_deck(cancel)
+            except Exception as error:
+                if not cancel.is_set():
+                    logger.warning("Pre-match playbook unavailable: %s", error)
+
+        self._deck_prep_thread = threading.Thread(target=prepare, name="pre-match-playbook", daemon=True)
+        self._deck_prep_thread.start()
+
     def analyze_deck_record(self, record: Any, *, refresh: bool = False) -> dict[str, Any]:
         """Build the playbook for one deck (blocking); returns the deck_analysis payload."""
         from arenamcp.deck_library import playbook_report
