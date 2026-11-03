@@ -17,6 +17,7 @@ on:
         required: false
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: managed-desktop-${{ inputs.lane || (github.event_name == 'release' && 'stable') || 'master' }}
   cancel-in-progress: false
@@ -44,6 +45,10 @@ jobs:
             version=${TAG#v}
           else
             version="1.0.$GITHUB_RUN_NUMBER"
+          fi
+          if [[ "$GITHUB_EVENT_NAME" != workflow_run ]]; then
+            passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/tests.yml/runs?head_sha=$COMMIT&event=push" --jq 'any(.workflow_runs[]; .conclusion == "success" and .head_branch == "master")')
+            [[ "$passed" == true ]] || { echo "No successful master test run for $COMMIT"; exit 1; }
           fi
           feed_body=$(gh release view -R "$GITHUB_REPOSITORY" "coach-$LANE-feed" --json body --jq .body 2>/dev/null || true)
           build=true
@@ -106,7 +111,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: read
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -120,8 +124,6 @@ jobs:
           SHA: ${{ needs.select.outputs.sha }}
           VERSION: ${{ needs.select.outputs.version }}
         run: |
-          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/tests.yml/runs?head_sha=$SHA&event=push" --jq 'any(.workflow_runs[]; .conclusion == "success" and .head_branch == "master")')
-          [[ "$passed" == true ]] || { echo "No successful master test run for $SHA"; exit 1; }
           if [[ "$LANE" == master && "$SHA" != "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)" ]]; then
             echo "A newer master revision superseded this build"
             exit 0
