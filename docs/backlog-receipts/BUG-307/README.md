@@ -2,7 +2,7 @@
 
 ## Verdict
 
-Merged to local master as MERGE COMMIT (receipt commit SOURCE COMMIT). Production change:
+Merged to local master as 2d058c6 (receipt commit 407441d). Production change:
 `board_assessment._spell_value` no longer credits a removal spell with killing the drain
 engine of a creature that returns as an enchantment. Block valuation already retained the
 engine (#270/#284) and needed no change; the removal half was the open gap.

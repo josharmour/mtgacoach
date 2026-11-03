@@ -151,8 +151,9 @@ deployed.
 | 31 | BUG-289 | merged_awaiting_review | 6c43157 (merge 46ffe24, regression test only) | docs/backlog-receipts/BUG-289/ |
 | 32 | BUG-300 | merged_awaiting_review | 1b1443c (merge ed82854, draft tutor-outcome fact check) | docs/backlog-receipts/BUG-300/ |
 | 33 | BUG-306 | merged_awaiting_review | 44a81f7 (merge 8ddeda1, submission-leg regression only) | docs/backlog-receipts/BUG-306/ |
+| 34 | BUG-307 | merged_awaiting_review | 2d058c6 (merge 407441d, removal valuation keeps the returning engine) | docs/backlog-receipts/BUG-307/ |
 
-Next item: BUG-307. All thirty-three merged items still need an independent review pass
+Next item: BUG-308. All thirty-four merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -537,3 +538,23 @@ passed across the seven reservation/payment files, ruff clean. Bounded gaps reco
 fixed: the guard needs a recorded pass decision that states a same-turn hold (a fresh board or
 another explicit priority decision supersedes it by design), the proof is numeric shortfall only,
 the historical raw packet is not bundled, and there is no live qualification or Linux CI receipt.
+
+BUG-307 split cleanly in two. The block half was already merged (#270/#284): `combat_solver._material`
+counts a live body plus its engine and `_death_material` subtracts the retained engine credit, so a
+block trade keeps the drain/draw engine and loses only the body — pinned by
+`tests/test_retained_engine_value_284.py` and `tests/test_combat_persistence_284.py`. The open half was
+removal valuation: `board_assessment._spell_value` credited a removal spell with killing the drain
+engine of a creature that returns as an enchantment. A probe on master 728c05f returned 7.0 for a 2/2
+drain body with Enduring-Tenacity-style return text, 7.0 for the same body without it, and 7.0 with
+visible exile — i.e. the returning body was valued exactly like a plain one. The fix adds
+`_keeps_engine(body)` (False when `_return_credit_blocked`, else
+`persistent_returns.returned_enchantment`) and the threat line now reads
+`power + (0.0 if _keeps_engine else engine_role)`: 5.0 for the returning body, 7.0 plain, 7.0
+exile-blocked, and a draw-engine return body stays at 5.0 both ways so no discount is invented.
+`tests/test_death_return_removal_value_307.py` pins those cases plus the block-half contrast
+(10.0/6.0 returning, 7.0/7.0 plain) and the mixed-board "most dangerous target" pick. Verification:
+5 passed for the new file, 442 passed across the valuation/search batch, 296 across the plan/line
+batch, ruff clean. Bounded gaps recorded rather than fixed: only the printed self-return rule is
+recognised (blink and reanimation abstain), the whole engine role is withheld for a returning body
+including token activations a noncreature enchantment may not use, the historical raw packet is not
+bundled, and there is no live qualification or Linux CI receipt.
