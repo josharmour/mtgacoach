@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_date": "2026-11-02",
+  "updated_date": "2026-11-03",
   "scope": "Exactly 39 retained partial/open IDs plus one CI performance item. No other historical work is active.",
   "baseline_commit": "c31000589d5a0f38680855ac07c3f16580635694",
   "membership_source": "The 2026-11-01 cumulative audit partial_or_open_mixed_scope list, reproduced below;20prerequisite/ambiguousIDs retired and18scopedrepairs user-assumedfixed on2026-11-02.",
@@ -1686,14 +1686,20 @@
         "backlog-evidence-2026-11-01.md: #317"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
+        "state": "merged_awaiting_review",
+        "owner": "Codex",
         "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "base_commit": "fbf3ee273b8e5e5d74b4ee9f4cbf181a5dcf3d06",
+        "source_commits": [
+          "fa1dccd49babe78d96e7b9552cc618928c06c7bf"
+        ],
+        "master_commits": [
+          "fa1dccd49babe78d96e7b9552cc618928c06c7bf"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-317/focused-tests.txt"
+        ],
+        "note": "Coverage-only closeout. The draft advisor validates the recommended pick against distinct pack alternatives, uses supplied quality bands or remaining heuristic ranks, and discloses missing rationale. The draft driver preserves the comparison in short narration. The focused cases exercise higher/equal/unknown bands, misleading rankings, and a one-choice pack. No external score or live audio result is inferred. Focused regression: 10 passed in 0.07s. No independent or live sign-off."
       },
       "independent_verification": {
         "state": "not_reviewed",
