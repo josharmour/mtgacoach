@@ -42,9 +42,16 @@ class RequestTrace:
 
     def __init__(self) -> None:
         self.started = time.perf_counter()
+        # A request that began before this decision opened belongs to an earlier
+        # one: its metrics can land after this trace is active (a cancelled leg
+        # finishing late), and attributing it here would misreport the decision.
+        self.started_unix_s = time.time()
         self.requests: list[dict[str, Any]] = []
 
     def add(self, metrics: dict[str, Any]) -> None:
+        started_unix_s = metrics.get("request_started_unix_s")
+        if started_unix_s is not None and started_unix_s < self.started_unix_s:
+            return
         entry = {name: metrics.get(name) for name in _FIELDS}
         with _LOCK:
             self.requests.append(entry)
