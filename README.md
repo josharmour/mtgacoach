@@ -14,6 +14,10 @@ Real-time AI coaching for Magic: The Gathering Arena. MTGA Coach tracks your liv
 - **Grounded Gameplay Planning**: More precise handling of legal choices, commander restrictions and tax, legend-rule replacements, combat protection, mana reservations, optional costs, and action/explanation consistency.
 - **Online AI Backend**: Hosted coaching uses the active backend via **`current`** through `api.mtgacoach.com`. Get your Patreon key at [mtgacoach.com/subscribe](https://mtgacoach.com/subscribe); the same key also works with [ArenaOnAir](https://arenaonair.com). Hosted clients discover `current` through authenticated `/v1/models`; LiteLLM selects the active backend. The gateway exposes only `current`; saved legacy aliases are migrated to it.
 
+### Managed desktop updates
+
+Install Coach once for your platform. The trial downloads follow tested master builds. Coach checks for updates at launch, downloads changed packages in the background, and applies compatible updates between matches. Runtime or bridge upgrades ask you to restart from Help. The title bar identifies the channel and commit. Existing Inno, pip, and Git users need to launch the new installation once to join the channel. The initial Windows and Mac packages are unsigned. [Desktop downloads](https://mtgacoach.com/#get-started)
+
 ### What's new in 3.8.2
 
 Coach prepares the selected deck's playbook before a match and reuses it across

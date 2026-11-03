@@ -93,6 +93,7 @@ jobs:
           python scripts/verify_bridge_release.py
           python -m build --wheel
           python installer/velopack/package.py "$RID" "$LANE" "$VERSION"
+          if [[ "$LANE" == stable && "$RID" == win-x64 ]]; then cp dist/*.whl dist/publish/; fi
       - uses: actions/upload-artifact@v4
         with:
           name: managed-${{ matrix.rid }}
@@ -130,14 +131,14 @@ jobs:
             gh release create -R "$GITHUB_REPOSITORY" "$feed" --target "$SHA" --prerelease --latest=false --title "Coach $LANE update feed" --notes "Install the package for your platform once. Coach checks this channel on launch."
           fi
           for dir in packages/*; do
-            find "$dir" -maxdepth 1 -type f ! -name '*.json' -exec gh release upload -R "$GITHUB_REPOSITORY" "$feed" --clobber {} +
+            find "$dir" -maxdepth 1 -type f ! -name '*.json' ! -name '*.whl' -exec gh release upload -R "$GITHUB_REPOSITORY" "$feed" --clobber {} +
           done
           for dir in packages/*; do
             gh release upload -R "$GITHUB_REPOSITORY" "$feed" --clobber "$dir"/releases.*.json
           done
           if [[ "$LANE" == stable ]]; then
             cp packages/managed-win-x64/*-Setup.exe mtgacoach-Setup.exe
-            gh release upload -R "$GITHUB_REPOSITORY" "v$VERSION" mtgacoach-Setup.exe --clobber
+            gh release upload -R "$GITHUB_REPOSITORY" "v$VERSION" mtgacoach-Setup.exe packages/managed-win-x64/*.whl --clobber
           fi
           printf 'Install once to follow this %s channel.\n\nPublished commit %s\nPackage version %s\n' "$LANE" "$SHA" "$VERSION" > "$RUNNER_TEMP/feed-notes.md"
           gh release edit -R "$GITHUB_REPOSITORY" "$feed" --notes-file "$RUNNER_TEMP/feed-notes.md"
