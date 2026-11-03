@@ -225,3 +225,43 @@ def test_parenthetical_anticounter_effect_is_not_discarded():
     decision, state, chosen, reason = context()
     state["hand"][0]["oracle_text"] += " (Spells you control cannot be countered.)"
     assert correct_protection_claims(reason, decision, state, chosen) == (reason, [])
+
+
+@pytest.mark.parametrize("failure", ["timeout", "invalid", "repeated"])
+def test_unsupported_protection_cast_passes_on_failed_reconsideration(failure):
+    decision, state, chosen, reason = context()
+    data = {"option_ids": chosen, "reasoning": reason}
+    ask = Mock(side_effect=TimeoutError() if failure == "timeout" else None)
+    parse = Mock(return_value=(data, ["tgt:684"] if failure == "invalid" else chosen))
+    trace = {}
+    revised, picked = review_protection_claim(decision, state, data, chosen, ask, parse, "", trace)
+    assert revised["option_ids"] == picked == ["pass"]
+    assert revised["reasoning"].startswith("Pass")
+    assert trace["uncorrected_reasoning"] == reason
+    ask.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        " I need the two life to survive the next attack.",
+        " Protect Forest from the removal spell as well.",
+    ],
+)
+def test_failed_recheck_preserves_an_independent_cast_reason(extra):
+    decision, state, chosen, reason = context()
+    data = {"option_ids": chosen, "reasoning": reason + extra}
+    revised, picked = review_protection_claim(
+        decision, state, data, chosen, Mock(side_effect=TimeoutError), Mock(), "", {}
+    )
+    assert revised["option_ids"] == picked == chosen
+    assert extra.strip() in revised["reasoning"]
+
+
+def test_failed_recheck_never_synthesizes_a_missing_pass():
+    decision, state, chosen, reason = context()
+    decision = replace(decision, can_pass=False, options=(decision.options[0],))
+    _, picked = review_protection_claim(
+        decision, state, {"reasoning": reason}, chosen, Mock(side_effect=TimeoutError), Mock(), "", {}
+    )
+    assert picked == chosen

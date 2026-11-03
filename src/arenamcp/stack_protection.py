@@ -169,7 +169,7 @@ def correct_protection_claims(text, decision, state, chosen):
     facts = protection_facts(decision, state, chosen)
     if facts is None:
         return text, []
-    clauses = re.split(r"(?<=[.;!?])\s+", str(text or ""))
+    clauses = re.split(r"(?<=[.;!?])\s+|,\s+(?=(?:but|and also)\b)", str(text or ""), flags=re.I)
     kept = [c for c in clauses if not _false_clause(c, facts)]
     if len(kept) == len(clauses):
         return text, []
@@ -188,12 +188,32 @@ def protection_prompt_note(decision, state):
     return "\n".join(notes)
 
 
-def review_protection_claim(decision, state, data, chosen, ask, parse, message, trace):
-    """One deadline-bounded reconsideration, allowing independently useful protection/life.
+def _unresolved_protection(decision, state, data, chosen, corrected):
+    # A target prompt comes after committing the spell. Only change an optional cast.
+    if (
+        decision.request_type == "ActionsAvailable"
+        and decision.can_pass
+        and decision.selection_is_valid(["pass"])
+        and decision.find("pass").payable is not False
+    ):
+        facts = protection_facts(decision, state, chosen)
+        # Only consider what the planner actually said, before the appended rules note.
+        kept = corrected.rsplit("Rules correction:", 1)[0].lower()
+        life_reason = facts.life and re.search(r"\b(?:life|surviv\w*)\b", kept)
+        protects_target = any(name.lower() in kept for name in facts.target_names) and re.search(
+            r"\b(?:protect\w*|save\w*|hexproof|indestructible)\b", kept
+        )
+        if not (life_reason or protects_target):
+            return {
+                "option_ids": ["pass"],
+                "reasoning": f"Pass priority. {facts.source_name} cannot protect {facts.spell_name} "
+                f"from {facts.counter_name} on the stack.",
+            }, ["pass"]
+    return {**data, "reasoning": corrected}, chosen
 
-    Failure preserves the legal choice but replaces the false explanation;
-    neither a forced pass nor a forced cancel is justified by this rule fact.
-    """
+
+def review_protection_claim(decision, state, data, chosen, ask, parse, message, trace):
+    """Reconsider once within the original decision deadline."""
     corrected, notes = correct_protection_claims(data.get("reasoning", ""), decision, state, chosen)
     if not notes:
         return data, chosen
@@ -223,10 +243,10 @@ def review_protection_claim(decision, state, data, chosen, ask, parse, message, 
         )
         if repeated:
             check["repeated_false_claim"] = True
-            revised = {**revised, "reasoning": revised_text}
             trace["uncorrected_reasoning"] = check["revised_reasoning"]
+            return _unresolved_protection(decision, state, revised, picked, revised_text)
         return revised, picked
     except Exception as error:
         check["failed"] = type(error).__name__
         trace["uncorrected_reasoning"] = original
-        return {**data, "reasoning": corrected}, chosen
+        return _unresolved_protection(decision, state, data, chosen, corrected)
