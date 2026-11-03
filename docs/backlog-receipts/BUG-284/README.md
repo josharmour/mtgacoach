@@ -9,8 +9,8 @@ code. A new regression file pins the forecast against the combat resolver so the
 claim cannot come back silently.
 
 - Base commit: `0fde30a` (local master before this item)
-- Source commit: `SOURCE_COMMIT`
-- Merged to local master as `MERGE_COMMIT` (receipt commit)
+- Source commit: `e78789a`
+- Merged to local master as `4be2eaf` (receipt commit)
 - Receipt: this file + `focused-tests.txt`
 
 ## Symptom and evidence

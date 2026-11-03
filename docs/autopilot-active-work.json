@@ -1298,14 +1298,20 @@
         "backlog-evidence-2026-11-01.md: #284"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-284",
+        "base_commit": "0fde30a",
+        "source_commits": [
+          "e78789a"
+        ],
+        "master_commits": [
+          "4be2eaf"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-284/focused-tests.txt"
+        ],
+        "note": "Verification only; no production source change. Current master already counts their blockers, damage order and net lifelink in the declaration forecast: assess() derives lethal_now from simulate_attacks against their best blocks, and optimal_blocks / _resolve_attacker carry damage_through, blocker_life_gained and damage order. Probes on current master: a 576-combination keyword grid found zero mismatches between forecast totals and the resolver and zero between lethal_now and the defender's best net life loss; four two-blocker damage-order boards matched; a 6/6 trample swing at 4 life is lethal against a plain 2/2 blocker and not lethal against a 2/2 lifelink blocker. New regression tests/test_lifelink_lethal_forecast_284.py (27 tests) pins the contrast pair, single-blocker totals over 16 keyword/P-T combinations, multi-blocker damage order, and lethal_now == (plan.net_life_lost >= opponent_life) on six boards. Targeted regression: 112 passed across the new file plus test_blocker_lifelink_284, test_extra_combat_damage_284, test_combat_persistence_284, test_false_lethal_claim, test_defender_hold_278, test_combat_strategy, test_combat_solver_budget and test_combat_double_strike_lifelink; ruff check and format clean. Bounded remaining gap recorded, not fixed: combat_strategy._best_through (line 1033) returns raw damage_through without subtracting the blockers' lifelink and the losing-attack guard's lethal test (line 1571) uses it; a probe found no board where subtracting lifelink changes the guard's outcome because dropping an attacker never raises net damage through. Historical #284 packet absent (reconstructed boards); docs/autopilot-improvements.md absent from this checkout; triage row 443 OPEN only. Independent review and a Linux CI receipt still required."
       },
       "independent_verification": {
         "state": "not_reviewed",
