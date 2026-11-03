@@ -1773,14 +1773,20 @@
         "| #329 | PARTIAL | no direct commit locator | Not recorded | Semantic/platform inspection required |"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
+        "state": "merged_awaiting_review",
+        "owner": "Codex",
         "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "base_commit": "d267860536265a9a892ea9c26a6d053b27b68edd",
+        "source_commits": [
+          "d8fc11ff7ab2d056cce54d09d6a9b632aa54b4dd"
+        ],
+        "master_commits": [
+          "d8fc11ff7ab2d056cce54d09d6a9b632aa54b4dd"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-329/focused-tests.txt"
+        ],
+        "note": "Added a retained Hydra regression through the engine submission path. The fake bridge receives one pass and no indexed cast for the contradictory cast/hold answer. Existing coverage checks cache, narration, intent, and decision history. Focused regression: 88 passed in 4.54s. No independent or live sign-off."
       },
       "independent_verification": {
         "state": "not_reviewed",

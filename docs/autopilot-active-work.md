@@ -156,8 +156,9 @@ deployed.
 | 36 | BUG-309 | merged_awaiting_review | 5ff82b9 (merge 7fcca7f, verification only: intent carry, phase note and Main2 claim check already merged; planner hop pinned) | docs/backlog-receipts/BUG-309/ |
 | 37 | BUG-317 | merged_awaiting_review | fa1dccd | docs/backlog-receipts/BUG-317/ |
 | 38 | BUG-318 | merged_awaiting_review | 518d7af | docs/backlog-receipts/BUG-318/ |
+| 39 | BUG-329 | merged_awaiting_review | d8fc11f | docs/backlog-receipts/BUG-329/ |
 
-Next item: BUG-329. Independent review and live qualification are separate.
+Next item: BUG-350. Independent review and live qualification are separate.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
 conservative limits. BUG-223 also needed no production source change: the lane,
