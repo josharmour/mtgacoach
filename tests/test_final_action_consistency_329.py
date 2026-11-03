@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from tests.fakes import FakeBridge, make_engine
 
 from arenamcp.action_planner import ActionPlanner, SecondLookError
 from arenamcp.decisions import DecisionOption, PendingDecision
@@ -71,6 +72,39 @@ def test_final_boundary_aligns_ids_trace_cache_memory_and_intent(monkeypatch):
     assert final_reason in planner.recent_decisions_text()
     assert "Casting Goldvein Hydra" not in planner.recent_decisions_text()
     assert planner._bound_decision_evidence[1]["trace"]["reasoning"] == final_reason
+
+
+def test_engine_submits_the_reconciled_pass_to_bridge(monkeypatch):
+    decision, state, reason = retained()
+    state.update(_bridge_connected=True, _bridge_has_pending=True, pending_decision="ActionsAvailable")
+    bridge = FakeBridge(
+        {
+            "ok": True,
+            "has_pending": True,
+            "request_type": "ActionsAvailable",
+            "actions": [decision.options[0].meta],
+            "can_pass": True,
+        }
+    )
+    submit_pass = Mock(return_value=True)
+    submit_cast = Mock(return_value=True)
+    monkeypatch.setattr(bridge, "submit_pass", submit_pass)
+    monkeypatch.setattr(bridge, "submit_action_by_index", submit_cast)
+    # The retained menu already contains Arena's original action indices.
+    monkeypatch.setattr("arenamcp.decisions.build_pending_decision", lambda *a, **kw: decision)
+    planner = ActionPlanner(backend=Mock())
+
+    def contradictory_answer(*args):
+        planner._last_decision_reasoning = reason
+        planner._last_decision_trace = {"selected_ids": ["idx:2"], "reasoning": reason}
+        return ["idx:2"]
+
+    monkeypatch.setattr(planner, "_plan_decision_options", contradictory_answer)
+    engine = make_engine(bridge, planner, game_state=state, post_action_delay=0.0)
+    assert engine.process_trigger(state, "decision_required") is True
+    submit_pass.assert_called_once_with()
+    submit_cast.assert_not_called()
+    assert planner.get_last_decision_trace()["selected_ids"] == ["pass"]
 
 
 def test_reused_contradictory_answer_is_invalidated_before_next_window(monkeypatch):

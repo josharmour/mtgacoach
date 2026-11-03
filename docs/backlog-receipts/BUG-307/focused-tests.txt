@@ -1,0 +1,24 @@
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest tests/test_death_return_removal_value_307.py -q
+.....                                                                    [100%]
+5 passed in 3.10s
+
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest -q tests/test_death_return_removal_value_307.py \
+    tests/test_board_assessment.py tests/test_held_removal_floor_20261019.py \
+    tests/test_retained_engine_value_284.py tests/test_combat_persistence_284.py \
+    tests/test_drain_engines_20261019.py tests/test_counted_drain_20261019.py \
+    tests/test_draw_growth_20261019.py tests/test_token_engines_20261019.py \
+    tests/test_blink_removal_forecast_20261025.py tests/test_false_kill_claim_20261019.py \
+    tests/test_line_search.py tests/test_line_search_opponent.py
+442 passed in 21.85s
+
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest -q tests/test_plan_lines.py \
+    tests/test_planner_lines.py tests/test_strategic_plan.py tests/test_outlook.py \
+    tests/test_line_guard.py tests/test_losing_attack_guard.py tests/test_free_attack_rule.py \
+    tests/test_defender_hold_278.py
+296 passed in 27.21s
+
+$ .venv_mac_311/bin/ruff check src/arenamcp/board_assessment.py tests/test_death_return_removal_value_307.py
+All checks passed!
+
+$ .venv_mac_311/bin/ruff format --check src/arenamcp/board_assessment.py tests/test_death_return_removal_value_307.py
+2 files already formatted

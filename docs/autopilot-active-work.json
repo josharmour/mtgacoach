@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_date": "2026-11-02",
+  "updated_date": "2026-11-03",
   "scope": "Exactly 39 retained partial/open IDs plus one CI performance item. No other historical work is active.",
   "baseline_commit": "c31000589d5a0f38680855ac07c3f16580635694",
   "membership_source": "The 2026-11-01 cumulative audit partial_or_open_mixed_scope list, reproduced below;20prerequisite/ambiguousIDs retired and18scopedrepairs user-assumedfixed on2026-11-02.",
@@ -138,11 +138,14 @@
         ]
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Search memo invalidation and the original latency gate are exercised separately."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_applicable",
@@ -185,11 +188,14 @@
         "note": "Repaired in an isolated worktree (/tmp/wt-141-base at 636459f, patched copy /tmp/wt-141-patched) and merged to local master as f72c411 (fix commit 264334b). b352b8a had already bounded the first hosted plan; the remaining gap was every reform after a cancellation, which still ran at full effort with the full 75 s budget and so always outlived its turn. _reform now treats a hosted reform with no plan or one supersede in a row as a recovery reform (effort none, min(timeout, 20 s) shared deadline), and a late answer after one supersede is kept instead of discarded; reforms that follow no cancellation keep full effort and budget, and the threat-supersede rule is unchanged. Scaled-time replay of turns 3-22 with turn and threat changes: baseline landed 1-3 plans in 20 turns (worst staleness 3 turns, twice ending mid-reform), patched lands a plan every four turns one turn after it is requested and ends idle with a plan. Focused regressions: 116 game-plan tests, then 473 in the wider batch; ruff clean. LIMIT: no live qualification and no Linux CI receipt (this session may not push), so the item stays merged_awaiting_review."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "A canceled reform gets a bounded replacement. The replacement survives a stale earlier answer."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -230,11 +236,14 @@
         "note": "Verified on current master abc898c and closed with no source change: the merged #210 repairs (b914f12 detect the tax behind an unpayable PayCosts cancel, f917975 withdraw instead of re-declaring, fa20953 finalize the withdraw on the refreshed request, 5ccc99e budget public taxes before projecting or submitting) already cover every acceptance point, and all 46 attack-tax tests plus 31 adjacent bridge/combat tests pass on that tree. Receipt docs/backlog-receipts/BUG-210/README.md maps each acceptance point to its code site and test, records the edge-case probes (own/phased-out/face-down prison, third-seat controller, unknown {X} cost, battle recipient, restricted mana sources) and states the remaining conservative limits: {X} taxes defined by a public count (Sphere of Safety, Collective Restraint), phyrexian costs, untyped floating pools, restricted/costed/sacrifice payment sources and vigilance-payment timing stay unknown, so the autopilot can attack with fewer creatures than another legal sequence but never submits an army it cannot pay for. LIMIT: no live qualification and no Linux CI receipt (this session may not push), so the item stays merged_awaiting_review."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Observed attack taxes constrain the submitted subset. Unknown tax and unrelated payment prompts retain their own behavior."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -274,11 +283,14 @@
         "note": "Verified on master 78fa182 that the scheduling mechanism already exists (shared background lane, supersede/drop, foreground bypass, priority 10 for background vs server default 0 for decisions, ARENAMCP_LLM_BACKGROUND_LANE kill switch). The remaining scope was the acceptance-required measurement fixture, added in tests/test_latency_223_background_contention.py: one metrics record separates lane_wait_ms (263.2) from client_setup_ms (0.0) and generation (0.2 ms); an urgent decision keeps its 1 s budget with lane_wait_ms 0 while a game plan holds the lane; a superseded plan is cancelled and its replacement completes; a dropped call reports its queue delay and sends nothing. No production source change. LIMIT: no live qualification (this session may not push/deploy) and no Linux CI receipt, so the item stays merged_awaiting_review. Priority only reorders vLLM's waiting queue, so a game plan already generating is not evicted by an urgent decision."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "The test isolates queue wait from generation and exercises both cancellation and foreground bypass."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -318,11 +330,14 @@
         "note": "Bounded instrumentation, no decision-logic change. The retained recurrence is a 15-31 s whole-loop stall that per-request [PROXY] metrics could not attribute: one decision can issue a hedged pair, a repair retry and a second opinion, interleaved with background work. src/arenamcp/llm_trace.py keeps one open trace; proxy _record_request_metrics appends lane_wait/client_setup/ttft/first_content/total/status per request; AutopilotEngine._plan_with_trace logs the decision line and _log_execution_path appends fallback/decision-ms/requests/cancelled to every submitted action. The merged #222 repairs (hedged declaration, shared repair deadline, reform cooldown, hosted first-plan effort) are reused unchanged. LIMIT: no live qualification - the historical stall (d90d0eae, e276ca14) was not replayed against the gateway, so the audit's unresolved prerequisite (matching request spans and chain waits to that stall) still needs a loaded live session; the trace makes that match possible from one log line but does not perform it. The trace is single-slot (one decision at a time) and only sees background work that lands inside the decision window. No Linux CI receipt."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "needs_follow_up",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Individual request spans are present. The historical whole-loop stall still lacks correlated waits between decisions."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -362,11 +377,14 @@
         "note": "No production source change. The retained c63678d8 mechanism is already repaired on master by b352b8a (first parser-usable declaration wins and the other leg is cancelled) and 70d9e2f (per-leg cancel events reach the backend call site); #222 budget repairs d27b878/9f0a328 cover the no-first-token half. Added tests/test_latency_232_combat_declaration.py: a ready low block declaration is submitted in <1.5 s with the high leg cancelled and the planner diagnostic recording effort/elapsed_ms, and both legs stalling still returns at the original deadline with FALLBACK_LLM_UNAVAILABLE so the autopilot's legal safe-default blocks run. LIMIT: no live replay of c63678d8 against api.mtgacoach.com; the harmful fallback strategy is a separate cause and out of scope; no Linux CI receipt."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Ready low-effort block declarations beat a slow high-effort leg. Two expired legs return the legal fallback."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -406,11 +424,14 @@
         "note": "No production source change: the merged mechanisms cover the acceptance. 6194d8a (2026-10-31) added _repair_mana_plan (one bounded repair inside the first call's deadline, skipped when a JSON retry already used the opportunity) and _check_dropped_cast_dependencies (clears unconditional path/develop_next/resource priorities and the dropped turn's attack/hold, keeps conditional waits and same-name bodies); 11a5f19 put the per-turn mana budget and 'castable alone does not mean castable together' into generation. Coloured pips (_pip_matching), commander tax (command_costs) and sequential spending (one used set, per-turn sources from the plan's own land drops, rocks/reducers from their next turn) were already validated. The uncovered half was the dependent cleanup: tests/test_plan_mana_dependencies_235.py now pins it plus the evidence loop (drop issues return as PREVIOUS VALIDATION). Both halves mutation-checked (no-op cleanup and removed conditional guard each fail a test). LIMIT: restricted mana ('spend only to cast artifacts') is not modelled and counts as ordinary coloured mana - over-permissive, not the #235 symptom; {X} costs use printed mana value; untyped floating pools are not counted; no live replay of trace 89f64a23; no Linux CI receipt."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "needs_follow_up",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Casting dependencies and colored shortfalls are checked, but the plan can spend artifact-only mana on other spells. The restricted-mana acceptance criterion is open."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -450,11 +471,14 @@
         "note": "Watchdog keeps the identity of the question its last safe default answered (prompt_key ignores Arena's per-message ids) and escalates a repeat inside SAME_PROMPT_GUARD_S to the alert instead of submitting again; a stuck prompt still gets a bounded retry after the window and any different question still gets its safe default. LIMITS: no typed OptionalAction handler (the model still decides the effect); guard window is a heuristic; no live replay of match 18975f2b; no Linux CI receipt."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "A reissued prompt gets one safe answer before escalation. A changed identity and expiration allow another attempt."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -494,11 +518,14 @@
         "note": "No production change: DecisionMemory provenance (70d9e2f) and the board signature (eb72e38) already answer this ID on master. tests/test_reversal_recheck_241.py pins the end-to-end planner path: an outage pass sends no re-check and the fresh legal choice stands; a genuine hold still gets its high-effort re-check; a changed board is not a reversal; the re-check's budget is clamped to the first call's deadline. With pre-fix behaviour restored two of the four tests fail with the logged symptom. LIMITS: no replay of the original Gaea's Gift window; bad_answer passes still count as holds by design; total decision-chain elapsed time unqualified; no Linux CI receipt."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "An outage pass and a deliberate hold lead to different rechecks. Reconsideration shares the original deadline."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -538,11 +565,14 @@
         "note": "combat_solver.evaluate_attack already scored a tenth poison counter and an emptied library as a win; the gap was combat_strategy._search, which scored life damage only and held winning toxic/mill attacks (reproduced: score 0.00, assignments {}). _search now reads both LossStates, accumulates poison/mill only for player recipients, scores a new loss as 10000 and a newly losing crackback as -1000 + material, passes our LossState into the crackback guarded_block_plan, and includes the zones library counts in the memo key. CombatChoice gains trailing poison_given/cards_milled fields. LIMITS: no live poison/mill game replay; only printed unconditional toxic/poisonous/infect and mill text (combat_loss boundary), so activated grants, conditional triggers and replacement effects abstain; unknown library count cannot score a mill win; no Linux CI receipt."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Tenth poison and last-card mill change combat choice. Nonlethal and crackback controls preserve a different choice."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -582,11 +612,14 @@
         "note": "No production change needed: the merged controls already answer this ID. Reproduced on current master: a stream that yields a first token then keeps generating past a 0.4 s budget is cut once at the budget (metrics status=error, ttft_ms=0.2, total_ms=416.9, attempts=1, budget_s=0.4), classified as a slow-but-alive timeout (first_token_seen=True, circuit stays closed, health degrades), never retried; the planner turns it into llm_unavailable inside its own deadline (blocked-stream run: 'Action planning timed out after 1192ms (limit 0.4s)', one backend call, diag failure='timeout'), and the autopilot plays the board-math line with zero consecutive plan failures and the planning timeout still 15.0 s (contrast: a plain empty plan escalates to 22.5 s). Added tests/test_latency_248_budget_cut.py (5 tests) pinning the #231 trace decomposition (lane_wait_ms, ttft_ms, generation cut at the budget, attempts, budget_s), the single bounded call, and the legal fallback. References d27b878/9f0a328 (#222 budget-cut health and no-retry), 70d9e2f and b352b8a (F5 cancellation/bounded wait), 1adc79d (#206 post-cast priority polling) and 9a321bc (#243 live-window classification) instead of duplicating a patch. LIMITS: no live replay of the retained window; the post-cast six-second waits in the same trace are #206/#243 and are not re-opened; which side wins the deadline race depends on whether generation blocks inside next() (both outcomes pinned); no Linux CI receipt."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "A blocked generation stream closes at the existing budget and its timing is recorded."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -626,11 +659,14 @@
         "note": "No production change needed: the merged controls already answer this ID. Reproduced on current master: a stream that yields only reasoning and keeps generating past a 0.4 s budget is cut once at the budget (metrics status=error, attempts=1, budget_s=0.4, ttft_ms=25.9, first_content_ms=None, stream_content_chars=0, stream_reasoning_chars=285, total_ms=409.6), classified as a slow-but-alive timeout (first_token_seen=True, circuit consecutive_failures=0, health DEGRADED) and never retried; the plan manager with no plan formed ran three consecutive failed reforms at effort 'none' inside the 20 s initial hosted budget (calls [('none', 20.0)] x3, deep budget 75.0 untouched), while the same backend under a non-hosted model name takes the deep path (calls [('low', 75.0)]), so repeated cuts cannot escalate into another full-effort call that will be cancelled again. Added tests/test_latency_249_first_token.py (2 tests) pinning the first-token-vs-first-answer distinction the retained trace turns on (650ae555: 45.3 s, 12,439 reasoning characters, zero content) and the no-escalation invariant. References d27b878/9f0a328 (#222 budget-cut health and no-retry), 70d9e2f and b352b8a (F5 cancellation/bounded wait), and the merged #141/#223 fast bounded first-plan controls instead of duplicating a patch. LIMITS: no replay of the retained live windows; gateway TTFT under real load is live qualification, not a code path; the malformed blocker JSON in the same trace belongs to the parser stream and is not re-opened; no Linux CI receipt."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "A reasoning token does not count as a usable answer. Repeated budget cuts preserve fast planning."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -669,11 +705,14 @@
         "note": "No production source change: the merged controls already reject a schema-valid empty plan, keep the prior plan, classify a skipped call as 'call not made' without retrying, discard a superseded answer, and bound every hosted attempt made while no plan exists to effort none inside the 20 s initial budget. Remaining scope was the regression pinning those answers and the reported reason (tests/test_game_plan_empty_and_busy_253.py). The archived transcript could not be replayed: cd0b1978/e53b79f6 are absent from this checkout and backlog-evidence-2026-11-01.md has no #253 row."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Schema-valid empty output, a busy lane and superseded answers preserve a usable prior plan or a bounded fallback."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -712,11 +751,14 @@
         "note": "No production change: both reported boards are closed on master by the counted subtype mana and Channel self-discount controls in exact_mana_total. Added replay tests through filter_play_options (Hydra {X}{G} on 8 mana keeps X=1..7, withholds the reported X=10; Nature's Rhythm {X}{G}{G} on 2 mana keeps X=0 only). Bounded gap recorded: an activated ability whose cost contains {X} is still uncapped because affordable_x reads the printed mana_cost."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "needs_follow_up",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "The reported spell X and fixed activation cases are covered. An activated ability with its own X cost can still bypass the affordability cap."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -755,11 +797,14 @@
         "note": "No production change: the five controls this ID names are merged and pinned on master (proxy budget clamp and cut-stream closure, first-token timeout never retried, typed hedge first-usable-answer with bounded doubt, declaration hedge first legal answer, fast initial hosted plan, and the planner cancel token set when its waiter gives up). Verified the 17 audit node IDs (27 passed) plus the decision-trace and model-down fallback files (38 passed). Bounded gaps recorded: the unavailable-card strategy half belongs to #240 and the closed attack window to #230/#243 (neither in this queue), decision-chain accumulation belongs to execution f9b88c8, and the retained trace 9dc1c55c is absent from this checkout so no exact historical replay was possible."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "needs_follow_up",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Per-request timing and bounded calls are covered. The compound historical episode lacks a complete reconstruction from first request to submission."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -798,11 +843,14 @@
         "note": "No production change: the reported '15-21 s stalls without first-token timeout' mechanism is closed on master because every decision path now passes a first-token timeout (typed decisions first_token_budget(8.0, prompt chars) at action_planner.py:9644/9589, plan and declarations _plan_first_token_timeout at 1038/1505, advice at coach.py:4629), and the proxy's stall guard only applies after the first token (proxy.py:708 read_limit). The typed hedge returns the first usable answer with a bounded doubt allowance, and a planner call whose waiter gives up has its cancel token set. Verified the 6 audit node IDs (8 passed) plus the decision-trace file and the first-token-timeout wiring test (8 passed). Bounded gaps recorded: PayCosts/AutoTap mismatch belongs to execution, contradictory fallback rationale to the claims/fallback owner, decision-chain accumulation to execution f9b88c8; traces 6bef1efb/06bbdd81/b5f55777 are absent from this checkout so no exact replay was possible."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "needs_follow_up",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Per-request samples distinguish waiting for a first token. They do not account for the full 15\u201321 second client stall without a failing model call."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -841,11 +889,14 @@
         "note": "No production change: this trace has no first-token or budget failure, so the stall cannot be attributed to the service; the client-versus-backend separation it needs is llm_trace on master (client_setup_ms and lane_wait_ms kept apart from ttft_ms/total_ms per request, scoped to one decision, plus the submission line), merged as 429fac1 (#231). The one first-plan-start lag is covered by the fast initial plan (game_plan.py:3733 _INITIAL_HOSTED_PLAN_TIMEOUT_S = 20.0 with effort none, 264334b/409749f), and T/F5 by the typed hedge (ec4836b/b352b8a) and the planner cancel token (4359d67). Verified the 9 audit node IDs (16 passed) plus the decision-trace file (7 passed). Bounded gaps recorded: end-to-end spans for a client-side stall without a failed call are not in this queue, first-plan live completion is still pending, and traces 90b6a56c/94f1043a/edfd8db0 are absent from this checkout."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "needs_follow_up",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Timing exists for an individual decision. There is no correlated span across the loop to explain the gap between consecutive decisions."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -884,11 +935,14 @@
         "note": "No production change: the reported mechanism (high-effort declaration fails at budget while low could stand) is fixed by _hedged_declaration on master (action_planner.py:1162, docstring cites #222/#265/#277), merged as 70d9e2f/b352b8a. Both legs are submitted at once; the first answer the ordinary parser accepts as legal actions wins and logs 'other effort not awaited'; a fast but invalid answer cannot displace the valid leg; if neither is usable a response is retained for the bounded repair path; the finally block sets every cancel token so the losing leg stops. F5 is 4359d67 and P (budget cut never retried, retries share one budget) is d27b878/87faace. Verified the 10 audit node IDs (14 passed) plus both declaration files (27 passed). Bounded gaps recorded: live qualification of a faster accepted declaration is pending, malformed typed output and illegal declarations stay with the parser/legality owner, and traces e756afa4/15eaac1a are absent from this checkout."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "The declaration hedge accepts a usable answer, rejects an invalid one, and can cancel an outstanding leg."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -927,11 +981,14 @@
         "note": "No production change: the second budget exhaustion in the retained window is fixed by the shared reform budget on master (game_plan.py:5209 _retry_for_json; a malformed answer's retry gets only the remainder, 3.0 s of 10 s, and an expired reform starts no second request), merged as 70d9e2f/b352b8a. P is d27b878/87faace (budget cut never retried, retries share one budget), T is ec4836b/b352b8a, F4 is 264334b/409749f and F5 is 4359d67. The audit prerequisite 'identify whether exhausted calls were hedge or serial work' is answered by the decision trace recording call_class, status, attempts and budget_s per request. Verified the 15 audit node IDs (24 passed) plus the reform-budget and post-cast priority files (37 passed). Bounded gaps recorded: the hop limit (_MAX_POST_CAST_PRIORITY_HOPS = 1, autopilot.py:5172) is deliberate bounded work owned by execution and logs when it trips, library-only strategy rejection belongs to the strategy owner (#240, out of queue scope), and traces 04314b21/8d26e22e/c06d3a82 are absent from this checkout."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "The post-cast continuation refreshes state and stops after a bounded priority hop. The receipt separately checks strategy retry budgeting."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -970,11 +1027,14 @@
         "note": "No production change: the retained mechanism is the intended behaviour, not a stall. A low answer doubted for a false lethal claim waits for the high leg only for the bounded doubt allowance (_DOUBT_AFTER_LOW_S = 6.0 at action_planner.py:8843, doubt_deadline = min(high_deadline, now + 6) at 8955) and without a high answer raises SecondLookError at 9023 so the caller's board-math fallback decides (last_llm_failure = 'set_aside' at 5140; docstring at 5357). T is ec4836b/b352b8a, P is d27b878/87faace, F5 is 4359d67. Verified the 11 audit node IDs (13 passed) plus both hedge files (12 passed). Bounded gaps recorded: no exact board replay because traces 211d4ccc/87cac475 are absent from this checkout, fallback time versus the Arena clock is not qualified live, and the false-lethal guard must not be removed to reduce latency per the triage."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "The typed second opinion uses only the remaining budget and yields after the bounded doubt wait."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1013,11 +1073,14 @@
         "note": "No production change: the body-versus-engine split is merged. persistent_returns.returned_enchantment (1df203b/7403b0f) builds a fresh Enchantment with no power/toughness, counters, attachments, damage or combat state and owner control; return_value gates on the printed 'dies, if it was a creature' text; return_credit signs the value by ownership; annotate_return_credit withholds it for visible suppression or 'exile ... instead'. combat_solver._death_material (169) = max(0, _material - return_credit), so the block search compares body-minus-engine against the full body (51e26ac/bacac2d/6a62c78). Verified tests/test_retained_engine_value_284.py + tests/test_combat_persistence_284.py (37 passed) and the three other consumers (34 passed). Bounded gaps recorded: the retained packet gameplay-ultra-audit.json G03 / d1bad78e is absent from this checkout so the tests reconstruct recorded facts, engine value is a fixed small number rather than a simulation, interference detection is textual, and there is no live qualification. #307 covers the same subsystem later in the queue; this receipt is the block/hold comparison it asks for."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "A real retained engine can change the block assignment while body loss still carries material cost."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1056,11 +1119,14 @@
         "note": "No production change: the protection half of this ID is merged. combat_strategy._possible_tricks (737) lists only instant-speed plays we can pay for (hand instants/flash filtered by combat_trick_mana.missing_trick_color, plus graveyard flashback/jump-start/retrace/escape, prepared creatures and activated abilities); losing_attackers (1449) builds affordable = cost <= untapped mana (1552) and keeps the whole attack when any affordable trick's text matches _SAVES_ATTACKER (1566), while plain pumps are judged per attacker by _doomed. autopilot_bridge._prepare_attack_submission (1166) applies that guard at 1195 unless action.line_push, then thins by attack_tax.affordable_entries (1243). New tests/test_attack_protection_273.py drives the supported precombat sequence (untapped Plains + Gods Willing) through that submission pass and contrasts the hold control, tapped land, wrong colour and sorcery-speed controls, plus partial-attack cases that thin only the doomed attacker. Verified 7 passed (new file), 98 passed (guard/protection regression set), 191 passed (other guard consumers), ruff clean. Bounded gaps recorded: nothing deterministically casts the trick in the precombat main (cast_notes.trick_timing_note at 99 only fires for 'gets +N/+N until end of turn' pumps at 89, so protection gets no timing note), and a 'protection from <quality>' trick is credited without checking that the quality covers the answering group. The historical #273 packet is absent from this checkout (BACKLOG_STAGE line 136), so the tests reconstruct a precombat main."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "needs_follow_up",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "The attack forecast recognizes affordable protection. The regression does not drive a precombat cast at a legal window before the attack."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1099,11 +1165,14 @@
         "note": "No production change: verification only. The audit's three signatures are each covered by merged master work. (1) Budget exhaustion / 19 s loop stall: proxy.py:1340 computes a per-call budget and deadline, the stream loop raises TimeoutError('LLM streaming time budget exhausted') between chunks, and the cancel watcher closes the socket (_TrackingNetworkBackend, proxy.py:880-900) so a stalled read is interrupted instead of outliving the decision; action_planner._wait_for_model (1133) / _bounded_call (1150) stop waiting without joining a slow backend and fall back through _llm_unavailable_plan (1233). (2) First-plan lag: game_plan._INITIAL_HOSTED_PLAN_TIMEOUT_S = 20.0 (3733) gives the hosted first plan a fast mode with a deep refresh behind it, and action_planner._plan_first_token_timeout (1038) / _sized_budget (1045) scale the plan call's first-token limit with prompt size inside the planner budget. (3) Hop-limit signature: autopilot._MAX_POST_CAST_PRIORITY_HOPS = 1 (5172) hands off to the watchdog with a named warning (6107). The acceptance's timing record already exists (#231): llm_trace is started around every plan (autopilot._plan_with_trace, 2974), fed by the proxy (proxy.py:1887), and carried on the submitted action line by _decision_suffix (2953). Probes against real code paths: a healthy slow first token records per-request lane/ttft/total timings and suffix '(decision=1390.2ms, requests=2)'; a budget cut falls back to llm_unavailable with '(decision=255.8ms, requests=0)'. A timestamped wrapper probe shows ~1.04 s of prompt construction before the model call starts, so the production 15 s planner cap leaves ~14 s of model time; a profile attributes setup to _build_action_prompt -> coach._format_game_context -> mcts_evaluator.evaluate -> board_assessment.assess plus cold imports. Verified 101 passed (14-file latency/trace regression set), 18 passed (post-cast hop limit), 21 passed (the audit's exact 14 node IDs). Bounded gaps recorded: both retained hashes (788e9968, a2b16e80) exist only in docs/latency-222-id-audit-20261101.json:530 and docs/latency-222-triage-20261101.md:150 with no trace or replay fixture in the repo, so the exact 19 s stall cannot be replayed; setup time sits outside the model budget by design (model_deadline starts after prompt construction, so a decision can take setup + budget); a timed-out decision records requests=0 because the cancelled call's metrics land after llm_trace.finish() while the proxy log still carries status=cancelled and total_ms; live timing distribution and hop progression remain unqualified (the audit's unresolved prerequisite) and there is no Linux CI receipt."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "needs_follow_up",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Component timing and fallback are exercised. The receipt lacks a correlated replay of the isolated long stall through final submission."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1142,11 +1211,14 @@
         "note": "Verification-only; no production source change. The retained recurrence is covered on master by the bounded declaration hedge (action_planner.py:1162, b352b8a, per-leg cancel events 70d9e2f) and the proxy budget cut (proxy.py:1340, d27b878/9f0a328). New regression tests/test_latency_276_declaration_budget.py drives the real ProxyBackend with a high leg that streams a reasoning chunk at once then one content chunk every 50 ms: with a ready low answer the low leg wins in 27 ms and the streaming high leg is cancelled at 58.7 ms total; with an unparseable low answer the streaming leg is cut at 1014.9 ms against a 1.0 s budget and the deterministic planner_free_attack line is returned instead of an empty plan. The decision trace records queue/first-token/generation/cancellation timing per request (#231). Verification: new file 2 passed, nine-file latency/trace regression set 48 passed, ruff check/format clean. Bounded gaps recorded, not fixed: both retained hashes (228fed6f/750806ad) exist only in the audit and triage rows with no trace to replay; the historical ~22 s loop resume is not fully explained by the planner (15 s budget plus ~1 s prompt construction leaves ~6 s, matching the post-cast priority waits already attributed to #206/#243 in the BUG-248 receipt); prompt construction sits outside the model deadline; live timing distribution and total loop timing remain unqualified, which is the audit's own unresolved prerequisite."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "needs_follow_up",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "The streaming hedge is bounded. The complete 22-second loop tail is still inferred and lacks a correlated regression."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1185,11 +1257,14 @@
         "note": "Verification-only: no production source change. The delayed-winner signature is already fixed on master by the bounded declaration hedge (action_planner.py:1162, b352b8a) with per-leg cancel events (70d9e2f), the proxy budget cut (proxy.py:1340, d27b878/9f0a328) and the deterministic free-attack fallback (action_planner.py:2775); this item references those commits instead of duplicating a patch. New regression tests/test_latency_277_delayed_winner.py drives the real ProxyBackend so llm_trace (#231) records queue/first-token/generation/cancellation timing: a slow-but-valid high leg (usable at ~1.2 s) loses to a ready low answer in 0.012 s model time with the high request cancelled at ttft 0.8 ms / total 1203.8 ms; a fast invalid high answer does not displace the valid low answer (both ok, 0.018 s); a streaming high leg is cut at 54.0 ms while low stands (0.001 s). All three submit declare_attackers with attacker Odin and an empty fallback_reason. Also corrected a scheduling-dependent leg-order assertion in tests/test_latency_276_declaration_budget.py (sorted legs; behaviour unchanged). Regression set of nine latency files: 63 passed in 18.98s; ruff check and format clean. Remaining: live first-valid-winner/cancel confirmation and the residual 33 s chain timing are unqualified (audit disposition PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED stands); retained traces absent from this checkout; independent review and Linux CI still required."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "needs_follow_up",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "A delayed high leg releases a usable low answer. The reported 33-second decision chain is not reconstructed."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1228,11 +1303,14 @@
         "note": "Verification-only: no production source change. The defender label is not wired to any consumer that can veto a declaration: _role (board_assessment.py:3448) returns ROLE_AGGRESSOR for all_in before the behind branch, role_guard (:3733) only replaces non-board ActionsAvailable picks, line_search._posture (:966) ranks hold against attack from simulated lines with net lifelink/crackback and no role input, attack_push/attack_line_note (line_guard.py:780/:907) are posture-driven, and _check_attack_crackback (action_planner.py:2170) trims by life math only; survival_mode consumers (game_plan.py:598/:951/:2615, line_search_guard.py:326-400) trim or annotate but cannot veto a declaration. New tests/test_defender_hold_278.py pins the contrast: 2x4/4 vs 2x3/3 at 11-12 life vs 10 is labelled defender yet posture 'attack', the prompt note ends 'Verdict: ATTACK.', attack_push applies with ids [100,101] and the crackback guard keeps both attackers; 2x1/1 vs 4x2/2 at 6 vs 20 is posture 'hold' ('dead on T9' vs 'dead on T11'), nothing is pushed and the guard empties the declaration with fallback planner_crackback_guard. Grid over reconstructed boards: 1199 defender boards, 24 with an attacking posture, 2 pushed, 0 where the guard empties an all-in declaration. Remaining limits: historical packet missing (BACKLOG_STAGE_2026-11-01.md:136), reconstructed boards only, no live qualification, and the push guard's conservative band (ATTACK_PUSH_MARGIN=6.0 vs POSTURE_MARGIN=3.0) is unchanged."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "The searched attack can override defender posture and a genuinely losing attack still results in a hold."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1271,11 +1349,14 @@
         "note": "Verification-only: no production source change. The retained 15\u201318 s stall is the 15 s decision budget plus prompt construction, not an unbounded stream: action_planner.py:1486 anchors model_deadline after prompt build, _bounded_call/_wait_for_model (action_planner.py:1133/:1150) raise TimeoutError at that deadline and shut the pool down with wait=False, proxy.py:1995\u20131996 cuts a streaming request per chunk at its budget, and proxy.py:1618\u20131625 plus _budget_cut_stream make that cut non-retryable; the except chain then returns fallback llm_unavailable with the deterministic board-math plan (an empty declaration is a legal hold). Probe against the real ActionPlanner/ProxyBackend with a stream that yields a first token then sleeps 0.4 s per chunk: timeout 3 s \u2192 elapsed 3.87 s = prompt build 0.87 s + the full 3.0 s budget, fallback llm_unavailable, actions []. New tests/test_latency_283_stream_stall.py pins both legs streaming past a 1 s budget returning at the deadline with a legal hold, and re-pins #277's hedge fix (low wins in 27 ms, high cancelled) as this item's regression reference. Regression set of eight latency files: 28 passed in 10.84s; ruff check and format clean. Remaining: live timing distribution unqualified (audit disposition PARTIAL_MECHANISM_COVERED_LIVE_UNQUALIFIED stands), prompt construction still sits outside the model deadline (~16 s worst case), and a bounded-wait decision can still show requests=0 in the trace (#275 gap); retained traces absent from this checkout; independent review and Linux CI still required."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "A hung stream is cut within the tactical deadline. The receipt distinguishes prompt construction time from model time."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1314,11 +1395,14 @@
         "note": "Verification only; no production source change. Current master already counts their blockers, damage order and net lifelink in the declaration forecast: assess() derives lethal_now from simulate_attacks against their best blocks, and optimal_blocks / _resolve_attacker carry damage_through, blocker_life_gained and damage order. Probes on current master: a 576-combination keyword grid found zero mismatches between forecast totals and the resolver and zero between lethal_now and the defender's best net life loss; four two-blocker damage-order boards matched; a 6/6 trample swing at 4 life is lethal against a plain 2/2 blocker and not lethal against a 2/2 lifelink blocker. New regression tests/test_lifelink_lethal_forecast_284.py (27 tests) pins the contrast pair, single-blocker totals over 16 keyword/P-T combinations, multi-blocker damage order, and lethal_now == (plan.net_life_lost >= opponent_life) on six boards. Targeted regression: 112 passed across the new file plus test_blocker_lifelink_284, test_extra_combat_damage_284, test_combat_persistence_284, test_false_lethal_claim, test_defender_hold_278, test_combat_strategy, test_combat_solver_budget and test_combat_double_strike_lifelink; ruff check and format clean. Bounded remaining gap recorded, not fixed: combat_strategy._best_through (line 1033) returns raw damage_through without subtracting the blockers' lifelink and the losing-attack guard's lethal test (line 1571) uses it; a probe found no board where subtracting lifelink changes the guard's outcome because dropping an attacker never raises net damage through. Historical #284 packet absent (reconstructed boards); docs/autopilot-improvements.md absent from this checkout; triage row 443 OPEN only. Independent review and a Linux CI receipt still required."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Blocker lifelink changes an exact lethal prediction. Single and multiple blocker forecasts compare against resolver totals."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1357,11 +1441,14 @@
         "note": "Verification-only for the latency mechanism plus one instrumentation fix. The declaration hedge already returns the first usable answer and cancels the other leg (action_planner.py:1162), our own budget cut is slow-but-alive and never retried (proxy.py:444/1533/1618), and the post-cast hop limit stays at one (autopilot.py:5172). Probe on current master: high leg cut at its budget leaves the standing low declaration to submit in 0.60 s; both legs cut or model-unavailable yields llm_unavailable with no invented action. Running the audit node IDs with the newer latency regressions exposed a #231 trace attribution bug (a cancelled leg from the previous decision was recorded into the next trace: budget_s=2.0, total_ms=55.2 inside a 1.0 s decision); RequestTrace now records started_unix_s and ignores metrics whose request_started_unix_s predates it, while metrics without that field are still recorded. Verification: 14 audit node IDs + this item's file + #276/#277/#283 regressions = 31 passed; #231 trace file = 7 passed; combined set twice = 64 passed; ruff clean. Live qualification not exercised: audit disposition stays PARTIAL MECHANISM COVERED / LIVE UNQUALIFIED (prerequisite: qualify declaration speed and service timeouts separately); retained traces absent from this checkout; no Linux CI receipt; independent review still required."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "A high-leg budget cut retains the low result. Both cut and earlier-decision attribution have negative controls."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1384,21 +1471,30 @@
         "backlog-evidence-2026-11-01.md: #286"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-286",
+        "base_commit": "dbcd4bc",
+        "source_commits": [
+          "0cdf55e"
+        ],
+        "master_commits": [
+          "78acf87"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-286/focused-tests.txt"
+        ],
+        "note": "Verification-only for the latency mechanism plus one regression test file; no production source change. The deterministic Sneak guard runs before any model call (action_planner.py:4970), the declaration hedge is bounded by the planner deadline (action_planner.py:1486/1537), and the bridge's authoritative attack override (autopilot_bridge.py:807/830) recovers the lethal Sneak line after a failed declaration. Probe on current master (Leonardo T12 board, ledger #156/#159): a timely low declaration wins in 25 ms and declares all fifteen attackers; a failed high declaration returns llm_unavailable at its 0.60 s budget with no actions and the guard then returns all fifteen attackers with Sneak reasoning in 2 ms; at 60/40 life the guard declines; a cancelled proxy leg is recorded as decision.plan cancelled (ttft=None, total=505 ms) beside the ok leg. tests/test_latency_286_sneak_guard.py pins those three cases; the ten audit node IDs plus the new file give 17 passed in 9.37 s and ruff is clean. Remaining gap: an illegal pass/fallback retry is a distinct case needing its own exact-case reproduction and owner qualification; live timing distribution is unqualified and there is no Linux CI receipt."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "needs_follow_up",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Sneak fallback after an unavailable planner is covered. The receipt leaves a parser or legality rejection followed by repeated pass without its exact regression."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1421,21 +1517,30 @@
         "backlog-evidence-2026-11-01.md: #289"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-289",
+        "base_commit": "77675d4",
+        "source_commits": [
+          "6c43157"
+        ],
+        "master_commits": [
+          "46ffe24"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-289/focused-tests.txt"
+        ],
+        "note": "Verification only; no production source change. The latency half is the merged typed-decision hedge (BUG-265 d94cf56, BUG-269 34f12f8, typed budget BUG-253 43679e3, declaration budget BUG-276 855129d): a usable low answer wins at its own latency and the high leg is cancelled. The freshness half is the typed-decision validation filter (action_planner.py:5049) plus deterministic legal fallbacks (5103-5120), so a stale option id cannot reach submission. Probe: critical hedge low won in 405 ms, elapsed 0.41 s against a 1.0 s budget, wait_after_low_ms 0; stale tgt:999 filtered and replaced by legal tgt:812. New regression tests/test_latency_289_stale_facts.py pins both. Remaining limits: historical solver choice (combat owner #288) and strategic compounding (#240/#287) not replayed; live timing unqualified; reconstructed decision; no Linux CI receipt; independent review still required."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "A timely low answer wins, and stale target IDs are replaced with an offered legal selection."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1458,14 +1563,21 @@
         "backlog-evidence-2026-11-01.md: #300"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-300",
+        "base_commit": "c743ae7",
+        "source_commits": [
+          "1b1443c",
+          "25cf3e8"
+        ],
+        "master_commits": [
+          "ed82854"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-300/focused-tests.txt"
+        ],
+        "note": "Draft-side tutor outcomes were the retained failing explanation. draft_facts.reason_corrections already corrected printed costs, simple mana production, one printed generic discount and free-equip attribution, and DraftAdvisor._validate keeps the chosen pick plus original_reason; tutor outcomes were only checked in gameplay (tutor_claims.correct_tutor_claims), never in draft prose. Reproduced on master c743ae7: 'Enlightened Tutor finds our best creature.' returned no correction against supplied text restricted to an artifact or enchantment card, and 'Finale of Devastation finds a land.' survived a creature-only search. New _tutor_types reads the first restricted 'search your library[/graveyard] for ... card' clause and _tutor_corrections rewrites only a claim naming a type outside it ('<name>'s search finds <allowed> cards; it cannot find <claimed> cards.'), wired into reason_corrections for every supplied card. Controls left alone: allowed type, 'artifact or enchantment', qualified tail ('if we splash blue'), negation (\"doesn't find creatures\"), ambiguous noun ('creature removal'), unrestricted tutor (Demonic Tutor 'for a card'), and a supported claim on a restricted tutor. Verification: 43 passed in tests/test_draft_facts.py, 206 passed across the seven draft files, ruff check and format clean. Bounded gaps: only the first restricted clause is read; 'permanent'/'spell' claims and mana-value-only restrictions abstain; no live qualification and no Linux CI receipt."
       },
       "independent_verification": {
         "state": "not_reviewed",
@@ -1495,21 +1607,30 @@
         "backlog-evidence-2026-11-01.md: #306"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-306",
+        "base_commit": "db82bf2",
+        "source_commits": [
+          "8ddeda1"
+        ],
+        "master_commits": [
+          "44a81f7"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-306/focused-tests.txt"
+        ],
+        "note": "Verification-only for production code: the merged reservation guard already holds on both PayCosts submission routes (autopilot_bridge.py:2774-2792 safe-default net and autopilot.py:3546-3575 process_trigger), and the post-spend hold refresh from ecc168d/c5d62fa is pinned by test_post_payment_commitment_306.py. The unpinned hop was the final submission: nothing asserted that a reserved PayCosts is answered with MTGA's cancel instead of an AutoTap solution. Added tests/test_optional_reservation_submission_306.py driving both real handlers with a recording bridge: reserved mana cancels once with no auto-tap and no pay/decline model call; spare mana and unrelated payments still auto-tap; a decline without can_cancel returns False and never pays. 6 passed for the new file, 62 passed across the seven reservation/payment files, ruff check and format clean. Bounded limits: the guard needs a recorded pass decision stating a same-turn hold (a fresh board or another explicit priority decision supersedes it by design), numeric shortfall proof only, historical raw packet not bundled, no live qualification."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Engine and bridge payment paths respect a recorded reserve. Spare mana can still be spent."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1532,14 +1653,20 @@
         "backlog-evidence-2026-11-01.md: #307"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-307",
+        "base_commit": "728c05f",
+        "source_commits": [
+          "407441d"
+        ],
+        "master_commits": [
+          "2d058c6"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-307/focused-tests.txt"
+        ],
+        "note": "Block half was already merged (#270/#284: _material/_death_material subtract the retained engine credit) and needed no change. The open gap was removal valuation: board_assessment._spell_value credited a removal spell with killing the drain engine of a creature that returns as an enchantment (probe on master 728c05f: 7.0 with return text, 7.0 without, 7.0 with visible exile). Added _keeps_engine(body) (False when _return_credit_blocked, else persistent_returns.returned_enchantment) and the threat line now reads power + (0.0 if _keeps_engine else engine_role). After the change: 5.0 returning body, 7.0 plain body, 7.0 exile-blocked; draw-engine return body unchanged at 5.0 both ways. New tests/test_death_return_removal_value_307.py pins the removal half plus the block-half contrast (10.0/6.0 returning, 7.0/7.0 plain) and the mixed-board target pick. Verification: new file 5 passed; valuation/search batch 442 passed; plan/line batch 296 passed; ruff check and format clean. Limits: only the printed self-return rule is recognised (blink/reanimation abstain), the whole engine role is withheld for a returning body (conservative), historical packet absent, no live qualification, no Linux CI receipt."
       },
       "independent_verification": {
         "state": "not_reviewed",
@@ -1569,21 +1696,30 @@
         "backlog-evidence-2026-11-01.md: #308"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-308",
+        "base_commit": "347b0e9",
+        "source_commits": [
+          "f0f50c8"
+        ],
+        "master_commits": [
+          "5758e9b"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-308/focused-tests.txt"
+        ],
+        "note": "Verification-only: the merged bounded same-turn comparison already satisfies this row's acceptance on current master, so no production source change was made. A probe on master 347b0e9 drove the real modules with the retained board (Enduring Innocence + Orcish Bowmasters + Answer + Test Recruit): search_lines ranked removal-first 34.80 (draws=1) above entrant-first 33.30 (draws=0) and entry-first 20.00 (draws=1, engine kept as an enchantment, opposing Army at 1 counter); sequence_values emitted both branches with the trigger unknown and only the spent branch once the engine id was marked used; public_sequence_concerns raised exactly one concern for a rationale claiming a draw while that trigger was observed spent and none for an acknowledged one; and with the entrant carrying protection from black the ping target list was [us, engine] with the protected entrant omitted while the engine still died and returned. Verification: 157 passed across the nine #308 files, 554 passed with the line-search/board-assessment/sacrifice-continuation neighbours, ruff check and format clean. Bounded gaps recorded rather than fixed: the search abstains outside the current turn, the prompt vector projects only fixed-damage removal and only us-or-entrant ping targets, TriggerUseMemory needs the full draw clause in the stack ability text, the historical packet is not bundled, and there is no live qualification or Linux CI receipt."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Same-turn comparison models both removal orders and conservatively handles unsupported or adversarial branches."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1606,21 +1742,30 @@
         "backlog-evidence-2026-11-01.md: #309"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-309",
+        "base_commit": "bd56f34",
+        "source_commits": [
+          "7fcca7f1ff83fdf9692c7024cdfbfced7abaab3e"
+        ],
+        "master_commits": [
+          "5ff82b94a60c3f50bf2bb73367f82dbf9d864e8d"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-309/focused-tests.txt"
+        ],
+        "note": "Verification-only for production code: both acceptance halves are already merged (activation_intent.py carries ability/source/turn/phase/lifetime through nested requests; equipment_opportunity_note is phase-aware; game_plan.decision_claim_notes plus corrected_decision_reasoning disallow a Main2 haste attack promise and keep shroud/mana-relay/next-turn reasons). The unpinned hop was ActionPlanner._note_false_claims (action_planner.py:10163, called from the typed path at :9818), which stores the corrected reasoning. Added tests/test_equipment_phase_planner_309.py (6 tests) driving that hop with a real ActionsAvailable equip menu: Main2 attack claim replaced with the timing fact and trace keys recorded; mana tap, shroud, next-turn attack and explicit 'combat has passed' reasons unchanged; Main1 attack claim unchanged. Verification: new file 6 passed; six-file equipment/intent set 107 passed; ruff check and format clean. Limits: retained packet not bundled (equivalent board regressions), text-level claim check, no live qualification, no Linux CI receipt."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Codex",
+        "reviewed_commit": "cbfb3f0065bb5067912b137aac73e43d8f28944d",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "The nested equipment path removes a Main2 attack promise but preserves a Main1 attack explanation and legal selection."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1643,14 +1788,20 @@
         "backlog-evidence-2026-11-01.md: #317"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
+        "state": "merged_awaiting_review",
+        "owner": "Codex",
         "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "base_commit": "fbf3ee273b8e5e5d74b4ee9f4cbf181a5dcf3d06",
+        "source_commits": [
+          "fa1dccd49babe78d96e7b9552cc618928c06c7bf"
+        ],
+        "master_commits": [
+          "fa1dccd49babe78d96e7b9552cc618928c06c7bf"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-317/focused-tests.txt"
+        ],
+        "note": "Coverage-only closeout. The draft advisor validates the recommended pick against distinct pack alternatives, uses supplied quality bands or remaining heuristic ranks, and discloses missing rationale. The draft driver preserves the comparison in short narration. The focused cases exercise higher/equal/unknown bands, misleading rankings, and a one-choice pack. No external score or live audio result is inferred. Focused regression: 10 passed in 0.07s. No independent or live sign-off."
       },
       "independent_verification": {
         "state": "not_reviewed",
@@ -1680,14 +1831,20 @@
         "backlog-evidence-2026-11-01.md: #318"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
+        "state": "merged_awaiting_review",
+        "owner": "Codex",
         "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "base_commit": "683ef634cfdc524545584bb3c1c4c8e6272a5dcb",
+        "source_commits": [
+          "518d7af46ec0d43e1339b6ccab2e27e5308a8e90"
+        ],
+        "master_commits": [
+          "518d7af46ec0d43e1339b6ccab2e27e5308a8e90"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-318/focused-tests.txt"
+        ],
+        "note": "Coverage-only closeout. The native request boundary separates sideboarding from mulligan, generic cancellation and initial deck mutation. The sideboard adapter/driver tests exercise registered pool and request identity, invalid deck changes, concurrent/reissued submissions, short timers, and return of ownership to gameplay. The BO3 resume test distinguishes a game result from the end of the match. Constructed and uncertain requests retain their documented manual limits. Focused regression: 63 passed in 0.35s. No independent or live sign-off."
       },
       "independent_verification": {
         "state": "not_reviewed",
@@ -1718,14 +1875,20 @@
         "| #329 | PARTIAL | no direct commit locator | Not recorded | Semantic/platform inspection required |"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
+        "state": "merged_awaiting_review",
+        "owner": "Codex",
         "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "base_commit": "d267860536265a9a892ea9c26a6d053b27b68edd",
+        "source_commits": [
+          "d8fc11ff7ab2d056cce54d09d6a9b632aa54b4dd"
+        ],
+        "master_commits": [
+          "d8fc11ff7ab2d056cce54d09d6a9b632aa54b4dd"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-329/focused-tests.txt"
+        ],
+        "note": "Added a retained Hydra regression through the engine submission path. The fake bridge receives one pass and no indexed cast for the contradictory cast/hold answer. Existing coverage checks cache, narration, intent, and decision history. Focused regression: 88 passed in 4.54s. No independent or live sign-off."
       },
       "independent_verification": {
         "state": "not_reviewed",
@@ -1755,14 +1918,20 @@
         "backlog-evidence-2026-11-01.md: #350"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
+        "state": "merged_awaiting_review",
+        "owner": "Codex",
         "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "base_commit": "f99359bdc717b417ae25c7b59442e440f1285621",
+        "source_commits": [
+          "83f1fbfbef606586bceb990eb9239721be314224"
+        ],
+        "master_commits": [
+          "83f1fbfbef606586bceb990eb9239721be314224"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-350/focused-tests.txt"
+        ],
+        "note": "Reproduced the retained cast on timeout, invalid selection, and repeated impossible protection rationale. All three now pass priority when Arena offers it. The single recheck shares the original deadline. Coverage retains valid targets after commitment, deliberate life gain or real permanent protection, and menus without pass. Focused regression: 46 passed in 0.14s. No independent or live sign-off."
       },
       "independent_verification": {
         "state": "not_reviewed",

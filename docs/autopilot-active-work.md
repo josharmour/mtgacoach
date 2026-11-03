@@ -146,9 +146,19 @@ deployed.
 | 27 | BUG-283 | merged_awaiting_review | dde78f7 (merge fa0e292, no source change) | docs/backlog-receipts/BUG-283/ |
 | 28 | BUG-284 | merged_awaiting_review | e78789a (merge 4be2eaf, no source change) | docs/backlog-receipts/BUG-284/ |
 | 29 | BUG-285 | merged_awaiting_review | 8f595f3 (merge 6ad4b01, trace scoping) | docs/backlog-receipts/BUG-285/ |
+| 30 | BUG-286 | merged_awaiting_review | 0cdf55e (merge 78acf87, regression test only) | docs/backlog-receipts/BUG-286/ |
+| 31 | BUG-289 | merged_awaiting_review | 6c43157 (merge 46ffe24, regression test only) | docs/backlog-receipts/BUG-289/ |
+| 32 | BUG-300 | merged_awaiting_review | 1b1443c (merge ed82854, draft tutor-outcome fact check) | docs/backlog-receipts/BUG-300/ |
+| 33 | BUG-306 | merged_awaiting_review | 44a81f7 (merge 8ddeda1, submission-leg regression only) | docs/backlog-receipts/BUG-306/ |
+| 34 | BUG-307 | merged_awaiting_review | 2d058c6 (merge 407441d, removal valuation keeps the returning engine) | docs/backlog-receipts/BUG-307/ |
+| 35 | BUG-308 | merged_awaiting_review | 5758e9b (merge f0f50c8, verification only: both orders, enemy response, once-per-turn and protection already pinned) | docs/backlog-receipts/BUG-308/ |
+| 36 | BUG-309 | merged_awaiting_review | 5ff82b9 (merge 7fcca7f, verification only: intent carry, phase note and Main2 claim check already merged; planner hop pinned) | docs/backlog-receipts/BUG-309/ |
+| 37 | BUG-317 | merged_awaiting_review | fa1dccd | docs/backlog-receipts/BUG-317/ |
+| 38 | BUG-318 | merged_awaiting_review | 518d7af | docs/backlog-receipts/BUG-318/ |
+| 39 | BUG-329 | merged_awaiting_review | d8fc11f | docs/backlog-receipts/BUG-329/ |
+| 40 | BUG-350 | merged_awaiting_review | 83f1fbf | docs/backlog-receipts/BUG-350/ |
 
-Next item: BUG-286. All twenty-nine merged items still need an independent review pass
-and a real Linux CI receipt; the implementer may not claim any as verified.
+Implementation queue complete. See the [independent review results](backlog-receipts/review-2026-11-03.md) and the per-item JSON status for the current verification disposition. Live qualification is recorded separately.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
 conservative limits. BUG-223 also needed no production source change: the lane,
@@ -476,3 +486,113 @@ receipts. The compact index below preserves exact membership and initial scopes.
 | 38 | BUG-318 | Sideboarding is confused with mulligan/gameplay and can submit or mutate the wrong deck. | Exercise same-request registered pool, deck constraints, dedup, short timer and resume ownership; preserve unsupported companion/commander/constructed paths visibly instead of blind submission. |
 | 39 | BUG-329 | Chosen actions contradict hold/pass reasoning or stale beliefs contaminate later choices. | Reproduce one remaining accepted-action/trace/memory contradiction across the actual final submission path; preserve legal selections and distinguish corrected prose from improved strategy. |
 | 40 | BUG-350 | Permanent hexproof is chosen as if it protects a spell from a counterspell. | Prevent a cast chosen solely for impossible spell protection while retaining deliberate life-gain or real permanent protection; test recheck failure, legal alternatives and original deadlines. |
+
+BUG-286 needed no production source change: the deterministic Sneak guard runs before any
+model call (action_planner.py:4970), the declaration hedge is bounded by the planner deadline
+(action_planner.py:1486/1537), and the bridge's authoritative attack override recovers the
+lethal Sneak line in milliseconds after a failed declaration (autopilot_bridge.py:807/830).
+The new tests/test_latency_286_sneak_guard.py pins the regression on the ledger #156/#159
+Leonardo board: a failed high declaration returns llm_unavailable at its 0.6 s budget and the
+guard still declares all fifteen attackers with Sneak reasoning; a timely low declaration is
+not overridden with fewer attackers; at 60/40 life the guard declines, so the recovery is not
+an unconditional all-in. The audit's unresolved prerequisite stands: an illegal pass/fallback
+retry is a distinct case needing its own exact-case reproduction, and live timing remains
+unqualified.
+
+BUG-289 needed no production source change either: the typed-decision hedge returns a usable
+low answer at its own latency and cancels the high leg (action_planner.py:8845), and the
+typed-decision validation filters any option id that is no longer legal before falling back to
+a deterministic legal pick (action_planner.py:5049/5103). The new
+tests/test_latency_289_stale_facts.py pins both halves: a critical hedge with a 0.2 s low leg
+against a 1.0 s budget returns in under 0.9 s with winner=low and wait_after_low_ms=0, and a
+stale tgt:999 answer is dropped in favour of a legal target. The audit's unresolved prerequisite
+stands: the historical solver choice belongs to the combat owner (#288) and the strategic
+compounding to #240/#287, and live timing remains unqualified.
+
+BUG-300 did need a production change, in the draft fact checker rather than the advisor.
+`draft_facts.reason_corrections` already corrected printed costs, simple mana production, one
+printed generic discount and free-equip attribution, and `DraftAdvisor._validate` keeps the
+chosen pick plus `original_reason` while replacing only the contradicted sentence. Tutor
+outcomes were checked in gameplay (`tutor_claims.correct_tutor_claims`) but never in draft
+prose: on master c743ae7 "Enlightened Tutor finds our best creature." passed through untouched
+even though the supplied oracle text restricts the search to an artifact or enchantment card,
+and "Finale of Devastation finds a land." survived against a creature-only search. The new
+`_tutor_types`/`_tutor_corrections` pair reads the first restricted "search your library for …
+card" clause and rewrites only a claim that names a type outside it, so an allowed type, a
+qualified tail ("if we splash blue"), a negation, an ambiguous noun ("creature removal") and an
+unrestricted tutor ("Demonic Tutor finds our best creature") all stay as written. Verification:
+43 passed in tests/test_draft_facts.py and 206 passed across the seven draft files, ruff clean.
+Bounded gaps recorded rather than fixed: only the first restricted clause is read, claims about
+"permanent"/"spell" or mana-value-only restrictions abstain, and there is no live qualification
+or Linux CI receipt.
+
+BUG-306 needed no production change either: the reservation guard was already wired into both
+PayCosts submission routes. `optional_reservation.reserved_optional_mana` feeds
+`AutopilotEngine._should_decline_optional_cost`, which `autopilot_bridge.py:2774-2792` (the
+safe-default net) and `autopilot.py:3546-3575` (`process_trigger`) both consult before any
+auto-tap, and `resource_hold.current_mana_hold` already refreshes the rendered hold after
+confirmed spending. What was missing was the last hop's regression: nothing asserted that a
+reserved PayCosts is answered with MTGA's cancel rather than an AutoTap solution, so a future
+regression could have spent the reserved mana while every existing test still passed. The new
+`tests/test_optional_reservation_submission_306.py` drives both real handlers with a recording
+bridge: the sole reserved mana ({1} optional against a {W} Rescue) cancels once with no auto-tap
+and no pay/decline model call, spare mana and an unrelated payment still auto-tap, and a decline
+without `can_cancel` returns False without paying. Verification: 6 passed for the new file and 62
+passed across the seven reservation/payment files, ruff clean. Bounded gaps recorded rather than
+fixed: the guard needs a recorded pass decision that states a same-turn hold (a fresh board or
+another explicit priority decision supersedes it by design), the proof is numeric shortfall only,
+the historical raw packet is not bundled, and there is no live qualification or Linux CI receipt.
+
+BUG-307 split cleanly in two. The block half was already merged (#270/#284): `combat_solver._material`
+counts a live body plus its engine and `_death_material` subtracts the retained engine credit, so a
+block trade keeps the drain/draw engine and loses only the body — pinned by
+`tests/test_retained_engine_value_284.py` and `tests/test_combat_persistence_284.py`. The open half was
+removal valuation: `board_assessment._spell_value` credited a removal spell with killing the drain
+engine of a creature that returns as an enchantment. A probe on master 728c05f returned 7.0 for a 2/2
+drain body with Enduring-Tenacity-style return text, 7.0 for the same body without it, and 7.0 with
+visible exile — i.e. the returning body was valued exactly like a plain one. The fix adds
+`_keeps_engine(body)` (False when `_return_credit_blocked`, else
+`persistent_returns.returned_enchantment`) and the threat line now reads
+`power + (0.0 if _keeps_engine else engine_role)`: 5.0 for the returning body, 7.0 plain, 7.0
+exile-blocked, and a draw-engine return body stays at 5.0 both ways so no discount is invented.
+`tests/test_death_return_removal_value_307.py` pins those cases plus the block-half contrast
+(10.0/6.0 returning, 7.0/7.0 plain) and the mixed-board "most dangerous target" pick. Verification:
+5 passed for the new file, 442 passed across the valuation/search batch, 296 across the plan/line
+batch, ruff clean. Bounded gaps recorded rather than fixed: only the printed self-return rule is
+recognised (blink and reanimation abstain), the whole engine role is withheld for a returning body
+including token activations a noncreature enchantment may not use, the historical raw packet is not
+bundled, and there is no live qualification or Linux CI receipt.
+
+BUG-308 needed no production source change. The bounded same-turn comparison merged earlier already
+covers every clause of its acceptance on current master, so the receipt records the reproduction and
+the gaps that stay outside that shape. A probe on master 347b0e9 drove the real modules with the
+retained board (Enduring Innocence + Orcish Bowmasters + Answer + Test Recruit): `search_lines` ranked
+removal-first at 34.80 with one draw above entrant-first at 33.30 with none and entry-first at 20.00,
+where the engine survives as an enchantment and the opposing Army shows one counter; `sequence_values`
+emitted both branches while the trigger was unknown and only the spent branch once the engine id was
+marked used; `public_sequence_concerns` raised exactly one concern for a rationale claiming a draw
+while that trigger was observed spent, and none for an acknowledged one; and with the entrant carrying
+protection from black the ping target list was us plus the engine, with the protected entrant omitted
+while the engine still died and returned. Verification: 157 passed across the nine #308 files, 554
+passed with the line-search/board-assessment/sacrifice-continuation neighbours, ruff check and format
+clean. Bounded gaps recorded rather than fixed: the search abstains outside the current turn, the
+prompt vector projects only fixed-damage removal and only us-or-entrant ping targets,
+`TriggerUseMemory` needs the full draw clause in the stack ability text, the historical packet is not
+bundled, and there is no live qualification or Linux CI receipt.
+
+BUG-309 needed no production source change either. The intent carry across nested requests
+(`activation_intent.py`), the phase-aware equipment note ("Combat has passed: haste can enable a tap
+ability, not an attack this turn") and the Main2 attack-promise claim check
+(`game_plan.decision_claim_notes` plus `corrected_decision_reasoning`) were all merged already. The
+unpinned hop was the planner call that stores the corrected reasoning: `ActionPlanner._note_false_claims`
+(`action_planner.py:10163`, called from the typed path at `:9818`). A probe on master bd56f34 with a real
+`ActionsAvailable` equip menu (Lightning Greaves, summoning-sick Notary Hobbits, Main2) showed the claim
+note firing, the sentence being replaced by "Rules correction: The normal attack declaration window has
+passed…", and the trace recording `uncorrected_reasoning` plus `false_claims`. The new
+`tests/test_equipment_phase_planner_309.py` pins that hop: the Main2 attack promise is replaced, while a
+mana-tap reason, a shroud reason, a next-turn attack and an explicit "combat has passed" reason stay as
+written, and a Main1 attack promise is left alone. Verification: 6 passed in the new file, 107 passed
+across the six equipment/intent files, ruff check and format clean. Bounded gaps recorded rather than
+fixed: the retained packet is not bundled (equivalent board regressions), the claim check is text-level
+and abstains on negations/future turns/explicit additional combat, and there is no live qualification or
+Linux CI receipt.

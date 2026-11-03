@@ -1,0 +1,13 @@
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest tests/test_draft_facts.py -q
+...........................................                              [100%]
+43 passed in 9.65s
+
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest tests/test_draft_facts.py tests/test_draft_advisor.py tests/test_draft_narration.py tests/test_draft_captured_facts.py tests/test_limited_rules_cube.py tests/test_draft_unrated_fallback.py tests/test_draft_autoplay.py -q
+........................................................................ [ 69%]
+..............................................................           [100%]
+206 passed in 13.19s
+
+$ .venv_mac_311/bin/python -m ruff check src/arenamcp/draft_facts.py tests/test_draft_facts.py
+All checks passed!
+$ .venv_mac_311/bin/python -m ruff format --check src/arenamcp/draft_facts.py tests/test_draft_facts.py
+2 files already formatted

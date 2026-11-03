@@ -67,6 +67,7 @@ from arenamcp.combat_solver import _death_life, _resolve_attacker, _search_block
 from arenamcp.combat_strategy import _CANT_BLOCK, _rules_text, loyalty
 from arenamcp.limited_rules import rules_profile
 from arenamcp.mulligan_policy import _land_colors, _mana_value, _pip_matching, hand_card
+from arenamcp.persistent_returns import returned_enchantment
 from arenamcp.ward import ward_of
 
 logger = logging.getLogger(__name__)
@@ -631,6 +632,19 @@ def engine_role(body: dict) -> float:
         + (body.get("_combat_source_growth") or 0)
         + (body.get("_token_value") or 0)
     )
+
+
+def _keeps_engine(body: dict, removal: dict, ours: list[dict] | tuple) -> bool:
+    """A death-return creature keeps its engine as an enchantment (#270/#307).
+
+    Killing it removes the body, not the drain/draw the returned enchantment still
+    provides. Visible exile or death-trigger suppression withholds that credit, so
+    the engine is counted as removed again.
+    """
+    raw = body.get("_card") or body
+    if raw.get("_return_credit_blocked") or body.get("_return_credit_blocked"):
+        return False
+    return returned_enchantment(body) is not None and not _kills(removal, body, ours=ours, without_death=True)
 
 
 def _flying(body: dict) -> bool:
@@ -3023,8 +3037,10 @@ def _spell_value(
         if not killable:
             return 0.0  # no target yet: hold it rather than schedule it
         # The most dangerous target: its power plus its engine role (ledger #132: Biotech
-        # Specialist's 2 damage a sacrificed artifact outranks a 2/2's extra power).
-        threat = max(b["power"] + engine_role(b) for b in killable)
+        # Specialist's 2 damage a sacrificed artifact outranks a 2/2's extra power). A
+        # death-return creature keeps that engine as an enchantment (#270/#307), so killing
+        # it is worth its body only; exile or suppression removes the engine for real.
+        threat = max(b["power"] + (0.0 if _keeps_engine(b, card, ours) else engine_role(b)) for b in killable)
         return (3 if spell.role == "removal" else 1) + threat * (1.5 if survival else 1.0)
     if spell.role == "planeswalker":
         return 4.0
@@ -3213,6 +3229,7 @@ def _kills(
     ours: list[dict] | tuple = (),
     attacking: bool = False,
     ward_mana: int = 0,
+    without_death: bool = False,
 ) -> bool:
     """The card's cast text can legally target this opposing creature and remove it.
 
@@ -3226,6 +3243,9 @@ def _kills(
     from instants") stops it (``_protected_from``).
     """
     for clause in _removal_clauses(card):
+        exiles = clause.words.startswith("exile ")
+        if without_death and not (exiles or clause.kind == "bounce"):
+            continue
         if not _legal_target(clause, body, attacking=attacking, ward_mana=ward_mana):
             continue
         if _protected_from(body, card, targeted=clause.targeted, damage=clause.kind in ("damage", "fight")):
@@ -3238,7 +3258,7 @@ def _kills(
             ):
                 return True
         elif clause.kind == "destroy":
-            if not has_combat_keyword(body, "indestructible"):
+            if exiles or not has_combat_keyword(body, "indestructible"):
                 return True
         elif clause.kind == "fight":
             if not has_combat_keyword(body, "indestructible") and any(

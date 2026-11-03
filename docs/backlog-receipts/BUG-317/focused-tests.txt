@@ -1,0 +1,2 @@
+python -m pytest -q --tb=short tests/test_draft_rating_tradeoff.py
+10 passed in 0.07s

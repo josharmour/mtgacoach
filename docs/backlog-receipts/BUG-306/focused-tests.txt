@@ -1,0 +1,12 @@
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest tests/test_optional_reservation_submission_306.py -q
+......                                                                   [100%]
+6 passed in 5.72s
+
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest tests/test_optional_reservation_306.py tests/test_optional_reservation_submission_306.py tests/test_post_payment_commitment_306.py tests/test_autopilot_optional_cost_gate.py tests/test_pay_costs_flow.py tests/test_pay_costs_race.py tests/test_mana_payment.py -q
+..............................................................           [100%]
+62 passed in 1.60s
+
+$ .venv_mac_311/bin/python -m ruff check tests/test_optional_reservation_submission_306.py
+All checks passed!
+$ .venv_mac_311/bin/python -m ruff format --check tests/test_optional_reservation_submission_306.py
+1 file already formatted

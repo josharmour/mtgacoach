@@ -1,9 +1,9 @@
 """Check a small, explicit subset of draft prose against supplied card facts.
 
 This is not a general natural-language rules validator. It checks direct printed
-cost and mana-production claims, a narrow generic discount, and attribution of
-free equip to hand-to-battlefield abilities. Unsupported syntax is left alone,
-not declared correct.
+cost and mana-production claims, a narrow generic discount, attribution of free
+equip to hand-to-battlefield abilities, and the card types a restricted library
+search can find. Unsupported syntax is left alone, not declared correct.
 """
 
 from __future__ import annotations
@@ -16,6 +16,19 @@ _COLORS = dict(white="W", blue="U", black="B", red="R", green="G", colorless="C"
 _COST = r"(?:\{[0-9WUBRGCXYZ/Po]+\})+|[0-9WUBRGCXYZ]+"
 _QUALIFIED = re.compile(
     r"\b(with|without|under|after|before|when|while|if|unless|instead|using|for|to|or|plus|targeting|maybe|perhaps)\b",
+    re.I,
+)
+_TUTOR_TYPES = ("artifact", "creature", "enchantment", "instant", "land", "planeswalker", "sorcery")
+_TUTOR_SEARCH = re.compile(
+    r"\bsearch your (?:library|graveyard)(?: and/or (?:library|graveyard))? for "
+    r"(?:up to (?:two|three|four|\w+) )?(?:(?:an?|one|two|three)\s+)?([^.]*?)\bcards?\b",
+    re.I,
+)
+_TUTOR_CLAIM = re.compile(
+    r"\b(?:finds?|fetches?|tutors?|searches? for|gets?)\s+(?:us\s+)?"
+    r"(?:(?:a|an|the|our|any|one|another)\s+)?(?:(?:best|first|cheapest|cheap|early|good|solid)\s+)?"
+    r"(artifact|creature|enchantment|instant|land|planeswalker|sorcery)s?\b"
+    r"(?=[.,;!?]|\s+(?:card|cards|spell|spells|or|and|to|for|that|with)\b|\s*$)",
     re.I,
 )
 
@@ -130,6 +143,41 @@ def _discount_corrections(reason: str, card: dict) -> list[str]:
     ]
 
 
+def _tutor_types(text: str) -> set[str]:
+    """Card types a restricted library search can find; empty when unrestricted or unclear."""
+    match = _TUTOR_SEARCH.search(text)
+    if not match:
+        return set()
+    phrase = match[1].lower()
+    types = re.split(r"\s*(?:,|\bor\b|\ban?\b)\s*", phrase.strip())
+    types = {value for value in types if value}
+    return types if types.issubset(_TUTOR_TYPES) else set()
+
+
+def _tutor_corrections(reason: str, card: dict, start: str) -> list[str]:
+    """A restricted search cannot find a card type its own rules text excludes."""
+    text = html.unescape(re.sub(r"<[^>]*>", "", str(card.get("oracle_text") or "")))
+    allowed = _tutor_types(text)
+    if not allowed:
+        return []
+    corrections = []
+    for match in re.finditer(start + r"[^.!?]{0,80}?" + _TUTOR_CLAIM.pattern, reason):
+        claimed = match[1].lower()
+        if claimed in allowed:
+            continue
+        window = reason[match.start() : match.end()]
+        prefix = window[: window.lower().rfind(claimed)]
+        if re.search(r"\b(?:not|never|cannot|can't|doesn't|don't|isn't)\b", prefix, re.I):
+            continue
+        if _QUALIFIED.search(re.split(r"[.!?]", reason[match.end() :])[0]):
+            continue
+        allowed_text = " or ".join(sorted(allowed))
+        corrections.append(
+            f"{card['name']}'s search requires {allowed_text}. The {claimed} card must also match that restriction."
+        )
+    return corrections
+
+
 def reason_corrections(reason: str, subject: dict, cards: list[dict]) -> list[str]:
     """Return facts contradicting direct claims; an empty list is not validation.
 
@@ -215,4 +263,5 @@ def reason_corrections(reason: str, subject: dict, cards: list[dict]) -> list[st
                 if not _QUALIFIED.search(match[2]) and _COLORS[match[1]] not in mana_colors:
                     produced = "/".join(label for label, symbol in _COLORS.items() if symbol in mana_colors)
                     corrections.append(f"{name}'s supplied tap ability produces {produced} mana.")
+        corrections.extend(_tutor_corrections(reason, card, start))
     return list(dict.fromkeys(corrections))
