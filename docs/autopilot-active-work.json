@@ -1427,14 +1427,20 @@
         "backlog-evidence-2026-11-01.md: #289"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-289",
+        "base_commit": "77675d4",
+        "source_commits": [
+          "6c43157"
+        ],
+        "master_commits": [
+          "46ffe24"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-289/focused-tests.txt"
+        ],
+        "note": "Verification only; no production source change. The latency half is the merged typed-decision hedge (BUG-265 d94cf56, BUG-269 34f12f8, typed budget BUG-253 43679e3, declaration budget BUG-276 855129d): a usable low answer wins at its own latency and the high leg is cancelled. The freshness half is the typed-decision validation filter (action_planner.py:5049) plus deterministic legal fallbacks (5103-5120), so a stale option id cannot reach submission. Probe: critical hedge low won in 405 ms, elapsed 0.41 s against a 1.0 s budget, wait_after_low_ms 0; stale tgt:999 filtered and replaced by legal tgt:812. New regression tests/test_latency_289_stale_facts.py pins both. Remaining limits: historical solver choice (combat owner #288) and strategic compounding (#240/#287) not replayed; live timing unqualified; reconstructed decision; no Linux CI receipt; independent review still required."
       },
       "independent_verification": {
         "state": "not_reviewed",

@@ -148,8 +148,9 @@ deployed.
 | 28 | BUG-284 | merged_awaiting_review | e78789a (merge 4be2eaf, no source change) | docs/backlog-receipts/BUG-284/ |
 | 29 | BUG-285 | merged_awaiting_review | 8f595f3 (merge 6ad4b01, trace scoping) | docs/backlog-receipts/BUG-285/ |
 | 30 | BUG-286 | merged_awaiting_review | 0cdf55e (merge 78acf87, regression test only) | docs/backlog-receipts/BUG-286/ |
+| 31 | BUG-289 | merged_awaiting_review | 6c43157 (merge 46ffe24, regression test only) | docs/backlog-receipts/BUG-289/ |
 
-Next item: BUG-289. All thirty merged items still need an independent review pass
+Next item: BUG-300. All thirty-one merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -490,3 +491,13 @@ not overridden with fewer attackers; at 60/40 life the guard declines, so the re
 an unconditional all-in. The audit's unresolved prerequisite stands: an illegal pass/fallback
 retry is a distinct case needing its own exact-case reproduction, and live timing remains
 unqualified.
+
+BUG-289 needed no production source change either: the typed-decision hedge returns a usable
+low answer at its own latency and cancels the high leg (action_planner.py:8845), and the
+typed-decision validation filters any option id that is no longer legal before falling back to
+a deterministic legal pick (action_planner.py:5049/5103). The new
+tests/test_latency_289_stale_facts.py pins both halves: a critical hedge with a 0.2 s low leg
+against a 1.0 s budget returns in under 0.9 s with winner=low and wait_after_low_ms=0, and a
+stale tgt:999 answer is dropped in favour of a legal target. The audit's unresolved prerequisite
+stands: the historical solver choice belongs to the combat owner (#288) and the strategic
+compounding to #240/#287, and live timing remains unqualified.

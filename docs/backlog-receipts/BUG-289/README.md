@@ -15,6 +15,8 @@ recurrence are already on local master and are pinned by a new regression file.
   and replaced by a deterministic legal fallback (`action_planner.py:5103–5120`),
   so a stale availability fact cannot reach submission.
 
+Merged to local master as `46ffe24`; receipt commit `6c43157`.
+
 ## Symptom and evidence
 
 - `docs/latency-222-triage-20261101.md:156` — `|#289|220b8546|Typed low reported
