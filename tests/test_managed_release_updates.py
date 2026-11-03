@@ -39,3 +39,13 @@ def test_managed_unix_engine_uses_the_bundled_interpreter(monkeypatch, tmp_path)
     assert runtime._is_app_root(tmp_path)
     assert runtime.is_packaged_runtime(str(exe), tmp_path)
     assert not runtime.is_packaged_runtime("/usr/bin/python3", tmp_path)
+
+
+def test_managed_bridge_leaves_a_running_arena_alone(monkeypatch):
+    from arenamcp.desktop import runtime
+    from arenamcp.repair_engine import RepairEngine
+
+    monkeypatch.setattr(runtime, "is_mtga_running", lambda: True)
+    repair = RepairEngine()
+    monkeypatch.setattr(repair, "_check_mtga_install", lambda: pytest.fail("unexpected bridge deployment"))
+    assert repair.managed_windows_bridge() == []

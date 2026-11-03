@@ -84,6 +84,17 @@ class RepairEngine:
         self._install = None  # populated by _check_mtga_install
 
     # ------------------------------------------------------------------
+    def managed_windows_bridge(self) -> list[CheckResult]:
+        """Deploy the packaged bridge on Windows when Arena is closed."""
+        from arenamcp.desktop.runtime import is_mtga_running
+
+        if is_mtga_running():
+            return []
+        discovered = self._check_mtga_install()
+        if self._install is None:
+            return [discovered]
+        return [r for check in (self._check_bepinex, self._check_plugin) if (r := check()) is not None]
+
     def run(self, progress: ProgressCb = None) -> RepairReport:
         report = RepairReport()
         checks = [

@@ -311,6 +311,21 @@ def main() -> int:
     # its own failure text says "open the Repair tab", which only exists
     window = MainWindow()
     window.show()
+    if sys.platform == "win32" and os.environ.get("MTGACOACH_VELOPACK_PENDING"):
+        # The legacy Inno installer deployed the bridge. Managed installations
+        # use the same package resources and never write into a running Arena.
+        def prepare_bridge():
+            from arenamcp.repair_engine import RepairEngine
+
+            try:
+                for result in RepairEngine().managed_windows_bridge():
+                    window._session.logEmitted.emit(
+                        result.detail, "error" if result.status == "error" else "status"
+                    )
+            except Exception as exc:
+                window._session.logEmitted.emit(f"Bridge setup needs attention in Repair: {exc}", "error")
+
+        threading.Thread(target=prepare_bridge, name="managed-bridge", daemon=True).start()
     if sys.platform == "darwin":
         # Emit Qt signals from the worker; widget changes stay on the GUI thread.
         session = window.coach_panel.session

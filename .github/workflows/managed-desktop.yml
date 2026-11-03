@@ -98,6 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -110,6 +111,12 @@ jobs:
           LANE: ${{ needs.select.outputs.lane }}
           SHA: ${{ needs.select.outputs.sha }}
         run: |
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/tests.yml/runs?head_sha=$SHA&event=push" --jq 'any(.workflow_runs[]; .conclusion == "success" and .head_branch == "master")')
+          [[ "$passed" == true ]] || { echo "No successful master test run for $SHA"; exit 1; }
+          if [[ "$LANE" == master && "$SHA" != "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)" ]]; then
+            echo "A newer master revision superseded this build"
+            exit 0
+          fi
           feed="coach-$LANE-feed"
           if ! gh release view -R "$GITHUB_REPOSITORY" "$feed" >/dev/null 2>&1; then
             gh release create -R "$GITHUB_REPOSITORY" "$feed" --target "$SHA" --prerelease --latest=false --title "Coach $LANE update feed" --notes "Install the package for your platform once. Coach checks this channel on launch."
