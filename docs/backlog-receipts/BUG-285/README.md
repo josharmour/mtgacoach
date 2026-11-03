@@ -6,9 +6,9 @@ budget-cut classification and hop limit are already merged by #232/#265/#277/#28
 belongs to an earlier decision.
 
 - Base commit: `6cb1f1c`
-- Source commit: `SOURCE_COMMIT`
-- Merge commit: `MERGE_COMMIT`
-- Receipt commit: `SOURCE_COMMIT`
+- Source commit: `8f595f3`
+- Merge commit: `6ad4b01`
+- Receipt commit: `8f595f3`
 
 ## Symptom and evidence
 

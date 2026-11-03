@@ -1341,14 +1341,20 @@
         "backlog-evidence-2026-11-01.md: #285"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-285",
+        "base_commit": "6cb1f1c",
+        "source_commits": [
+          "8f595f3"
+        ],
+        "master_commits": [
+          "6ad4b01"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-285/focused-tests.txt"
+        ],
+        "note": "Verification-only for the latency mechanism plus one instrumentation fix. The declaration hedge already returns the first usable answer and cancels the other leg (action_planner.py:1162), our own budget cut is slow-but-alive and never retried (proxy.py:444/1533/1618), and the post-cast hop limit stays at one (autopilot.py:5172). Probe on current master: high leg cut at its budget leaves the standing low declaration to submit in 0.60 s; both legs cut or model-unavailable yields llm_unavailable with no invented action. Running the audit node IDs with the newer latency regressions exposed a #231 trace attribution bug (a cancelled leg from the previous decision was recorded into the next trace: budget_s=2.0, total_ms=55.2 inside a 1.0 s decision); RequestTrace now records started_unix_s and ignores metrics whose request_started_unix_s predates it, while metrics without that field are still recorded. Verification: 14 audit node IDs + this item's file + #276/#277/#283 regressions = 31 passed; #231 trace file = 7 passed; combined set twice = 64 passed; ruff clean. Live qualification not exercised: audit disposition stays PARTIAL MECHANISM COVERED / LIVE UNQUALIFIED (prerequisite: qualify declaration speed and service timeouts separately); retained traces absent from this checkout; no Linux CI receipt; independent review still required."
       },
       "independent_verification": {
         "state": "not_reviewed",
