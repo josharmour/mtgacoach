@@ -665,6 +665,8 @@ def test_covered_step_cannot_hide_missing_cards_or_a_lethal_flip():
     assert mgr._should_reform((2,), key=old, state=board) == ""
     danger = (("defender", False, True, False), (), (), frozenset())
     assert mgr._should_reform((2,), key=danger, state=board) == "lethal flip"
+    mgr._plan.turn_plan = [{"turn": 3, "attack": "none"}]
+    assert mgr._should_reform((2,), key=old, state=board) == "plan our next turn"
 
 
 def test_hosted_lethal_flip_still_requests_a_full_strategic_review(monkeypatch):

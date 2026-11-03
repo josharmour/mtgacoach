@@ -62,7 +62,8 @@ class DeckRecord:
     def game_state(self) -> dict[str, Any]:
         """The state shape the playbook analysis and its cache identity read."""
         return {
-            "deck_cards": self.deck_cards(),
+            # Arena reports the main pile and designated commanders separately.
+            "deck_cards": [gid for gid, count in self.main for _ in range(count)],
             "commander_grp_ids": list(self.command_zone),
             "players": [{"seat_id": 1, "is_local": True}],
             "local_seat_id": 1,

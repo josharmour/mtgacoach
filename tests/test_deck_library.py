@@ -256,8 +256,10 @@ def test_identity_matches_the_in_match_identity_for_the_same_cards():
     from arenamcp.deck_strategy import deck_identity
 
     record = DeckRecord("d", "Deck", main=[(100, 2), (200, 1)], command_zone=[999])
-    live = {"deck_cards": [200, 100, 999, 100], "commander_grp_ids": [999], "players": []}
+    live = {"deck_cards": [200, 100, 100], "commander_grp_ids": [999], "players": []}
     assert record.identity() == deck_identity(live)
+    assert record.game_state()["deck_cards"] == [100, 100, 200]
+    assert record.game_state()["commander_grp_ids"] == [999]
     assert DeckRecord("e", "Empty").identity() == ""
     payload = deck_payload(record, {"status": "none"})
     assert payload["cards"] == 4 and payload["complete"] and payload["strategy"] == {"status": "none"}

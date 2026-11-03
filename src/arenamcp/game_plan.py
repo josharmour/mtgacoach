@@ -4758,7 +4758,12 @@ class GamePlanManager:
 
     def _planned_step_available(self, state: dict, turn: int) -> bool:
         step = self._plan.step_for(turn) if self._plan else None
-        if not step:
+        if not step or not (
+            step.get("land")
+            or step.get("cast")
+            or step.get("hold")
+            or (step.get("attack") and not _NO_ATTACK.match(step["attack"]))
+        ):
             return False
         local = state.get("local_seat_id") or self._local_seat(state)
         cards = _castable_cards(state) + [
