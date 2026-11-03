@@ -105,10 +105,11 @@ def make_per_user_mac_installer(pkg: Path) -> None:
         (component,) = expanded.glob("*.pkg/PackageInfo")
         info = ET.parse(component)
         info.getroot().set("auth", "none")
-        bundle = info.find("bundle")
-        app_path = Path(bundle.attrib["path"]) if bundle is not None else Path()
-        if app_path.parent != Path(".") or app_path.suffix != ".app":
-            raise RuntimeError("Unexpected Velopack app bundle path")
+        bundle_paths = (Path(b.attrib["path"]) for b in info.findall("bundle"))
+        apps = [path for path in bundle_paths if path.parent == Path(".") and path.suffix == ".app"]
+        if len(apps) != 1:
+            raise RuntimeError(f"Expected one top-level Velopack app, found {apps}")
+        app_path = apps[0]
         info.write(component, encoding="utf-8", xml_declaration=True)
         postinstall = component.parent / "Scripts/postinstall"
         postinstall.write_text(
