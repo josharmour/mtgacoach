@@ -152,8 +152,9 @@ deployed.
 | 32 | BUG-300 | merged_awaiting_review | 1b1443c (merge ed82854, draft tutor-outcome fact check) | docs/backlog-receipts/BUG-300/ |
 | 33 | BUG-306 | merged_awaiting_review | 44a81f7 (merge 8ddeda1, submission-leg regression only) | docs/backlog-receipts/BUG-306/ |
 | 34 | BUG-307 | merged_awaiting_review | 2d058c6 (merge 407441d, removal valuation keeps the returning engine) | docs/backlog-receipts/BUG-307/ |
+| 35 | BUG-308 | merged_awaiting_review | 5758e9b (merge f0f50c8, verification only: both orders, enemy response, once-per-turn and protection already pinned) | docs/backlog-receipts/BUG-308/ |
 
-Next item: BUG-308. All thirty-four merged items still need an independent review pass
+Next item: BUG-309. All thirty-five merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -557,4 +558,21 @@ exile-blocked, and a draw-engine return body stays at 5.0 both ways so no discou
 batch, ruff clean. Bounded gaps recorded rather than fixed: only the printed self-return rule is
 recognised (blink and reanimation abstain), the whole engine role is withheld for a returning body
 including token activations a noncreature enchantment may not use, the historical raw packet is not
+bundled, and there is no live qualification or Linux CI receipt.
+
+BUG-308 needed no production source change. The bounded same-turn comparison merged earlier already
+covers every clause of its acceptance on current master, so the receipt records the reproduction and
+the gaps that stay outside that shape. A probe on master 347b0e9 drove the real modules with the
+retained board (Enduring Innocence + Orcish Bowmasters + Answer + Test Recruit): `search_lines` ranked
+removal-first at 34.80 with one draw above entrant-first at 33.30 with none and entry-first at 20.00,
+where the engine survives as an enchantment and the opposing Army shows one counter; `sequence_values`
+emitted both branches while the trigger was unknown and only the spent branch once the engine id was
+marked used; `public_sequence_concerns` raised exactly one concern for a rationale claiming a draw
+while that trigger was observed spent, and none for an acknowledged one; and with the entrant carrying
+protection from black the ping target list was us plus the engine, with the protected entrant omitted
+while the engine still died and returned. Verification: 157 passed across the nine #308 files, 554
+passed with the line-search/board-assessment/sacrifice-continuation neighbours, ruff check and format
+clean. Bounded gaps recorded rather than fixed: the search abstains outside the current turn, the
+prompt vector projects only fixed-damage removal and only us-or-entrant ping targets,
+`TriggerUseMemory` needs the full draw clause in the stack ability text, the historical packet is not
 bundled, and there is no live qualification or Linux CI receipt.

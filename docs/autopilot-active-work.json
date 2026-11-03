@@ -1600,14 +1600,20 @@
         "backlog-evidence-2026-11-01.md: #308"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-308",
+        "base_commit": "347b0e9",
+        "source_commits": [
+          "f0f50c8"
+        ],
+        "master_commits": [
+          "5758e9b"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-308/focused-tests.txt"
+        ],
+        "note": "Verification-only: the merged bounded same-turn comparison already satisfies this row's acceptance on current master, so no production source change was made. A probe on master 347b0e9 drove the real modules with the retained board (Enduring Innocence + Orcish Bowmasters + Answer + Test Recruit): search_lines ranked removal-first 34.80 (draws=1) above entrant-first 33.30 (draws=0) and entry-first 20.00 (draws=1, engine kept as an enchantment, opposing Army at 1 counter); sequence_values emitted both branches with the trigger unknown and only the spent branch once the engine id was marked used; public_sequence_concerns raised exactly one concern for a rationale claiming a draw while that trigger was observed spent and none for an acknowledged one; and with the entrant carrying protection from black the ping target list was [us, engine] with the protected entrant omitted while the engine still died and returned. Verification: 157 passed across the nine #308 files, 554 passed with the line-search/board-assessment/sacrifice-continuation neighbours, ruff check and format clean. Bounded gaps recorded rather than fixed: the search abstains outside the current turn, the prompt vector projects only fixed-damage removal and only us-or-entrant ping targets, TriggerUseMemory needs the full draw clause in the stack ability text, the historical packet is not bundled, and there is no live qualification or Linux CI receipt."
       },
       "independent_verification": {
         "state": "not_reviewed",

@@ -11,7 +11,7 @@ unsupported sequence was found inside the supported shape, so this item adds
 no source change and no new test file; it records the reproduction and the
 bounded gaps that remain outside that shape.
 
-Merged to local master as MERGE COMMIT (receipt commit SOURCE COMMIT).
+Merged to local master as 5758e9b (receipt commit f0f50c8).
 
 ## Symptom and evidence
 
