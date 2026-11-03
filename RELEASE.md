@@ -1,50 +1,66 @@
-# Release Workflow
+# Installing, updating, and releasing MTGA Coach
 
-`v2.0.0` is the start of the PySide desktop app release line.
+## Which download should I use?
 
-## Development
+| What you want | Where to get it | What you receive |
+| --- | --- | --- |
+| Play with the latest tested Coach code, including trial users and the maintainer | [Trial downloads](https://mtgacoach.com/#get-started) | The tested **master** channel checks for newer builds on launch. |
+| Follow named releases such as 3.8.3 | [Stable downloads](https://github.com/josharmour/mtgacoach/releases/tag/coach-stable-feed) | The **stable** channel updates when a newer official release is qualified and packaged. |
+| Edit and run local source | [Development setup](DEV.md) | Your Git checkout follows the revisions you choose locally. |
 
-Use the repo-backed launcher described in [DEV.md](DEV.md):
+### First installation or migration
 
-- Runtime/interpreter: `%LOCALAPPDATA%\mtgacoach\venv`
-- Source of truth: repo `src\`
-- Desktop shortcut target: `pythonw.exe Z:\mtgacoach\scripts\launch_desktop.py`
+1. Finish the current match and close the old Coach. Choose a channel above.
+2. On **Windows x64**, run that channel's Setup EXE. On **Mac**, choose the package for Apple Silicon or Intel. On **Linux x64**, download the AppImage, make it executable, and run it.
+3. Start Coach from the new installation. The title bar identifies the channel, platform, package build, and Git commit. Existing local settings, trial credentials, and match history use the same per-user locations.
 
-This path is for source iteration only.
+An older Inno, pip, or source installation needs this one-time migration to receive managed updates. Use the new shortcut on subsequent launches. The initial Windows and Mac distributions are unsigned.
 
-## Customer Releases
+## What happens after installation?
 
-Customer installs should use the packaged PySide installer, not the repo launcher.
+Coach checks its channel in the background each time it starts. Velopack stages a delta when available and automatically uses a full package when needed. Users continue playing with the version that started the match.
 
-Build it on Windows with:
+- **Compatible update.** After a completed match, Coach waits for the existing safe-restart checks, including post-match work. It then closes, applies the staged package, and reopens. A compatible update already staged at the next launch can apply then.
+- **Runtime or Arena bridge change.** Coach offers **Restart to install Coach…** under **Help**. Finish your match, then approve the restart. Windows bridge deployment waits for Arena to be closed.
+- **Offline or failed release.** The installed build can still open. A failed CI or native-package check leaves the previous published update available.
 
-```powershell
-cd Z:\mtgacoach\installer
-.\build-installer.ps1
-```
+## Shipping changes from master
 
-That script now:
+Submit changes through a pull request and wait for **pytest**, **ruff**, and **Hosted trials and Patreon keys** to pass before merging. The push to master runs the checks on the merged commit. A successful run starts **Managed desktop releases**, which builds and launches the packaged app for Windows x64, Linux x64, and both Mac architectures. Once every build passes, CI uploads the packages and then the update indexes. Master users pick up the build on launch. You do not need to create a version tag for this channel.
 
-1. Stages a PySide desktop release under `dist\desktop-release\app`
-2. Builds a bundled runtime under `dist\desktop-release\app\runtime`
-3. Packages the staged app into `dist\installer\mtgacoach-Setup.exe`
+To see what is actually live, open the [master feed](https://github.com/josharmour/mtgacoach/releases/tag/coach-master-feed). The release body lists the published commit and package version. Compare the commit with the one in the Coach title bar. A green test run by itself means packaging can start.
 
-Installed launch target:
+## Cutting a stable GitHub release
 
-- `{app}\runtime\Scripts\pythonw.exe "{app}\scripts\launch_installed.py"`
+Use the draft-first path when you want the installers attached before users see the release. The commands below use **v3.8.4 as an example**. Choose the next unused version.
 
-The installed app runs from `C:\Program Files\mtgacoach` and does not depend on a repo checkout.
+1. Update `__version__` in `src/arenamcp/__init__.py` and write `docs/releases/v3.8.4.md`. Merge the release preparation after PR checks pass. Wait for the push tests on the exact master commit to pass.
+2. Tag that tested commit and create a draft. Replace `TESTED_SHA` with its full commit ID.
 
-## Migration From Earlier Installs
+   ```sh
+   git tag -a v3.8.4 TESTED_SHA -m "MTGA Coach 3.8.4"
+   git push origin refs/tags/v3.8.4
+   gh release create v3.8.4 --verify-tag --draft --title "MTGA Coach 3.8.4" --notes-file docs/releases/v3.8.4.md
+   ```
 
-The installer keeps the existing Inno `AppId`, so a `v2.0.0+` install upgrades any prior install in place.
+3. Build the stable packages through the **Managed desktop releases** workflow. Open the run URL printed by the command and wait for **publish** to pass.
 
-Migration behavior:
+   ```sh
+   gh workflow run managed-desktop.yml --ref master -f lane=stable -f version=v3.8.4
+   ```
 
-- old shortcut target is replaced by the PySide launcher
-- old `{app}\launcher` files are deleted during install
-- `%LOCALAPPDATA%\mtgacoach` is preserved
-- `~/.arenamcp` settings/logs are preserved
+4. Check the [stable feed](https://github.com/josharmour/mtgacoach/releases/tag/coach-stable-feed) for the expected version, commit, and all four platform downloads. Confirm the ordinary release has the Windows installer and Python wheel, then publish it.
+
+   ```sh
+   gh release view v3.8.4 --json tagName,assets
+   gh release edit v3.8.4 --draft=false --latest
+   ```
+
+Publishing a stable GitHub release also invokes the managed workflow. It recognizes an already-published version and commit. The separate PyPI workflow publishes the Python package. The old Inno installer workflow is available through manual dispatch for recovery.
+
+## Diagnosing an update
+
+Check the installed channel and commit first. Then check the corresponding feed, its most recent **Managed desktop releases** run, and **Help** for an update awaiting approval. The host writes update errors under the OS local application-data directory in `mtgacoach/updates/<channel>/update.log`.
 
 ## Bug Reports
 
