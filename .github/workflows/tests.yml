@@ -65,7 +65,9 @@ jobs:
         env:
           ARENAMCP_LOG_FILE: /tmp/arenamcp-pytest.log
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest tests -q --tb=short
+        run: |
+          python -m pytest tests/test_line_search.py tests/test_race_math_20261019.py tests/test_opponent_tricks.py -m search_latency -q --tb=short
+          python -m pytest tests -m "not search_latency" -q --tb=short
 
   ruff:
     runs-on: ubuntu-latest

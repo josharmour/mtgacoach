@@ -168,6 +168,7 @@ warn_redundant_casts = true
 warn_unreachable = true
 
 [tool.pytest.ini_options]
+markers = ["search_latency: synchronous combat-search CPU timing regressions"]
 testpaths = ["tests"]
 
 [dependency-groups]

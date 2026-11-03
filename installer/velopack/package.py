@@ -4,6 +4,8 @@ import hashlib
 import json
 import shutil
 import subprocess
+import tempfile
+import zipfile
 import sys
 from pathlib import Path
 
@@ -64,6 +66,25 @@ def previous_release(lane, channel):
     return full["FileName"]
 
 
+def verify_launcher(rid):
+    """Launch the delivered host outside the checkout without starting Arena or a desktop session."""
+    with tempfile.TemporaryDirectory(prefix="Coach package smoke ") as temp:
+        temp = Path(temp)
+        if rid.startswith("linux"):
+            image = next(OUTPUT.glob("*.AppImage"))
+            image.chmod(0o755)
+            run(image, "--appimage-extract", cwd=temp, stdout=subprocess.DEVNULL)
+            launcher = temp / "squashfs-root/AppRun"
+        elif rid.startswith("osx"):
+            run("ditto", "-x", "-k", next(OUTPUT.glob("*Portable.zip")), temp)
+            launcher = next(temp.glob("*.app/Contents/MacOS/MTGACoach"))
+        else:
+            with zipfile.ZipFile(next(OUTPUT.glob("*Portable.zip"))) as archive:
+                archive.extractall(temp)
+            launcher = next(temp.rglob("MTGACoach.exe"))
+        run(launcher, "--version", cwd=temp, timeout=90)
+
+
 def main():
     rid, lane, version = sys.argv[1:4]
     channel = f"{lane}-{rid}"
@@ -115,6 +136,7 @@ def main():
             STAGE,
             "-CheckoutRoot",
             ROOT,
+            "-Relocate",
             "-Label",
             "velopack",
         )
@@ -184,6 +206,7 @@ def main():
     for path in RELEASES.iterdir():
         if path.is_file() and path.name != previous and path.name != "assets." + channel + ".json":
             shutil.copyfile(path, OUTPUT / path.name)
+    verify_launcher(rid)
     if previous and not list(OUTPUT.glob("*-delta.nupkg")):
         raise RuntimeError("Previous release was available, but no delta was built")
 

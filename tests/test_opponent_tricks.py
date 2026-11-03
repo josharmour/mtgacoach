@@ -642,6 +642,7 @@ def test_payload_is_json_safe_and_deterministic(table):
     assert first["ui_line"] and first["verdict"]
 
 
+@pytest.mark.search_latency
 def test_latency(table):
     states = [deepcopy(S.G3_T10_BLOCKS), deepcopy(S.BUG_180436)]
     for state in states:

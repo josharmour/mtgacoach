@@ -133,7 +133,9 @@ jobs:
         run: |
           $tag = "${{ inputs.release_tag }}"
           if (-not $tag) { $tag = "${{ github.ref_name }}" }
-          gh release upload "$tag" dist/installer/mtgacoach-Setup.exe --clobber
+          # The managed stable feed owns the canonical setup name for new releases.
+          Move-Item dist/installer/mtgacoach-Setup.exe dist/installer/mtgacoach-Legacy-Setup.exe
+          gh release upload "$tag" dist/installer/mtgacoach-Legacy-Setup.exe --clobber
           Get-ChildItem -Path dist\*.whl | ForEach-Object {
             gh release upload "$tag" $_.FullName --clobber
           }

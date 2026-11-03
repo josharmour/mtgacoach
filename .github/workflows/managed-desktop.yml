@@ -28,6 +28,7 @@ jobs:
       sha: ${{ steps.pick.outputs.sha }}
       version: ${{ steps.pick.outputs.version }}
       lane: ${{ steps.pick.outputs.lane }}
+      build: ${{ steps.pick.outputs.build }}
     steps:
       - id: pick
         env:
@@ -44,11 +45,17 @@ jobs:
           else
             version="1.0.$GITHUB_RUN_NUMBER"
           fi
+          feed_body=$(gh release view -R "$GITHUB_REPOSITORY" "coach-$LANE-feed" --json body --jq .body 2>/dev/null || true)
+          build=true
+          if [[ "$LANE" == master && "$COMMIT" != "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)" ]]; then build=false; fi
+          if grep -Fxq "Published commit $COMMIT" <<< "$feed_body" && { [[ "$LANE" == master ]] || grep -Fxq "Package version $version" <<< "$feed_body"; }; then build=false; fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "lane=$LANE" >> "$GITHUB_OUTPUT"
           echo "sha=$COMMIT" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
   build:
     needs: select
+    if: needs.select.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -110,6 +117,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           LANE: ${{ needs.select.outputs.lane }}
           SHA: ${{ needs.select.outputs.sha }}
+          VERSION: ${{ needs.select.outputs.version }}
         run: |
           passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/tests.yml/runs?head_sha=$SHA&event=push" --jq 'any(.workflow_runs[]; .conclusion == "success" and .head_branch == "master")')
           [[ "$passed" == true ]] || { echo "No successful master test run for $SHA"; exit 1; }
@@ -127,3 +135,9 @@ jobs:
           for dir in packages/*; do
             gh release upload -R "$GITHUB_REPOSITORY" "$feed" --clobber "$dir"/releases.*.json
           done
+          if [[ "$LANE" == stable ]]; then
+            cp packages/managed-win-x64/*-Setup.exe mtgacoach-Setup.exe
+            gh release upload -R "$GITHUB_REPOSITORY" "v$VERSION" mtgacoach-Setup.exe --clobber
+          fi
+          printf 'Install once to follow this %s channel.\n\nPublished commit %s\nPackage version %s\n' "$LANE" "$SHA" "$VERSION" > "$RUNNER_TEMP/feed-notes.md"
+          gh release edit -R "$GITHUB_REPOSITORY" "$feed" --notes-file "$RUNNER_TEMP/feed-notes.md"

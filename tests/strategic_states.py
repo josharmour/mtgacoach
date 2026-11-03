@@ -25,9 +25,9 @@ MATCH_ID = "d3d701e3-7fee-480e-be9a-d3cf0ad23bbe"
 
 
 def cpu_ms(run: Callable[[], Any], times: int = 5) -> float:
-    """The fastest of ``times`` runs of ``run()``, in process CPU milliseconds, GC off.
+    """The fastest of ``times`` runs of ``run()``, in calling-thread CPU milliseconds, GC off.
 
-    CPU time leaves out the time other processes take the core (a wall-clock
+    Thread CPU time excludes work on other threads and time spent descheduled (a wall-clock
     50 ms bound failed at 50.2 ms, then at 67-99 ms, while other suites ran);
     the collector is paused so a cycle collection the suite's earlier
     allocations earned does not land in one run (2026-10-07: 50-56 ms runs
@@ -40,9 +40,9 @@ def cpu_ms(run: Callable[[], Any], times: int = 5) -> float:
         was_enabled = gc.isenabled()
         gc.disable()
         try:
-            started = time.process_time()
+            started = time.thread_time()
             run()
-            best = min(best, (time.process_time() - started) * 1000)
+            best = min(best, (time.thread_time() - started) * 1000)
         finally:
             if was_enabled:
                 gc.enable()

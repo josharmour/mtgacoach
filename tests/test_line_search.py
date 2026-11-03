@@ -557,6 +557,7 @@ def test_real_and_crowded_boards_finish_inside_the_work_budget(name):
     assert not result.bounded and not result.truncated, result.stats()
 
 
+@pytest.mark.search_latency
 def test_worst_case_is_cut_off_by_the_deadlines():
     # One run at production limits: the work budget (or, on a loaded machine, the
     # 350 ms wall-clock cap) stops the search, and CPU time never exceeds wall time.
@@ -882,6 +883,7 @@ def test_the_kill_switch_also_stops_mode_comparisons(monkeypatch):
 
 
 @pytest.mark.parametrize("name", ["SLOW_212608", "SLOW_202111"])
+@pytest.mark.search_latency
 def test_the_slowest_real_boards_stay_within_the_latency_target(name, unlimited_search_deadline):
     from tests import strategic_states
 

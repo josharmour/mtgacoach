@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
 from tests import race_boards_20261019 as rb
 from tests.race_boards_20261019 import BURN_HAND, MARSHAL_T7, MARSHAL_T11, board, card
 from tests.strategic_states import actions_decision, cast, cpu_ms, latency_bound
@@ -245,6 +246,7 @@ def test_a_plan_aiming_two_burn_spells_at_one_creature_replays_the_kill():
     ]
 
 
+@pytest.mark.search_latency
 def test_a_burn_heavy_hand_stays_within_the_latency_target():
     # Seven burn spells against four creatures no single spell kills: the combined-kill
     # pieces are pruned (two targets per spell, completable sets only) so the work budget,

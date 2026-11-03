@@ -53,9 +53,12 @@ def test_landing_page_content(client) -> None:
     assert "A coach in your ear" in html
     assert "https://arenaonair.com" in html
     assert "7 days" in html
-    # Not on PyPI under that name; the package is arenamcp.
-    assert "pip install mtgacoach" not in html
-    assert "uv tool install arenamcp" in html
+    feed = (
+        "https://github.com/josharmour/mtgacoach/releases/download/coach-master-feed/MTGACoachMaster-master-"
+    )
+    for artifact in ("win-x64-Setup.exe", "osx-arm64-Setup.pkg", "osx-x64-Setup.pkg", "linux-x64.AppImage"):
+        assert f'href="{feed}{artifact}"' in html
+    assert "unsigned" in html
     for clip in ("coach-turn.mp3", "coach-lethal.mp3", "coach-draft.mp3"):
         assert f"/static/audio/{clip}" in html
 
