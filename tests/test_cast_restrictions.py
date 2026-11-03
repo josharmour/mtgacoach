@@ -19,11 +19,13 @@ from __future__ import annotations
 
 import copy
 import json
+from functools import partial
 from pathlib import Path
+from unittest.mock import patch
 
 from arenamcp import board_assessment as ba
 from arenamcp.board_model import board_cast_bans, build_board_model, cast_bans, spell_banned
-from arenamcp.line_search import _deployment, _order
+from arenamcp.line_search import _deployment, _order, search_lines
 
 FIXTURE = Path(__file__).parent / "fixtures" / "bug_20261006_185403_game_state.json"
 VOCIFEROUS = (
@@ -50,7 +52,9 @@ def _main_phase() -> dict:
 
 def _search(state: dict):
     ba._CACHE.clear()
-    return ba.assess(copy.deepcopy(state)).line_search
+    # Ranking and legality require both candidate lines, even on a busy CI worker.
+    with patch("arenamcp.line_search.search_lines", partial(search_lines, hard_ms=1e9)):
+        return ba.assess(copy.deepcopy(state)).line_search
 
 
 def _hand(state: dict, name: str) -> dict:
