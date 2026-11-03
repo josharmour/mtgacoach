@@ -21,7 +21,7 @@ _QUALIFIED = re.compile(
 _TUTOR_TYPES = ("artifact", "creature", "enchantment", "instant", "land", "planeswalker", "sorcery")
 _TUTOR_SEARCH = re.compile(
     r"\bsearch your (?:library|graveyard)(?: and/or (?:library|graveyard))? for "
-    r"(?:up to (?:two|three|four|\w+) )?(?:a|an|one|two|three)? ?([^.]*?)\bcards?\b",
+    r"(?:up to (?:two|three|four|\w+) )?(?:(?:an?|one|two|three)\s+)?([^.]*?)\bcards?\b",
     re.I,
 )
 _TUTOR_CLAIM = re.compile(
@@ -149,7 +149,9 @@ def _tutor_types(text: str) -> set[str]:
     if not match:
         return set()
     phrase = match[1].lower()
-    return {kind for kind in _TUTOR_TYPES if re.search(rf"\b{kind}s?\b", phrase)}
+    types = re.split(r"\s*(?:,|\bor\b|\ban?\b)\s*", phrase.strip())
+    types = {value for value in types if value}
+    return types if types.issubset(_TUTOR_TYPES) else set()
 
 
 def _tutor_corrections(reason: str, card: dict, start: str) -> list[str]:
@@ -171,7 +173,7 @@ def _tutor_corrections(reason: str, card: dict, start: str) -> list[str]:
             continue
         allowed_text = " or ".join(sorted(allowed))
         corrections.append(
-            f"{card['name']}'s search finds {allowed_text} cards; it cannot find {claimed} cards."
+            f"{card['name']}'s search requires {allowed_text}. The {claimed} card must also match that restriction."
         )
     return corrections
 

@@ -206,10 +206,10 @@ FINALE = dict(
 
 def test_restricted_tutor_outcome_is_corrected_from_supplied_rules():
     assert reason_corrections("Enlightened Tutor finds our best creature.", ENLIGHTENED, [ENLIGHTENED]) == [
-        "Enlightened Tutor's search finds artifact or enchantment cards; it cannot find creature cards."
+        "Enlightened Tutor's search requires artifact or enchantment. The creature card must also match that restriction."
     ]
     assert reason_corrections("Finale of Devastation finds a land.", FINALE, [FINALE]) == [
-        "Finale of Devastation's search finds creature cards; it cannot find land cards."
+        "Finale of Devastation's search requires creature. The land card must also match that restriction."
     ]
 
 
@@ -241,4 +241,9 @@ def test_tutor_correction_keeps_the_pick_and_original_diagnostic():
     pick = DraftAdvisor._validate(payload, [ENLIGHTENED], [], 1)["recommendations"][0]
     assert pick["grp_id"] == 4
     assert pick["original_reason"] == "Enlightened Tutor finds our best creature."
-    assert "cannot find creature" in pick["reason"]
+    assert "creature card must also match" in pick["reason"]
+
+
+def test_unrecognized_search_restriction_abstains():
+    tutor = {**ENLIGHTENED, "oracle_text": "Search your library for a noncreature artifact card."}
+    assert not reason_corrections("Enlightened Tutor finds a land.", tutor, [tutor])

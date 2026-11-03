@@ -7,6 +7,10 @@ merged #270/#284 return-credit work, not a claim of complete replay reconstructi
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
+
 from arenamcp.board_assessment import _Spell, _spell_value, engine_role
 from arenamcp.combat_solver import _death_material, _material
 
@@ -63,6 +67,19 @@ def test_exile_interference_counts_the_engine_as_removed():
     """Visible exile withholds the return credit, so the engine really dies."""
     blocked = drain_body(_return_credit_blocked=True)
     assert _spell_value(removal(), survival=False, theirs=[blocked]) == 7.0
+
+
+@pytest.mark.parametrize(
+    "role,text,value",
+    [
+        ("removal", "Exile target creature.", 7.0),
+        ("bounce", "Return target creature to its owner's hand.", 5.0),
+        ("removal", "Destroy target creature. Exile target creature with flying.", 5.0),
+    ],
+)
+def test_return_credit_depends_on_how_the_spell_can_remove_this_target(role, text, value):
+    spell = replace(removal(), role=role, card={**ANSWER, "oracle_text": text})
+    assert _spell_value(spell, survival=False, theirs=[drain_body()]) == value
 
 
 def test_draw_engine_return_creature_is_not_double_counted():
