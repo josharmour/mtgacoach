@@ -1580,11 +1580,14 @@
         "note": "Draft-side tutor outcomes were the retained failing explanation. draft_facts.reason_corrections already corrected printed costs, simple mana production, one printed generic discount and free-equip attribution, and DraftAdvisor._validate keeps the chosen pick plus original_reason; tutor outcomes were only checked in gameplay (tutor_claims.correct_tutor_claims), never in draft prose. Reproduced on master c743ae7: 'Enlightened Tutor finds our best creature.' returned no correction against supplied text restricted to an artifact or enchantment card, and 'Finale of Devastation finds a land.' survived a creature-only search. New _tutor_types reads the first restricted 'search your library[/graveyard] for ... card' clause and _tutor_corrections rewrites only a claim naming a type outside it ('<name>'s search finds <allowed> cards; it cannot find <claimed> cards.'), wired into reason_corrections for every supplied card. Controls left alone: allowed type, 'artifact or enchantment', qualified tail ('if we splash blue'), negation (\"doesn't find creatures\"), ambiguous noun ('creature removal'), unrestricted tutor (Demonic Tutor 'for a card'), and a supported claim on a restricted tutor. Verification: 43 passed in tests/test_draft_facts.py, 206 passed across the seven draft files, ruff check and format clean. Bounded gaps: only the first restricted clause is read; 'permanent'/'spell' claims and mana-value-only restrictions abstain; no live qualification and no Linux CI receipt."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "needs_follow_up",
+        "reviewer": "Independent Codex reviewer",
+        "reviewed_commit": "eaffaa236ef98e80ce0e4f6729f4d7f528c1d682",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "DraftAdvisor discarded the correct explanation that Enlightened Tutor can find Steel Overseer when its supplied type is Artifact Creature. The pick and original diagnostic survived, but the validation message wrongly described the explanation as contradicting card data."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1669,11 +1672,14 @@
         "note": "Block half was already merged (#270/#284: _material/_death_material subtract the retained engine credit) and needed no change. The open gap was removal valuation: board_assessment._spell_value credited a removal spell with killing the drain engine of a creature that returns as an enchantment (probe on master 728c05f: 7.0 with return text, 7.0 without, 7.0 with visible exile). Added _keeps_engine(body) (False when _return_credit_blocked, else persistent_returns.returned_enchantment) and the threat line now reads power + (0.0 if _keeps_engine else engine_role). After the change: 5.0 returning body, 7.0 plain body, 7.0 exile-blocked; draw-engine return body unchanged at 5.0 both ways. New tests/test_death_return_removal_value_307.py pins the removal half plus the block-half contrast (10.0/6.0 returning, 7.0/7.0 plain) and the mixed-board target pick. Verification: new file 5 passed; valuation/search batch 442 passed; plan/line batch 296 passed; ruff check and format clean. Limits: only the printed self-return rule is recognised (blink/reanimation abstain), the whole engine role is withheld for a returning body (conservative), historical packet absent, no live qualification, no Linux CI receipt."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "needs_follow_up",
+        "reviewer": "Independent Codex reviewer",
+        "reviewed_commit": "eaffaa236ef98e80ce0e4f6729f4d7f528c1d682",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "Destroy and exile behaved differently for the drain engine. For Enduring Innocence with its draw ability, removal scored 5.0 for both effects, with and without the death-return ability. The valuation omits the loss of the draw engine."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1804,11 +1810,14 @@
         "note": "Coverage-only closeout. The draft advisor validates the recommended pick against distinct pack alternatives, uses supplied quality bands or remaining heuristic ranks, and discloses missing rationale. The draft driver preserves the comparison in short narration. The focused cases exercise higher/equal/unknown bands, misleading rankings, and a one-choice pack. No external score or live audio result is inferred. Focused regression: 10 passed in 0.07s. No independent or live sign-off."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "needs_follow_up",
+        "reviewer": "Independent Codex reviewer",
+        "reviewed_commit": "eaffaa236ef98e80ce0e4f6729f4d7f528c1d682",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "When the model named a weak alternative and a stronger rated card was still in the pack, the validated explanation and narration named only the weak card. This reproduced with the selected card rated both strong and unknown."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1847,11 +1856,14 @@
         "note": "Coverage-only closeout. The native request boundary separates sideboarding from mulligan, generic cancellation and initial deck mutation. The sideboard adapter/driver tests exercise registered pool and request identity, invalid deck changes, concurrent/reissued submissions, short timers, and return of ownership to gameplay. The BO3 resume test distinguishes a game result from the end of the match. Constructed and uncertain requests retain their documented manual limits. Focused regression: 63 passed in 0.35s. No independent or live sign-off."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Independent Codex reviewer",
+        "reviewed_commit": "eaffaa236ef98e80ce0e4f6729f4d7f528c1d682",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "The simulated bridge covered sideboard request identity, pool and deck constraints, duplicate and reissued prompts, a short timer, unsupported constructed requests, special piles and resumption of best-of-three gameplay."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1891,11 +1903,14 @@
         "note": "Added a retained Hydra regression through the engine submission path. The fake bridge receives one pass and no indexed cast for the contradictory cast/hold answer. Existing coverage checks cache, narration, intent, and decision history. Focused regression: 88 passed in 4.54s. No independent or live sign-off."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "verified",
+        "reviewer": "Independent Codex reviewer",
+        "reviewed_commit": "eaffaa236ef98e80ce0e4f6729f4d7f528c1d682",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "The retained Hydra cast/hold contradiction produced one pass and zero indexed casts at bridge dispatch. Trace, cache, intent and decision memory agreed. The check does not establish that passing was the best tactical choice."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
@@ -1934,11 +1949,14 @@
         "note": "Reproduced the retained cast on timeout, invalid selection, and repeated impossible protection rationale. All three now pass priority when Arena offers it. The single recheck shares the original deadline. Coverage retains valid targets after commitment, deliberate life gain or real permanent protection, and menus without pass. Focused regression: 46 passed in 0.14s. No independent or live sign-off."
       },
       "independent_verification": {
-        "state": "not_reviewed",
-        "reviewer": null,
-        "reviewed_commit": null,
-        "receipt": null,
-        "findings": []
+        "state": "needs_follow_up",
+        "reviewer": "Independent Codex reviewer",
+        "reviewed_commit": "eaffaa236ef98e80ce0e4f6729f4d7f528c1d682",
+        "receipt": "docs/backlog-receipts/review-2026-11-03.md",
+        "findings": [
+          "After the bounded recheck timed out, the original false rationale produced a pass. Adding either \u201cThe two life are irrelevant.\u201d or \u201cWe do not need to protect Forest.\u201d produced a cast. The fallback treated an explicitly rejected benefit as a reason to cast."
+        ],
+        "reviewed_date": "2026-11-03"
       },
       "live_qualification": {
         "state": "not_exercised",
