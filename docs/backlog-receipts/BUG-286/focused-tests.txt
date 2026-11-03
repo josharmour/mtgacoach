@@ -1,0 +1,8 @@
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest -q <ten audit node IDs from docs/latency-222-id-audit-20261101.json id 286> tests/test_latency_286_sneak_guard.py
+.................                                                        [100%]
+17 passed in 9.37s
+
+$ .venv_mac_311/bin/python -m ruff check tests/test_latency_286_sneak_guard.py
+All checks passed!
+$ .venv_mac_311/bin/python -m ruff format --check tests/test_latency_286_sneak_guard.py
+1 file already formatted
