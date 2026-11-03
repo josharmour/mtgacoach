@@ -1,5 +1,7 @@
 # Tactical followup and attack-tax integration
 
+Historical evidence for the [active work queue](autopilot-active-work.md). The commands, installed revisions, and pending items below describe this checkpoint. Consult the current ledger for ownership and verification status.
+
 Baseline: installed `f4aaacd571645a20f2052caf2811fcbcd773286d`.
 Prepared on isolated `codex/next-tactical`. No live app, settings/history, native bridge, or GitHub changes.
 

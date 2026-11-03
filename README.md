@@ -18,6 +18,8 @@ The initial 3.8.3 Mac installers are unsigned and unnotarized. Gatekeeper can bl
 2. Open the newly installed **MTGA Coach** app. Choose **Tools → Setup & Repair**. This checks the Arena installation, logging, and license. Use **Check & Repair** to run the checks again.
 3. For a seven-day trial, enter your email and the verification code sent to it. If you already have a subscriber key, enter it in Setup & Repair. [Subscriber key and account access](https://mtgacoach.com/subscribe)
 
+Coach uses the hosted model `current` at `https://api.mtgacoach.com/v1`. Trial and subscriber installations need no Ollama server, separate Python installation, or environment file.
+
 ### How updates work
 
 Coach checks its channel at launch and downloads an update in the background. A compatible update can apply after the match and its post-match work finish, or on the next launch. For a runtime or Arena bridge change, Coach offers a restart under **Help**. The title bar shows the channel, package build, and Git commit.
@@ -45,7 +47,7 @@ uv pip install --python .venv -e ".[full]"
 uv run --no-sync mtgacoach-desktop
 ```
 
-A source checkout follows the Git revision you select. Python package users can also install the `arenamcp` wheel attached to a numbered release and launch `mtgacoach-desktop`. For desktop updates through Velopack, use a managed download above.
+See the [development workflow](DEV.md) for tests and the [feature documentation index](docs/README.md) for subsystem guides and active work. A source checkout follows the Git revision you select. Python package users can also install the `arenamcp` wheel attached to a numbered release and launch `mtgacoach-desktop`. For desktop updates through Velopack, use a managed download above.
 
 ## License
 

@@ -1,85 +1,38 @@
-# Development Workflow
+# Develop MTGA Coach
 
-Use exactly one desktop app during development: the PySide6 app in this repo.
+## Run from a checkout
 
-## One-Time Setup
+Use Python 3.10 or newer. In a fresh checkout, the following creates an editable development environment, including the dependencies for the website tests. Run the commands from the repository root.
 
-Run this command on Windows:
-
-```powershell
-C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe -m pip install -e Z:\mtgacoach[desktop]
+```sh
+uv venv --python 3.11
+uv pip install --python .venv -e ".[dev,full]" -r website/requirements.txt
+uv run --no-sync mtgacoach-desktop
 ```
 
-`pip install -e` is important: the desktop app runs directly from the repo source tree.
-`[desktop]` now includes the PySide app plus Kokoro desktop-worker dependencies.
+On the maintainer’s existing Mac checkout, use the working `.venv_mac_311` environment as described in [AGENTS.md](AGENTS.md). Python edits take effect on the next launch. Rebuild the C# plugin when you change its source.
 
-This repo already contains a Linux `.venv` for WSL work. Do not try to use `Z:\mtgacoach\.venv` as the Windows launch environment.
+## Find the code
 
-## Launch
+| Feature | Entry point |
+| --- | --- |
+| Desktop UI and setup | [PySide app](src/arenamcp/desktop/app.py) and [Setup & Repair](src/arenamcp/desktop/repair_tab.py) |
+| Coaching and model calls | [Coach](src/arenamcp/coach.py), [backend factory](src/arenamcp/coach_backends.py), [hosted client](src/arenamcp/backends/proxy.py) |
+| Arena state, MCP tools and Autoplay | [Server](src/arenamcp/server.py), [autopilot](src/arenamcp/autopilot.py), [bridge guide](bepinex-plugin/README.md) |
+| Trials and subscriptions | [Website setup](website/SETUP.md) |
+| Feature evidence and open bugs | [Development docs](docs/README.md) |
 
-Use exactly one launch target:
+The UI runs the coaching engine as a subprocess over a JSON pipe. Desktop model calls use `current` at `https://api.mtgacoach.com/v1`. To test a compatible gateway deliberately, set `ARENAMCP_GATEWAY_URL` in the process environment or use the saved `gateway_url` setting. Clear both overrides to use the public endpoint.
 
-```powershell
-C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\pythonw.exe Z:\mtgacoach\scripts\launch_desktop.py
+## Verify and ship changes
+
+Run a focused regression test while working, then check formatting and the test suite before merging.
+
+```sh
+uv run --no-sync python -m pytest tests/test_desktop_runtime.py -q
+uv run --no-sync ruff check src tests
+uv run --no-sync ruff format --check src tests
+uv run --no-sync python -m pytest tests -q
 ```
 
-Recommended shortcut target:
-
-- `C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\pythonw.exe`
-
-Recommended shortcut arguments:
-
-- `Z:\mtgacoach\scripts\launch_desktop.py`
-
-Recommended shortcut "Start in":
-
-- `Z:\mtgacoach`
-
-## What Updates On Next Launch
-
-- Any edit under `src\arenamcp\` takes effect on the next app launch.
-- Any edit under `src\arenamcp\desktop\` takes effect on the next app launch.
-- No C# rebuild is part of the normal dev loop anymore.
-- Launch does not depend on the package being importable from an editable install; the launcher script adds `src\` directly.
-
-If you change Python dependencies or entrypoints, rerun:
-
-```powershell
-C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe -m pip install -e Z:\mtgacoach[desktop]
-```
-
-## Do Not Use During Development
-
-- `C:\Users\Public\Desktop\mtgacoach.lnk`
-- `C:\Program Files\mtgacoach\...`
-- `mtgacoach-dev.lnk`
-
-Those are no longer part of the source-iteration workflow.
-
-## Useful Commands
-
-Launch from a terminal without the GUI script wrapper:
-
-```powershell
-C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe -m arenamcp.desktop
-```
-
-Run tests:
-
-```powershell
-C:\Users\joshu\AppData\Local\mtgacoach\venv\Scripts\python.exe -m pytest Z:\mtgacoach\tests -q
-```
-
-## Logs
-
-- Desktop UI log: `%LOCALAPPDATA%\mtgacoach\desktop.log`
-- Desktop launcher log: `%LOCALAPPDATA%\mtgacoach\desktop-launch.log`
-- Coach runtime log: `%USERPROFILE%\.arenamcp\standalone.log`
-- Saved bug reports: `%USERPROFILE%\.arenamcp\bug_reports\bug_*.json`
-- BepInEx log: `<MTGA>\BepInEx\LogOutput.log`
-
-## Notes
-
-- The PySide6 app is the full desktop app now: coach UI plus repair/install flows.
-- The coaching engine still runs as a subprocess internally over the existing JSON pipe protocol. That separation is intentional and keeps the UI responsive while preserving the current backend seam.
-- Customer releases come from the packaged PySide installer built by `installer\build-installer.ps1`.
+GitHub runs lint, hosted trial checks, and pytest. The combat timing regressions run in their own process. For customer builds, follow the [managed release workflow](RELEASE.md). A successful test run qualifies a commit for packaging; the published feed identifies the build users can install.
