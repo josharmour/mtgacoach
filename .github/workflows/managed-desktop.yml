@@ -17,6 +17,7 @@ on:
         required: false
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: managed-desktop-${{ inputs.lane || (github.event_name == 'release' && 'stable') || 'master' }}
   cancel-in-progress: false
@@ -44,6 +45,10 @@ jobs:
             version=${TAG#v}
           else
             version="1.0.$GITHUB_RUN_NUMBER"
+          fi
+          if [[ "$GITHUB_EVENT_NAME" != workflow_run ]]; then
+            passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/tests.yml/runs?head_sha=$COMMIT&event=push" --jq 'any(.workflow_runs[]; .conclusion == "success" and .head_branch == "master")')
+            [[ "$passed" == true ]] || { echo "No successful master test run for $COMMIT"; exit 1; }
           fi
           feed_body=$(gh release view -R "$GITHUB_REPOSITORY" "coach-$LANE-feed" --json body --jq .body 2>/dev/null || true)
           build=true
@@ -93,6 +98,7 @@ jobs:
           python scripts/verify_bridge_release.py
           python -m build --wheel
           python installer/velopack/package.py "$RID" "$LANE" "$VERSION"
+          if [[ "$LANE" == stable && "$RID" == win-x64 ]]; then cp dist/*.whl dist/publish/; fi
       - uses: actions/upload-artifact@v4
         with:
           name: managed-${{ matrix.rid }}
@@ -105,7 +111,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: read
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -119,8 +124,6 @@ jobs:
           SHA: ${{ needs.select.outputs.sha }}
           VERSION: ${{ needs.select.outputs.version }}
         run: |
-          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/tests.yml/runs?head_sha=$SHA&event=push" --jq 'any(.workflow_runs[]; .conclusion == "success" and .head_branch == "master")')
-          [[ "$passed" == true ]] || { echo "No successful master test run for $SHA"; exit 1; }
           if [[ "$LANE" == master && "$SHA" != "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)" ]]; then
             echo "A newer master revision superseded this build"
             exit 0
@@ -130,14 +133,14 @@ jobs:
             gh release create -R "$GITHUB_REPOSITORY" "$feed" --target "$SHA" --prerelease --latest=false --title "Coach $LANE update feed" --notes "Install the package for your platform once. Coach checks this channel on launch."
           fi
           for dir in packages/*; do
-            find "$dir" -maxdepth 1 -type f ! -name '*.json' -exec gh release upload -R "$GITHUB_REPOSITORY" "$feed" --clobber {} +
+            find "$dir" -maxdepth 1 -type f ! -name '*.json' ! -name '*.whl' -exec gh release upload -R "$GITHUB_REPOSITORY" "$feed" --clobber {} +
           done
           for dir in packages/*; do
             gh release upload -R "$GITHUB_REPOSITORY" "$feed" --clobber "$dir"/releases.*.json
           done
           if [[ "$LANE" == stable ]]; then
             cp packages/managed-win-x64/*-Setup.exe mtgacoach-Setup.exe
-            gh release upload -R "$GITHUB_REPOSITORY" "v$VERSION" mtgacoach-Setup.exe --clobber
+            gh release upload -R "$GITHUB_REPOSITORY" "v$VERSION" mtgacoach-Setup.exe packages/managed-win-x64/*.whl --clobber
           fi
           printf 'Install once to follow this %s channel.\n\nPublished commit %s\nPackage version %s\n' "$LANE" "$SHA" "$VERSION" > "$RUNNER_TEMP/feed-notes.md"
           gh release edit -R "$GITHUB_REPOSITORY" "$feed" --notes-file "$RUNNER_TEMP/feed-notes.md"

@@ -1,10 +1,7 @@
 name: build-installer
 
-# Builds mtgacoach-Setup.exe on a Windows runner and attaches it to the
-# release for the pushed tag, alongside the Python wheel (.whl) artifact.
+# On-demand recovery for older Inno installations. Velopack owns tag releases.
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -99,15 +96,15 @@ jobs:
             Write-Host "::warning::Release tag version '$version' does not match package __version__ '$packageVersion' - the installer asset will be stamped '$version'."
           }
 
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=$version /Fmtgacoach-Setup installer\mtgacoach.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=$version /Fmtgacoach-Legacy-Setup installer\mtgacoach.iss
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }
-          if (-not (Test-Path dist\installer\mtgacoach-Setup.exe)) { throw "installer not produced" }
+          if (-not (Test-Path dist\installer\mtgacoach-Legacy-Setup.exe)) { throw "installer not produced" }
 
       - name: Verify installed runtime in a path with spaces
         shell: pwsh
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP ("mtgacoach install " + [guid]::NewGuid().ToString("N"))
-          $setup = Join-Path $PWD "dist\installer\mtgacoach-Setup.exe"
+          $setup = Join-Path $PWD "dist\installer\mtgacoach-Legacy-Setup.exe"
           $process = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
             "/VERYSILENT",
             "/SUPPRESSMSGBOXES",
@@ -134,7 +131,6 @@ jobs:
           $tag = "${{ inputs.release_tag }}"
           if (-not $tag) { $tag = "${{ github.ref_name }}" }
           # The managed stable feed owns the canonical setup name for new releases.
-          Move-Item dist/installer/mtgacoach-Setup.exe dist/installer/mtgacoach-Legacy-Setup.exe
           gh release upload "$tag" dist/installer/mtgacoach-Legacy-Setup.exe --clobber
           Get-ChildItem -Path dist\*.whl | ForEach-Object {
             gh release upload "$tag" $_.FullName --clobber
@@ -144,8 +140,8 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/') && inputs.release_tag == '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: mtgacoach-Setup
-          path: dist/installer/mtgacoach-Setup.exe
+          name: mtgacoach-Legacy-Setup
+          path: dist/installer/mtgacoach-Legacy-Setup.exe
           if-no-files-found: error
 
       - name: Upload wheel artifact (non-tag runs)
