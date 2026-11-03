@@ -8,6 +8,10 @@ MTGA Coach is a desktop companion for **Magic: The Gathering Arena**. It reads A
 
 If you prefer **stable**, install the package for your platform from the stable feed. The Windows installer attached to release 3.8.3 also follows stable. The initial Windows and Mac packages are unsigned. [Stable downloads](https://github.com/josharmour/mtgacoach/releases/tag/coach-stable-feed) · [Latest official release](https://github.com/josharmour/mtgacoach/releases/latest)
 
+### If macOS says the package was “Not Opened”
+
+The initial 3.8.3 Mac installers are unsigned and unnotarized. Gatekeeper can block the first open with a message that Apple could not verify the package. To verify your download, run `shasum -a 256` on the downloaded `.pkg` and compare it with the SHA-256 digest for that exact asset on the GitHub release. If the digests match and you trust the package, click **Done**, open **System Settings → Privacy & Security**, scroll to **Security**, and choose **Open Anyway** for that package. [Tested-master release assets](https://github.com/josharmour/mtgacoach/releases/tag/coach-master-feed) · [Apple’s instructions](https://support.apple.com/en-us/102445)
+
 ### First run
 
 1. In Arena, open **Options → Account**, turn on **Detailed Logs (Plugin Support)**, and restart Arena.
