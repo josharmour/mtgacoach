@@ -10,6 +10,8 @@
 
 ### First installation or migration
 
+New Mac installs go into your account’s Applications folder (`~/Applications`). Launch that copy for updates without an administrator prompt. Existing shared copies in `/Applications` can ask for macOS authorization when replacing the app.
+
 1. Finish the current match and close the old Coach. Choose a channel above.
 2. On **Windows x64**, run that channel's Setup EXE. On **Mac**, choose the package for Apple Silicon or Intel. On **Linux x64**, download the AppImage, make it executable, and run it.
 3. Start Coach from the new installation. The title bar identifies the channel, platform, package build, and Git commit. Existing local settings, trial credentials, and match history use the same per-user locations.
@@ -21,7 +23,7 @@ An older Inno, pip, or source installation needs this one-time migration to rece
 Coach checks its channel in the background each time it starts. Velopack stages a delta when available and automatically uses a full package when needed. Users continue playing with the version that started the match.
 
 - **Compatible update.** After a completed match, Coach waits for the existing safe-restart checks, including post-match work. It then closes, applies the staged package, and reopens. A compatible update already staged at the next launch can apply then.
-- **Runtime or Arena bridge change.** Coach offers **Restart to install Coach…** under **Help**. Finish your match, then approve the restart. Windows bridge deployment waits for Arena to be closed.
+- **Runtime or Arena bridge change.** Finish your match, then click **Update** beside **Restart Coach** and approve the restart. macOS may ask for permission to replace the installed app. Windows bridge deployment waits for Arena to be closed.
 - **Offline or failed release.** The installed build can still open. A failed CI or native-package check leaves the previous published update available.
 
 ## Shipping changes from master
@@ -60,7 +62,7 @@ Publishing a stable GitHub release also invokes the managed workflow. It recogni
 
 ## Diagnosing an update
 
-Check the installed channel and commit first. Then check the corresponding feed, its most recent **Managed desktop releases** run, and **Help** for an update awaiting approval. The host writes update errors under the OS local application-data directory in `mtgacoach/updates/<channel>/update.log`.
+Check the installed channel and commit first. Then check the corresponding feed, its most recent **Managed desktop releases** run, and the **Update** button beside **Restart Coach** for an update awaiting approval. The host writes update errors under the OS local application-data directory in `mtgacoach/updates/<channel>/update.log`.
 
 ## Bug Reports
 

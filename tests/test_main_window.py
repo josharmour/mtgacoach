@@ -75,3 +75,39 @@ def test_autopilot_bug_button_routes_to_capture(qapp, monkeypatch):
         capture.assert_called_once_with()
     finally:
         win.close()
+
+
+def test_update_button_tracks_download_and_requests_approval(qapp, monkeypatch, tmp_path):
+    import json
+    from unittest.mock import Mock
+
+    from PySide6.QtWidgets import QMessageBox
+
+    marker = tmp_path / "pending.json"
+    monkeypatch.setenv("MTGACOACH_VELOPACK_PENDING", str(marker))
+    win = MainWindow()
+    try:
+        button = win.coach_panel.update_btn
+        assert not button.isHidden() and not button.isEnabled()
+        from arenamcp.desktop.release_updates import pending_update
+
+        marker.write_text(json.dumps({"version": "1.0.14", "downloading": True, "automatic": None}))
+        win._show_pending_release()
+        assert "Downloading 1.0.14" in button.text() and not button.isEnabled()
+        assert pending_update() is None
+        marker.write_text(json.dumps({"version": "1.0.14", "automatic": False}))
+        win._show_pending_release()
+        assert button.isEnabled() and button.text() == "Update to 1.0.14"
+        apply = Mock()
+        monkeypatch.setattr(win, "_apply_release", apply)
+        for answer in (QMessageBox.No, QMessageBox.Yes):
+            monkeypatch.setattr(QMessageBox, "question", lambda *args, result=answer: result)
+            button.click()
+            if answer == QMessageBox.No:
+                apply.assert_not_called()
+        apply.assert_called_once_with(approved=True)
+        marker.unlink()
+        win._show_pending_release()
+        assert not button.isEnabled()
+    finally:
+        win.close()

@@ -32,13 +32,17 @@ using var owner = hostLock;
 start.Environment["MTGACOACH_BUILD_LABEL"] = $"{channel} {manager.CurrentVersion} ({config.GetProperty("commit").GetString()![..8]})";
 var marker = Path.Combine(state, "pending.json");
 bool CanAuto(VelopackAsset asset) => asset.NotesMarkdown?.Split('\n').Any(line => line.Trim() == compatibility) == true;
+// The macOS package installer can leave a root-owned bundle in /Applications.
+// UpdateMac must be able to request authorization to replace it.
+void Apply(VelopackAsset release) =>
+    manager.WaitExitThenApplyUpdates(release, silent: !OperatingSystem.IsMacOS(), restart: true);
 var pending = manager.UpdatePendingRestart;
 if (pending != null && CanAuto(pending)) {
-    manager.WaitExitThenApplyUpdates(pending, silent: true, restart: true);
+    Apply(pending);
     return 0;
 }
-void Announce(VelopackAsset asset) {
-    var json = JsonSerializer.Serialize(new { version = asset.Version.ToString(), automatic = CanAuto(asset) });
+void Announce(VelopackAsset asset, bool downloading = false) {
+    var json = JsonSerializer.Serialize(new { version = asset.Version.ToString(), automatic = downloading ? (bool?) null : CanAuto(asset), downloading });
     File.WriteAllText(marker + ".tmp", json);
     File.Move(marker + ".tmp", marker, overwrite: true);
 }
@@ -51,17 +55,21 @@ var worker = Task.Run(async () => {
         var update = await manager.CheckForUpdatesAsync();
         if (update != null && !cancel.IsCancellationRequested) {
             Log($"Downloading {update.TargetFullRelease.Version}");
+            if (pending == null) Announce(update.TargetFullRelease, downloading: true);
             await manager.DownloadUpdatesAsync(update, cancelToken: cancel.Token);
             Announce(update.TargetFullRelease);
         }
-    } catch (Exception ex) { Log(ex.Message); }
+    } catch (Exception ex) {
+        Log(ex.Message);
+        if (pending == null) File.Delete(marker);
+    }
 });
 int code;
 do { code = RunDesktop(start); } while (code == 42);
 cancel.Cancel();
 await worker;
 if ((code == 86 || code == 87) && manager.UpdatePendingRestart is { } asset && (code == 87 || CanAuto(asset))) {
-    manager.WaitExitThenApplyUpdates(asset, silent: true, restart: true);
+    Apply(asset);
     return 0;
 }
 return code;

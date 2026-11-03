@@ -2,10 +2,12 @@
 
 import hashlib
 import json
+import shlex
 import shutil
 import subprocess
 import tempfile
 import zipfile
+import xml.etree.ElementTree as ET
 import sys
 from pathlib import Path
 
@@ -83,6 +85,42 @@ def verify_launcher(rid):
                 archive.extractall(temp)
             launcher = next(temp.rglob("MTGACoach.exe"))
         run(launcher, "--version", cwd=temp, timeout=90)
+
+
+def make_per_user_mac_installer(pkg: Path) -> None:
+    """Install under ~/Applications so Coach can replace its bundle as the current user."""
+    with tempfile.TemporaryDirectory(dir=pkg.parent) as temp:
+        expanded = Path(temp) / "expanded"
+        run("pkgutil", "--expand", pkg, expanded)
+        distribution = expanded / "Distribution"
+        xml = ET.parse(distribution)
+        domains = xml.find("domains")
+        if domains is None or domains.get("enable_currentUserHome") != "true":
+            raise RuntimeError("Velopack installer does not support per-user installs")
+        domains.set("enable_anywhere", "false")
+        domains.set("enable_localSystem", "false")
+        xml.write(distribution, encoding="utf-8", xml_declaration=True)
+        # The stock component requests root privileges and its postinstall uses
+        # sudo. Both are unnecessary for a package confined to the user domain.
+        (component,) = expanded.glob("*.pkg/PackageInfo")
+        info = ET.parse(component)
+        info.getroot().set("auth", "none")
+        bundle = info.find("bundle")
+        app_path = Path(bundle.attrib["path"]) if bundle is not None else Path()
+        if app_path.parent != Path(".") or app_path.suffix != ".app":
+            raise RuntimeError("Unexpected Velopack app bundle path")
+        info.write(component, encoding="utf-8", xml_declaration=True)
+        postinstall = component.parent / "Scripts/postinstall"
+        postinstall.write_text(
+            '#!/bin/sh\nif [ -z "${COMMAND_LINE_INSTALL:-}" ]; then\n'
+            f'    VELOPACK_FIRSTRUN=1 /usr/bin/open "$2"/{shlex.quote(app_path.name)}\nfi\nexit 0\n'
+        )
+        output = Path(temp) / pkg.name
+        run("pkgutil", "--flatten", expanded, output)
+        choices = subprocess.check_output(["/usr/sbin/installer", "-dominfo", "-pkg", str(output)], text=True)
+        if choices.split() != ["CurrentUserHomeDirectory"]:
+            raise RuntimeError(f"Unexpected Mac installer destinations: {choices}")
+        output.replace(pkg)
 
 
 def main():
@@ -202,7 +240,10 @@ def main():
         prepare_icon(rid),
         "--releaseNotes",
         notes,
+        *(["--instWelcome", ROOT / "installer/velopack/mac-welcome.txt"] if rid.startswith("osx-") else []),
     )
+    if rid.startswith("osx-"):
+        make_per_user_mac_installer(next(RELEASES.glob("*-Setup.pkg")))
     verify_launcher(rid)
     # Only the bootstrap, packages and feed index are needed by clients.
     for path in RELEASES.iterdir():

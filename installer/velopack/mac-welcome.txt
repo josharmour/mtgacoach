@@ -1,0 +1,3 @@
+Coach will install in the Applications folder inside your home folder for this Mac account. Coach checks for updates each time it opens. Your account owns this copy, so routine updates can replace it without an administrator password.
+
+When an update is ready, use Update beside Restart Coach. Compatible updates can also apply between matches.
