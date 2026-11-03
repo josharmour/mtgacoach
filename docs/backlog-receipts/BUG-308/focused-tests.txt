@@ -1,0 +1,31 @@
+# BUG-308 focused checks (verification-only: no production source change)
+
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest -q \
+    tests/test_entry_draw_extra_review_308.py tests/test_entry_draw_independent_review_308.py \
+    tests/test_entry_draw_integration_review_308.py tests/test_entry_draw_projection_308.py \
+    tests/test_entry_draw_search_308.py tests/test_entry_draw_transition_308.py \
+    tests/test_public_response_308.py tests/test_public_sequence_308.py \
+    tests/test_sequence_value_308.py
+157 passed in 5.92s
+
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest -q \
+    tests/test_entry_draw_extra_review_308.py tests/test_entry_draw_independent_review_308.py \
+    tests/test_entry_draw_integration_review_308.py tests/test_entry_draw_projection_308.py \
+    tests/test_entry_draw_search_308.py tests/test_entry_draw_transition_308.py \
+    tests/test_public_response_308.py tests/test_public_sequence_308.py \
+    tests/test_sequence_value_308.py tests/test_line_search.py tests/test_line_search_opponent.py \
+    tests/test_line_search_pings_20261019.py tests/test_line_search_walkers_20261019.py \
+    tests/test_board_assessment.py tests/test_sacrifice_continuation_280.py
+554 passed in 16.06s
+
+$ .venv_mac_311/bin/python -m ruff check src/arenamcp/entry_draw_transition.py \
+    src/arenamcp/entry_draw_projection.py src/arenamcp/public_sequence.py \
+    src/arenamcp/sequence_value.py tests/test_entry_draw_search_308.py \
+    tests/test_sequence_value_308.py tests/test_public_sequence_308.py
+All checks passed!
+
+$ .venv_mac_311/bin/python -m ruff format --check src/arenamcp/entry_draw_transition.py \
+    src/arenamcp/entry_draw_projection.py src/arenamcp/public_sequence.py \
+    src/arenamcp/sequence_value.py tests/test_entry_draw_search_308.py \
+    tests/test_sequence_value_308.py tests/test_public_sequence_308.py
+7 files already formatted
