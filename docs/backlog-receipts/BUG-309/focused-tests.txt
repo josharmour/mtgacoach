@@ -1,0 +1,14 @@
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest tests/test_equipment_phase_planner_309.py -q
+......                                                                   [100%]
+6 passed in 4.85s
+
+$ PYTHONPATH=. .venv_mac_311/bin/python -m pytest tests/test_equipment_phase_planner_309.py tests/test_equipment_phase_309.py tests/test_activation_intent_309.py tests/test_greaves_first_turn_20261031.py tests/test_greaves_relay_252bd136.py tests/test_haste_equipment_mana.py -q
+........................................................................ [ 67%]
+...................................                                      [100%]
+107 passed in 6.39s
+
+$ .venv_mac_311/bin/ruff check tests/test_equipment_phase_planner_309.py
+All checks passed!
+
+$ .venv_mac_311/bin/ruff format --check tests/test_equipment_phase_planner_309.py
+1 file already formatted
