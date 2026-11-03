@@ -4,6 +4,7 @@ import contextlib
 import datetime
 import faulthandler
 import os
+import subprocess
 import sys
 import threading
 import traceback
@@ -273,7 +274,9 @@ def main() -> int:
         try:
             import ctypes
 
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("arenamcp.mtgacoach")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                os.environ.get("MTGACOACH_WINDOWS_APP_ID") or "arenamcp.mtgacoach"
+            )
         except Exception:
             pass
 
@@ -325,7 +328,32 @@ def main() -> int:
             except Exception as exc:
                 window._session.logEmitted.emit(f"Bridge setup needs attention in Repair: {exc}", "error")
 
-        threading.Thread(target=prepare_bridge, name="managed-bridge", daemon=True).start()
+            from .runtime import launch_windows_arena
+
+            try:
+                status = launch_windows_arena()
+                if status:
+                    window._session.logEmitted.emit(status, "status")
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                window._session.logEmitted.emit(
+                    f"Arena could not start: {exc}. Check Setup & Repair.", "error"
+                )
+
+        worker = threading.Thread(target=prepare_bridge, name="managed-arena", daemon=True)
+        worker.start()
+        marker = os.environ.get("MTGACOACH_WINDOWS_LAUNCH_REQUEST")
+        if marker:
+            request = Path(marker)
+
+            def handle_shortcut():
+                nonlocal worker
+                if worker.is_alive() or not request.exists():
+                    return
+                request.unlink(missing_ok=True)
+                worker = threading.Thread(target=prepare_bridge, name="managed-arena", daemon=True)
+                worker.start()
+
+            window._update_timer.timeout.connect(handle_shortcut)
     if sys.platform == "darwin":
         # Emit Qt signals from the worker; widget changes stay on the GUI thread.
         session = window.coach_panel.session

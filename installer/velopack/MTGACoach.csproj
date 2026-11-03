@@ -7,6 +7,7 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <DebugType>none</DebugType>
+    <ApplicationIcon Condition="$(RuntimeIdentifier.StartsWith('win-'))">../../mtga_coach.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Velopack" Version="1.2.161" />
