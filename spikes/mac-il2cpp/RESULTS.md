@@ -1,6 +1,6 @@
 # Native-Mac IL2CPP GRE spike: results
 
-Scope: the first reviewable milestone in `autopilot4mac.md` — observe the live
+Historical scope: the [September 2026 native Mac bridge milestone](https://github.com/josharmour/mtgacoach/blob/adbaca97f9076b8ee8be86689154e67410203911/autopilot4mac.md) — observe the live
 request in the native Mac client and submit play/draw, Keep and a land by
 identity, with each outcome confirmed. This covers only the first half of G1/G2;
 creatures, payment chains, backgrounded Arena, repeated launches and scene

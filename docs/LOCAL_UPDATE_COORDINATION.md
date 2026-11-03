@@ -1,12 +1,14 @@
 # Local update coordination
 
+This procedure applies to maintainer checkouts with a live Coach process. Customer updates use the [managed release workflow](../RELEASE.md).
+
 The November 1 update attempt closed Coach and Arena after match `9f593806`
 ended at 04:50:34–35 UTC. Coach reopened at 04:52:07. The separate installer
 then failed to acquire `desktop.lock`, before modifying the checkout. The logs
 establish a reopened process, not whether the user or an automatic mechanism
 launched it. Build `07098e91` remained installed.
 
-Further deployment restarts are paused. Preparing code does not resume them.
+Deployment restarts were paused at this checkpoint. Preparing code does not authorize restarting a live session.
 
 When activation resumes, use one continuous operation for the approved safe
 shutdown, installation, installed-source checks, and normal relaunch. Do not

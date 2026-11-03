@@ -101,7 +101,7 @@ scope and closure verification remain.
   sequences were not recovered in this review. No closure is inferred from #337.
 
 The final audit also qualifies the bounded draft-context mechanisms in #293/#297
-and 35 additional scopes. The [per-ID closure evidence](backlog-evidence-2026-11-01.md#final-cumulative-offline-qualification)
+and 35 additional scopes. The [per-ID closure evidence](backlog-evidence-2026-11-01.md#historical-cumulative-offline-qualification--before-user-disposition)
 retains each scope and limit; no general strategic-quality or live-completion
 claim follows. The [live qualification plan](backlog-live-qualification-2026-11-01.md)
 is observation guidance, not authorization to interrupt a game.
