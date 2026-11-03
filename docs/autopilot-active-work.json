@@ -1816,14 +1816,20 @@
         "backlog-evidence-2026-11-01.md: #350"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
+        "state": "merged_awaiting_review",
+        "owner": "Codex",
         "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "base_commit": "f99359bdc717b417ae25c7b59442e440f1285621",
+        "source_commits": [
+          "83f1fbfbef606586bceb990eb9239721be314224"
+        ],
+        "master_commits": [
+          "83f1fbfbef606586bceb990eb9239721be314224"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-350/focused-tests.txt"
+        ],
+        "note": "Reproduced the retained cast on timeout, invalid selection, and repeated impossible protection rationale. All three now pass priority when Arena offers it. The single recheck shares the original deadline. Coverage retains valid targets after commitment, deliberate life gain or real permanent protection, and menus without pass. Focused regression: 46 passed in 0.14s. No independent or live sign-off."
       },
       "independent_verification": {
         "state": "not_reviewed",
