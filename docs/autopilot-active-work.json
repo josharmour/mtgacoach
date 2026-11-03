@@ -1470,14 +1470,21 @@
         "backlog-evidence-2026-11-01.md: #300"
       ],
       "implementation": {
-        "state": "queued",
-        "owner": null,
-        "session": null,
-        "base_commit": null,
-        "source_commits": [],
-        "master_commits": [],
-        "test_receipts": [],
-        "note": "Not started by this queue; existing merged repairs must be reused."
+        "state": "merged_awaiting_review",
+        "owner": "autopilot-queue-session",
+        "session": "2026-11-02 BUG-300",
+        "base_commit": "c743ae7",
+        "source_commits": [
+          "1b1443c",
+          "25cf3e8"
+        ],
+        "master_commits": [
+          "ed82854"
+        ],
+        "test_receipts": [
+          "docs/backlog-receipts/BUG-300/focused-tests.txt"
+        ],
+        "note": "Draft-side tutor outcomes were the retained failing explanation. draft_facts.reason_corrections already corrected printed costs, simple mana production, one printed generic discount and free-equip attribution, and DraftAdvisor._validate keeps the chosen pick plus original_reason; tutor outcomes were only checked in gameplay (tutor_claims.correct_tutor_claims), never in draft prose. Reproduced on master c743ae7: 'Enlightened Tutor finds our best creature.' returned no correction against supplied text restricted to an artifact or enchantment card, and 'Finale of Devastation finds a land.' survived a creature-only search. New _tutor_types reads the first restricted 'search your library[/graveyard] for ... card' clause and _tutor_corrections rewrites only a claim naming a type outside it ('<name>'s search finds <allowed> cards; it cannot find <claimed> cards.'), wired into reason_corrections for every supplied card. Controls left alone: allowed type, 'artifact or enchantment', qualified tail ('if we splash blue'), negation (\"doesn't find creatures\"), ambiguous noun ('creature removal'), unrestricted tutor (Demonic Tutor 'for a card'), and a supported claim on a restricted tutor. Verification: 43 passed in tests/test_draft_facts.py, 206 passed across the seven draft files, ruff check and format clean. Bounded gaps: only the first restricted clause is read; 'permanent'/'spell' claims and mana-value-only restrictions abstain; no live qualification and no Linux CI receipt."
       },
       "independent_verification": {
         "state": "not_reviewed",

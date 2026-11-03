@@ -1,6 +1,6 @@
 # BUG-300 — draft rationale: restricted tutor outcomes
 
-Verdict: merged to local master as MERGE COMMIT (receipt commit SOURCE COMMIT).
+Verdict: merged to local master as ed82854 (receipt commit 25cf3e8).
 Draft pick and alternative prose that claims a restricted library search finds a
 card type its own rules text excludes is now corrected from supplied card data.
 The chosen pick, its ranking and the original diagnostic are preserved.

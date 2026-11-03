@@ -149,8 +149,9 @@ deployed.
 | 29 | BUG-285 | merged_awaiting_review | 8f595f3 (merge 6ad4b01, trace scoping) | docs/backlog-receipts/BUG-285/ |
 | 30 | BUG-286 | merged_awaiting_review | 0cdf55e (merge 78acf87, regression test only) | docs/backlog-receipts/BUG-286/ |
 | 31 | BUG-289 | merged_awaiting_review | 6c43157 (merge 46ffe24, regression test only) | docs/backlog-receipts/BUG-289/ |
+| 32 | BUG-300 | merged_awaiting_review | 1b1443c (merge ed82854, draft tutor-outcome fact check) | docs/backlog-receipts/BUG-300/ |
 
-Next item: BUG-300. All thirty-one merged items still need an independent review pass
+Next item: BUG-306. All thirty-two merged items still need an independent review pass
 and a real Linux CI receipt; the implementer may not claim any as verified.
 BUG-210 needed no source change: the merged repairs already cover its acceptance
 points, and the receipt records the current-source evidence plus the remaining
@@ -501,3 +502,20 @@ against a 1.0 s budget returns in under 0.9 s with winner=low and wait_after_low
 stale tgt:999 answer is dropped in favour of a legal target. The audit's unresolved prerequisite
 stands: the historical solver choice belongs to the combat owner (#288) and the strategic
 compounding to #240/#287, and live timing remains unqualified.
+
+BUG-300 did need a production change, in the draft fact checker rather than the advisor.
+`draft_facts.reason_corrections` already corrected printed costs, simple mana production, one
+printed generic discount and free-equip attribution, and `DraftAdvisor._validate` keeps the
+chosen pick plus `original_reason` while replacing only the contradicted sentence. Tutor
+outcomes were checked in gameplay (`tutor_claims.correct_tutor_claims`) but never in draft
+prose: on master c743ae7 "Enlightened Tutor finds our best creature." passed through untouched
+even though the supplied oracle text restricts the search to an artifact or enchantment card,
+and "Finale of Devastation finds a land." survived against a creature-only search. The new
+`_tutor_types`/`_tutor_corrections` pair reads the first restricted "search your library for …
+card" clause and rewrites only a claim that names a type outside it, so an allowed type, a
+qualified tail ("if we splash blue"), a negation, an ambiguous noun ("creature removal") and an
+unrestricted tutor ("Demonic Tutor finds our best creature") all stay as written. Verification:
+43 passed in tests/test_draft_facts.py and 206 passed across the seven draft files, ruff clean.
+Bounded gaps recorded rather than fixed: only the first restricted clause is read, claims about
+"permanent"/"spell" or mana-value-only restrictions abstain, and there is no live qualification
+or Linux CI receipt.
