@@ -1,0 +1,2 @@
+python -m pytest -q --tb=short tests/test_native_sideboard_318.py tests/test_sideboard_automation_318.py tests/test_match_records_restart_20261019.py::test_a_bo3_game_result_alone_does_not_stop_the_sideboarding_resume
+63 passed in 0.35s
