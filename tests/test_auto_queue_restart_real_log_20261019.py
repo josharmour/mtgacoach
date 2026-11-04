@@ -22,6 +22,7 @@ import datetime
 import logging
 from pathlib import Path
 from unittest.mock import Mock
+from zoneinfo import ZoneInfo
 
 import pytest
 from tests.test_standalone_auto_queue import Runtime
@@ -30,7 +31,8 @@ from arenamcp import server
 
 FIXTURE = Path(__file__).parent / "fixtures" / "player_log_idle_after_match_20261019.log"
 MATCH = "15e0eb20-a63e-4b88-9c8b-2e2d39188258"
-RESTART = datetime.datetime(2026, 10, 19, 11, 6, 30).timestamp()  # the first auto-queue poll
+# The captured session was Pacific time, independently of the test runner's TZ.
+RESTART = datetime.datetime(2026, 10, 19, 11, 6, 30, tzinfo=ZoneInfo("America/Los_Angeles")).timestamp()
 EVENT_JOIN = (
     '[UnityCrossThreadLogger]==> EventJoin {"id":"069d9002-0f02-4809-8851-16b80cea6054","request":"{\\"EventName'
     '\\":\\"Ladder\\",\\"EntryCurrencyType\\":\\"None\\",\\"EntryCurrencyPaid\\":0,\\"CustomTokenId\\":null,'
