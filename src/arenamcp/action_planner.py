@@ -1062,6 +1062,7 @@ class ActionPlanner(_ActionLegalityMixin):
         reasoning_effort: str | None = None,
         cancel_event: threading.Event | None = None,
         yield_background: bool = True,
+        selective_thinking: bool = False,
     ) -> str:
         """One planner model call: deterministic, raising on backend errors, labelled.
 
@@ -1075,6 +1076,8 @@ class ActionPlanner(_ActionLegalityMixin):
             self._yield_background()
         complete = self._backend.complete
         extras: dict[str, Any] = {"call_class": call_class}
+        if selective_thinking:
+            extras["selective_thinking"] = True
         if self.separate_strategy_planning and call_class.startswith("decision."):
             reasoning_effort = "low"
         if call_class in {"decision.typed", "decision.mulligan"}:
@@ -8313,6 +8316,28 @@ class ActionPlanner(_ActionLegalityMixin):
         picked_opp = False
         intent = getattr(self, "_last_decision_target_controllers", {})
         exceptions = getattr(self, "_last_decision_unusual_targets", {})
+        from arenamcp.self_harm_guard import lethal_friendly_damage
+
+        unsafe = lethal_friendly_damage(
+            game_state,
+            oracle,
+            [option.option_id for option in getattr(decision, "options", ())] or chosen,
+            kicked=bool(self._recorded_kick(game_state)),
+            justifications={oid: why for oid, why in exceptions.items() if intent.get(oid) == "self"},
+        )
+        blocked = [oid for oid in chosen if oid in unsafe]
+        if blocked:
+            trace = getattr(self, "_last_decision_trace", None)
+            if isinstance(trace, dict):
+                trace["self_harm_guard"] = {oid: unsafe[oid] for oid in blocked}
+            logger.warning("Self-harm guard rejected %s", {oid: unsafe[oid] for oid in blocked})
+            return self._move_off_bad_targets(
+                decision,
+                game_state,
+                chosen,
+                blocked,
+                {**hints, **{int(oid[4:]): "Cold" for oid in unsafe}},
+            )
         intentional_own = intentional_opp = True
         arena_bad: list[str] = []
         for oid in chosen:
@@ -9472,15 +9497,24 @@ class ActionPlanner(_ActionLegalityMixin):
         critical = critical_decision(
             decision, game_state, getattr(self, "_game_plan", ""), skipped=passed_over
         )
+        from arenamcp.selective_thinking import enabled as selective_enabled
+        from arenamcp.selective_thinking import selection_reason
+
+        selective_requested = selective_enabled(getattr(self._backend, "model", None))
+        selective_reason = selection_reason(decision, game_state, critical) if selective_requested else ""
         if self.separate_strategy_planning:
             critical = ""
         # On the opponent's turn the windows close fast (2026-10-11 turn 9: 13
         # windows each answered within 3 s while one high-effort call ran its
         # full 15 s and timed out), so every decision there runs at low effort.
         opponent_turn = _is_opponent_turn(game_state, local_seat)
+        if opponent_turn:
+            selective_reason = ""
         own_stack = ""
         if decision.request_type == "ActionsAvailable":
             own_stack = own_stack_only(decision, game_state)
+            if own_stack:
+                selective_reason = ""
         if critical and opponent_turn:
             logger.info("typed-decision: %s, but on the opponent's turn — low effort", critical)
             critical = ""
@@ -9555,6 +9589,7 @@ class ActionPlanner(_ActionLegalityMixin):
         ) -> str:
             from arenamcp.game_plan import critical_decision_call
 
+            thinking_leg = bool(selective_reason and effort == "selective")
             if self.separate_strategy_planning:
                 effort = "low"
 
@@ -9578,7 +9613,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 cancel_event if cancel_event is not None and cancel_event is not outer else threading.Event()
             )
             try:
-                with critical_decision_call(effort == "high"):
+                with critical_decision_call(effort == "high" or thinking_leg):
                     return self._bounded_call(
                         lambda: self._call_llm(
                             system_prompt,
@@ -9590,6 +9625,7 @@ class ActionPlanner(_ActionLegalityMixin):
                             reasoning_effort=effort,
                             cancel_event=request_cancel,
                             yield_background=False,
+                            selective_thinking=thinking_leg,
                         ),
                         timeout_s=remaining,
                     )
@@ -9651,6 +9687,14 @@ class ActionPlanner(_ActionLegalityMixin):
                 len(system_prompt) + len(user_message), first_token_s, normal_budget,
             )  # fmt: skip
         yielded = self._yield_background()
+        selective_skip = ""
+        if selective_reason and llm_degraded(getattr(self, "_backend", None)):
+            selective_skip = "server degraded"
+        elif selective_reason and not yielded:
+            selective_skip = "game-plan reform in flight"
+        if selective_skip:
+            selective_reason = ""
+            self._last_decision_trace["selective_thinking"] = {"admitted": False, "skipped": selective_skip}
         if critical and llm_degraded(getattr(self, "_backend", None)):
             # 2026-10-19 09:34:06-09:34:23: during the vLLM hang each critical
             # decision sent both legs into the hung server (6 requests before
@@ -9683,7 +9727,9 @@ class ActionPlanner(_ActionLegalityMixin):
             )
 
         decision_deadline = time.monotonic() + (
-            self._sized_budget(self._CRITICAL_DECISION_BUDGET_S, first_token_s) if critical else normal_budget
+            self._sized_budget(self._CRITICAL_DECISION_BUDGET_S, first_token_s)
+            if critical and not selective_requested
+            else normal_budget
         )
         if arena_deadline is not None:
             decision_deadline = min(decision_deadline, arena_deadline)
@@ -9692,7 +9738,58 @@ class ActionPlanner(_ActionLegalityMixin):
             raise concurrent.futures.TimeoutError("Arena clock reserved for safe default")
         normal_budget = min(normal_budget, remaining_budget)
         answered_high = False
-        if critical:
+        if selective_reason and remaining_budget >= 6.0:
+            import hashlib
+
+            from arenamcp.selective_thinking import race
+            from arenamcp.self_harm_guard import false_power_survival_claim, lethal_friendly_damage
+
+            experiment_trace = {
+                "reason": selective_reason,
+                "prompt_sha256": hashlib.sha256((system_prompt + "\0" + user_message).encode()).hexdigest(),
+            }
+            self._last_decision_trace["selective_thinking"] = experiment_trace
+
+            def validated_parse(response):
+                answer, ids = parse(response)
+                if not decision.selection_is_valid(ids):
+                    raise ValueError("selection not legal for this decision")
+                contradiction = false_power_survival_claim(game_state, answer.get("reasoning", ""))
+                if contradiction:
+                    raise ValueError(contradiction)
+                if decision.request_type == "SelectTargets":
+                    acknowledgments = answer.get("target_controllers") or {}
+                    exceptions = answer.get("unusual_target_reasons") or {}
+                    exceptions = exceptions if isinstance(exceptions, dict) else {}
+                    acknowledgments = acknowledgments if isinstance(acknowledgments, dict) else {}
+                    unsafe = lethal_friendly_damage(
+                        game_state,
+                        self._decision_source_oracle(decision, game_state),
+                        ids,
+                        kicked=bool(self._recorded_kick(game_state)),
+                        justifications={
+                            oid: reason
+                            for oid, reason in exceptions.items()
+                            if acknowledgments.get(oid) == "self"
+                        },
+                    )
+                    if unsafe:
+                        raise ValueError("; ".join(unsafe.values()))
+                return answer, ids
+
+            try:
+                data, chosen = race(
+                    ask,
+                    validated_parse,
+                    user_message,
+                    deadline=decision_deadline,
+                    trace=experiment_trace,
+                    cancel_event=getattr(self, "_decision_cancel_event", None),
+                )
+            finally:
+                logger.info("Selective thinking decision: %s", experiment_trace)
+            answered_high = experiment_trace.get("selected_leg") == "thinking"
+        elif critical and not selective_requested:
             low_agrees = None
             if decision.request_type == "ActionsAvailable" and line_source is not None and not unmodelled:
                 # The searched line valued every option: its own play needs no second opinion.

@@ -21,6 +21,41 @@ def run(*args, **kwargs):
     return subprocess.run(list(map(str, args)), check=True, **kwargs)
 
 
+def build_mac_bridge(rid):
+    """Compile and qualify the bridge shipped beside the managed Mac runtime."""
+    arch = "arm64" if rid == "osx-arm64" else "x86_64"
+    source = ROOT / "spikes/mac-il2cpp/probe.cpp"
+    harness = ROOT / "dist/probe_batch_test"
+    run(
+        "clang++",
+        "-std=c++17",
+        "-O1",
+        "-arch",
+        arch,
+        source.parent / "tests/probe_batch_test.cpp",
+        "-o",
+        harness,
+    )
+    run(harness)
+    library = STAGE / "native/libmtgacoach_probe.dylib"
+    library.parent.mkdir(parents=True, exist_ok=True)
+    run(
+        "clang++",
+        "-std=c++17",
+        "-O1",
+        "-shared",
+        "-fPIC",
+        "-fvisibility=hidden",
+        "-arch",
+        arch,
+        source,
+        "-o",
+        library,
+    )
+    run("codesign", "--force", "--sign", "-", library)
+    run("codesign", "--verify", "--strict", library)
+
+
 def prepare_icon(rid):
     if rid.startswith("win"):
         return ROOT / "mtga_coach.ico"
@@ -80,6 +115,10 @@ def verify_launcher(rid):
         elif rid.startswith("osx"):
             run("ditto", "-x", "-k", next(RELEASES.glob("*Portable.zip")), temp)
             launcher = next(temp.glob("*.app/Contents/MacOS/MTGACoach"))
+            bridge = launcher.parent / "native/libmtgacoach_probe.dylib"
+            if bridge.read_bytes() != (STAGE / "native/libmtgacoach_probe.dylib").read_bytes():
+                raise RuntimeError("Packaged Mac bridge differs from the qualified build")
+            run("codesign", "--verify", "--strict", bridge)
         else:
             with zipfile.ZipFile(next(RELEASES.glob("*Portable.zip"))) as archive:
                 archive.extractall(temp)
@@ -150,6 +189,8 @@ def main():
         STAGE,
     )
     runtime = STAGE / "runtime"
+    if rid.startswith("osx"):
+        build_mac_bridge(rid)
     if rid.startswith("win"):
         shutil.copyfile(ROOT / "mtga_coach.ico", STAGE / "mtga_coach.ico")
         run(
@@ -200,6 +241,9 @@ def main():
         text=True,
     )
     signature = hashlib.sha256(deps.encode())
+    if rid.startswith("osx"):
+        # Native code updates require the explicit bridge/runtime update path.
+        signature.update((ROOT / "spikes/mac-il2cpp/probe.cpp").read_bytes())
     signature.update(subprocess.check_output([str(exe), "-I", "-c", "import sys;print(sys.version)"]))
     for path in [
         ROOT / "installer/build-runtime.ps1",
@@ -251,7 +295,9 @@ def main():
     verify_launcher(rid)
     # Only the bootstrap, packages and feed index are needed by clients.
     for path in RELEASES.iterdir():
-        if path.name != previous and (path.suffix in {".nupkg", ".AppImage", ".exe", ".pkg"} or path.name == f"releases.{channel}.json"):
+        if path.name != previous and (
+            path.suffix in {".nupkg", ".AppImage", ".exe", ".pkg"} or path.name == f"releases.{channel}.json"
+        ):
             shutil.copyfile(path, OUTPUT / path.name)
     if previous and not list(OUTPUT.glob("*-delta.nupkg")):
         raise RuntimeError("Previous release was available, but no delta was built")

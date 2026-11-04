@@ -53,8 +53,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libportaudio2 libsndfile1 \
+            libportaudio2 libsndfile1 pulseaudio \
             libgl1 libegl1 libxkbcommon0 libdbus-1-3 libfontconfig1
+
+      - name: Start virtual audio device
+        run: |
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=coach_ci
+          pactl set-default-sink coach_ci
 
       - name: Install package with dev + full extras
         run: |

@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
@@ -919,7 +920,38 @@ def launch_mtga(mtga_dir: str, *, on_status: Callable[[str], None] | None = None
             if on_status:
                 on_status("Arena is already running. Connecting to its bridge; your match stays open.")
             return str(_find_mac_app_bundle(mtga_dir) or Path(mtga_dir))
+        stage_managed_mac_bridge()
         return _launch_mtga(mtga_dir, on_status=on_status)
+
+
+def stage_managed_mac_bridge() -> bool:
+    """Install a packaged bridge only with Arena closed, replacing by rename.
+
+    Never truncate a dylib that an existing Arena process could have mapped.
+    Source installs without a bundled bridge keep their manually built library.
+    """
+    if sys.platform != "darwin":
+        return False
+    source = Path(get_app_root()) / "native/libmtgacoach_probe.dylib"
+    if not source.is_file() or is_mtga_running():
+        return False
+    from arenamcp.platform_integration import MAC_BRIDGE_LIBRARY
+
+    destination = MAC_BRIDGE_LIBRARY
+    if destination.is_file() and destination.read_bytes() == source.read_bytes():
+        return False
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".libmtgacoach_probe-", dir=destination.parent)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(source.read_bytes())
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, source.stat().st_mode & 0o777)
+        os.replace(temporary, destination)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return True
 
 
 def _launch_mtga(mtga_dir: str, *, on_status: Callable[[str], None] | None = None) -> str:
@@ -991,6 +1023,8 @@ def launch_native_mac_session(*, on_status: Callable[[str], None] | None = None)
                 "autoplay needs the bridge."
             )
         return None
+    stage_managed_mac_bridge()
+    installed = mac_bridge_installed()
     if not installed:
         if on_status:
             on_status(

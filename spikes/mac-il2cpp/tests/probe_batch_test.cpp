@@ -10,6 +10,9 @@
 #include <array>
 #include <iostream>
 #include <stdexcept>
+#include <signal.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
 
 #define CHECK(condition) do { \
     if (!(condition)) throw std::runtime_error( \
@@ -538,6 +541,127 @@ void new_struct_failures() {
 }
 }  // namespace mock
 
+namespace safety {
+int gc_depth = 0;
+int gc_resumes = 0;
+volatile sig_atomic_t received_signal = 0;
+
+void pointer_regions() {
+    const size_t page = static_cast<size_t>(getpagesize());
+    auto* region = static_cast<uint8_t*>(mmap(nullptr, 3 * page, PROT_READ | PROT_WRITE,
+                                             MAP_PRIVATE | MAP_ANON, -1, 0));
+    CHECK(region != MAP_FAILED);
+    CHECK(munmap(region + page, page) == 0);
+    CHECK(plausible_object(nullptr));
+    CHECK(plausible_object(region));
+    CHECK(!plausible_object(region + 1));
+    CHECK(!plausible_object(region + page));  // hole before a readable region
+    CHECK(!plausible_object(region + page - sizeof(void*)));  // incomplete header
+    CHECK(plausible_object(region + page - 2 * sizeof(void*)));
+    Encoder encoder(10, 10, {});
+    CHECK(encoder.object(region + page, 1) == "{\"$bad_ptr\":true}");
+    CHECK(mprotect(region + 2 * page, page, PROT_NONE) == 0);
+    CHECK(!plausible_object(region + 2 * page));
+    CHECK(munmap(region, page) == 0);
+    CHECK(munmap(region + 2 * page, page) == 0);
+}
+
+void gc_unwinding() {
+    auto disable = il2cpp_gc_disable;
+    auto enable = il2cpp_gc_enable;
+    il2cpp_gc_disable = +[] { ++gc_depth; };
+    il2cpp_gc_enable = +[] { --gc_depth; ++gc_resumes; };
+    CHECK(encode_with_gc_paused([] {
+        CHECK(gc_depth == 1);
+        return std::string("encoded");
+    }) == "encoded");
+    CHECK(gc_depth == 0 && gc_resumes == 1);
+    bool destroyed = false;
+    bool caught = false;
+    try {
+        encode_with_gc_paused([&]() -> std::string {
+            struct Cleanup {
+                bool& destroyed;
+                ~Cleanup() { destroyed = true; }
+            } cleanup{destroyed};
+            CHECK(gc_depth == 1);
+            throw std::runtime_error("encode failure");
+        });
+    } catch (const std::runtime_error& error) {
+        caught = std::string(error.what()) == "encode failure";
+    }
+    CHECK(caught && destroyed && gc_depth == 0 && gc_resumes == 2);
+    il2cpp_gc_disable = disable;
+    il2cpp_gc_enable = enable;
+}
+
+void record_signal(int sig) { received_signal = sig; }
+void exit_on_fault(int) { _exit(73); }
+
+// Isolate every signal test: the old handler could jump across thread stacks.
+// A regression must fail a child, never corrupt or hang the pytest process.
+void signal_child(int sig, bool worker, bool real_fault) {
+    pid_t child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        alarm(5);
+        struct sigaction expected{}, before{}, after{};
+        expected.sa_handler = real_fault ? exit_on_fault : record_signal;
+        expected.sa_flags = SA_RESTART;
+        sigemptyset(&expected.sa_mask);
+        sigaddset(&expected.sa_mask, SIGUSR1);
+        if (sigaction(sig, &expected, nullptr) != 0) _exit(10);
+        // macOS can choose SIGBUS or SIGSEGV for a protected-page access.
+        if (real_fault && sigaction(SIGBUS, &expected, nullptr) != 0) _exit(11);
+        if (sigaction(sig, nullptr, &before) != 0) _exit(12);
+        struct Context { int sig; volatile char* page; } context{sig, nullptr};
+        if (real_fault) {
+            void* page = mmap(nullptr, getpagesize(), PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+            if (page == MAP_FAILED) _exit(13);
+            context.page = static_cast<volatile char*>(page);
+        }
+        auto trigger = +[](void* raw) -> void* {
+            auto* ctx = static_cast<Context*>(raw);
+            if (ctx->page) *ctx->page = 1;  // genuine native access violation
+            else if (raise(ctx->sig) != 0) _exit(14);
+            return nullptr;
+        };
+        auto result = encode_with_gc_paused([&] {
+            if (worker) {
+                pthread_t thread;
+                if (pthread_create(&thread, nullptr, trigger, &context) != 0) _exit(15);
+                if (pthread_join(thread, nullptr) != 0) _exit(16);
+            } else {
+                trigger(&context);
+            }
+            if (sigaction(sig, nullptr, &after) != 0) _exit(17);
+            if (after.sa_handler != before.sa_handler || after.sa_flags != before.sa_flags ||
+                sigismember(&after.sa_mask, SIGUSR1) != 1) _exit(18);
+            return std::string("encoded");
+        });
+        if (real_fault || received_signal != sig || result != "encoded") _exit(19);
+        if (sigaction(sig, nullptr, &after) != 0 || after.sa_handler != before.sa_handler ||
+            after.sa_flags != before.sa_flags || sigismember(&after.sa_mask, SIGUSR1) != 1) _exit(20);
+        _exit(0);
+    }
+    int status = 0;
+    pid_t waited;
+    do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+    CHECK(waited == child);
+    CHECK(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == (real_fault ? 73 : 0));
+}
+
+void signal_ownership() {
+    for (int sig : {SIGSEGV, SIGBUS})
+        for (bool worker : {false, true}) signal_child(sig, worker, false);
+}
+
+void native_fault_reporting() {
+    for (bool worker : {false, true}) signal_child(SIGSEGV, worker, true);
+}
+}  // namespace safety
+
 int main() {
     try {
         mock::install();
@@ -546,7 +670,7 @@ int main() {
         CHECK(JsonParser(dispatch_bridge("{\"action\":\"ping\"}")).parse(&reply));
         CHECK(json_flag(reply.get("ok"), false));
         CHECK(json_int(reply.get("pid"), -1) == getpid());
-        CHECK(json_text(reply.get("version")) == "mac-il2cpp-0.3.2");
+        CHECK(json_text(reply.get("version")) == "mac-il2cpp-0.3.3");
         g_hooked = false;
         std::cout << "PASS bridge handshake identifies its process\n";
         mock::string_field_round_trip();
@@ -569,6 +693,14 @@ int main() {
         std::cout << "PASS value instance, inherited boxed, static and reference ctor receivers\n";
         mock::new_struct_failures();
         std::cout << "PASS new struct constructor exception, unavailable rooting and allocation failure\n";
+        safety::pointer_regions();
+        std::cout << "PASS unmapped holes, protected pages and incomplete object headers rejected\n";
+        safety::gc_unwinding();
+        std::cout << "PASS encoder GC and C++ cleanup on normal return and exception\n";
+        safety::signal_ownership();
+        std::cout << "PASS Arena signal handlers preserved during main and worker thread signals\n";
+        safety::native_fault_reporting();
+        std::cout << "PASS genuine main and worker thread faults reach Arena crash handler\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL " << error.what() << '\n';
         return 1;

@@ -42,6 +42,7 @@ from arenamcp.autopilot_progress import (
 )
 from arenamcp.autopilot_targets import _normalize_planner_card_name
 from arenamcp.autopilot_telemetry import _AutopilotTelemetryMixin
+from arenamcp.decision_arbiter import arbitrate
 from arenamcp.gre_bridge import (
     _ACTIONS_AVAILABLE_BRIDGE_REQUESTS,
     UNMAPPED_INTERACTION_TYPE,
@@ -3214,6 +3215,21 @@ class AutopilotEngine(
         self._sideboard_waiting = True
         return True
 
+    def _bridge_decision_available(self, game_state: dict, trigger: str) -> bool:
+        if arbitrate(game_state, bridge_connected=True) is not None:
+            return True
+        # Unity's main thread can lag behind the log. Give the bridge its usual
+        # catch-up window before treating this trigger as idle.
+        poll = self._poll_bridge_for_pending(self._BRIDGE_CATCH_UP_WAIT_S)
+        if not (poll and poll.get("has_pending")):
+            return False
+        enrich_snapshot_from_pending_response(game_state, poll, bridge_connected=self._gre_bridge.connected)
+        if game_state.get("match_ended"):
+            return False
+        game_state["_bridge_has_pending"] = True
+        logger.info("Autopilot: bridge caught up on retry — proceeding with trigger '%s'", trigger)
+        return True
+
     def process_trigger(
         self,
         game_state: dict[str, Any],
@@ -3249,7 +3265,18 @@ class AutopilotEngine(
             if not self._config.dry_run:
                 from arenamcp.bridge_readiness import automation_blocker, incomplete_hand_blocker
 
-                blocked = automation_blocker(self._gre_bridge) or incomplete_hand_blocker(game_state)
+                blocked = automation_blocker(self._gre_bridge)
+                if not blocked and incomplete_hand_blocker(game_state):
+                    # An opponent spell can wake us when Arena needs no input.
+                    # A partial hand only merits a warning if a decision is waiting.
+                    if game_state.get("match_ended") or not self._bridge_decision_available(
+                        game_state, trigger
+                    ):
+                        self._state = AutopilotState.IDLE
+                        self._current_plan = None
+                        self._automation_wait_reason = None
+                        return True
+                    blocked = incomplete_hand_blocker(game_state)
                 if blocked:
                     self._state = AutopilotState.PAUSED
                     self._current_plan = None
@@ -3398,44 +3425,13 @@ class AutopilotEngine(
                     )
                 )
             )
-            bridge_has_pending = bool(
-                game_state.get("_bridge_has_pending")
-                or game_state.get("_bridge_request_type")
-                or game_state.get("_bridge_request_class")
-                or game_state.get("bridge_pending_interaction")
-                or (bridge_trigger and bridge_trigger.get("has_pending"))
-            )
-            if bridge_connected and not bridge_has_pending:
-                # The bridge plugin polls Unity's main thread, which can lag
-                # behind GRE log messages by hundreds of milliseconds.  Retry
-                # once after a short delay before giving up on the trigger.
-                retry_pending = self._poll_bridge_for_pending(self._BRIDGE_CATCH_UP_WAIT_S)
-                if retry_pending and retry_pending.get("has_pending"):
-                    bridge_has_pending = True
-                    enrich_snapshot_from_pending_response(
-                        game_state,
-                        retry_pending,
-                        bridge_connected=self._gre_bridge.connected,
-                    )
-                    game_state["_bridge_has_pending"] = True
-                    logger.info(
-                        "Autopilot: bridge caught up on retry — proceeding with trigger '%s'",
-                        trigger,
-                    )
-                else:
-                    # Arbiter doctrine (fable-improvements.md item 4): a
-                    # connected, idle bridge is authoritative — log-derived
-                    # decisions are stale by definition. The old "log has
-                    # data; proceeding" branch here planned (and spoke)
-                    # against ghost decisions the client had already
-                    # consumed (live 2026-06-09 TTS/replan spiral).
-                    logger.info(
-                        "Autopilot: bridge connected but idle — no decision "
-                        "exists (arbiter); dropping trigger '%s'",
-                        trigger,
-                    )
-                    self._state = AutopilotState.IDLE
-                    return True
+            if bridge_connected and not self._bridge_decision_available(game_state, trigger):
+                logger.info(
+                    "Autopilot: bridge connected but idle — no decision exists (arbiter); dropping trigger '%s'",
+                    trigger,
+                )
+                self._state = AutopilotState.IDLE
+                return True
 
             if self._decision_type(game_state) == UNMAPPED_INTERACTION_TYPE:
                 self._pause_for_manual("Unmapped GRE interaction", game_state)

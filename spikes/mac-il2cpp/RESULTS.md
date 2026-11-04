@@ -1,5 +1,30 @@
 # Native-Mac IL2CPP GRE spike: results
 
+## Native fault handling repair (2026-11-03, bridge 0.3.3)
+
+The installed 0.3.2 bridge used process-wide SIGSEGV/SIGBUS handlers with one
+main-thread `sigjmp_buf`. A worker fault during encoding could jump onto another
+thread's stack. Recovery also bypassed C++ destructors and could resume after
+interrupting runtime or allocator state. Version 0.3.3 removes this interception
+entirely, retains the encoder's scoped GC pause, and leaves native faults with
+Arena's existing crash handlers. It does not convert access violations into
+successful bridge replies.
+
+The object-region check now rejects holes before readable mappings and headers
+that extend past a region, and releases the Mach object-name send right returned
+by the query. A readable mapping is still not proof of a valid IL2CPP object.
+
+All 15 native harness checks pass on arm64 and x86_64 (Rosetta), including normal
+and exceptional GC cleanup, unmapped/protected memory, existing signal-handler
+preservation, and real protected-page faults on both main and worker threads.
+Signal scenarios run in bounded child processes. The five new fault/pointer
+regression scenarios also fail against the original implementation as expected.
+
+The November 3 SQLite crash is not proven to originate in this code. These are
+confirmed bridge defects, not a claim that the crash has been reproduced and
+eliminated. Stage libraries by atomic rename; never rewrite a dylib mapped by a
+running Arena. Activation requires a subsequent Arena launch through Coach.
+
 Historical scope: the [September 2026 native Mac bridge milestone](https://github.com/josharmour/mtgacoach/blob/adbaca97f9076b8ee8be86689154e67410203911/autopilot4mac.md) — observe the live
 request in the native Mac client and submit play/draw, Keep and a land by
 identity, with each outcome confirmed. This covers only the first half of G1/G2;
