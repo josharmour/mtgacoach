@@ -120,6 +120,7 @@ class MainWindow(QMainWindow):
         self.coach_panel = CompactCoachPanel(session=self._session, parent=self)
         self.coach_panel.repair_requested.connect(self._show_repair_view)
         self.coach_panel.performance_requested.connect(self._show_performance_view)
+        self.coach_panel.rank_strip.history_requested.connect(self._show_performance_view)
         self.coach_panel.restart_requested.connect(self._restart_coach)
         self.coach_panel.reload_engine_requested.connect(self._reload_engine)
         self.coach_panel.autopilot_bug_requested.connect(self._session.trigger_autopilot_bug)
@@ -127,7 +128,8 @@ class MainWindow(QMainWindow):
         self._stack = QStackedWidget()
         self._stack.addWidget(self.coach_panel)  # Index 0
         self._stack.addWidget(_build_page("Setup & Repair", self.repair_tab, self._show_coach_view))  # 1
-        self._stack.addWidget(_build_page("Match History", PerformanceTab(), self._show_coach_view))  # 2
+        self.performance_tab = PerformanceTab()
+        self._stack.addWidget(_build_page("Match History", self.performance_tab, self._show_coach_view))  # 2
         self.decks_tab = DecksTab(session=self._session)
         self._stack.addWidget(_build_page("Decks", self.decks_tab, self._show_coach_view))  # 3
         self.setCentralWidget(self._stack)
@@ -159,7 +161,7 @@ class MainWindow(QMainWindow):
         repair_act = tools_menu.addAction("Setup && Repair…")
         repair_act.triggered.connect(self._show_repair_view)
         perf_act = tools_menu.addAction("Match History…")
-        perf_act.triggered.connect(self._show_performance_view)
+        perf_act.triggered.connect(lambda: self._show_performance_view())
         decks_act = tools_menu.addAction("Decks…")
         decks_act.triggered.connect(self._show_decks_view)
         tools_menu.addSeparator()
@@ -481,7 +483,8 @@ class MainWindow(QMainWindow):
     def _show_repair_view(self) -> None:
         self._stack.setCurrentIndex(1)
 
-    def _show_performance_view(self) -> None:
+    def _show_performance_view(self, ladder: str | None = None) -> None:
+        self.performance_tab.set_ladder(ladder)
         self._stack.setCurrentIndex(2)
 
     def _show_decks_view(self) -> None:
