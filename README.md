@@ -4,7 +4,7 @@ MTGA Coach is a desktop companion for **Magic: The Gathering Arena**. It reads A
 
 ## Install Coach
 
-**New trial users should use the [desktop download page](https://mtgacoach.com/#get-started).** These downloads follow tested builds from `master`. Choose Windows x64 Setup, the Apple Silicon or Intel Mac package, or the Linux x64 AppImage. On Linux, make the AppImage executable before opening it.
+**New trial users should use the [desktop download page](https://mtgacoach.com/#get-started).** These downloads follow tested builds from `master`. Choose Windows x64 Setup, the Apple Silicon Mac package, or the Linux x64 AppImage. On Linux, make the AppImage executable before opening it.
 
 If you prefer **stable**, install the package for your platform from the stable feed. The Windows installer attached to release 3.8.3 also follows stable. The initial Windows and Mac packages are unsigned. [Stable downloads](https://github.com/josharmour/mtgacoach/releases/tag/coach-stable-feed) · [Latest official release](https://github.com/josharmour/mtgacoach/releases/latest)
 

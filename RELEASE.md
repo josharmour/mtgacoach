@@ -13,7 +13,7 @@
 New Mac installs go into your account’s Applications folder (`~/Applications`). Launch that copy for updates without an administrator prompt. Existing shared copies in `/Applications` can ask for macOS authorization when replacing the app.
 
 1. Finish the current match and close the old Coach. Choose a channel above.
-2. On **Windows x64**, run that channel's Setup EXE. On **Mac**, choose the package for Apple Silicon or Intel. On **Linux x64**, download the AppImage, make it executable, and run it.
+2. On **Windows x64**, run that channel's Setup EXE. On **Apple Silicon Mac**, choose the Mac package. On **Linux x64**, download the AppImage, make it executable, and run it. Intel Mac is no longer supported.
 3. Start Coach from the new installation. The title bar identifies the channel, platform, package build, and Git commit. Existing local settings, trial credentials, and match history use the same per-user locations.
 
 An older Inno, pip, or source installation needs this one-time migration to receive managed updates. Use the new shortcut on subsequent launches. The initial Windows and Mac distributions are unsigned.
@@ -30,7 +30,7 @@ Managed Mac packages include the native Arena bridge. Coach stages the bundled l
 
 ## Shipping changes from master
 
-Submit changes through a pull request and wait for **pytest**, **ruff**, and **Hosted trials and Patreon keys** to pass before merging. The push to master runs the checks on the merged commit. A successful run starts **Managed desktop releases**, which builds and launches the packaged app for Windows x64, Linux x64, and both Mac architectures. Once every build passes, CI uploads the packages and then the update indexes. Master users pick up the build on launch. You do not need to create a version tag for this channel.
+Submit changes through a pull request and wait for **pytest**, **ruff**, and **Hosted trials and Patreon keys** to pass before merging. The push to master runs the checks on the merged commit. A successful run starts **Managed desktop releases**, which builds and launches the packaged app for Windows x64, Linux x64, and Apple Silicon Mac. Once every build passes, CI uploads the packages and then the update indexes. Master users pick up the build on launch. You do not need to create a version tag for this channel.
 
 To see what is actually live, open the [master feed](https://github.com/josharmour/mtgacoach/releases/tag/coach-master-feed). The release body lists the published commit and package version. Compare the commit with the one in the Coach title bar. A green test run by itself means packaging can start.
 
@@ -53,7 +53,7 @@ Use the draft-first path when you want the installers attached before users see 
    gh workflow run managed-desktop.yml --ref master -f lane=stable -f version=v3.8.4
    ```
 
-4. Check the [stable feed](https://github.com/josharmour/mtgacoach/releases/tag/coach-stable-feed) for the expected version, commit, and all four platform downloads. Confirm the ordinary release has the Windows installer and Python wheel, then publish it.
+4. Check the [stable feed](https://github.com/josharmour/mtgacoach/releases/tag/coach-stable-feed) for the expected version, commit, and all three platform downloads. Confirm the ordinary release has the Windows installer and Python wheel, then publish it.
 
    ```sh
    gh release view v3.8.4 --json tagName,assets
