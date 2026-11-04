@@ -56,8 +56,10 @@ def test_landing_page_content(client) -> None:
     feed = (
         "https://github.com/josharmour/mtgacoach/releases/download/coach-master-feed/MTGACoachMaster-master-"
     )
-    for artifact in ("win-x64-Setup.exe", "osx-arm64-Setup.pkg", "osx-x64-Setup.pkg", "linux-x64.AppImage"):
+    for artifact in ("win-x64-Setup.exe", "osx-arm64-Setup.pkg", "linux-x64.AppImage"):
         assert f'href="{feed}{artifact}"' in html
+    assert "osx-x64-Setup.pkg" not in html
+    assert "macOS (Apple Silicon)" in html
     assert "unsigned" in html
     for clip in ("coach-turn.mp3", "coach-lethal.mp3", "coach-draft.mp3"):
         assert f"/static/audio/{clip}" in html
