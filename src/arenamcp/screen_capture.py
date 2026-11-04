@@ -26,6 +26,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = sys.platform == "win32"
+_IS_MACOS = sys.platform == "darwin"
+
+
+def require_screen_capture_access() -> None:
+    """Check macOS access without triggering an OS permission prompt.
+
+    An enabled Settings entry can belong to an older ad-hoc-signed build.
+    Diagnostics must still save when the running build has no capture grant.
+    Do not cache: the user may grant access while Coach is open.
+    """
+    if not _IS_MACOS:
+        return
+    try:
+        core = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        preflight = core.CGPreflightScreenCaptureAccess
+        preflight.argtypes = []
+        preflight.restype = ctypes.c_bool
+        allowed = preflight()
+    except (AttributeError, OSError):
+        allowed = False
+    if not allowed:
+        raise PermissionError(
+            "macOS has not authorized screen capture for this Coach build. "
+            "The report can still be saved without the Arena screenshot."
+        )
+
 
 # Session-level kill switch. On Linux/Wayland PIL's ImageGrab shells out to
 # gnome-screenshot, which cannot capture the Proton/XWayland game window —
@@ -223,6 +249,12 @@ def capture_mtga_png(
     """
     global _CAPTURE_DEAD
     if _CAPTURE_DEAD:
+        return None
+
+    try:
+        require_screen_capture_access()
+    except PermissionError as error:
+        logger.debug("Skipping screen capture: %s", error)
         return None
 
     try:

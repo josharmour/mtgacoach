@@ -410,6 +410,8 @@ class CoachSession(QObject):
             from arenamcp.autopilot_bug_capture import capture_mtga_screenshot
 
             out.update(capture_mtga_screenshot(bug_dir, f"bug_{ts}"))
+        except PermissionError as e:
+            self.logEmitted.emit(str(e), "error")
         except Exception as e:
             logger.debug("MTGA screenshot failed: %s", e)
 

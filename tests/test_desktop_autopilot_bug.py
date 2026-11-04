@@ -55,6 +55,30 @@ def test_screenshot_failure_does_not_cancel_state_capture(session, monkeypatch):
     assert payload["screenshot_error"] == "denied"
 
 
+@pytest.mark.parametrize("running", [True, False])
+def test_debug_report_survives_missing_mac_capture_permission(session, monkeypatch, tmp_path, running):
+    session._process.is_running = running
+    monkeypatch.setattr(
+        "arenamcp.screen_capture.require_screen_capture_access",
+        Mock(side_effect=PermissionError("macOS has not authorized this Coach build")),
+    )
+    grab = Mock()
+    monkeypatch.setattr("PIL.ImageGrab.grab", grab)
+    notices = []
+    session.logEmitted.connect(lambda message, level: notices.append(message))
+    session.trigger_debug_report()
+    grab.assert_not_called()
+    assert any("this Coach build" in notice for notice in notices)
+    if running:
+        payload = session._process.send_payload.call_args.args[0]
+        assert payload["cmd"] == "debug_report"
+        assert "mtga" not in payload["screenshots"]
+    else:
+        reports = list((tmp_path / "bug_reports").glob("bug_*.json"))
+        assert len(reports) == 1
+        assert "mtga" not in json.loads(reports[0].read_text())["screenshots"]
+
+
 def test_offline_capture_marks_last_known_state_and_no_recovery(session, monkeypatch, tmp_path):
     session._process.is_running = False
     session._last_game_state = {"match_id": "previous", "pending_decision": "Choose targets"}

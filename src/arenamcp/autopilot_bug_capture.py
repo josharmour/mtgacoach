@@ -21,6 +21,10 @@ def capture_mtga_screenshot(directory: Path, stem: str) -> dict[str, str]:
     """Capture only Arena's window rectangle, using the existing desktop locator."""
     import sys
 
+    from arenamcp.screen_capture import require_screen_capture_access
+
+    require_screen_capture_access()
+
     from PIL import ImageGrab
 
     from arenamcp.desktop.window_tracking import get_mtga_window_rect
