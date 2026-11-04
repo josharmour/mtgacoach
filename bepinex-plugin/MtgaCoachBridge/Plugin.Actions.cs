@@ -1320,18 +1320,18 @@ namespace MtgaCoachBridge
             if (request is SelectNRequest selectNReq)
             {
                 var idsArr = cmd.Json["ids"] as JArray;
-                if (idsArr == null || idsArr.Count == 0)
+                if (idsArr == null)
                 {
-                    _log.LogInfo("Submitting SelectN: arbitrary/empty");
-                    selectNReq.SubmitArbitrary();
+                    cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "SelectN requires an explicit ids array" });
+                    return;
                 }
-                else
-                {
-                    var ids = new List<uint>();
-                    foreach (var id in idsArr) ids.Add((uint)id.Value<int>());
-                    _log.LogInfo($"Submitting SelectN: {ids.Count} selections");
-                    selectNReq.SubmitSelection(ids);
-                }
+                // Empty means choose none / acknowledge a look-only prompt.
+                // SubmitArbitrary() sends the sentinel id 0, which Arena rejects
+                // for these requests. Preserve the caller's explicit selection.
+                var ids = new List<uint>();
+                foreach (var id in idsArr) ids.Add((uint)id.Value<int>());
+                _log.LogInfo($"Submitting SelectN: {ids.Count} selections");
+                selectNReq.SubmitSelection(ids);
                 lock (_interactionLock) { _lastKnownRequest = null; }
                 cmd.SetResponse(new JObject { ["ok"] = true, ["submitted_type"] = "SelectN" });
             }
