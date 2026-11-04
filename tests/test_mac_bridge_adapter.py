@@ -1456,3 +1456,16 @@ def test_must_attack_goblin_token_shapes_and_submits_with_qualified_attackers():
     update = game.submits()[-1]
     assert update[-1]["method"] == "UpdateAttacker"
     assert update[-1]["args"] == [{"list": [{"h": 40}, {"h": 51}]}]
+
+
+def test_bepinex_result_poll_distinguishes_scene_transition_from_home():
+    from tests.mac_world import World
+
+    world = World()
+    adapter = MacBridgeAdapter(world.send, runtime="bepinex")
+    transition = adapter.handle({"action": "get_match_end"})
+    assert transition["is_open"] is False and transition["home_active"] is False
+    world.finds["HomePageContentController"] = world.add(42, "HomePageContentController")
+    home = adapter.handle({"action": "get_match_end"})
+    assert home["is_open"] is False and home["home_active"] is True
+    assert not clicks(world)
