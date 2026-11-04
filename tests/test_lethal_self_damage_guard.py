@@ -111,5 +111,7 @@ def test_current_toughness_and_marked_damage_determine_lethality(kind):
 
 
 def test_good_arena_highlight_does_not_override_proven_lethal_self_damage(monkeypatch):
-    monkeypatch.setattr(ActionPlanner, "_target_highlights", staticmethod(lambda decision, state: {287: "Good"}))
+    monkeypatch.setattr(
+        ActionPlanner, "_target_highlights", staticmethod(lambda decision, state: {287: "Good"})
+    )
     assert choose(position())[0] == ["tgt:1"]

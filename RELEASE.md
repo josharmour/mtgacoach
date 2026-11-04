@@ -26,6 +26,8 @@ Coach checks its channel in the background each time it starts. Velopack stages 
 - **Runtime or Arena bridge change.** Finish your match, then click **Update** beside **Restart Coach** and approve the restart. macOS may ask for permission to replace the installed app. Windows bridge deployment waits for Arena to be closed.
 - **Offline or failed release.** The installed build can still open. A failed CI or native-package check leaves the previous published update available.
 
+Managed Mac packages include the native Arena bridge. Coach stages the bundled library by atomic replacement only while Arena is closed, before launching Arena. A native bridge change requires the explicit runtime-update path; restarting Coach alone does not replace a bridge already loaded into Arena.
+
 ## Shipping changes from master
 
 Submit changes through a pull request and wait for **pytest**, **ruff**, and **Hosted trials and Patreon keys** to pass before merging. The push to master runs the checks on the merged commit. A successful run starts **Managed desktop releases**, which builds and launches the packaged app for Windows x64, Linux x64, and both Mac architectures. Once every build passes, CI uploads the packages and then the update indexes. Master users pick up the build on launch. You do not need to create a version tag for this channel.
