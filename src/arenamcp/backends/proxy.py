@@ -1272,6 +1272,7 @@ class ProxyBackend:
         first_token_timeout_s: float | None = None,
         cancel_event: threading.Event | None = None,
         lane_wait_s: float | None = None,
+        selective_thinking: bool = False,
     ) -> str:
         """Get completion from the API endpoint.
 
@@ -1293,6 +1294,9 @@ class ProxyBackend:
                 "max". GLM-5.3 has no "medium" (the template silently runs it
                 as max), so "medium" is sent as "high". Unrestricted thinking
                 can outlast a turn.
+            selective_thinking: Explicit experimental typed-decision leg. When
+                locally enabled for DeepSeek, sends effort 1 and a 256-token
+                thinking cap without changing total output or time budgets.
             response_format: Optional structured output schema for callers
                 that also validate the returned JSON.
             raise_on_error: Re-raise API errors instead of returning the
@@ -1372,6 +1376,13 @@ class ProxyBackend:
             client_setup_started = time.perf_counter()
             client = self._get_client()
             call.client_setup_ms = (time.perf_counter() - client_setup_started) * 1000
+            from arenamcp.selective_thinking import enabled as selective_enabled
+
+            bounded_thinking = (
+                selective_thinking is True
+                and selective_enabled(self.model)
+                and call.call_class == "decision.typed"
+            )
             if self.model.lower() == "current" or any(
                 name in self.model.lower() for name in ("deepseek", "dsv4")
             ):
@@ -1383,6 +1394,9 @@ class ProxyBackend:
                     reasoning_effort = "none"
                 elif call.call_class == "background.game_plan" and reasoning_effort in {"high", "max"}:
                     reasoning_effort = "low"
+            if bounded_thinking:
+                thinking_enabled = True
+                reasoning_effort = 1
             params = self._build_params(
                 system_prompt,
                 user_message,
@@ -1393,6 +1407,8 @@ class ProxyBackend:
                 reasoning_effort=_normalize_reasoning_effort(self.model, reasoning_effort),
             )
             call.priority = self._resolve_priority(priority, is_background)
+            if bounded_thinking:
+                params["extra_body"]["thinking_token_budget"] = 256
             if call.priority is not None:
                 params.setdefault("extra_body", {})["priority"] = call.priority
             if cancel_event is not None:
@@ -1879,6 +1895,7 @@ class ProxyBackend:
             "call_class": call.call_class if call is not None else None,
             "priority": _sent_priority(params),
             "reasoning_effort": _effective_effort(params),
+            "thinking_token_budget": (params or {}).get("extra_body", {}).get("thinking_token_budget"),
             "max_tokens": max_tokens,
             "budget_s": round(call.budget_s, 1) if call is not None and call.budget_s is not None else None,
         }
