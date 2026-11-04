@@ -235,3 +235,49 @@ def test_selection_and_reason_persist_across_refresh(seeded_file, qapp):
     tab.refresh()  # simulates a poll rebuilding the table
     assert tab._detail.text() == before
     assert "over-extended" in tab._detail.text()
+
+
+def test_sidebar_ranks_open_recent_ladder_matches(seeded_file, qapp, monkeypatch, tmp_path):
+    from PySide6.QtGui import QAction
+
+    from arenamcp.desktop.main_window import MainWindow
+    from arenamcp.match_history import MatchRecord
+
+    path = tmp_path / "Player.log"
+    path.write_text(
+        '<== RankGetCombinedRankInfo(id)\n{"constructedSeasonOrdinal":95,"constructedClass":"Diamond","constructedLevel":4,"constructedStep":1,"limitedSeasonOrdinal":95,"limitedLevel":3}\n'
+    )
+    monkeypatch.setenv("MTGA_LOG_PATH", str(path))
+    monkeypatch.setenv("MTGACOACH_GAME_DEVICE", "desktop")
+    monkeypatch.setattr(MainWindow, "_start_session", lambda self: None)
+    history = MatchHistory()
+    history.add_record(MatchRecord(match_id="draft", format_name="QuickDraft FRA", result="win"))
+    for i in range(24):
+        history.add_record(MatchRecord(match_id=str(i), format_name="Ladder", result="loss"))
+    history.add_record(MatchRecord(match_id="casual", format_name="Play", result="win"))
+    win = MainWindow()
+    try:
+        win.show()
+        qapp.processEvents()
+        strip = win.coach_panel.rank_strip
+        assert strip.buttons["Constructed"].text().replace(" · ", "\n").splitlines() == [
+            "Constructed",
+            "Diamond 4",
+            "1 pip",
+        ]
+        assert strip.buttons["Limited"].text().replace(" · ", "\n").splitlines() == [
+            "Limited",
+            "Bronze 3",
+            "0 pips",
+        ]
+        for ladder, expected in (("Limited", ["draft"]), ("Constructed", ["23", "22", "21", "20", "19"])):
+            strip.buttons[ladder].click()
+            assert win.performance_tab.isVisible()
+            assert [row.match_id for row in win.performance_tab._row_records] == expected
+            assert f"Ranked {ladder}" in win.performance_tab._summary.text()
+            win._show_coach_view()
+        next(action for action in win.findChildren(QAction) if action.text() == "Match History…").trigger()
+        assert win.performance_tab._row_records[0].match_id == "casual"
+        assert len(win.performance_tab._row_records) == 20
+    finally:
+        win.close()

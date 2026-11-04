@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from arenamcp.ladder import ranked_ladder
 from arenamcp.match_history import MatchHistory
 
 from . import theme
@@ -39,7 +40,7 @@ def _fmt_ts(ts: str) -> str:
     if not ts:
         return ""
     try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00")).strftime("%m-%d %H:%M")
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().strftime("%m-%d %H:%M")
     except Exception:
         return ts or ""
 
@@ -53,6 +54,7 @@ class PerformanceTab(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._ladder: str | None = None
         self._row_records: list = []
         self._build_ui()
         # The coach writes match history from a SEPARATE process, so the UI
@@ -180,12 +182,24 @@ class PerformanceTab(QWidget):
             return getattr(self._row_records[row], "match_id", None)
         return None
 
+    def set_ladder(self, ladder: str | None) -> None:
+        self._ladder = ladder
+        if self.isVisible():
+            self.refresh()  # Otherwise showEvent refreshes when the page opens.
+
     def refresh(self) -> None:
         try:
             # Fresh instance every time: re-reads match_history from disk so
             # results written by the coach subprocess are always visible.
             history = MatchHistory()
-            records = list(reversed(history.get_recent(_MAX_ROWS)))
+            if self._ladder:
+                records = [
+                    rec
+                    for rec in reversed(history.get_recent(history.total_games))
+                    if ranked_ladder(rec.format_name) == self._ladder
+                ][:5]
+            else:
+                records = list(reversed(history.get_recent(_MAX_ROWS)))
         except Exception:
             records = []
 
@@ -278,4 +292,10 @@ class PerformanceTab(QWidget):
         summary = f"{len(records)} shown · {wins}W / {losses}L ({win_rate:.0f}% win rate)"
         if avg is not None:
             summary += f" · avg coach score {avg}/10"
+        if self._ladder:
+            summary = (
+                f"Ranked {self._ladder} · {summary}"
+                if records
+                else f"No ranked {self._ladder} matches recorded yet."
+            )
         self._summary.setText(summary)

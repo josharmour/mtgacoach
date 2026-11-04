@@ -35,6 +35,7 @@ from . import theme
 from .coach_session import CoachSession
 from .flow_layout import FlowLayout
 from .plan_text import plan_steps_text
+from .rank_strip import RankStrip
 from .theme import block, span
 
 logger = logging.getLogger(__name__)
@@ -410,6 +411,9 @@ class CompactCoachPanel(QWidget):
         self.turn_strip.setAlignment(Qt.AlignCenter)
         self.turn_strip.setWordWrap(True)
         root.addWidget(self.turn_strip)
+
+        self.rank_strip = RankStrip(self)
+        root.addWidget(self.rank_strip)
 
         # Status chips: model and game source.
         self.status_row = QWidget()
