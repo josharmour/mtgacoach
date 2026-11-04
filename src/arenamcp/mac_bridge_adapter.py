@@ -1453,24 +1453,33 @@ class MacBridgeAdapter:
     # three centre clicks on VICTORY each had no effect and navigation paused.
     # Members verified in live IL2CPP metadata 2026-10-20 (Arena 2026.64.50).
 
-    def _match_end_state(self, timeout: float | None) -> dict:
+    def _match_end_state(self, timeout: float | None, *, include_home: bool = False) -> dict:
         """Read-only: is the result screen open, and does leaving it work yet?"""
         ops = _Ops()
         scene = ops.add("find", **{"class": "MatchEndScene"}, depth=0, optional=True)
         listener = ops.get(scene, "ExitMatchCompleted", optional=True)
         background = ops.get(scene, "_exitMatchBackgroundButton", optional=True)
         shown = ops.get(ops.get(background, "gameObject", optional=True), "activeInHierarchy", optional=True)
+        home = (
+            ops.add("find", **{"class": "HomePageContentController"}, depth=0, optional=True)
+            if include_home
+            else None
+        )
         values = self._run(ops, timeout)
         found = bool(handle(values[scene["ref"]]))
-        return {
+        result = {
             "ok": True,
             "is_open": found,
             "exit_ready": found and bool(handle(values[listener["ref"]])),
             "click_ready": found and values[shown["ref"]] is True,
         }
 
+        if home is not None:
+            result["home_active"] = bool(handle(values[home["ref"]]))
+        return result
+
     def _cmd_get_match_end(self, command: dict, timeout: float | None) -> dict:
-        return self._match_end_state(timeout)
+        return self._match_end_state(timeout, include_home=self._runtime == BEPINEX_RUNTIME)
 
     # -- post-match survey ---------------------------------------------------
     # "Did you have fun in the match?" (loc DuelScene/EndMatch/PostMatchSurvey_Ask,

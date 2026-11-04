@@ -237,3 +237,44 @@ def test_screens_that_cannot_be_saved_never_break_navigation(tmp_path, monkeypat
     step(nav)
     assert controller.execute.call_count == 2
     assert not list(tmp_path.glob("**/*.png"))
+
+
+def test_windows_waits_for_home_after_leaving_once_then_queues_once():
+    nav, _, _, _, _ = navigator()
+    between = {**CLOSED, "home_active": False}
+    bridge = nav._bridge = result_bridge([between, READY, *([between] * 7), {**CLOSED, "home_active": True}])
+    bridge.client_runtime = "bepinex"
+    bridge.return_to_home = Mock(return_value=False)
+    bridge.queue_match = Mock(return_value=True)
+    arm(nav)
+    for _ in range(12):
+        step(nav)
+    bridge.leave_match.assert_called_once()
+    bridge.return_to_home.assert_not_called()
+    bridge.queue_match.assert_called_once()
+    assert nav._stage == "queue"
+
+
+@pytest.mark.parametrize("started", [False, True])
+def test_windows_retry_from_home_preserves_queue_ownership(started):
+    nav, _, _, _, _ = navigator()
+    bridge = nav._bridge = result_bridge([{**CLOSED, "home_active": True}])
+    bridge.client_runtime = "bepinex"
+    bridge.queue_match = Mock(return_value=True)
+    arm(nav)
+    nav._stage = "resuming"
+    nav._queue_started = started
+    step(nav)
+    step(nav)
+    assert nav._stage == "queue"
+    assert bridge.queue_match.call_count == int(not started)
+
+
+def test_windows_home_transition_still_has_a_deadline():
+    nav, _, _, _, _ = navigator()
+    nav._bridge = result_bridge([{**CLOSED, "home_active": False}])
+    nav._bridge.client_runtime = "bepinex"
+    arm(nav)
+    nav._progress_at -= auto_queue._RESULT_READY_WAIT_S + 1
+    step(nav)
+    assert nav._stage == "paused"
