@@ -158,7 +158,11 @@ def engine_with_bridge(bridge):
 
 
 @pytest.mark.parametrize(
-    "state,connected", [({"_bridge_connected": True}, False), ({"hand_complete": False}, True)]
+    "state,connected",
+    [
+        ({"_bridge_connected": True}, False),
+        ({"hand_complete": False, "_bridge_request_type": "ActionsAvailable"}, True),
+    ],
 )
 def test_planning_stops_before_model_for_offline_or_incomplete_state(state, connected):
     engine = engine_with_bridge(SimpleNamespace(connected=connected))
@@ -166,6 +170,26 @@ def test_planning_stops_before_model_for_offline_or_incomplete_state(state, conn
     assert engine._state == AutopilotState.PAUSED
     engine._planner.plan_actions.assert_not_called()
     engine._notify.assert_called_once()
+
+
+def test_partial_hand_only_notifies_when_a_decision_is_waiting():
+    engine = engine_with_bridge(SimpleNamespace(connected=True))
+    engine._poll_bridge_for_pending = Mock(
+        side_effect=[
+            {"has_pending": False},
+            {"has_pending": True, "request_type": "ActionsAvailable"},
+        ]
+    )
+    state = {"hand_complete": False, "pending_decision": "stale log decision"}
+    assert engine.process_trigger(state, "stack_spell_opponent")
+    assert engine.state == AutopilotState.IDLE
+    engine._notify.assert_not_called()
+
+    assert engine.process_trigger(state, "stack_spell_opponent")
+    assert engine.state == AutopilotState.PAUSED
+    assert engine.process_trigger(state, "decision_required")
+    engine._notify.assert_called_once_with("AUTOPILOT", incomplete_hand_blocker(state))
+    engine._planner.plan_actions.assert_not_called()
 
 
 def test_execution_rechecks_process_after_plan(monkeypatch):

@@ -41,8 +41,6 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
-#include <setjmp.h>
-#include <signal.h>
 #include <pthread.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -1076,7 +1074,7 @@ static std::string command_call_request(const char* expected_class, const char* 
 // Bridge protocol (same commands and fields as the BepInEx plugin; main thread)
 // ---------------------------------------------------------------------------
 
-static const char* kBridgeVersion = "mac-il2cpp-0.3.2";  // Process identity in the automation handshake
+static const char* kBridgeVersion = "mac-il2cpp-0.3.3";  // No process-wide native fault recovery
 static const int kMainThreadBudgetMs = 3500;  // under gre_bridge.py's 5 s default read timeout
 static std::atomic<bool> g_bridge_connected{false};
 
@@ -1367,21 +1365,28 @@ static bool g_handles_ok = false;  // GC handle round trip verified at startup
 // matches, 2026-10-01 x2): a GC triggered by our own boxing allocations can
 // collect or relocate objects mid-walk, and a stale/garbage pointer anywhere in
 // the graph faults the whole game. While a walk runs we pause collections, and
-// every object pointer is sanity-checked before dereference. Belt and braces:
-// run_batch wraps each walk so an unforeseen fault degrades to an error result
-// instead of killing MTGA.
+// every object pointer is sanity-checked before dereference. This is a region
+// check, not proof of a live IL2CPP object; unexpected native faults must remain
+// under Arena's own crash handling rather than resuming a damaged process.
 static bool plausible_object(void* obj) {
     if (!obj) return true;  // null is a legal value everywhere
     mach_vm_address_t addr = reinterpret_cast<mach_vm_address_t>(obj);
     if ((addr & 7) != 0) return false;                  // heap objects are 8-aligned
     if (addr < 0x100000ULL || addr > 0x800000000000ULL) return false;
+    const mach_vm_address_t requested = addr;
     mach_vm_size_t size = 0;
     vm_region_basic_info_data_64_t info{};
     mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
     mach_port_t object_name = MACH_PORT_NULL;
     kern_return_t kr = mach_vm_region(mach_task_self(), &addr, &size, VM_REGION_BASIC_INFO_64,
                                       reinterpret_cast<vm_region_info_t>(&info), &count, &object_name);
-    return kr == KERN_SUCCESS && (info.protection & VM_PROT_READ) != 0;
+    // mach_vm_region can return the NEXT region when requested is in a hole.
+    // Require the whole object header (klass + monitor) in this readable region.
+    // Release the returned send right on every query, including rejected ones.
+    if (object_name != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), object_name);
+    const mach_vm_size_t header_size = 2 * sizeof(void*);
+    return kr == KERN_SUCCESS && (info.protection & VM_PROT_READ) != 0 &&
+           addr <= requested && size >= header_size && requested - addr <= size - header_size;
 }
 
 class ScopedGcPaused {
@@ -1392,45 +1397,15 @@ class ScopedGcPaused {
     ScopedGcPaused& operator=(const ScopedGcPaused&) = delete;
 };
 
-// SIGSEGV/SIGBUS landing pad for encoder walks. Single-threaded use only: all
-// walks run on the Unity main thread inside run_batch, so one file-scope jump
-// target is enough.
-static sigjmp_buf g_guard_jump;
-static volatile sig_atomic_t g_guard_armed = 0;
-
-static void guard_fault_handler(int sig, siginfo_t*, void*) {
-    signal(sig, SIG_DFL);          // never loop on repeated faults
-    if (!g_guard_armed) return;    // fault outside a guarded walk: die as before
-    g_guard_armed = 0;
-    siglongjmp(g_guard_jump, 1);
-}
-
+// Do not install SIGSEGV/SIGBUS handlers here. Signal dispositions are shared
+// by all Arena threads: a global jump buffer can transfer a worker fault into
+// the main thread's stack. Even a thread-local buffer would skip C++ destructors
+// and resume after potentially interrupting allocator/runtime locks. Preserve
+// Arena's handlers and use ordinary scope unwinding for C++ exceptions.
 template <typename Fn>
-static std::string guarded_encode(Fn&& walk, const char* what) {
-    struct sigaction sa{}, old_segv{}, old_bus{};
-    sa.sa_sigaction = guard_fault_handler;
-    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
-    sigemptyset(&sa.sa_mask);
-    bool installed = sigaction(SIGSEGV, &sa, &old_segv) == 0 &&
-                     sigaction(SIGBUS, &sa, &old_bus) == 0;
-    std::string out;
-    if (sigsetjmp(g_guard_jump, 1) == 0) {
-        ScopedGcPaused gc_pause;   // dtor runs on the normal path
-        g_guard_armed = 1;
-        out = walk();
-        g_guard_armed = 0;
-    } else {
-        // siglongjmp path: RAII destructors were skipped, so undo explicitly.
-        g_guard_armed = 0;
-        if (il2cpp_gc_enable) il2cpp_gc_enable();
-        plog("guarded_encode: recovered from %s fault", what);
-        out = "{\"$fault\":true}";
-    }
-    if (installed) {
-        sigaction(SIGSEGV, &old_segv, nullptr);
-        sigaction(SIGBUS, &old_bus, nullptr);
-    }
-    return out;
+static std::string encode_with_gc_paused(Fn&& walk) {
+    ScopedGcPaused gc_pause;
+    return walk();
 }
 
 static void init_reflection() {
@@ -2018,7 +1993,7 @@ static std::string run_batch(const Json& request) {
                 void* klass = il2cpp_object_get_class(target);
                 if (void* getter = find_method(klass, ("get_" + member).c_str(), 0)) {
                     object = invoke(getter, target, nullptr, &error);
-                    result = guarded_encode([&] { return encoder.object(object, depth); }, "getter encode");
+                    result = encode_with_gc_paused([&] { return encoder.object(object, depth); });
                     if (object && il2cpp_class_is_valuetype(il2cpp_object_get_class(object))) {
                         if (json_flag(op.get("retain_value"), false)) {
                             // REF values must remain rooted across later managed calls.
@@ -2031,7 +2006,7 @@ static std::string run_batch(const Json& request) {
                     void* type = il2cpp_field_get_type(field);
                     std::vector<uint8_t> buffer(std::max<size_t>(16, value_size(type)), 0);
                     il2cpp_field_get_value(target, field, buffer.data());
-                    result = guarded_encode([&] { return encoder.value(buffer.data(), type, depth); }, "field encode");
+                    result = encode_with_gc_paused([&] { return encoder.value(buffer.data(), type, depth); });
                     if (!il2cpp_class_is_valuetype(il2cpp_class_from_type(type)))
                         object = *reinterpret_cast<void**>(buffer.data());
                     else if (json_flag(op.get("retain_value"), false)) {
@@ -2051,7 +2026,7 @@ static std::string run_batch(const Json& request) {
                 if (method) {
                     object = call_with_args(method, target, op.get("args"), batch, &error);
                     if (error.empty())
-                        result = guarded_encode([&] { return encoder.object(object, depth); }, "call encode");
+                        result = encode_with_gc_paused([&] { return encoder.object(object, depth); });
                     if (object && il2cpp_class_is_valuetype(il2cpp_object_get_class(object))) object = nullptr;
                 }
             } else if (target && kind == "set") {
@@ -2119,7 +2094,7 @@ static std::string run_batch(const Json& request) {
                     if (constructor) call_with_args(constructor, object, op.get("args"), batch, &error);
                 }
                 if (error.empty())
-                    result = guarded_encode([&] { return encoder.object(object, std::max(depth, 0)); }, "new encode");
+                    result = encode_with_gc_paused([&] { return encoder.object(object, std::max(depth, 0)); });
             }
         } else {
             error = "unknown op " + kind;
