@@ -689,7 +689,7 @@ class AutoQueueNavigator:
                 return False
             return self._arm_navigation({**target, "match_id": state.get("match_id")}, idle=True)
 
-    def start_recent_match(self, state: dict) -> bool:
+    def start_recent_match(self, state: dict, *, completed_at: float = 0) -> bool:
         """Opted-in cold start. The bridge must prove Home is idle before joining."""
         with self._lock:
             if not self.enabled or self.active or state.get("pending_decision"):
@@ -701,7 +701,9 @@ class AutoQueueNavigator:
                 return False
             if getattr(self._bridge, "client_runtime", "") != "il2cpp-macos":
                 return False
-            return self._arm_navigation({"match_id": state.get("match_id")}, idle=True)
+            return self._arm_navigation(
+                {"match_id": state.get("match_id"), "completed_at": completed_at}, idle=True
+            )
 
     def _arm_navigation(self, state: dict, *, idle: bool = False) -> bool:
         with self._lock:
@@ -1789,7 +1791,9 @@ class AutoQueueNavigator:
         if not target.get("ok"):
             self._failures += 1
             reason = target.get("error") or "Recent Match is not ready"
-            if time.monotonic() - self._armed_at >= 90 or any(
+            # Result animations can outlast this entire budget. Only time
+            # without navigation progress counts toward loading Recent Match.
+            if time.monotonic() - self._progress_at >= 90 or any(
                 word in reason
                 for word in ("no available entry", "event page", "free entry", "no available deck", "limited")
             ):

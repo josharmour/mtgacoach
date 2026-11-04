@@ -68,6 +68,20 @@ def test_the_human_play_click_makes_it_busy(real_log):
     assert server.idle_completed_match_from_log() is None
 
 
+def test_old_completion_can_reconcile_a_native_queue_reservation(real_log, monkeypatch):
+    monkeypatch.setattr(server.time, "time", lambda: RESTART + 4 * 3600)
+    assert server.idle_completed_match_from_log() is None
+    assert server.idle_completed_match_from_log(max_age_s=float("inf"))["match_id"] == MATCH
+    with real_log.open("a") as log:
+        log.write(EVENT_JOIN + "\n")
+    assert server.idle_completed_match_from_log(max_age_s=float("inf")) is None
+
+
+def test_future_completion_cannot_clear_a_queue_reservation(real_log, monkeypatch):
+    monkeypatch.setattr(server.time, "time", lambda: RESTART - 3600)
+    assert server.idle_completed_match_from_log(max_age_s=float("inf")) is None
+
+
 @pytest.fixture
 def navigator(monkeypatch):
     nav = Mock()
