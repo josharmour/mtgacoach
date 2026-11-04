@@ -8313,6 +8313,28 @@ class ActionPlanner(_ActionLegalityMixin):
         picked_opp = False
         intent = getattr(self, "_last_decision_target_controllers", {})
         exceptions = getattr(self, "_last_decision_unusual_targets", {})
+        from arenamcp.self_harm_guard import lethal_friendly_damage
+
+        unsafe = lethal_friendly_damage(
+            game_state,
+            oracle,
+            [option.option_id for option in getattr(decision, "options", ())] or chosen,
+            kicked=bool(self._recorded_kick(game_state)),
+            justifications={oid: why for oid, why in exceptions.items() if intent.get(oid) == "self"},
+        )
+        blocked = [oid for oid in chosen if oid in unsafe]
+        if blocked:
+            trace = getattr(self, "_last_decision_trace", None)
+            if isinstance(trace, dict):
+                trace["self_harm_guard"] = {oid: unsafe[oid] for oid in blocked}
+            logger.warning("Self-harm guard rejected %s", {oid: unsafe[oid] for oid in blocked})
+            return self._move_off_bad_targets(
+                decision,
+                game_state,
+                chosen,
+                blocked,
+                {**hints, **{int(oid[4:]): "Cold" for oid in unsafe}},
+            )
         intentional_own = intentional_opp = True
         arena_bad: list[str] = []
         for oid in chosen:
