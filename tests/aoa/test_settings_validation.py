@@ -3,7 +3,7 @@
 from unittest.mock import Mock
 
 import pytest
-from PySide6.QtWidgets import QLineEdit
+from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QLineEdit
 
 from arenamcp.commentary.setup import SpeechSetup
 from arenamcp.desktop import commentary_settings as ui
@@ -43,6 +43,7 @@ def dialog(qapp, monkeypatch):
 def test_simple_surface_has_no_manual_paths_or_backend_controls(dialog):
     widget, settings, session = dialog
     assert not widget.findChildren(QLineEdit)
+    assert "Server Chatterbox" not in [w.text() for w in widget.findChildren(QCheckBox)]
     assert widget.provider.count() == 2 and widget.mode.count() == 2
     assert widget.provider.currentData() == "kokoro"
     assert widget._apply()  # inactive Chatterbox never blocks Kokoro
@@ -61,16 +62,51 @@ def test_preview_does_not_save_or_enable_speech(dialog):
     session.set_speech_enabled.assert_not_called()
 
 
-def test_unavailable_chatterbox_is_actionable_and_cannot_start_or_save_enabled(dialog):
+def test_unavailable_chatterbox_blocks_preview_but_can_save_preferences(dialog):
     widget, settings, session = dialog
-    before = dict(settings)
     widget.provider.setCurrentIndex(1)
-    widget.server.setChecked(False)
     widget.enabled.setChecked(True)
     widget._preview()
-    assert not widget._apply()
-    assert "Server Chatterbox" in widget.status.text() and "Kokoro" in widget.status.text()
-    assert settings == before and not session.mock_calls
+    assert not widget.preview.isEnabled()
+    session.preview_voice.assert_not_called()
+    assert "Sign in to Coach" in widget.status.text()
+    assert widget._apply()
+    assert settings["tts_provider"] == "chatterbox_remote"
+    assert settings["muted"] is False
+
+
+@pytest.mark.parametrize("catalog_state", ["pending", "failed", "one_voice"])
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("saved_pair", ["", "mira|atlas"])
+def test_save_closes_with_unavailable_announcer_voices(dialog, catalog_state, enabled, saved_pair):
+    widget, settings, session = dialog
+    widget.setup.server_configured = True
+    widget.catalog_pending = True  # deterministic in-flight lookup; no network
+    widget.pairs["chatterbox"] = saved_pair
+    widget.provider.setCurrentIndex(widget.provider.findData("chatterbox"))
+    widget.mode.setCurrentIndex(widget.mode.findData("commentary"))
+    if catalog_state == "failed":
+        widget._catalog_ready({"error": "Can't load server voices"})
+    elif catalog_state == "one_voice":
+        widget._catalog_ready({"voices": ["atlas"], "default": "atlas"})
+    widget.enabled.setChecked(enabled)
+    widget.speed.setCurrentIndex(widget.speed.findData(2.0))
+    widget.show()
+    assert widget.isVisible()
+    assert not widget.preview.isEnabled()
+    widget._preview()
+    session.preview_voice.assert_not_called()
+
+    widget.findChild(QDialogButtonBox).button(QDialogButtonBox.Save).click()
+
+    assert widget.result() == QDialog.Accepted
+    assert not widget.isVisible()
+    assert settings["commentary_chatterbox_pair"] == saved_pair
+    assert settings["autoplay_speech"] == "commentary"
+    assert settings["tts_provider"] == "chatterbox_remote"
+    assert settings["speech_speed"] == 2.0
+    assert settings["muted"] is not enabled
+    session.set_speech_enabled.assert_called_once_with(enabled)
 
 
 def test_cancel_preserves_all_settings(dialog):

@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from arenamcp.chatterbox_remote import ChatterboxError
+from arenamcp.chatterbox_remote import HOSTED_BASE, ChatterboxError
 from arenamcp.commentary.config import PERSONAS, CommentaryConfig, speech_rate
 from arenamcp.commentary.setup import VOICE_LABELS, discover, server_voices
 from arenamcp.commentary.voices import VoicePairUnavailable, pair_options, voice_pair
@@ -68,8 +68,6 @@ class CommentarySettingsDialog(QDialog):
             ],
             speech_rate(settings),
         )
-        self.server = QCheckBox("Server Chatterbox")
-        self.server.setChecked(settings.get("speech_server_chatterbox", self.setup.prefer_server))
         self.private = QCheckBox("Discuss my hand and deck")
         self.private.setChecked(self.config.private_information)
         self.voice = QComboBox()
@@ -89,7 +87,6 @@ class CommentarySettingsDialog(QDialog):
             ("", self.enabled),
             ("Voice engine", self.provider),
             ("Hear", self.mode),
-            ("", self.server),
             (self.style_label, self.style),
             ("", self.private),
             (self.voice_label, self.voice),
@@ -109,7 +106,6 @@ class CommentarySettingsDialog(QDialog):
         self.catalog_signals = _CatalogSignals(self)
         self.catalog_signals.finished.connect(self._catalog_ready)
         self.provider.currentIndexChanged.connect(self._update_controls)
-        self.server.toggled.connect(self._update_controls)
         self.voice.currentIndexChanged.connect(self._voice_changed)
         self.enabled.toggled.connect(self._update_status)
         self.mode.currentIndexChanged.connect(self._update_controls)
@@ -125,7 +121,6 @@ class CommentarySettingsDialog(QDialog):
 
     def _update_controls(self):
         chatterbox = self.provider.currentData() == "chatterbox"
-        self.server.setVisible(chatterbox)
         self.voice.blockSignals(True)
         self.voice.clear()
         duo = self.mode.currentData() == "commentary"
@@ -135,11 +130,7 @@ class CommentarySettingsDialog(QDialog):
         self.style_label.setVisible(duo)
         self.pair_error = ""
         if duo:
-            provider = (
-                ("chatterbox_remote" if self.server.isChecked() else "chatterbox_local")
-                if chatterbox
-                else "kokoro"
-            )
+            provider = "chatterbox_remote" if chatterbox else "kokoro"
             try:
                 pairs = pair_options({"tts_provider": provider, "voice": self.kokoro_voice}, self.catalog)
                 options = [(key, label) for key, label, _voices in pairs]
@@ -149,16 +140,11 @@ class CommentarySettingsDialog(QDialog):
             selected = self.pairs[self.provider.currentData()]
         elif not chatterbox:
             options, selected = KOKORO_VOICES, self.kokoro_voice
-        elif self.server.isChecked():
+        else:
             default = (self.catalog or {}).get("default")
             label = "Server default" + (f" ({default.title()})" if default else "")
             options = [("", label)] + [
                 (key, VOICE_LABELS[key]) for key in (self.catalog or {}).get("voices", [])
-            ]
-            selected = self.override
-        else:
-            options = [("", "Chatterbox original voice")] + [
-                (key, VOICE_LABELS[key]) for key in ("atlas", "mira")
             ]
             selected = self.override
         for key, label in options:
@@ -167,18 +153,18 @@ class CommentarySettingsDialog(QDialog):
         self.voice.blockSignals(False)
         if (
             chatterbox
-            and self.server.isChecked()
             and self.setup.server_configured
             and self.catalog is None
             and not self.catalog_pending
             and not self.catalog_error
         ):
             self.catalog_pending = True
-            signals, endpoint = self.catalog_signals, self.setup.values["chatterbox_server_url"]
+            signals = self.catalog_signals
+            api_key = str(self.settings.get("license_key") or "")
 
             def read():
                 try:
-                    value = server_voices(endpoint)
+                    value = server_voices(api_key=api_key)
                 except ChatterboxError as error:
                     value = {"error": str(error)}
                 try:
@@ -198,11 +184,8 @@ class CommentarySettingsDialog(QDialog):
         self._update_controls()
 
     def _problem(self, *, provider_only=False):
-        if self.provider.currentData() == "chatterbox":
-            if self.server.isChecked() and not self.setup.server_configured:
-                return "Server Chatterbox isn't configured. Connect your speech server in ArenaOnAir; Coach will reuse that setup automatically."
-            if not self.server.isChecked() and not self.setup.local_configured:
-                return "Local Chatterbox isn't installed on this computer. Turn on Server Chatterbox to use your existing server, or choose Kokoro."
+        if self.provider.currentData() == "chatterbox" and not self.setup.server_configured:
+            return "Sign in to Coach to use Chatterbox."
         if self.mode.currentData() == "commentary" and self.pair_error:
             return self.catalog_error or self.pair_error
         if (
@@ -220,7 +203,7 @@ class CommentarySettingsDialog(QDialog):
             problem
             or self.catalog_error
             or (
-                "Loading voices from your speech server…"
+                "Loading Chatterbox voices…"
                 if self.catalog_pending
                 else "Preview auditions the selected voice or both announcers without saving. Announcers use play-by-play then analyst; advice stays silent. Server default + partner keeps the server lead and adds a distinct available voice."
             )
@@ -231,10 +214,10 @@ class CommentarySettingsDialog(QDialog):
         chatterbox = self.provider.currentData() == "chatterbox"
         duo = self.mode.currentData() == "commentary"
         values.update(
-            tts_provider=("chatterbox_remote" if self.server.isChecked() else "chatterbox_local")
-            if chatterbox
-            else "kokoro",
-            speech_server_chatterbox=self.server.isChecked(),
+            tts_provider="chatterbox_remote" if chatterbox else "kokoro",
+            speech_server_chatterbox=True,
+            chatterbox_server_url=HOSTED_BASE + "/speech",
+            chatterbox_key_file="",
             autoplay_speech=self.mode.currentData(),
             commentary_persona=self.style.currentData(),
             commentary_speakers=2,
@@ -245,22 +228,19 @@ class CommentarySettingsDialog(QDialog):
             else self.override,
             voice=str(self.voice.currentData()) if not chatterbox and not duo else self.kokoro_voice,
         )
-        values["chatterbox_voice"] = values["chatterbox_voice_override"] or (
-            "server_default" if self.server.isChecked() else "default"
-        )
-        if duo:
+        values["chatterbox_voice"] = values["chatterbox_voice_override"] or "server_default"
+        if duo and not self.pair_error:
             key = "commentary_chatterbox_pair" if chatterbox else "commentary_kokoro_pair"
             values[key] = str(self.voice.currentData() or "")
-            # Validation uses the current catalog; never manufacture a pair.
-            voice_pair(values, self.catalog)
+        # A failed/pending catalog leaves a placeholder in the selector. Keep
+        # the saved pair until real choices are available again.
         values["speech_speed"] = float(self.speed.currentData())
         values["chatterbox_speed"] = values["voice_speed"] = values["speech_speed"]
         return values
 
     def _apply(self):
-        if (self.enabled.isChecked() or self.mode.currentData() == "commentary") and self._problem():
-            self._update_status()
-            return False
+        # Availability controls playback, not whether preferences can be saved
+        # (including turning speech off while the server is unreachable).
         values = self._values()
         config = replace(
             self.config,
@@ -293,6 +273,8 @@ class CommentarySettingsDialog(QDialog):
     def _preview(self):
         if not self._problem(provider_only=True):
             options = self._values()
+            if self.mode.currentData() == "commentary":
+                voice_pair(options, self.catalog)
             if self.catalog is not None:
                 options["_commentary_voice_catalog"] = self.catalog
             self.session.preview_voice(options)

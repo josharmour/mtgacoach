@@ -22,6 +22,99 @@ from pathlib import Path
 
 VOICES = ("atlas", "mira", "default", "server_default")
 MAX_AUDIO_BYTES = 20_000_000
+HOSTED_BASE = "https://api.mtgacoach.com/v1/chatterbox"
+
+
+def _hosted_request(path, api_key, payload=None):
+    if not isinstance(api_key, str) or not api_key.strip() or any(c in api_key for c in "\r\n"):
+        raise ChatterboxError("Sign in to Coach to use Chatterbox.")
+    return urllib.request.Request(
+        HOSTED_BASE + path,
+        data=json.dumps(payload).encode() if payload is not None else None,
+        headers={
+            "Authorization": "Bearer " + api_key.strip(),
+            "Content-Type": "application/json",
+            "User-Agent": "MTGA-Coach",
+        },
+    )
+
+
+def hosted_voices(api_key, *, opener=None):
+    try:
+        request = _hosted_request("/voices", api_key)
+        with (opener or urllib.request.build_opener(_NoRedirect)).open(request, timeout=3) as response:
+            value = json.loads(response.read(16385))
+        voices = value.get("voices")
+        if (
+            not isinstance(voices, list)
+            or not voices
+            or any(voice not in VOICES[:3] for voice in voices)
+            or value.get("default") not in voices
+        ):
+            raise ValueError()
+        return {"voices": voices, "default": value["default"]}
+    except ChatterboxError:
+        raise
+    except Exception:
+        raise ChatterboxError(
+            "Can't load Chatterbox voices. Check your connection and Coach sign-in."
+        ) from None
+
+
+def stream_hosted(*, api_key, text, voice="server_default", speed=1.0, cancelled=None, opener=None):
+    """Yield aligned 24 kHz PCM immediately; no endpoint or speech-key override."""
+    if not text.strip() or len(text) > 600 or voice not in VOICES:
+        raise ChatterboxError("Chatterbox requires 1–600 characters and an available voice.")
+    if not math.isfinite(speed) or not 0.5 <= speed <= 2:
+        raise ChatterboxError("Invalid speech speed.")
+    deadline = time.monotonic() + 60
+
+    def check():
+        if cancelled is not None and cancelled.is_set():
+            raise SpeechCancelled("Speech cancelled.")
+        if time.monotonic() >= deadline:
+            raise ChatterboxError("Speech server missed its deadline.")
+
+    payload = {"input": text, "speed": speed}
+    if voice != "server_default":
+        payload["voice"] = voice
+    check()
+    request = _hosted_request("/speech", api_key, payload)
+    total, pending = 0, b""
+    try:
+        with (opener or urllib.request.build_opener(_NoRedirect)).open(request, timeout=6) as response:
+            if (
+                response.headers.get_content_type() != "audio/pcm"
+                or response.headers.get("X-Sample-Rate") != "24000"
+            ):
+                raise ChatterboxError("Speech server returned an unsupported audio format.")
+            read = getattr(response, "read1", response.read)
+            while True:
+                check()
+                data = read(9600)
+                check()
+                if not data:
+                    break
+                total += len(data)
+                if total > MAX_AUDIO_BYTES:
+                    raise ChatterboxError("Speech server returned too much audio.")
+                pending += data
+                aligned = len(pending) // 2 * 2
+                if aligned:
+                    yield pending[:aligned]
+                    pending = pending[aligned:]
+            if not total or pending:
+                raise ChatterboxError("Speech server returned empty or incomplete audio.")
+    except ChatterboxError:
+        raise
+    except urllib.error.HTTPError as error:
+        if error.code in (401, 403):
+            raise ChatterboxError("Sign in with an active Coach key to use Chatterbox.") from None
+        if error.code in (429, 503):
+            raise ChatterboxError("Chatterbox is busy. Try again shortly.") from None
+        raise ChatterboxError("Chatterbox request failed.") from None
+    except Exception:
+        raise ChatterboxError("Chatterbox connection interrupted.") from None
 
 
 class ChatterboxError(RuntimeError):

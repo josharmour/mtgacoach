@@ -263,8 +263,6 @@ class CoachSession(QObject):
         self._process.send_payload({"cmd": "sync_voice_preferences", "muted": self._muted})
 
     def preview_voice(self, options: dict | None = None) -> None:
-        if not self._tts._chatterbox_lock.locked():
-            self._tts._local_chatterbox.failed = False
         if options is None:
             from arenamcp.settings import get_settings
 

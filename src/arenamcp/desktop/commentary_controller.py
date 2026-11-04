@@ -10,6 +10,7 @@ from dataclasses import replace
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from arenamcp.chatterbox_remote import HOSTED_BASE
 from arenamcp.commentary.config import CommentaryConfig, speech_rate
 from arenamcp.commentary.contracts import TERMINAL_STATES, Epoch, SpeechCategory, Utterance
 from arenamcp.commentary.events import ObservationAdapter
@@ -169,18 +170,16 @@ class CommentaryController(QObject):
 
     @staticmethod
     def _chatterbox_voice(settings, provider):
-        return str(
-            settings.get("chatterbox_voice_override")
-            or ("server_default" if provider == "chatterbox_remote" else "default")
-        )
+        return str(settings.get("chatterbox_voice_override") or "server_default")
 
     def _catalog(self, settings):
-        if settings.get("tts_provider") != "chatterbox_remote":
+        if not str(settings.get("tts_provider") or "").startswith("chatterbox"):
             return None
         supplied = settings.get("_commentary_voice_catalog")
         if isinstance(supplied, dict):
             return supplied
-        endpoint = str(settings.get("chatterbox_server_url") or "")
+        endpoint = HOSTED_BASE
+        api_key = str(get_settings().get("license_key") or "")
         if endpoint in self.catalogs:
             return self.catalogs[endpoint]
         if (
@@ -192,7 +191,7 @@ class CommentaryController(QObject):
 
             def read():
                 try:
-                    value = server_voices(endpoint)
+                    value = server_voices(api_key=api_key)
                 except Exception:
                     value = None
                 try:

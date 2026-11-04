@@ -21,6 +21,7 @@ def manager(monkeypatch):
         "chatterbox_server_url": "https://speech.example/v1",
         "chatterbox_key_file": "/unused/test.key",
         "chatterbox_voice": "mira",
+        "license_key": "coach-test-key",
     }
     monkeypatch.setattr(settings, "get_settings", lambda: values)
     monkeypatch.setattr(TtsManager, "is_running", property(lambda self: True))
@@ -30,6 +31,9 @@ def manager(monkeypatch):
     monkeypatch.setattr(m, "_speak_fallback", Mock())
     monkeypatch.setattr(tts_manager.AudioPlayback, "play_file", Mock(return_value=True))
     monkeypatch.setattr(tts_manager.AudioPlayback, "is_playing", Mock(return_value=False))
+    monkeypatch.setattr(m._pcm, "append", Mock(side_effect=lambda data: m._pcm.started.emit()))
+    monkeypatch.setattr(m._pcm, "finish", Mock())
+    monkeypatch.setattr(m._pcm, "stop", Mock())
     statuses = []
     m.speechStatus.connect(lambda uid, state: statuses.append((uid, state)))
     m.statuses = statuses
@@ -51,9 +55,9 @@ def test_selection_uses_separate_voice_and_qt_thread_delivery(manager, monkeypat
     def render(**kwargs):
         calls.append(kwargs)
         completed.set()
-        return b"fake audio; playback is mocked"
+        yield b"\0\0" * 24
 
-    monkeypatch.setattr(chatterbox_remote, "render_remote", render)
+    monkeypatch.setattr(chatterbox_remote, "stream_hosted", render)
     speak(manager)
     assert completed.wait(2)
     # Acquire after renderer returns to ensure the result has been emitted.
@@ -63,14 +67,16 @@ def test_selection_uses_separate_voice_and_qt_thread_delivery(manager, monkeypat
     manager.test_app.processEvents()
     assert manager.statuses == [("u1", "started")]
     assert calls[0]["voice"] == "server_default"
-    assert calls[0]["key_file"] == "/unused/test.key"
-    manager._check_playback()
+    assert calls[0]["api_key"] == "coach-test-key"
+    assert "endpoint" not in calls[0] and "key_file" not in calls[0]
+    manager._pcm.finish.assert_called_once()
+    manager._pcm.finished.emit()
     assert manager.statuses[-1] == ("u1", "finished")
 
 
 def test_busy_chatterbox_does_not_start_another_request_or_switch_provider(manager, monkeypatch):
     render = Mock()
-    monkeypatch.setattr(chatterbox_remote, "render_remote", render)
+    monkeypatch.setattr(chatterbox_remote, "stream_hosted", render)
     manager._chatterbox_lock.acquire()
     try:
         speak(manager)
@@ -128,3 +134,41 @@ def test_remote_failure_can_start_local_kokoro_without_reading_live_settings(man
     manager._on_remote_failed(8, "Hello", "am_adam", "Adam", 1, "busy")
     assert running[0] and manager._pending_request["generation"] == 8
     manager._speak_fallback.assert_not_called()
+
+
+@pytest.mark.parametrize("provider", ["chatterbox", "chatterbox_local", "chatterbox_remote"])
+def test_every_legacy_chatterbox_choice_routes_to_hosted_stream(manager, monkeypatch, provider):
+    manager.test_settings["tts_provider"] = provider
+    request = Mock()
+    monkeypatch.setattr(manager, "_request_chatterbox_speech", request)
+    speak(manager)
+    assert request.call_args.kwargs["api_key"] == "coach-test-key"
+    assert "endpoint" not in request.call_args.kwargs
+    assert "local_config" not in request.call_args.kwargs
+
+
+def test_audio_starts_while_network_stream_is_still_open_and_stop_discards_late_chunks(manager, monkeypatch):
+    first = threading.Event()
+    release = threading.Event()
+
+    def render(**kwargs):
+        yield b"\0\0" * 24
+        first.set()
+        release.wait(2)
+        yield b"\0\0" * 24
+
+    monkeypatch.setattr(chatterbox_remote, "stream_hosted", render)
+    try:
+        speak(manager)
+        assert first.wait(2)
+        manager.test_app.processEvents()
+        assert manager.statuses == [("u1", "started")]
+        assert manager._chatterbox_lock.locked()
+        manager.stop_speech()
+    finally:
+        release.set()
+    with manager._chatterbox_lock:
+        pass
+    manager.test_app.processEvents()
+    manager._pcm.append.assert_called_once()
+    assert manager.statuses == [("u1", "started"), ("u1", "stopped")]
