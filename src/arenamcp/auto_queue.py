@@ -506,6 +506,7 @@ class AutoQueueNavigator:
         self._result_ready_logged = False
         self._bridge_leaves = 0
         self._bridge_left_at = 0.0
+        self._bridge_reports_home = False
         self._bridge_result_done = False
         # Stall evidence: how long the current status has held, when navigation
         # last progressed, and what the running step is doing.
@@ -1650,6 +1651,7 @@ class AutoQueueNavigator:
         return True
 
     def _reset_bridge_result(self) -> None:
+        self._bridge_reports_home = False
         self._result_seen_at = self._bridge_left_at = 0.0
         self._result_ready_logged = self._bridge_result_done = False
         self._bridge_leaves = 0
@@ -1670,6 +1672,8 @@ class AutoQueueNavigator:
         ):
             return False
         state = get_state()
+        if isinstance(state, dict) and isinstance(state.get("home_active"), bool):
+            self._bridge_reports_home = True
         if (
             self._stage in {"results", "home"}
             and isinstance(state, dict)
@@ -1831,9 +1835,7 @@ class AutoQueueNavigator:
             if self._stage == "resuming":
                 self._stage = "queue" if self._queue_started else "results"
 
-            if self._stage == "results" or (
-                self._stage == "home" and getattr(bridge, "client_runtime", "") == "bepinex"
-            ):
+            if self._stage == "results" or (self._stage == "home" and self._bridge_reports_home):
                 if self._leave_result_via_bridge(bridge, generation, aborted):
                     return
 
