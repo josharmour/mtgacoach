@@ -17,3 +17,33 @@ Check which component returned the error before changing any limits. A per-key L
 The tracked [watchdog](vllm-watchdog/) and [scheduler patch](vllm-patches/) target a particular vLLM deployment. Check the active backend and service configuration before using either. [Historical incident measurements](https://github.com/josharmour/mtgacoach/blob/adbaca97f9076b8ee8be86689154e67410203911/gateway/README.md)
 
 The ArenaOnAir trial API has a separate access policy. [ArenaOnAir service](../website/ARENAONAIR.md)
+
+## Hosted Chatterbox speech
+
+Coach's Chatterbox option always calls `https://api.mtgacoach.com/v1/chatterbox/speech`
+and obtains its catalog from `/v1/chatterbox/voices`, using the existing Coach license
+key. Legacy LAN URLs, speech key files, and local Chatterbox selections are ignored
+by the desktop playback path. Kokoro remains a separate option.
+
+The tunnel's narrow `^/v1/chatterbox/(speech|voices)$` rule precedes the existing
+`api.mtgacoach.com` catch-all and targets the R9700 service at `10.0.0.10:18767`.
+All other API paths retain the existing inference route. Neither a LiteLLM restart
+nor changes to customer model grants are required.
+
+`gateway/chatterbox_service.py` runs in the existing `arenaonair-rocm` environment
+under `arenaonair-r9700-tts.service`. Its systemd override selects this entry point;
+the existing GPU visibility variables keep synthesis on ROCm device 0 (R9700,
+`gfx1201`, 32 GB). It verifies every hosted request against LiteLLM's authenticated
+model listing and requires the `current` grant. Invalid or expired keys fail closed.
+The original speech-key-protected LAN endpoint remains for ArenaOnAir compatibility.
+
+The model generates short text segments successively. Each segment's 24 kHz mono
+PCM is sent immediately; Coach's Qt audio sink starts while later segments are still
+being generated. This is segment streaming, not token-level neural synthesis.
+Cancellation closes the client stream and discards queued playback. The server
+holds its single synthesis slot until a running segment finishes, then stops work
+when the disconnected client is detected.
+
+For rollback, remove only the `hosted-coach.conf` systemd override and restart the
+speech service to restore its previous module. Remove only the Chatterbox-specific
+tunnel rule. Leave the general API route untouched.

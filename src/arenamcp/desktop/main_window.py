@@ -395,62 +395,7 @@ class MainWindow(QMainWindow):
         CommentarySettingsDialog(self._settings, self._session, self).exec()
 
     def _configure_voice_engine(self) -> None:
-        from arenamcp.chatterbox_remote import ChatterboxError, read_speech_key, speech_endpoint
-
-        choices = ["Kokoro", "Chatterbox server"]
-        current = int(self._settings.get("tts_provider") == "chatterbox_remote")
-        choice, accepted = QInputDialog.getItem(
-            self, "Voice Engine", "Speech provider:", choices, current, False
-        )
-        if not accepted:
-            return
-        if choice == "Kokoro":
-            self._settings.set("tts_provider", "kokoro")
-            self._session.stop_speaking()
-            return
-        url, accepted = QInputDialog.getText(
-            self,
-            "Chatterbox Server",
-            "Speech server URL (HTTPS or a trusted local connection):",
-            text=str(self._settings.get("chatterbox_server_url") or ""),
-        )
-        if not accepted:
-            return
-        key_file, accepted = QInputDialog.getText(
-            self,
-            "Chatterbox Speech Key",
-            "Path to a speech-only key file (0600 on macOS/Linux):",
-            text=str(self._settings.get("chatterbox_key_file") or ""),
-        )
-        if not accepted:
-            return
-        voices = ["atlas", "mira", "default"]
-        saved_voice = str(self._settings.get("chatterbox_voice") or "atlas")
-        voice, accepted = QInputDialog.getItem(
-            self,
-            "Chatterbox Voice",
-            "Voice:",
-            voices,
-            voices.index(saved_voice) if saved_voice in voices else 0,
-            False,
-        )
-        if not accepted:
-            return
-        try:
-            clean_url = speech_endpoint(url)
-            read_speech_key(key_file.strip())
-        except ChatterboxError as error:
-            QMessageBox.warning(self, "Chatterbox Configuration", str(error))
-            return
-        self._settings.set("chatterbox_server_url", clean_url)
-        self._settings.set("chatterbox_key_file", key_file.strip())
-        self._settings.set("chatterbox_voice", voice)
-        self._settings.set("tts_provider", "chatterbox_remote")
-        self._session.stop_speaking()
-        if self.statusBar():
-            self.statusBar().showMessage(
-                "Chatterbox selected; unavailable speech uses the fallback voice.", 5000
-            )
+        self._configure_commentary()
 
     def _configure_remote_tts(self) -> None:
         current_url = str(self._settings.get("tts_server_url") or "")

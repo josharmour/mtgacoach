@@ -27,6 +27,8 @@ class TtsManager(QObject):
     speechStatus = Signal(str, str)
     # Emitting from a Python worker queues delivery on this QObject's Qt thread.
     _remoteRendered = Signal(int, str, float)
+    _streamChunk = Signal(int, bytes)
+    _streamDone = Signal(int)
     _remoteFailed = Signal(int, str, str, str, float, str)
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -37,9 +39,15 @@ class TtsManager(QObject):
         self._remote_cancel: threading.Event | None = None
         self._remote_generation: int | None = None
         self._speech_valid = lambda: True
-        from arenamcp.local_chatterbox import LocalChatterboxClient
+        from .pcm_stream import PcmStreamPlayer
 
-        self._local_chatterbox = LocalChatterboxClient()
+        self._pcm = PcmStreamPlayer(self)
+        self._pcm_generation = -1
+        self._streamChunk.connect(self._on_stream_chunk)
+        self._streamDone.connect(self._on_stream_done)
+        self._pcm.started.connect(self._on_stream_started)
+        self._pcm.finished.connect(lambda: self._complete(self._pcm_generation, "finished"))
+        self._pcm.failed.connect(self._on_stream_failed)
         self._process: QProcess | None = None
         self._stdout_buffer = ""
         self._stderr_buffer = ""
@@ -182,7 +190,7 @@ class TtsManager(QObject):
             self._speak_fallback(text, speed)
             self._track_fallback(speech_id)
             return
-        if selected in {"chatterbox_remote", "chatterbox_local"}:
+        if selected.startswith("chatterbox"):
             self._resolve_tracked("superseded")
             self._request_chatterbox_speech(
                 text=text,
@@ -193,24 +201,11 @@ class TtsManager(QObject):
                 if voice_id in {"atlas", "mira", "default", "server_default"}
                 else voice_name,
                 speed=float(speed),
-                endpoint=str(settings.get("chatterbox_server_url") or ""),
-                key_file=str(settings.get("chatterbox_key_file") or ""),
+                api_key=str(get_settings().get("license_key") or ""),
                 chatterbox_voice=voice_id
                 if voice_id in {"atlas", "mira", "default", "server_default"}
-                else str(
-                    settings.get("chatterbox_voice_override")
-                    or ("server_default" if selected == "chatterbox_remote" else "default")
-                ),
+                else str(settings.get("chatterbox_voice_override") or "server_default"),
                 speech_id=speech_id,
-                local_config={
-                    "python": str(settings.get("chatterbox_local_python") or ""),
-                    "aoa_source": str(settings.get("commentary_aoa_source") or ""),
-                    "model_dir": str(settings.get("chatterbox_model_dir") or ""),
-                    "revision": str(settings.get("chatterbox_model_revision") or ""),
-                    "device": str(settings.get("chatterbox_device") or "cpu"),
-                }
-                if selected == "chatterbox_local"
-                else None,
             )
             return
 
@@ -386,8 +381,6 @@ class TtsManager(QObject):
                 proc.terminate()
 
     def shutdown(self) -> None:
-        if not self._chatterbox_lock.locked():
-            self._local_chatterbox.close()
         if self._remote_cancel is not None:
             self._remote_cancel.set()
         self._resolve_tracked("stopped")
@@ -466,16 +459,14 @@ class TtsManager(QObject):
     def _request_chatterbox_speech(
         self,
         *,
-        text: str,
-        voice_id: str,
-        voice_name: str,
-        speed: float,
-        endpoint: str,
-        key_file: str,
-        chatterbox_voice: str,
-        speech_id: str | None,
-        local_config: dict | None = None,
-    ) -> None:
+        text,
+        voice_id,
+        voice_name,
+        speed,
+        api_key,
+        chatterbox_voice,
+        speech_id,
+    ):
         self._generation += 1
         generation = self._generation
         self._remote_generation = generation
@@ -486,8 +477,6 @@ class TtsManager(QObject):
         self._track(speech_id)
         cancelled = threading.Event()
         self._remote_cancel = cancelled
-        # The server cannot abort synthesis: don't queue or pile up requests
-        # while a cancelled request is still occupying it.
         if not self._chatterbox_lock.acquire(blocking=False):
             self._on_remote_failed(
                 generation, text, voice_id, voice_name, speed, "Speech renderer still busy"
@@ -495,64 +484,28 @@ class TtsManager(QObject):
             return
         self._busy = True
         self._busy_timer.start()
-        self.status_line.emit(
-            "Loading local Chatterbox…"
-            if local_config and not self._local_chatterbox.ready
-            else "Generating speech with Chatterbox…"
-        )
+        self.status_line.emit("Streaming Chatterbox speech…")
 
-        def worker() -> None:
-            import tempfile
+        def worker():
+            from arenamcp.chatterbox_remote import SpeechCancelled, speech_chunks, stream_hosted
 
-            from arenamcp.chatterbox_remote import (
-                SpeechCancelled,
-                join_speech_audio,
-                render_remote,
-                speech_chunks,
-            )
-
-            path = None
             try:
                 started = time.monotonic()
-                parts = []
-                for chunk in speech_chunks(text):
+                for chunk in speech_chunks(text, limit=600):
                     if cancelled.is_set():
                         return
                     if time.monotonic() - started > 60:
-                        raise RuntimeError("Speech render deadline")
-                    if local_config is not None:
-                        audio = self._local_chatterbox.render(
-                            config=local_config,
-                            text=chunk,
-                            voice=chatterbox_voice,
-                            speed=speed,
-                            cancelled=cancelled,
-                        )
-                    else:
-                        audio = render_remote(
-                            endpoint=endpoint,
-                            key_file=key_file,
-                            text=chunk,
-                            voice=chatterbox_voice,
-                            speed=speed,
-                            cancelled=cancelled,
-                        )
-                    parts.append(audio)
-                audio = join_speech_audio(parts)
-                if cancelled.is_set():
-                    return
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as stream:
-                    path = stream.name
-                    stream.write(audio)
-                if cancelled.is_set():
-                    self._cleanup_path(Path(path))
-                    return
-                self._remoteRendered.emit(generation, path, time.monotonic() - started)
-                path = None  # Qt slot owns cleanup, including stale results.
+                        raise RuntimeError("Speech deadline exceeded")
+                    for data in stream_hosted(
+                        api_key=api_key, text=chunk, voice=chatterbox_voice, speed=speed, cancelled=cancelled
+                    ):
+                        if cancelled.is_set():
+                            return
+                        self._streamChunk.emit(generation, data)
+                self._streamDone.emit(generation)
             except SpeechCancelled:
                 pass
             except Exception:
-                # Never include URLs, credentials or server response bodies.
                 if not cancelled.is_set():
                     self._remoteFailed.emit(
                         generation,
@@ -560,14 +513,42 @@ class TtsManager(QObject):
                         voice_id,
                         voice_name,
                         speed,
-                        "Chatterbox unavailable or invalid audio",
+                        "Chatterbox connection or playback unavailable",
                     )
             finally:
-                if path is not None:
-                    self._cleanup_path(Path(path))
                 self._chatterbox_lock.release()
 
-        threading.Thread(target=worker, daemon=True, name="chatterbox-tts").start()
+        threading.Thread(target=worker, daemon=True, name="chatterbox-stream").start()
+
+    def _on_stream_chunk(self, generation, data):
+        if self._closing or generation != self._generation:
+            return
+        if not self._speech_valid():
+            if self._remote_cancel is not None:
+                self._remote_cancel.set()
+            self._pcm.stop()
+            self._generation += 1
+            self._complete(generation, "superseded")
+            return
+        self._busy = False
+        self._busy_timer.stop()
+        self._pcm_generation = generation
+        self._pcm.append(data)
+
+    def _on_stream_done(self, generation):
+        if not self._closing and generation == self._generation:
+            self._pcm.finish()
+
+    def _on_stream_started(self):
+        if self._tracked is not None and self._tracked[0] == self._pcm_generation:
+            self.speechStatus.emit(self._tracked[1], "started")
+
+    def _on_stream_failed(self):
+        if self._remote_cancel is not None:
+            self._remote_cancel.set()
+        self._generation += 1
+        self._complete(self._pcm_generation, "failed")
+        self.error_line.emit("Chatterbox audio output is unavailable.")
 
     def _request_remote_speech(
         self,
@@ -678,6 +659,9 @@ class TtsManager(QObject):
             self._complete(generation, "superseded")
             return
         if getattr(self, "_selected_provider", "kokoro").startswith("chatterbox"):
+            self._pcm.stop()
+            if self._remote_cancel is not None:
+                self._remote_cancel.set()
             self.error_line.emit(
                 f"Chatterbox unavailable: {err_msg} Try Preview again or choose Kokoro in Speech & voices."
             )
@@ -897,6 +881,7 @@ class TtsManager(QObject):
             self.error_line.emit(self._process.errorString())
 
     def _stop_playback(self) -> None:
+        self._pcm.stop()
         AudioPlayback.stop()
         if self._current_audio_path is not None:
             self._cleanup_path(self._current_audio_path)

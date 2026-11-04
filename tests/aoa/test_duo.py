@@ -42,7 +42,7 @@ def test_automatic_pair_follows_server_default_without_old_troubleshooting_value
     assert voice_pair(settings, CATALOG) == ("server_default", "mira")
     assert voice_pair(settings, dict(CATALOG, default="mira")) == ("server_default", "atlas")
     assert voice_pair(dict(settings, commentary_chatterbox_pair="mira|atlas"), CATALOG) == ("mira", "atlas")
-    assert voice_pair({"tts_provider": "chatterbox_local"}) == ("atlas", "mira")
+    assert voice_pair({"tts_provider": "chatterbox_local"}, CATALOG) == ("server_default", "mira")
     assert voice_pair(
         {"tts_provider": "kokoro", "voice": "af_heart", "commentary_kokoro_analyst": "af_heart"}
     ) == ("af_heart", "am_adam")

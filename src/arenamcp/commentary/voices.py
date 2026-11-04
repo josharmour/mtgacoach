@@ -20,7 +20,7 @@ def pair_options(settings, catalog=None):
         label = f"Automatic · {labels[lead]} + {labels[partner]}"
     else:
         labels = {"atlas": "Atlas", "mira": "Mira", "default": "Original", "server_default": "Server default"}
-        if provider == "chatterbox_remote":
+        if provider.startswith("chatterbox"):
             if not isinstance(catalog, dict):
                 raise VoicePairUnavailable("Loading announcer voices from the speech server…")
             available = catalog.get("voices", [])
