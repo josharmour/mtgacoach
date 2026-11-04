@@ -705,7 +705,7 @@ def idle_completed_match_from_log(max_age_s: float = 1800.0) -> dict[str, Any] |
             except ValueError:
                 selection = None
             break
-    if completed is None or time.time() - completed["completed_at"] > max_age_s:
+    if completed is None or not 0 <= time.time() - completed["completed_at"] <= max_age_s:
         return None
     event_id = completed["event_id"]
     if not event_id or re.search(r"draft|sealed", event_id, re.IGNORECASE):

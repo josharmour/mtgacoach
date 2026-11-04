@@ -142,9 +142,17 @@ class _AutoQueueMixin(AutoQuestMixin):
             )
             return False
         if getattr(getattr(navigator, "_bridge", None), "client_runtime", "") == "il2cpp-macos":
-            # No fabricated completion or dependency on a previous Player.log:
-            # Arena's current Home/queue/model state is checked in the worker.
-            return navigator.start_recent_match(state)
+            from arenamcp.server import idle_completed_match_from_log
+
+            # Recover completion evidence for the persistent duplicate guard.
+            # Age is immaterial here: the guard compares it with the prior
+            # submission, and the scan rejects any later queue/gameplay. The
+            # live bridge still proves idle Home and selects the current deck.
+            completed = idle_completed_match_from_log(max_age_s=float("inf"))
+            completed_at = 0.0
+            if completed and (not current_id or current_id == completed["match_id"]):
+                completed_at = completed["completed_at"]
+            return navigator.start_recent_match(state, completed_at=completed_at)
         from arenamcp.server import idle_completed_match_from_log
 
         completed = idle_completed_match_from_log()

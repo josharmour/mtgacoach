@@ -211,3 +211,76 @@ def test_result_scene_appearing_after_completion_log_is_still_dismissed():
     step(nav)
     bridge.queue_recent_match.assert_called_once()
     controller.capture.assert_not_called()
+
+
+def test_slow_results_leave_a_full_recent_match_loading_budget(monkeypatch):
+    from tests.test_auto_queue_result_bridge_20261020 import CLOSED, NOT_READY, READY
+
+    clock = [100.0]
+    monkeypatch.setattr("arenamcp.auto_queue.time.monotonic", lambda: clock[0])
+    nav, bridge, state, *_ = setup()
+    state["match_id"] = "ended"
+    bridge.get_match_end = Mock(side_effect=[NOT_READY, READY, CLOSED, CLOSED])
+    bridge.leave_match = Mock(return_value={"ok": True})
+    target = bridge.get_recent_match.return_value
+    bridge.get_recent_match.side_effect = [
+        {"ok": False, "error": "ref does not name an object result"},
+        target,
+    ]
+    nav.note_match_end({"match_id": "ended"}, confirmed_match_end=True)
+    step(nav)
+    clock[0] += 84
+    step(nav)  # animation finally accepts LeaveMatch
+    clock[0] += 11
+    step(nav)  # Home model still loading, 95s after completion
+    assert not nav.paused_reason
+    bridge.queue_recent_match.assert_not_called()
+    clock[0] += 3
+    step(nav)
+    bridge.queue_recent_match.assert_called_once()
+
+
+def test_recent_match_loading_still_times_out_without_progress(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr("arenamcp.auto_queue.time.monotonic", lambda: clock[0])
+    nav, bridge, state, *_ = setup()
+    nav.start_recent_match(state)
+    bridge.get_recent_match.return_value = {"ok": False, "error": "Home not present"}
+    step(nav)
+    clock[0] += 91
+    step(nav)
+    assert "Recent Match stopped" in nav.paused_reason
+    bridge.queue_recent_match.assert_not_called()
+
+
+@pytest.mark.parametrize("completion", [None, "older", "later", "other_match"])
+def test_restart_reconciles_only_proven_completed_submission(monkeypatch, tmp_path, completion):
+    path = tmp_path / "attempt.json"
+    nav, bridge, state, *_ = setup()
+    target = bridge.get_recent_match.return_value
+    now = time.time()
+    reserve("arena-A", target, path=path)
+    state.update(match_id="ended", last_game_result="Win")
+    proof = (
+        None
+        if completion is None
+        else {
+            "match_id": "different" if completion == "other_match" else "ended",
+            "completed_at": now - 1 if completion == "older" else now + 1,
+        }
+    )
+    scan = Mock(return_value=proof)
+    monkeypatch.setattr("arenamcp.server.idle_completed_match_from_log", scan)
+
+    def submit(target, *, completed_at):
+        try:
+            reserve("arena-A", target, completed_at, path=path)
+            return {"ok": True}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    bridge.queue_recent_match.side_effect = submit
+    assert _AutoQueueMixin()._arm_auto_queue_after_restart(nav, state)
+    scan.assert_called_once_with(max_age_s=float("inf"))
+    step(nav)
+    assert bool(nav.paused_reason) == (completion != "later")
