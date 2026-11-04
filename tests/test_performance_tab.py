@@ -18,6 +18,14 @@ from arenamcp.desktop.performance_tab import PerformanceTab
 from arenamcp.match_history import MatchHistory, record_from_game_end
 from arenamcp.standalone_postmatch import _PostMatchMixin
 
+
+@pytest.fixture(autouse=True)
+def exercise_table_layout(monkeypatch):
+    # Exercise the Windows/Linux layout on Mac CI as well. The Cocoa-safe
+    # layout is exercised explicitly below, without any native table widgets.
+    monkeypatch.setattr("arenamcp.desktop.performance_tab._USE_TABLES", True)
+
+
 _SNAP = {
     "turn": {"turn_number": 5},
     "players": [{"is_local": True, "life_total": 10}, {"seat_id": 2, "life_total": 20}],
@@ -281,3 +289,36 @@ def test_sidebar_ranks_open_recent_ladder_matches(seeded_file, qapp, monkeypatch
         assert len(win.performance_tab._row_records) == 20
     finally:
         win.close()
+
+
+def test_mac_history_uses_accessible_buttons_and_retains_selection(seeded_file, qapp, monkeypatch):
+    from PySide6.QtGui import QAccessible
+    from PySide6.QtWidgets import QTableWidget
+
+    monkeypatch.setattr("arenamcp.desktop.performance_tab._USE_TABLES", False)
+    tab = PerformanceTab()
+    tab.show()
+    qapp.processEvents()
+    try:
+        assert tab.findChildren(QTableWidget) == []
+        cards = tab._cards
+        record = next(r for r in tab._row_records if r.coach_rating is not None)
+        button = cards.buttons[record.match_id]
+        button.click()
+        assert "score" in tab._detail.text()
+        assert record.coach_score_reason in tab._detail.text()
+        interface = QAccessible.queryAccessibleInterface(button)
+        assert interface.role() == QAccessible.Role.CheckBox  # a checkable QPushButton
+        assert (record.opponent_name or "opponent") in interface.text(QAccessible.Text.Name)
+        for _ in range(4):
+            tab.refresh()
+            qapp.processEvents()
+            assert cards.buttons[record.match_id] is button
+            assert button.isChecked()
+            assert tab._selected_match_id() == record.match_id
+        tab.set_ladder("Limited")
+        assert tab._selected_match_id() is None
+        assert cards.buttons == {}
+        assert "No ranked Limited" in tab._summary.text()
+    finally:
+        tab.close()

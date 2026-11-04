@@ -11,6 +11,7 @@ switches to the full seven-column table. Both views hold the same rows.
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer
@@ -34,6 +35,7 @@ from . import theme
 _COLUMNS = ["Result", "Score", "Opponent", "Format", "Colors", "Turns", "When"]
 _MAX_ROWS = 20
 WIDE_LAYOUT_PX = 520
+_USE_TABLES = sys.platform != "darwin"  # QTBUG-149612: Cocoa selected-cell cache ownership
 
 
 def _fmt_ts(ts: str) -> str:
@@ -56,6 +58,7 @@ class PerformanceTab(QWidget):
         super().__init__(parent)
         self._ladder: str | None = None
         self._row_records: list = []
+        self._cards = None
         self._build_ui()
         # The coach writes match history from a SEPARATE process, so the UI
         # must re-read the file rather than trust any cached in-memory list.
@@ -83,37 +86,44 @@ class PerformanceTab(QWidget):
         header.addWidget(refresh, 0, Qt.AlignTop)
         lay.addLayout(header)
 
-        # Wide: seven columns.
-        self._table = QTableWidget(0, len(_COLUMNS))
-        self._table.setHorizontalHeaderLabels(_COLUMNS)
-        self._table.verticalHeader().setVisible(False)
-        self._table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._table.setSelectionBehavior(QTableWidget.SelectRows)
-        self._table.setSelectionMode(QTableWidget.SingleSelection)
-        self._table.setShowGrid(False)
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self._table.itemSelectionChanged.connect(lambda: self._on_selection_changed(self._table))
+        if not _USE_TABLES:
+            from .match_history_cards import MatchHistoryCards
 
-        # Narrow: result badge + two-line details.
-        self._compact = QTableWidget(0, 2)
-        self._compact.horizontalHeader().setVisible(False)
-        self._compact.verticalHeader().setVisible(False)
-        self._compact.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._compact.setSelectionBehavior(QTableWidget.SelectRows)
-        self._compact.setSelectionMode(QTableWidget.SingleSelection)
-        self._compact.setShowGrid(False)
-        self._compact.setWordWrap(True)
-        self._compact.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self._compact.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self._compact.itemSelectionChanged.connect(lambda: self._on_selection_changed(self._compact))
+            self._cards = MatchHistoryCards(self)
+            self._cards.selected.connect(self._show_record)
+            lay.addWidget(self._cards, 1)
+        else:
+            # Wide: seven columns.
+            self._table = QTableWidget(0, len(_COLUMNS))
+            self._table.setHorizontalHeaderLabels(_COLUMNS)
+            self._table.verticalHeader().setVisible(False)
+            self._table.setEditTriggers(QTableWidget.NoEditTriggers)
+            self._table.setSelectionBehavior(QTableWidget.SelectRows)
+            self._table.setSelectionMode(QTableWidget.SingleSelection)
+            self._table.setShowGrid(False)
+            self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+            self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+            self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            self._table.itemSelectionChanged.connect(lambda: self._on_selection_changed(self._table))
 
-        self._views = QStackedWidget()
-        self._views.addWidget(self._compact)
-        self._views.addWidget(self._table)
-        self._views.setCurrentWidget(self._table)
-        lay.addWidget(self._views, 1)
+            # Narrow: result badge + two-line details.
+            self._compact = QTableWidget(0, 2)
+            self._compact.horizontalHeader().setVisible(False)
+            self._compact.verticalHeader().setVisible(False)
+            self._compact.setEditTriggers(QTableWidget.NoEditTriggers)
+            self._compact.setSelectionBehavior(QTableWidget.SelectRows)
+            self._compact.setSelectionMode(QTableWidget.SingleSelection)
+            self._compact.setShowGrid(False)
+            self._compact.setWordWrap(True)
+            self._compact.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+            self._compact.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+            self._compact.itemSelectionChanged.connect(lambda: self._on_selection_changed(self._compact))
+
+            self._views = QStackedWidget()
+            self._views.addWidget(self._compact)
+            self._views.addWidget(self._table)
+            self._views.setCurrentWidget(self._table)
+            lay.addWidget(self._views, 1)
 
         why = QLabel("WHY THIS SCORE")
         why.setProperty("role", "caption")
@@ -128,6 +138,8 @@ class PerformanceTab(QWidget):
     # ------------------------------------------------------------------
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         super().resizeEvent(event)
+        if self._cards is not None:
+            return
         wide = self.width() >= WIDE_LAYOUT_PX
         target = self._table if wide else self._compact
         if self._views.currentWidget() is not target:
@@ -140,6 +152,8 @@ class PerformanceTab(QWidget):
         return self._views.currentWidget()
 
     def _selected_row(self) -> int | None:
+        if self._cards is not None:
+            return self._cards.selected_row()
         rows = self._visible_table().selectionModel().selectedRows()
         return rows[0].row() if rows else None
 
@@ -149,7 +163,9 @@ class PerformanceTab(QWidget):
         if not rows:
             self._detail.setText("Click a row to see why its score was given.")
             return
-        row = rows[0].row()
+        self._show_record(rows[0].row())
+
+    def _show_record(self, row: int) -> None:
         if not (0 <= row < len(self._row_records)):
             self._detail.setText("")
             return
@@ -206,6 +222,17 @@ class PerformanceTab(QWidget):
         # Preserve the selected row's explanation across the 3s auto-refresh so
         # the "why this score" stays visible instead of clearing every poll.
         selected_match_id = self._selected_match_id()
+
+        if self._cards is not None:
+            self._row_records = records
+            self._cards.set_records(records)
+            row = self._cards.selected_row()
+            if row is not None:
+                self._show_record(row)
+            else:
+                self._detail.setText("Select a match to see why its score was given.")
+            self._update_summary(records)
+            return
 
         for table in (self._table, self._compact):
             table.setRowCount(0)
@@ -285,6 +312,12 @@ class PerformanceTab(QWidget):
                     self._visible_table().selectRow(r)
                     break
 
+        self._update_summary(records)
+
+    def _update_summary(self, records) -> None:
+        wins = sum((r.result or "").lower() == "win" for r in records)
+        losses = sum((r.result or "").lower() == "loss" for r in records)
+        rated = [r.coach_rating for r in records if r.coach_rating is not None]
         total = wins + losses
         win_rate = (wins / total * 100) if total else 0.0
         avg = round(sum(rated) / len(rated), 1) if rated else None
