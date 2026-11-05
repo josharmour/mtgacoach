@@ -174,3 +174,18 @@ def test_audio_starts_while_network_stream_is_still_open_and_stop_discards_late_
     manager.test_app.processEvents()
     manager._pcm.append.assert_called_once()
     assert manager.statuses == [("u1", "started"), ("u1", "stopped")]
+
+
+def test_kokoro_uses_supported_cadence_without_adding_spoken_words(manager, monkeypatch):
+    manager.test_settings["tts_provider"] = "kokoro"
+    monkeypatch.setattr(manager, "_should_offload_to_remote", lambda: False)
+    manager.request_speech(
+        text="The game ends.",
+        voice_id="am_adam",
+        voice_name="Adam",
+        speed=1.25,
+        speech_id="big-moment",
+        excitement="electric",
+    )
+    assert manager._pending_request["text"] == "The game ends!"
+    assert manager._pending_request["speed"] == pytest.approx(1.325)

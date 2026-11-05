@@ -75,14 +75,18 @@ def render(engine, payload):
     from arenaonair.models import Utterance
 
     text, speed, voice = payload["text"], float(payload.get("speed", 1)), payload.get("voice", "atlas")
+    excitement = payload.get("excitement", "normal")
     if (
         not isinstance(text, str)
         or not 0 < len(text) <= 600
         or not 0.5 <= speed <= 2
         or voice not in {"atlas", "mira", "default"}
+        or excitement not in {"calm", "normal", "tense", "electric"}
     ):
         raise ValueError("Invalid render request")
-    chunks = engine.prepare_audio(Utterance("render", None, "speech", text, 1, 0, rate=speed, voice=voice))
+    chunks = engine.prepare_audio(
+        Utterance("render", None, "speech", text, 1, 0, rate=speed, voice=voice, excitement=excitement)
+    )
     output = io.BytesIO()
     total = 0
     with wave.open(output, "wb") as wav:

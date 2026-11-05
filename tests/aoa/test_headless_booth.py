@@ -55,7 +55,12 @@ def response(context, audit, supported=True, count=2):
     if audit:
         return {
             "checks": [
-                {"index": i, "supported": supported, "unsupported_claim": "" if supported else "unsupported"}
+                {
+                    "index": i,
+                    "supported": supported,
+                    "adds_insight": True,
+                    "unsupported_claim": "" if supported else "unsupported",
+                }
                 for i in range(len(context["lines"]))
             ]
         }
@@ -78,9 +83,9 @@ def test_native_personas_audit_anchor_and_heard_ledger(source, persona):
     def rpc(system, context, audit):
         requests.append(audit)
         if not audit:
-            from arenaonair.personas import get
+            from arenamcp.commentary.config import STYLES
 
-            assert context["style"] == get(persona).style
+            assert context["style"] == STYLES[persona]
         assert len(system.encode()) + len(json.dumps(context).encode()) + 256 <= 6000
         return response(context, audit)
 
@@ -199,18 +204,30 @@ def test_worker_public_strategic_tail_survives_unrelated_private_draw(source):
         if audit:
             return {
                 "checks": [
-                    {"index": 0, "supported": True, "unsupported_claim": "", "scope": "historical"},
-                    {"index": 1, "supported": True, "unsupported_claim": "", "scope": "position"},
+                    {
+                        "index": 0,
+                        "supported": True,
+                        "adds_insight": True,
+                        "unsupported_claim": "",
+                        "scope": "historical",
+                    },
+                    {
+                        "index": 1,
+                        "supported": True,
+                        "adds_insight": True,
+                        "unsupported_claim": "",
+                        "scope": "position",
+                    },
                 ]
             }
-        assert "state:board" in context["facts"] and "card:120" in context["facts"]
+        assert "state:battlefield" in context["facts"] and "card:120" in context["facts"]
         return {
             "turns": [
                 {"role": "play_by_play", "text": "Opt goes onto the stack.", "refs": context["new_events"]},
                 {
                     "role": "color_analyst",
                     "text": "Emberheart Challenger benefits from noncreature spells before combat; that timing can turn cards into attacking pressure.",
-                    "refs": [context["new_events"][0], "state:board", "card:120"],
+                    "refs": [context["new_events"][0], "state:battlefield", "card:120"],
                 },
             ]
         }

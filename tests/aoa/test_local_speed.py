@@ -22,8 +22,12 @@ def test_local_render_passes_rate_once_and_preserves_native_audio(monkeypatch):
         return [(np.zeros(16000, dtype=np.float32), 24000)]
 
     audio = base64.b64decode(
-        render(SimpleNamespace(prepare_audio=prepare), {"text": "A cast.", "speed": 1.5, "voice": "mira"})
+        render(
+            SimpleNamespace(prepare_audio=prepare),
+            {"text": "A cast.", "speed": 1.5, "voice": "mira", "excitement": "electric"},
+        )
     )
     assert len(seen) == 1 and seen[0].rate == 1.5 and seen[0].voice == "mira"
+    assert seen[0].excitement == "electric"
     with wave.open(io.BytesIO(audio)) as wav:
         assert wav.getframerate() == 24000 and wav.getnframes() == 16000

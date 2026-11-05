@@ -62,6 +62,16 @@ def compact_context(system, context):
         in_flight=[],
         omitted_context="Omitted facts are unknown, not absent. Speculation must be labeled and grounded in included evidence.",
     )
+    # Reserve conversational memory BEFORE filling the request with card rules.
+    # A separate analyst ledger survives many intervening play-by-play calls.
+    result["recent_analysis"] = []
+    for line in reversed(context.get("recent_analysis", ())[-8:]):
+        if not isinstance(line, str):
+            continue
+        result["recent_analysis"].insert(0, line)
+        if len(json.dumps(result["recent_analysis"]).encode()) > 900:
+            result["recent_analysis"].pop(0)
+            break
     facts = context["facts"]
     new = list(context.get("new_events", ()))
     # Preserve the meaningful play in a burst even when a routine land came last.
@@ -86,10 +96,11 @@ def compact_context(system, context):
     for key, fact in facts.items():
         if key.startswith("private:hand:"):
             related.extend(f"card:{c['grp_id']}" for c in fact.get("cards", ()) if c.get("grp_id"))
-    order += ["state:game_read", "state:board"] + related
+    order += ["state:game_read", "state:battlefield", "private:deck_plan"] + related
     order += [
         f"card:{c['grp_id']}" for c in facts.get("state:board", {}).get("objects", []) if c.get("grp_id")
     ]
+    order += ["state:board"]
     order += [k for k in facts if k.startswith("private:hand:")]
     order += ranked[2:]
     order += [k for k in facts if k.startswith("card:")]

@@ -5,21 +5,31 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 
 MODES = {"actions", "commentary", "essential"}
-PERSONAS = {
-    "classic": "Classic radio booth",
-    "esports": "Esports hype desk",
-    "test_match": "Test-match understatement",
-    "pro_tour": "Pro Tour analysts (technical)",
+PERSONAS = {"hype": "Hype", "technical": "Technical"}
+STYLES = {
+    "hype": "Lively, funny, informative sports broadcast: vivid calls, playful situational metaphors and quick conversational payoffs. Build excitement on consequential swings; routine plays stay brief. The analyst adds substance to the fun. Let humor emerge from this position, never stock catchphrases, insults or invented facts.",
+    "technical": "Engaging expert coverage with dry wit: precise card language, lucid strategic tradeoffs and measured delivery. An occasional wry observation or analogy makes a complicated position approachable. Develop both players' routes to winning; avoid lecturing, stock jokes and verdicts on the player's decisions.",
 }
 FOCUSES = {"calls", "balanced", "analysis"}
+
+
+def normalize_persona(value):
+    if not isinstance(value, str):
+        return "technical"
+    return {
+        "esports": "hype",
+        "classic": "technical",
+        "test_match": "technical",
+        "pro_tour": "technical",
+    }.get(value, value if value in PERSONAS else "technical")
 
 
 @dataclass(frozen=True)
 class CommentaryConfig:
     mode: str = "actions"
-    persona: str = "classic"
+    persona: str = "technical"
     speakers: int = 2
-    focus: str = "balanced"
+    focus: str = "analysis"
     exchanges_per_minute: int = 2
     generative: bool = False
     private_information: bool = False
@@ -27,6 +37,9 @@ class CommentaryConfig:
     output_owner: str = "coach"
     python: str = ""
     aoa_source: str = ""
+
+    def __post_init__(self):
+        object.__setattr__(self, "persona", normalize_persona(self.persona))
 
     @classmethod
     def from_settings(cls, settings):
@@ -39,10 +52,11 @@ class CommentaryConfig:
         values = {key: data.get(key, default) for key, default in asdict(cls()).items()}
         for key in ("generative", "private_information", "muted"):
             values[key] = values[key] is True
+        values["persona"] = normalize_persona(values["persona"])
         for key, allowed, default in (
             ("mode", MODES, "actions"),
-            ("persona", PERSONAS, "classic"),
-            ("focus", FOCUSES, "balanced"),
+            ("persona", PERSONAS, "technical"),
+            ("focus", FOCUSES, "analysis"),
             ("output_owner", {"coach", "standalone"}, "coach"),
         ):
             if not isinstance(values[key], str) or values[key] not in allowed:
@@ -65,7 +79,7 @@ class CommentaryConfig:
 
 
 def speech_rate(settings):
-    """One explicit desktop speed for all voice engines; legacy speeds stay private."""
+    """User-selected base speed shared by all voice engines."""
     import math
 
     try:

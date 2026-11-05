@@ -81,7 +81,13 @@ def test_native_generated_context_and_audit_keep_exact_identity():
             assert context["facts"]["state:player:1"]["name"] == "Armour"
             return {
                 "checks": [
-                    {"index": i, "supported": True, "unsupported_claim": "", "scope": "historical"}
+                    {
+                        "index": i,
+                        "supported": True,
+                        "adds_insight": True,
+                        "unsupported_claim": "",
+                        "scope": "historical",
+                    }
                     for i in range(len(context["lines"]))
                 ]
             }
@@ -150,7 +156,13 @@ def test_real_worker_transports_names_and_keeps_heard_identity(request):
         if audit:
             return {
                 "checks": [
-                    {"index": i, "supported": True, "unsupported_claim": "", "scope": "position"}
+                    {
+                        "index": i,
+                        "supported": True,
+                        "adds_insight": True,
+                        "unsupported_claim": "",
+                        "scope": "position",
+                    }
                     for i in range(len(context["lines"]))
                 ]
             }

@@ -23,7 +23,7 @@ def test_big_moment_uses_expressive_model_and_respects_persona():
     observation = Observation(Epoch("m", 1), 1, "s", 1, {}, events=(event,))
     item = utterance(evidence_ids=("e",))
     assert speech_delivery(item, observation, "esports") == {"excitement": "electric", "energy": 0.8}
-    assert speech_delivery(item, observation, "pro_tour") == {"excitement": "tense", "energy": 0.65}
+    assert speech_delivery(item, observation, "pro_tour") == {"excitement": "normal", "energy": 0.5}
     observation = replace(observation, events=(replace(event, kind="land_drop"),))
     assert speech_delivery(item, observation)["excitement"] == "calm"
 

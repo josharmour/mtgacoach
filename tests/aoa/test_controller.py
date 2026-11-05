@@ -56,7 +56,9 @@ def test_ordered_workflow_protected_and_essential_preempts(controller):
 
 
 def test_native_excitement_is_forwarded_to_speech(controller):
-    c, tts, _, _ = controller
+    c, tts, _, state = controller
+    c.configure(CommentaryConfig(mode="commentary", persona="hype").to_wire())
+    c.observe(state)
     c.proposal(replace(line(c), excitement="electric", salience=3).to_wire())
     assert tts.request_speech.call_args.kwargs["excitement"] == "electric"
     assert tts.request_speech.call_args.kwargs["energy"] == 0.8
@@ -234,3 +236,22 @@ def test_event_call_survives_board_change_but_not_new_game(controller):
     state["game_number"] = 2
     c.observe(state)
     assert not valid() and c.arbiter.active is None
+
+
+@pytest.mark.parametrize(
+    "style,call_tier,reply_tier", [("hype", "electric", "tense"), ("technical", "normal", "normal")]
+)
+def test_duo_preview_uses_unsaved_style_for_each_caster(controller, style, call_tier, reply_tier):
+    c, tts, _, _ = controller
+    c.configure(
+        CommentaryConfig(mode="commentary", persona="technical" if style == "hype" else "hype").to_wire()
+    )
+    options = {"tts_provider": "kokoro", "autoplay_speech": "commentary", "commentary_persona": style}
+    c.preview(options)
+    first = tts.request_speech.call_args.kwargs
+    assert first["excitement"] == call_tier
+    tts.speechStatus.emit(first["speech_id"], "started")
+    tts.speechStatus.emit(first["speech_id"], "finished")
+    second = tts.request_speech.call_args.kwargs
+    assert second["speech_id"] != first["speech_id"]
+    assert second["excitement"] == reply_tier

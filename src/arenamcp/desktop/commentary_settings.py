@@ -74,6 +74,11 @@ class CommentarySettingsDialog(QDialog):
         self.voice_label = QLabel("Voice")
         self.style_label = QLabel("Style")
         self.style = combo(list(PERSONAS.items()), self.config.persona)
+        self.style.setToolTip(
+            "Hype: playful reactions and rising energy on big moments. "
+            "Technical: measured delivery, dry wit and precise strategy. "
+            "Both casters follow the changing game, with a distinct analyst voice."
+        )
         self.pairs = {
             "kokoro": str(settings.get("commentary_kokoro_pair") or ""),
             "chatterbox": str(settings.get("commentary_chatterbox_pair") or ""),
@@ -247,6 +252,7 @@ class CommentarySettingsDialog(QDialog):
             mode=self.mode.currentData(),
             speakers=2,
             persona=self.style.currentData(),
+            focus="analysis",
             private_information=self.private.isChecked(),
             generative=True,
             muted=False,
