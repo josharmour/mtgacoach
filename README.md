@@ -6,13 +6,13 @@ MTGA Coach is a desktop companion for **Magic: The Gathering Arena**. Keep it be
 
 ## A clearer view of your next play
 
-The **4.0 series** puts the current decision first. A glowing green path marks the leading supported line found by the search. An animated balance scale shows the board outlook, with the reasons underneath. Expand alternatives, your hand and board, activity history, or rank when you need them; autoplay and speech controls stay visible as you scroll.
+The **4.0 series** puts the current decision first. A green highlight marks the leading supported line found by the search. A compact animated scale shows the board outlook. Open paths and supporting details when you need them; rank, recent-match access, playback controls, and recovery buttons stay in place. The main view adapts to the window size without scrolling or jumping as game updates arrive.
 
 <p align="center">
-  <img src="docs/images/coach-4-companion.png" width="420" alt="MTGA Coach beside-Arena view: current decision, an outlook scale marked Behind, and a green leading path that survives modeled attacks without an established win." />
+  <img src="docs/images/coach-4-companion.png" width="420" alt="MTGA Coach companion: fixed rank and recent matches, Cast Theorix Metamage as the next decision, a compact outlook marked Behind, a clickable leading path, and visible recovery controls." />
 </p>
 
-*Native desktop screenshot using the recorded `G1_T8` test fixture, not a live match. The outlook is Behind even though one path leads the search: green means best supported candidate found, not a guaranteed win. This still image does not show the scale’s animation.*
+*Native desktop screenshot using the recorded `G1_T8` board fixture and synthetic rank/recent-match examples, not a live match. The outlook is Behind even though one path leads the search: green means best supported candidate found, not a guaranteed win. This still image does not show the scale’s animation.*
 
 The scale is a board assessment, **not a win probability**. Paths show modeled continuations and their limits; unknown opponent spells and future draws are not predicted. When the board changes, old guidance loses its leading highlight while Coach reassesses. [Read the screen](docs/using-coach.md#read-the-screen).
 
@@ -36,7 +36,7 @@ Coach uses the hosted model `current` at `https://api.mtgacoach.com/v1`. Trial a
 
 ### How updates work
 
-Coach checks its channel at launch and downloads an update in the background. A compatible update can apply after the match and its post-match work finish, or on the next launch. For a runtime or Arena bridge change, expand **Help & settings** and click **Update** beside **Restart Coach** after your match. macOS may ask for permission to replace the app. The title bar shows the channel, package build, and Git commit.
+Coach checks its channel at launch and downloads an update in the background. A compatible update can apply after the match and its post-match work finish, or on the next launch. For a runtime or Arena bridge change, click **Update** in the fixed footer after your match. macOS may ask for permission to replace the app. The title bar shows the channel, package build, and Git commit.
 
 If you used the older Windows installer, pip, or a Git checkout, close the old copy and install the managed app once. Start it from the new shortcut. Coach uses your existing per-user settings and trial credentials. [Installation, update, and release guide](RELEASE.md)
 

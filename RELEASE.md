@@ -23,7 +23,7 @@ An older Inno, pip, or source installation needs this one-time migration to rece
 Coach checks its channel in the background each time it starts. Velopack stages a delta when available and automatically uses a full package when needed. Users continue playing with the version that started the match.
 
 - **Compatible update.** After a completed match, Coach waits for the existing safe-restart checks, including post-match work. It then closes, applies the staged package, and reopens. A compatible update already staged at the next launch can apply then.
-- **Runtime or Arena bridge change.** Finish your match, then expand **Help & settings**, click **Update** beside **Restart Coach**, and approve the restart. macOS may ask for permission to replace the installed app. Windows bridge deployment waits for Arena to be closed.
+- **Runtime or Arena bridge change.** Finish your match, then click **Update** in the fixed footer and approve the restart. macOS may ask for permission to replace the installed app. Windows bridge deployment waits for Arena to be closed.
 - **Offline or failed release.** The installed build can still open. A failed CI or native-package check leaves the previous published update available.
 
 Managed Mac packages include the native Arena bridge. Coach stages the bundled library by atomic replacement only while Arena is closed, before launching Arena. A native bridge change requires the explicit runtime-update path; restarting Coach alone does not replace a bridge already loaded into Arena.
@@ -70,11 +70,11 @@ Publishing a stable GitHub release also invokes the managed workflow. It recogni
 
 For update help, email [support@mtgacoach.com](mailto:support@mtgacoach.com) with your platform, installed channel, and version.
 
-Check the installed channel and commit first. Then check the corresponding feed, its most recent **Managed desktop releases** run, and the **Update** button under **Help & settings**, beside **Restart Coach**, for an update awaiting approval. The host writes update errors under the OS local application-data directory in `mtgacoach/updates/<channel>/update.log`.
+Check the installed channel and commit first. Then check the corresponding feed, its most recent **Managed desktop releases** run, and the **Update** button in the fixed footer for an update awaiting approval. The host writes update errors under the OS local application-data directory in `mtgacoach/updates/<channel>/update.log`.
 
 ## Bug Reports
 
-Expand **Help & settings** in the desktop app and choose **Debug report**.
+Choose **Debug report** from the always-visible recovery controls in the desktop app.
 
 Behavior:
 
