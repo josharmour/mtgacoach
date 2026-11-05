@@ -45,14 +45,24 @@ and volume are not artificially boosted.
 
 ## Runtime requirement
 
-Generated exchanges require the independent `arenaonair` core in the commentary
-worker's Python environment (or an explicitly configured source checkout).
-Coach's current managed packaging does not include that dependency. Without it,
-the two style controls, voice delivery and built-in strategic fallback work,
-but the generated analyst's semantic freshness audit and conversational humor
-are unavailable. A release advertising generated dual-caster analysis must
-include and verify a pinned core runtime; local Torch/Chatterbox extras are not
-needed when speech uses Kokoro or the hosted service.
+Managed Coach includes the `arenaonair` core pinned to commit
+`20d87e8c5034f247f551bef326a4ac4d7983eff9`. Each platform's packaging check
+initializes the generated commentary booth from the installed Python runtime,
+outside the checkout. The core revision is recorded in `coach-release.json`
+and included in the runtime compatibility identity.
+
+Source and standalone Python installations need that core in the commentary
+worker's environment (or an explicitly configured source checkout). Without it,
+the style controls, voice delivery and built-in strategic fallback work, but
+generated analysis is unavailable. To install the tested core without optional
+local speech models:
+
+```sh
+python -m pip install https://github.com/josharmour/arenaonair/archive/20d87e8c5034f247f551bef326a4ac4d7983eff9.zip
+```
+
+The core requires Python 3.11 or newer. Its Torch/Chatterbox extras are not needed
+when speech uses Kokoro or the hosted service.
 
 ## Coverage research and local evidence
 

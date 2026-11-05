@@ -16,6 +16,7 @@ from typing import Any
 from PySide6.QtCore import QPoint, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFrame,
@@ -24,18 +25,22 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QPushButton,
+    QScrollArea,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from arenamcp import settings as settings
+from arenamcp.forecast_identity import forecast_key
 
 from . import theme
 from .coach_session import CoachSession
 from .flow_layout import FlowLayout
 from .plan_text import plan_steps_text
 from .rank_strip import RankStrip
+from .strategy_model import decision_heading, is_current, number
+from .strategy_view import Disclosure, StrategyView, text_label
 from .theme import block, span
 
 logger = logging.getLogger(__name__)
@@ -302,14 +307,14 @@ class VoiceStylePopover(QFrame):
     user clicks elsewhere.
     """
 
-    def __init__(self, parent: QWidget) -> None:
+    def __init__(self, parent: QWidget, title: str = "Voice & style") -> None:
         super().__init__(parent, Qt.Popup)
         self.setObjectName("voiceStylePopover")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(6, 8, 6, 6)
         self._layout.setSpacing(1)
-        heading = _caption("Voice & style")
+        heading = _caption(title)
         heading.setContentsMargins(10, 0, 0, 4)
         self._layout.addWidget(heading)
         self.setMinimumWidth(220)
@@ -400,9 +405,21 @@ class CompactCoachPanel(QWidget):
     # Layout
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+        # Long forecasts and expanded details must not set the window's minimum
+        # height. Keep play/audio controls outside this scrolling viewport.
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setFrameShape(QFrame.NoFrame)
+        self.content_scroll.setAccessibleName("Coaching and game details")
+        self.content_body = QWidget()
+        root = QVBoxLayout(self.content_body)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
+        self.content_scroll.setWidget(self.content_body)
+        shell.addWidget(self.content_scroll, 1)
 
         # Turn strip: whose turn, turn number, phase.
         self.turn_strip = QLabel("Waiting for MTGA…")
@@ -412,8 +429,9 @@ class CompactCoachPanel(QWidget):
         self.turn_strip.setWordWrap(True)
         root.addWidget(self.turn_strip)
 
+        self.rank_details = Disclosure("Rank & recent matches")
         self.rank_strip = RankStrip(self)
-        root.addWidget(self.rank_strip)
+        self.rank_details.content.addWidget(self.rank_strip)
 
         # Status chips: model and game source.
         self.status_row = QWidget()
@@ -485,7 +503,7 @@ class CompactCoachPanel(QWidget):
         # Now card: the latest spoken advice, then the tactical line and plan.
         self.now_card, now_layout = _card()
         now_head = QHBoxLayout()
-        now_head.addWidget(_caption("Now"))
+        now_head.addWidget(_caption("Your next decision"))
         now_head.addStretch()
         self.now_time = QLabel("")
         self.now_time.setProperty("role", "small")
@@ -499,6 +517,16 @@ class CompactCoachPanel(QWidget):
         self.now_text.setWordWrap(True)
         self.now_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
         now_layout.addWidget(self.now_text)
+        self.priority_label = text_label()
+        now_layout.addWidget(self.priority_label)
+        self.now_reason = text_label()
+        now_layout.addWidget(self.now_reason)
+        self.watch_label = text_label()
+        self.watch_label.setProperty("tone", "warn")
+        now_layout.addWidget(self.watch_label)
+        self.plan_details = Disclosure("Plan & advice details")
+        self.advice_detail = text_label(role="body")
+        self.plan_details.content.addWidget(self.advice_detail)
 
         self.now_divider = _divider()
         self.now_divider.hide()
@@ -512,14 +540,14 @@ class CompactCoachPanel(QWidget):
             "Rule-of-thumb suggestion from the heuristic hints (not a simulation)"
         )
         self.mcts_pill_label.hide()
-        now_layout.addWidget(self.mcts_pill_label)
+        self.plan_details.content.addWidget(self.mcts_pill_label)
 
         self.turn_plan_label = QLabel()
         self.turn_plan_label.setObjectName("turnPlanLabel")
         self.turn_plan_label.setWordWrap(True)
         self.turn_plan_label.setTextFormat(Qt.RichText)
         self.turn_plan_label.hide()
-        now_layout.addWidget(self.turn_plan_label)
+        self.plan_details.content.addWidget(self.turn_plan_label)
 
         # Strategy: role (who's the beatdown), clocks, and the 3-turn plan.
         self.game_plan_label = QLabel()
@@ -527,8 +555,15 @@ class CompactCoachPanel(QWidget):
         self.game_plan_label.setWordWrap(True)
         self.game_plan_label.setTextFormat(Qt.RichText)
         self.game_plan_label.hide()
-        now_layout.addWidget(self.game_plan_label)
+        self.plan_details.content.addWidget(self.game_plan_label)
         root.addWidget(self.now_card)
+        self.strategy_view = StrategyView()
+        self.strategy_view.hide()
+        self.strategy_view.scale.set_motion(bool(self._settings.get("desktop_animate_outlook", True)))
+        root.addWidget(self.strategy_view)
+        root.addWidget(self.plan_details)
+        self.position_summary = text_label(role="body")
+        root.addWidget(self.position_summary)
 
         # Board card: sized to its content.
         board_card, board_layout = _card()
@@ -538,12 +573,14 @@ class CompactCoachPanel(QWidget):
         self.game_state_view.setWordWrap(True)
         self.game_state_view.setTextInteractionFlags(Qt.TextSelectableByMouse)
         board_layout.addWidget(self.game_state_view)
-        root.addWidget(board_card)
+        self.board_details = Disclosure("Hand & board")
+        self.board_details.content.addWidget(board_card)
+        root.addWidget(self.board_details)
 
         # Feed card: proactive advice and chronological activity log.
         feed_card, feed_layout = _card()
         feed_head = QHBoxLayout()
-        self.feed_caption = _caption("Feed")
+        self.feed_caption = _caption("Activity history")
         feed_head.addWidget(self.feed_caption)
         feed_head.addStretch()
         self.latest_feed_btn = QPushButton("Latest ↓")
@@ -558,18 +595,25 @@ class CompactCoachPanel(QWidget):
         self.log_view.setProperty("bare", True)
         self.log_view.setReadOnly(True)
         self.log_view.setMinimumHeight(90)
+        self.log_view.setMaximumHeight(220)
         self._feed_follow_latest = True
         self._feed_updating = False
         self.log_view.verticalScrollBar().valueChanged.connect(self._on_feed_scrolled)
         self.log_view.verticalScrollBar().rangeChanged.connect(self._on_feed_range_changed)
         feed_layout.addWidget(self.log_view, 1)
 
-        root.addWidget(feed_card, stretch=1)
+        self.latest_event = text_label()
+        root.addWidget(self.latest_event)
+        self.feed_details = Disclosure("Activity history")
+        self.feed_details.content.addWidget(feed_card)
+        root.addWidget(self.feed_details)
 
         # Primary controls.
-        controls = FlowLayout()
+        self.primary_controls = QWidget()
+        controls = FlowLayout(self.primary_controls)
+        controls.setContentsMargins(8, 8, 8, 8)
         controls.setSpacing(6)
-        self.ap_btn = QPushButton("Autoplay: Off")
+        self.ap_btn = QPushButton("Enable autoplay")
         self.ap_btn.setObjectName("apButton")
         self.ap_btn.setProperty("state", "off")
         self.ap_btn.setToolTip("Toggle autoplay — automatically plays the current match")
@@ -583,16 +627,23 @@ class CompactCoachPanel(QWidget):
             "Continues until turned off; requires Autoplay to be on."
         )
         self.auto_queue_btn.clicked.connect(self._toggle_auto_queue)
-        controls.addWidget(self.auto_queue_btn)
+        self.after_match_popover = VoiceStylePopover(self, "After this match")
+        self.after_match_popover.setAccessibleName("After this match")
+        self.after_match_popover.add_button(self.auto_queue_btn)
+        self.after_match_btn = QPushButton("After match…")
+        self.after_match_btn.clicked.connect(
+            lambda: self.after_match_popover.popup_from(self.after_match_btn)
+        )
+        controls.addWidget(self.after_match_btn)
         self._grind_enabled = False
         self.auto_quest_btn = QPushButton("Grind: Off")
         self.auto_quest_btn.setToolTip(
             "Complete quests, then earn remaining daily and weekly mastery XP. Requires Autoplay and an initial match."
         )
         self.auto_quest_btn.clicked.connect(self._configure_auto_quest)
-        controls.addWidget(self.auto_quest_btn)
+        self.after_match_popover.add_button(self.auto_quest_btn)
 
-        self.stop_speech_btn = QPushButton("■")
+        self.stop_speech_btn = QPushButton("Stop speech")
         self.stop_speech_btn.setObjectName("stopSpeechButton")
         self.stop_speech_btn.setToolTip("Stop speaking")
         self.stop_speech_btn.setAccessibleName("Stop speaking")
@@ -604,27 +655,29 @@ class CompactCoachPanel(QWidget):
         self.more_btn.setToolTip("Speech on/off, voice engine, advice or announcers, and voice preview")
         self.more_btn.clicked.connect(self._show_voice_style)
         controls.addWidget(self.more_btn)
-        root.addLayout(controls)
+        shell.addWidget(self.primary_controls)
 
         self.auto_queue_status_label = QLabel()
         self.auto_queue_status_label.setObjectName("autoQueueStatus")
         self.auto_queue_status_label.setTextFormat(Qt.RichText)
         self.auto_queue_status_label.setWordWrap(True)
-        root.addWidget(self.auto_queue_status_label)
+        self.after_match_popover._layout.addWidget(self.auto_queue_status_label)
         self._render_auto_queue_status()
         self.auto_quest_status_label = QLabel("Grind: Off")
         self.auto_quest_status_label.setTextFormat(Qt.PlainText)
         self.auto_quest_status_label.setWordWrap(True)
-        root.addWidget(self.auto_quest_status_label)
+        self.after_match_popover._layout.addWidget(self.auto_quest_status_label)
+        self.auto_quest_status_label.hide()
 
+        self.help_details = Disclosure("Help & settings")
         self.autopilot_bug_btn = QPushButton("Autopilot bug")
         self.autopilot_bug_btn.setObjectName("autopilotBugButton")
-        self.autopilot_bug_btn.setProperty("variant", "primary")
+        self.autopilot_bug_btn.setProperty("variant", "flat")
         self.autopilot_bug_btn.setToolTip(
             "Report an incorrect autoplay decision with the current game context"
         )
         self.autopilot_bug_btn.clicked.connect(self._on_autopilot_bug_clicked)
-        root.addWidget(self.autopilot_bug_btn)
+        self.help_details.content.addWidget(self.autopilot_bug_btn)
         self.autopilot_report_link = QLabel()
         self.autopilot_report_link.setWordWrap(True)
         self.autopilot_report_link.setTextFormat(Qt.RichText)
@@ -665,11 +718,22 @@ class CompactCoachPanel(QWidget):
         self.update_btn.setStyleSheet("padding: 5px 6px;")
         self.update_btn.hide()  # The managed host enables the update controls.
         recovery_controls.addWidget(self.update_btn)
-        root.addLayout(recovery_controls)
+        self.help_details.content.addLayout(recovery_controls)
+        self.animate_outlook = QCheckBox("Animate outlook changes")
+        self.animate_outlook.setChecked(bool(self._settings.get("desktop_animate_outlook", True)))
+        self.animate_outlook.toggled.connect(self._set_outlook_motion)
+        self.help_details.content.addWidget(self.animate_outlook)
+        root.addWidget(self.help_details)
+        root.addWidget(self.rank_details)
+        root.addStretch()
 
         self._build_voice_style_popover()
         self._refresh_status_dots()
         self._render_board({})
+
+    def _set_outlook_motion(self, enabled: bool) -> None:
+        self._settings.set("desktop_animate_outlook", enabled)
+        self.strategy_view.scale.set_motion(enabled)
 
     def _build_voice_style_popover(self) -> None:
         self.voice_style_popover = VoiceStylePopover(self)
@@ -806,7 +870,7 @@ class CompactCoachPanel(QWidget):
         from arenamcp.commentary.status import status_label
 
         self.commentary_label.setText(status_label(status))
-        self.commentary_label.setVisible(status.get("state") != "disabled")
+        self.commentary_label.setVisible(status.get("state") not in {"disabled", "idle", "waiting"})
 
     def _wire_session(self) -> None:
         self._session.gameStateChanged.connect(self._on_game_state_changed)
@@ -957,6 +1021,7 @@ class CompactCoachPanel(QWidget):
             f"border: 1px solid {theme.color(tone)}; border-radius: {tokens.radius_card}px; }}"
         )
         self.startup_banner.show()
+        self.help_details.set_expanded(True)
         # The startup card owns the sidebar while it is up (#215).
         self.backend_status_label.hide()
 
@@ -1090,7 +1155,26 @@ class CompactCoachPanel(QWidget):
         self.concede_banner.show()
 
     def _on_game_state_changed(self, state: dict[str, Any]) -> None:
+        previous_key = forecast_key(self._last_state)
         self._last_state = state if isinstance(state, dict) else {}
+        self.strategy_view.setVisible(
+            bool(
+                self._last_state.get("match_id")
+                and self._last_state.get("turn")
+                and not self._last_state.get("game_over")
+                and not self._last_state.get("result")
+            )
+        )
+        if forecast_key(self._last_state) != previous_key:
+            self._now = None
+            self._latest_advice = None
+            self._last_plan = None
+            self._last_mcts = None
+            self._render_turn_plan()
+            self._render_tactical_line()
+        self.strategy_view.set_data(self._game_plan, self._last_state)
+        self._render_game_plan()
+        self._render_now()
         self.update_turn_strip(self._last_state)
         self._render_board(self._last_state)
         if not self._last_state.get("turn"):
@@ -1100,6 +1184,20 @@ class CompactCoachPanel(QWidget):
 
     def _render_board(self, state: dict[str, Any]) -> None:
         self.game_state_view.setText(self._format_game_state_html(state))
+        local = state.get("local_seat_id")
+        players = [p for p in state.get("players") or [] if isinstance(p, dict)]
+        you = next((p for p in players if p.get("seat_id") == local), {})
+        opp = next((p for p in players if p.get("seat_id") != local), {})
+        parts = []
+        if players:
+            parts.append(f"You {you.get('life_total', '?')} · Opponent {opp.get('life_total', '?')}")
+        pool = you.get("mana_pool")
+        if isinstance(pool, dict) and pool:
+            mana = " ".join(f"{key}:{value}" for key, value in pool.items() if number(value))
+            if mana:
+                parts.append("Floating mana " + mana)
+        self.position_summary.setText(" · ".join(parts))
+        self.position_summary.setVisible(bool(parts))
 
     def _on_mcts_updated(self, payload: Any) -> None:
         self._last_mcts = payload
@@ -1189,23 +1287,28 @@ class CompactCoachPanel(QWidget):
         self._sync_now_divider()
 
     def _sync_now_divider(self) -> None:
-        self.now_divider.setVisible(
-            not self.mcts_pill_label.isHidden()
-            or not self.turn_plan_label.isHidden()
-            or not self.game_plan_label.isHidden()
-        )
+        self.now_divider.hide()
 
     def _on_game_plan_changed(self, plan: Any) -> None:
         if isinstance(plan, dict):
+            if is_current(self._game_plan, self._last_state) and not is_current(plan, self._last_state):
+                return  # A late result must not replace the already-current assessment.
             self._game_plan = plan
+            self.strategy_view.set_data(plan, self._last_state)
             self._render_game_plan()
+            self._render_now()
 
     def _render_game_plan(self) -> None:
         """Role + clocks + the next three of our turns, from the game_plan event."""
         plan = self._game_plan if isinstance(self._game_plan, dict) else {}
         facts = plan.get("facts") if isinstance(plan.get("facts"), dict) else {}
         role = str(facts.get("role") or plan.get("role") or "")
-        steps = [s for s in plan.get("turn_plan") or [] if isinstance(s, dict)]
+        turn_number = number((self._last_state.get("turn") or {}).get("turn_number")) or 0
+        steps = [
+            s
+            for s in plan.get("turn_plan") or []
+            if isinstance(s, dict) and (number(s.get("turn")) or 0) >= turn_number
+        ]
         status = plan.get("plan_status") if isinstance(plan.get("plan_status"), dict) else {}
         if not role and not steps and not status:
             self.game_plan_label.hide()
@@ -1216,6 +1319,8 @@ class CompactCoachPanel(QWidget):
             return span(text, "muted", weight=700) + "&nbsp;&nbsp;"
 
         lines = []
+        if self._last_state.get("match_id") and not is_current(plan, self._last_state):
+            lines.append(block(span("Previous assessment · not current advice", "warn")))
         if status:
             # The plan's own status comes first: a missing plan is the thing to notice.
             lines.append(block(label("Plan") + _plan_status_html(status), size="caption"))
@@ -1279,7 +1384,14 @@ class CompactCoachPanel(QWidget):
             paused = "PAUSED" in val
             ap_on = "ON" in val or paused
             state = "paused" if paused else "on" if ap_on else "off"
-            self.ap_btn.setText(f"Autoplay: {state.capitalize()}")
+            self.ap_btn.setText(
+                "Pause autoplay"
+                if ap_on and not paused
+                else "Autoplay paused"
+                if paused
+                else "Enable autoplay"
+            )
+            self._render_now()
             self.ap_btn.setToolTip(
                 "Paused: see the latest autoplay notice. Toggle off/on to retry."
                 if paused
@@ -1290,8 +1402,10 @@ class CompactCoachPanel(QWidget):
         elif key == "GRIND":
             self._grind_enabled = val.strip().upper() == "ON"
             self.auto_quest_btn.setText("Grind: On" if self._grind_enabled else "Grind: Off")
+            self.auto_quest_status_label.setVisible(self._grind_enabled)
         elif key == "AUTO_QUEST":
             self.auto_quest_status_label.setText("Grind: " + val)
+            self.auto_quest_status_label.setVisible(self._grind_enabled)
         elif key == "AUTO_QUEUE":
             state = val.strip().upper()
             if state in {"ON", "OFF"}:
@@ -1456,6 +1570,9 @@ class CompactCoachPanel(QWidget):
             )
 
     def _on_spoken_line(self, text: str) -> None:
+        if self._execution_trace(text):
+            self._on_log_emitted(text, "debug")
+            return
         display_text = text
         if self._latest_advice:
             detailed, label = self._latest_advice
@@ -1470,19 +1587,56 @@ class CompactCoachPanel(QWidget):
         self.append_log(text, role="spoken")
 
     def _render_now(self) -> None:
-        if self._now is None:
-            self.now_text.setText(_NOW_EMPTY)
-            self.now_text.setProperty("empty", True)
+        facts = self._game_plan.get("facts") or {}
+        reason = str(facts.get("role_reason") or "") if is_current(self._game_plan, self._last_state) else ""
+        self.now_reason.setText(reason[:177] + "…" if len(reason) > 180 else reason)
+        self.now_reason.setToolTip(reason)
+        self.now_reason.setVisible(bool(reason))
+        threats = facts.get("threats") or []
+        watch = str((facts.get("flags") or [""])[0])
+        if not watch and threats and isinstance(threats[0], dict):
+            watch = ": ".join(str(threats[0].get(k) or "") for k in ("name", "why"))
+        self.watch_label.setText(
+            "Watch for: " + watch if watch and is_current(self._game_plan, self._last_state) else ""
+        )
+        self.watch_label.setVisible(bool(self.watch_label.text()))
+        if self._last_state.get("match_id") and self._last_state.get("turn"):
+            heading, ownership = decision_heading(
+                self._last_state, self._game_plan, self._dot_values.get("AUTOPILOT", "")
+            )
+            self.now_text.setText(heading)
+            self.now_text.setProperty("empty", False)
+            self.priority_label.setText(ownership)
             self.now_time.setText("")
-        else:
+        elif self._now is not None:
             stamp, text = self._now
             self.now_text.setText(text)
             self.now_text.setProperty("empty", False)
             self.now_time.setText(stamp)
+            self.priority_label.clear()
+        else:
+            self.now_text.setText(_NOW_EMPTY)
+            self.now_text.setProperty("empty", True)
+            self.now_time.setText("")
+            self.priority_label.clear()
+        self.advice_detail.setText(self._now[1] if self._now else "")
         theme.repolish(self.now_text)
+
+    @staticmethod
+    def _execution_trace(text: str) -> bool:
+        return bool(
+            re.match(
+                r"^(?:Plan complete\b|Planning:|PLAN:|\[\d+/\d+\]\s|\d+\.\s+declare_)",
+                text.strip(),
+                re.IGNORECASE,
+            )
+        )
 
     def _on_advice_received(self, text: str, label: str) -> None:
         if not text.strip():
+            return
+        if self._execution_trace(text):
+            self._on_log_emitted(text, "debug")
             return
         self._latest_advice = (text, label)
         # Advice is useful even when narration is muted, suppressed, or has not
@@ -1492,6 +1646,8 @@ class CompactCoachPanel(QWidget):
         self.append_log(text, role="advice")
 
     def _on_log_emitted(self, msg: str, role: str) -> None:
+        if self._execution_trace(msg) and role != "error" and not self._debug_logging:
+            return
         if role in self._PERTINENT_LOG_ROLES or self._debug_logging:
             self.append_log(msg, role=role)
 
@@ -1510,7 +1666,22 @@ class CompactCoachPanel(QWidget):
 
     def append_log(self, text: str, role: str = "status") -> None:
         """Append a line to the activity feed (oldest first, newest at the bottom)."""
+        if not text.strip():
+            return
+        if (
+            self._activity_history
+            and role != "error"
+            and _same_feed_line(self._activity_history[-1][1], text)
+        ):
+            return
         stamp = datetime.datetime.now().strftime("%H:%M")
+        first_line = text.splitlines()[0]
+        self.latest_event.setText(
+            "Latest · " + (first_line[:177] + "…" if len(first_line) > 180 else first_line)
+        )
+        self.latest_event.setToolTip(text)
+        if role == "error":
+            self.feed_details.set_expanded(True)
         self._activity_history.append((stamp, text, role))
         if len(self._activity_history) > MAX_FEED_LINES:
             del self._activity_history[: len(self._activity_history) - MAX_FEED_LINES]
@@ -1632,7 +1803,16 @@ class CompactCoachPanel(QWidget):
             if self._dot_values.get("MODEL")
             else "muted"
         )
-        self.model_chip.setText(span("●", model_tone) + "&nbsp;" + span(model, "text", weight=600))
+        model_label = (
+            "Coach ready"
+            if self._startup_status.get("ready")
+            else "Coach configured"
+            if self._dot_values.get("MODEL")
+            else "Coach starting"
+        )
+        if model_tone == "bad":
+            model_label = "Coach needs attention"
+        self.model_chip.setText(span("●", model_tone) + "&nbsp;" + span(model_label, "text", weight=600))
         self.model_chip.setToolTip(
             "Trial or license key expired — subscribe at mtgacoach.com/subscribe and enter your key in Setup & Repair."
             if auth_expired
@@ -1640,7 +1820,7 @@ class CompactCoachPanel(QWidget):
             if preparing
             else "Coach ready. Model used for advice."
             if self._startup_status.get("ready")
-            else "Model configured for advice"
+            else f"Model configured for advice: {model}"
         )
 
         device = self._dot_values.get("DEVICE") or ""
@@ -1671,7 +1851,7 @@ class CompactCoachPanel(QWidget):
                     )
                 self.source_chip.setToolTip(f"MTGA on {phone}: game log mirrored over adb{tip}")
         elif bridge_on:
-            self.source_chip.setText(span("●", "good") + "&nbsp;Bridge")
+            self.source_chip.setText(span("●", "good") + "&nbsp;Arena connected")
             self.source_chip.setToolTip("Game state from Player.log, enriched by the GRE bridge")
         else:
             self.source_chip.setText(span("●", "good" if in_game else "muted") + "&nbsp;Log watcher")
@@ -1695,6 +1875,7 @@ class CompactCoachPanel(QWidget):
         self._render_tactical_line()
         self._render_turn_plan()
         self._render_game_plan()
+        self.strategy_view.refresh()
         self._render_now()
         self._render_feed()
 

@@ -13,7 +13,7 @@ on:
         options: [master, stable]
         default: master
       version:
-        description: Existing stable release tag (stable lane only)
+        description: Existing v4.0.x tag matching a published master build (stable only)
         required: false
 permissions:
   contents: read
@@ -35,6 +35,9 @@ jobs:
       build: ${{ steps.pick.outputs.build }}
       cache_epoch: ${{ steps.pick.outputs.cache_epoch }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - id: pick
         env:
           GH_TOKEN: ${{ github.token }}
@@ -43,11 +46,13 @@ jobs:
           COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           if [[ "$LANE" == stable ]]; then
-            [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            python scripts/release_version.py tag "$TAG" > /dev/null
             COMMIT=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)
-            version=${TAG#v}
+            manifests=$(mktemp -d)
+            gh release download -R "$GITHUB_REPOSITORY" coach-master-feed --pattern 'published.master-*.json' --dir "$manifests"
+            version=$(python scripts/release_version.py promote "$TAG" "$COMMIT" "$manifests")
           else
-            version="1.0.$GITHUB_RUN_NUMBER"
+            version=$(python scripts/release_version.py master "$GITHUB_RUN_NUMBER")
           fi
           if [[ "$GITHUB_EVENT_NAME" != workflow_run ]]; then
             passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/tests.yml/runs?head_sha=$COMMIT&event=push" --jq 'any(.workflow_runs[]; .conclusion == "success" and .head_branch == "master")')

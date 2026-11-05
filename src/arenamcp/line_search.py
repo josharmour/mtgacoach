@@ -246,6 +246,10 @@ class Line:
             "dead_at": self.dead_at,
             "win_at": self.win_at,
             "now_life": self.now_life,
+            "complete": self.complete,
+            "distant": self.distant_v is not None,
+            "unsupported": list(self.unsupported),
+            "block": self.block,
             "value": round(float(self.v), 2),
             "steps": [
                 {
