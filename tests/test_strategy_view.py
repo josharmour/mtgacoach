@@ -9,8 +9,7 @@ from arenamcp.plan_card import card_payload
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QVariantAnimation
-from PySide6.QtWidgets import QScrollArea
+from PySide6.QtCore import QPoint, QRect, QVariantAnimation
 from tests.test_compact_coach import make_snapshot
 
 from arenamcp.desktop import theme
@@ -267,13 +266,11 @@ def test_native_companion_fits_narrow_sidebar(qapp, width, palette):
     state = make_snapshot()
     panel._on_game_state_changed(state)
     panel._on_game_plan_changed(forecast(state))
-    scroll = QScrollArea()
-    scroll.setWidgetResizable(True)
-    scroll.setWidget(panel)
-    scroll.resize(width, 850)
-    scroll.show()
+    panel.resize(width, 850)
+    panel.show()
     qapp.processEvents()
-    assert scroll.horizontalScrollBar().maximum() == 0
+    assert panel.content_scroll.horizontalScrollBar().maximum() == 0
+    assert panel.height() == 850
     assert panel.width() <= width
     assert panel.strategy_view.cards[0].summary.wordWrap()
     assert panel.strategy_view.cards[0].rail.isVisible()
@@ -283,13 +280,79 @@ def test_native_companion_fits_narrow_sidebar(qapp, width, palette):
         if card.rail.isVisible():
             assert card.outcome.y() >= card.rail.y() + card.rail.height()
     children = [
-        panel.layout().itemAt(i).widget()
-        for i in range(panel.layout().count())
-        if panel.layout().itemAt(i).widget() and panel.layout().itemAt(i).widget().isVisible()
+        panel.content_body.layout().itemAt(i).widget()
+        for i in range(panel.content_body.layout().count())
+        if panel.content_body.layout().itemAt(i).widget()
+        and panel.content_body.layout().itemAt(i).widget().isVisible()
     ]
     for before, after in zip(children, children[1:], strict=False):
         assert before.geometry().bottom() < after.geometry().top()
     assumptions = panel.strategy_view.assumptions
     assert assumptions.toggle.geometry().bottom() < assumptions.height()
-    scroll.close()
-    scroll.deleteLater()
+    panel.close()
+    panel.deleteLater()
+
+
+@pytest.mark.parametrize("height", [720, 900, 1020])
+def test_real_window_keeps_controls_visible_with_long_forecast(qapp, monkeypatch, height):
+    from types import SimpleNamespace
+
+    from arenamcp.desktop import main_window
+
+    monkeypatch.setattr(main_window.MainWindow, "_start_session", lambda self: None)
+    monkeypatch.setattr(main_window, "WatchdogPingBridge", None)
+    # Qt's offscreen screen is only 800px tall. Exercise the real screen-clamp
+    # code with a 1080px desktop, retaining space for its taskbar/menu bar.
+    screen = SimpleNamespace(availableGeometry=lambda: QRect(0, 0, 1920, 1040))
+    monkeypatch.setattr(main_window.QGuiApplication, "screenAt", lambda point: screen)
+    monkeypatch.setenv("MTGACOACH_DEV_CHECKOUT", "/test/dev")
+    monkeypatch.setenv("MTGACOACH_DEV_COMMIT", "a" * 40)
+    window = main_window.MainWindow()
+    panel = window.coach_panel
+    state = make_snapshot()
+    panel._on_game_state_changed(state)
+    panel._on_game_plan_changed(forecast(state))
+    window.resize(420, height)
+    window.show()
+    try:
+        for expanded in (False, True):
+            for detail in (
+                panel.plan_details,
+                panel.board_details,
+                panel.feed_details,
+                panel.help_details,
+                panel.rank_details,
+                panel.strategy_view.assumptions,
+            ):
+                detail.set_expanded(expanded)
+            qapp.processEvents()
+            assert window.height() == height
+            assert window.width() == 420
+            scroll = panel.content_scroll
+            assert scroll.horizontalScrollBar().maximum() == 0
+            bar = scroll.verticalScrollBar()
+            assert bar.maximum() > 0
+            for position in (bar.minimum(), bar.maximum()):
+                bar.setValue(position)
+                qapp.processEvents()
+                for control in (
+                    panel.ap_btn,
+                    panel.after_match_btn,
+                    panel.stop_speech_btn,
+                    panel.more_btn,
+                    window.dev_commit_button,
+                ):
+                    rect = control.rect().translated(control.mapTo(window, QPoint()))
+                    assert control.isVisible()
+                    assert window.rect().contains(rect)
+                    assert window.childAt(rect.center()) is control
+            # All lower details remain reachable, without moving the footer.
+            scroll.ensureWidgetVisible(panel.rank_details)
+            qapp.processEvents()
+            rect = panel.rank_details.toggle.rect().translated(
+                panel.rank_details.toggle.mapTo(scroll.viewport(), QPoint())
+            )
+            assert scroll.viewport().rect().contains(rect)
+    finally:
+        window.close()
+        window.deleteLater()

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QPushButton,
+    QScrollArea,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -404,9 +405,21 @@ class CompactCoachPanel(QWidget):
     # Layout
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+        # Long forecasts and expanded details must not set the window's minimum
+        # height. Keep play/audio controls outside this scrolling viewport.
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setFrameShape(QFrame.NoFrame)
+        self.content_scroll.setAccessibleName("Coaching and game details")
+        self.content_body = QWidget()
+        root = QVBoxLayout(self.content_body)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
+        self.content_scroll.setWidget(self.content_body)
+        shell.addWidget(self.content_scroll, 1)
 
         # Turn strip: whose turn, turn number, phase.
         self.turn_strip = QLabel("Waiting for MTGA…")
@@ -596,7 +609,9 @@ class CompactCoachPanel(QWidget):
         root.addWidget(self.feed_details)
 
         # Primary controls.
-        controls = FlowLayout()
+        self.primary_controls = QWidget()
+        controls = FlowLayout(self.primary_controls)
+        controls.setContentsMargins(8, 8, 8, 8)
         controls.setSpacing(6)
         self.ap_btn = QPushButton("Enable autoplay")
         self.ap_btn.setObjectName("apButton")
@@ -640,7 +655,7 @@ class CompactCoachPanel(QWidget):
         self.more_btn.setToolTip("Speech on/off, voice engine, advice or announcers, and voice preview")
         self.more_btn.clicked.connect(self._show_voice_style)
         controls.addWidget(self.more_btn)
-        root.addLayout(controls)
+        shell.addWidget(self.primary_controls)
 
         self.auto_queue_status_label = QLabel()
         self.auto_queue_status_label.setObjectName("autoQueueStatus")
