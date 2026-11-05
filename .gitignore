@@ -60,3 +60,4 @@ launch.sh
 run_update.py
 
 .__smb*
+.build-cache/

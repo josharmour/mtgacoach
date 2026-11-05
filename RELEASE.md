@@ -30,9 +30,13 @@ Managed Mac packages include the native Arena bridge. Coach stages the bundled l
 
 ## Shipping changes from master
 
-Submit changes through a pull request and wait for **pytest**, **ruff**, and **Hosted trials and Patreon keys** to pass before merging. The push to master runs the checks on the merged commit. A successful run starts **Managed desktop releases**, which builds and launches the packaged app for Windows x64, Linux x64, and Apple Silicon Mac. Once every build passes, CI uploads the packages and then the update indexes. Master users pick up the build on launch. You do not need to create a version tag for this channel.
+Release builds use one version for the app, wheel, and updater package. CI stamps the selected release version into its build checkout before creating the wheel; the packaging step rejects mismatches. The source checkout retains its next stable version, while Dev identifies itself by commit. The website reads the published updater indexes rather than hardcoding a source version.
 
-To see what is actually live, open the [master feed](https://github.com/josharmour/mtgacoach/releases/tag/coach-master-feed). The release body lists the published commit and package version. Compare the commit with the one in the Coach title bar. A green test run by itself means packaging can start.
+Submit changes through a pull request and wait for **pytest**, **ruff**, and **Hosted trials and Patreon keys** to pass before merging. The push to master runs the checks on the merged commit. A successful run starts **Managed desktop releases**, which builds and launches the packaged app for Windows x64, Linux x64, and Apple Silicon Mac. Each platform publishes immediately after its own package checks pass, uploading packages before its update index. Master users pick up their platform's build on launch. You do not need to create a version tag for this channel.
+
+To see what is actually live, open the [master feed](https://github.com/josharmour/mtgacoach/releases/tag/coach-master-feed). The `published.master-<platform>.json` asset records the latest published commit and version for each platform, such as `published.master-osx-arm64.json`. Compare that commit with the one in the Coach title bar. The release body records the last release completed on all three platforms; an individual platform can be newer. A green test run by itself means packaging can start.
+
+Builds cache the Python runtime and dependencies by platform, Python version, dependency/build inputs, and week. Every build reinstalls the current Coach wheel and verifies its installed files against that wheel before qualifying the relocated package. Dependency changes or the weekly refresh rebuild the runtime. The Mac bridge cache also includes its source, harness, compiler, and SDK; unchanged native code is reused only after its signature is checked. These caches speed up packaging without skipping package launch or relocation checks. Use the [Dev launcher](DEV.md#quick-mac-iteration) for immediate local feedback on Python changes.
 
 ## Cutting a stable GitHub release
 

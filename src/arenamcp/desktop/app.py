@@ -256,6 +256,16 @@ def main() -> int:
         print(f"mtgacoach {__version__}")
         return 0
 
+    if checkout := os.environ.get("MTGACOACH_DEV_CHECKOUT"):
+        # Refresh on Restart Coach too, which execs the desktop module directly.
+        try:
+            commit = subprocess.check_output(
+                ["git", "-C", checkout, "rev-parse", "--short", "HEAD"], text=True, timeout=3
+            ).strip()
+        except (OSError, subprocess.SubprocessError):
+            commit = "unknown commit"
+        os.environ["MTGACOACH_BUILD_LABEL"] = f"dev source ({commit})"
+
     # Acquire singleton lock before initializing Qt or spawning background threads
     if not _acquire_single_instance_lock():
         _configure_logging()

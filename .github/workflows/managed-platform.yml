@@ -1,0 +1,127 @@
+name: Build and publish one desktop platform
+on:
+  workflow_call:
+    inputs:
+      os: {type: string, required: true}
+      rid: {type: string, required: true}
+      sha: {type: string, required: true}
+      lane: {type: string, required: true}
+      version: {type: string, required: true}
+      cache_epoch: {type: string, required: true}
+jobs:
+  build:
+    runs-on: ${{ inputs.os }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          cache: pip
+          python-version: '3.11'
+      - name: Identify Python build
+        id: runtime
+        shell: bash
+        run: python -c 'import hashlib, sys; print("key=" + hashlib.sha256(sys.version.encode()).hexdigest())' >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: .build-cache/runtime
+          key: coach-runtime-v1-${{ inputs.rid }}-${{ steps.runtime.outputs.key }}-${{ inputs.cache_epoch }}-${{ hashFiles('pyproject.toml', 'installer/build-runtime.ps1', 'installer/velopack/package.py') }}
+      - name: Identify Mac compiler
+        if: inputs.rid == 'osx-arm64'
+        id: compiler
+        shell: bash
+        run: |
+          python - <<'PYCODE' >> "$GITHUB_OUTPUT"
+          import hashlib, subprocess
+          version = subprocess.check_output(['clang++', '--version']) + subprocess.check_output(['xcrun', '--show-sdk-version'])
+          print('key=' + hashlib.sha256(version).hexdigest())
+          PYCODE
+      - uses: actions/cache@v4
+        if: inputs.rid == 'osx-arm64'
+        with:
+          path: .build-cache/native
+          key: coach-native-v1-${{ inputs.rid }}-${{ steps.compiler.outputs.key }}-${{ hashFiles('spikes/mac-il2cpp/probe.cpp', 'spikes/mac-il2cpp/tests/probe_batch_test.cpp', 'installer/velopack/package.py') }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: coach-nuget-v1-${{ inputs.rid }}-${{ hashFiles('installer/velopack/MTGACoach.csproj') }}
+      - name: Build and qualify package
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RID: ${{ inputs.rid }}
+          LANE: ${{ inputs.lane }}
+          VERSION: ${{ inputs.version }}
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          if [[ "$RID" == linux-* ]]; then
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y libportaudio2 libfuse2 squashfs-tools
+          fi
+          dotnet tool install --global vpk --version 1.2.161
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          python -m pip install build uv
+          python scripts/verify_bridge_release.py
+          python scripts/set_build_version.py "$VERSION"
+          python -m build --wheel
+          python installer/velopack/package.py "$RID" "$LANE" "$VERSION"
+          if [[ "$RID" == osx-* ]]; then
+            /usr/sbin/installer -pkg dist/publish/*-Setup.pkg -target CurrentUserHomeDirectory
+            app="$HOME/Applications/MTGA Coach.app"
+            if [[ "$LANE" == master ]]; then app="$HOME/Applications/MTGA Coach (master).app"; fi
+            test -O "$app" && test -w "$app/Contents/MacOS"
+            "$app/Contents/MacOS/MTGACoach" --version
+          fi
+          if [[ "$LANE" == stable && "$RID" == win-x64 ]]; then cp dist/*.whl dist/publish/; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: managed-${{ inputs.rid }}
+          path: dist/publish/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: managed-${{ inputs.rid }}
+          path: package
+      - name: Publish this platform after its qualification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LANE: ${{ inputs.lane }}
+          SHA: ${{ inputs.sha }}
+          VERSION: ${{ inputs.version }}
+          RID: ${{ inputs.rid }}
+        run: |
+          if [[ "$LANE" == master && "$SHA" != "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)" ]]; then
+            echo "A newer master revision superseded this build"
+            exit 0
+          fi
+          feed="coach-$LANE-feed"
+          # Upload all payloads before advertising them to the updater.
+          find package -maxdepth 1 -type f ! -name '*.json' ! -name '*.whl' -exec gh release upload -R "$GITHUB_REPOSITORY" "$feed" --clobber {} +
+          gh release upload -R "$GITHUB_REPOSITORY" "$feed" --clobber "package/releases.$LANE-$RID.json"
+          python - <<'PYCODE'
+          import json, os, pathlib
+          status = {key: os.environ[env] for key, env in [('commit', 'SHA'), ('version', 'VERSION'), ('platform', 'RID'), ('lane', 'LANE')]}
+          pathlib.Path(f"published.{status['lane']}-{status['platform']}.json").write_text(json.dumps(status) + '\n')
+          PYCODE
+          gh release upload -R "$GITHUB_REPOSITORY" "$feed" --clobber "published.$LANE-$RID.json"
+          if [[ "$LANE" == stable && "$RID" == win-x64 ]]; then
+            cp package/*-Setup.exe mtgacoach-Setup.exe
+            gh release upload -R "$GITHUB_REPOSITORY" "v$VERSION" mtgacoach-Setup.exe package/*.whl --clobber
+          fi

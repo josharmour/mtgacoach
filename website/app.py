@@ -113,6 +113,13 @@ async def landing_page(request: Request):
     return state.templates.TemplateResponse(request=request, name="landing.html")
 
 
+@app.get("/downloads/versions")
+async def download_versions():
+    from download_versions import published_versions
+
+    return JSONResponse(await published_versions(), headers={"Cache-Control": "public, max-age=60"})
+
+
 @app.get("/health")
 async def health():
     return {

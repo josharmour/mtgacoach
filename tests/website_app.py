@@ -24,6 +24,7 @@ WEBSITE_MODULES = (
     "state",
     "arenaonair",
     "match_bundles",
+    "download_versions",
     "routers",
     "routers.admin",
     "routers.billing",
