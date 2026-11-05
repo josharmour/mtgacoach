@@ -2,29 +2,107 @@
 
 import hashlib
 import json
+import os
 import shlex
 import shutil
 import subprocess
-import tempfile
-import zipfile
-import xml.etree.ElementTree as ET
 import sys
+import tempfile
+import xml.etree.ElementTree as ET
+import zipfile
+from email.parser import BytesParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE = ROOT / "dist" / "managed"
 RELEASES = ROOT / "dist" / "feed"
 OUTPUT = ROOT / "dist" / "publish"
+CACHE = Path(os.environ.get("MTGACOACH_BUILD_CACHE", ROOT / ".build-cache"))
 
 
 def run(*args, **kwargs):
     return subprocess.run(list(map(str, args)), check=True, **kwargs)
 
 
+def cache_key(rid, paths, extra=""):
+    digest = hashlib.sha256((rid + extra).encode())
+    for path in paths:
+        digest.update(str(path.relative_to(ROOT)).encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def save_runtime_cache(runtime, target):
+    staging = target.with_name(target.name + ".tmp")
+    if staging.exists():
+        shutil.rmtree(staging)
+    shutil.copytree(runtime, staging, symlinks=True)
+    staging.replace(target)
+
+
+def install_current_wheel(exe, wheel, rid):
+    # The package version can stay unchanged across source commits. Always
+    # replace arenamcp, including its RECORD-tracked deleted files.
+    run(
+        "uv",
+        "pip",
+        "install",
+        "--break-system-packages",
+        "--python",
+        exe,
+        "--reinstall-package",
+        "arenamcp",
+        "--no-deps",
+        wheel,
+    )
+    for path in (
+        exe.parent.parent.rglob("direct_url.json")
+        if not rid.startswith("win")
+        else exe.parent.rglob("direct_url.json")
+    ):
+        path.unlink()
+    if rid.startswith("win"):
+        for path in (exe.parent / "Scripts").glob("*.exe"):
+            path.unlink()
+
+
+def verify_installed_wheel(exe, wheel):
+    """A cached runtime must contain this wheel's code and resources."""
+    run(
+        exe,
+        "-I",
+        "-c",
+        """
+import importlib.util, pathlib, sys, zipfile
+root = pathlib.Path(importlib.util.find_spec("arenamcp").submodule_search_locations[0])
+with zipfile.ZipFile(sys.argv[1]) as wheel:
+    for name in wheel.namelist():
+        if name.startswith("arenamcp/") and not name.endswith("/"):
+            actual = root / name.removeprefix("arenamcp/")
+            if actual.read_bytes() != wheel.read(name):
+                raise SystemExit("Packaged runtime does not match current wheel: " + name)
+""",
+        wheel,
+    )
+
+
 def build_mac_bridge(rid):
     """Compile and qualify the bridge shipped beside the managed Mac runtime."""
     arch = "arm64" if rid == "osx-arm64" else "x86_64"
     source = ROOT / "spikes/mac-il2cpp/probe.cpp"
+    library = STAGE / "native/libmtgacoach_probe.dylib"
+    library.parent.mkdir(parents=True, exist_ok=True)
+    compiler = subprocess.check_output(["clang++", "--version"], text=True)
+    sdk = subprocess.check_output(["xcrun", "--show-sdk-version"], text=True)
+    key = cache_key(
+        rid, [source, source.parent / "tests/probe_batch_test.cpp", Path(__file__)], compiler + sdk
+    )
+    cached = CACHE / "native" / key / library.name
+    if cached.is_file():
+        shutil.copy2(cached, library)
+        run("codesign", "--verify", "--strict", library)
+        print("Reused qualified Mac bridge", flush=True)
+        return
     harness = ROOT / "dist/probe_batch_test"
     run(
         "clang++",
@@ -37,8 +115,6 @@ def build_mac_bridge(rid):
         harness,
     )
     run(harness)
-    library = STAGE / "native/libmtgacoach_probe.dylib"
-    library.parent.mkdir(parents=True, exist_ok=True)
     run(
         "clang++",
         "-std=c++17",
@@ -54,6 +130,8 @@ def build_mac_bridge(rid):
     )
     run("codesign", "--force", "--sign", "-", library)
     run("codesign", "--verify", "--strict", library)
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(library, cached)
 
 
 def prepare_icon(rid):
@@ -170,6 +248,8 @@ def main():
     channel = f"{lane}-{rid}"
     if lane not in ("master", "stable"):
         raise ValueError(lane)
+    if rid not in ("win-x64", "linux-x64", "osx-arm64"):
+        raise ValueError(rid)
     for folder in (STAGE, RELEASES, OUTPUT):
         if folder.exists():
             shutil.rmtree(folder)
@@ -177,6 +257,12 @@ def main():
     STAGE.mkdir(parents=True, exist_ok=True)
     OUTPUT.mkdir(parents=True, exist_ok=True)
     wheel = next((ROOT / "dist").glob("arenamcp-*.whl"))
+    with zipfile.ZipFile(wheel) as archive:
+        metadata = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+        if BytesParser().parsebytes(archive.read(metadata))["Version"] != version:
+            raise RuntimeError(
+                "App and package versions differ; stamp the release version before building the wheel"
+            )
     run(
         "dotnet",
         "publish",
@@ -189,25 +275,53 @@ def main():
         STAGE,
     )
     runtime = STAGE / "runtime"
+    key = cache_key(
+        rid, [ROOT / "pyproject.toml", ROOT / "installer/build-runtime.ps1", Path(__file__)], sys.version
+    )
+    cached_runtime = CACHE / "runtime" / key
+    reused_runtime = cached_runtime.is_dir()
+    if reused_runtime:
+        shutil.copytree(cached_runtime, runtime, symlinks=True)
+        print("Reused qualified Python runtime and dependencies", flush=True)
     if rid.startswith("osx"):
         build_mac_bridge(rid)
     if rid.startswith("win"):
         shutil.copyfile(ROOT / "mtga_coach.ico", STAGE / "mtga_coach.ico")
-        run(
-            "pwsh",
-            "-NoProfile",
-            "-File",
-            ROOT / "installer/build-runtime.ps1",
-            "-WheelPath",
-            wheel,
-            "-PythonHome",
-            sys.base_prefix,
-            "-RuntimeDir",
-            runtime,
-            "-RepoRoot",
-            ROOT,
-        )
+        if not reused_runtime:
+            run(
+                "pwsh",
+                "-NoProfile",
+                "-File",
+                ROOT / "installer/build-runtime.ps1",
+                "-WheelPath",
+                wheel,
+                "-PythonHome",
+                sys.base_prefix,
+                "-RuntimeDir",
+                runtime,
+                "-RepoRoot",
+                ROOT,
+            )
         exe = runtime / "python.exe"
+    else:
+        if not reused_runtime:
+            target = ROOT / "dist" / "cpython"
+            run("uv", "python", "install", "3.11", "--no-bin", "--install-dir", target)
+            portable = next(p for p in target.glob("cpython-*") if p.is_dir())
+            shutil.copytree(portable, runtime, symlinks=True)
+            run(
+                "uv",
+                "pip",
+                "install",
+                "--break-system-packages",
+                "--python",
+                runtime / "bin/python3",
+                f"{wheel}[full]",
+            )
+        exe = runtime / "bin/python3"
+    install_current_wheel(exe, wheel, rid)
+    verify_installed_wheel(exe, wheel)
+    if rid.startswith("win"):
         run(
             "pwsh",
             "-NoProfile",
@@ -223,13 +337,9 @@ def main():
             "-Label",
             "velopack",
         )
-    else:
-        target = ROOT / "dist" / "cpython"
-        run("uv", "python", "install", "3.11", "--no-bin", "--install-dir", target)
-        portable = next(p for p in target.glob("cpython-*") if p.is_dir())
-        shutil.copytree(portable, runtime, symlinks=True)
-        exe = runtime / "bin/python3"
-        run("uv", "pip", "install", "--break-system-packages", "--python", exe, f"{wheel}[full]")
+    if not reused_runtime:
+        cached_runtime.parent.mkdir(parents=True, exist_ok=True)
+        save_runtime_cache(runtime, cached_runtime)
     # Compare runtime dependencies and native bridge inputs across releases.
     deps = subprocess.check_output(
         [
@@ -255,6 +365,7 @@ def main():
         json.dumps(
             dict(
                 channel=channel,
+                version=version,
                 compatibility=compat,
                 commit=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
             )

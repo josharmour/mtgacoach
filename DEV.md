@@ -12,6 +12,22 @@ uv run --no-sync mtgacoach-desktop
 
 On the maintainer’s existing Mac checkout, use the working `.venv_mac_311` environment as described in [AGENTS.md](AGENTS.md). Python edits take effect on the next launch. Rebuild the C# plugin when you change its source.
 
+### Quick Mac iteration
+
+Use **MTGA Coach (Dev)** for local feedback instead of waiting for a public release. Create its launcher with a source checkout and an existing working environment:
+
+```sh
+python3 scripts/install_mac_dev_launcher.py --checkout "$PWD" --python "$PWD/.venv_mac_311/bin/python"
+```
+
+The app is installed in `~/Applications/MTGA Coach (Dev).app`. Quit the current Coach after the match, then open Dev. It reads Python directly from the selected checkout and shows `Dev (<commit>)` in its title. Relaunch after Python edits; no packaging or GitHub runner is involved. It uses the existing Coach settings and does not fetch Git changes or replace the managed application.
+
+The maintainer's dedicated Dev checkout is `~/repos/mtgacoach-dev`. Before asking for a local test, put the tested source changes in that checkout and verify its commit and imports. Keep native bridge/runtime qualification separate from Python iteration. The managed release remains the installation and update path for other users.
+
+For stable local screen-capture identity, install the launcher with `--sign-identity "Apple Development: ..."` using your existing development certificate. The native launcher keeps that identity while the external Python source changes. macOS still requires a separate Screen Recording grant for Dev. Release distributions require their own distribution signing setup.
+
+The maintainer tests changes in Dev first. Do not merge or publish follow-up changes until explicitly asked to **release to master** or **release to stable**. Master release publishes to master users; a named stable release publishes to stable users. Creating a reviewable PR and running its checks does not publish an update.
+
 ## Find the code
 
 | Feature | Entry point |

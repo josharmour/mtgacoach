@@ -60,9 +60,26 @@ def test_landing_page_content(client) -> None:
         assert f'href="{feed}{artifact}"' in html
     assert "osx-x64-Setup.pkg" not in html
     assert "macOS (Apple Silicon)" in html
+    assert "Version 3.8.3" not in html
+    assert 'data-release-summary="master"' in html
+    assert 'data-release-platform="osx-arm64"' in html
+    assert "coach-stable-feed" in html
     assert "unsigned" in html
     for clip in ("coach-turn.mp3", "coach-lethal.mp3", "coach-draft.mp3"):
         assert f"/static/audio/{clip}" in html
+
+
+def test_download_versions_endpoint_is_public(client, monkeypatch) -> None:
+    import download_versions
+
+    async def published():
+        return {"master": {"osx-arm64": "1.0.26"}, "stable": {}}
+
+    monkeypatch.setattr(download_versions, "published_versions", published)
+    response = client.get("/downloads/versions")
+    assert response.status_code == 200
+    assert response.json() == {"master": {"osx-arm64": "1.0.26"}, "stable": {}}
+    assert response.headers["cache-control"] == "public, max-age=60"
 
 
 def test_subscribe_page_keeps_its_patreon_links(client) -> None:

@@ -77,8 +77,9 @@ class MainWindow(QMainWindow):
         self._theme_actions: dict[str, QAction] = {}
         self._debug_logging_action: QAction | None = None
 
-        build = os.environ.get("MTGACOACH_BUILD_LABEL", "")
-        self.setWindowTitle(f"mtgacoach v{read_version()}" + (f" | {build}" if build else ""))
+        from .build_info import window_title
+
+        self.setWindowTitle(window_title(read_version()))
 
         # Session & Controller
         self._session = CoachSession(self)

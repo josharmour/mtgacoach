@@ -25,11 +25,15 @@ jobs:
   select:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && !github.event.release.prerelease && startsWith(github.event.release.tag_name, 'v')) || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
     outputs:
       sha: ${{ steps.pick.outputs.sha }}
       version: ${{ steps.pick.outputs.version }}
       lane: ${{ steps.pick.outputs.lane }}
       build: ${{ steps.pick.outputs.build }}
+      cache_epoch: ${{ steps.pick.outputs.cache_epoch }}
     steps:
       - id: pick
         env:
@@ -52,7 +56,14 @@ jobs:
           feed_body=$(gh release view -R "$GITHUB_REPOSITORY" "coach-$LANE-feed" --json body --jq .body 2>/dev/null || true)
           build=true
           if [[ "$LANE" == master && "$COMMIT" != "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)" ]]; then build=false; fi
-          if grep -Fxq "Published commit $COMMIT" <<< "$feed_body" && { [[ "$LANE" == master ]] || grep -Fxq "Package version $version" <<< "$feed_body"; }; then build=false; fi
+          if grep -Fxq "Published commit $COMMIT" <<< "$feed_body" && { [[ "$LANE" == master ]] || { grep -Fxq "Version $version" <<< "$feed_body" || grep -Fxq "Package version $version" <<< "$feed_body"; }; }; then build=false; fi
+          if [[ "$build" == true ]]; then
+            feed="coach-$LANE-feed"
+            if ! gh release view -R "$GITHUB_REPOSITORY" "$feed" --json tagName >/dev/null 2>&1; then
+              gh release create -R "$GITHUB_REPOSITORY" "$feed" --target "$COMMIT" --prerelease --latest=false --title "Coach $LANE update feed" --notes "Each platform publishes after its own checks pass. See the published.<channel>.json assets for the commit and version available on each platform."
+            fi
+          fi
+          echo "cache_epoch=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
           echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "lane=$LANE" >> "$GITHUB_OUTPUT"
           echo "sha=$COMMIT" >> "$GITHUB_OUTPUT"
@@ -67,62 +78,24 @@ jobs:
           - {os: windows-latest, rid: win-x64}
           - {os: ubuntu-22.04, rid: linux-x64}
           - {os: macos-latest, rid: osx-arm64}
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.select.outputs.sha }}
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 8.0.x
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Build and qualify package
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RID: ${{ matrix.rid }}
-          LANE: ${{ needs.select.outputs.lane }}
-          VERSION: ${{ needs.select.outputs.version }}
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          if [[ "$RID" == linux-* ]]; then
-            sudo apt-get update && sudo apt-get install -y libportaudio2 libfuse2 squashfs-tools
-          fi
-          dotnet tool install --global vpk --version 1.2.161
-          export PATH="$PATH:$HOME/.dotnet/tools"
-          python -m pip install build uv
-          python scripts/verify_bridge_release.py
-          python -m build --wheel
-          python installer/velopack/package.py "$RID" "$LANE" "$VERSION"
-          if [[ "$RID" == osx-* ]]; then
-            /usr/sbin/installer -pkg dist/publish/*-Setup.pkg -target CurrentUserHomeDirectory
-            app="$HOME/Applications/MTGA Coach.app"
-            if [[ "$LANE" == master ]]; then app="$HOME/Applications/MTGA Coach (master).app"; fi
-            test -O "$app" && test -w "$app/Contents/MacOS"
-            "$app/Contents/MacOS/MTGACoach" --version
-          fi
-          if [[ "$LANE" == stable && "$RID" == win-x64 ]]; then cp dist/*.whl dist/publish/; fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: managed-${{ matrix.rid }}
-          path: dist/publish/*
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 2
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/managed-platform.yml
+    with:
+      os: ${{ matrix.os }}
+      rid: ${{ matrix.rid }}
+      sha: ${{ needs.select.outputs.sha }}
+      lane: ${{ needs.select.outputs.lane }}
+      version: ${{ needs.select.outputs.version }}
+      cache_epoch: ${{ needs.select.outputs.cache_epoch }}
   publish:
     needs: [select, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: managed-*
-          path: packages
-      - name: Publish packages before channel indexes
-        shell: bash
+      - name: Record the completed release after all platforms publish
         env:
           GH_TOKEN: ${{ github.token }}
           LANE: ${{ needs.select.outputs.lane }}
@@ -130,26 +103,7 @@ jobs:
           VERSION: ${{ needs.select.outputs.version }}
         run: |
           if [[ "$LANE" == master && "$SHA" != "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/master" --jq .object.sha)" ]]; then
-            echo "A newer master revision superseded this build"
             exit 0
           fi
-          if [[ "$LANE" == stable ]]; then
-            # Draft releases are visible to this publishing token.
-            gh release view -R "$GITHUB_REPOSITORY" "v$VERSION" --json tagName >/dev/null
-          fi
-          feed="coach-$LANE-feed"
-          if ! gh release view -R "$GITHUB_REPOSITORY" "$feed" >/dev/null 2>&1; then
-            gh release create -R "$GITHUB_REPOSITORY" "$feed" --target "$SHA" --prerelease --latest=false --title "Coach $LANE update feed" --notes "Install the package for your platform once. Coach checks this channel on launch."
-          fi
-          for dir in packages/*; do
-            find "$dir" -maxdepth 1 -type f ! -name '*.json' ! -name '*.whl' -exec gh release upload -R "$GITHUB_REPOSITORY" "$feed" --clobber {} +
-          done
-          for dir in packages/*; do
-            gh release upload -R "$GITHUB_REPOSITORY" "$feed" --clobber "$dir"/releases.*.json
-          done
-          if [[ "$LANE" == stable ]]; then
-            cp packages/managed-win-x64/*-Setup.exe mtgacoach-Setup.exe
-            gh release upload -R "$GITHUB_REPOSITORY" "v$VERSION" mtgacoach-Setup.exe packages/managed-win-x64/*.whl --clobber
-          fi
-          printf 'Install once to follow this %s channel.\n\nPublished commit %s\nPackage version %s\n' "$LANE" "$SHA" "$VERSION" > "$RUNNER_TEMP/feed-notes.md"
-          gh release edit -R "$GITHUB_REPOSITORY" "$feed" --notes-file "$RUNNER_TEMP/feed-notes.md"
+          printf 'Install once to follow this %s channel. Each platform publishes after its own checks pass. The published.<channel>.json assets identify the latest available build per platform.\n\nLast release completed on every supported platform:\nPublished commit %s\nVersion %s\n' "$LANE" "$SHA" "$VERSION" > "$RUNNER_TEMP/feed-notes.md"
+          gh release edit -R "$GITHUB_REPOSITORY" "coach-$LANE-feed" --title "MTGA Coach — ${LANE^}" --notes-file "$RUNNER_TEMP/feed-notes.md"

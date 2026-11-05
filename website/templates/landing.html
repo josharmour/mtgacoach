@@ -68,7 +68,7 @@
     <section id="release" aria-labelledby="release-title">
         <div class="wrap">
             <div class="section-head">
-                <p class="label">Version 3.8.3 · November 2026</p>
+                <p class="label"><span data-release-summary="master">Master · latest published build</span></p>
                 <h2 id="release-title">Coach updates between matches.</h2>
                 <p class="lede">Install Coach once to follow tested master builds. Coach downloads updates at launch
                 and keeps your current match on the version that started it.</p>
@@ -86,7 +86,8 @@
                 </article>
             </div>
             <div class="hero-actions">
-                <a class="button primary" href="https://github.com/josharmour/mtgacoach/releases/tag/coach-master-feed">Managed downloads</a>
+                <a class="button primary" href="https://github.com/josharmour/mtgacoach/releases/tag/coach-master-feed">Master downloads</a>
+                <a class="text-link" href="https://github.com/josharmour/mtgacoach/releases/tag/coach-stable-feed"><span data-release-summary="stable">Stable downloads</span></a>
                 <a class="button" href="#get-started">Installation guide</a>
             </div>
         </div>
@@ -298,7 +299,7 @@
                     <tbody>
                         <tr>
                             <th scope="row">Windows</th>
-                            <td data-col="Install"><a href="https://github.com/josharmour/mtgacoach/releases/download/coach-master-feed/MTGACoachMaster-master-win-x64-Setup.exe"><strong>Install Coach for Windows</strong></a>. The app checks for tested updates at launch.</td>
+                            <td data-col="Install"><a href="https://github.com/josharmour/mtgacoach/releases/download/coach-master-feed/MTGACoachMaster-master-win-x64-Setup.exe"><strong>Install Coach for Windows</strong></a>. The app checks for tested updates at launch.<br><small data-release-platform="win-x64">Master channel</small></td>
                             <td data-col="Coaching"><strong>Yes</strong> <span class="tag ok">Player.log</span></td>
                             <td data-col="Autoplay"><strong>Yes</strong> <span class="tag ok">BepInEx bridge</span><br>
                             The installer sets the bridge up; Setup &amp; Repair reinstalls it if it
@@ -306,7 +307,7 @@
                         </tr>
                         <tr>
                             <th scope="row">macOS (Apple Silicon)</th>
-                            <td data-col="Install"><a href="https://github.com/josharmour/mtgacoach/releases/download/coach-master-feed/MTGACoachMaster-master-osx-arm64-Setup.pkg">Install Coach for Mac</a>.</td>
+                            <td data-col="Install"><a href="https://github.com/josharmour/mtgacoach/releases/download/coach-master-feed/MTGACoachMaster-master-osx-arm64-Setup.pkg">Install Coach for Mac</a>.<br><small data-release-platform="osx-arm64">Master channel</small></td>
                             <td data-col="Coaching"><strong>Yes</strong> <span class="tag ok">Player.log</span><br>
                             Native Arena client, no Wine.</td>
                             <td data-col="Autoplay"><strong>Experimental</strong> <span class="tag exp">injected library</span><br>
@@ -317,7 +318,7 @@
                         </tr>
                         <tr>
                             <th scope="row">Linux</th>
-                            <td data-col="Install"><a href="https://github.com/josharmour/mtgacoach/releases/download/coach-master-feed/MTGACoachMaster-master-linux-x64.AppImage">Linux x64 AppImage</a>. Allow it to run as an executable.</td>
+                            <td data-col="Install"><a href="https://github.com/josharmour/mtgacoach/releases/download/coach-master-feed/MTGACoachMaster-master-linux-x64.AppImage">Linux x64 AppImage</a>. Allow it to run as an executable.<br><small data-release-platform="linux-x64">Master channel</small></td>
                             <td data-col="Coaching"><strong>Yes</strong> <span class="tag ok">Player.log</span><br>
                             Arena on Steam with Proton; the coach reads the log inside the Proton
                             prefix.</td>
@@ -514,5 +515,5 @@
 {% endblock %}
 
 {% block scripts %}
-    <script src="/static/js/site.js?v=2" defer></script>
+    <script src="/static/js/site.js?v=3" defer></script>
 {% endblock %}

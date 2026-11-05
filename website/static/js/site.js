@@ -4,6 +4,33 @@
     "use strict";
     document.documentElement.classList.add("js");
 
+    // Match the updater's published version, not the website source revision.
+    fetch("/downloads/versions", {credentials: "omit"})
+        .then(function (response) {
+            if (!response.ok) { throw new Error("Release versions unavailable"); }
+            return response.json();
+        })
+        .then(function (channels) {
+            document.querySelectorAll("[data-release-platform]").forEach(function (label) {
+                var version = (channels.master || {})[label.dataset.releasePlatform];
+                if (/^\d+\.\d+\.\d+$/.test(version || "")) {
+                    label.textContent = version + " · Master";
+                }
+            });
+            document.querySelectorAll("[data-release-summary]").forEach(function (label) {
+                var lane = label.dataset.releaseSummary;
+                var releases = channels[lane] || {};
+                var versions = ["win-x64", "osx-arm64", "linux-x64"].map(function (platform) {
+                    return releases[platform];
+                });
+                if (/^\d+\.\d+\.\d+$/.test(versions[0] || "") &&
+                        versions.every(function (version) { return version === versions[0]; })) {
+                    label.textContent = versions[0] + " · " + (lane === "master" ? "Master" : "Stable");
+                }
+            });
+        })
+        .catch(function () { /* Keep accurate channel labels when offline. */ });
+
     var clips = Array.prototype.slice.call(document.querySelectorAll("[data-clip]"));
 
     function stopOthers(current) {
