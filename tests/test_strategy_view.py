@@ -442,3 +442,27 @@ def test_countdown_and_long_update_keep_small_shell_fixed(qapp):
     panel._show_detail("status")
     assert "Auto-concede" in panel.detail_pager.browser.toPlainText()
     panel.close()
+
+
+@pytest.mark.parametrize("palette", ["dark", "light", "high-contrast"])
+def test_recovery_row_shares_space_by_label_needs_at_320(qapp, palette):
+    theme.apply_theme(qapp, palette)
+    panel = CompactCoachPanel()
+    panel.resize(320, 650)
+    panel.show()
+    qapp.processEvents()
+    before = (panel.size(), panel.primary_controls.geometry(), panel.workspace.geometry())
+    # Exercise the same asymmetric label pressure as Linux fonts, on any host.
+    equal_share = (panel.primary_controls.width() - 8) // 3
+    text = panel.reload_engine_btn.text()
+    while panel.reload_engine_btn.fontMetrics().horizontalAdvance(text) + 6 <= equal_share:
+        text += "."
+    panel.reload_engine_btn.setText(text)
+    qapp.processEvents()
+    buttons = (panel.bug_report_btn, panel.reload_engine_btn, panel.restart_btn)
+    assert (panel.size(), panel.primary_controls.geometry(), panel.workspace.geometry()) == before
+    for button in buttons:
+        assert button.width() >= button.fontMetrics().horizontalAdvance(button.text()) + 6
+        assert panel.rect().contains(button.rect().translated(button.mapTo(panel, QPoint())))
+    assert panel.reload_engine_btn.width() > panel.bug_report_btn.width()
+    panel.close()

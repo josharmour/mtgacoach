@@ -833,7 +833,15 @@ class CompactCoachPanel(QWidget):
             for button in buttons:
                 button.setStyleSheet("padding: 5px 3px;")
                 button.setMinimumWidth(0)
-                button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+                recovery = button in (self.bug_report_btn, self.reload_engine_btn, self.restart_btn)
+                if recovery:
+                    button.setProperty("compactRecovery", True)
+                    button.setStyleSheet("")
+                # Respect each recovery label's native font/style size before sharing surplus space.
+                # Equal-width ignored hints clipped Reload engine on Linux at 320px.
+                button.setSizePolicy(
+                    QSizePolicy.Minimum if recovery else QSizePolicy.Ignored, QSizePolicy.Fixed
+                )
                 controls.addWidget(button, 1)
                 button.show()
             footer.addLayout(controls)
@@ -1705,7 +1713,9 @@ class CompactCoachPanel(QWidget):
         except Exception as exc:
             self.append_log(f"Bug report saved to: {path} (clipboard copy failed: {exc})", role="status")
 
-        self.bug_report_btn.setText("Report saved — link copied")
+        # Keep transient confirmation within the recovery row's compact label budget.
+        # The full saved path and clipboard result remain in Activity.
+        self.bug_report_btn.setText("Saved")
         QTimer.singleShot(3000, lambda: self.bug_report_btn.setText(_BUG_REPORT_LABEL))
 
     def _on_bug_report_confirmation_requested(self, request: dict[str, Any]) -> None:

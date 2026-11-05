@@ -534,10 +534,16 @@ def test_compact_coach_bug_report_copies_exact_local_link(panel, tmp_path, qapp,
     monkeypatch.setattr(
         support, "contact_josh", lambda *args: pytest.fail("Debug report must not open support review")
     )
+    panel.resize(320, 650)
+    qapp.processEvents()
+    before = panel.size()
     panel.session.bugReportSaved.emit(str(report_file), "")
+    qapp.processEvents()
+    assert panel.size() == before
     assert qapp.clipboard().text() == report_file.resolve().as_uri()
     assert report_file.read_text() == original
-    assert panel.bug_report_btn.text() == "Report saved — link copied"
+    assert panel.bug_report_btn.text() == "Saved"
+    assert "Bug report saved — link copied" in panel.log_view.toPlainText()
     assert report_file.resolve().as_uri() in panel.log_view.toPlainText()
 
 

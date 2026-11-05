@@ -429,6 +429,7 @@ QPushButton {{
 }}
 QPushButton:hover {{ background: {hover}; }}
 QPushButton:pressed {{ background: {pressed}; }}
+QPushButton[compactRecovery="true"] {{ padding: 5px {max(0, 3 - t.line)}px; }}
 QPushButton:focus {{ border-color: {t.accent}; }}
 QPushButton:disabled {{ color: {t.muted}; }}
 QPushButton:checked, QPushButton[state="on"] {{ background: {selected}; border-color: {t.accent}; font-weight: 600; }}
