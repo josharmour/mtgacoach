@@ -1098,7 +1098,53 @@ class _PostMatchMixin:
                     rec.opponent_name = cos["Opponent"].get("ScreenName") or rec.opponent_name
             except Exception:
                 pass
-        MatchHistory().add_record(rec)
+        history = MatchHistory()
+        history.add_record(rec)
+        try:
+            self._offer_deck_building(history, rec)
+        except Exception as error:
+            logger.debug("Deck-building invitation unavailable: %s", error)
+
+    def _offer_deck_building(self, history, record) -> None:
+        from arenamcp.deck_recommendation import ADVICE_LABEL, claim_invitation, invitation
+        from arenamcp.ladder import RankLog, ranked_ladder
+        from arenamcp.watcher import DEFAULT_LOG_PATH, _normalize_log_path
+
+        if record.result not in ("win", "loss") or ranked_ladder(record.format_name) != "Constructed":
+            return
+        reader = getattr(self, "_deck_invitation_rank_log", None)
+        if reader is None:
+            reader = self._deck_invitation_rank_log = RankLog()
+        watcher = getattr(getattr(getattr(self, "_mcp", None), "_server", None), "watcher", None)
+        path = getattr(watcher, "log_path", None)
+        if not path:
+            import os
+
+            from arenamcp.android_link import MIRROR_PATH, game_device
+
+            path = (
+                MIRROR_PATH
+                if game_device() == "android"
+                else os.environ.get("MTGA_LOG_PATH") or DEFAULT_LOG_PATH
+            )
+        # Bound work in the game-end path. On a large log, continue catching up
+        # next time rather than using an old rank snapshot.
+        for _ in range(8):
+            if not reader.read(_normalize_log_path(path)):
+                break
+        else:
+            return
+        offer = invitation(history.get_recent(history.total_games), reader.snapshot)
+        if offer is None:
+            return
+        if not claim_invitation(history._path.with_name("deck_invitation.json"), record.match_id):
+            return
+        self.ui.advice(offer.message, ADVICE_LABEL)
+        self.speak_advice(
+            "Your recent win/loss record suggests trying a new deck. Would you like help building one?",
+            blocking=False,
+            speech_category="workflow",
+        )
 
     def _record_performance_rating(self, match_id, match_result, analysis) -> None:
         """Best-effort 1-10 rating; degrades silently to W/L-only."""

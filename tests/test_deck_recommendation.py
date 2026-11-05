@@ -1,0 +1,174 @@
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+
+from arenamcp.deck_candidates import arena_export, compare_collection
+from arenamcp.deck_recommendation import claim_invitation, invitation
+from arenamcp.match_history import MatchRecord
+
+NOW = datetime(2026, 11, 5, tzinfo=timezone.utc)
+
+
+def records(wins, losses, event="Ladder"):
+    return [
+        MatchRecord(
+            match_id=str(i),
+            timestamp=(NOW - timedelta(minutes=losses + wins - i)).isoformat(),
+            result=result,
+            format_name=event,
+        )
+        for i, result in enumerate(["win"] * wins + ["loss"] * losses)
+    ]
+
+
+@pytest.mark.parametrize(
+    "rank,wins,losses,expected",
+    [
+        ("Gold", 6, 14, True),
+        ("Gold", 7, 13, False),
+        ("Platinum", 9, 11, True),
+        ("Diamond", 10, 10, False),
+        ("Mythic", 0, 20, False),
+        ("Unknown", 0, 20, False),
+        ("Platinum", 0, 19, False),
+    ],
+)
+def test_rank_threshold_and_sample(rank, wins, losses, expected):
+    result = invitation(records(wins, losses), {"constructedClass": rank}, now=NOW)
+    assert bool(result) is expected
+
+
+@pytest.mark.parametrize(
+    "event", ["Play", "QuickDraft_FRA", "Traditional Standard Ranked", "TradLadder", "BO3 Ranked"]
+)
+def test_excludes_non_constructed_and_game_level_bo3(event):
+    assert invitation(records(0, 30, event), {"constructedClass": "Diamond"}, now=NOW) is None
+
+
+def test_window_queue_draws_and_old_records():
+    history = records(0, 30)
+    for rec in history[:10]:
+        rec.timestamp = (NOW - timedelta(days=31)).isoformat()
+    result = invitation(history, {"constructedClass": "Gold"}, now=NOW)
+    assert result.losses == 20
+    history[-1].result = "draw"
+    assert invitation(history, {"constructedClass": "Gold"}, now=NOW) is None
+    history = records(0, 30) + records(20, 0)
+    for i, rec in enumerate(history):
+        rec.match_id = str(i)
+    assert invitation(history, {"constructedClass": "Diamond"}, now=NOW) is None
+    history = records(0, 30) + records(0, 1, "Historic Ladder")
+    assert invitation(history, {"constructedClass": "Diamond"}, now=NOW) is None
+
+
+def test_cooldown_survives_restart_and_duplicate_event(tmp_path):
+    path = tmp_path / "cooldown.json"
+    assert claim_invitation(path, "first", now=NOW)
+    assert not claim_invitation(path, "second", now=NOW + timedelta(hours=23))
+    assert not claim_invitation(path, "first", now=NOW + timedelta(days=2))
+    assert claim_invitation(path, "second", now=NOW + timedelta(days=2))
+
+
+def card(name, rarity="rare", arena_id=10, type_line="Creature"):
+    return SimpleNamespace(name=name, rarity=rarity, arena_id=arena_id, type_line=type_line)
+
+
+def test_cost_counts_reprints_and_both_piles_and_unknown_rarities():
+    db = Mock()
+    db.get_card_by_arena_id.side_effect = lambda _: card("Spell")
+    db.get_card_by_name.side_effect = lambda name: card(name) if name == "Spell" else None
+    deck = {"mainboard": ["4 Spell"], "sideboard": ["2 Spell", "1 Unknown"]}
+    cost = compare_collection(deck, {10: 1, 11: 2}, {"rare": 3}, db)
+    assert cost["spend"] == {"rare": 3}
+    assert cost["unknown"] == ["Unknown"]
+    assert not cost["affordable"]
+    deck["sideboard"] = ["2 Spell"]
+    assert compare_collection(deck, {10: 1, 11: 2}, {"rare": 3}, db)["affordable"]
+    assert not compare_collection(deck, {10: 1, 11: 2}, {"rare": 2}, db)["affordable"]
+
+
+def test_basic_lands_and_export_validation():
+    db = Mock()
+    db.get_card_by_name.return_value = card("Island", rarity="common", type_line="Basic Land — Island")
+    assert compare_collection({"mainboard": ["60 Island"]}, {}, {}, db)["owned"]
+    assert arena_export({"mainboard": ["60 Island (SET) 123"]}) == "Deck\n60 Island"
+    with pytest.raises(ValueError):
+        arena_export({"mainboard": ["4 Spell"]})
+    with pytest.raises(ValueError):
+        arena_export({"mainboard": ["unparsed source content"]})
+    db.get_card_by_name.return_value = card(
+        "Snow-Covered Island", rarity="common", type_line="Basic Snow Land — Island"
+    )
+    cost = compare_collection({"mainboard": ["20 Snow-Covered Island"]}, {}, {}, db)
+    assert cost["spend"] == {"common": 20}
+    assert not cost["owned"]
+
+
+def test_local_arena_rarity_handles_name_only_catalog():
+    db = Mock()
+    db.get_card_by_name.return_value = card("Spell", rarity="", arena_id=0)
+    db.get_raw_mtgadb.return_value.get_rarity_by_name.return_value = "rare"
+    cost = compare_collection({"mainboard": ["4 Spell", "56 Forest"]}, {}, {"rare": 4}, db)
+    assert cost["affordable"]
+    assert cost["spend"] == {"rare": 4}
+    assert cost["unknown"] == []
+
+
+def test_later_source_can_resolve_shadowed_arena_printing():
+    db = Mock()
+    db.get_card_by_name.return_value = card("Spell", rarity="", arena_id=0)
+    db.get_raw_mtgadb.return_value = None
+    source = Mock()
+    source.get_card_by_name.return_value = card("Spell", rarity="uncommon")
+    db.sources = [source]
+    cost = compare_collection({"mainboard": ["4 Spell", "56 Forest"]}, {}, {"uncommon": 4}, db)
+    assert cost["affordable"]
+    assert cost["spend"] == {"uncommon": 4}
+
+
+def test_postmatch_delivers_once_without_analysis(tmp_path, monkeypatch):
+    import arenamcp.deck_recommendation as dr
+    import arenamcp.match_history as mh
+    from arenamcp.match_history import MatchHistory
+    from arenamcp.standalone_postmatch import _PostMatchMixin
+
+    monkeypatch.setattr(mh, "HISTORY_FILE", tmp_path / "history.json")
+    log = tmp_path / "Player.log"
+    log.write_text(
+        '<== RankGetCombinedRankInfo(id)\n{"constructedSeasonOrdinal":95,"constructedClass":"Platinum"}\n'
+    )
+    monkeypatch.setenv("MTGA_LOG_PATH", str(log))
+    monkeypatch.setenv("MTGACOACH_GAME_DEVICE", "desktop")
+    actual_invitation = dr.invitation
+    monkeypatch.setattr(dr, "invitation", lambda rows, snapshot: actual_invitation(rows, snapshot, now=NOW))
+    history = MatchHistory()
+    for rec in records(0, 20):
+        history.add_record(rec)
+    host = _PostMatchMixin()
+    host.ui = Mock()
+    host.speak_advice = Mock()
+    host._offer_deck_building(history, rec)
+    host._offer_deck_building(history, rec)
+    host.ui.advice.assert_called_once()
+    host.speak_advice.assert_called_once()
+    assert "Would you like help" in host.ui.advice.call_args.args[0]
+
+
+def test_goldfish_reads_current_public_deck_data(monkeypatch):
+    import arenamcp.mtggoldfish as goldfish
+
+    response = Mock()
+    response.content = b"""<script>
+    initializeDeckComponents('display-id', '123', "4%20Spell%0A56%20Island%0Asideboard%0A2%20Answer%0A", '', false);
+    </script>"""
+    monkeypatch.setattr(goldfish.requests, "get", Mock(return_value=response))
+    client = goldfish.MTGGoldfishClient()
+    client._read_cache = Mock(return_value={"mainboard": [], "sideboard": []})
+    client._write_cache = Mock()
+    deck = client.get_deck_list("https://www.mtggoldfish.com/deck/123")
+    assert deck["mainboard"] == ["4 Spell", "56 Island"]
+    assert deck["sideboard"] == ["2 Answer"]
+    assert "Sideboard\n2 Answer" in arena_export(deck)
+    client._write_cache.assert_called_once()

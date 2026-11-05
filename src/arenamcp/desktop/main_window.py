@@ -135,6 +135,7 @@ class MainWindow(QMainWindow):
         self.decks_tab = DecksTab(session=self._session)
         self._stack.addWidget(_build_page("Decks", self.decks_tab, self._show_coach_view))  # 3
         self.setCentralWidget(self._stack)
+        self._session.adviceReceived.connect(self._on_deck_invitation)
 
     def _build_dev_commit_button(self) -> None:
         self.dev_commit_button = None
@@ -472,6 +473,36 @@ class MainWindow(QMainWindow):
         self._stack.setCurrentIndex(3)
         if not self.decks_tab._decks:
             self.decks_tab.refresh()
+
+    def _on_deck_invitation(self, text: str, label: str) -> None:
+        from arenamcp.deck_recommendation import ADVICE_LABEL
+
+        if label != ADVICE_LABEL:
+            return
+        current = getattr(self, "_deck_invitation", None)
+        if current is not None and current.isVisible():
+            return
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Try building a stronger deck")
+        dialog.setTextFormat(Qt.PlainText)
+        dialog.setText(text)
+        dialog.setInformativeText(
+            "Compare source decks using cards you own or cards within your wildcard balance. "
+            "You can find this anytime in Decks → Build a stronger deck."
+        )
+        build = dialog.addButton("Help me build a deck", QMessageBox.AcceptRole)
+        dialog.addButton("Not now", QMessageBox.RejectRole)
+        dialog.setDefaultButton(build)
+
+        def chosen(button):
+            if button is build:
+                self._show_decks_view()
+                self.decks_tab.open_builder()
+
+        dialog.buttonClicked.connect(chosen)
+        self._deck_invitation = dialog
+        dialog.setModal(False)
+        dialog.show()
 
     def _show_pending_release(self):
         from .release_updates import update_status

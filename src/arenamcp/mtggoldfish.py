@@ -4,10 +4,13 @@ Scrapes metagame breakdowns and deck lists from MTGGoldfish.
 Caches responses for 1 hour.
 """
 
+import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import requests
 from bs4 import BeautifulSoup
@@ -141,7 +144,7 @@ class MTGGoldfishClient:
 
         if not force_refresh:
             cached = self._read_cache(cache_key)
-            if cached:
+            if cached and cached.get("mainboard"):
                 logger.debug("Using cached deck list")
                 return cached
 
@@ -153,6 +156,27 @@ class MTGGoldfishClient:
 
             soup = BeautifulSoup(response.content, "html.parser")
             deck_data: dict[str, Any] = {"mainboard": [], "sideboard": []}
+
+            # The current public page renders its list from a URL-encoded
+            # argument to initializeDeckComponents. Read data only; never run JS.
+            for script in soup.find_all("script"):
+                match = re.search(
+                    r"initializeDeckComponents\(\s*'[^']*',\s*'[^']*',\s*(\"(?:\\.|[^\"\\])*\")",
+                    script.get_text(),
+                )
+                if match:
+                    exported = unquote(json.loads(match.group(1)))
+                    pile = "mainboard"
+                    for line in exported.splitlines():
+                        line = line.strip()
+                        if line.lower() == "sideboard":
+                            pile = "sideboard"
+                        elif line and line.lower() != "deck":
+                            deck_data[pile].append(line)
+                    if deck_data["mainboard"]:
+                        deck_data.update(fetched_at=time.time(), url=url)
+                        self._write_cache(cache_key, deck_data)
+                        return deck_data
 
             # Try clipboard textarea first (cleaner)
             textarea = soup.select_one("textarea.copy-paste-box")
