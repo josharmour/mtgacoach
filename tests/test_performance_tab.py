@@ -268,6 +268,10 @@ def test_sidebar_ranks_open_recent_ladder_matches(seeded_file, qapp, monkeypatch
         win.show()
         qapp.processEvents()
         strip = win.coach_panel.rank_strip
+        assert not strip.isVisible()
+        win.coach_panel.rank_details.toggle.click()
+        qapp.processEvents()
+        assert strip.isVisible()
         assert strip.buttons["Constructed"].text().replace(" · ", "\n").splitlines() == [
             "Constructed",
             "Diamond 4",
