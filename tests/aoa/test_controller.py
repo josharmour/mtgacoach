@@ -55,6 +55,13 @@ def test_ordered_workflow_protected_and_essential_preempts(controller):
     assert {e["state"] for e in sent if e.get("speech_id") == "workflow"} == {"accepted", "superseded"}
 
 
+def test_native_excitement_is_forwarded_to_speech(controller):
+    c, tts, _, _ = controller
+    c.proposal(replace(line(c), excitement="electric", salience=3).to_wire())
+    assert tts.request_speech.call_args.kwargs["excitement"] == "electric"
+    assert tts.request_speech.call_args.kwargs["energy"] == 0.8
+
+
 def test_reply_requires_finished_anchor_and_duplicate_is_not_reacknowledged(controller):
     c, tts, sent, state = controller
     first = line(c)

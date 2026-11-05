@@ -45,11 +45,18 @@ sd = None
 winsound = None
 if _USE_WINSOUND:
     import winsound
-else:
-    try:
-        import sounddevice as sd
-    except ImportError:
-        sd = None
+
+
+def _ensure_playback_backend():
+    global sd
+    if not _USE_WINSOUND and sd is None:
+        try:
+            import sounddevice
+
+            sd = sounddevice
+        except ImportError:
+            pass
+
 
 logger = logging.getLogger(__name__)
 
@@ -850,6 +857,7 @@ class VoiceOutput:
 
             try:
                 logger.info(f"Speaking (device={self._device_index}): {text[:50]}...")
+                _ensure_playback_backend()
                 if _USE_WINSOUND:
                     _winsound_play_samples(samples, sample_rate, blocking=True)
                 elif sd is not None:
@@ -907,6 +915,7 @@ class VoiceOutput:
 
                 try:
                     logger.info(f"Speaking async (device={self._device_index}): {text[:50]}...")
+                    _ensure_playback_backend()
                     if _USE_WINSOUND:
                         _winsound_play_samples(samples, sample_rate, blocking=True)
                     elif sd is not None:

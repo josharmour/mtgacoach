@@ -14,6 +14,9 @@ from arenamcp.desktop.coach_session import CoachSession
 @pytest.fixture
 def session(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr("arenamcp.logging_config.LOG_DIR", tmp_path)
+    monkeypatch.setattr(
+        "arenamcp.desktop.screen_capture_permissions.ensure_screen_capture_permission", lambda *_: True
+    )
     session = CoachSession()
     session._process = Mock(is_running=True)
     # Keep the shared TTS instance held by the speech arbiter; mock its effect.
@@ -53,6 +56,23 @@ def test_screenshot_failure_does_not_cancel_state_capture(session, monkeypatch):
     assert payload["cmd"] == "autopilot_bug_screenshots"
     assert payload["screenshots"] == {}
     assert payload["screenshot_error"] == "denied"
+
+
+def test_declined_permission_keeps_report_and_pauses_before_prompt(session, monkeypatch):
+    def decline(*_):
+        assert session._process.send_payload.call_args.args[0]["cmd"] == "autopilot_bug"
+        return False
+
+    monkeypatch.setattr(
+        "arenamcp.desktop.screen_capture_permissions.ensure_screen_capture_permission", decline
+    )
+    capture = Mock()
+    monkeypatch.setattr("arenamcp.autopilot_bug_capture.capture_mtga_screenshot", capture)
+    session.trigger_autopilot_bug()
+    capture.assert_not_called()
+    payload = session._process.send_payload.call_args.args[0]
+    assert payload["cmd"] == "autopilot_bug_screenshots"
+    assert payload["screenshots"] == {}
 
 
 @pytest.mark.parametrize("running", [True, False])

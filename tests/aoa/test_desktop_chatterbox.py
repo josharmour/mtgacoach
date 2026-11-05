@@ -44,8 +44,8 @@ def manager(monkeypatch):
     m._busy_timer.stop()
 
 
-def speak(m, uid="u1"):
-    m.request_speech(text="Hello.", voice_id="am_adam", voice_name="Adam", speed=1, speech_id=uid)
+def speak(m, uid="u1", **delivery):
+    m.request_speech(text="Hello.", voice_id="am_adam", voice_name="Adam", speed=1, speech_id=uid, **delivery)
 
 
 def test_selection_uses_separate_voice_and_qt_thread_delivery(manager, monkeypatch):
@@ -58,7 +58,7 @@ def test_selection_uses_separate_voice_and_qt_thread_delivery(manager, monkeypat
         yield b"\0\0" * 24
 
     monkeypatch.setattr(chatterbox_remote, "stream_hosted", render)
-    speak(manager)
+    speak(manager, excitement="electric", energy=0.8)
     assert completed.wait(2)
     # Acquire after renderer returns to ensure the result has been emitted.
     with manager._chatterbox_lock:
@@ -68,6 +68,8 @@ def test_selection_uses_separate_voice_and_qt_thread_delivery(manager, monkeypat
     assert manager.statuses == [("u1", "started")]
     assert calls[0]["voice"] == "server_default"
     assert calls[0]["api_key"] == "coach-test-key"
+    assert calls[0]["excitement"] == "electric"
+    assert calls[0]["energy"] == 0.8
     assert "endpoint" not in calls[0] and "key_file" not in calls[0]
     manager._pcm.finish.assert_called_once()
     manager._pcm.finished.emit()

@@ -296,6 +296,7 @@ class CommentaryController(QObject):
             speech_text = pronounce_players(speech_text, self.observation.public_state.get("player_names"))
         self.tts.request_speech(
             **overrides,
+            **self._delivery(item),
             text=speech_text,
             voice_id=item.voice,
             voice_name=self.voice_names.get(item.utterance_id, item.voice),
@@ -311,6 +312,11 @@ class CommentaryController(QObject):
                 self._valid(item) and item.epoch == self.arbiter.epoch and time.monotonic() < item.expires_at
             ),
         )
+
+    def _delivery(self, item):
+        from arenamcp.commentary.delivery import speech_delivery
+
+        return speech_delivery(item, self.observation, self.config.persona)
 
     def _playback_status(self, uid, state):
         item = self.arbiter.active

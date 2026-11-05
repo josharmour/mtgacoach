@@ -154,6 +154,8 @@ class TtsManager(QObject):
         category: str = "",
         valid=None,
         settings_override=None,
+        excitement="normal",
+        energy=0.5,
     ) -> None:
         if self._closing or not text or not text.strip():
             if speech_id:
@@ -206,6 +208,8 @@ class TtsManager(QObject):
                 if voice_id in {"atlas", "mira", "default", "server_default"}
                 else str(settings.get("chatterbox_voice_override") or "server_default"),
                 speech_id=speech_id,
+                excitement=excitement,
+                energy=energy,
             )
             return
 
@@ -466,6 +470,8 @@ class TtsManager(QObject):
         api_key,
         chatterbox_voice,
         speech_id,
+        excitement="normal",
+        energy=0.5,
     ):
         self._generation += 1
         generation = self._generation
@@ -497,7 +503,13 @@ class TtsManager(QObject):
                     if time.monotonic() - started > 60:
                         raise RuntimeError("Speech deadline exceeded")
                     for data in stream_hosted(
-                        api_key=api_key, text=chunk, voice=chatterbox_voice, speed=speed, cancelled=cancelled
+                        api_key=api_key,
+                        text=chunk,
+                        voice=chatterbox_voice,
+                        speed=speed,
+                        cancelled=cancelled,
+                        excitement=excitement,
+                        energy=energy,
                     ):
                         if cancelled.is_set():
                             return

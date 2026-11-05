@@ -29,6 +29,22 @@ _IS_WINDOWS = sys.platform == "win32"
 _IS_MACOS = sys.platform == "darwin"
 
 
+def request_screen_capture_access() -> bool:
+    """Request access only after an explicit desktop permission action."""
+    if not _IS_MACOS:
+        return True
+    try:
+        core = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        request = core.CGRequestScreenCaptureAccess
+        request.argtypes = []
+        request.restype = ctypes.c_bool
+        request()
+        require_screen_capture_access()
+        return True
+    except (AttributeError, OSError, PermissionError):
+        return False
+
+
 def require_screen_capture_access() -> None:
     """Check macOS access without triggering an OS permission prompt.
 

@@ -265,6 +265,14 @@ def find_python_executable() -> tuple[str | None, str]:
     if getattr(sys, "frozen", False):
         return (str(Path(sys.executable)), "frozen")
 
+    # The source launcher deliberately selects a local venv. Keep the engine
+    # and speech workers in it even if an older packaged runtime is present.
+    if os.environ.get("MTGACOACH_DEV_CHECKOUT"):
+        current = _normalize_current_python(Path(sys.executable))
+        if current is not None and _python_responds(current):
+            return (str(current), "dev_current")
+        return (None, "dev_python_unavailable")
+
     runtime_root = Path(get_runtime_root())
     app_root = Path(get_app_root())
     scripts_dir = "Scripts" if sys.platform == "win32" else "bin"

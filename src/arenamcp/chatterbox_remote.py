@@ -61,12 +61,28 @@ def hosted_voices(api_key, *, opener=None):
         ) from None
 
 
-def stream_hosted(*, api_key, text, voice="server_default", speed=1.0, cancelled=None, opener=None):
+def stream_hosted(
+    *,
+    api_key,
+    text,
+    voice="server_default",
+    speed=1.0,
+    cancelled=None,
+    opener=None,
+    excitement="normal",
+    energy=0.5,
+):
     """Yield aligned 24 kHz PCM immediately; no endpoint or speech-key override."""
     if not text.strip() or len(text) > 600 or voice not in VOICES:
         raise ChatterboxError("Chatterbox requires 1–600 characters and an available voice.")
     if not math.isfinite(speed) or not 0.5 <= speed <= 2:
         raise ChatterboxError("Invalid speech speed.")
+    if (
+        excitement not in {"calm", "normal", "tense", "electric"}
+        or not math.isfinite(energy)
+        or not 0 <= energy <= 1
+    ):
+        raise ChatterboxError("Invalid speech delivery.")
     deadline = time.monotonic() + 60
 
     def check():
@@ -75,7 +91,7 @@ def stream_hosted(*, api_key, text, voice="server_default", speed=1.0, cancelled
         if time.monotonic() >= deadline:
             raise ChatterboxError("Speech server missed its deadline.")
 
-    payload = {"input": text, "speed": speed}
+    payload = {"input": text, "speed": speed, "energy": energy, "excitement": excitement}
     if voice != "server_default":
         payload["voice"] = voice
     check()

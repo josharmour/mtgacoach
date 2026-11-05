@@ -35,9 +35,15 @@ def install(
         "CFBundlePackageType": "APPL",
         "CFBundleVersion": "1",
         "NSHighResolutionCapable": True,
+        # This parent has no UI. Qt in the child owns the window and Dock icon;
+        # treating the waiting C supervisor as a GUI app leaves its icon bouncing.
+        "LSUIElement": True,
+        "NSScreenCaptureUsageDescription": "Include the Arena window in screenshots you request.",
     }
     if icon:
-        shutil.copyfile(icon, resources / "Coach.icns")
+        if icon.resolve() != (resources / "Coach.icns").resolve():
+            shutil.copyfile(icon, resources / "Coach.icns")
+    if (resources / "Coach.icns").is_file():
         properties["CFBundleIconFile"] = "Coach.icns"
     info.write_bytes(plistlib.dumps(properties))
     source = Path(__file__).resolve().parents[1] / "installer/mac-dev/launcher.c"
@@ -53,6 +59,7 @@ def install(
                 source,
                 "-DCOACH_REPO=" + json.dumps(str(checkout)),
                 "-DCOACH_PYTHON=" + json.dumps(str(python)),
+                "-DCOACH_APP=" + json.dumps(str(destination.absolute())),
                 "-o",
                 built,
             ],

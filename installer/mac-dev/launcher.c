@@ -20,6 +20,7 @@ int main(int argc, char **argv) {
     setenv("PYTHONPATH", COACH_REPO "/src", 1);
     setenv("PYTHONNOUSERSITE", "1", 1);
     setenv("MTGACOACH_DEV_CHECKOUT", COACH_REPO, 1);
+    setenv("MTGACOACH_DEV_APP", COACH_APP, 1);
     setenv("MTGACOACH_BUILD_LABEL", "dev source", 1);
     const char *home = getenv("HOME");
     if (home) {

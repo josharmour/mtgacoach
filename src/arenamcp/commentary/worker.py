@@ -138,6 +138,8 @@ def main():
                             snapshot_id=observation.snapshot_id,
                             role=item.role,
                             speed=item.rate,
+                            excitement=getattr(item, "excitement", None),
+                            salience=getattr(item, "salience", 1),
                             event_bound=historical,
                             position_id=position_fingerprint(observation, position_scope)
                             if position and not historical

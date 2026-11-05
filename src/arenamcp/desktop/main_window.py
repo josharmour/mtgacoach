@@ -176,6 +176,8 @@ class MainWindow(QMainWindow):
         restart_act.triggered.connect(self._restart_coach)
         if is_mac:
             tools_menu.addSeparator()
+            screen_act = tools_menu.addAction("Screen Recording Permissions\u2026")
+            screen_act.triggered.connect(self._check_screen_capture_permission)
             permissions_act = tools_menu.addAction("Autoplay Permissions…")
             permissions_act.triggered.connect(self._check_autoplay_permissions)
             stop_autoplay_act = tools_menu.addAction("Stop Autoplay\tF11")
@@ -300,6 +302,14 @@ class MainWindow(QMainWindow):
         box.setTextFormat(Qt.RichText)
         box.setText(f"<table>{rows}</table>")
         box.exec()
+
+    def _check_screen_capture_permission(self) -> None:
+        from .screen_capture_permissions import ensure_screen_capture_permission
+
+        if ensure_screen_capture_permission(self):
+            QMessageBox.information(
+                self, "Screen Recording", "Arena screenshots are allowed for this Coach session."
+            )
 
     def _check_autoplay_permissions(self) -> None:
         from arenamcp.native_mac_input import NativeMacInput
