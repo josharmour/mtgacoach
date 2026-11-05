@@ -5,7 +5,7 @@
 | What you want | Where to get it | What you receive |
 | --- | --- | --- |
 | Play with the latest tested Coach code, including trial users and the maintainer | [Trial downloads](https://mtgacoach.com/#get-started) | The tested **master** channel checks for newer builds on launch. |
-| Follow named releases such as 3.8.3 | [Stable downloads](https://github.com/josharmour/mtgacoach/releases/tag/coach-stable-feed) | The **stable** channel updates when a newer official release is qualified and packaged. |
+| Follow master builds promoted to stable | [Stable downloads](https://github.com/josharmour/mtgacoach/releases/tag/coach-stable-feed) | The **stable** channel updates when a newer official release is qualified and packaged. |
 | Edit and run local source | [Development setup](DEV.md) | Your Git checkout follows the revisions you choose locally. |
 
 ### First installation or migration
@@ -30,7 +30,7 @@ Managed Mac packages include the native Arena bridge. Coach stages the bundled l
 
 ## Shipping changes from master
 
-Release builds use one version for the app, wheel, and updater package. CI stamps the selected release version into its build checkout before creating the wheel; the packaging step rejects mismatches. The source checkout retains its next stable version, while Dev identifies itself by commit. The website reads the published updater indexes rather than hardcoding a source version.
+Release builds use one version for the app, wheel, and updater package. CI stamps the selected release version into its build checkout before creating the wheel; the packaging step rejects mismatches. Master allocates a version in the 4.0.x series. Stable promotion preserves that exact version and commit after every master platform has published. The source checkout uses a development baseline, while Dev identifies itself by commit; release builders stamp the selected version into every artifact, including PyPI. The website reads the published updater indexes rather than hardcoding a source version.
 
 Submit changes through a pull request and wait for **pytest**, **ruff**, and **Hosted trials and Patreon keys** to pass before merging. The push to master runs the checks on the merged commit. A successful run starts **Managed desktop releases**, which builds and launches the packaged app for Windows x64, Linux x64, and Apple Silicon Mac. Each platform publishes immediately after its own package checks pass, uploading packages before its update index. Master users pick up their platform's build on launch. You do not need to create a version tag for this channel.
 
@@ -40,31 +40,31 @@ Builds cache the Python runtime and dependencies by platform, Python version, de
 
 ## Cutting a stable GitHub release
 
-Use the draft-first path when you want the installers attached before users see the release. The commands below use **v3.8.4 as an example**. Choose the next unused version.
+Promote the completed master build without changing its version or making a separate stable version bump. Both channels use **4.0.x**; 1.0.x master and 3.8.x stable are retired. The move to 4.0.x is newer than either previous series, so existing managed clients can update normally. Older manual installations still need the one-time managed installation described above.
 
-1. Update `__version__` in `src/arenamcp/__init__.py` and write `docs/releases/v3.8.4.md`. Merge the release preparation after PR checks pass. Wait for the push tests on the exact master commit to pass.
-2. Tag that tested commit and create a draft. Replace `TESTED_SHA` with its full commit ID.
-
-   ```sh
-   git tag -a v3.8.4 TESTED_SHA -m "MTGA Coach 3.8.4"
-   git push origin refs/tags/v3.8.4
-   gh release create v3.8.4 --verify-tag --draft --title "MTGA Coach 3.8.4" --notes-file docs/releases/v3.8.4.md
-   ```
-
-3. Build the stable packages through the **Managed desktop releases** workflow. Open the run URL printed by the command and wait for **publish** to pass.
+1. Wait for the exact master commit to pass tests and publish on all three supported platforms. Read its version and commit from the `published.master-<platform>.json` assets in the master feed. The example below uses `4.0.33`; replace it and `TESTED_SHA` with the actual published values.
+2. Tag that same commit and create a draft with release notes. Do not bump `__version__` or create another source commit just to promote stable.
 
    ```sh
-   gh workflow run managed-desktop.yml --ref master -f lane=stable -f version=v3.8.4
+   git tag -a v4.0.33 TESTED_SHA -m "MTGA Coach 4.0.33"
+   git push origin refs/tags/v4.0.33
+   gh release create v4.0.33 --verify-tag --draft --title "MTGA Coach 4.0.33" --notes-file RELEASE_NOTES.md
    ```
 
-4. Check the [stable feed](https://github.com/josharmour/mtgacoach/releases/tag/coach-stable-feed) for the expected version, commit, and all three platform downloads. Confirm the ordinary release has the Windows installer and Python wheel, then publish it.
+3. Build stable packages. The workflow rejects the promotion unless every published master platform matches the tag's version and commit.
 
    ```sh
-   gh release view v3.8.4 --json tagName,assets
-   gh release edit v3.8.4 --draft=false --latest
+   gh workflow run managed-desktop.yml --ref master -f lane=stable -f version=v4.0.33
    ```
 
-Publishing a stable GitHub release also invokes the managed workflow. It recognizes an already-published version and commit. The separate PyPI workflow publishes the Python package. The old Inno installer workflow is available through manual dispatch for recovery.
+4. Wait for all three platforms to publish. Verify stable feed manifests, full/delta packages, installers, app/wheel versions, and website labels. Confirm the ordinary release has its Windows installer and Python wheel, then publish it.
+
+   ```sh
+   gh release view v4.0.33 --json tagName,assets
+   gh release edit v4.0.33 --draft=false --latest
+   ```
+
+Publishing a stable GitHub release also invokes the managed workflow. It recognizes an already-published version and commit. The separate PyPI workflow checks out the release tag and stamps that same version into the Python package. The old Inno installer workflow is available through manual dispatch for recovery.
 
 ## Diagnosing an update
 

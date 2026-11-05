@@ -6,11 +6,11 @@ MTGA Coach is a desktop companion for **Magic: The Gathering Arena**. It reads A
 
 **New trial users should use the [desktop download page](https://mtgacoach.com/#get-started).** These downloads follow tested builds from `master`. Choose Windows x64 Setup, the Apple Silicon Mac package, or the Linux x64 AppImage. On Linux, make the AppImage executable before opening it.
 
-If you prefer **stable**, install the package for your platform from the stable feed. The Windows installer attached to release 3.8.3 also follows stable. The initial Windows and Mac packages are unsigned. [Stable downloads](https://github.com/josharmour/mtgacoach/releases/tag/coach-stable-feed) · [Latest official release](https://github.com/josharmour/mtgacoach/releases/latest)
+If you prefer **stable**, install the package for your platform from the stable feed. The Windows installer attached to the latest official release also follows stable. Master and stable use the same 4.0.x version when the same build is promoted. The initial Windows and Mac packages are unsigned. [Stable downloads](https://github.com/josharmour/mtgacoach/releases/tag/coach-stable-feed) · [Latest official release](https://github.com/josharmour/mtgacoach/releases/latest)
 
 ### If macOS says the package was “Not Opened”
 
-The initial 3.8.3 Mac installers are unsigned and unnotarized. Gatekeeper can block the first open with a message that Apple could not verify the package. To verify your download, run `shasum -a 256` on the downloaded `.pkg` and compare it with the SHA-256 digest for that exact asset on the GitHub release. If the digests match and you trust the package, click **Done**, open **System Settings → Privacy & Security**, scroll to **Security**, and choose **Open Anyway** for that package. [Tested-master release assets](https://github.com/josharmour/mtgacoach/releases/tag/coach-master-feed) · [Apple’s instructions](https://support.apple.com/en-us/102445)
+The current Mac installers are unsigned and unnotarized. Gatekeeper can block the first open with a message that Apple could not verify the package. To verify your download, run `shasum -a 256` on the downloaded `.pkg` and compare it with the SHA-256 digest for that exact asset on the GitHub release. If the digests match and you trust the package, click **Done**, open **System Settings → Privacy & Security**, scroll to **Security**, and choose **Open Anyway** for that package. [Tested-master release assets](https://github.com/josharmour/mtgacoach/releases/tag/coach-master-feed) · [Apple’s instructions](https://support.apple.com/en-us/102445)
 
 ### First run
 
@@ -24,7 +24,7 @@ Coach uses the hosted model `current` at `https://api.mtgacoach.com/v1`. Trial a
 
 Coach checks its channel at launch and downloads an update in the background. A compatible update can apply after the match and its post-match work finish, or on the next launch. For a runtime or Arena bridge change, click **Update** beside **Restart Coach** after your match. macOS may ask for permission to replace the app. The title bar shows the channel, package build, and Git commit.
 
-If you used the older Windows installer, pip, or a Git checkout, close the old copy and install the managed app once. Start it from the new shortcut. Coach uses your existing per-user settings and trial credentials. [Installation, update, and release guide](RELEASE.md) · [3.8.3 release notes](docs/releases/v3.8.3.md)
+If you used the older Windows installer, pip, or a Git checkout, close the old copy and install the managed app once. Start it from the new shortcut. Coach uses your existing per-user settings and trial credentials. [Installation, update, and release guide](RELEASE.md)
 
 ## Coaching, speech, and autoplay
 
