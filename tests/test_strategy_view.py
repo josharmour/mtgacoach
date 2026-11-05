@@ -453,7 +453,10 @@ def test_recovery_row_shares_space_by_label_needs_at_320(qapp, palette):
     qapp.processEvents()
     before = (panel.size(), panel.primary_controls.geometry(), panel.workspace.geometry())
     # Exercise the same asymmetric label pressure as Linux fonts, on any host.
-    equal_share = (panel.primary_controls.width() - 8) // 3
+    # Qt rounds some equal shares up; exceed the largest rounded share, not
+    # the floor, or a 99px label can still fit an equal 99/99/98px allocation.
+    available = panel.primary_controls.width() - 8
+    equal_share = (available + 2) // 3
     text = panel.reload_engine_btn.text()
     while panel.reload_engine_btn.fontMetrics().horizontalAdvance(text) + 6 <= equal_share:
         text += "."
