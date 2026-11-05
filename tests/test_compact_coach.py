@@ -193,23 +193,24 @@ def test_controls_reflow_at_sidebar_width(panel, qapp):
     theme.apply_theme(qapp, theme.THEME_DARK)
     panel._on_game_state_changed(make_snapshot())
     panel._refresh_status_dots()
-    panel.resize(240, 900)
+    panel.resize(320, 900)
     qapp.processEvents()
 
-    assert panel.width() == 240
+    assert panel.width() == 320
     buttons = [b for b in panel.findChildren(QPushButton) if b.isVisible()]
     assert panel.ap_btn in buttons and panel.more_btn in buttons
-    assert panel.help_details.toggle in buttons
-    assert panel.autopilot_bug_btn not in buttons and panel.restart_btn not in buttons
+    assert panel.detail_buttons["settings"] in buttons
+    assert panel.autopilot_bug_btn in buttons and panel.restart_btn in buttons
     rects = [QRect(b.mapTo(panel, b.rect().topLeft()), b.size()) for b in buttons]
     for button, rect in zip(buttons, rects, strict=True):
         assert panel.rect().contains(rect)
-        assert button.width() >= button.sizeHint().width()
+        if button in (panel.bug_report_btn, panel.reload_engine_btn, panel.restart_btn):
+            assert button.width() >= button.fontMetrics().horizontalAdvance(button.text()) + 6
     for index, rect in enumerate(rects):
         for other in rects[index + 1 :]:
             assert not rect.intersects(other)
-    # At 240px the voice controls wrap onto a second row.
-    assert panel.more_btn.y() > panel.ap_btn.y()
+    # The two primary controls remain on the same fixed row.
+    assert panel.more_btn.y() == panel.ap_btn.y()
 
     panel.resize(800, 900)
     qapp.processEvents()
@@ -236,7 +237,7 @@ def test_compact_coach_debug_report_triggers(panel, monkeypatch):
 
 
 @pytest.mark.parametrize("theme_name", ["dark", "light", "high-contrast"])
-def test_recovery_buttons_accessible_in_help(panel, qapp, theme_name):
+def test_recovery_buttons_always_accessible(panel, qapp, theme_name):
     from PySide6.QtCore import QRect
 
     from arenamcp.desktop import theme
@@ -244,13 +245,12 @@ def test_recovery_buttons_accessible_in_help(panel, qapp, theme_name):
     theme.apply_theme(qapp, theme_name)
     panel._on_game_state_changed(make_snapshot())
     panel._on_status_changed("AUTOPILOT", "PAUSED")
-    assert not panel.autopilot_bug_btn.isVisible()
-    panel.help_details.toggle.click()
-    panel.resize(240, 1300)
+    assert panel.autopilot_bug_btn.isVisible()
+    panel.resize(320, 1300)
     qapp.processEvents()
 
     assert not panel.voice_style_popover.isVisible()
-    assert panel.size().width() == 240
+    assert panel.size().width() == 320
     for button in (
         panel.autopilot_bug_btn,
         panel.bug_report_btn,
@@ -258,12 +258,13 @@ def test_recovery_buttons_accessible_in_help(panel, qapp, theme_name):
         panel.reload_engine_btn,
         panel.restart_btn,
     ):
-        assert button.parent() is panel.help_details.body
+        assert button.parent() is panel.primary_controls
         assert button.isVisible()
         assert button.isEnabled()
         rect = QRect(button.mapTo(panel, button.rect().topLeft()), button.size())
         assert panel.rect().contains(rect)
-        assert button.width() >= button.sizeHint().width()
+        if button in (panel.bug_report_btn, panel.reload_engine_btn, panel.restart_btn):
+            assert button.width() >= button.fontMetrics().horizontalAdvance(button.text()) + 6
 
 
 def test_restart_button_requests_full_app_restart(panel):
@@ -516,10 +517,10 @@ def test_startup_banner_and_reload_controls_fit_sidebar(panel, qapp, theme_name)
     panel._on_startup_status(
         {"phase": "resuming_match", "message": "Restoring the current match…", "ready": False}
     )
-    panel.resize(240, 900)
+    panel.resize(320, 900)
     qapp.processEvents()
-    assert panel.width() == 240
-    for widget in (panel.startup_banner, panel.reload_engine_btn, panel.restart_btn):
+    assert panel.width() == 320
+    for widget in (panel.notice_button, panel.reload_engine_btn, panel.restart_btn):
         assert widget.isVisible()
         assert panel.rect().contains(QRect(widget.mapTo(panel, widget.rect().topLeft()), widget.size()))
 
@@ -595,41 +596,36 @@ def test_compact_coach_voice_status_updates(panel):
     assert panel.voice_btn.text() == "Voice: Nova"
 
 
-def test_feed_follows_after_layout_and_resize(panel, qapp):
-    panel.feed_details.set_expanded(True)
+def test_activity_shows_newest_first_after_resize(panel, qapp):
     panel.resize(450, 700)
     for i in range(70):
-        panel.append_log(f"Action {i}: " + "A long wrapped strategic explanation. " * 5)
+        panel.append_log(f"Action {i}: " + "A long strategic explanation. " * 5)
+    panel._show_detail("activity")
     qapp.processEvents()
-    scrollbar = panel.log_view.verticalScrollBar()
-    assert scrollbar.maximum() > 0
-    assert scrollbar.value() == scrollbar.maximum()
-    panel.resize(360, 600)
-    qapp.processEvents()
+    assert panel.detail_pager.browser.toPlainText().find(
+        "Action 69:"
+    ) < panel.detail_pager.browser.toPlainText().find("Action 0:")
+    panel.resize(360, 650)
     panel.append_log("Newest action: choose two Forests.")
     qapp.processEvents()
-    assert scrollbar.value() == scrollbar.maximum()
-    assert not panel.latest_feed_btn.isVisible()
+    assert "Newest action" in panel.detail_pager.browser.toPlainText().splitlines()[0]
+    assert panel.detail_pager.page == 0
+    assert not panel.detail_pager.browser.verticalScrollBar().isVisible()
 
 
-def test_feed_preserves_manual_scroll_and_latest_resumes_following(panel, qapp):
-    panel.feed_details.set_expanded(True)
+def test_activity_keeps_selected_page_during_updates(panel, qapp):
     panel.resize(450, 700)
     for i in range(70):
-        panel.append_log(f"Action {i}: a longer entry for the scrolling feed.")
+        panel.append_log(f"Action {i}: a longer entry for the paged feed.")
+    panel._show_detail("activity")
     qapp.processEvents()
-    scrollbar = panel.log_view.verticalScrollBar()
-    scrollbar.setValue(scrollbar.maximum() // 2)
-    old_position = scrollbar.value()
+    panel.detail_pager.next.click()
+    assert panel.detail_pager.page == 1
     panel.append_log("A new action while reading history.")
     qapp.processEvents()
-    assert scrollbar.value() == old_position
-    assert panel.latest_feed_btn.isVisible()
-    panel.latest_feed_btn.click()
-    panel.append_log("Follow this newest action too.")
-    qapp.processEvents()
-    assert scrollbar.value() == scrollbar.maximum()
-    assert not panel.latest_feed_btn.isVisible()
+    assert panel.detail_pager.page == 1
+    panel.detail_pager.previous.click()
+    assert panel.detail_pager.page == 0
 
 
 def test_compact_coach_feed_is_chronological(panel):
@@ -647,10 +643,10 @@ def test_compact_coach_feed_is_chronological(panel):
 
 
 def test_spoken_line_fills_now_card(panel):
-    assert panel.now_text.property("empty") is True
+    before = panel.now_text.height()
     panel.session.spokenLine.emit("Bolt the attacker.")
     assert panel.now_text.text() == "Bolt the attacker."
-    assert panel.now_text.property("empty") is False
+    assert panel.now_text.height() == before
     assert "Bolt the attacker." in panel.log_view.toPlainText()
 
 

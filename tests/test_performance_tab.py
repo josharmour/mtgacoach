@@ -268,26 +268,27 @@ def test_sidebar_ranks_open_recent_ladder_matches(seeded_file, qapp, monkeypatch
         win.show()
         qapp.processEvents()
         strip = win.coach_panel.rank_strip
-        assert not strip.isVisible()
-        win.coach_panel.rank_details.toggle.click()
-        qapp.processEvents()
         assert strip.isVisible()
-        assert strip.buttons["Constructed"].text().replace(" · ", "\n").splitlines() == [
+        assert "\n".join(strip.buttons["Constructed"].text().splitlines()[:2]).replace(
+            " · ", "\n"
+        ).splitlines() == [
             "Constructed",
             "Diamond 4",
             "1 pip",
         ]
-        assert strip.buttons["Limited"].text().replace(" · ", "\n").splitlines() == [
+        assert "\n".join(strip.buttons["Limited"].text().splitlines()[:2]).replace(
+            " · ", "\n"
+        ).splitlines() == [
             "Limited",
             "Bronze 3",
             "0 pips",
         ]
         for ladder, expected in (("Limited", ["draft"]), ("Constructed", ["23", "22", "21", "20", "19"])):
             strip.buttons[ladder].click()
-            assert win.performance_tab.isVisible()
-            assert [row.match_id for row in win.performance_tab._row_records] == expected
-            assert f"Ranked {ladder}" in win.performance_tab._summary.text()
-            win._show_coach_view()
+            assert win.coach_panel.isVisible()
+            assert [row.match_id for row in strip.recent[ladder]] == expected
+            assert f"Recent {ladder}" in win.coach_panel.detail_pager.title.text()
+            win.coach_panel._close_detail()
         next(action for action in win.findChildren(QAction) if action.text() == "Match History…").trigger()
         assert win.performance_tab._row_records[0].match_id == "casual"
         assert len(win.performance_tab._row_records) == 20
@@ -326,3 +327,27 @@ def test_mac_history_uses_accessible_buttons_and_retains_selection(seeded_file, 
         assert "No ranked Limited" in tab._summary.text()
     finally:
         tab.close()
+
+
+def test_rank_strip_picks_up_new_result_without_changing_geometry(seeded_file, qapp, monkeypatch, tmp_path):
+    from arenamcp.desktop.rank_strip import RankStrip
+    from arenamcp.match_history import MatchRecord
+
+    monkeypatch.setenv("MTGA_LOG_PATH", str(tmp_path / "missing.log"))
+    monkeypatch.setenv("MTGACOACH_GAME_DEVICE", "desktop")
+    strip = RankStrip()
+    strip.resize(304, 64)
+    strip.show()
+    strip.refresh()
+    before = strip.size()
+    history = MatchHistory()
+    for i, result in enumerate(("win", "loss", "win", "loss", "win", "draw")):
+        history.add_record(MatchRecord(match_id=str(i), format_name="Ladder", result=result))
+    strip.refresh()
+    assert [r.match_id for r in strip.recent["Constructed"]] == ["5", "4", "3", "2", "1"]
+    assert "L  W  L  W  D" in strip.buttons["Constructed"].text()
+    history.set_result("5", "win")
+    strip.refresh()
+    assert "L  W  L  W  W" in strip.buttons["Constructed"].text()
+    assert strip.size() == before
+    strip.close()

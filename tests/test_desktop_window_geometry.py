@@ -45,9 +45,9 @@ def test_saved_position_restores_frame_origin(qapp):
 
     assert window.frameGeometry().x() == available.left() + 20
     assert window.frameGeometry().y() == available.top() + 20
-    assert window.size().width() == 300
+    assert window.size().width() == 320
     assert window.size().height() == 400
-    assert window.minimumWidth() == 240
+    assert window.minimumWidth() == 320
     window.close()
 
 
@@ -64,14 +64,14 @@ def test_coach_stack_can_resize_to_sidebar_width(qapp):
     window._restart_coach = Mock()
     window._reload_engine = Mock()
     MainWindow._build_central_widget(window)
-    window.setMinimumWidth(240)
+    window.setMinimumWidth(320)
     window.show()
     qapp.processEvents()
-    window.resize(240, 900)
+    window.resize(320, 900)
     qapp.processEvents()
 
-    assert window.width() == 240
-    assert window.coach_panel.width() <= 240
+    assert window.width() == 320
+    assert window.coach_panel.width() <= 320
     window.coach_panel.restart_btn.click()
     window._restart_coach.assert_called_once()
     window._session.shutdown()

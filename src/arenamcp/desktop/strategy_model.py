@@ -19,7 +19,11 @@ def number(value: Any) -> int | None:
 def is_current(plan: dict, state: dict) -> bool:
     key = forecast_key(state)
     return bool(
-        key and plan.get("snapshot_key") == key and not state.get("game_over") and not state.get("result")
+        key
+        and plan.get("snapshot_key") == key
+        and not state.get("game_over")
+        and not state.get("result")
+        and (number((state.get("turn") or {}).get("turn_number")) or 0) > 0
     )
 
 

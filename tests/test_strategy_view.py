@@ -89,7 +89,7 @@ def test_board_change_withdraws_glow_and_outlook_before_replacement(view):
     view.set_data(plan, changed)
     assert not view.leading and view.scale.value is None
     assert "Reassessing" in view.verdict.text()
-    assert not any(c.rail.leading for c in view.cards)
+    assert not view.path_button.leading
     # A delayed old result cannot re-enable the green leader.
     view.set_data(deepcopy(plan), changed)
     assert not view.leading
@@ -138,19 +138,19 @@ def test_leading_losing_line_still_says_projected_loss(view):
     plan["facts"]["lines"][0]["outcome"] = "dead"
     view.set_data(plan, state)
     assert view.leading
-    assert "Projected loss" in view.cards[0].outcome.text()
-    assert "win not established" not in view.cards[0].outcome.text()
+    assert "Projected loss" in view.detail_html()
+    assert "win not established" not in view.detail_html()
 
 
 def test_inspection_preserves_recommendation_and_displays_both_life_totals(view):
     state = make_snapshot()
     view.set_data(forecast(state), state)
-    assert "you 20 · opponent 12" in view.cards[0].detail.text()
-    view.cards[1].button.click()
+    assert "you 20 · opponent 12" in view.detail_html()
+    view.inspect(1)
     assert view.selected == 1
-    assert view.cards[0].rail.leading
-    assert not view.cards[1].rail.leading
-    assert not view.cards[1].detail.isHidden()
+    assert view.path_button.leading
+    assert "Projected loss" in view.detail_html()
+    assert "you 0" in view.detail_html()
 
 
 def test_elapsed_first_action_is_not_rebranded_as_a_future_line(view):
@@ -258,101 +258,185 @@ def test_recorded_board_assessment_reaches_native_view(view):
     assert len(view.lines) == len(assessment.lines[:3])
 
 
-@pytest.mark.parametrize("width", [240, 320, 440])
+@pytest.mark.parametrize("width,height", [(320, 900), (320, 650), (420, 720), (690, 900)])
 @pytest.mark.parametrize("palette", ["dark", "light", "high-contrast"])
-def test_native_companion_fits_narrow_sidebar(qapp, width, palette):
+def test_companion_fits_without_scroll_or_overlapping_controls(qapp, width, height, palette):
+    from PySide6.QtWidgets import QPushButton, QScrollArea
+
     theme.apply_theme(qapp, palette)
     panel = CompactCoachPanel()
+    panel.resize(width, height)
+    panel.show()
     state = make_snapshot()
     panel._on_game_state_changed(state)
     panel._on_game_plan_changed(forecast(state))
-    panel.resize(width, 850)
-    panel.show()
     qapp.processEvents()
-    assert panel.content_scroll.horizontalScrollBar().maximum() == 0
-    assert panel.height() == 850
-    assert panel.width() <= width
-    assert panel.strategy_view.cards[0].summary.wordWrap()
-    assert panel.strategy_view.cards[0].rail.isVisible()
-    scale = panel.strategy_view.scale
-    assert panel.strategy_view.reason.y() >= scale.y() + scale.height()
-    for card in panel.strategy_view.cards:
-        if card.rail.isVisible():
-            assert card.outcome.y() >= card.rail.y() + card.rail.height()
-    children = [
-        panel.content_body.layout().itemAt(i).widget()
-        for i in range(panel.content_body.layout().count())
-        if panel.content_body.layout().itemAt(i).widget()
-        and panel.content_body.layout().itemAt(i).widget().isVisible()
-    ]
-    for before, after in zip(children, children[1:], strict=False):
-        assert before.geometry().bottom() < after.geometry().top()
-    assumptions = panel.strategy_view.assumptions
-    assert assumptions.toggle.geometry().bottom() < assumptions.height()
-    panel.close()
-    panel.deleteLater()
+    try:
+        assert panel.size().width() == width
+        assert panel.size().height() == height
+        assert not panel.findChildren(QScrollArea)
+        assert panel.strategy_view.scale.height() <= 36
+        assert panel.strategy_view.height() <= 85
+        assert panel.rank_strip.isVisible()
+        controls = [w for w in panel.findChildren(QPushButton) if w.isVisible() and w.window() == panel]
+        rects = [w.rect().translated(w.mapTo(panel, QPoint())) for w in controls]
+        for control, rect in zip(controls, rects, strict=True):
+            assert panel.rect().contains(rect), control.text()
+        for i, rect in enumerate(rects):
+            assert not any(rect.intersects(other) for other in rects[i + 1 :])
+        for button in (panel.bug_report_btn, panel.reload_engine_btn, panel.restart_btn):
+            assert button.isVisible()
+            assert button.width() >= button.fontMetrics().horizontalAdvance(button.text()) + 6
+    finally:
+        panel.close()
+        panel.deleteLater()
 
 
-@pytest.mark.parametrize("height", [720, 900, 1020])
-def test_real_window_keeps_controls_visible_with_long_forecast(qapp, monkeypatch, height):
+@pytest.mark.parametrize("height", [650, 720, 900])
+def test_real_window_does_not_jump_when_assessments_or_status_change(qapp, monkeypatch, height):
     from types import SimpleNamespace
 
     from arenamcp.desktop import main_window
 
     monkeypatch.setattr(main_window.MainWindow, "_start_session", lambda self: None)
     monkeypatch.setattr(main_window, "WatchdogPingBridge", None)
-    # Qt's offscreen screen is only 800px tall. Exercise the real screen-clamp
-    # code with a 1080px desktop, retaining space for its taskbar/menu bar.
     screen = SimpleNamespace(availableGeometry=lambda: QRect(0, 0, 1920, 1040))
     monkeypatch.setattr(main_window.QGuiApplication, "screenAt", lambda point: screen)
     monkeypatch.setenv("MTGACOACH_DEV_CHECKOUT", "/test/dev")
     monkeypatch.setenv("MTGACOACH_DEV_COMMIT", "a" * 40)
     window = main_window.MainWindow()
     panel = window.coach_panel
+    window.resize(420, height)
+    window.show()
     state = make_snapshot()
     panel._on_game_state_changed(state)
     panel._on_game_plan_changed(forecast(state))
-    window.resize(420, height)
-    window.show()
+    qapp.processEvents()
+    fixed = (panel.rank_strip, panel.now_card, panel.strategy_view, panel.workspace, panel.primary_controls)
+    before = [w.geometry() for w in fixed]
     try:
-        for expanded in (False, True):
-            for detail in (
-                panel.plan_details,
-                panel.board_details,
-                panel.feed_details,
-                panel.help_details,
-                panel.rank_details,
-                panel.strategy_view.assumptions,
-            ):
-                detail.set_expanded(expanded)
-            qapp.processEvents()
-            assert window.height() == height
-            assert window.width() == 420
-            scroll = panel.content_scroll
-            assert scroll.horizontalScrollBar().maximum() == 0
-            bar = scroll.verticalScrollBar()
-            assert bar.maximum() > 0
-            for position in (bar.minimum(), bar.maximum()):
-                bar.setValue(position)
-                qapp.processEvents()
-                for control in (
-                    panel.ap_btn,
-                    panel.after_match_btn,
-                    panel.stop_speech_btn,
-                    panel.more_btn,
-                    window.dev_commit_button,
-                ):
-                    rect = control.rect().translated(control.mapTo(window, QPoint()))
-                    assert control.isVisible()
-                    assert window.rect().contains(rect)
-                    assert window.childAt(rect.center()) is control
-            # All lower details remain reachable, without moving the footer.
-            scroll.ensureWidgetVisible(panel.rank_details)
-            qapp.processEvents()
-            rect = panel.rank_details.toggle.rect().translated(
-                panel.rank_details.toggle.mapTo(scroll.viewport(), QPoint())
+        for iteration in range(8):
+            changed = deepcopy(state)
+            changed["battlefield"][0]["power"] += iteration
+            panel._on_game_state_changed(changed)
+            panel._on_commentary_status({"state": "speaking" if iteration % 2 else "idle"})
+            panel._on_startup_status(
+                {"ready": iteration % 2 == 0, "phase": "starting", "message": "Long startup message " * 40}
             )
-            assert scroll.viewport().rect().contains(rect)
+            qapp.processEvents()
+            assert window.size().width() == 420 and window.size().height() == height
+            assert [w.geometry() for w in fixed] == before
+            plan = forecast(changed)
+            plan["facts"]["role_reason"] = "A long explanation " * 80
+            plan["facts"]["lines"] = plan["facts"]["lines"][:1] if iteration % 2 else []
+            panel._on_game_plan_changed(plan)
+            qapp.processEvents()
+            assert [w.geometry() for w in fixed] == before
+        for name in ("paths", "board", "activity", "settings", "history:Constructed"):
+            panel._show_detail(name)
+            qapp.processEvents()
+            assert [w.geometry() for w in fixed] == before
+        terminal = dict(state, game_over=True, result="win")
+        panel._on_game_state_changed(terminal)
+        panel._on_game_plan_changed(forecast(terminal))
+        qapp.processEvents()
+        assert [w.geometry() for w in fixed] == before
+        assert "Match complete" in panel.turn_strip.text()
+        assert not panel.strategy_view.path_button.leading
+        for control in (
+            panel.ap_btn,
+            panel.stop_speech_btn,
+            panel.bug_report_btn,
+            panel.reload_engine_btn,
+            panel.restart_btn,
+            window.dev_commit_button,
+        ):
+            rect = control.rect().translated(control.mapTo(window, QPoint()))
+            assert window.rect().contains(rect)
+            assert window.childAt(rect.center()) is control
     finally:
         window.close()
         window.deleteLater()
+
+
+def test_resize_reveals_context_but_live_updates_do_not(qapp):
+    panel = CompactCoachPanel()
+    panel.resize(320, 650)
+    panel.show()
+    panel._on_game_state_changed(make_snapshot())
+    qapp.processEvents()
+    small = [w.isVisible() for w in (panel.overview_board, panel.overview_reason, panel.overview_event)]
+    panel.resize(690, 900)
+    qapp.processEvents()
+    qapp.processEvents()
+    large = [w.isVisible() for w in (panel.overview_board, panel.overview_reason, panel.overview_event)]
+    assert sum(large) > sum(small)
+    panel.close()
+
+
+def test_open_details_withdraw_stale_winning_claims(qapp):
+    panel = CompactCoachPanel()
+    state = make_snapshot()
+    plan = forecast(state)
+    plan["facts"]["lines"][0]["outcome"] = "win"
+    plan["win_conditions"] = ["OLD LETHAL CLAIM"]
+    panel._on_game_state_changed(state)
+    panel._on_game_plan_changed(plan)
+    panel._show_detail("paths")
+    assert "Projected win" in panel.detail_pager.browser.toPlainText()
+    changed = deepcopy(state)
+    changed["turn"]["turn_number"] += 1
+    panel._on_game_state_changed(changed)
+    assert "Projected win" not in panel.detail_pager.browser.toPlainText()
+    assert "No current recommendation" in panel.detail_pager.browser.toPlainText()
+    panel._show_detail("advice")
+    assert "OLD LETHAL CLAIM" not in panel.detail_pager.browser.toPlainText()
+    assert "Outlook" not in panel.game_plan_label.text()
+    assert "▮" not in panel.game_plan_label.text()
+    panel.close()
+
+
+def test_details_are_paged_and_do_not_change_window_size(qapp):
+    panel = CompactCoachPanel()
+    panel.resize(420, 720)
+    panel.show()
+    for i in range(120):
+        panel.append_log(f"Observed event {i}: " + "long explanation " * 10)
+    panel._show_detail("activity")
+    qapp.processEvents()
+    pager = panel.detail_pager
+    assert pager.next.isEnabled()
+    before = panel.geometry()
+    first = pager.browser.verticalScrollBar().value()
+    pager.next.click()
+    assert pager.browser.verticalScrollBar().value() > first
+    assert not pager.browser.verticalScrollBar().isVisible()
+    while pager.next.isEnabled():
+        pager.next.click()
+    assert pager.browser.verticalScrollBar().value() == pager.browser.verticalScrollBar().maximum()
+    assert panel.geometry() == before
+    pager.close_button.click()
+    assert panel.workspace.currentWidget() is panel.overview
+    panel.close()
+
+
+def test_countdown_and_long_update_keep_small_shell_fixed(qapp):
+    panel = CompactCoachPanel()
+    panel.resize(320, 650)
+    panel.show()
+    qapp.processEvents()
+    before = panel.geometry()
+    panel.update_btn.setText("Downloading 4.0.0-preview.123456789")
+    panel.update_btn.show()
+    panel._on_concede_countdown({"state": "armed", "id": 7, "seconds": 10})
+    qapp.processEvents()
+    assert panel.geometry() == before
+    assert panel.concede_cancel_btn.isVisible()
+    assert "Auto-concede in 10s" in panel.notice_button.text()
+    assert (
+        panel.notice_button.width()
+        >= panel.notice_button.fontMetrics().horizontalAdvance("Auto-concede in 10s") + 28
+    )
+    panel._show_detail("status")
+    assert "Auto-concede" in panel.detail_pager.browser.toPlainText()
+    panel.close()

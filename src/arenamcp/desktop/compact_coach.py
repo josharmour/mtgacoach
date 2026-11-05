@@ -25,7 +25,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QPushButton,
-    QScrollArea,
+    QSizePolicy,
+    QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -36,6 +37,7 @@ from arenamcp.forecast_identity import forecast_key
 
 from . import theme
 from .coach_session import CoachSession
+from .companion_widgets import DetailPager, SummaryButton, SummaryLabel, plain_text
 from .flow_layout import FlowLayout
 from .plan_text import plan_steps_text
 from .rank_strip import RankStrip
@@ -271,6 +273,8 @@ def _int_value(value: Any, default: int = 0) -> int:
 
 
 def _pretty_phase(phase: str) -> str:
+    if phase in {"None", "Phase_None", "Step_None"}:
+        return ""
     text = phase.replace("Phase_", "").replace("Step_", " ").strip()
     return re.sub(r"(?<=[a-z])(?=[A-Z0-9])", " ", text)
 
@@ -344,7 +348,7 @@ class VoiceStylePopover(QFrame):
 
 
 class CompactCoachPanel(QWidget):
-    """Svelte, single-column sidebar layout of the MTGA Coach HUD (~260-440px wide)."""
+    """Svelte, single-column sidebar layout of the MTGA Coach HUD (320px minimum width)."""
 
     repair_requested = Signal()
     performance_requested = Signal()
@@ -356,6 +360,7 @@ class CompactCoachPanel(QWidget):
 
     def __init__(self, session: CoachSession | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setMinimumWidth(320)
         self._settings = settings.get_settings()
         self._session = session or CoachSession(self)
         self._bug_report_dialog_open = False
@@ -395,6 +400,13 @@ class CompactCoachPanel(QWidget):
 
         self._build_ui()
         self._wire_session()
+        for signal in (
+            self._session.statusChanged,
+            self._session.startupStatusChanged,
+            self._session.backendHealthChanged,
+            self._session.concedeCountdownChanged,
+        ):
+            signal.connect(self._refresh_companion)
         theme.on_theme_changed(self._restyle)
 
     @property
@@ -408,18 +420,11 @@ class CompactCoachPanel(QWidget):
         shell = QVBoxLayout(self)
         shell.setContentsMargins(0, 0, 0, 0)
         shell.setSpacing(0)
-        # Long forecasts and expanded details must not set the window's minimum
-        # height. Keep play/audio controls outside this scrolling viewport.
-        self.content_scroll = QScrollArea()
-        self.content_scroll.setWidgetResizable(True)
-        self.content_scroll.setFrameShape(QFrame.NoFrame)
-        self.content_scroll.setAccessibleName("Coaching and game details")
         self.content_body = QWidget()
         root = QVBoxLayout(self.content_body)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
-        self.content_scroll.setWidget(self.content_body)
-        shell.addWidget(self.content_scroll, 1)
+        shell.addWidget(self.content_body)
 
         # Turn strip: whose turn, turn number, phase.
         self.turn_strip = QLabel("Waiting for MTGA…")
@@ -458,10 +463,10 @@ class CompactCoachPanel(QWidget):
         self.startup_label.setWordWrap(True)
         self.startup_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         startup_layout.addWidget(self.startup_label)
-        from arenamcp.support import contact_josh
+        from arenamcp.support import contact_support
 
-        support = QPushButton("Contact Josh…")
-        support.clicked.connect(lambda: contact_josh(self))
+        support = QPushButton("Contact support…")
+        support.clicked.connect(lambda: contact_support(self))
         startup_layout.addWidget(support)
         self.startup_banner.hide()
         root.addWidget(self.startup_banner)
@@ -510,14 +515,14 @@ class CompactCoachPanel(QWidget):
         now_head.addWidget(self.now_time)
         now_layout.addLayout(now_head)
 
-        self.now_text = QLabel(_NOW_EMPTY)
+        self.now_text = SummaryLabel(_NOW_EMPTY, lines=2, role="emphasis")
         self.now_text.setObjectName("nowText")
         self.now_text.setProperty("role", "emphasis")
-        self.now_text.setProperty("empty", True)
+        self.now_text.setProperty("empty", False)
         self.now_text.setWordWrap(True)
         self.now_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
         now_layout.addWidget(self.now_text)
-        self.priority_label = text_label()
+        self.priority_label = SummaryLabel()
         now_layout.addWidget(self.priority_label)
         self.now_reason = text_label()
         now_layout.addWidget(self.now_reason)
@@ -562,7 +567,7 @@ class CompactCoachPanel(QWidget):
         self.strategy_view.scale.set_motion(bool(self._settings.get("desktop_animate_outlook", True)))
         root.addWidget(self.strategy_view)
         root.addWidget(self.plan_details)
-        self.position_summary = text_label(role="body")
+        self.position_summary = SummaryLabel(role="body")
         root.addWidget(self.position_summary)
 
         # Board card: sized to its content.
@@ -695,9 +700,9 @@ class CompactCoachPanel(QWidget):
         self.bug_report_btn.setToolTip("Save a debug-report snapshot and copy its link (F12 or Ctrl+Shift+D)")
         self.bug_report_btn.clicked.connect(self._on_bug_report_clicked)
         recovery_controls.addWidget(self.bug_report_btn)
-        self.support_btn = QPushButton("Contact Josh")
+        self.support_btn = QPushButton("Contact support")
         self.support_btn.setStyleSheet("padding: 5px 6px;")
-        self.support_btn.clicked.connect(lambda: contact_josh(self))
+        self.support_btn.clicked.connect(lambda: contact_support(self))
         recovery_controls.addWidget(self.support_btn)
 
         self.reload_engine_btn = QPushButton("Reload engine")
@@ -714,7 +719,7 @@ class CompactCoachPanel(QWidget):
         self.restart_btn.clicked.connect(self.restart_requested.emit)
         recovery_controls.addWidget(self.restart_btn)
 
-        self.update_btn = QPushButton("Update")
+        self.update_btn = SummaryButton("Update")
         self.update_btn.setStyleSheet("padding: 5px 6px;")
         self.update_btn.hide()  # The managed host enables the update controls.
         recovery_controls.addWidget(self.update_btn)
@@ -730,6 +735,259 @@ class CompactCoachPanel(QWidget):
         self._build_voice_style_popover()
         self._refresh_status_dots()
         self._render_board({})
+        self._install_companion_layout()
+
+    def _install_companion_layout(self) -> None:
+        """Keep a bounded shell; details replace a workspace instead of growing it."""
+        shell = self.layout()
+        shell.removeWidget(self.content_body)
+        self.content_body.hide()  # Legacy labels are data sources, never a second UI.
+        old_controls = self.primary_controls
+        shell.removeWidget(old_controls)
+        old_controls.hide()
+        shell.setContentsMargins(8, 6, 8, 6)
+        shell.setSpacing(5)
+        shell.addWidget(self.rank_strip)
+        self.rank_strip.show()
+        shell.addWidget(self.turn_strip)
+        self.turn_strip.setFixedHeight(28)
+        self.turn_strip.setWordWrap(False)
+
+        self.notice_row = QWidget()
+        row = QHBoxLayout(self.notice_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        self.notice_button = SummaryButton("Coach starting…")
+        self.notice_button.setProperty("variant", "flat")
+        self.notice_button.clicked.connect(lambda: self._show_detail("status"))
+        row.addWidget(self.notice_button, 1)
+        row.addWidget(self.concede_cancel_btn)
+        self.concede_cancel_btn.hide()
+        self.notice_row.setFixedHeight(30)
+        shell.addWidget(self.notice_row)
+
+        # Essential information uses stable line budgets, even while stale or idle.
+        self.now_reason.setParent(self.content_body)
+        self.watch_label.setParent(self.content_body)
+        self.now_reason.hide()
+        self.watch_label.hide()
+        self.now_card.layout().addWidget(self.position_summary)
+        self.now_time.hide()
+        shell.addWidget(self.now_card)
+        self.now_card.show()
+        shell.addWidget(self.strategy_view)
+        self.strategy_view.show()
+
+        self.workspace = QStackedWidget()
+        self.workspace.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.workspace.setMinimumSize(0, 65)
+        self.overview = QWidget()
+        overview_layout = QVBoxLayout(self.overview)
+        overview_layout.setContentsMargins(0, 0, 0, 0)
+        overview_layout.setSpacing(6)
+        self.overview_board = SummaryLabel(lines=3)
+        self.overview_reason = SummaryLabel(lines=2)
+        self.overview_event = SummaryLabel(lines=2)
+        for label in (self.overview_board, self.overview_reason, self.overview_event):
+            overview_layout.addWidget(label)
+        overview_layout.addStretch()
+        discover = QHBoxLayout()
+        discover.setSpacing(4)
+        self.detail_buttons = {}
+        for key, title in (("board", "Hand & board"), ("activity", "Activity"), ("settings", "Settings")):
+            button = QPushButton(title.replace("&", "&&"))
+            button.clicked.connect(lambda checked=False, name=key: self._show_detail(name))
+            self.detail_buttons[key] = button
+            discover.addWidget(button)
+        overview_layout.addLayout(discover)
+        self.workspace.addWidget(self.overview)
+        self.detail_pager = DetailPager()
+        self.detail_pager.closed.connect(self._close_detail)
+        self.detail_pager.linkActivated.connect(self._detail_link)
+        self.workspace.addWidget(self.detail_pager)
+        self.settings_page = QWidget()
+        settings_layout = QVBoxLayout(self.settings_page)
+        settings_layout.setContentsMargins(0, 0, 0, 0)
+        self.settings_back = QPushButton("Back")
+        self.settings_back.clicked.connect(self._close_detail)
+        settings_layout.addWidget(self.settings_back)
+        settings_layout.addWidget(self.animate_outlook)
+        settings_layout.addStretch()
+        self.workspace.addWidget(self.settings_page)
+        self._detail_kind = ""
+        shell.addWidget(self.workspace, 1)
+        self.strategy_view.detailRequested.connect(lambda: self._show_detail("paths"))
+        self.rank_strip.history_requested.connect(self._show_rank_history)
+
+        self.primary_controls = QWidget()
+        footer = QVBoxLayout(self.primary_controls)
+        footer.setContentsMargins(0, 0, 0, 0)
+        footer.setSpacing(4)
+        for buttons in (
+            (self.ap_btn, self.more_btn),
+            (self.stop_speech_btn, self.after_match_btn, self.autopilot_bug_btn),
+            (self.bug_report_btn, self.reload_engine_btn, self.restart_btn),
+        ):
+            controls = QHBoxLayout()
+            controls.setSpacing(4)
+            for button in buttons:
+                button.setStyleSheet("padding: 5px 3px;")
+                button.setMinimumWidth(0)
+                button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+                controls.addWidget(button, 1)
+                button.show()
+            footer.addLayout(controls)
+        self.autopilot_bug_btn.setText("Autoplay bug")
+        contact = QHBoxLayout()
+        contact.addWidget(self.support_btn)
+        self.support_btn.setProperty("variant", "flat")
+        self.support_btn.show()
+        contact.addStretch()
+        contact.addWidget(self.update_btn, 1)
+        policy = self.update_btn.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self.update_btn.setSizePolicy(policy)
+        footer.addLayout(contact)
+        shell.addWidget(self.primary_controls)
+        self._refresh_companion()
+        self._fit_overview()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if hasattr(self, "workspace"):
+            self._fit_overview()
+            QTimer.singleShot(0, self._fit_overview)
+
+    def _fit_overview(self) -> None:
+        # Resize-only disclosure. Never use changing text/data to choose geometry.
+        if not hasattr(self, "workspace"):
+            return
+        remaining = self.workspace.height() - 45
+        for label in (self.overview_board, self.overview_reason, self.overview_event):
+            needed = label.height() + 6
+            show = remaining >= needed
+            label.setVisible(show)
+            if show:
+                remaining -= needed
+
+    def _show_detail(self, kind: str) -> None:
+        reset = kind != self._detail_kind
+        self._detail_kind = kind
+        self.workspace.setCurrentWidget(self.settings_page if kind == "settings" else self.detail_pager)
+        self._refresh_detail(reset=reset)
+
+    def _close_detail(self) -> None:
+        self._detail_kind = ""
+        self.workspace.setCurrentWidget(self.overview)
+        self._fit_overview()
+
+    def _show_rank_history(self, ladder: str) -> None:
+        self._show_detail("history:" + ladder)
+
+    def _detail_link(self, link: str) -> None:
+        if link.startswith("path:") and link[5:].isdigit():
+            self.strategy_view.inspect(int(link[5:]))
+            self._refresh_detail(reset=True)
+        elif link == "advice:":
+            self._show_detail("advice")
+        elif link.startswith("file:"):
+            from PySide6.QtGui import QDesktopServices
+
+            # Only the exact local report generated by Coach is exposed here.
+            if link in self.autopilot_report_link.text():
+                QDesktopServices.openUrl(QUrl(link))
+
+    def _refresh_detail(self, *, reset=False) -> None:
+        if not hasattr(self, "_detail_kind") or not self._detail_kind or self._detail_kind == "settings":
+            return
+        kind = self._detail_kind
+        if kind == "paths":
+            title, text = "Paths & assumptions", self.strategy_view.detail_html()
+            text += '<p><a href="advice:">Coaching explanation</a></p>'
+        elif kind == "advice":
+            title = "Coaching explanation"
+            text = self.game_plan_label.text() + block(span(self.advice_detail.text()))
+            if not text:
+                text = "No current explanation."
+        elif kind == "board":
+            title, text = "Hand & board", self.game_state_view.text()
+        elif kind == "activity":
+            title = "Activity · newest first"
+            text = (
+                "".join(self._feed_line_html(*item) for item in reversed(self._activity_history))
+                or "No activity yet."
+            )
+        elif kind.startswith("history:"):
+            ladder = kind.split(":", 1)[1]
+            title = f"Recent {ladder}"
+            rows = self.rank_strip.recent.get(ladder, [])
+            text = (
+                "".join(
+                    block(
+                        span(
+                            f"{record.result.upper() or '?'} · {record.format_name} · {record.opponent_name or 'Opponent'} · {record.timestamp}"
+                        )
+                    )
+                    for record in rows
+                )
+                or "No recent ranked matches recorded."
+            )
+        else:
+            title = "Coach status"
+            text = self.concede_label.text() if not self.concede_banner.isHidden() else ""
+            text += self.startup_label.text() if not self.startup_banner.isHidden() else ""
+            text += "".join(
+                label.text()
+                for label in (self.backend_status_label, self.arena_status_label)
+                if not label.isHidden()
+            )
+            text += self.autopilot_report_link.text()
+            text = text or block(span(self.notice_button.text()))
+        self.detail_pager.set_content(title, text, reset=reset)
+
+    def _refresh_companion(self, *_) -> None:
+        if not hasattr(self, "workspace"):
+            return
+        if not self.concede_banner.isHidden():
+            message = plain_text(self.concede_label.text())
+            tone = "bad"
+        elif not self.startup_banner.isHidden():
+            message = plain_text(self.startup_label.text())
+            tone = "warn"
+        elif not self.backend_status_label.isHidden():
+            message = plain_text(self.backend_status_label.text())
+            tone = "warn"
+        elif not self.arena_status_label.isHidden():
+            message = plain_text(self.arena_status_label.text())
+            tone = "warn"
+        else:
+            message = plain_text(self.model_chip.text() + " · " + self.source_chip.text())
+            tone = "muted"
+        self.notice_button.setText(" · ".join(message.splitlines()))
+        self.notice_button.setToolTip(message)
+        self.notice_button.setProperty("tone", tone)
+        theme.repolish(self.notice_button)
+        local = self._last_state.get("local_seat_id")
+        ours, theirs = [], []
+        for card in self._last_state.get("battlefield") or []:
+            dest = ours if card.get("controller_seat_id") == local else theirs
+            dest.append(str(card.get("name") or "Unknown"))
+        hand = [str(c.get("name") or "Unknown") for c in self._last_state.get("hand") or []]
+
+        def summarize(cards):
+            return ", ".join(
+                f"{name} ×{count}" if count > 1 else name for name, count in Counter(cards).items()
+            )
+
+        self.overview_board.setText(
+            f"You: {summarize(ours) or 'No board'} · Opponent: {summarize(theirs) or 'No board'} · "
+            f"Hand ({len(hand)}): {summarize(hand) or 'empty'}"
+        )
+        self.overview_reason.setText(
+            " · ".join(filter(None, (self.now_reason.text(), self.watch_label.text())))
+        )
+        self.overview_event.setText(self.latest_event.text())
+        self._refresh_detail()
 
     def _set_outlook_motion(self, enabled: bool) -> None:
         self._settings.set("desktop_animate_outlook", enabled)
@@ -871,6 +1129,7 @@ class CompactCoachPanel(QWidget):
 
         self.commentary_label.setText(status_label(status))
         self.commentary_label.setVisible(status.get("state") not in {"disabled", "idle", "waiting"})
+        self._refresh_companion()
 
     def _wire_session(self) -> None:
         self._session.gameStateChanged.connect(self._on_game_state_changed)
@@ -972,7 +1231,7 @@ class CompactCoachPanel(QWidget):
         startup failures.
         """
         state = str(self._backend_health.get("state") or "")
-        if not state or state == "ok" or self.startup_banner.isVisible():
+        if not state or state == "ok" or not self.startup_banner.isHidden():
             self.backend_status_label.hide()
             return
         detail = str(self._backend_health.get("detail") or "").strip()
@@ -1021,7 +1280,7 @@ class CompactCoachPanel(QWidget):
             f"border: 1px solid {theme.color(tone)}; border-radius: {tokens.radius_card}px; }}"
         )
         self.startup_banner.show()
-        self.help_details.set_expanded(True)
+        self._refresh_companion()
         # The startup card owns the sidebar while it is up (#215).
         self.backend_status_label.hide()
 
@@ -1058,7 +1317,8 @@ class CompactCoachPanel(QWidget):
             self._concede_deadline = time.monotonic() + seconds
             if state == "offering" or current.get("id") != payload.get("id"):
                 self.concede_cancel_btn.setEnabled(True)
-                self.concede_cancel_btn.setText("Cancel — keep playing")
+                self.concede_cancel_btn.setText("Cancel")
+                self.concede_cancel_btn.setToolTip("Cancel auto-concede and keep playing")
             self._concede_clear_timer.stop()
             self._concede_timer.start()
         else:
@@ -1098,6 +1358,8 @@ class CompactCoachPanel(QWidget):
         if not state:
             self._concede_timer.stop()
             self.concede_banner.hide()
+            self.concede_cancel_btn.hide()
+            self._refresh_companion()
             return
         reason = str(payload.get("reason") or "")
         if state == "offering":
@@ -1153,18 +1415,12 @@ class CompactCoachPanel(QWidget):
             self._concede_style = style
             self.concede_banner.setStyleSheet(style)
         self.concede_banner.show()
+        self._refresh_companion()
 
     def _on_game_state_changed(self, state: dict[str, Any]) -> None:
         previous_key = forecast_key(self._last_state)
         self._last_state = state if isinstance(state, dict) else {}
-        self.strategy_view.setVisible(
-            bool(
-                self._last_state.get("match_id")
-                and self._last_state.get("turn")
-                and not self._last_state.get("game_over")
-                and not self._last_state.get("result")
-            )
-        )
+        self.strategy_view.show()
         if forecast_key(self._last_state) != previous_key:
             self._now = None
             self._latest_advice = None
@@ -1197,7 +1453,8 @@ class CompactCoachPanel(QWidget):
             if mana:
                 parts.append("Floating mana " + mana)
         self.position_summary.setText(" · ".join(parts))
-        self.position_summary.setVisible(bool(parts))
+        self.position_summary.show()
+        self._refresh_companion()
 
     def _on_mcts_updated(self, payload: Any) -> None:
         self._last_mcts = payload
@@ -1299,82 +1556,17 @@ class CompactCoachPanel(QWidget):
             self._render_now()
 
     def _render_game_plan(self) -> None:
-        """Role + clocks + the next three of our turns, from the game_plan event."""
-        plan = self._game_plan if isinstance(self._game_plan, dict) else {}
-        facts = plan.get("facts") if isinstance(plan.get("facts"), dict) else {}
-        role = str(facts.get("role") or plan.get("role") or "")
-        turn_number = number((self._last_state.get("turn") or {}).get("turn_number")) or 0
-        steps = [
-            s
-            for s in plan.get("turn_plan") or []
-            if isinstance(s, dict) and (number(s.get("turn")) or 0) >= turn_number
-        ]
-        status = plan.get("plan_status") if isinstance(plan.get("plan_status"), dict) else {}
-        if not role and not steps and not status:
-            self.game_plan_label.hide()
-            self._sync_now_divider()
+        """One assessment UI: details contain reasons, never a second outlook meter."""
+        if not is_current(self._game_plan, self._last_state):
+            self.game_plan_label.setText(
+                "No current assessment. Previous winning claims have been withdrawn."
+            )
             return
-
-        def label(text: str) -> str:
-            return span(text, "muted", weight=700) + "&nbsp;&nbsp;"
-
-        lines = []
-        if self._last_state.get("match_id") and not is_current(plan, self._last_state):
-            lines.append(block(span("Previous assessment · not current advice", "warn")))
-        if status:
-            # The plan's own status comes first: a missing plan is the thing to notice.
-            lines.append(block(label("Plan") + _plan_status_html(status), size="caption"))
-        outlook = plan.get("outlook") if isinstance(plan.get("outlook"), dict) else {}
-        if outlook.get("pct") is not None:
-            lines.append(block(label("Outlook") + _outlook_html(outlook), size="caption"))
-        if role:
-            head = label("Role") + span(role.upper(), _ROLE_TONES.get(role, "accent"), weight=700)
-            reason = str(facts.get("role_reason") or plan.get("role_reason") or "")
-            if reason:
-                head += "&nbsp;" + span(f"— {reason}", "muted")
-            lines.append(block(head, size="caption"))
-        if facts:
-            theirs, ours = facts.get("their_clock"), facts.get("our_clock")
-            bits = [
-                f"they kill you in {theirs}" if theirs else "no clock on you",
-                f"you kill them in {ours}" if ours else "no clock on them",
-            ]
-            if facts.get("race"):
-                bits.append(f"race {facts['race']}")
-            lines.append(block(label("Clocks") + span(" · ".join(bits)), size="caption"))
-            flags = [str(f) for f in facts.get("flags") or [] if f]
-            if flags:
-                lines.append(block(span(" · ".join(flags[:2]), "bad", weight=600), size="caption"))
-            lines += _line_rows(facts, label)
-        opp = plan.get("opp_interaction") if isinstance(plan.get("opp_interaction"), dict) else {}
-        opp_text = str(opp.get("ui_line") or "").strip() if opp.get("known") else ""
-        if opp_text:
-            # The row label already says "Opp" ('Opp tricks ~12%: ...' → 'tricks ~12%: ...').
-            opp_text = re.sub(r"^opp\s+", "", opp_text, flags=re.IGNORECASE)
-            lines.append(block(label("Opp") + span(opp_text, "muted"), size="caption"))
-        if steps:
-            turns = [f"T{s.get('turn')} {_plan_step_text(s)}" for s in steps[:3]]
-        else:
-            turns = [
-                f"T{s.get('turn')} {' + '.join(s.get('casts') or []) or '—'}"
-                for s in facts.get("lookahead") or []
-                if isinstance(s, dict)
-            ][:3]
-        if turns:
-            lines.append(block(label("Next 3") + span(" → ".join(turns)), size="caption"))
-        wins = [str(w) for w in plan.get("win_conditions") or [] if w]
-        if wins:
-            lines.append(block(label("Win") + span(wins[0], "muted"), size="caption"))
-        ledger = plan.get("ledger") if isinstance(plan.get("ledger"), dict) else {}
-        lessons = [str(item) for item in ledger.get("lessons") or [] if item]
-        for lesson in lessons[:2]:
-            lines.append(block(label("So far") + span(lesson, "warn"), size="caption"))
-        turns = [str(item) for item in ledger.get("turns") or [] if item]
-        if turns and not lessons:
-            lines.append(block(label("So far") + span(turns[-1], "muted"), size="caption"))
-        self.game_plan_label.setText("".join(lines))
-        self.game_plan_label.show()
-        self._sync_now_divider()
+        facts = self._game_plan.get("facts") or {}
+        parts = [block(span(str(facts.get("role_reason") or "")))]
+        for flag in facts.get("flags") or []:
+            parts.append(block(span(str(flag), "warn")))
+        self.game_plan_label.setText("".join(parts))
 
     def _on_status_changed(self, key: str, val: str) -> None:
         self._dot_values[key] = val
@@ -1591,7 +1783,7 @@ class CompactCoachPanel(QWidget):
         reason = str(facts.get("role_reason") or "") if is_current(self._game_plan, self._last_state) else ""
         self.now_reason.setText(reason[:177] + "…" if len(reason) > 180 else reason)
         self.now_reason.setToolTip(reason)
-        self.now_reason.setVisible(bool(reason))
+        self.now_reason.hide()
         threats = facts.get("threats") or []
         watch = str((facts.get("flags") or [""])[0])
         if not watch and threats and isinstance(threats[0], dict):
@@ -1599,7 +1791,7 @@ class CompactCoachPanel(QWidget):
         self.watch_label.setText(
             "Watch for: " + watch if watch and is_current(self._game_plan, self._last_state) else ""
         )
-        self.watch_label.setVisible(bool(self.watch_label.text()))
+        self.watch_label.hide()
         if self._last_state.get("match_id") and self._last_state.get("turn"):
             heading, ownership = decision_heading(
                 self._last_state, self._game_plan, self._dot_values.get("AUTOPILOT", "")
@@ -1616,11 +1808,12 @@ class CompactCoachPanel(QWidget):
             self.priority_label.clear()
         else:
             self.now_text.setText(_NOW_EMPTY)
-            self.now_text.setProperty("empty", True)
+            self.now_text.setProperty("empty", False)
             self.now_time.setText("")
             self.priority_label.clear()
         self.advice_detail.setText(self._now[1] if self._now else "")
         theme.repolish(self.now_text)
+        self._refresh_companion()
 
     @staticmethod
     def _execution_trace(text: str) -> bool:
@@ -1680,8 +1873,6 @@ class CompactCoachPanel(QWidget):
             "Latest · " + (first_line[:177] + "…" if len(first_line) > 180 else first_line)
         )
         self.latest_event.setToolTip(text)
-        if role == "error":
-            self.feed_details.set_expanded(True)
         self._activity_history.append((stamp, text, role))
         if len(self._activity_history) > MAX_FEED_LINES:
             del self._activity_history[: len(self._activity_history) - MAX_FEED_LINES]
@@ -1706,6 +1897,7 @@ class CompactCoachPanel(QWidget):
         # Qt can finish wrapping/layout after insertHtml returns. Follow the
         # resulting range as well as the immediate document size.
         QTimer.singleShot(0, self._scroll_feed_to_latest)
+        self._refresh_companion()
 
     def _on_feed_scrolled(self, value: int) -> None:
         if self._feed_updating:
@@ -1758,7 +1950,10 @@ class CompactCoachPanel(QWidget):
         match_id = game_state.get("match_id")
         pending = str(game_state.get("pending_decision") or "")
 
-        if "mulligan" in pending.lower() or (match_id and not turn_num and not phase):
+        if game_state.get("game_over") or game_state.get("result"):
+            self.turn_strip.setText("Match complete")
+            self.turn_strip.setProperty("who", "none")
+        elif "mulligan" in pending.lower() or (match_id and not turn_num and not phase):
             self.turn_strip.setText("Game starting · Mulligan")
             self.turn_strip.setProperty("who", "you")
         elif not turn_num and not phase:

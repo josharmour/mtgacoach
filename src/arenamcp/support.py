@@ -95,3 +95,14 @@ def contact_josh(parent=None, summary=None):
     close.clicked.connect(dialog.reject)
     layout.addWidget(close)
     dialog.exec()
+
+
+def contact_support(parent=None):
+    """Open the user's mail composer; never send or attach diagnostics automatically."""
+    url = QUrl("mailto:" + SUPPORT_EMAIL + "?subject=MTGA%20Coach%20support")
+    opened = QDesktopServices.openUrl(url)
+    if not opened:
+        from PySide6.QtWidgets import QMessageBox
+
+        QMessageBox.information(parent, "Contact support", "Email " + SUPPORT_EMAIL)
+    return opened
