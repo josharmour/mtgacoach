@@ -2,7 +2,7 @@
 
 MTGA Coach is a desktop companion for **Magic: The Gathering Arena**. Keep it beside Arena to see your next decision, compare possible lines, and hear advice or a two-person broadcast as you play. It reads Arena’s game log, helps with draft picks, and prepares a playbook for your deck before a match.
 
-[Download Coach](https://mtgacoach.com/#get-started) · [Installation guide](INSTALL.md) · [Using the 4.0 screen](docs/using-coach.md)
+[Download Coach](https://mtgacoach.com/#get-started) · [Installation guide](INSTALL.md) · [Using the 4.0 screen](docs/using-coach.md) · [Support: support@mtgacoach.com](mailto:support@mtgacoach.com)
 
 ## A clearer view of your next play
 

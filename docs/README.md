@@ -2,6 +2,8 @@
 
 For the desktop controls, see [Using MTGA Coach 4.0](using-coach.md).
 
+For support, email [support@mtgacoach.com](mailto:support@mtgacoach.com).
+
 Start with [DEV.md](../DEV.md) to run the code. Use [INSTALL.md](../INSTALL.md) for customer setup and [RELEASE.md](../RELEASE.md) to publish a build.
 
 | Working on | Reference |

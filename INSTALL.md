@@ -43,6 +43,8 @@ Coach checks for updates at launch. Compatible updates can apply between matches
 
 Older Inno, pip, or Git installations need a one-time managed install: finish your match, close the old Coach, install the chosen package, and use its new shortcut. Settings, trial credentials, and history stay in their existing per-user locations. A source checkout continues to follow Git rather than the managed updater.
 
+For help with installation, access, or updates, email [support@mtgacoach.com](mailto:support@mtgacoach.com). Include your platform and the version shown in Coach’s title bar.
+
 - [Using Coach during a match](docs/using-coach.md)
 - [Update troubleshooting and release process](RELEASE.md)
 - [Developer installation and local Python launchers](DEV.md)

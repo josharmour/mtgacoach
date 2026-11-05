@@ -68,6 +68,8 @@ Publishing a stable GitHub release also invokes the managed workflow. It recogni
 
 ## Diagnosing an update
 
+For update help, email [support@mtgacoach.com](mailto:support@mtgacoach.com) with your platform, installed channel, and version.
+
 Check the installed channel and commit first. Then check the corresponding feed, its most recent **Managed desktop releases** run, and the **Update** button under **Help & settings**, beside **Restart Coach**, for an update awaiting approval. The host writes update errors under the OS local application-data directory in `mtgacoach/updates/<channel>/update.log`.
 
 ## Bug Reports

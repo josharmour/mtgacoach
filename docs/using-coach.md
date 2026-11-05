@@ -45,6 +45,8 @@ Managed packages include the ArenaOnAir core used for generated commentary. Sour
 
 ## Recover, update, or report a problem
 
+For help, email [support@mtgacoach.com](mailto:support@mtgacoach.com). Include your platform, Coach version, and what happened.
+
 Expand **Help & settings** for **Autopilot bug**, **Debug report**, **Contact Josh**, **Reload engine**, **Restart Coach**, and the update control when available. **Reload engine** restarts the coaching process while keeping the app open; **Restart Coach** reloads the desktop app as well. Finish the match before applying an update.
 
 Use **Tools → Setup & Repair** for installation, detailed-log, access, and bridge checks. For a bridge replacement, follow the platform instructions and close Arena first. [Setup and migration](../INSTALL.md) · [Update behavior](../RELEASE.md#what-happens-after-installation)

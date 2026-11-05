@@ -16,6 +16,8 @@ On the maintainer’s Mac, keep the source checkout on the network share and Pyt
 
 Dev windows have a **Copy commit** button in the status bar. It copies the full source commit captured at Coach startup, even if the shared checkout changes afterward. Use **Restart Coach** after an iterative source update to load and identify the new revision.
 
+For help, email [support@mtgacoach.com](mailto:support@mtgacoach.com) and include your platform and the revision from **Copy commit**.
+
 ### Quick Mac iteration
 
 Use **MTGA Coach (Dev)** for local feedback instead of waiting for a public release. Create its launcher with a source checkout and an existing working environment:
