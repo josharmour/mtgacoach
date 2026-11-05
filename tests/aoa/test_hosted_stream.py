@@ -1,3 +1,4 @@
+import json
 import threading
 from unittest.mock import Mock
 
@@ -47,4 +48,24 @@ def test_sign_in_required_before_network():
     opener = Mock()
     with pytest.raises(cb.ChatterboxError, match="Sign in"):
         list(cb.stream_hosted(api_key="", text="Hello.", opener=opener))
+    opener.open.assert_not_called()
+
+
+def test_expressive_delivery_reaches_public_stream_request():
+    opener = Mock(open=Mock(return_value=Response(b"\0\0" * 24)))
+    list(
+        cb.stream_hosted(
+            api_key="key", text="What a finish!", excitement="electric", energy=0.8, opener=opener
+        )
+    )
+    payload = json.loads(opener.open.call_args.args[0].data)
+    assert payload["excitement"] == "electric"
+    assert payload["energy"] == 0.8
+
+
+@pytest.mark.parametrize("delivery", [{"excitement": "invalid"}, {"energy": float("nan")}, {"energy": 2}])
+def test_invalid_delivery_never_opens_connection(delivery):
+    opener = Mock()
+    with pytest.raises(cb.ChatterboxError, match="delivery"):
+        list(cb.stream_hosted(api_key="key", text="Hello.", opener=opener, **delivery))
     opener.open.assert_not_called()

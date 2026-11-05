@@ -133,8 +133,14 @@ class Utterance:
     position_id: str = ""
     position_scope: str = ""
     protocol_version: int = PROTOCOL_VERSION
+    excitement: str | None = None
+    salience: int = 1
 
     def __post_init__(self) -> None:
+        if self.excitement not in {None, "calm", "normal", "tense", "electric"}:
+            raise ValueError("Invalid speech excitement")
+        if type(self.salience) is not int or not 0 <= self.salience <= 3:
+            raise ValueError("Invalid speech salience")
         if self.protocol_version != PROTOCOL_VERSION:
             raise ValueError("Unsupported commentary protocol")
         if (

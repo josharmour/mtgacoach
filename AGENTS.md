@@ -34,7 +34,8 @@ python -m arenamcp.standalone --backend online
 ```
 
 ## Local venvs (macOS dev machine)
-- `.venv_mac_311/` — Python 3.11, the working macOS venv (pip, pytest, editable arenamcp). Use this on mac.
+- `~/Library/Application Support/MTGA Coach Dev/venv/` — local Python 3.11 and dependencies for macOS development. Source remains on `/Volumes/repos/mtgacoach-dev`; use `PYTHONPATH=src` when testing another worktree.
+- `.venv_mac_311/` — previous network-share environment, retained for recovery; use the local environment above for Dev.
 - `.venv/` — Linux/WSL-era venv; pip shebang broken on macOS (points at old ArenaMCP path).
 
 ## Tooling

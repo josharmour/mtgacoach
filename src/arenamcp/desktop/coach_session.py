@@ -405,7 +405,15 @@ class CoachSession(QObject):
         except Exception as e:
             logger.debug("Coach screenshot failed: %s", e)
 
-        # 2. MTGA window screenshot
+        # 2. MTGA window screenshot (only this user action may request access).
+        from .screen_capture_permissions import ensure_screen_capture_permission
+
+        if not ensure_screen_capture_permission(self.parent()):
+            self.logEmitted.emit(
+                "Arena screenshot omitted; the report can still be saved without screen recording access.",
+                "info",
+            )
+            return out
         try:
             from arenamcp.autopilot_bug_capture import capture_mtga_screenshot
 
@@ -448,6 +456,10 @@ class CoachSession(QObject):
         screenshots: dict[str, str] = {}
         screenshot_error = ""
         try:
+            from .screen_capture_permissions import ensure_screen_capture_permission
+
+            if not ensure_screen_capture_permission(self.parent()):
+                raise PermissionError("Arena screenshot skipped; screen recording access is needed.")
             screenshots = capture_mtga_screenshot(
                 Path(LOG_DIR) / "bug_reports", f"autopilot_bug_{capture_id}"
             )

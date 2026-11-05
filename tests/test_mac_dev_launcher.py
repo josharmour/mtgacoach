@@ -48,11 +48,13 @@ p = pathlib.Path("attempt.json")
 count = json.loads(p.read_text())["count"] + 1 if p.exists() else 1
 p.write_text(json.dumps({"count": count, "args": sys.argv[1:],
     "source": os.environ["PYTHONPATH"], "checkout": os.environ["MTGACOACH_DEV_CHECKOUT"],
+    "app": os.environ["MTGACOACH_DEV_APP"],
     "pending": os.environ.get("MTGACOACH_VELOPACK_PENDING")}))
 raise SystemExit(42 if count == 1 else 0)
 """)
     monkeypatch.setenv("MTGACOACH_VELOPACK_PENDING", "must-not-use-managed-updater")
     app = installer.install(checkout, Path(sys.executable), tmp_path / "Dev.app")
+    assert plistlib.loads((app / "Contents/Info.plist").read_bytes())["LSUIElement"] is True
     subprocess.run([app / "Contents/MacOS/CoachDev", "--candidate"], check=True, timeout=30)
     result = json.loads((checkout / "attempt.json").read_text())
     assert result == {
@@ -60,5 +62,6 @@ raise SystemExit(42 if count == 1 else 0)
         "args": ["--candidate"],
         "source": str(checkout / "src"),
         "checkout": str(checkout),
+        "app": str(app),
         "pending": None,
     }

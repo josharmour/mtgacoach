@@ -59,3 +59,13 @@ def test_non_mac_platform_does_not_load_coregraphics(monkeypatch):
     monkeypatch.setattr(screen_capture.ctypes, "CDLL", load)
     screen_capture.require_screen_capture_access()
     load.assert_not_called()
+
+
+@pytest.mark.parametrize("allowed", [True, False])
+def test_explicit_request_rechecks_current_process_access(monkeypatch, allowed):
+    core = Mock(CGPreflightScreenCaptureAccess=Mock(return_value=allowed))
+    monkeypatch.setattr(screen_capture, "_IS_MACOS", True)
+    monkeypatch.setattr(screen_capture.ctypes, "CDLL", Mock(return_value=core))
+    assert screen_capture.request_screen_capture_access() is allowed
+    core.CGRequestScreenCaptureAccess.assert_called_once()
+    core.CGPreflightScreenCaptureAccess.assert_called_once()

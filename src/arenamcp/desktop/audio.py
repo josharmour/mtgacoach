@@ -17,7 +17,9 @@ except ImportError:  # pragma: no cover - non-Windows
 
 sd = None
 sf = None
-if winsound is None:
+if winsound is None and sys.platform != "darwin":
+    # Mac playback uses afplay. Importing PortAudio probes input devices too,
+    # causing unnecessary microphone prompts and delaying the first window.
     try:
         import sounddevice as sd
         import soundfile as sf

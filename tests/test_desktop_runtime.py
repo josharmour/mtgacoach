@@ -41,6 +41,23 @@ def test_current_interpreter_needs_no_subprocess(monkeypatch, tmp_path: Path) ->
     assert runtime._python_responds(current)
 
 
+def test_dev_workers_keep_launchers_local_environment(monkeypatch, tmp_path: Path) -> None:
+    current = tmp_path / "local venv" / "bin" / "python"
+    current.parent.mkdir(parents=True)
+    current.touch()
+    monkeypatch.setenv("MTGACOACH_DEV_CHECKOUT", "/network/source")
+    monkeypatch.setattr(runtime.sys, "executable", str(current))
+    monkeypatch.setattr(runtime.sys, "frozen", False, raising=False)
+
+    def no_runtime_search(*args, **kwargs):
+        raise AssertionError("Dev must not search or probe an alternate runtime")
+
+    monkeypatch.setattr(runtime, "get_app_root", no_runtime_search)
+    monkeypatch.setattr(runtime, "get_runtime_root", no_runtime_search)
+    monkeypatch.setattr(runtime.subprocess, "run", no_runtime_search)
+    assert runtime.find_python_executable() == (str(current), "dev_current")
+
+
 def test_dead_preferred_runtime_falls_back_without_probing_current(monkeypatch, tmp_path: Path) -> None:
     app = tmp_path / "app"
     preferred = app / "runtime" / "python.exe"
