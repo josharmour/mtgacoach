@@ -12,6 +12,8 @@ uv run --no-sync mtgacoach-desktop
 
 On the maintainer’s Mac, keep the source checkout on the network share and Python and its dependencies on the local disk. Python edits take effect on the next launch. Rebuild the C# plugin when you change its source.
 
+Dev windows have a **Copy commit** button in the status bar. It copies the full source commit captured at Coach startup, even if the shared checkout changes afterward. Use **Restart Coach** after an iterative source update to load and identify the new revision.
+
 ### Quick Mac iteration
 
 Use **MTGA Coach (Dev)** for local feedback instead of waiting for a public release. Create its launcher with a source checkout and an existing working environment:
