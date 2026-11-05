@@ -49,3 +49,39 @@ def test_shortcut_uses_the_detected_distribution(monkeypatch, tmp_path, kind):
     else:
         spawn.assert_called_once_with([str(executable)], cwd=str(executable.parent))
         shell.assert_not_called()
+
+
+@pytest.mark.parametrize("managed", [False, True])
+def test_windows_startup_launches_arena_for_dev_and_managed(monkeypatch, managed):
+    from arenamcp.desktop import app
+    from arenamcp.repair_engine import RepairEngine
+
+    monkeypatch.delenv("MTGACOACH_VELOPACK_PENDING", raising=False)
+    if managed:
+        monkeypatch.setenv("MTGACOACH_VELOPACK_PENDING", "pending.json")
+    else:
+        monkeypatch.setenv("MTGACOACH_DEV_CHECKOUT", "Z:/mtgacoach-dev")
+    repair = Mock(return_value=[])
+    launch = Mock(return_value="Starting Arena.")
+    monkeypatch.setattr(RepairEngine, "managed_windows_bridge", repair)
+    monkeypatch.setattr(runtime, "launch_windows_arena", launch)
+    log = Mock()
+    app._launch_windows_session(log)
+    launch.assert_called_once_with()
+    assert repair.call_count == int(managed)
+    log.assert_called_once_with("Starting Arena.", "status")
+
+
+def test_source_startup_reports_arena_launch_failure(monkeypatch):
+    from arenamcp.desktop import app
+
+    monkeypatch.delenv("MTGACOACH_VELOPACK_PENDING", raising=False)
+    monkeypatch.setattr(
+        runtime, "launch_windows_arena", Mock(side_effect=FileNotFoundError("Arena installation not found"))
+    )
+    log = Mock()
+    app._launch_windows_session(log)
+    message, kind = log.call_args.args
+    assert "Arena installation not found" in message
+    assert "Setup & Repair" in message
+    assert kind == "error"

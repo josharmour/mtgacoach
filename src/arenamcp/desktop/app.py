@@ -232,6 +232,27 @@ def _launch_native_mac_session(
                     callback(message)
 
 
+def _launch_windows_session(log: Callable[[str, str], None]) -> None:
+    # Source launches use the installed bridge; only managed packages deploy it.
+    if os.environ.get("MTGACOACH_VELOPACK_PENDING"):
+        from arenamcp.repair_engine import RepairEngine
+
+        try:
+            for result in RepairEngine().managed_windows_bridge():
+                log(result.detail, "error" if result.status == "error" else "status")
+        except Exception as exc:
+            log(f"Bridge setup needs attention in Repair: {exc}", "error")
+
+    from .runtime import launch_windows_arena
+
+    try:
+        status = launch_windows_arena()
+        if status:
+            log(status, "status")
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        log(f"Arena could not start: {exc}. Check Setup & Repair.", "error")
+
+
 def main() -> int:
     # CLI routing for frozen executable / command-line invocations
     if any(
@@ -258,12 +279,9 @@ def main() -> int:
 
     if checkout := os.environ.get("MTGACOACH_DEV_CHECKOUT"):
         # Refresh on Restart Coach too, which execs the desktop module directly.
-        try:
-            commit = subprocess.check_output(
-                ["git", "-C", checkout, "rev-parse", "--short", "HEAD"], text=True, timeout=3
-            ).strip()
-        except (OSError, subprocess.SubprocessError):
-            commit = "unknown commit"
+        from .dev_source import source_revision
+
+        commit = source_revision(checkout)
         os.environ["MTGACOACH_BUILD_LABEL"] = f"dev source ({commit})"
 
     # Acquire singleton lock before initializing Qt or spawning background threads
@@ -324,32 +342,12 @@ def main() -> int:
     # its own failure text says "open the Repair tab", which only exists
     window = MainWindow()
     window.show()
-    if sys.platform == "win32" and os.environ.get("MTGACOACH_VELOPACK_PENDING"):
-        # The legacy Inno installer deployed the bridge. Managed installations
-        # use the same package resources and never write into a running Arena.
+    if sys.platform == "win32":
+
         def prepare_bridge():
-            from arenamcp.repair_engine import RepairEngine
+            _launch_windows_session(window._session.logEmitted.emit)
 
-            try:
-                for result in RepairEngine().managed_windows_bridge():
-                    window._session.logEmitted.emit(
-                        result.detail, "error" if result.status == "error" else "status"
-                    )
-            except Exception as exc:
-                window._session.logEmitted.emit(f"Bridge setup needs attention in Repair: {exc}", "error")
-
-            from .runtime import launch_windows_arena
-
-            try:
-                status = launch_windows_arena()
-                if status:
-                    window._session.logEmitted.emit(status, "status")
-            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-                window._session.logEmitted.emit(
-                    f"Arena could not start: {exc}. Check Setup & Repair.", "error"
-                )
-
-        worker = threading.Thread(target=prepare_bridge, name="managed-arena", daemon=True)
+        worker = threading.Thread(target=prepare_bridge, name="windows-arena", daemon=True)
         worker.start()
         marker = os.environ.get("MTGACOACH_WINDOWS_LAUNCH_REQUEST")
         if marker:
@@ -360,7 +358,7 @@ def main() -> int:
                 if worker.is_alive() or not request.exists():
                     return
                 request.unlink(missing_ok=True)
-                worker = threading.Thread(target=prepare_bridge, name="managed-arena", daemon=True)
+                worker = threading.Thread(target=prepare_bridge, name="windows-arena", daemon=True)
                 worker.start()
 
             window._update_timer.timeout.connect(handle_shortcut)

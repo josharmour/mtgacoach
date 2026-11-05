@@ -32,6 +32,20 @@ For stable local screen-capture identity, install the launcher with `--sign-iden
 
 The maintainer tests changes in Dev first. Do not merge or publish follow-up changes until explicitly asked to **release to master** or **release to stable**. Master release publishes to master users; a named stable release publishes to stable users. Creating a reviewable PR and running its checks does not publish an update.
 
+### Quick Windows iteration
+
+Keep Python and dependencies on the Windows disk and use the shared source checkout:
+
+```powershell
+py -3.11 Z:\mtgacoach-dev\scripts\install_windows_dev_launcher.py --checkout Z:\mtgacoach-dev --create-venv --git-dir Z:\mtgacoach\.git\worktrees\mtgacoach-dev
+```
+
+This creates `%LOCALAPPDATA%\MTGACoachDev\venv` and a **MTGA Coach (Dev)** desktop shortcut. The existing master shortcut stays available. Setup installs dependencies once; normal launches read source directly without installing packages or waiting for a release. Re-run setup when dependencies change. For an existing local environment, use `--python C:\path\to\venv\Scripts\python.exe` instead of `--create-venv`.
+
+The `--git-dir` option is only needed for a worktree created on another operating system whose `.git` file contains a path Windows cannot resolve. A regular clone needs no override or Git executable for its Dev title. Run setup in your normal desktop session with the share connected, and keep that share connected when using Dev.
+
+**Restart Coach** reloads the shared Python source using the same local environment. Dev uses the existing Coach settings; quit the other Coach before opening it. The maintainer's Windows `Z:\mtgacoach-dev` and Mac `/Volumes/repos/mtgacoach-dev` refer to the same checkout. Launcher configuration and startup errors are in `%LOCALAPPDATA%\MTGACoachDev`.
+
 ## Find the code
 
 | Feature | Entry point |
