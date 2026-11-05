@@ -7,7 +7,7 @@ to MTGA instead of simulating mouse clicks.
 
 Coach’s [Python bridge](../src/arenamcp/gre_bridge.py) listens on loopback TCP. The [BepInEx plugin](MtgaCoachBridge/Plugin.Pipe.cs) connects to Coach and exchanges newline-delimited JSON. The plugin dispatches game actions on the Unity main thread. See [Plugin.Actions.cs](MtgaCoachBridge/Plugin.Actions.cs) for the commands supported by this build.
 
-Windows and Linux/Proton use this plugin. Native macOS uses the separate [IL2CPP bridge](../spikes/mac-il2cpp/build.sh). Manual coaching can read Arena’s log on all three platforms.
+Windows and Linux/Proton use this plugin. Managed Apple Silicon Mac packages include the native IL2CPP bridge and stage it while Arena is closed. Native Mac source users build that [bridge separately](../spikes/mac-il2cpp/build.sh); BepInEx does not load into native Arena. [Customer platform setup](../INSTALL.md#platform-setup). Manual coaching can read Arena’s log on all three platforms.
 
 ## Install and build
 

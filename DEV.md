@@ -2,7 +2,7 @@
 
 ## Run from a checkout
 
-Use Python 3.10 or newer. In a fresh checkout, the following creates an editable development environment, including the dependencies for the website tests. Run the commands from the repository root.
+Use Python 3.11 for the full setup below, including generated ArenaOnAir commentary (the base package supports Python 3.10 or newer). In a fresh checkout, the following creates an editable development environment, including the dependencies for the website tests. Run the commands from the repository root.
 
 ```sh
 uv venv --python 3.11
@@ -10,7 +10,9 @@ uv pip install --python .venv -e ".[dev,full]" -r website/requirements.txt
 uv run --no-sync mtgacoach-desktop
 ```
 
-On the maintainer’s Mac, keep the source checkout on the network share and Python and its dependencies on the local disk. Python edits take effect on the next launch. Rebuild the C# plugin when you change its source.
+Managed downloads bundle Python, the commentary core, and platform bridge assets. A source checkout uses the Python environment and native bridge you provision. Install the pinned [ArenaOnAir core](docs/commentary.md#runtime-requirement) in the commentary worker’s environment to enable generated analysis; selecting hosted Chatterbox does not require local Torch or speech-model weights.
+
+On the maintainer’s Mac, keep the source checkout on the network share and Python and its dependencies on the local disk. Python edits take effect on the next launch. Rebuild the [C# plugin](bepinex-plugin/README.md) when you change its source. Native Mac source users build the [IL2CPP bridge](spikes/mac-il2cpp/build.sh) separately; the managed Mac installer bundles it. Stage bridge changes with Arena closed and launch a new Arena process to load them.
 
 Dev windows have a **Copy commit** button in the status bar. It copies the full source commit captured at Coach startup, even if the shared checkout changes afterward. Use **Restart Coach** after an iterative source update to load and identify the new revision.
 
@@ -52,6 +54,7 @@ The `--git-dir` option is only needed for a worktree created on another operatin
 
 | Feature | Entry point |
 | --- | --- |
+| Current-decision UI and forecast display | [User guide](docs/using-coach.md), [strategy view](src/arenamcp/desktop/strategy_view.py), and [presentation model](src/arenamcp/desktop/strategy_model.py) |
 | Desktop UI and setup | [PySide app](src/arenamcp/desktop/app.py) and [Setup & Repair](src/arenamcp/desktop/repair_tab.py) |
 | Coaching and model calls | [Coach](src/arenamcp/coach.py), [backend factory](src/arenamcp/coach_backends.py), [hosted client](src/arenamcp/backends/proxy.py) |
 | Arena state, MCP tools and Autoplay | [Server](src/arenamcp/server.py), [autopilot](src/arenamcp/autopilot.py), [bridge guide](bepinex-plugin/README.md) |
