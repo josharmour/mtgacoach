@@ -1404,7 +1404,7 @@ def test_desktop_banner_offers_counts_down_and_cancels(qapp):
 
     try:
         event({"state": "offering", "id": 1, "seconds": 10, "reason": "Concede: x"})
-        assert panel.concede_banner.isVisible() and "Auto-concede offered" in panel.concede_label.text()
+        assert panel.notice_button.isVisible() and "Auto-concede offered" in panel.notice_button.text()
         assert panel.concede_cancel_btn.isVisible()
         event({"state": "armed", "id": 1, "seconds": 10, "reason": "Concede: x"})
         assert "Auto-concede in 10s" in panel.concede_label.text()
@@ -1440,10 +1440,10 @@ def test_desktop_drops_an_armed_banner_nobody_follows_up(qapp):
         panel.session._handle_process_event(
             {"type": "concede_countdown", "data": {"state": "armed", "id": 7, "seconds": 3}}
         )
-        assert panel.concede_banner.isVisible()
+        assert panel.notice_button.isVisible() and "Auto-concede in" in panel.notice_button.text()
         panel._concede_deadline = time.monotonic() - 20  # deadline long gone, no follow-up
         panel._render_concede()
-        assert not panel.concede_banner.isVisible()
+        assert "Auto-concede" not in panel.notice_button.text()
     finally:
         panel.close()
 

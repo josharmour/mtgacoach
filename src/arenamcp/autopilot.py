@@ -1989,6 +1989,7 @@ class AutopilotEngine(
                 "DeclareBlock",
                 "DeclareAttack",
                 "Search",
+                "Distribution",
             )
         ) or (
             self._decision_type(game_state or {})
@@ -2000,6 +2001,7 @@ class AutopilotEngine(
                 "declare_blockers",
                 "declare_attackers",
                 "search",
+                "distribution",
             )
         ):
             logger.info("Refusing unvalidated auto-response for %s", breq or bcls)

@@ -4,6 +4,22 @@
     "use strict";
     document.documentElement.classList.add("js");
 
+    // A labeled illustration, never a simulated live game or numeric win odds.
+    document.querySelectorAll("[data-outlook-demo]").forEach(function (demo) {
+        var beam = demo.querySelector("[data-outlook-beam]");
+        var label = demo.querySelector("[data-outlook-label]");
+        var choices = demo.querySelectorAll("[data-outlook-value]");
+        choices.forEach(function (button) {
+            button.addEventListener("click", function () {
+                choices.forEach(function (choice) {
+                    choice.setAttribute("aria-pressed", choice === button ? "true" : "false");
+                });
+                beam.style.setProperty("--tilt", button.dataset.outlookValue + "deg");
+                label.textContent = button.textContent;
+            });
+        });
+    });
+
     // Match the updater's published version, not the website source revision.
     fetch("/downloads/versions", {credentials: "omit"})
         .then(function (response) {

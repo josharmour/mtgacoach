@@ -1,18 +1,7 @@
-"""Desktop plan card x line search (multi-turn planning spec WP10).
-
-The plan card gains a Line row (the searched best line's outcome, our life
-after each of their attacks and the attack/hold posture), a muted Alt row (the
-runner-up line) and a muted Opp row (the opponent-trick estimate), and the
-tactical pill says 'Best line' when its branches come from the line search.
-Payloads without lines (search off, failed or truncated, or an older backend)
-render exactly as before. Boards are the real recorded states in
-tests/strategic_states.py; nothing reads ~/.arenamcp.
-"""
+"""Forecast detail contracts on recorded boards; no live files or network services."""
 
 from __future__ import annotations
 
-import html as _html
-import re
 import time
 from copy import deepcopy
 from typing import Any
@@ -26,13 +15,14 @@ from tests import strategic_states as S
 from arenamcp import board_assessment as ba
 from arenamcp import game_plan as gp
 from arenamcp import opponent_tricks as ot
-from arenamcp.desktop.compact_coach import _ROLE_TONES, CompactCoachPanel, _plan_step_text
-from arenamcp.desktop.theme import block, span
+from arenamcp.desktop import theme
+from arenamcp.desktop.compact_coach import CompactCoachPanel
+from arenamcp.forecast_identity import forecast_key
 from arenamcp.game_plan import GamePlanManager
 from arenamcp.mcts_evaluator import MCTSEvaluator
+from arenamcp.plan_card import card_payload
 
 FIXTURES = ["G1_T8", "G1_T12", "G1_T14", "G1_T15_FROM_OPPONENT", "G3_T10_BLOCKS"]
-NEW_LABELS = ("Line", "Alt", "Opp")
 
 pytestmark = pytest.mark.usefixtures("unlimited_search_deadline")
 
@@ -65,249 +55,220 @@ def _offline(monkeypatch, tmp_path):
 @pytest.fixture
 def panel(qapp):
     p = CompactCoachPanel()
+    p.resize(420, 720)
     p.show()
     yield p
     p.close()
 
 
-def _label(text: str) -> str:
-    return span(text, "muted", weight=700) + "&nbsp;&nbsp;"
+def _facts(name):
+    return ba.assess(deepcopy(getattr(S, name))).as_payload()
 
 
-def _legacy_card(plan: dict[str, Any]) -> str:
-    """The plan card as ``_render_game_plan`` drew it before the line search (reference)."""
-    facts = plan.get("facts") if isinstance(plan.get("facts"), dict) else {}
-    role = str(facts.get("role") or plan.get("role") or "")
-    steps = [s for s in plan.get("turn_plan") or [] if isinstance(s, dict)]
-    lines = []
-    if role:
-        head = _label("Role") + span(role.upper(), _ROLE_TONES.get(role, "accent"), weight=700)
-        reason = str(facts.get("role_reason") or plan.get("role_reason") or "")
-        if reason:
-            head += "&nbsp;" + span(f"— {reason}", "muted")
-        lines.append(block(head, size="caption"))
-    if facts:
-        theirs, ours = facts.get("their_clock"), facts.get("our_clock")
-        bits = [
-            f"they kill you in {theirs}" if theirs else "no clock on you",
-            f"you kill them in {ours}" if ours else "no clock on them",
-        ]
-        if facts.get("race"):
-            bits.append(f"race {facts['race']}")
-        lines.append(block(_label("Clocks") + span(" · ".join(bits)), size="caption"))
-        flags = [str(f) for f in facts.get("flags") or [] if f]
-        if flags:
-            lines.append(block(span(" · ".join(flags[:2]), "bad", weight=600), size="caption"))
-    if steps:
-        turns = [f"T{s.get('turn')} {_plan_step_text(s)}" for s in steps[:3]]
-    else:
-        turns = [
-            f"T{s.get('turn')} {' + '.join(s.get('casts') or []) or '—'}"
-            for s in facts.get("lookahead") or []
-            if isinstance(s, dict)
-        ][:3]
-    if turns:
-        lines.append(block(_label("Next 3") + span(" → ".join(turns)), size="caption"))
-    wins = [str(w) for w in plan.get("win_conditions") or [] if w]
-    if wins:
-        lines.append(block(_label("Win") + span(wins[0], "muted"), size="caption"))
-    return "".join(lines)
-
-
-def _blocks(html: str) -> list[str]:
-    return [b + "</div>" for b in html.split("</div>") if b]
-
-
-def _plain(html: str) -> str:
-    return _html.unescape(re.sub(r"<[^>]+>", "", html).replace("&nbsp;", " "))
-
-
-def _row(html: str, name: str) -> str | None:
-    """The plain text of the card row labelled ``name`` (None when absent)."""
-    rows = [_plain(b) for b in _blocks(html) if b.startswith("<div") and _label(name) in b]
-    assert len(rows) <= 1
-    return rows[0] if rows else None
-
-
-def _facts(name: str) -> dict[str, Any]:
-    assessment = ba.assess(deepcopy(getattr(S, name)))
-    assert assessment is not None
-    return assessment.as_payload()
-
-
-def _legacy_facts(name: str) -> dict[str, Any]:
+def _legacy_facts(name):
     facts = _facts(name)
     for key in ("lines", "posture", "search"):
         facts.pop(key)
     return facts
 
 
-def _plan(facts: dict[str, Any], **extra: Any) -> dict[str, Any]:
+def _plan(facts, **extra):
     return {"facts": facts, "role": facts["role"], "role_reason": facts["role_reason"], **extra}
 
 
-def _with_turns(facts: dict[str, Any]) -> dict[str, Any]:
+def _with_turns(facts):
     return _plan(
         facts,
-        turn_plan=[
-            {"turn": 12, "label": "T", "land": "Island", "cast": ["Undulating Witness"], "attack": "none"},
-            {"turn": 14, "label": "T+1", "land": "", "cast": ["Murmuring Volume"], "attack": "Witness"},
-        ],
+        turn_plan=[{"turn": 12, "land": "Island", "cast": ["Undulating Witness"]}],
         win_conditions=["Archive Arbiter / Beast midrange beats"],
     )
 
 
-def _render(panel: CompactCoachPanel, plan: dict[str, Any]) -> str:
-    panel._on_game_plan_changed(plan)
-    assert not panel.game_plan_label.isHidden()
-    return panel.game_plan_label.text()
+def _open(panel, kind="paths", index=0):
+    if kind == "paths":
+        panel.strategy_view.inspect(index)
+    else:
+        panel._show_detail(kind)
+    assert panel.workspace.currentWidget() is panel.detail_pager
+    assert panel.detail_pager.isVisible()
+    return panel.detail_pager.browser.toPlainText()
 
 
-def _step(turn: int, life: int | None, **extra: Any) -> dict[str, Any]:
-    step = {"turn": turn, "label": "T", "land": "", "casts": [], "modes": {}, "cycles": [], "attack": []}
-    step.update({"held": [], "life_after": life, "opp_life_after": None, **extra})
-    return step
+def _render(panel, plan, state=None):
+    state = deepcopy(state or S.G1_T12)
+    panel._on_game_state_changed(state)
+    panel._on_game_plan_changed(dict(plan, snapshot_key=forecast_key(state)))
+    assert panel.strategy_view.current
+    return _open(panel)
 
 
-def _line(outcome: str, *steps: dict[str, Any], now_life: int | None = None) -> dict[str, Any]:
-    return {"summary": "", "outcome": outcome, "now_life": now_life, "value": 0.0, "steps": list(steps)}
+def _step(turn, life, **extra):
+    return {
+        "turn": turn,
+        "land": "",
+        "casts": [],
+        "modes": {},
+        "cycles": [],
+        "attack": [],
+        "held": [],
+        "life_after": life,
+        "opp_life_after": None,
+        **extra,
+    }
 
 
-def _synthetic(lines: list[dict[str, Any]], posture: str = "", **search: Any) -> dict[str, Any]:
+def _line(outcome, *steps, now_life=None):
+    return {"outcome": outcome, "now_life": now_life, "steps": list(steps)}
+
+
+def _synthetic(lines, posture="", **search):
     facts = _legacy_facts("G1_T12")
-    facts.update(
-        lines=lines, posture=posture, search={"nodes": 9, "bounded": False, "truncated": False, **search}
-    )
+    facts.update(lines=lines, posture=posture, search={"truncated": False, **search})
     return _plan(facts)
-
-
-# --- payloads without lines: exactly as before ------------------------------------
 
 
 @pytest.mark.parametrize("name", FIXTURES)
 @pytest.mark.parametrize("shape", [_plan, _with_turns])
-def test_payloads_without_lines_render_exactly_as_before(panel, name, shape):
+def test_payloads_without_search_keep_explanation_without_inventing_a_leading_path(panel, name, shape):
     plan = shape(_legacy_facts(name))
-    assert _render(panel, plan) == _legacy_card(plan)
-    # An unknown trick estimate adds nothing either.
-    unknown = dict(plan, opp_interaction={"known": False, "ui_line": ""})
-    assert _render(panel, unknown) == _legacy_card(plan)
+    text = _render(panel, plan, getattr(S, name))
+    assert "No supported searched paths" in text
+    assert not panel.strategy_view.path_button.leading
+    detail = _open(panel, "advice")
+    assert plan["facts"]["role_reason"] in detail
+    if plan.get("turn_plan"):
+        assert "T12: Island + Undulating Witness" in detail
+        assert "Plan objective: Archive Arbiter / Beast midrange beats" in detail
+    elif plan["facts"].get("lookahead"):
+        assert "Unsearched board-math projection" in detail
+        for step in plan["facts"]["lookahead"][:3]:
+            assert f"T{step['turn']}:" in detail
+            for card in step.get("casts") or []:
+                assert card in detail
+    assert "▮" not in detail and "Outlook" not in detail
+    _render(
+        panel, dict(plan, opp_interaction={"known": False, "ui_line": "HIDDEN ESTIMATE"}), getattr(S, name)
+    )
+    assert "HIDDEN ESTIMATE" not in _open(panel)
 
 
-def test_kill_switch_payloads_render_exactly_as_before(panel, monkeypatch):
+def test_search_kill_switch_keeps_plan_context_without_claiming_a_searched_leader(panel, monkeypatch):
     monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")
     facts = _facts("G1_T12")
     assert facts["lines"] == [] and facts["posture"] == ""
-    plan = _with_turns(facts)
-    assert _render(panel, plan) == _legacy_card(plan)
+    assert "No supported searched paths" in _render(panel, _with_turns(facts))
+    assert not panel.strategy_view.path_button.leading
+    assert "Island + Undulating Witness" in _open(panel, "advice")
 
 
 @pytest.mark.parametrize("name", FIXTURES)
-def test_line_rows_only_add_rows_between_the_flags_and_next_3(panel, name):
+def test_recorded_paths_and_alternatives_are_inspectable_without_growing_panel(panel, name, qapp):
+    state = getattr(S, name)
     facts = _facts(name)
-    plan = _with_turns(facts)
-    html = _render(
-        panel, dict(plan, opp_interaction={"known": True, "ui_line": "Opp tricks ~9%: 2 open (U)"})
+    text = _render(
+        panel, _plan(facts, opp_interaction={"known": True, "ui_line": "Opp tricks ~9%: 2 open (U)"}), state
     )
-    kept = [b for b in _blocks(html) if not any(_label(n) in b for n in NEW_LABELS)]
-    assert "".join(kept) == _legacy_card(plan)
-    blocks = _blocks(html)
-    order = [
-        i for i, b in enumerate(blocks) if any(_label(n) in b for n in ("Clocks", *NEW_LABELS, "Next 3"))
-    ]
-    labels = [next(n for n in ("Clocks", *NEW_LABELS, "Next 3") if _label(n) in blocks[i]) for i in order]
-    expected = (
-        ["Clocks"] + (["Line"] if facts["lines"] else []) + (["Alt"] if len(facts["lines"]) > 1 else [])
+    assert "Opp tricks ~9%: 2 open (U)" in text
+    qapp.processEvents()
+    before = panel.size()
+    for index, line in enumerate(facts["lines"][:3]):
+        text = _open(panel, index=index)
+        expected = {"dead": "Projected loss", "win": "Projected win", "alive": "Survives modeled attacks"}
+        assert expected[line["outcome"]] in text
+        for step in line["steps"]:
+            for card in step["casts"]:
+                assert card in text
+        assert panel.size() == before
+    assert facts["role_reason"] in _open(panel, "advice")
+
+
+def test_path_shows_lives_after_opponents_attacks_and_posture(panel):
+    text = _render(panel, _synthetic([_line("alive", _step(12, 7), _step(14, 5))], posture="hold"))
+    assert "Survives modeled attacks · win not established" in text
+    assert "T13 · Your life after their attack: 7" in text
+    assert "T15 · Your life after their attack: 5" in text
+    assert "Posture: hold" in text
+    assert "path:1" not in panel.strategy_view.detail_html()
+
+
+@pytest.mark.parametrize("posture", ["attack", "hold", "either", ""])
+def test_only_meaningful_attack_or_hold_posture_is_shown(panel, posture):
+    text = _render(panel, _synthetic([_line("alive", _step(12, 17))], posture=posture))
+    assert ("Posture:" in text) == (posture in ("attack", "hold"))
+    if posture in ("attack", "hold"):
+        assert "Posture: " + posture in text
+
+
+def test_dead_line_has_loss_timing_bad_tone_and_life_floored_at_zero(panel):
+    text = _render(panel, _synthetic([_line("dead", _step(14, 2), _step(16, -3))]))
+    assert "Projected loss · T17" in text
+    assert "T15 · Your life after their attack: 2" in text
+    assert "T17 · Your life after their attack: 0" in text
+    assert "-3" not in text
+    assert theme.color("bad") in panel.strategy_view.detail_html()
+
+
+def test_combat_already_under_way_precedes_future_life_projections(panel):
+    state = deepcopy(S.G1_T12)
+    state["turn"]["turn_number"] = 10
+    text = _render(panel, _synthetic([_line("alive", _step(11, 16), _step(13, 12), now_life=20)]), state)
+    assert text.index("After current combat: your projected life 20") < text.index(
+        "T12 · Your life after their attack: 16"
     )
-    assert labels == expected + ["Opp", "Next 3"]
+    assert "T14 · Your life after their attack: 12" in text
 
 
-# --- the Line row ---------------------------------------------------------------
-
-
-def test_line_row_shows_outcome_lives_with_their_attack_turns_and_posture(panel):
-    best = _line("alive", _step(12, 7), _step(14, 5))
-    html = _render(panel, _synthetic([best], posture="hold"))
-    assert _row(html, "Line") == "Line  survive · 7 → 5 (T13, T15) · hold"
-    # Default tone: only a dead line's outcome is coloured.
-    expected = block(_label("Line") + span("survive") + span(" · 7 → 5 (T13, T15) · hold"), size="caption")
-    assert expected in html
-    assert _row(html, "Alt") is None
+def test_winning_line_names_conditional_lethal_turn_and_opponent_life(panel):
+    text = _render(panel, _synthetic([_line("win", _step(15, None, attack=["Cadet"], opp_life_after=-2))]))
+    assert "Projected win · T15 · conditional" in text
+    assert "Attack with Cadet" in text
+    assert "T15 · Opponent life after your attack: 0" in text
+    assert "-2" not in text
 
 
 @pytest.mark.parametrize(
-    "posture, shown", [("attack", " · attack"), ("hold", " · hold"), ("either", ""), ("", "")]
+    "lines,search",
+    [([], {}), ([_line("win", _step(12, 7, opp_life_after=0))], {"truncated": True}), (["not a line"], {})],
 )
-def test_posture_is_shown_only_when_it_says_attack_or_hold(panel, posture, shown):
-    html = _render(panel, _synthetic([_line("alive", _step(8, 17), _step(10, 17))], posture=posture))
-    assert _row(html, "Line") == f"Line  survive · 17 → 17 (T9, T11){shown}"
+def test_unusable_or_truncated_search_does_not_claim_a_supported_win(panel, lines, search):
+    text = _render(panel, _synthetic(lines, **search))
+    assert not panel.strategy_view.path_button.leading
+    assert "Projected win" not in text
+    if search.get("truncated"):
+        assert "Search truncated · survival and wins uncertain" in text
+    else:
+        assert "No supported searched paths" in text
 
 
-def test_dead_line_outcome_is_bad_toned_and_lives_floor_at_zero(panel):
-    best = _line("dead", _step(14, 2), _step(16, -3))
-    html = _render(panel, _synthetic([best], posture="hold"))
-    assert _row(html, "Line") == "Line  dead T17 · 2 → 0 (T15, T17) · hold"
-    assert span("dead T17", "bad") in html
-
-
-def test_the_attack_under_way_comes_first(panel):
-    best = _line("alive", _step(11, 16), _step(13, 12), now_life=20)
-    html = _render(panel, _synthetic([best]))
-    assert _row(html, "Line") == "Line  survive · 20 → 16 → 12 (T10, T12, T14)"
-
-
-def test_a_winning_line_names_its_lethal_turn_once(panel):
-    win = _line("win", _step(15, None, attack=["Cadet"], opp_life_after=-2))
-    html = _render(panel, _synthetic([win], posture="lethal"))
-    assert _row(html, "Line") == "Line  lethal T15"
-    assert span("lethal T15", "bad") not in html
-
-
-@pytest.mark.parametrize(
-    "lines, search",
-    [
-        ([], {}),
-        ([_line("alive", _step(12, 7))], {"truncated": True}),
-        (["not a line"], {}),
-    ],
-)
-def test_no_line_rows_without_usable_lines(panel, lines, search):
-    html = _render(panel, _synthetic(lines, posture="hold", **search))
-    assert _row(html, "Line") is None and _row(html, "Alt") is None
-
-
-def test_real_g1_t14_best_line_is_dead_and_the_destroy_mode_alt_dies_first(panel):
+def test_real_g1_t14_alternative_dies_before_best_line(panel):
     facts = _facts("G1_T14")
-    best, alt = facts["lines"][0], facts["lines"][1]
-    html = _render(panel, _plan(facts))
-    dead_turn = re.search(r"dead on (T\d+)", best["summary"]).group(1)
-    line_row = _row(html, "Line")
-    assert line_row.startswith(f"Line  dead {dead_turn} · ")
-    assert span(f"dead {dead_turn}", "bad") in html
-    alt_turn = re.search(r"dead on (T\d+)", alt["summary"]).group(1)
-    assert int(alt_turn[1:]) < int(dead_turn[1:])
-    assert _row(html, "Alt").startswith("Alt  Island + Archive Arbiter (destroy")
-    assert _row(html, "Alt").endswith(f" · dead {alt_turn}")
+    best, alt = facts["lines"][:2]
+    dead_turn = next(
+        s["turn"] + 1 for s in best["steps"] if s["life_after"] is not None and s["life_after"] <= 0
+    )
+    alt_turn = next(
+        s["turn"] + 1 for s in alt["steps"] if s["life_after"] is not None and s["life_after"] <= 0
+    )
+    assert alt_turn < dead_turn
+    text = _render(panel, _plan(facts), S.G1_T14)
+    assert f"Projected loss · T{dead_turn}" in text
+    alternative = _open(panel, index=1)
+    assert "Archive Arbiter (destroy" in alternative
+    assert f"Projected loss · T{alt_turn}" in alternative
 
 
-def test_real_g1_t12_line_row_reads_the_best_lines_lives(panel):
+def test_real_g1_t12_preserves_life_chain_and_alternative_cast(panel):
     facts = _facts("G1_T12")
     best = facts["lines"][0]
-    lives = [s["life_after"] for s in best["steps"] if s["life_after"] is not None]
-    turns = [s["turn"] + 1 for s in best["steps"] if s["life_after"] is not None]
-    html = _render(panel, _plan(facts))
-    chain = " → ".join(str(life) for life in lives)
-    assert _row(html, "Line").startswith(f"Line  survive · {chain} ({', '.join(f'T{t}' for t in turns)})")
-    # The best line is Island + Witness (WP3); the runner-up casts Murmuring Volume first.
-    assert best["steps"][0]["land"] == "Island" and best["steps"][0]["casts"] == ["Undulating Witness"]
-    assert _row(html, "Alt").startswith("Alt  Island + Murmuring Volume: ")
+    text = _render(panel, _plan(facts))
+    for step in best["steps"]:
+        if step["life_after"] is not None:
+            assert f"T{step['turn'] + 1} · Your life after their attack: {max(0, step['life_after'])}" in text
+    assert "Play Island" in text and "Cast Undulating Witness" in text
+    assert "Cast Murmuring Volume" in _open(panel, index=1)
 
 
-# --- the Alt row ----------------------------------------------------------------
-
-
-def test_alt_row_is_muted_and_names_the_runner_up_t_step(panel):
-    best = _line("alive", _step(12, 7), _step(14, 5))
+def test_alternative_preserves_modes_targets_and_each_turn(panel):
     alt = _line(
         "alive",
         _step(
@@ -316,52 +277,55 @@ def test_alt_row_is_muted_and_names_the_runner_up_t_step(panel):
             land="Island",
             casts=["Murmuring Volume", "Archive Arbiter"],
             modes={"Archive Arbiter": "gain 4 life"},
+            targets={"Archive Arbiter": "You"},
         ),
         _step(14, 4, casts=["Undulating Witness"]),
     )
-    html = _render(panel, _synthetic([best, alt]))
-    text = "Island + Murmuring Volume + Archive Arbiter (gain 4 life): 4 → 4"
-    assert _row(html, "Alt") == f"Alt  {text}"
-    assert block(_label("Alt") + span(text, "muted"), size="caption") in html
+    _render(panel, _synthetic([_line("alive", _step(12, 7)), alt]))
+    text = _open(panel, index=1)
+    assert "Path 2" in text and "Leading path" not in text.splitlines()[0]
+    assert "Cast Archive Arbiter (gain 4 life) → You" in text
+    assert "T14: Cast Undulating Witness" in text
+    assert "T15 · Your life after their attack: 4" in text
 
 
-def test_alt_row_shows_a_dead_or_winning_outcome_and_escapes_names(panel):
+def test_alternative_preserves_outcome_and_escapes_card_names(panel):
     best = _line("alive", _step(12, 7))
-    alt = _line("dead", _step(12, -4, land="Island", casts=["<b>Arbiter & Co</b>"]))
-    html = _render(panel, _synthetic([best, alt]))
-    assert _row(html, "Alt") == "Alt  Island + <b>Arbiter & Co</b>: 0 · dead T13"
-    assert "<b>Arbiter" not in html and "&lt;b&gt;Arbiter &amp; Co&lt;/b&gt;" in html
+    alt = _line("dead", _step(12, -4, casts=["<b>Arbiter & Co</b>"]))
+    _render(panel, _synthetic([best, alt]))
+    text = _open(panel, index=1)
+    assert "<b>Arbiter & Co</b>" in text and "Projected loss · T13" in text
+    assert "&lt;b&gt;Arbiter &amp; Co&lt;/b&gt;" in panel.strategy_view.detail_html()
     win = _line("win", _step(15, 16, attack=["Cadet"], opp_life_after=1), _step(17, None, opp_life_after=-5))
-    html = _render(panel, _synthetic([best, win]))
-    assert _row(html, "Alt") == "Alt  attack with Cadet: 16 · lethal T17"
+    _render(panel, _synthetic([best, win]))
+    assert "Projected win · T17 · conditional" in _open(panel, index=1)
 
 
-def test_alt_row_shortens_a_long_t_step(panel):
+def test_long_alternative_keeps_full_names_in_paged_detail(panel):
     names = [f"Very Long Creature Name {n}" for n in range(4)]
-    alt = _line("alive", _step(12, 4, attack=names))
-    html = _render(panel, _synthetic([_line("alive", _step(12, 7)), alt]))
-    row = _row(html, "Alt")
-    head = row[len("Alt  ") : row.index(": 4")]
-    assert head.endswith("…") and len(head) <= 64
+    _render(panel, _synthetic([_line("alive", _step(12, 7)), _line("alive", _step(12, 4, attack=names))]))
+    before = panel.size()
+    text = _open(panel, index=1)
+    assert all(name in text for name in names)
+    assert panel.size() == before
 
 
-# --- the Opp row ----------------------------------------------------------------
-
-
-def test_opp_row_shows_the_trick_estimate_only_when_known(panel):
+def test_opponent_estimate_is_visible_only_when_known_and_current(panel):
     ui_line = "Opp tricks ~14%: 3 open (G R), 3 in hand · Test Pump (pump) 0.31"
     plan = _plan(_legacy_facts("G3_T10_BLOCKS"))
-    html = _render(panel, dict(plan, opp_interaction={"known": True, "ui_line": ui_line}))
-    text = "tricks ~14%: 3 open (G R), 3 in hand · Test Pump (pump) 0.31"
-    assert _row(html, "Opp") == f"Opp  {text}"
-    assert block(_label("Opp") + span(text, "muted"), size="caption") in html
+    assert ui_line in _render(
+        panel, dict(plan, opp_interaction={"known": True, "ui_line": ui_line}), S.G3_T10_BLOCKS
+    )
+    changed = deepcopy(S.G3_T10_BLOCKS)
+    changed["turn"]["turn_number"] += 1
+    panel._on_game_state_changed(changed)
+    assert ui_line not in panel.detail_pager.browser.toPlainText()
     for unknown in ({"known": False, "ui_line": ui_line}, {"known": True, "ui_line": ""}, {}, "junk"):
-        html = _render(panel, dict(plan, opp_interaction=unknown))
-        assert _row(html, "Opp") is None and html == _legacy_card(plan)
+        text = _render(panel, dict(plan, opp_interaction=unknown), S.G3_T10_BLOCKS)
+        assert "Opponent interaction estimate" not in text and ui_line not in text
 
 
-def test_ui_payload_end_to_end(panel, tmp_path):
-    """The game_plan event payload as GamePlanManager builds it reaches all three rows."""
+def test_ui_payload_end_to_end_uses_publisher_identity(panel, tmp_path):
     service = _offline_service(tmp_path / "tricks")
     pump = ot.TrickCard(grp_id=1, name="Test Pump", mana_cost="{1}{G}", mv=2, pips=("G",), kinds=("pump",))
     service.register(
@@ -371,13 +335,18 @@ def test_ui_payload_end_to_end(panel, tmp_path):
     )
     manager = GamePlanManager(None)
     manager.trick_service = service
-    payload = manager.ui_payload(deepcopy(S.G3_T10_BLOCKS))
-    assert payload["opp_interaction"]["known"] is True and len(payload["facts"]["lines"]) > 1
-    html = _render(panel, dict(payload, source="autopilot"))
-    assert _row(html, "Line").startswith("Line  survive · ")
-    assert _row(html, "Alt").startswith("Alt  ")
-    assert "Test Pump" in _row(html, "Opp")
-    assert not _row(html, "Opp").startswith("Opp  Opp")
+    state = deepcopy(S.G3_T10_BLOCKS)
+    payload = card_payload(manager, state, source="autopilot")
+    assert payload["opp_interaction"]["known"] and len(payload["facts"]["lines"]) > 1
+    panel._on_game_state_changed(state)
+    panel._on_game_plan_changed(payload)
+    assert panel.strategy_view.current
+    assert "Test Pump" in _open(panel)
+    assert "Path 2" in _open(panel, index=1)
+    panel._on_game_state_changed(dict(state, game_over=True))
+    text = panel.detail_pager.browser.toPlainText()
+    assert "No current recommendation" in text and "Test Pump" not in text
+    assert not panel.strategy_view.path_button.leading
 
 
 # --- the tactical pill ----------------------------------------------------------

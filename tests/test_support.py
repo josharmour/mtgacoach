@@ -76,3 +76,36 @@ def test_disabled_email_and_patreon_share_no_draft(monkeypatch, browser_ok):
 
     monkeypatch.setattr(QDialog, "exec", inspect)
     support.contact_josh()
+
+
+def test_direct_support_opens_composer_without_collecting_context(monkeypatch):
+    opened = []
+    monkeypatch.setattr(support.QDesktopServices, "openUrl", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(support, "diagnostic_summary", lambda: pytest.fail("No automatic diagnostics"))
+    monkeypatch.setattr(QDialog, "exec", lambda self: pytest.fail("No intermediate support dialog"))
+    assert support.contact_support()
+    assert (
+        bytes(opened[0].toEncoded()).decode() == "mailto:support@mtgacoach.com?subject=MTGA%20Coach%20support"
+    )
+
+
+def test_direct_support_explains_missing_email_handler(monkeypatch, qapp):
+    from PySide6.QtWidgets import QMessageBox
+
+    messages = []
+    monkeypatch.setattr(support.QDesktopServices, "openUrl", lambda url: False)
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: messages.append(args))
+    assert not support.contact_support()
+    assert "support@mtgacoach.com" in messages[0][-1]
+
+
+def test_companion_support_button_opens_address(qapp, monkeypatch):
+    from arenamcp.desktop.compact_coach import CompactCoachPanel
+
+    opened = []
+    monkeypatch.setattr(support.QDesktopServices, "openUrl", lambda url: opened.append(url) or True)
+    panel = CompactCoachPanel()
+    panel.support_btn.click()
+    assert panel.support_btn.text() == "Contact support"
+    assert opened[0].path() == "support@mtgacoach.com"
+    panel.close()

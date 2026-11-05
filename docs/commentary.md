@@ -1,6 +1,6 @@
 # Commentary and speech development
 
-The desktop’s **Speech & voices** controls select spoken Coach advice or two ArenaOnAir announcers. The commentary engine consumes observed game events and available coaching explanations. Player decisions and urgent prompts take priority over background narration. Local Chatterbox has a separate [runtime setup](../runtime/chatterbox/README.md).
+The desktop’s **Speech & voices** controls select spoken Coach advice or two ArenaOnAir announcers. The commentary engine consumes observed game events and available coaching explanations. Player decisions and urgent prompts take priority over background narration. The desktop’s Chatterbox choice uses hosted speech with the Coach sign-in; no local Torch installation or model download is required. See the [user guide](using-coach.md#choose-what-you-hear) for Hype/Technical, voice pairs, and Preview. The optional local Chatterbox developer runtime has a separate [setup](../runtime/chatterbox/README.md).
 
 ## Broadcast behavior
 
