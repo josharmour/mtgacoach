@@ -12,6 +12,12 @@ uv run --no-sync python -m pytest tests/test_website_pages.py tests/test_trial_e
 
 For a local server, configure development values using [.env.example](.env.example) and [config.yaml](config.yaml). From the `website` directory, start the service with `docker compose up --build`. The [Compose file](docker-compose.yml) exposes port 8443 and mounts the database directory. Use separate development credentials and data when exercising signup or Patreon callbacks.
 
+## Transactional email
+
+Trial verification codes, Patreon license-key delivery, and trial-expiration notices default to `support@mtgacoach.com` as the sender. All three set `Reply-To: support@mtgacoach.com`, including when the SMTP login uses another address. Verify the sender with the SMTP provider before enabling delivery. `SMTP_FROM` can override the From address for deployments using a different verified sender; replies still go to support. Configure inbound forwarding separately from SMTP delivery.
+
+Run `python -m pytest tests/test_transactional_email.py -q` to check the sender, reply address, and message delivery using a mocked SMTP connection. These tests send no real email and mint no keys.
+
 ## Check a deployment
 
 Verify the public landing page, its platform download links, and the website’s `/health` route. For account changes, also test email-code verification, trial issuance, expiration, and subscriber access with a test account. A healthy website alone does not establish that an inference request will succeed.

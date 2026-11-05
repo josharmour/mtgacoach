@@ -67,7 +67,8 @@ SMTP_HOST = os.environ.get("SMTP_HOST", "")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASS = os.environ.get("SMTP_PASS", "")
-SMTP_FROM = os.environ.get("SMTP_FROM", SMTP_USER or "keys@mtgacoach.com")
+SUPPORT_EMAIL = "support@mtgacoach.com"
+SMTP_FROM = os.environ.get("SMTP_FROM") or SUPPORT_EMAIL
 
 _USER_AGENT = "mtgacoach-website/1.0"
 
@@ -258,6 +259,7 @@ def _send_email_sync(to_addr: str, name: str, key: str) -> None:
     msg = EmailMessage()
     msg["Subject"] = "Your mtgacoach license key"
     msg["From"] = SMTP_FROM
+    msg["Reply-To"] = SUPPORT_EMAIL
     msg["To"] = to_addr
     msg.set_content(
         f"Welcome{', ' + name if name else ''}!\n\n"
@@ -294,6 +296,7 @@ def send_trial_code_email(to_addr: str, code: str, *, product: str = "mtgacoach"
     msg = EmailMessage()
     msg["Subject"] = f"Your {product} verification code"
     msg["From"] = SMTP_FROM
+    msg["Reply-To"] = SUPPORT_EMAIL
     msg["To"] = to_addr
     msg.set_content(
         f"Your {product} verification code is:\n\n"
@@ -314,6 +317,7 @@ def send_trial_expired_email(to_addr: str, *, product: str = "mtgacoach") -> Non
     msg = EmailMessage()
     msg["Subject"] = f"Your {product} free trial has expired"
     msg["From"] = SMTP_FROM
+    msg["Reply-To"] = SUPPORT_EMAIL
     msg["To"] = to_addr
     msg.set_content(
         f"Your 7-day {product} free trial has expired.\n\n"
