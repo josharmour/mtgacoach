@@ -39,7 +39,7 @@ This lets the BepInEx loader run inside the Windows game under Proton. Start Are
 
 Master and stable both use the **4.0.x** series. Stable promotion retains the version and commit of the qualified master build; the channels differ in when new builds are offered. Existing managed 1.0.x master and 3.8.x stable clients can update to the newer series normally.
 
-Coach checks for updates at launch. Compatible updates can apply between matches after post-match work finishes. For a runtime or bridge update, finish your match, expand **Help & settings**, and use **Update** beside **Restart Coach**. Close Arena when bridge deployment requires it. [Update details](RELEASE.md#what-happens-after-installation).
+Coach checks for updates at launch. Compatible updates can apply between matches after post-match work finishes. For a runtime or bridge update, finish your match and use **Update** in the fixed footer. Close Arena when bridge deployment requires it. [Update details](RELEASE.md#what-happens-after-installation).
 
 Older Inno, pip, or Git installations need a one-time managed install: finish your match, close the old Coach, install the chosen package, and use its new shortcut. Settings, trial credentials, and history stay in their existing per-user locations. A source checkout continues to follow Git rather than the managed updater.
 

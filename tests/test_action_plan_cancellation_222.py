@@ -53,7 +53,10 @@ def test_successful_initial_call_does_not_cancel_the_repairs_fresh_token(monkeyp
                 return "not JSON"
             return '{"actions":[{"action_type":"declare_attackers","attacker_names":[]}]}'
 
-    planner = ActionPlanner(Backend(), timeout=1, land_drop_first=False)
+    # This checks token ownership, not a one-second scheduling deadline. Keep
+    # the normal planning budget so a busy CI worker can schedule the repair;
+    # the tests above independently exercise short-deadline cancellation.
+    planner = ActionPlanner(Backend(), timeout=5, land_drop_first=False)
     monkeypatch.setattr("arenamcp.action_planner.declaration_effort", lambda *a: ("", ""))
     plan = planner.plan_actions(
         _state(turn=3),
@@ -61,6 +64,6 @@ def test_successful_initial_call_does_not_cancel_the_repairs_fresh_token(monkeyp
         ["Attack with: Spider", "Done"],
         {"type": "declare_attackers"},
     )
-    assert len(plan.actions) == 1
+    assert len(plan.actions) == 1, (plan.fallback_reason, len(tokens), [t.is_set() for t in tokens])
     assert len(tokens) == 2 and tokens[0] is not tokens[1]
     assert not any(token.is_set() for token in tokens)

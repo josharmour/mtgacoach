@@ -429,6 +429,7 @@ QPushButton {{
 }}
 QPushButton:hover {{ background: {hover}; }}
 QPushButton:pressed {{ background: {pressed}; }}
+QPushButton[compactRecovery="true"] {{ padding: 5px {max(0, 3 - t.line)}px; }}
 QPushButton:focus {{ border-color: {t.accent}; }}
 QPushButton:disabled {{ color: {t.muted}; }}
 QPushButton:checked, QPushButton[state="on"] {{ background: {selected}; border-color: {t.accent}; font-weight: 600; }}
@@ -438,6 +439,9 @@ QPushButton[variant="primary"]:hover {{ background: {primary_hover}; }}
 QPushButton[variant="primary"]:disabled {{ background: {t.surface_2}; color: {t.muted}; border-color: {t.border}; }}
 QPushButton[variant="flat"] {{ background: transparent; border-color: transparent; color: {t.accent}; padding: 3px 2px; }}
 QPushButton[variant="flat"]:hover {{ color: {t.text}; }}
+QPushButton[tone="muted"] {{ color: {t.muted}; }}
+QPushButton[tone="warn"] {{ color: {t.warn}; }}
+QPushButton[tone="bad"] {{ color: {t.bad}; }}
 QPushButton[variant="menuitem"] {{ background: transparent; border-color: transparent; text-align: left; padding: 6px 10px; }}
 QPushButton[variant="menuitem"]:hover {{ background: {selected}; }}
 QPushButton[variant="menuitem"][state="on"] {{ background: {selected}; border-color: transparent; }}
@@ -508,6 +512,11 @@ QScrollBar::add-line, QScrollBar::sub-line {{ width: 0px; height: 0px; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
 QStatusBar {{ border-top: {b} {t.border}; }}
 """
+
+
+def rich_text_css() -> str:
+    t = tokens()
+    return f"body {{ color: {t.text}; font-size: {px('body')}px; }} a {{ color: {t.accent}; }}"
 
 
 def token_names() -> list[str]:

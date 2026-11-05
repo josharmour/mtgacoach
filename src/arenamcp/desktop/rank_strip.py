@@ -3,11 +3,14 @@
 import os
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import QHBoxLayout, QPushButton, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QWidget
 
 from arenamcp.android_link import MIRROR_PATH, game_device
-from arenamcp.ladder import LADDERS, RankLog, rank_text
+from arenamcp.ladder import LADDERS, RankLog, rank_text, ranked_ladder
+from arenamcp.match_history import MatchHistory
 from arenamcp.watcher import DEFAULT_LOG_PATH, _normalize_log_path
+
+from .companion_widgets import SummaryButton
 
 
 class RankStrip(QWidget):
@@ -19,8 +22,11 @@ class RankStrip(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         self._reader = RankLog()
         self.buttons = {}
+        self.recent = {ladder: [] for ladder in LADDERS}
+        self._history_stamp = None
         for ladder in LADDERS:
-            button = QPushButton(f"{ladder}\nUnavailable")
+            button = SummaryButton(f"{ladder}\nUnavailable")
+            button.setFixedHeight(64)
             button.setCursor(Qt.PointingHandCursor)
             button.setToolTip(f"Show the last five ranked {ladder} matches")
             button.clicked.connect(lambda checked=False, name=ladder: self.history_requested.emit(name))
@@ -45,9 +51,15 @@ class RankStrip(QWidget):
     def _render(self):
         for ladder, button in self.buttons.items():
             rank = rank_text(self._reader.snapshot, ladder)
-            if self.width() < 280:
-                rank = rank.replace(" · ", "\n")
-            button.setText(f"{ladder}\n{rank}")
+            recent = self.recent[ladder]
+            results = "  ".join(
+                {"win": "W", "loss": "L", "draw": "D"}.get(r.result, "?") for r in reversed(recent)
+            )
+            history = results if results else "No recent matches"
+            button.setText(f"{ladder}\n{rank}\n{history}")
+            button.setToolTip(
+                f"{ladder}: {rank}. {history}. Click for the last five ranked matches (newest first)."
+            )
 
     def refresh(self):
         path = (
@@ -57,5 +69,19 @@ class RankStrip(QWidget):
         )
         more = self._reader.read(path)
         if not more:
+            from arenamcp import match_history
+
+            try:
+                stat = match_history.HISTORY_FILE.stat()
+                stamp = (str(match_history.HISTORY_FILE), stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                stamp = (str(match_history.HISTORY_FILE), None)
+            if stamp != self._history_stamp:
+                self._history_stamp = stamp
+                history = MatchHistory()
+                records = list(reversed(history.get_recent(history.total_games)))
+                self.recent = {
+                    name: [r for r in records if ranked_ladder(r.format_name) == name][:5] for name in LADDERS
+                }
             self._render()
         self._timer.start(10 if more else 3000)

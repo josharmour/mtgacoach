@@ -1,6 +1,6 @@
 # Using MTGA Coach 4.0
 
-Keep the compact Coach window beside Arena. Start at **Your next decision**; open the supporting detail when you want to understand the recommendation. The coaching area scrolls in a shorter window while autoplay and speech controls stay available at the bottom.
+Keep the compact Coach window beside Arena. Start at **Your next decision**; open the supporting detail when you want to understand the recommendation. The main view adapts to the window size without scrolling. Rank, recent-match access, playback controls, and recovery buttons stay in place as game updates arrive.
 
 ## Read the screen
 
@@ -9,20 +9,22 @@ Keep the compact Coach window beside Arena. Start at **Your next decision**; ope
 | Turn strip and connection chips | Whose turn it is, the phase, and Coach/Arena connection status. | Check that Coach is following this game. The decision card separately identifies your response window; the active player is not always the player with priority. |
 | Your next decision | The current action or waiting state, a short reason, and a threat to watch. | Start here before reading a full plan. A completed action in history is not a new instruction. |
 | Outlook | A balance scale and an ahead/even/behind assessment, with contributing factors. | See how the position is changing. This is a board heuristic, not a percentage chance of winning. The scale moves when the assessment changes. |
-| Paths from here | The leading searched line and up to two alternatives. | Follow the turn markers to compare possible continuations. Expand a path for its steps and projected life totals. Inspecting a path does not select moves for autoplay. |
-| Forecast assumptions | What the search can and cannot account for. | Read this before relying on a distant outcome. Solid segments show searched continuations; dashed segments show approximate continuations. Future draws and unknown opponent spells are not modeled, and the third turn uses a greedy continuation. |
-| Plan & advice details | Longer coaching explanations and available plan details. | Expand when you want the reasoning behind the short recommendation. |
+| Paths from here | A compact summary of the leading searched line and available alternatives. | Open it to inspect turn markers, steps, and projected life totals. Inspecting a path does not select moves for autoplay. |
+| Forecast assumptions | What the search can and cannot account for. | Read this before relying on a distant outcome. Future draws and unknown opponent spells are not modeled, and the third turn uses an approximate continuation. |
+| Coaching explanation | Longer coaching explanations and available plan details. | Open **Paths & assumptions**, then **Coaching explanation** for the reasoning behind the short recommendation. |
 | Life summary; Hand & board | Life totals and the game state observed by Coach. | Check the position the advice is based on. Floating mana is shown only when explicitly known. |
-| Activity history | Recent advice and events. | Review what happened without mixing past actions into the current decision. |
-| Rank & recent matches | Constructed/Limited rank and access to recent ranked results. | Expand between games and open the relevant ladder’s history. |
+| Activity | Recent advice and events, newest first. | Review what happened without mixing past actions into the current decision. |
+| Rank & recent matches | Constructed/Limited rank and access to recent ranked results. | This stays visible; open the relevant ladder’s history between games. |
 
-### What the green line means
+The detail workspace uses **Previous** and **Next** pages for longer content. **Back** returns to the overview; the decision and recovery controls stay visible. Resize the window to reveal more supporting context. The minimum supported width is 320 pixels.
+
+### What the green highlight means
 
 A green glow identifies the **leading supported candidate found for the current board**. It does not establish that the game is won or that all possible lines were searched. A survival line can lead while the overall outlook is Behind, and the best modeled line can still project a loss. Read the outcome beneath the path.
 
 When the observed board changes, Coach removes the old leading highlight and marks the outlook **Reassessing** until a matching assessment arrives. Previous paths may remain as labeled context. A truncated search or an unsupported or unknown forecast does not earn the green leading highlight.
 
-To stop the scale moving, expand **Help & settings** and turn off **Animate outlook changes**. High-contrast mode also uses a static scale. Color is accompanied by text labels and outcomes.
+To stop the scale moving, open the **Settings** workspace and turn off **Animate outlook changes**. High-contrast mode also uses a static scale. Color is accompanied by text labels and outcomes.
 
 ## Choose what you hear
 
@@ -47,7 +49,7 @@ Managed packages include the ArenaOnAir core used for generated commentary. Sour
 
 For help, email [support@mtgacoach.com](mailto:support@mtgacoach.com). Include your platform, Coach version, and what happened.
 
-Expand **Help & settings** for **Autopilot bug**, **Debug report**, **Contact Josh**, **Reload engine**, **Restart Coach**, and the update control when available. **Reload engine** restarts the coaching process while keeping the app open; **Restart Coach** reloads the desktop app as well. Finish the match before applying an update.
+**Debug report**, **Reload engine**, and **Restart Coach** stay visible in the main window. **Contact support** opens your email app addressed to support@mtgacoach.com. **Reload engine** restarts the coaching process while keeping the app open; **Restart Coach** reloads the desktop app as well. Finish the match before applying an update.
 
 Use **Tools → Setup & Repair** for installation, detailed-log, access, and bridge checks. For a bridge replacement, follow the platform instructions and close Arena first. [Setup and migration](../INSTALL.md) · [Update behavior](../RELEASE.md#what-happens-after-installation)
 
