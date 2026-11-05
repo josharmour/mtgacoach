@@ -258,12 +258,9 @@ def main() -> int:
 
     if checkout := os.environ.get("MTGACOACH_DEV_CHECKOUT"):
         # Refresh on Restart Coach too, which execs the desktop module directly.
-        try:
-            commit = subprocess.check_output(
-                ["git", "-C", checkout, "rev-parse", "--short", "HEAD"], text=True, timeout=3
-            ).strip()
-        except (OSError, subprocess.SubprocessError):
-            commit = "unknown commit"
+        from .dev_source import source_revision
+
+        commit = source_revision(checkout)
         os.environ["MTGACOACH_BUILD_LABEL"] = f"dev source ({commit})"
 
     # Acquire singleton lock before initializing Qt or spawning background threads
