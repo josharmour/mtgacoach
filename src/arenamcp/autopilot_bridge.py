@@ -2753,6 +2753,12 @@ class _BridgeSubmitMixin:
         # These families reject ClientMessageType_AutoResp. A successful
         # bridge invocation only means the message was sent, not accepted
         # (bug_20261025_132718: six rejected Charm replies exhausted the rope).
+        if "Distribution" in btype + bclass or dec_type == "distribution":
+            # Forgotten Ancient, bug_20261104_200450: AutoResp was sent
+            # successfully but Arena rejected it as UnexpectedMessage.
+            # A split needs an explicit plan; do not claim an automatic answer.
+            return False
+
         if "CastingTimeOption" in btype + bclass or dec_type == "casting_time_options":
             from arenamcp.casting_options import casting_fallback_choice
             from arenamcp.decisions import build_pending_decision, submit_option

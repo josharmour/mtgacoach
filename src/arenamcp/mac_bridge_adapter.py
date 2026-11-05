@@ -3288,14 +3288,47 @@ class MacBridgeAdapter:
         return {"ok": True, "submitted_type": "AssignDamage", "assigner_count": len(plans)}
 
     def _cmd_submit_distribution(self, command: dict, timeout: float | None) -> dict:
-        pairs = [
-            [U(int(k)), U(int(v))]
-            for k, v in (command.get("distributions") or {}).items()
-            if str(k).isdigit()
-        ]
-        self._call_on_request(
-            command, timeout, ("DistributionRequest",), "SubmitDistribution", {"dict": pairs}
-        )
+        snapshot = self._require(timeout, "DistributionRequest")
+        self._check_request_identity(snapshot, command)
+        supplied = command.get("distributions")
+        if not isinstance(supplied, dict):
+            raise AdapterError("Missing 'distributions' object")
+        pairs = []
+        for key, value in supplied.items():
+            if not str(key).isdigit() or type(value) is not int or not 0 <= value <= 0xFFFFFFFF:
+                raise AdapterError("Distribution ids and amounts must be unsigned integers")
+            pairs.append((int(key), value))
+        targets = {num(i) for i in items(field(snapshot.request, "TargetIds"))}
+        legal = {num(i) for i in items(field(snapshot.request, "LegalTargetIds"))}
+        if len({iid for iid, _ in pairs}) != len(pairs) or any(
+            iid not in targets or (amount > 0 and iid not in legal) for iid, amount in pairs
+        ):
+            raise AdapterError("Distribution contains duplicate or illegal targets")
+        minimum = num(field(snapshot.request, "Min"))
+        maximum = num(field(snapshot.request, "Max"))
+        min_per = num(field(snapshot.request, "MinPer"))
+        max_per = num(field(snapshot.request, "MaxPer"))
+        if not minimum <= sum(amount for _, amount in pairs) <= maximum or any(
+            amount > 0 and not min_per <= amount <= max_per for _, amount in pairs
+        ):
+            raise AdapterError("Distribution does not satisfy the requested amounts")
+
+        def build(ops: _Ops, request: dict) -> None:
+            # The loaded Mac probe cannot marshal SubmitDistribution's dictionary
+            # parameter (bug_20261104_200450). Build the protobuf response with
+            # scalar writes, like SelectTargets, without rebuilding the probe.
+            body = ops.new(MESSAGING + "DistributionResp")
+            entries = ops.get(body, "Distributions")
+            for iid, amount in pairs:
+                entry = ops.new(MESSAGING + "Distribution")
+                ops.set(entry, "InstanceId", U(iid))
+                ops.set(entry, "Amount", U(amount))
+                ops.call(entries, "Add", entry)
+            message = ops.message("DistributionResp", snapshot.game_state_id, snapshot.msg_id)
+            ops.set(message, "DistributionResp", body)
+            ops.on_submit(request, message)
+
+        self._submit(snapshot, build, timeout)
         return {"ok": True, "submitted_type": "Distribution", "target_count": len(pairs)}
 
     def _cmd_submit_order(self, command: dict, timeout: float | None) -> dict:
