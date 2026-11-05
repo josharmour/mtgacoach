@@ -597,3 +597,49 @@ ol.steps p strong { color: var(--ink); font-weight: 500; }
     html { scroll-behavior: auto; }
     *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---- 4.0 launch: current decisions and the commentary booth -------------- */
+.hero-highlights { list-style: none; margin-top: 24px; font-family: var(--sans); font-size: 0.95rem; }
+.hero-highlights li { margin: 10px 0; color: var(--faint); padding-left: 18px; position: relative; }
+.hero-highlights li::before { content: "·"; position: absolute; left: 0; color: var(--accent); }
+.hero-highlights strong { color: var(--ink); font-weight: 600; }
+.launch-shot { max-width: 370px; }
+.launch-shot .shot { padding: 0; overflow: hidden; }
+.launch-shot .shot img { border-radius: 12px; }
+.release-strip { border-block: 1px solid var(--rule); background: var(--bg-2); padding: 32px 0; }
+.release-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 28px; }
+.release-row h2 { font-size: 1.55rem; }
+.release-row p:not(.label) { color: var(--faint); max-width: 45em; }
+.release-links { display: grid; gap: 12px; font-family: var(--sans); font-size: 0.85rem; }
+.outlook-feature { align-items: center; }
+.outlook-feature .wide-text p + p { margin-top: 14px; }
+.outlook-demo { width: 100%; padding: 24px; border: 1px solid var(--rule); border-radius: 12px; background: var(--bg-2); text-align: center; }
+.outlook-verdict { font-family: var(--sans); font-size: 1.4rem; font-weight: 600; color: var(--ink); }
+.outlook-scale { display: block; width: 100%; max-width: 360px; margin: 4px auto 18px; overflow: visible; }
+.scale-base { stroke: var(--faint); fill: none; stroke-width: 2; }
+.scale-arm { stroke: var(--accent); stroke-width: 3; stroke-linecap: round; }
+.scale-pan { stroke: var(--faint); fill: var(--bg-3); stroke-width: 1.5; }
+.scale-pivot { fill: var(--bg-2); stroke: var(--accent); stroke-width: 2; }
+.scale-beam { transform-origin: 160px 55px; transform: rotate(var(--tilt)); transition: transform 650ms cubic-bezier(0.22, 1, 0.36, 1); }
+.outlook-choices { display: flex; justify-content: center; gap: 6px; flex-wrap: wrap; }
+.outlook-choices button { border: 1px solid var(--rule); background: transparent; color: var(--ink); border-radius: 5px; padding: 9px 10px; font: 0.76rem var(--sans); cursor: pointer; }
+.outlook-choices button[aria-pressed="true"] { border-color: var(--accent); background: var(--bg-3); color: var(--accent); }
+.outlook-demo .note { margin-top: 16px; }
+.announcer { border-top: 2px solid var(--rule); padding-top: 24px; }
+.announcer.hype { border-color: var(--accent); }
+.announcer.technical { border-color: #759cb8; }
+.announcer h3 { font-size: 1.6rem; }
+.voice-note { margin-top: 32px; border: 1px solid var(--rule); border-radius: 8px; background: var(--bg-2); padding: 28px; }
+.voice-note p { margin-top: 12px; color: var(--faint); max-width: 58em; }
+#voices { background: var(--bg-2); }
+.closing h2 { max-width: 20em; margin: 0 auto 24px; }
+@media (max-width: 760px) {
+    .release-row { grid-template-columns: minmax(0, 1fr); }
+    .outlook-demo { padding: 20px 12px; }
+    .voice-note { padding: 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .scale-beam { transition: none; }
+}
+.note { font-family: var(--sans); font-size: 0.86rem; color: var(--faint); line-height: 1.5; }
+.section-head > .note { margin-top: 14px; }

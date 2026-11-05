@@ -1,9 +1,11 @@
 # Optional, isolated Chatterbox Turbo runtime
 
-Coach's default installation does not include Torch or Chatterbox. The desktop
-uses a separate Python process for local synthesis and remains the only playback
-owner. Remote Chatterbox does not need this environment or local model weights.
+This is an optional developer runtime for local synthesis and benchmarking.
+The 4.0 desktop's **Speech & voices → Chatterbox** selection uses hosted speech
+with your Coach sign-in. It does not need this environment or local model weights;
+managed packages include the commentary core without local Torch/Chatterbox.
 Nothing in this directory is automatically installed or downloaded by Coach.
+[Desktop speech controls](../../docs/using-coach.md#choose-what-you-hear).
 
 ## Install after live matches finish
 
@@ -23,21 +25,21 @@ confirm `ChatterboxTurboTTS.from_local(ckpt_dir, device)` exists. Dependencies w
 resolved, **not installed or benchmarked** as part of this change.
 
 The downloader pins `ResembleAI/chatterbox-turbo` to
-`749d1c1a46eb10492095d68fbcf55691ccf137cd`. Copy its printed snapshot directory into
-**Tools → Arena On Air & Voice → Runtime & connections**. The snapshot directory's
-name must equal the configured revision. Select the separate Python executable,
-the Arena On Air source folder (or install a compatible AOA package in that
-interpreter), and CPU/MPS/CUDA. The render worker loads from that local directory
+`749d1c1a46eb10492095d68fbcf55691ccf137cd`. Pass its printed snapshot directory to
+the benchmark below. The snapshot directory's name must equal the configured
+revision. Supply the separate Python executable, an ArenaOnAir source folder
+(or install a compatible core in that interpreter), and CPU/MPS/CUDA.
+The 4.0 speech dialog has no local-runtime path controls. The render worker loads from that local directory
 with Hugging Face/Transformers offline mode enabled. It never calls
 `from_pretrained` or downloads missing weights.
 
 Atlas and Mira are shipped under `src/arenamcp/assets/chatterbox/` with their CMU
 license and modification notes. Both reference conditionings are cached at model
-startup. The model default is also selectable. Original/hybrid models and
+startup. The worker also accepts the model-default voice. Original/hybrid models and
 speculative audio preparation remain off, as the integration plan requires until
 qualification. CUDA load OOM gets one CPU fallback; a generation error/timeout
-ends the worker and requires an explicit preview to retry. Essential messages
-bypass Chatterbox for warm Kokoro/system speech.
+ends the worker; a retry must be explicit. This benchmark produces audio data
+without playing it through the desktop.
 
 ## Explicit benchmark, without playback
 

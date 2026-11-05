@@ -1,6 +1,20 @@
 # MTGA Coach
 
-MTGA Coach is a desktop companion for **Magic: The Gathering Arena**. It reads Arena’s game log, suggests plays when you have priority, and can speak its advice while you play. It also helps with draft picks and prepares a playbook for your deck before a match.
+MTGA Coach is a desktop companion for **Magic: The Gathering Arena**. Keep it beside Arena to see your next decision, compare possible lines, and hear advice or a two-person broadcast as you play. It reads Arena’s game log, helps with draft picks, and prepares a playbook for your deck before a match.
+
+[Download Coach](https://mtgacoach.com/#get-started) · [Installation guide](INSTALL.md) · [Using the 4.0 screen](docs/using-coach.md) · [Support: support@mtgacoach.com](mailto:support@mtgacoach.com)
+
+## A clearer view of your next play
+
+The **4.0 series** puts the current decision first. A glowing green path marks the leading supported line found by the search. An animated balance scale shows the board outlook, with the reasons underneath. Expand alternatives, your hand and board, activity history, or rank when you need them; autoplay and speech controls stay visible as you scroll.
+
+<p align="center">
+  <img src="docs/images/coach-4-companion.png" width="420" alt="MTGA Coach beside-Arena view: current decision, an outlook scale marked Behind, and a green leading path that survives modeled attacks without an established win." />
+</p>
+
+*Native desktop screenshot using the recorded `G1_T8` test fixture, not a live match. The outlook is Behind even though one path leads the search: green means best supported candidate found, not a guaranteed win. This still image does not show the scale’s animation.*
+
+The scale is a board assessment, **not a win probability**. Paths show modeled continuations and their limits; unknown opponent spells and future draws are not predicted. When the board changes, old guidance loses its leading highlight while Coach reassesses. [Read the screen](docs/using-coach.md#read-the-screen).
 
 ## Install Coach
 
@@ -22,7 +36,7 @@ Coach uses the hosted model `current` at `https://api.mtgacoach.com/v1`. Trial a
 
 ### How updates work
 
-Coach checks its channel at launch and downloads an update in the background. A compatible update can apply after the match and its post-match work finish, or on the next launch. For a runtime or Arena bridge change, click **Update** beside **Restart Coach** after your match. macOS may ask for permission to replace the app. The title bar shows the channel, package build, and Git commit.
+Coach checks its channel at launch and downloads an update in the background. A compatible update can apply after the match and its post-match work finish, or on the next launch. For a runtime or Arena bridge change, expand **Help & settings** and click **Update** beside **Restart Coach** after your match. macOS may ask for permission to replace the app. The title bar shows the channel, package build, and Git commit.
 
 If you used the older Windows installer, pip, or a Git checkout, close the old copy and install the managed app once. Start it from the new shortcut. Coach uses your existing per-user settings and trial credentials. [Installation, update, and release guide](RELEASE.md)
 
@@ -30,14 +44,15 @@ If you used the older Windows installer, pip, or a Git checkout, close the old c
 
 - **Live coaching** recommends plays using the board, your hand, and the choices Arena offers. A cached deck playbook gives Coach a starting point. During a match, it revises the plan as threats change while tactical advice can proceed.
 - **Draft assistance** uses 17Lands ratings and color-pair information to explain picks and alternatives.
-- **Speech & voices** lets you choose Coach advice or two ArenaOnAir announcers. Preview voices and select Kokoro or an available Chatterbox runtime in the desktop app.
-- **Autoplay and Auto Queue** are opt-ins. Manual coaching reads Arena’s log. Autoplay also needs a working platform bridge. Windows and Linux/Proton use BepInEx. Native Mac autoplay uses an experimental bridge that you build separately, then load when starting Arena. [Platform setup](https://mtgacoach.com/#get-started) · [Mac bridge build script](spikes/mac-il2cpp/build.sh)
+- **Speech & voices** offers Coach advice or two ArenaOnAir announcers, with **Hype** and **Technical** broadcast styles. Preview a voice or pair before saving. Choose Kokoro or hosted Chatterbox; Chatterbox uses your Coach sign-in and needs no local Torch installation or model download. Managed packages include the commentary core. [Speech controls](docs/using-coach.md#choose-what-you-hear).
+- **Autoplay** plays the current match when enabled. **After match…** groups Auto Queue and Grind separately, so you can choose whether to continue after this game. Manual coaching reads Arena’s log; autoplay also needs a connected platform bridge.
+- **Managed setup** includes Python and the bridge assets. Windows and Linux/Proton use BepInEx and the packaged plugin. Apple Silicon Mac packages include the native bridge; Coach stages it while Arena is closed and launches Arena with it. Source installs have separate bridge build steps. [Platform setup and first launch](INSTALL.md#platform-setup).
 
 Coach can miss card interactions or suggest a suboptimal line. You can keep autoplay off and use spoken advice while making the decisions yourself.
 
 ## Run from source
 
-The Python package includes the desktop app and an MCP server that exposes Arena game state to MCP clients. For development, use Python 3.10 or newer. The following example creates a Python 3.11 environment in a fresh checkout using `uv`.
+The Python package includes the desktop app and an MCP server that exposes Arena game state to MCP clients. For the full development setup, including generated ArenaOnAir commentary, use Python 3.11. The base package supports Python 3.10 or newer. The following example creates a Python 3.11 environment in a fresh checkout using `uv`.
 
 ```sh
 git clone https://github.com/josharmour/mtgacoach.git
@@ -47,7 +62,7 @@ uv pip install --python .venv -e ".[full]"
 uv run --no-sync mtgacoach-desktop
 ```
 
-See the [development workflow](DEV.md) for tests and the [feature documentation index](docs/README.md) for subsystem guides and active work. A source checkout follows the Git revision you select. Python package users can also install the `arenamcp` wheel attached to a numbered release and launch `mtgacoach-desktop`. For desktop updates through Velopack, use a managed download above.
+See the [development workflow](DEV.md) for the local Python Dev launchers, **Copy commit**, tests, and the additional commentary-core installation needed by source users. The [feature documentation index](docs/README.md) covers subsystem guides and active work. A source checkout follows the Git revision you select. Python package users can also install the `arenamcp` wheel attached to a numbered release and launch `mtgacoach-desktop`. For desktop updates through Velopack, use a managed download above.
 
 ## License
 
