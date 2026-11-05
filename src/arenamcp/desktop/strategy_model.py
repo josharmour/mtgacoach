@@ -50,10 +50,36 @@ def line_outcome(line: dict) -> str:
     kind = line.get("outcome")
     if line.get("unsupported") or kind not in {"win", "alive", "dead"}:
         return "Outcome uncertain"
+    steps = [step for step in line.get("steps") or [] if isinstance(step, dict)]
     if kind == "dead":
-        return "Projected loss · best available may still lose"
+        turn = next(
+            (
+                number(step.get("turn")) + 1
+                for step in steps
+                if number(step.get("life_after")) is not None
+                and number(step["life_after"]) <= 0
+                and number(step.get("turn")) is not None
+            ),
+            None,
+        )
+        now = number(line.get("now_life"))
+        timing = " · current combat" if now is not None and now <= 0 else f" · T{turn}" if turn else ""
+        return "Projected loss" + timing + " · best available may still lose"
     if kind == "win":
-        return "Projected win · conditional" + (" · distant" if line.get("distant") else "")
+        turn = next(
+            (
+                number(step.get("turn"))
+                for step in steps
+                if number(step.get("opp_life_after")) is not None and number(step["opp_life_after"]) <= 0
+            ),
+            None,
+        )
+        return (
+            "Projected win"
+            + (f" · T{turn}" if turn else "")
+            + " · conditional"
+            + (" · distant" if line.get("distant") else "")
+        )
     return "Survives modeled attacks · win not established"
 
 

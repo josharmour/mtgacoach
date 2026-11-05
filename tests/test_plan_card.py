@@ -225,19 +225,32 @@ def test_the_coach_keeps_one_card_and_none_without_a_ui_hook():
 # ---------------------------------------------------------------------------
 
 
-def test_desktop_plan_card_repaints_new_facts_under_the_same_plan(qapp):
-    pytest.importorskip("PySide6")
+def test_desktop_details_repaint_intra_turn_facts_and_reject_late_old_assessment(qapp):
     from arenamcp.desktop.compact_coach import CompactCoachPanel
+    from arenamcp.plan_card import card_payload
 
     manager = GamePlanManager(NoModelBackend())
     panel = CompactCoachPanel()
+    panel.show()
     try:
-        panel._on_game_plan_changed(dict(manager.ui_payload(opponent_turn()), source="autopilot"))
-        before = panel.game_plan_label.text()
-        panel._on_game_plan_changed(dict(manager.ui_payload(pumped()), source="autopilot"))
-        after = panel.game_plan_label.text()
+        state = opponent_turn()
+        old = card_payload(manager, state, source="autopilot")
+        panel._on_game_state_changed(state)
+        panel._on_game_plan_changed(old)
+        panel._show_detail("advice")
+        before = panel.detail_pager.browser.toPlainText()
+        changed = pumped()
+        panel._on_game_state_changed(changed)
+        assert panel.strategy_view.scale.value is None
+        assert "DEFENDER" not in panel.detail_pager.browser.toPlainText()
+        panel._on_game_plan_changed(card_payload(manager, changed, source="autopilot"))
+        after = panel.detail_pager.browser.toPlainText()
+        assert "DEFENDER" in before and "CONTROL/STABILIZE" in after
+        assert "their clock 4" in before and "dead in 2 turns" in after
+        assert "DEAD IN 2 TURNS UNLESS WE STABILIZE" in after
+        panel._on_game_plan_changed(old)
+        assert panel.detail_pager.browser.toPlainText() == after
+        assert panel.strategy_view.current
     finally:
+        panel.close()
         panel.deleteLater()
-    assert "DEFENDER" in before and "CONTROL/STABILIZE" in after
-    assert "they kill you in 4" in before and "they kill you in 2" in after
-    assert "DEAD IN 2 TURNS UNLESS WE STABILIZE" in after

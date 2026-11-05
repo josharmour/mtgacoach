@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from arenamcp.outlook import outlook
 
 
@@ -41,50 +39,62 @@ def test_outlook_moves_with_life_board_clocks_and_lethal():
     assert outlook(facts(opp_lethal_on_board=True))["label"] == "losing"
 
 
-def test_sidebar_renders_outlook_bar_and_ledger_rows():
-    pytest.importorskip("PySide6")
-    from PySide6.QtWidgets import QApplication
+def test_sidebar_uses_one_scale_with_explanation_and_ledger(qapp):
+    from copy import deepcopy
 
-    from arenamcp.desktop.compact_coach import CompactCoachPanel, _outlook_html
+    from tests.strategic_states import G1_T8
 
-    app = QApplication.instance() or QApplication([])
+    from arenamcp.desktop.compact_coach import CompactCoachPanel
+    from arenamcp.forecast_identity import forecast_key
+
+    state = deepcopy(G1_T8)
     panel = CompactCoachPanel()
+    panel.show()
     try:
+        panel._on_game_state_changed(state)
         panel._on_game_plan_changed(
             {
-                "role": "aggressor",
-                "facts": {"role": "aggressor", "our_clock": 3, "their_clock": None, "race": "ahead"},
-                "turn_plan": [{"turn": 7, "cast": ["Mindseeker Oculus"], "attack": "Void Extrapolator"}],
+                "snapshot_key": forecast_key(state),
+                "facts": {"role": "aggressor"},
                 "outlook": {"pct": 64, "label": "ahead", "tone": "good", "trend": [(5, 50), (7, 64)]},
                 "ledger": {
-                    "lessons": ["No damage dealt on our turns T3, T5: the pressure line is not working"],
-                    "turns": ["T5 (our turn): did: x"],
+                    "lessons": ["No damage dealt on our turns T3, T5: the pressure line is not working"]
                 },
             }
         )
-        html = panel.game_plan_label.text()
-        assert "Outlook" in html and "ahead" in html and "improving since T5" in html and "64%" not in html
-        assert "▮▮▮▮▮▮" in html and "▯▯▯▯" in html
-        assert "So far" in html and "No damage dealt on our turns T3, T5" in html
-        assert "AGGRESSOR" in html
+        assert panel.strategy_view.scale.value == 64
+        assert "Ahead" in panel.strategy_view.verdict.text()
+        assert "64%" not in panel.strategy_view.verdict.text()
+        assert "improving since T5" in panel.strategy_view.verdict.toolTip()
+        panel._show_detail("advice")
+        text = panel.detail_pager.browser.toPlainText()
+        assert "So far: No damage dealt on our turns T3, T5" in text
+        assert "AGGRESSOR" in text
+        assert "Outlook" not in text and "▮" not in text and "▯" not in text
+        panel._on_game_state_changed(dict(state, game_over=True))
+        assert panel.strategy_view.scale.value is None
+        assert "No damage dealt" not in panel.detail_pager.browser.toPlainText()
     finally:
         panel.close()
-    plain = _outlook_html({"pct": 20, "label": "losing", "tone": "bad", "trend": [(3, 22)]})
-    assert "losing" in plain and "20%" not in plain and "since" not in plain
-    del app
 
 
-def test_sidebar_shows_the_plan_status_row_first():
-    pytest.importorskip("PySide6")
-    from PySide6.QtWidgets import QApplication
+def test_plan_status_is_available_in_current_explanation_without_changing_shell(qapp):
+    from copy import deepcopy
+
+    from tests.strategic_states import G1_T8
 
     from arenamcp.desktop.compact_coach import CompactCoachPanel, _plan_status_html
+    from arenamcp.forecast_identity import forecast_key
 
-    app = QApplication.instance() or QApplication([])
+    state = deepcopy(G1_T8)
     panel = CompactCoachPanel()
+    panel.resize(420, 720)
+    panel.show()
     try:
+        panel._on_game_state_changed(state)
         panel._on_game_plan_changed(
             {
+                "snapshot_key": forecast_key(state),
                 "facts": {"role": "aggressor"},
                 "plan_status": {
                     "state": "none",
@@ -94,26 +104,33 @@ def test_sidebar_shows_the_plan_status_row_first():
                 },
             }
         )
-        html = panel.game_plan_label.text()
-        assert "NO GAME PLAN" in html and "3 attempts, 3 cancelled, last: yielded to a decision" in html
-        assert html.index("Plan") < html.index("Role")
+        panel._show_detail("advice")
+        text = panel.detail_pager.browser.toPlainText()
+        assert "NO GAME PLAN" in text and "3 attempts, 3 cancelled, last: yielded to a decision" in text
+        assert text.index("Game plan:") < text.index("AGGRESSOR")
+        before = panel.size()
         panel._on_game_plan_changed(
             {
+                "snapshot_key": forecast_key(state),
                 "plan_status": {
                     "state": "forming",
                     "inflight": True,
                     "inflight_s": 6,
                     "inflight_for_turn": 8,
                     "attempts": 1,
-                }
+                },
             }
         )
-        assert "forming… 6s for T8" in panel.game_plan_label.text()
+        assert "forming… 6s for T8" in panel.detail_pager.browser.toPlainText()
+        assert panel.size() == before
+        changed = deepcopy(state)
+        changed["turn"]["turn_number"] += 1
+        panel._on_game_state_changed(changed)
+        assert "forming… 6s" not in panel.detail_pager.browser.toPlainText()
     finally:
         panel.close()
     assert "formed T8" in _plan_status_html({"state": "ready", "turn_formed": 8, "age_turns": 1})
     assert "6 turns old" in _plan_status_html({"state": "ready", "turn_formed": 2, "age_turns": 6})
-    del app
 
 
 def test_clock_urgency_and_lethal_precedence():

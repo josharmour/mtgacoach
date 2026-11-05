@@ -396,9 +396,9 @@ def test_coach_advice_uses_the_same_grounded_block():
     assert CoachEngine._grounded_plan_text(legacy, deepcopy(G1_T12)) == "GAME PLAN: legacy"
 
 
-def test_desktop_plan_card_renders_role_clocks_and_next_turns(qapp):
-    pytest.importorskip("PySide6")
+def test_desktop_explanation_preserves_role_plan_objective_and_validated_turns(qapp):
     from arenamcp.desktop.compact_coach import CompactCoachPanel
+    from arenamcp.plan_card import card_payload
 
     manager = GamePlanManager(
         _Backend(
@@ -409,18 +409,29 @@ def test_desktop_plan_card_renders_role_clocks_and_next_turns(qapp):
             }
         )
     )
-    manager.maybe_reform(deepcopy(G1_T12))
+    state = deepcopy(G1_T12)
+    manager.maybe_reform(state)
     panel = CompactCoachPanel()
+    panel.show()
     try:
-        panel._on_game_plan_changed(dict(manager.ui_payload(deepcopy(G1_T12)), source="autopilot"))
-        html = panel.game_plan_label.text()
-        assert not panel.game_plan_label.isHidden()
-        assert "DEFENDER" in html
-        assert "they kill you in 2" in html and "race behind" in html
-        assert "T12 Island + Undulating Witness" in html
-        assert "Archive Arbiter / Beast midrange beats" in html
+        panel._on_game_state_changed(state)
+        panel._on_game_plan_changed(card_payload(manager, state, source="autopilot"))
+        panel._show_detail("advice")
+        text = panel.detail_pager.browser.toPlainText()
+        assert panel.detail_pager.isVisible()
+        assert "DEFENDER" in text
+        assert "their clock 2 vs ours none" in text and "behind" in text
+        assert "T12: Island + Undulating Witness" in text
+        assert "Plan objective: Archive Arbiter / Beast midrange beats" in text
+        assert "Outlook" not in text and "▮" not in text
+        changed = deepcopy(state)
+        changed["turn"]["turn_number"] += 1
+        panel._on_game_state_changed(changed)
         panel._on_game_plan_changed({})
-        assert panel.game_plan_label.isHidden()
+        text = panel.detail_pager.browser.toPlainText()
+        assert "No current assessment" in text
+        assert "Undulating Witness" not in text and "Plan objective" not in text
+        assert not panel.strategy_view.path_button.leading
     finally:
         panel.close()
 

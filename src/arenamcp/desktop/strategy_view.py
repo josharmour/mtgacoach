@@ -241,6 +241,12 @@ class StrategyView(QWidget):
         self.verdict.setText("Outlook · " + verdict)
         self.reason.setText("Board assessment · not win odds")
         why = " · ".join(map(str, outlook.get("why") or [])) if self.current else "No current assessment."
+        trend = outlook.get("trend") or []
+        if self.current and len(trend) >= 2 and isinstance(trend[-2], (list, tuple)) and len(trend[-2]) == 2:
+            previous = number(trend[-2][1])
+            score = number(outlook.get("pct"))
+            if previous is not None and score is not None and abs(score - previous) >= 5:
+                why += f" · {'improving' if score > previous else 'declining'} since T{trend[-2][0]}"
         self.verdict.setToolTip(why)
         self.scale.setToolTip("Opponent ahead ← balance → You ahead. " + why)
         tone = str(outlook.get("tone") or "muted") if self.current else "muted"
@@ -252,7 +258,9 @@ class StrategyView(QWidget):
             action = step_text(steps[0]).split(" · ")[0] if steps else "Resolve the current attack"
             prefix = "Leading path" if self.leading else "Limited forecast"
             title = f"{prefix} · {action}  ›"
-            tip = line_outcome(first) + ". Click to explore paths and assumptions."
+            tip = (
+                "Outcome uncertain" if search.get("truncated") else line_outcome(first)
+            ) + ". Click to explore paths and assumptions."
         else:
             title = "Paths · No active plan  ›" if finished or not in_game else "Paths · Rechecking  ›"
             tip = "No current recommendation. Previous winning claims have been withdrawn."
@@ -276,7 +284,20 @@ class StrategyView(QWidget):
             line = self.lines[self.selected]
             heading = "Leading path" if self.selected == 0 and self.leading else f"Path {self.selected + 1}"
             parts.append(theme.block(theme.span(heading, weight=600)))
-            parts.append(theme.block(theme.span(line_outcome(line))))
+            outcome = "Outcome uncertain" if search.get("truncated") else line_outcome(line)
+            parts.append(
+                theme.block(theme.span(outcome, "bad" if outcome.startswith("Projected loss") else None))
+            )
+            posture = facts.get("posture")
+            if self.selected == 0 and posture in ("attack", "hold"):
+                parts.append(theme.block(theme.span("Posture: " + posture)))
+            now = number(line.get("now_life"))
+            if now is not None:
+                parts.append(
+                    theme.block(
+                        theme.span(f"After current combat: your projected life {max(0, now)}", "muted")
+                    )
+                )
             if search.get("truncated"):
                 parts.append(
                     theme.block(theme.span("Search truncated · survival and wins uncertain", "warn"))
@@ -285,11 +306,21 @@ class StrategyView(QWidget):
                 text = f"T{step.get('turn', '?')}: {step_text(step)}"
                 parts.append(theme.block(theme.span(text)))
                 life, opp = number(step.get("life_after")), number(step.get("opp_life_after"))
-                if life is not None or opp is not None:
+                turn = number(step.get("turn"))
+                if opp is not None:
                     parts.append(
                         theme.block(
                             theme.span(
-                                f"Projected life: you {life if life is not None else '?'} · opponent {opp if opp is not None else '?'}",
+                                f"T{turn if turn is not None else '?'} · Opponent life after your attack: {max(0, opp)}",
+                                "muted",
+                            )
+                        )
+                    )
+                if life is not None:
+                    parts.append(
+                        theme.block(
+                            theme.span(
+                                f"T{turn + 1 if turn is not None else '?'} · Your life after their attack: {max(0, life)}",
                                 "muted",
                             )
                         )
@@ -307,6 +338,10 @@ class StrategyView(QWidget):
             parts.append(theme.block(" · ".join(links)))
         else:
             parts.append("No supported searched paths are available.")
+        interaction = self.plan.get("opp_interaction")
+        if isinstance(interaction, dict) and interaction.get("known") and interaction.get("ui_line"):
+            parts.append(theme.block(theme.span("Opponent interaction estimate", weight=600)))
+            parts.append(theme.block(theme.span(str(interaction["ui_line"]), "muted")))
         parts.append(
             theme.block(
                 theme.span(

@@ -145,12 +145,14 @@ def test_leading_losing_line_still_says_projected_loss(view):
 def test_inspection_preserves_recommendation_and_displays_both_life_totals(view):
     state = make_snapshot()
     view.set_data(forecast(state), state)
-    assert "you 20 · opponent 12" in view.detail_html()
+    turn = state["turn"]["turn_number"]
+    assert f"T{turn} · Opponent life after your attack: 12" in view.detail_html()
+    assert f"T{turn + 1} · Your life after their attack: 20" in view.detail_html()
     view.inspect(1)
     assert view.selected == 1
     assert view.path_button.leading
     assert "Projected loss" in view.detail_html()
-    assert "you 0" in view.detail_html()
+    assert f"T{turn + 1} · Your life after their attack: 0" in view.detail_html()
 
 
 def test_elapsed_first_action_is_not_rebranded_as_a_future_line(view):

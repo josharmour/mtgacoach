@@ -1563,9 +1563,33 @@ class CompactCoachPanel(QWidget):
             )
             return
         facts = self._game_plan.get("facts") or {}
-        parts = [block(span(str(facts.get("role_reason") or "")))]
+        parts = []
+        status = self._game_plan.get("plan_status")
+        if isinstance(status, dict):
+            parts.append(block(span("Game plan: ") + _plan_status_html(status)))
+        role = str(facts.get("role") or "")
+        if role:
+            parts.append(block(span(role.upper(), _ROLE_TONES.get(role, "muted"), weight=600)))
+        parts.append(block(span(str(facts.get("role_reason") or ""))))
         for flag in facts.get("flags") or []:
             parts.append(block(span(str(flag), "warn")))
+        steps = [step for step in self._game_plan.get("turn_plan") or [] if isinstance(step, dict)]
+        if steps:
+            parts.append(block(span("Game-plan steps · conditional", weight=600)))
+            for step in steps:
+                parts.append(block(span(f"T{step.get('turn', '?')}: {_plan_step_text(step)}")))
+        elif not facts.get("lines"):
+            lookahead = [step for step in facts.get("lookahead") or [] if isinstance(step, dict)]
+            if lookahead:
+                parts.append(block(span("Unsearched board-math projection", weight=600)))
+                for step in lookahead[:3]:
+                    casts = ", ".join(map(str, step.get("casts") or [])) or "No cast projected"
+                    parts.append(block(span(f"T{step.get('turn', '?')}: {casts}")))
+        for objective in self._game_plan.get("win_conditions") or []:
+            parts.append(block(span("Plan objective: " + str(objective), "muted")))
+        ledger = self._game_plan.get("ledger") or {}
+        for lesson in ledger.get("lessons") or []:
+            parts.append(block(span("So far: " + str(lesson), "warn")))
         self.game_plan_label.setText("".join(parts))
 
     def _on_status_changed(self, key: str, val: str) -> None:
