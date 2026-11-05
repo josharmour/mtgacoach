@@ -179,6 +179,11 @@ class TtsManager(QObject):
 
         settings = settings_override if settings_override is not None else get_settings()
         selected = provider or str(settings.get("tts_provider") or "kokoro")
+        if selected == "kokoro":
+            from arenamcp.commentary.delivery import kokoro_delivery
+
+            text, speed = kokoro_delivery(text, speed, excitement)
+            self._last_text, self._last_speed = text, speed
         self._selected_provider = selected
         if (
             selected == "kokoro"

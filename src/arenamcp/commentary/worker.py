@@ -94,6 +94,7 @@ def main():
                     facade = HeadlessBooth(config, rpc, time.monotonic)
                     configuration = config
                 native, status = facade.generate(observation)
+                from .delivery import LEVELS, delivery_level, event_excitement
                 from .timeline import event_lifetime, historical_scope, position_fingerprint
 
                 lines = []
@@ -114,6 +115,13 @@ def main():
                         if ref in facade.event_sources
                     ]
                     cited = cited or list(observation.events)
+                    excitement = getattr(item, "excitement", None)
+                    if excitement in {None, "normal"}:
+                        # Older AOA cores leave generated delivery at normal.
+                        # Derive it from cited observations, not local AOA edits.
+                        excitement = max(
+                            (event_excitement(e) for e in cited), key=LEVELS.index, default="normal"
+                        )
                     evidence_time = min(
                         (e.received_at or observation.arrived_at for e in cited),
                         default=observation.arrived_at,
@@ -138,7 +146,7 @@ def main():
                             snapshot_id=observation.snapshot_id,
                             role=item.role,
                             speed=item.rate,
-                            excitement=getattr(item, "excitement", None),
+                            excitement=delivery_level(config.persona, item.role, excitement),
                             salience=getattr(item, "salience", 1),
                             event_bound=historical,
                             position_id=position_fingerprint(observation, position_scope)

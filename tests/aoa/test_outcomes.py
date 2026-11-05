@@ -242,14 +242,20 @@ def test_actual_worker_keeps_outcome_evidence_audit_duo_and_recap_window():
         if audit:
             return {
                 "checks": [
-                    {"index": i, "supported": True, "unsupported_claim": "", "scope": "historical"}
+                    {
+                        "index": i,
+                        "supported": True,
+                        "adds_insight": True,
+                        "unsupported_claim": "",
+                        "scope": "historical",
+                    }
                     for i in range(len(context["lines"]))
                 ]
             }
         key = next(k for k in context["new_events"] if context["facts"][k].get("kind") == "outcome")
         fact = context["facts"][key]
         assert fact["data"]["count"] == 20 and fact["turn"] == 14
-        assert fact["player"] == "Hero" and "cite that event for a historical call" in system
+        assert fact["player"] == "Hero" and "Historical calls cite past events" in system
         return {
             "turns": [
                 {"role": "play_by_play", "text": "Hero milled twenty cards.", "refs": [key]},

@@ -81,9 +81,9 @@ DEFAULTS = {
     # Independent provider selection; Kokoro settings/voice remain intact.
     "tts_provider": "kokoro",
     "autoplay_speech": "actions",
-    "commentary_persona": "classic",
+    "commentary_persona": "technical",
     "commentary_speakers": 2,
-    "commentary_focus": "balanced",
+    "commentary_focus": "analysis",
     "commentary_exchanges_per_minute": 2,
     "commentary_generative": False,
     "commentary_private_information": False,

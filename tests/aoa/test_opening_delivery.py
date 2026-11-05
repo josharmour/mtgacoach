@@ -156,33 +156,17 @@ def rationale_state(monkeypatch, explanation):
         ),
     ],
 )
-def test_displayed_rationale_becomes_retrospective_second_speaker(monkeypatch, explanation, expected):
+def test_action_rationale_is_context_not_a_substitute_for_strategy(monkeypatch, explanation, expected):
     state, obs, event, *_ = rationale_state(monkeypatch, explanation)
     attached = attach_rationales([event], state, True, 101)
+    assert expected in attached[0].payload["coach_intent"]
     lines = deterministic(
-        replace(obs, events=attached), CommentaryConfig(mode="commentary", private_information=True)
+        replace(obs, events=attached, private_state={}),
+        CommentaryConfig(mode="commentary", private_information=True),
     )
-    assert len(lines) == 2 and expected in lines[1].text
-    assert "17" not in lines[1].text and "3/2" not in lines[1].text and "Burst Lightning" not in lines[1].text
-    changed = copy.deepcopy(state)
-    changed["turn_info"].update(turn_number=2, phase="Combat")
-    changed["zones"]["my_hand"] = []
-    fresh = ObservationAdapter(lambda: 102).project(changed, True)
-    played, delivered = [], []
-    a = SpeechArbiter(
-        start=played.append,
-        stop=lambda: None,
-        status=lambda u, s: delivered.append((u, s)),
-        clock=lambda: 102,
-        valid=lambda u: valid_for(u, fresh),
-    )
-    a.reset(obs.epoch)
-    for line in lines:
-        a.submit(line)
-    finish(a)
-    assert a.active.role == "color_analyst"
-    finish(a)
-    assert len([s for _, s in delivered if s == "finished"]) == 2
+    # No supporting board position: don't manufacture a second speaker by
+    # simply reading the action's rationale back to the listener.
+    assert len(lines) == 1 and lines[0].role == "play_by_play"
 
 
 @pytest.mark.parametrize(

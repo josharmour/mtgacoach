@@ -6,6 +6,7 @@ from dataclasses import replace
 from arenamcp.player_names import actor_name
 
 from .contracts import SpeechCategory, Utterance
+from .delivery import delivery_level, event_excitement
 from .timeline import event_lifetime, event_priority, position_fingerprint
 
 
@@ -19,13 +20,19 @@ def _cards(observation):
 
 
 def _pair(first, text, observation, config, *, position=False, snapshot=False, scope=""):
-    if config.speakers != 2 or not text or text in observation.recent_commentary:
+    if (
+        config.speakers != 2
+        or not text
+        or text in observation.recent_commentary
+        or text in observation.recent_analysis
+    ):
         return [first]
     tail = replace(
         first,
         utterance_id=first.utterance_id + ":analyst",
         text=text,
         role="color_analyst",
+        excitement=delivery_level(config.persona, "color_analyst", first.excitement),
         anchor_id=first.utterance_id,
         event_bound=not (position or snapshot),
         position_id=position_fingerprint(observation, scope) if position else "",
@@ -101,7 +108,7 @@ def outcome_exchange(observation, config):
             tail = "It went to exile, so ordinary graveyard recursion cannot bring it back."
     else:
         return []
-    if config.persona == "esports":
+    if config.persona == "hype":
         text = text.rstrip(".") + "!"
     first = Utterance(
         "aoa:" + event.event_id,
@@ -112,14 +119,20 @@ def outcome_exchange(observation, config):
         evidence_ids=(event.event_id,),
         snapshot_id=observation.snapshot_id,
         event_bound=True,
+        excitement=delivery_level(config.persona, "play_by_play", event_excitement(event)),
     )
+    from .strategy import strategic_observation
+
+    insight = strategic_observation(observation, event, private=config.private_information)
+    if insight:
+        return _pair(first, insight[0], observation, config, position=True, scope=insight[1])
     return _pair(first, tail, observation, config, position=position, scope="battlefield")
 
 
 def add_analyst(first, event, observation, config):
     from .strategy import strategic_observation
 
-    insight = strategic_observation(observation, event)
+    insight = strategic_observation(observation, event, private=config.private_information)
     if insight:
         return _pair(first, insight[0], observation, config, position=True, scope=insight[1])
     text, position, snapshot = "", False, False
@@ -129,11 +142,8 @@ def add_analyst(first, event, observation, config):
             text = "That leaves very little room for another loss of life."
             position = True
     elif event.kind == "action_observed":
-        intent = event.payload.get("coach_intent")
-        if config.private_information and isinstance(intent, str) and len(intent) <= 240:
-            # A statement of the purpose of a completed cast is retrospective,
-            # not a prediction that damage, resolution or a block occurred.
-            return _pair(first, intent, observation, config)
+        # Action rationale is context for generation, not a ready-made analyst
+        # line. Without a supported strategic observation, let the call stand.
         card = next(
             (
                 c

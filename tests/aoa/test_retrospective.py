@@ -113,7 +113,13 @@ def test_real_worker_scopes_recent_recaps_and_fresh_analysis(scope):
         if audit:
             return {
                 "checks": [
-                    {"index": i, "supported": True, "unsupported_claim": "", "scope": scope}
+                    {
+                        "index": i,
+                        "supported": True,
+                        "adds_insight": True,
+                        "unsupported_claim": "",
+                        "scope": scope,
+                    }
                     for i in range(len(context["lines"]))
                 ]
             }

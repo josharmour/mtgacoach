@@ -45,6 +45,8 @@ def test_simple_surface_has_no_manual_paths_or_backend_controls(dialog):
     assert not widget.findChildren(QLineEdit)
     assert "Server Chatterbox" not in [w.text() for w in widget.findChildren(QCheckBox)]
     assert widget.provider.count() == 2 and widget.mode.count() == 2
+    assert widget.style.count() == 2
+    assert {widget.style.itemText(i) for i in range(2)} == {"Hype", "Technical"}
     assert widget.provider.currentData() == "kokoro"
     assert widget._apply()  # inactive Chatterbox never blocks Kokoro
     assert settings["muted"] is True
@@ -133,7 +135,7 @@ def test_actual_catalog_default_and_explicit_selection(dialog):
     assert settings["chatterbox_voice_override"] == "mira"
     assert settings["tts_provider"] == "chatterbox_remote"
     assert settings["autoplay_speech"] == "commentary" and not settings["muted"]
-    assert settings["commentary_persona"] == "esports"
+    assert settings["commentary_persona"] == "hype"
     reopened = ui.CommentarySettingsDialog(settings, session)
     reopened._catalog_ready(widget.catalog)
     assert reopened.voice.currentData() == ""  # automatic pair, separate from advice voice
