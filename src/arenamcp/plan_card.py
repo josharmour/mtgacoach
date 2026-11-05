@@ -25,6 +25,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from arenamcp.forecast_identity import forecast_key
+
 logger = logging.getLogger(__name__)
 
 # The loop wakes on every new GRE message; the board facts cost 1-20 ms per
@@ -35,12 +37,13 @@ SYNC_INTERVAL_S = 0.5
 
 def card_payload(manager: Any, game_state: dict[str, Any] | None, *, source: str) -> dict[str, Any]:
     """``manager``'s card payload for ``game_state``, tagged with its sender; ``{}`` when there is none."""
+    snapshot_key = forecast_key(game_state)
     payload_fn = getattr(manager, "ui_payload", None)
     payload = payload_fn(game_state) if callable(payload_fn) else None
     if not isinstance(payload, dict):
         plan = getattr(manager, "current", None)
         payload = dict(plan.as_payload()) if plan is not None else {}
-    return dict(payload, source=source) if payload else {}
+    return dict(payload, source=source, snapshot_key=snapshot_key) if payload else {}
 
 
 def _shown_part(payload: dict[str, Any]) -> dict[str, Any]:
