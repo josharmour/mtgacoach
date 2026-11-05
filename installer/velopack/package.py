@@ -18,6 +18,43 @@ STAGE = ROOT / "dist" / "managed"
 RELEASES = ROOT / "dist" / "feed"
 OUTPUT = ROOT / "dist" / "publish"
 CACHE = Path(os.environ.get("MTGACOACH_BUILD_CACHE", ROOT / ".build-cache"))
+COMMENTARY_CORE_COMMIT = "20d87e8c5034f247f551bef326a4ac4d7983eff9"
+
+
+def install_commentary_core(exe):
+    # Core only: speech stays with Coach's Kokoro or hosted Chatterbox path.
+    run(
+        "uv",
+        "pip",
+        "install",
+        "--break-system-packages",
+        "--python",
+        exe,
+        f"https://github.com/josharmour/arenaonair/archive/{COMMENTARY_CORE_COMMIT}.zip",
+    )
+
+
+def verify_commentary_core(exe):
+    """Reject packages whose generated commentary depends on a developer checkout."""
+    with tempfile.TemporaryDirectory(prefix="Coach commentary smoke ") as temp:
+        run(
+            exe,
+            "-I",
+            "-c",
+            """
+import pathlib, sys, time
+import arenaonair
+from arenamcp.commentary.config import CommentaryConfig
+from arenamcp.commentary.headless import HeadlessBooth
+root = pathlib.Path(arenaonair.__file__).resolve()
+if not root.is_relative_to(pathlib.Path(sys.prefix).resolve()):
+    raise SystemExit("Commentary core resolved outside packaged Python: " + str(root))
+HeadlessBooth(CommentaryConfig(mode="commentary", generative=True), lambda *args: None, time.monotonic)
+print("Packaged generated commentary core initialized successfully")
+""",
+            cwd=temp,
+            timeout=30,
+        )
 
 
 def run(*args, **kwargs):
@@ -319,8 +356,11 @@ def main():
                 f"{wheel}[full]",
             )
         exe = runtime / "bin/python3"
+    if not reused_runtime:
+        install_commentary_core(exe)
     install_current_wheel(exe, wheel, rid)
     verify_installed_wheel(exe, wheel)
+    verify_commentary_core(exe)
     if rid.startswith("win"):
         run(
             "pwsh",
@@ -351,6 +391,7 @@ def main():
         text=True,
     )
     signature = hashlib.sha256(deps.encode())
+    signature.update(COMMENTARY_CORE_COMMIT.encode())
     if rid.startswith("osx"):
         # Native code updates require the explicit bridge/runtime update path.
         signature.update((ROOT / "spikes/mac-il2cpp/probe.cpp").read_bytes())
@@ -368,6 +409,7 @@ def main():
                 version=version,
                 compatibility=compat,
                 commit=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+                commentary_core_commit=COMMENTARY_CORE_COMMIT,
             )
         )
     )
