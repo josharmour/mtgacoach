@@ -110,6 +110,7 @@ def test_capture_id_cannot_escape_report_directory(tmp_path):
 def test_arena_screenshot_uses_only_existing_window_rectangle(tmp_path, monkeypatch):
     from unittest.mock import Mock
 
+    monkeypatch.setattr("arenamcp.screen_capture.require_screen_capture_access", lambda: None)
     monkeypatch.setattr("arenamcp.desktop.window_tracking.get_mtga_window_rect", lambda: (10, 20, 200, 100))
     picture = Mock()
     grab = Mock(return_value=picture)

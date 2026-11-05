@@ -42,6 +42,7 @@ def test_a_real_screen_grab_is_refused(guards, monkeypatch, tmp_path):
     with pytest.raises(guards.RealMachineAccess, match="real screen"):
         ImageGrab.grab()
     # The bug-report capture with Arena's window found reaches the guard too.
+    monkeypatch.setattr("arenamcp.screen_capture.require_screen_capture_access", lambda: None)
     monkeypatch.setattr(window_tracking, "get_mtga_window_rect", lambda *a, **k: (0, 0, 100, 100))
     with pytest.raises(guards.RealMachineAccess):
         capture_mtga_screenshot(tmp_path, "x")

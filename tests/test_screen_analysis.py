@@ -128,6 +128,7 @@ def test_screen_capture_bbox_validation(monkeypatch: pytest.MonkeyPatch, bbox) -
     # The kill switch is module-global: never let this test (or an earlier
     # one) leave capture disabled for the rest of the worker.
     monkeypatch.setattr(screen_capture, "_CAPTURE_DEAD", False)
+    monkeypatch.setattr(screen_capture, "require_screen_capture_access", lambda: None)
     calls: list[dict] = []
 
     def mock_grab(*args, **kwargs):
