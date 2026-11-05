@@ -131,7 +131,7 @@ def test_native_hand_observation_supports_audited_possibilities():
             assert "Clearly labeled possibilities" in system
             return {
                 "checks": [
-                    {"index": i, "supported": True, "unsupported_claim": ""}
+                    {"index": i, "supported": True, "adds_insight": True, "unsupported_claim": ""}
                     for i in range(len(context["lines"]))
                 ]
             }

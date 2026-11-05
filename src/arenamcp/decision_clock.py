@@ -32,6 +32,7 @@ ActivePlayer timer running. gamestate merges both per timer
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -41,6 +42,27 @@ _DEADLINE_BEHAVIORS = frozenset({"TimerBehavior_TakeControl", "TimerBehavior_Tim
 # synthetic test numbers ("0", "1000") or future clock skew fall back to now.
 _MIN_EPOCH_S = 1_577_836_800.0
 _MAX_FUTURE_SKEW_S = 24 * 3600.0
+
+# A server timestamp and the machine clock are not necessarily synchronized.
+# The Windows VM on 2026-11-04 was 54 minutes ahead: fresh commander prompts
+# appeared thousands of seconds overdue. Old catch-up readings are equally
+# unsuitable for automatic deadline decisions. Do not rebase either to now.
+_MAX_READING_AGE_S = 300.0
+_READING_FUTURE_TOLERANCE_S = 5.0
+
+
+def _reading_age(entry: dict[str, Any], now: float) -> float | None:
+    """Elapsed seconds, or unknown for stale/skewed readings; bridge reads are fresh."""
+    received = entry.get("received_at")
+    if received is None:
+        return 0.0
+    try:
+        age = now - float(received)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(age) or not -_READING_FUTURE_TOLERANCE_S <= age <= _MAX_READING_AGE_S:
+        return None
+    return max(0.0, age)
 
 
 def event_wall_time(payload: dict[str, Any] | None, now: float | None = None) -> float:
@@ -185,6 +207,9 @@ def seconds_remaining(
     if not isinstance(entry, dict) or not entry.get("is_ticking"):
         return None
     now = time.time() if now is None else now
+    age = _reading_age(entry, now)
+    if age is None:
+        return None
     received = entry.get("received_at")
     received = now if received is None else float(received)
     if not_before is not None and received < not_before:
@@ -193,7 +218,7 @@ def seconds_remaining(
         remaining = float(entry.get("time_remaining_ms") or 0) / 1000.0
     except (TypeError, ValueError):
         return None
-    return remaining - max(0.0, now - received)
+    return remaining - age
 
 
 def decision_seconds_remaining(
@@ -235,8 +260,10 @@ def decision_seconds_remaining(
     rope = (entry.get("rope_s") or {}).get(kind)
     if not isinstance(rope, (int, float)):
         return remaining
-    received = entry.get("received_at")
-    rope -= max(0.0, now - (now if received is None else float(received)))
+    age = _reading_age(entry, now)
+    if age is None:
+        return None
+    rope -= age
     return rope if remaining is None else min(rope, remaining)
 
 
@@ -286,13 +313,15 @@ def wrap_up_reason(
         return "Arena's turn timer already ran out on us this turn"
     if active_player != seat or (entry.get("rope_turn") or {}).get("TimerType_ActivePlayer") != turn:
         return ""
+    now = time.time() if now is None else now
+    age = _reading_age(entry, now)
+    if age is None:
+        return ""
     rope = (entry.get("rope_s") or {}).get("TimerType_ActivePlayer")
     if not isinstance(rope, (int, float)):
         return ""
     if (entry.get("rope_running") or {}).get("TimerType_ActivePlayer"):
-        now = time.time() if now is None else now
-        received = entry.get("received_at")
-        rope -= max(0.0, now - (now if received is None else float(received)))
+        rope -= age
     if rope > threshold:
         return ""
     return f"{max(0.0, rope):.0f}s left on our turn clock"

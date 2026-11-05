@@ -198,8 +198,9 @@ def test_controls_reflow_at_sidebar_width(panel, qapp):
 
     assert panel.width() == 240
     buttons = [b for b in panel.findChildren(QPushButton) if b.isVisible()]
-    assert panel.ap_btn in buttons and panel.autopilot_bug_btn in buttons and panel.more_btn in buttons
-    assert panel.bug_report_btn in buttons and panel.restart_btn in buttons
+    assert panel.ap_btn in buttons and panel.more_btn in buttons
+    assert panel.help_details.toggle in buttons
+    assert panel.autopilot_bug_btn not in buttons and panel.restart_btn not in buttons
     rects = [QRect(b.mapTo(panel, b.rect().topLeft()), b.size()) for b in buttons]
     for button, rect in zip(buttons, rects, strict=True):
         assert panel.rect().contains(rect)
@@ -235,7 +236,7 @@ def test_compact_coach_debug_report_triggers(panel, monkeypatch):
 
 
 @pytest.mark.parametrize("theme_name", ["dark", "light", "high-contrast"])
-def test_recovery_buttons_always_visible_without_opening_a_menu(panel, qapp, theme_name):
+def test_recovery_buttons_accessible_in_help(panel, qapp, theme_name):
     from PySide6.QtCore import QRect
 
     from arenamcp.desktop import theme
@@ -243,12 +244,13 @@ def test_recovery_buttons_always_visible_without_opening_a_menu(panel, qapp, the
     theme.apply_theme(qapp, theme_name)
     panel._on_game_state_changed(make_snapshot())
     panel._on_status_changed("AUTOPILOT", "PAUSED")
-    panel.resize(240, 600)
+    assert not panel.autopilot_bug_btn.isVisible()
+    panel.help_details.toggle.click()
+    panel.resize(240, 1300)
     qapp.processEvents()
 
     assert not panel.voice_style_popover.isVisible()
     assert panel.size().width() == 240
-    assert panel.size().height() == 600
     for button in (
         panel.autopilot_bug_btn,
         panel.bug_report_btn,
@@ -256,7 +258,7 @@ def test_recovery_buttons_always_visible_without_opening_a_menu(panel, qapp, the
         panel.reload_engine_btn,
         panel.restart_btn,
     ):
-        assert button.parent() is panel
+        assert button.parent() is panel.help_details.body
         assert button.isVisible()
         assert button.isEnabled()
         rect = QRect(button.mapTo(panel, button.rect().topLeft()), button.size())
@@ -594,6 +596,7 @@ def test_compact_coach_voice_status_updates(panel):
 
 
 def test_feed_follows_after_layout_and_resize(panel, qapp):
+    panel.feed_details.set_expanded(True)
     panel.resize(450, 700)
     for i in range(70):
         panel.append_log(f"Action {i}: " + "A long wrapped strategic explanation. " * 5)
@@ -610,6 +613,7 @@ def test_feed_follows_after_layout_and_resize(panel, qapp):
 
 
 def test_feed_preserves_manual_scroll_and_latest_resumes_following(panel, qapp):
+    panel.feed_details.set_expanded(True)
     panel.resize(450, 700)
     for i in range(70):
         panel.append_log(f"Action {i}: a longer entry for the scrolling feed.")
@@ -748,7 +752,7 @@ def test_auto_queue_status_detail_never_toggles_queueing_or_autoplay(panel, monk
     panel.session.statusChanged.emit("AUTO_QUEUE_DETAIL", "Paused: turn on Autoplay to continue.")
     assert panel.auto_queue_btn.text() == "Auto-queue: On"
     assert "turn on Autoplay" in panel.auto_queue_status_label.text()
-    assert panel.ap_btn.text() == "Autoplay: Off"
+    assert panel.ap_btn.text() == "Enable autoplay"
     panel.session.statusChanged.emit("AUTO_QUEUE_DETAIL", "Continuing the result screen.")
     assert "result screen" in panel.auto_queue_status_label.text()
     panel.session.statusChanged.emit("AUTO_QUEUE", "OFF")

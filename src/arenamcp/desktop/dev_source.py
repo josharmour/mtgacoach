@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 
-def source_revision(checkout: str) -> str:
+def source_revision(checkout: str, *, short: bool = True) -> str:
     try:
         metadata = Path(os.environ.get("MTGACOACH_DEV_GIT_DIR") or Path(checkout) / ".git")
         if metadata.is_file():
@@ -34,6 +34,8 @@ def source_revision(checkout: str) -> str:
                     ),
                     "",
                 )
-        return head[:7] if re.fullmatch(r"[0-9a-fA-F]{40,64}", head) else "unknown commit"
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", head):
+            return "unknown commit"
+        return head[:7] if short else head
     except (OSError, ValueError):
         return "unknown commit"

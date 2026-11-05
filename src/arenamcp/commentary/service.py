@@ -44,7 +44,8 @@ class CommentaryService:
         self.pending_epoch = None
         self.fallback_events = set()
         self.proposals = {}
-        self.heard = deque(maxlen=4)
+        self.heard = deque(maxlen=24)
+        self.heard_analysis = deque(maxlen=16)
         self.openings = {}
         self.grounded_ids = set()
         self.suppressed_opening_epoch = None
@@ -61,6 +62,7 @@ class CommentaryService:
                 self.inflight.clear()
                 self.proposals.clear()
                 self.heard.clear()
+                self.heard_analysis.clear()
                 self.grounded_ids.clear()
             self.emit({"type": "commentary_clear"})
         self.wake.set()
@@ -109,6 +111,9 @@ class CommentaryService:
                 item = self.proposals.pop(uid, None)
                 if item and state == "finished":
                     self.heard.append(item.text)
+                    if item.role == "color_analyst":
+                        self.heard_analysis.append(item.text)
+                    logger.info("Commentary spoken role=%s text=%s", item.role, item.text)
                     if uid in self.grounded_ids:
                         self.last_grounded = (item.epoch, time.monotonic())
                 self.grounded_ids.discard(uid)
@@ -206,7 +211,7 @@ class CommentaryService:
                 system,
                 user,
                 output,
-                temperature=0 if audit else 0.3,
+                temperature=0 if audit else 0.6,
                 enable_thinking=False,
                 request_timeout_s=timeout,
                 raise_on_error=True,
@@ -324,6 +329,7 @@ class CommentaryService:
                     self.pending_epoch = observation.epoch
                     self.fallback_events = set()
                     self.heard.clear()
+                    self.heard_analysis.clear()
                     self.proposals.clear()
                     self.openings.clear()
                     self.grounded_ids.clear()
@@ -358,6 +364,7 @@ class CommentaryService:
                         observation,
                     ),
                     recent_commentary=tuple(self.heard),
+                    recent_analysis=tuple(self.heard_analysis),
                 )
                 # Expire missing delivery acknowledgments; no unbounded speech backlog.
                 with self._lock:

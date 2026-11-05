@@ -90,6 +90,7 @@ class Observation:
     events: tuple[Evidence, ...] = ()
     private_state: dict[str, Any] = field(default_factory=dict)
     recent_commentary: tuple[str, ...] = ()
+    recent_analysis: tuple[str, ...] = ()
     protocol_version: int = PROTOCOL_VERSION
 
     def __post_init__(self) -> None:
@@ -111,6 +112,7 @@ class Observation:
         data["epoch"] = Epoch(**data["epoch"])
         data["events"] = tuple(Evidence(**event) for event in data.get("events", ()))
         data["recent_commentary"] = tuple(data.get("recent_commentary", ()))
+        data["recent_analysis"] = tuple(data.get("recent_analysis", ()))
         return cls(**data)
 
 

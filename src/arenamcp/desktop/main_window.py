@@ -96,6 +96,7 @@ class MainWindow(QMainWindow):
 
         self._limited_preview = LimitedDeckPreview(self)
         self._session.limitedDeckPreviewChanged.connect(self._limited_preview.set_preview)
+        self._build_dev_commit_button()
         self._build_access_badge()
         self._apply_window_geometry()
         self._setup_hotkeys()
@@ -134,6 +135,29 @@ class MainWindow(QMainWindow):
         self.decks_tab = DecksTab(session=self._session)
         self._stack.addWidget(_build_page("Decks", self.decks_tab, self._show_coach_view))  # 3
         self.setCentralWidget(self._stack)
+
+    def _build_dev_commit_button(self) -> None:
+        self.dev_commit_button = None
+        if not os.environ.get("MTGACOACH_DEV_CHECKOUT"):
+            return
+        # Snapshot the startup revision, never the checkout's newer HEAD.
+        commit = os.environ.get("MTGACOACH_DEV_COMMIT", "")
+        known = len(commit) in (40, 64) and all(c in "0123456789abcdefABCDEF" for c in commit)
+        button = QPushButton("Copy commit" if known else "Commit unavailable", self)
+        button.setEnabled(known)
+        button.setToolTip(
+            f"Copy the full commit running in this Coach: {commit}"
+            if known
+            else "Restart Coach with its source share connected to identify this build."
+        )
+
+        def copy_commit() -> None:
+            QApplication.clipboard().setText(commit)
+            self.statusBar().showMessage(f"Copied commit {commit[:7]}", 3000)
+
+        button.clicked.connect(copy_commit)
+        self.statusBar().addPermanentWidget(button)
+        self.dev_commit_button = button
 
     def _build_access_badge(self) -> None:
         """Subscriber badge / trial countdown, pinned to the right of the status bar."""

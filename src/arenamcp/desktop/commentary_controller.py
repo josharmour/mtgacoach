@@ -11,8 +11,9 @@ from dataclasses import replace
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from arenamcp.chatterbox_remote import HOSTED_BASE
-from arenamcp.commentary.config import CommentaryConfig, speech_rate
+from arenamcp.commentary.config import CommentaryConfig, normalize_persona, speech_rate
 from arenamcp.commentary.contracts import TERMINAL_STATES, Epoch, SpeechCategory, Utterance
+from arenamcp.commentary.delivery import delivery_level
 from arenamcp.commentary.events import ObservationAdapter
 from arenamcp.commentary.setup import server_voices
 from arenamcp.commentary.timeline import valid_for
@@ -234,25 +235,17 @@ class CommentaryController(QObject):
             self.statusChanged.emit({"state": "voice", "message": str(error)})
             return
         preview_lines = {
-            "classic": (
-                "Welcome to the booth. I'll call the action.",
-                "And I'll add the details. Good to have you with us.",
+            "hype": (
+                "The attack is on! Can this board keep up the pressure?",
+                "That's the tension: commit to the race, or keep resources ready for the next threat.",
             ),
-            "esports": (
-                "I'm calling the action. Welcome to the booth!",
-                "And I'm here for the big moments. Let's get into it!",
-            ),
-            "test_match": (
-                "Well, here we are. I'll call the play.",
-                "And I'll offer the occasional observation. Steady on.",
-            ),
-            "pro_tour": (
-                "I'm on play-by-play. We'll keep the card language precise.",
-                "I'll add the technical details supported by the game.",
+            "technical": (
+                "The attack changes the position. What matters over the next few turns?",
+                "The balance between pressure and resources. We'll follow how each player's route to winning develops.",
             ),
         }
         texts = (
-            preview_lines.get(options.get("commentary_persona"), preview_lines["classic"])
+            preview_lines[normalize_persona(options.get("commentary_persona"))]
             if duo
             else ("The booth is ready. Welcome to the game.",)
         )
@@ -268,6 +261,11 @@ class CommentaryController(QObject):
                 provider=provider,
                 voice=voice,
                 speed=speech_rate(options),
+                excitement=delivery_level(
+                    normalize_persona(options.get("commentary_persona")),
+                    "color_analyst" if index else "play_by_play",
+                    "electric" if duo else "normal",
+                ),
                 role="color_analyst" if index else "play_by_play",
                 anchor_id=uid if index else None,
             )
@@ -316,7 +314,9 @@ class CommentaryController(QObject):
     def _delivery(self, item):
         from arenamcp.commentary.delivery import speech_delivery
 
-        return speech_delivery(item, self.observation, self.config.persona)
+        preview = self.preview_settings.get(item.utterance_id)
+        persona = normalize_persona(preview.get("commentary_persona")) if preview else self.config.persona
+        return speech_delivery(item, self.observation, persona)
 
     def _playback_status(self, uid, state):
         item = self.arbiter.active

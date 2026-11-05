@@ -145,7 +145,8 @@ def test_pair_preview_is_ordered_preserves_mute_and_ignores_advice_voice(qapp, m
     c.preview(dict(settings, commentary_chatterbox_pair="mira|atlas", commentary_persona="pro_tour"))
     assert tts.request_speech.call_count == 1
     first = tts.request_speech.call_args.kwargs
-    assert first["voice_id"] == "mira" and "precise" in first["text"]
+    assert first["voice_id"] == "mira" and first["text"].endswith("?")
+    assert first["excitement"] == "normal"
     tts.speechStatus.emit(first["speech_id"], "started")
     tts.speechStatus.emit(first["speech_id"], "finished")
     second = tts.request_speech.call_args.kwargs

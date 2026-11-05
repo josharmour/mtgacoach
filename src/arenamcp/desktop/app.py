@@ -281,8 +281,10 @@ def main() -> int:
         # Refresh on Restart Coach too, which execs the desktop module directly.
         from .dev_source import source_revision
 
-        commit = source_revision(checkout)
-        os.environ["MTGACOACH_BUILD_LABEL"] = f"dev source ({commit})"
+        commit = source_revision(checkout, short=False)
+        os.environ["MTGACOACH_DEV_COMMIT"] = commit
+        label = commit[:7] if commit != "unknown commit" else commit
+        os.environ["MTGACOACH_BUILD_LABEL"] = f"dev source ({label})"
 
     # Acquire singleton lock before initializing Qt or spawning background threads
     if not _acquire_single_instance_lock():

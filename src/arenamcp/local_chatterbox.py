@@ -58,7 +58,7 @@ class LocalChatterboxClient:
         self.failed = True
         raise ChatterboxError("Local Chatterbox missed its deadline.")
 
-    def render(self, *, config, text, voice, speed, cancelled):
+    def render(self, *, config, text, voice, speed, cancelled, excitement=None):
         identity = tuple(sorted(config.items()))
         if self.config != identity:
             self.close()
@@ -107,7 +107,15 @@ class LocalChatterboxClient:
                 {"cmd": "init", **{k: v for k, v in config.items() if k not in {"python", "aoa_source"}}}
             )
             self.ready = self._wait(cancelled, 90).get("type") == "ready"
-        self._send({"cmd": "render", "text": text, "voice": voice, "speed": speed})
+        self._send(
+            {
+                "cmd": "render",
+                "text": text,
+                "voice": voice,
+                "speed": speed,
+                "excitement": excitement or "normal",
+            }
+        )
         result = self._wait(cancelled, 6)
         self.last_metrics = result.get("metrics", {})
         raw = base64.b64decode(result.get("audio", ""), validate=True)

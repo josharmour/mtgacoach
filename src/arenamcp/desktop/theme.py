@@ -303,6 +303,13 @@ def px(size: str) -> int:
     return TYPE_SCALE[size]
 
 
+def ui_font(size: str = "body") -> QFont:
+    """Token-sized application font for native painted data marks."""
+    font = QFont()
+    font.setPixelSize(TYPE_SCALE[size])
+    return font
+
+
 def mono_font(size: str = "caption") -> QFont:
     """The platform's fixed-width face (SF Mono / Cascadia / DejaVu ...)."""
     font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
@@ -447,11 +454,16 @@ QTextEdit[bare="true"], QPlainTextEdit[bare="true"] {{ background: transparent; 
 
 QFrame[card="true"] {{ background: {t.surface}; border: {b} {t.border}; border-radius: {t.radius_card}px; }}
 QFrame[card="true"] QLabel {{ background: transparent; }}
+QFrame#strategyPath[leading="true"] {{ background: {t.tint("good", 0.10)}; border-color: {t.good}; }}
+QFrame#strategyPath[selected="true"] {{ border-width: 2px; }}
 QFrame[divider="true"] {{ background: {t.border}; border: none; min-height: 1px; max-height: 1px; }}
 QFrame#voiceStylePopover {{ background: {t.surface}; border: {b} {t.border}; }}
 
 QLabel[role="caption"] {{ color: {t.muted}; font-size: {fs["caption"]}px; font-weight: 700; }}
 QLabel[role="muted"] {{ color: {t.muted}; }}
+QLabel[tone="warn"] {{ color: {t.warn}; }}
+QLabel[tone="good"] {{ color: {t.good}; }}
+QLabel[tone="bad"] {{ color: {t.bad}; }}
 QLabel[role="small"] {{ color: {t.muted}; font-size: {fs["caption"]}px; }}
 QLabel[role="emphasis"] {{ font-size: {fs["emphasis"]}px; font-weight: 600; }}
 QLabel[role="title"] {{ font-size: {fs["title"]}px; font-weight: 700; }}
