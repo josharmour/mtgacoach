@@ -293,6 +293,11 @@ def casting_fallback_choice(
     modal = by_kind.get("modal")
     if modal:
         minimum = casting_selection_bounds(modal[0].meta or {})[0]
+        if minimum > 1:
+            from arenamcp.sweep_sequence import fallback_sweep
+
+            if pick := fallback_sweep(decision, state):
+                return pick
         if minimum == 1:
             best, why = _best_mode(decision, state, modal, comparison)
             if best:

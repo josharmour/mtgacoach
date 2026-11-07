@@ -1,0 +1,1105 @@
+{
+  "800": {
+    "state": {
+      "local_seat_id": 2,
+      "turn": {
+        "turn_number": 22,
+        "active_player": 2,
+        "priority_player": 2,
+        "phase": "Phase_Main1",
+        "step": "",
+        "decision_player": 2
+      },
+      "match_id": "6d783c30-2997-4383-9364-c91698fe7e60",
+      "game_number": 1,
+      "players": [
+        {
+          "seat_id": 1,
+          "is_local": false,
+          "life_total": 8
+        },
+        {
+          "seat_id": 2,
+          "is_local": true,
+          "life_total": 8
+        }
+      ],
+      "decision_context": {
+        "type": "target_selection",
+        "source_card": "Pyrogoyf",
+        "source_id": 1794,
+        "targets": [
+          {
+            "targetIdx": 1,
+            "targets": [
+              {
+                "targetInstanceId": 1,
+                "legalAction": "SelectAction_Select",
+                "highlight": "HighlightType_Hot"
+              },
+              {
+                "targetInstanceId": 2,
+                "legalAction": "SelectAction_Select",
+                "highlight": "HighlightType_Cold"
+              },
+              {
+                "targetInstanceId": 1371,
+                "legalAction": "SelectAction_Select",
+                "highlight": "HighlightType_Hot"
+              },
+              {
+                "targetInstanceId": 1671,
+                "legalAction": "SelectAction_Select",
+                "highlight": "HighlightType_Hot"
+              },
+              {
+                "targetInstanceId": 1789,
+                "legalAction": "SelectAction_Select",
+                "highlight": "HighlightType_Cold"
+              }
+            ],
+            "minTargets": 1,
+            "maxTargets": 1,
+            "prompt": {
+              "promptId": 11869,
+              "parameters": [
+                {
+                  "parameterName": "CardId",
+                  "type": "ParameterType_Number",
+                  "numberValue": 1789
+                }
+              ]
+            },
+            "targetingAbilityGrpId": 190718,
+            "targetingPlayer": 2
+          }
+        ],
+        "source_parent_instance_id": 1789,
+        "source_oracle_text": "Whenever CARDNAME or another Lhurgoyf creature you control enters, that creature deals damage equal to its power to any target."
+      },
+      "battlefield": [
+        {
+          "instance_id": 1789,
+          "grp_id": 99698,
+          "controller_seat_id": 2,
+          "subtypes": [
+            "Lhurgoyf"
+          ],
+          "power": 6,
+          "toughness": 7,
+          "is_tapped": false,
+          "turn_entered_battlefield": 22,
+          "summoning_sickness": true,
+          "name": "Pyrogoyf",
+          "type_line": "Creature \u2014 Lhurgoyf",
+          "oracle_text": "Pyrogoyf's power is equal to the number of card types among cards in all graveyards and its toughness is equal to that number plus 1.\nWhenever this creature or another Lhurgoyf creature you control enters, that creature deals damage equal to its power to any target."
+        },
+        {
+          "instance_id": 1671,
+          "grp_id": 106341,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Chimera",
+            "Horror"
+          ],
+          "power": 6,
+          "toughness": 6,
+          "is_tapped": false,
+          "turn_entered_battlefield": 21,
+          "summoning_sickness": true,
+          "name": "Hexhaven Invigorator",
+          "type_line": "Creature \u2014 Chimera Horror",
+          "oracle_text": "Vigilance\nWhenever this creature is dealt damage, you may search your library for up to that many land cards, put them onto the battlefield tapped, then shuffle."
+        },
+        {
+          "instance_id": 1659,
+          "grp_id": 99534,
+          "controller_seat_id": 1,
+          "subtypes": [],
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": 21,
+          "name": "Exploration",
+          "type_line": "Enchantment",
+          "oracle_text": "You may play an additional land on each of your turns."
+        },
+        {
+          "instance_id": 1371,
+          "grp_id": 93960,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Merfolk",
+            "Druid"
+          ],
+          "power": 3,
+          "toughness": 3,
+          "is_tapped": true,
+          "turn_entered_battlefield": 19,
+          "name": "Tatyova, Benthic Druid",
+          "type_line": "Legendary Creature \u2014 Merfolk Druid",
+          "oracle_text": "<i>Landfall</i> \u2014 Whenever a land you control enters, you gain 1 life and draw a card."
+        }
+      ],
+      "stack": [
+        {
+          "instance_id": 1794,
+          "grp_id": 190718,
+          "controller_seat_id": 2,
+          "subtypes": [],
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "parent_instance_id": 1789,
+          "name": "Pyrogoyf ability",
+          "type_line": "Ability",
+          "oracle_text": "Whenever CARDNAME or another Lhurgoyf creature you control enters, that creature deals damage equal to its power to any target."
+        }
+      ],
+      "hand": [
+        {
+          "instance_id": 1787,
+          "grp_id": 90824,
+          "controller_seat_id": 2,
+          "subtypes": [],
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "name": "Bridgeworks Battle",
+          "type_line": "Sorcery",
+          "oracle_text": "Target creature you control gets +2/+2 until end of turn. It fights up to one target creature you don't control."
+        },
+        {
+          "instance_id": 1652,
+          "grp_id": 70318,
+          "controller_seat_id": 2,
+          "subtypes": [
+            "Beast"
+          ],
+          "power": 4,
+          "toughness": 4,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "name": "Questing Beast",
+          "type_line": "Legendary Creature \u2014 Beast",
+          "oracle_text": "Vigilance\nDeathtouch\nHaste\nQuesting Beast can't be blocked by creatures with power 2 or less.\nCombat damage that would be dealt by creatures you control can't be prevented.\nWhenever Questing Beast deals combat damage to an opponent, it deals that much damage to target planeswalker that player controls."
+        },
+        {
+          "instance_id": 1649,
+          "grp_id": 87101,
+          "controller_seat_id": 2,
+          "subtypes": [
+            "Aura"
+          ],
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "name": "Utopia Sprawl",
+          "type_line": "Enchantment \u2014 Aura",
+          "oracle_text": "Enchant Forest\nAs this Aura enters, choose a color.\nWhenever enchanted Forest is tapped for mana, its controller adds an additional one mana of the chosen color."
+        }
+      ]
+    },
+    "decision": {
+      "request_id": [
+        800,
+        1149
+      ],
+      "request_type": "SelectTargets",
+      "options": [
+        {
+          "option_id": "tgt:1",
+          "label": "Opponent urmumsbussy (8 life)",
+          "payable": null,
+          "meta": {
+            "instanceId": 1,
+            "grpId": 0,
+            "targetIdx": 1,
+            "player_seat": 1,
+            "highlight": "Hot"
+          }
+        },
+        {
+          "option_id": "tgt:2",
+          "label": "You (seat 2, 8 life)",
+          "payable": null,
+          "meta": {
+            "instanceId": 2,
+            "grpId": 0,
+            "targetIdx": 1,
+            "player_seat": 2,
+            "highlight": "Cold"
+          }
+        },
+        {
+          "option_id": "tgt:1371",
+          "label": "Tatyova, Benthic Druid",
+          "payable": null,
+          "meta": {
+            "instanceId": 1371,
+            "grpId": 0,
+            "targetIdx": 1,
+            "highlight": "Hot"
+          }
+        },
+        {
+          "option_id": "tgt:1671",
+          "label": "Hexhaven Invigorator",
+          "payable": null,
+          "meta": {
+            "instanceId": 1671,
+            "grpId": 0,
+            "targetIdx": 1,
+            "highlight": "Hot"
+          }
+        },
+        {
+          "option_id": "tgt:1789",
+          "label": "Pyrogoyf",
+          "payable": null,
+          "meta": {
+            "instanceId": 1789,
+            "grpId": 0,
+            "targetIdx": 1,
+            "highlight": "Cold"
+          }
+        }
+      ],
+      "min_select": 1,
+      "max_select": 1,
+      "can_pass": false,
+      "can_cancel": false,
+      "source_label": "Pyrogoyf ability",
+      "min_weight": null,
+      "max_weight": null,
+      "slots": [
+        {
+          "target_idx": 1,
+          "min_targets": 1,
+          "max_targets": 1,
+          "selected": 0,
+          "candidate_ids": [
+            1,
+            2,
+            1371,
+            1671,
+            1789
+          ]
+        }
+      ]
+    }
+  },
+  "857": {
+    "state": {
+      "local_seat_id": 2,
+      "turn": {
+        "turn_number": 22,
+        "active_player": 2,
+        "priority_player": 2,
+        "phase": "Phase_Main1",
+        "step": "",
+        "decision_player": 2
+      },
+      "match_id": "6d783c30-2997-4383-9364-c91698fe7e60",
+      "game_number": 1,
+      "players": [
+        {
+          "seat_id": 1,
+          "is_local": false,
+          "life_total": 18
+        },
+        {
+          "seat_id": 2,
+          "is_local": true,
+          "life_total": 8
+        }
+      ],
+      "decision_context": {
+        "type": "actions_available"
+      },
+      "battlefield": [
+        {
+          "instance_id": 1789,
+          "grp_id": 99698,
+          "controller_seat_id": 2,
+          "subtypes": [
+            "Lhurgoyf"
+          ],
+          "power": 6,
+          "toughness": 7,
+          "is_tapped": false,
+          "turn_entered_battlefield": 22,
+          "summoning_sickness": true,
+          "name": "Pyrogoyf",
+          "type_line": "Creature \u2014 Lhurgoyf",
+          "oracle_text": "Pyrogoyf's power is equal to the number of card types among cards in all graveyards and its toughness is equal to that number plus 1.\nWhenever this creature or another Lhurgoyf creature you control enters, that creature deals damage equal to its power to any target."
+        },
+        {
+          "instance_id": 1659,
+          "grp_id": 99534,
+          "controller_seat_id": 1,
+          "subtypes": [],
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": 21,
+          "name": "Exploration",
+          "type_line": "Enchantment",
+          "oracle_text": "You may play an additional land on each of your turns."
+        },
+        {
+          "instance_id": 1371,
+          "grp_id": 93960,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Merfolk",
+            "Druid"
+          ],
+          "power": 3,
+          "toughness": 3,
+          "is_tapped": true,
+          "turn_entered_battlefield": 19,
+          "name": "Tatyova, Benthic Druid",
+          "type_line": "Legendary Creature \u2014 Merfolk Druid",
+          "oracle_text": "<i>Landfall</i> \u2014 Whenever a land you control enters, you gain 1 life and draw a card."
+        },
+        {
+          "instance_id": 1864,
+          "grp_id": 91328,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Zombie"
+          ],
+          "power": 2,
+          "toughness": 2,
+          "is_tapped": false,
+          "turn_entered_battlefield": 22,
+          "summoning_sickness": true,
+          "parent_instance_id": 1809,
+          "name": "Zombie",
+          "type_line": "Token Creature \u2014 Zombie",
+          "oracle_text": ""
+        },
+        {
+          "instance_id": 1865,
+          "grp_id": 91328,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Zombie"
+          ],
+          "power": 2,
+          "toughness": 2,
+          "is_tapped": false,
+          "turn_entered_battlefield": 22,
+          "summoning_sickness": true,
+          "parent_instance_id": 1808,
+          "name": "Zombie",
+          "type_line": "Token Creature \u2014 Zombie",
+          "oracle_text": ""
+        },
+        {
+          "instance_id": 1866,
+          "grp_id": 91328,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Zombie"
+          ],
+          "power": 2,
+          "toughness": 2,
+          "is_tapped": false,
+          "turn_entered_battlefield": 22,
+          "summoning_sickness": true,
+          "parent_instance_id": 1807,
+          "name": "Zombie",
+          "type_line": "Token Creature \u2014 Zombie",
+          "oracle_text": ""
+        },
+        {
+          "instance_id": 1867,
+          "grp_id": 91328,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Zombie"
+          ],
+          "power": 2,
+          "toughness": 2,
+          "is_tapped": false,
+          "turn_entered_battlefield": 22,
+          "summoning_sickness": true,
+          "parent_instance_id": 1806,
+          "name": "Zombie",
+          "type_line": "Token Creature \u2014 Zombie",
+          "oracle_text": ""
+        },
+        {
+          "instance_id": 1868,
+          "grp_id": 91328,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Zombie"
+          ],
+          "power": 2,
+          "toughness": 2,
+          "is_tapped": false,
+          "turn_entered_battlefield": 22,
+          "summoning_sickness": true,
+          "parent_instance_id": 1805,
+          "name": "Zombie",
+          "type_line": "Token Creature \u2014 Zombie",
+          "oracle_text": ""
+        },
+        {
+          "instance_id": 1869,
+          "grp_id": 91328,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Zombie"
+          ],
+          "power": 2,
+          "toughness": 2,
+          "is_tapped": false,
+          "turn_entered_battlefield": 22,
+          "summoning_sickness": true,
+          "parent_instance_id": 1804,
+          "name": "Zombie",
+          "type_line": "Token Creature \u2014 Zombie",
+          "oracle_text": ""
+        },
+        {
+          "instance_id": 1921,
+          "grp_id": 91328,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Zombie"
+          ],
+          "power": 2,
+          "toughness": 2,
+          "is_tapped": false,
+          "turn_entered_battlefield": 22,
+          "summoning_sickness": true,
+          "parent_instance_id": 1874,
+          "name": "Zombie",
+          "type_line": "Token Creature \u2014 Zombie",
+          "oracle_text": ""
+        },
+        {
+          "instance_id": 1972,
+          "grp_id": 91328,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Zombie"
+          ],
+          "power": 2,
+          "toughness": 2,
+          "is_tapped": false,
+          "turn_entered_battlefield": 22,
+          "summoning_sickness": true,
+          "parent_instance_id": 1927,
+          "name": "Zombie",
+          "type_line": "Token Creature \u2014 Zombie",
+          "oracle_text": ""
+        }
+      ],
+      "stack": [],
+      "hand": [
+        {
+          "instance_id": 1787,
+          "grp_id": 90824,
+          "controller_seat_id": 2,
+          "subtypes": [],
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "name": "Bridgeworks Battle",
+          "type_line": "Sorcery",
+          "oracle_text": "Target creature you control gets +2/+2 until end of turn. It fights up to one target creature you don't control."
+        },
+        {
+          "instance_id": 1652,
+          "grp_id": 70318,
+          "controller_seat_id": 2,
+          "subtypes": [
+            "Beast"
+          ],
+          "power": 4,
+          "toughness": 4,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "name": "Questing Beast",
+          "type_line": "Legendary Creature \u2014 Beast",
+          "oracle_text": "Vigilance\nDeathtouch\nHaste\nQuesting Beast can't be blocked by creatures with power 2 or less.\nCombat damage that would be dealt by creatures you control can't be prevented.\nWhenever Questing Beast deals combat damage to an opponent, it deals that much damage to target planeswalker that player controls."
+        },
+        {
+          "instance_id": 1649,
+          "grp_id": 87101,
+          "controller_seat_id": 2,
+          "subtypes": [
+            "Aura"
+          ],
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "name": "Utopia Sprawl",
+          "type_line": "Enchantment \u2014 Aura",
+          "oracle_text": "Enchant Forest\nAs this Aura enters, choose a color.\nWhenever enchanted Forest is tapped for mana, its controller adds an additional one mana of the chosen color."
+        }
+      ]
+    },
+    "decision": null
+  },
+  "295": {
+    "state": {
+      "local_seat_id": 2,
+      "turn": {
+        "turn_number": 12,
+        "active_player": 2,
+        "priority_player": 2,
+        "phase": "Phase_Main1",
+        "step": "",
+        "decision_player": 2
+      },
+      "match_id": "081331bf-f4ea-40fc-836c-e820ee0d1654",
+      "game_number": 1,
+      "players": [
+        {
+          "seat_id": 1,
+          "is_local": false,
+          "life_total": 23
+        },
+        {
+          "seat_id": 2,
+          "is_local": true,
+          "life_total": 20
+        }
+      ],
+      "decision_context": {
+        "type": "actions_available"
+      },
+      "battlefield": [
+        {
+          "instance_id": 803,
+          "grp_id": 95549,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Human",
+            "Bard"
+          ],
+          "power": 1,
+          "toughness": 3,
+          "is_tapped": true,
+          "turn_entered_battlefield": 11,
+          "summoning_sickness": true,
+          "name": "Voice of Victory",
+          "type_line": "Creature \u2014 Human Bard",
+          "oracle_text": "Mobilize 2\nYour opponents can't cast spells during your turn."
+        },
+        {
+          "instance_id": 797,
+          "grp_id": 71283,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Human",
+            "Warrior"
+          ],
+          "power": 4,
+          "toughness": 4,
+          "is_tapped": false,
+          "turn_entered_battlefield": 11,
+          "summoning_sickness": true,
+          "name": "Winota, Joiner of Forces",
+          "type_line": "Legendary Creature \u2014 Human Warrior",
+          "oracle_text": "Whenever a non-Human creature you control attacks, look at the top six cards of your library. You may put a Human creature card from among them onto the battlefield tapped and attacking. It gains indestructible until end of turn. Put the rest of the cards on the bottom of your library in a random order."
+        },
+        {
+          "instance_id": 781,
+          "grp_id": 81841,
+          "controller_seat_id": 2,
+          "subtypes": [
+            "Minsc"
+          ],
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": 10,
+          "counters": {
+            "Loyalty": 2,
+            "unknown": 2
+          },
+          "name": "Minsc & Boo, Timeless Heroes",
+          "type_line": "Legendary Planeswalker \u2014 Minsc",
+          "oracle_text": "When Minsc & Boo enters and at the beginning of your upkeep, you may create Boo, a legendary 1/1 red Hamster creature token with trample and haste.\n[+1]: Put three +1/+1 counters on up to one target creature with trample or haste.\n[-2]: Sacrifice a creature. When you do, Minsc & Boo deals X damage to any target, where X is that creature's power. If the sacrificed creature was a Hamster, draw X cards.\nMinsc & Boo, Timeless Heroes can be your commander."
+        },
+        {
+          "instance_id": 778,
+          "grp_id": 72528,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Food",
+            "Golem"
+          ],
+          "power": 1,
+          "toughness": 1,
+          "is_tapped": true,
+          "turn_entered_battlefield": 9,
+          "name": "Gingerbrute",
+          "type_line": "Artifact Creature \u2014 Food Golem",
+          "oracle_text": "Haste\n{o1}: This creature can't be blocked this turn except by creatures with haste.\n{o2}, {oT}, Sacrifice this creature: You gain 3 life."
+        },
+        {
+          "instance_id": 810,
+          "grp_id": 81876,
+          "controller_seat_id": 2,
+          "subtypes": [
+            "Hamster"
+          ],
+          "power": 1,
+          "toughness": 1,
+          "is_tapped": false,
+          "turn_entered_battlefield": 12,
+          "parent_instance_id": 809,
+          "name": "Boo",
+          "type_line": "Token Legendary Creature \u2014 Hamster",
+          "oracle_text": "Trample\nHaste"
+        }
+      ],
+      "stack": [],
+      "hand": [
+        {
+          "instance_id": 780,
+          "grp_id": 99534,
+          "controller_seat_id": 2,
+          "subtypes": [],
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "name": "Exploration",
+          "type_line": "Enchantment",
+          "oracle_text": "You may play an additional land on each of your turns."
+        },
+        {
+          "instance_id": 678,
+          "grp_id": 88380,
+          "controller_seat_id": 2,
+          "subtypes": [],
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "name": "Fiery Confluence",
+          "type_line": "Sorcery",
+          "oracle_text": "Choose three. You may choose the same mode more than once. \n\u2022<indent=4%><indent=4%>Fiery Confluence deals 1 damage to each creature. </indent></indent>\n\u2022<indent=4%><indent=4%>Fiery Confluence deals 2 damage to each opponent. </indent></indent>\n\u2022<indent=4%><indent=4%>Destroy target artifact.</indent></indent>"
+        },
+        {
+          "instance_id": 355,
+          "grp_id": 19831,
+          "controller_seat_id": 2,
+          "subtypes": [],
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "name": "Chrome Mox",
+          "type_line": "Artifact",
+          "oracle_text": "<i>Imprint</i> \u2014 When this artifact enters, you may exile a nonartifact, nonland card from your hand.\n{oT}: Add one mana of any of the exiled card's colors."
+        },
+        {
+          "instance_id": 349,
+          "grp_id": 70318,
+          "controller_seat_id": 2,
+          "subtypes": [
+            "Beast"
+          ],
+          "power": 4,
+          "toughness": 4,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "name": "Questing Beast",
+          "type_line": "Legendary Creature \u2014 Beast",
+          "oracle_text": "Vigilance\nDeathtouch\nHaste\nQuesting Beast can't be blocked by creatures with power 2 or less.\nCombat damage that would be dealt by creatures you control can't be prevented.\nWhenever Questing Beast deals combat damage to an opponent, it deals that much damage to target planeswalker that player controls."
+        }
+      ]
+    },
+    "decision": {
+      "request_id": [
+        295,
+        456
+      ],
+      "request_type": "ActionsAvailable",
+      "options": [
+        {
+          "option_id": "idx:0",
+          "label": "Cast Questing Beast",
+          "payable": true,
+          "meta": {
+            "actionType": "ActionType_Cast",
+            "grpId": 70318,
+            "instanceId": 349,
+            "abilityGrpId": 0,
+            "manaCost": [
+              {
+                "color": "[ \"Generic\" ]",
+                "count": 2
+              },
+              {
+                "color": "[ \"Green\" ]",
+                "count": 2
+              }
+            ],
+            "hasAutoTap": true
+          }
+        },
+        {
+          "option_id": "idx:2",
+          "label": "Cast Fiery Confluence",
+          "payable": true,
+          "meta": {
+            "actionType": "ActionType_Cast",
+            "grpId": 88380,
+            "instanceId": 678,
+            "abilityGrpId": 0,
+            "manaCost": [
+              {
+                "color": "[ \"Generic\" ]",
+                "count": 2
+              },
+              {
+                "color": "[ \"Red\" ]",
+                "count": 2
+              }
+            ],
+            "hasAutoTap": true
+          }
+        },
+        {
+          "option_id": "idx:3",
+          "label": "Cast Exploration",
+          "payable": true,
+          "meta": {
+            "actionType": "ActionType_Cast",
+            "grpId": 99534,
+            "instanceId": 780,
+            "abilityGrpId": 0,
+            "manaCost": [
+              {
+                "color": "[ \"Green\" ]",
+                "count": 1
+              }
+            ],
+            "hasAutoTap": true
+          }
+        },
+        {
+          "option_id": "idx:4",
+          "label": "Activate: Minsc & Boo, Timeless Heroes [+1: Put three +1/+1 counters on up to one target creature with trample or haste.]",
+          "payable": null,
+          "meta": {
+            "actionType": "ActionType_Activate",
+            "grpId": 81841,
+            "instanceId": 781,
+            "abilityGrpId": 151486,
+            "manaCost": null,
+            "hasAutoTap": false
+          }
+        },
+        {
+          "option_id": "idx:5",
+          "label": "Activate: Minsc & Boo, Timeless Heroes [-2: Sacrifice a creature. When you do, this deals X damage to any target, where X is that creature's power. If the sacrificed creature was a Hamster, draw X cards.]",
+          "payable": null,
+          "meta": {
+            "actionType": "ActionType_Activate",
+            "grpId": 81841,
+            "instanceId": 781,
+            "abilityGrpId": 151487,
+            "manaCost": null,
+            "hasAutoTap": false
+          }
+        },
+        {
+          "option_id": "idx:6",
+          "label": "Play land: Yavimaya, Cradle of Growth",
+          "payable": null,
+          "meta": {
+            "actionType": "ActionType_Play",
+            "grpId": 77064,
+            "instanceId": 811,
+            "abilityGrpId": 0,
+            "manaCost": null,
+            "hasAutoTap": false
+          }
+        },
+        {
+          "option_id": "pass",
+          "label": "Pass",
+          "payable": null,
+          "meta": {}
+        }
+      ],
+      "min_select": 1,
+      "max_select": 1,
+      "can_pass": true,
+      "can_cancel": false,
+      "source_label": "",
+      "min_weight": null,
+      "max_weight": null,
+      "slots": []
+    }
+  },
+  "296": {
+    "state": {
+      "local_seat_id": 2,
+      "turn": {
+        "turn_number": 12,
+        "active_player": 2,
+        "priority_player": 2,
+        "phase": "Phase_Main1",
+        "step": "",
+        "decision_player": 2
+      },
+      "match_id": "081331bf-f4ea-40fc-836c-e820ee0d1654",
+      "game_number": 1,
+      "players": [
+        {
+          "seat_id": 1,
+          "is_local": false,
+          "life_total": 23
+        },
+        {
+          "seat_id": 2,
+          "is_local": true,
+          "life_total": 20
+        }
+      ],
+      "decision_context": {
+        "type": "casting_time_options",
+        "source_id": 812,
+        "source_card": "Fiery Confluence",
+        "source_oracle_text": "Choose three. You may choose the same mode more than once. \n\u2022<indent=4%><indent=4%>Fiery Confluence deals 1 damage to each creature. </indent></indent>\n\u2022<indent=4%><indent=4%>Fiery Confluence deals 2 damage to each opponent. </indent></indent>\n\u2022<indent=4%><indent=4%>Destroy target artifact.</indent></indent>"
+      },
+      "battlefield": [
+        {
+          "instance_id": 803,
+          "grp_id": 95549,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Human",
+            "Bard"
+          ],
+          "power": 1,
+          "toughness": 3,
+          "is_tapped": true,
+          "turn_entered_battlefield": 11,
+          "summoning_sickness": true,
+          "name": "Voice of Victory",
+          "type_line": "Creature \u2014 Human Bard",
+          "oracle_text": "Mobilize 2\nYour opponents can't cast spells during your turn."
+        },
+        {
+          "instance_id": 797,
+          "grp_id": 71283,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Human",
+            "Warrior"
+          ],
+          "power": 4,
+          "toughness": 4,
+          "is_tapped": false,
+          "turn_entered_battlefield": 11,
+          "summoning_sickness": true,
+          "name": "Winota, Joiner of Forces",
+          "type_line": "Legendary Creature \u2014 Human Warrior",
+          "oracle_text": "Whenever a non-Human creature you control attacks, look at the top six cards of your library. You may put a Human creature card from among them onto the battlefield tapped and attacking. It gains indestructible until end of turn. Put the rest of the cards on the bottom of your library in a random order."
+        },
+        {
+          "instance_id": 781,
+          "grp_id": 81841,
+          "controller_seat_id": 2,
+          "subtypes": [
+            "Minsc"
+          ],
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": 10,
+          "counters": {
+            "Loyalty": 2,
+            "unknown": 2
+          },
+          "name": "Minsc & Boo, Timeless Heroes",
+          "type_line": "Legendary Planeswalker \u2014 Minsc",
+          "oracle_text": "When Minsc & Boo enters and at the beginning of your upkeep, you may create Boo, a legendary 1/1 red Hamster creature token with trample and haste.\n[+1]: Put three +1/+1 counters on up to one target creature with trample or haste.\n[-2]: Sacrifice a creature. When you do, Minsc & Boo deals X damage to any target, where X is that creature's power. If the sacrificed creature was a Hamster, draw X cards.\nMinsc & Boo, Timeless Heroes can be your commander."
+        },
+        {
+          "instance_id": 778,
+          "grp_id": 72528,
+          "controller_seat_id": 1,
+          "subtypes": [
+            "Food",
+            "Golem"
+          ],
+          "power": 1,
+          "toughness": 1,
+          "is_tapped": true,
+          "turn_entered_battlefield": 9,
+          "name": "Gingerbrute",
+          "type_line": "Artifact Creature \u2014 Food Golem",
+          "oracle_text": "Haste\n{o1}: This creature can't be blocked this turn except by creatures with haste.\n{o2}, {oT}, Sacrifice this creature: You gain 3 life."
+        },
+        {
+          "instance_id": 810,
+          "grp_id": 81876,
+          "controller_seat_id": 2,
+          "subtypes": [
+            "Hamster"
+          ],
+          "power": 1,
+          "toughness": 1,
+          "is_tapped": false,
+          "turn_entered_battlefield": 12,
+          "parent_instance_id": 809,
+          "name": "Boo",
+          "type_line": "Token Legendary Creature \u2014 Hamster",
+          "oracle_text": "Trample\nHaste"
+        }
+      ],
+      "stack": [
+        {
+          "instance_id": 812,
+          "grp_id": 88380,
+          "controller_seat_id": 2,
+          "subtypes": [],
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "name": "Fiery Confluence",
+          "type_line": "Sorcery",
+          "oracle_text": "Choose three. You may choose the same mode more than once. \n\u2022<indent=4%><indent=4%>Fiery Confluence deals 1 damage to each creature. </indent></indent>\n\u2022<indent=4%><indent=4%>Fiery Confluence deals 2 damage to each opponent. </indent></indent>\n\u2022<indent=4%><indent=4%>Destroy target artifact.</indent></indent>"
+        }
+      ],
+      "hand": [
+        {
+          "instance_id": 780,
+          "grp_id": 99534,
+          "controller_seat_id": 2,
+          "subtypes": [],
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "name": "Exploration",
+          "type_line": "Enchantment",
+          "oracle_text": "You may play an additional land on each of your turns."
+        },
+        {
+          "instance_id": 355,
+          "grp_id": 19831,
+          "controller_seat_id": 2,
+          "subtypes": [],
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "name": "Chrome Mox",
+          "type_line": "Artifact",
+          "oracle_text": "<i>Imprint</i> \u2014 When this artifact enters, you may exile a nonartifact, nonland card from your hand.\n{oT}: Add one mana of any of the exiled card's colors."
+        },
+        {
+          "instance_id": 349,
+          "grp_id": 70318,
+          "controller_seat_id": 2,
+          "subtypes": [
+            "Beast"
+          ],
+          "power": 4,
+          "toughness": 4,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "name": "Questing Beast",
+          "type_line": "Legendary Creature \u2014 Beast",
+          "oracle_text": "Vigilance\nDeathtouch\nHaste\nQuesting Beast can't be blocked by creatures with power 2 or less.\nCombat damage that would be dealt by creatures you control can't be prevented.\nWhenever Questing Beast deals combat damage to an opponent, it deals that much damage to target planeswalker that player controls."
+        }
+      ]
+    },
+    "decision": {
+      "request_id": [
+        296,
+        459
+      ],
+      "request_type": "CastingTimeOptions",
+      "options": [
+        {
+          "option_id": "idx:0",
+          "label": "Mode 1: CARDNAME deals 1 damage to each creature.",
+          "payable": null,
+          "meta": {
+            "actionType": "CastingTimeOption",
+            "choiceKind": "modal",
+            "requestClass": "CastingTimeOption_ModalRequest",
+            "childIndex": 0,
+            "label": "Mode 1",
+            "optionIndex": 0,
+            "grpId": 167295,
+            "sourceId": 812,
+            "repeatedSelectAllowed": true,
+            "abilityGrpId": 167297,
+            "min": 3,
+            "max": 3
+          }
+        },
+        {
+          "option_id": "idx:1",
+          "label": "Mode 2: CARDNAME deals 2 damage to each opponent.",
+          "payable": null,
+          "meta": {
+            "actionType": "CastingTimeOption",
+            "choiceKind": "modal",
+            "requestClass": "CastingTimeOption_ModalRequest",
+            "childIndex": 0,
+            "label": "Mode 2",
+            "optionIndex": 1,
+            "grpId": 167296,
+            "sourceId": 812,
+            "repeatedSelectAllowed": true,
+            "abilityGrpId": 167297,
+            "min": 3,
+            "max": 3
+          }
+        },
+        {
+          "option_id": "idx:2",
+          "label": "Mode 3: Destroy target artifact.",
+          "payable": null,
+          "meta": {
+            "actionType": "CastingTimeOption",
+            "choiceKind": "modal",
+            "requestClass": "CastingTimeOption_ModalRequest",
+            "childIndex": 0,
+            "label": "Mode 3",
+            "optionIndex": 2,
+            "grpId": 22564,
+            "sourceId": 812,
+            "repeatedSelectAllowed": true,
+            "abilityGrpId": 167297,
+            "min": 3,
+            "max": 3
+          }
+        }
+      ],
+      "min_select": 3,
+      "max_select": 3,
+      "can_pass": false,
+      "can_cancel": true,
+      "source_label": "",
+      "min_weight": null,
+      "max_weight": null,
+      "slots": []
+    }
+  }
+}

@@ -161,6 +161,12 @@ class DecisionWatchdog:
         self._default_failed = False
         self._alerted_at = None
 
+    def bridge_settling(self, last_answer_at: float, step: WatchdogStep) -> bool:
+        """A recent submission can clear the old bridge request before the next one arrives."""
+        return 0 < last_answer_at <= self._now() < last_answer_at + 1.5 and (
+            step.remaining_s is None or step.remaining_s > 5
+        )
+
     def may_act(
         self,
         resp: dict[str, Any] | None,
