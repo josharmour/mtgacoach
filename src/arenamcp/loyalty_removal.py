@@ -65,6 +65,11 @@ def mana_engine_context(state):
     return "\n".join(notes)
 
 
+def _printed_power_draw(walker):
+    rules = re.sub(r"\[([−-]\d+)\]:\s*", r"[\1: ", walker.get("oracle_text") or "")
+    return _POWER_DRAW.search(rules)
+
+
 def engine_removal_note(state):
     """A concrete alternative for both the background planner and the current window."""
     from arenamcp.play_safety import _damage_protected, lethal_damage
@@ -76,8 +81,7 @@ def engine_removal_note(state):
     for walker in board:
         if walker.get("controller_seat_id") != local or walker.get("is_phased_out"):
             continue
-        rules = re.sub(r"\[([−-]\d+)\]:\s*", r"[\1: ", walker.get("oracle_text") or "")
-        ability = _POWER_DRAW.search(rules)
+        ability = _printed_power_draw(walker)
         if not ability or (loyalty(walker) or 0) < int(ability[1]):
             continue
         for target in board:
@@ -264,11 +268,66 @@ def choose_removal(decision, state, pending):
     return None, None
 
 
+def _blocker_power(state, seat):
+    from arenamcp.combat_strategy import _eligible_blockers
+
+    blockers = _eligible_blockers(state, seat)
+    if any(
+        not isinstance(c.get("power"), int)
+        or has_combat_keyword(c, "deathtouch")
+        or has_combat_keyword(c, "double strike")
+        or re.search(r"when(?:ever)?[^.]*blocks?\b", c.get("oracle_text") or "", re.I)
+        for c in blockers
+    ):
+        return None
+    return sum(max(0, c["power"]) for c in blockers)
+
+
+def loyalty_strategy_context(state):
+    """Expose the attack-first option even if an earlier plan did not mention a sacrifice."""
+    from arenamcp.combat_strategy import able_attackers
+
+    lines = [mana_engine_context(state)]
+    turn = state.get("turn") or {}
+    local = get_local_seat_id(state)
+    if (
+        local is None
+        or turn.get("active_player") != local
+        or str(turn.get("phase")).lower().removeprefix("phase_") != "main1"
+    ):
+        return lines[0]
+    board = state.get("battlefield") or []
+    for walker in board:
+        if walker.get("controller_seat_id") != local or walker.get("is_phased_out"):
+            continue
+        ability = _printed_power_draw(walker)
+        if not ability or (loyalty(walker) or 0) < int(ability[1]):
+            continue
+        opponent = next(
+            (p.get("seat_id") for p in state.get("players") or [] if p.get("seat_id") != local), None
+        )
+        if opponent is None or (block_power := _blocker_power(state, opponent)) is None:
+            continue
+        for food in able_attackers(state):
+            if (
+                _draw_fodder(food, local, ability[2])
+                and _enough_library(state, food["power"])
+                and (food.get("toughness") or 0) - (food.get("damage") or 0) > block_power
+            ):
+                lines.append(
+                    f"{food['name']} is a {food['power']}/{food['toughness']} legal attacker. Visible blockers total "
+                    f"{block_power} power. Compare attacking first and using {walker['name']} −{ability[1]} "
+                    f"after combat for up to {food['power']} damage and {food['power']} cards if it survives, "
+                    "with using loyalty before combat. Pumping spends the same turn’s loyalty activation."
+                )
+    return "\n".join(filter(None, lines))
+
+
 def reserve_postcombat_loyalty(decision, state, step):
     """Keep a planned postcombat activation available if its attacker can survive visible blocks."""
     from dataclasses import replace
 
-    from arenamcp.combat_strategy import _eligible_blockers, able_attackers
+    from arenamcp.combat_strategy import able_attackers
 
     if (
         decision.request_type != "ActionsAvailable"
@@ -294,16 +353,9 @@ def reserve_postcombat_loyalty(decision, state, step):
     opp = next((p for p in state.get("players") or [] if p.get("seat_id") != local), {})
     if not opp or not isinstance(opp.get("life_total"), int):
         return decision
-    blockers = _eligible_blockers(state, opp["seat_id"])
-    if any(
-        not isinstance(c.get("power"), int)
-        or has_combat_keyword(c, "deathtouch")
-        or has_combat_keyword(c, "double strike")
-        or re.search(r"when(?:ever)?[^.]*blocks?\b", c.get("oracle_text") or "", re.I)
-        for c in blockers
-    ):
+    power = _blocker_power(state, opp["seat_id"])
+    if power is None:
         return decision
-    power = sum(max(0, c["power"]) for c in blockers)
     reserved = set()
     for option in decision.options:
         ability = _POWER_DRAW.search(option.label)

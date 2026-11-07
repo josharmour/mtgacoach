@@ -4261,10 +4261,10 @@ class GamePlanManager:
         assessment = assess(state) if state is not None else None
         risk = opponent_interaction(state, self._tricks()) if state is not None else None
         verdict = risk.verdict_line() if risk is not None and risk.known else ""
-        from arenamcp.loyalty_removal import mana_engine_context
+        from arenamcp.loyalty_removal import loyalty_strategy_context
 
         extra = "\n".join(filter(None, (f"  OPP INTERACTION: {verdict}" if verdict else "",
-                                        mana_engine_context(state) if state else "")))
+                                        loyalty_strategy_context(state) if state else "")))
         block = compose_strategy_block(
             assessment,
             plan,
@@ -5076,9 +5076,9 @@ class GamePlanManager:
         seed = self._seed_text(game_state)
         user_parts = [f"DECK PLAYBOOK / STRATEGY:\n{seed}\n"] if seed else []
         user_parts.append(context)
-        from arenamcp.loyalty_removal import mana_engine_context
+        from arenamcp.loyalty_removal import loyalty_strategy_context
 
-        removal = mana_engine_context(game_state)
+        removal = loyalty_strategy_context(game_state)
         if removal:
             user_parts.append(removal)
         user_parts.append(_plan_availability_block(game_state, self._plan))

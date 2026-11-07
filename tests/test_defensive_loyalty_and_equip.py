@@ -113,6 +113,10 @@ def test_current_plan_reserves_loyalty_and_rechecks_after_combat():
         "Activate: Walker [+1: Draw a card.]",
         meta={"actionType": "ActionType_Activate", "instanceId": 10},
     )
+    walker["oracle_text"] = minus.label.split("Walker ", 1)[1].replace("-2:", "-2]:", 1)
+    from arenamcp.loyalty_removal import loyalty_strategy_context
+
+    assert "after combat for up to 4 damage" in loyalty_strategy_context(state)
     menu = PendingDecision((165, 226), "ActionsAvailable", (minus, plus, DecisionOption("pass", "Pass")))
     intent = {"postcombat_sacrifice": {"source": "Walker", "attacker": "Runner", "cost": -2}}
     step = {"turn": 7, "attack": "Runner", "hold": "", **postcombat_sacrifice_step(intent, "Runner")}
