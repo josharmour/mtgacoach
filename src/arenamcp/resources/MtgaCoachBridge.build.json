@@ -1,34 +1,34 @@
-{
-  "schema_version": 1,
-  "built_at_utc": "2026-11-04T07:10:28.421024+00:00",
-  "compiler": "dotnet 10.0.403",
-  "source_sha256": {
-    "bepinex-plugin/MtgaCoachBridge/BotBattleBridge.cs": "514ad3f8068ff4a456996e2806707781aa5181cefac5ea7adac299caa331f0c2",
-    "bepinex-plugin/MtgaCoachBridge/MtgaCoachBridge.csproj": "d63721694dd8ffba8d42a5ad77eabdb7630333aec8323089fbf90978adffe387",
-    "bepinex-plugin/MtgaCoachBridge/MtgaCoachHost.cs": "75c4e920dd298c6242cabcc5c9133a52d8f75200d9c659c69c1b625e599d3e0d",
-    "bepinex-plugin/MtgaCoachBridge/Plugin.Actions.cs": "241e75ec37ec545345d245ccf2ebcbdd71f9421ec73c51a38ee434292a94912c",
-    "bepinex-plugin/MtgaCoachBridge/Plugin.Attackers.cs": "9a267349b9a5d2d8c6667fc96f5de7f1de59dd769804fc672ec2fa97b5b6ea0f",
-    "bepinex-plugin/MtgaCoachBridge/Plugin.cs": "170305595b357791e9a698241a2c50f0a7c976873793255df27d0cfe2110ba66",
-    "bepinex-plugin/MtgaCoachBridge/Plugin.GameState.cs": "c4b2b697d30e85c855fd3d0dea751e1d741981bc1bf2f28b248ff599dd87d4cf",
-    "bepinex-plugin/MtgaCoachBridge/Plugin.Payment.cs": "dc6b18b17008cddbfeb180cada98f6477700e1af0de8c4f384cc63b9210a9986",
-    "bepinex-plugin/MtgaCoachBridge/Plugin.Pipe.cs": "82b14a4cb4a115cb5f02249a5ddcaaca15676958de8f4a97dde2c87b72ca958a",
-    "bepinex-plugin/MtgaCoachBridge/Plugin.Reflect.cs": "59d3de3be2e57126cb90873f2b1e589fa528a8ec9fcca306c76cab40163f0ef3",
-    "bepinex-plugin/MtgaCoachBridge/Plugin.ReplayGeometry.cs": "79df5e3c5d2d7c6070a90b5d4de254e2a55dcb8d2bab281541f916b7bd47b45c",
-    "bepinex-plugin/MtgaCoachBridge/PracticeMatchBridge.cs": "2b07c6535ca28dea9e047d87567d40b694f064f85994430b0b83fe72eff2609b",
-    "bepinex-plugin/MtgaCoachBridge/ReflectBatch.cs": "2ce07dcad85e1487a8c73bdec555c98d8c8129bc672fc77aac1940fc4d1d762f"
-  },
-  "reference_sha256": {
-    "UnityEngine.dll": "ed2854beb0f9b44c2c95184ce833528a3abcdad6abe90468b467c18d8087e412",
-    "Wizards.MDN.GreProtobuf.dll": "6b56b6f21ba7f7b594cc80e325c5cd00bd8983489f3478a57f372d2ce373d1ef",
-    "UnityEngine.CoreModule.dll": "7c8faf1b9befe71ec2d2a5aae0acbb97c6fd8962d9514495d701f717a20b0014",
-    "SharedClientCore.dll": "a37c1023ea039997966777dbc32c8fd008c51c87244f1cabfc1c638eb398c7b7",
-    "Core.dll": "f110aa54c37ea5a7f9664fdacbb4d626d2d09e80ad71dd46e087857f99903bc7",
-    "BepInEx.dll": "8255b28902886085c578b9e427d3073c97002db85176d2090cdeda90ef14ce70",
-    "Google.Protobuf.dll": "592761c0cea52110c818978c94e33202d942a9a36ef8742b224d08fac5d42f2b",
-    "UnityEngine.PhysicsModule.dll": "3b71e85f4d91ebaf88c640bb2d9035ae133554b317a03ea4125366df829a28a9",
-    "Newtonsoft.Json.dll": "a56146202232958f46bd6a28b5a7da166aea123ee0d646735a46e5c341dfbf1f",
-    "0Harmony.dll": "1a21cc03424fc82c3dd1346905d16494536b9595ae4162228d99fb7c285c1031",
-    "Assembly-CSharp.dll": "3bfbe7cd14e0c88f7d6b20da4259280338894bf18835dc4f789d3bc95cda5fa8"
-  },
-  "dll_sha256": "ebed764d38774c987cfdb15b3f20a6a5925b6f06e9f946be67578eabdcb4233a"
+﻿{
+    "schema_version":  1,
+    "built_at_utc":  "2026-11-07T02:26:06.0334420Z",
+    "compiler":  "dotnet 10.0.403",
+    "source_sha256":  {
+                          "bepinex-plugin/MtgaCoachBridge/BotBattleBridge.cs":  "514ad3f8068ff4a456996e2806707781aa5181cefac5ea7adac299caa331f0c2",
+                          "bepinex-plugin/MtgaCoachBridge/MtgaCoachBridge.csproj":  "d63721694dd8ffba8d42a5ad77eabdb7630333aec8323089fbf90978adffe387",
+                          "bepinex-plugin/MtgaCoachBridge/MtgaCoachHost.cs":  "75c4e920dd298c6242cabcc5c9133a52d8f75200d9c659c69c1b625e599d3e0d",
+                          "bepinex-plugin/MtgaCoachBridge/Plugin.Actions.cs":  "5c82b198a3ae425afdb70cc45da1ace7ed57aba8ab7a6325897aac28935f7d9a",
+                          "bepinex-plugin/MtgaCoachBridge/Plugin.Attackers.cs":  "9a267349b9a5d2d8c6667fc96f5de7f1de59dd769804fc672ec2fa97b5b6ea0f",
+                          "bepinex-plugin/MtgaCoachBridge/Plugin.GameState.cs":  "c4b2b697d30e85c855fd3d0dea751e1d741981bc1bf2f28b248ff599dd87d4cf",
+                          "bepinex-plugin/MtgaCoachBridge/Plugin.Payment.cs":  "dc6b18b17008cddbfeb180cada98f6477700e1af0de8c4f384cc63b9210a9986",
+                          "bepinex-plugin/MtgaCoachBridge/Plugin.Pipe.cs":  "82b14a4cb4a115cb5f02249a5ddcaaca15676958de8f4a97dde2c87b72ca958a",
+                          "bepinex-plugin/MtgaCoachBridge/Plugin.Reflect.cs":  "59d3de3be2e57126cb90873f2b1e589fa528a8ec9fcca306c76cab40163f0ef3",
+                          "bepinex-plugin/MtgaCoachBridge/Plugin.ReplayGeometry.cs":  "79df5e3c5d2d7c6070a90b5d4de254e2a55dcb8d2bab281541f916b7bd47b45c",
+                          "bepinex-plugin/MtgaCoachBridge/Plugin.cs":  "9963c7b0b9caf472e833f438805587a5581e5b37155600b7c45fa3dba1aad136",
+                          "bepinex-plugin/MtgaCoachBridge/PracticeMatchBridge.cs":  "2b07c6535ca28dea9e047d87567d40b694f064f85994430b0b83fe72eff2609b",
+                          "bepinex-plugin/MtgaCoachBridge/ReflectBatch.cs":  "2ce07dcad85e1487a8c73bdec555c98d8c8129bc672fc77aac1940fc4d1d762f"
+                      },
+    "reference_sha256":  {
+                             "Assembly-CSharp.dll":  "3bfbe7cd14e0c88f7d6b20da4259280338894bf18835dc4f789d3bc95cda5fa8",
+                             "Core.dll":  "f110aa54c37ea5a7f9664fdacbb4d626d2d09e80ad71dd46e087857f99903bc7",
+                             "SharedClientCore.dll":  "a37c1023ea039997966777dbc32c8fd008c51c87244f1cabfc1c638eb398c7b7",
+                             "Wizards.MDN.GreProtobuf.dll":  "6b56b6f21ba7f7b594cc80e325c5cd00bd8983489f3478a57f372d2ce373d1ef",
+                             "UnityEngine.dll":  "ed2854beb0f9b44c2c95184ce833528a3abcdad6abe90468b467c18d8087e412",
+                             "UnityEngine.CoreModule.dll":  "7c8faf1b9befe71ec2d2a5aae0acbb97c6fd8962d9514495d701f717a20b0014",
+                             "UnityEngine.PhysicsModule.dll":  "3b71e85f4d91ebaf88c640bb2d9035ae133554b317a03ea4125366df829a28a9",
+                             "Newtonsoft.Json.dll":  "a56146202232958f46bd6a28b5a7da166aea123ee0d646735a46e5c341dfbf1f",
+                             "Google.Protobuf.dll":  "592761c0cea52110c818978c94e33202d942a9a36ef8742b224d08fac5d42f2b",
+                             "BepInEx.dll":  "8255b28902886085c578b9e427d3073c97002db85176d2090cdeda90ef14ce70",
+                             "0Harmony.dll":  "1a21cc03424fc82c3dd1346905d16494536b9595ae4162228d99fb7c285c1031"
+                         },
+    "dll_sha256":  "9f0e603c983772629975339b240f20be40c9aad4095cdfeb2af2e747ea0a530c"
 }
