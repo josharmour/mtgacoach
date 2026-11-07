@@ -4977,6 +4977,17 @@ class ActionPlanner(_ActionLegalityMixin):
             if decision.request_type == "Search" and decision.selection_is_valid([]):
                 return []
             return [DECLINE_DECISION]
+        from arenamcp.loyalty_removal import choose_removal
+
+        removal, self._pending_loyalty_removal = choose_removal(
+            decision, game_state, getattr(self, "_pending_loyalty_removal", None)
+        )
+        if removal:
+            oid, reason = removal
+            self._last_decision_option_ids = [oid]
+            self._last_decision_reasoning = reason
+            self._last_decision_trace = {"policy": "defensive_loyalty", "validated_ids": [oid]}
+            return [oid]
         from arenamcp.land_sequence import choose_land_sequence
 
         land_pick, self._pending_land_sequence = choose_land_sequence(

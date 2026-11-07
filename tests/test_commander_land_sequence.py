@@ -83,3 +83,33 @@ def test_landfall_funds_commander_even_with_a_tapped_land_and_preserves_colored_
         source_label="Lotus Cobra",
     )
     assert landfall_color(colors, state).option_id == "sel:G"
+
+
+def test_first_land_pays_for_a_forest_aura_before_red_land():
+    s, _ = position()
+    red, forest, aura = (
+        card(6, "Ring", "Land", "{T}: Add {R}."),
+        card(7, "Forest", "Basic Land — Forest", ""),
+        card(
+            8,
+            "Sprawl",
+            "Enchantment — Aura",
+            "Enchant Forest\nWhenever enchanted Forest is tapped for mana, its controller adds an additional one mana of the chosen color.",
+            "{G}",
+        ),
+    )
+    s.update(battlefield=[], hand=[red, forest, aura])
+    play = PendingDecision(
+        (6, 19),
+        "ActionsAvailable",
+        tuple(
+            DecisionOption(
+                str(c["instance_id"]),
+                c["name"],
+                meta={"actionType": "ActionType_Play", "instanceId": c["instance_id"]},
+            )
+            for c in (red, forest)
+        ),
+    )
+    pick, pending = choose_land_sequence(play, s, None)
+    assert pick[0] == "7" and pending[2].target_id == 8

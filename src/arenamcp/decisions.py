@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from arenamcp.card_db import is_unknown_card_name
-from arenamcp.mana import has_autotap_solution
+from arenamcp.mana import SPELL_CAST_TYPES, face_payment, has_autotap_solution
 from arenamcp.target_effects import target_highlight
 
 logger = logging.getLogger(__name__)
@@ -925,8 +925,8 @@ def _build_actions_available(
             continue
         alternative = ""
         alternative_text = ""
-        if atype == "ActionType_Cast":
-            payable = has_autotap_solution(action)
+        if atype.removeprefix("ActionType_") in SPELL_CAST_TYPES:
+            payable = has_autotap_solution(action) if atype == "ActionType_Cast" else face_payment(action)
             alternative = _alternative_cost_kind(action)
             if alternative:
                 _, alternative_text = _default_ability_description(int(action["alternativeGrpId"]))

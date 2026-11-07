@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from arenamcp.action_planner import ActionType
+from arenamcp.mana import SPELL_CAST_TYPES, face_payment
 
 logger = logging.getLogger(__name__)
 
@@ -84,19 +85,7 @@ def _norm_atype(atype: str) -> str:
 # land play / spell cast respectively. Covers MDFC/Adventure/Room/Omen and the
 # split left/right variants emitted by either producer.
 _PLAY_ATYPES: frozenset[str] = frozenset({"play", "playmdfc"})
-_CAST_ATYPES: frozenset[str] = frozenset(
-    {
-        "cast",
-        "castleft",
-        "castright",
-        "castadventure",
-        "castmdfc",
-        "castprototype",
-        "castleftroom",
-        "castrightroom",
-        "castomen",
-    }
-)
+_CAST_ATYPES = frozenset(t.lower() for t in SPELL_CAST_TYPES)
 
 
 # ---------------------------------------------------------------------------
@@ -454,9 +443,11 @@ def match_action_to_gre(
 
     # --- CAST SPELL ----------------------------------------------------
     if atype == ActionType.CAST_SPELL:
-        for raw in raw_actions:
-            if _norm_atype(raw.get("actionType", "")) not in _CAST_ATYPES:
-                continue
+        casts = [
+            r for r in raw_actions if _norm_atype(r.get("actionType", "")) in _CAST_ATYPES
+            and (_norm_atype(r["actionType"]) == "cast" or face_payment(r) is not False)
+        ]
+        for raw in casts:
             grp_id = raw.get("grpId", 0)
             card_name = _resolve_card_name(grp_id, game_objects, scryfall_lookup)
             if action.card_name and _name_matches(action.card_name, card_name):
@@ -464,7 +455,6 @@ def match_action_to_gre(
                 logger.info(f"Matched CAST_SPELL '{action.card_name}' -> grpId={grp_id} '{card_name}'")
                 return ref
         # Fallback: if only one Cast action, use it
-        casts = [r for r in raw_actions if _norm_atype(r.get("actionType", "")) in _CAST_ATYPES]
         if len(casts) == 1:
             ref = GREActionRef.from_raw(casts[0])
             logger.info(

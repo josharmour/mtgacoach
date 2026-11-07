@@ -95,30 +95,25 @@ def commander_land_line(decision, state):
     if local is None or turn.get("active_player") != local or "main" not in str(turn.get("phase")).lower():
         return None
     board = state.get("battlefield") or []
-    # Sequencing advice for developing on a quiet board. Defer combat, cost
-    # modifiers and missed priority windows to the normal tactical planner.
+    # Build development lines on quiet boards. Use Arena’s current price when a cost modifier is present.
     if any(
         "creature" in str(c.get("type_line")).lower() and c.get("controller_seat_id") != local for c in board
     ):
         return None
-    if any(
-        re.search(
-            r"spells?[^.]*cost[^.]*\b(?:more|less)\b|lands?[^.]*your opponents control enter tapped",
-            _rules(c),
-            re.I,
-        )
-        for c in board
-    ):
+    if any(re.search(r"lands?[^.]*your opponents control enter tapped", _rules(c), re.I) for c in board):
         return None
+    modified_costs = any(re.search(r"spells?[^.]*cost[^.]*\b(?:more|less)\b", _rules(c), re.I) for c in board)
     own = [c for c in board if c.get("controller_seat_id") == local and not c.get("is_phased_out")]
     lands = [c for c in own if "land" in str(c.get("type_line")).lower()]
     untapped = [c for c in lands if not c.get("is_tapped")]
     hand = state.get("hand") or []
     engines = [c for c in hand if _engine(c)]
     triggers = sum(_engine(c) for c in own)
-    if not engines and not triggers:
-        return None
-    commanders = [c for c in our_commanders(state) if not c.blocked_by and c.cost]
+    commanders = [
+        c
+        for c in our_commanders(state)
+        if not c.blocked_by and c.cost and (not modified_costs or c.from_action)
+    ]
     life = next(
         (p.get("life_total") or 0 for p in state.get("players") or [] if p.get("seat_id") == local), 0
     )
@@ -156,12 +151,15 @@ def commander_land_line(decision, state):
                 else 0
             )
             for cmd in commanders:
-                if triggers and _pays(cmd.cost, sources):
-                    why = f"Play {label}. Landfall plus available lands can pay {cmd.cost} for {cmd.name} this turn."
+                if _pays(cmd.cost, sources):
+                    resources = "Landfall plus available lands" if triggers else "Available lands"
+                    why = f"Play {label}. {resources} can pay {cmd.cost} for {cmd.name} this turn."
                     lines.append(
                         LandLine(oid, land, kind, pay, True, fixing, cmd.card.get("instance_id"), why)
                     )
                     continue
+                if modified_costs:
+                    continue  # Arena's current commander price is authoritative; a later price may change.
                 for engine in engines:
                     if not _pays(engine.get("mana_cost"), sources):
                         continue
@@ -184,7 +182,30 @@ def commander_land_line(decision, state):
                                         oid, land, kind, pay, False, fixing, engine.get("instance_id"), why
                                     )
                                 )
-    return min(lines, key=lambda line: (not line.now, line.life, -line.fixing), default=None)
+    best = min(lines, key=lambda line: (not line.now, line.life, -line.fixing), default=None)
+    if best or lands or not offered:
+        return best
+    # A turn-one mana aura needs both a payable pip and a legal land to
+    # enchant. Examine known cards in hand, before assuming any future draws.
+    from arenamcp.mana_potential import _AURA_BONUS_RE
+
+    for oid, land in offered:
+        for first, tapped, pay, kind in _variants(land, [], life=life):
+            if tapped:
+                continue
+            for aura in hand:
+                rules = _rules(aura)
+                target = re.search(r"^Enchant (land|Plains|Island|Swamp|Mountain|Forest)\b", rules, re.I)
+                if not target or not _AURA_BONUS_RE.search(rules):
+                    continue
+                if target[1].lower() != "land" and target[1].lower() not in basic_types(first):
+                    continue
+                if _pays(aura.get("mana_cost"), [_produces(first, [first])]):
+                    reason = (
+                        f"Play {first['name']} to enchant it with {aura['name']} for extra mana next turn."
+                    )
+                    return LandLine(oid, land, kind, pay, False, 0, aura.get("instance_id"), reason)
+    return None
 
 
 def landfall_color(decision, state):

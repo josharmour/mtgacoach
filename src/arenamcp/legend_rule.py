@@ -225,19 +225,48 @@ _CREATE_LEGEND = re.compile(
 )
 
 
-def _replacement_payoff(board):
-    """Leave entry/death, token replacement, and graveyard engines to the planner."""
+def _replacement_payoff(board, incoming):
+    """Match the entering/dying object, including who controls it.
+
+    A named self trigger may use the name of an alternate printing. A
+    permanent already on the battlefield does not enter when our token does.
+    """
     for obj in board:
+        if card_of(obj).get("is_phased_out"):
+            continue
         rules = text(obj)
-        for match in re.finditer(r"\b(?:when|whenever|if)\s+([^.,\n]+)", rules):
-            trigger = match[1]
-            if (
-                re.search(r"\b(?:dies?|leaves?|enters?|created?)\b", trigger)
-                and not re.search(r"\bthis (?:creature|permanent|artifact|enchantment)\b", trigger)
-                and not trigger.startswith((name_of(obj) + " ", name_of(obj).split(",", 1)[0] + " "))
+        for m in re.finditer(r"\b(?:when|whenever|if)\s+([^.,\n]+)", rules):
+            clause = m[1]
+            event = re.search(
+                r"\b(?:dies?|leaves?|enters?|is put into a graveyard|are put into a graveyard)\b", clause
+            )
+            if not event:
+                continue
+            subject = clause[: event.start()].strip()
+            if "nontoken" in subject and token(incoming):
+                continue
+            if "you control" in clause and controller(obj) != controller(incoming):
+                continue
+            if "opponent controls" in clause and controller(obj) == controller(incoming):
+                continue
+            if subject.startswith(("this ", "cardname", "~")) or subject in {
+                name_of(obj),
+                name_of(obj).split(",", 1)[0],
+            }:
+                if name_of(obj) == name_of(incoming):
+                    return True
+                continue
+            object_types = set(re.findall(r"\w+", str(incoming.get("type_line") or "").lower()))
+            if any(
+                k in subject.split() and k not in object_types
+                for k in ("artifact", "land", "enchantment", "creature", "planeswalker")
+            ):
+                continue
+            if subject == name_of(incoming) or re.search(
+                r"\b(?:a|an|any|another|other|one or more|one of your|each|any number of)\b", subject
             ):
                 return True
-        if re.search(r"tokens?[^.\n]*\binstead\b|\bfrom (?:your|a) graveyard\b", rules):
+        if re.search(r"\b(?:if|whenever) (?:you|a player|an opponent) (?:would )?create", rules):
             return True
     return False
 
@@ -280,7 +309,7 @@ def legend_decision(decision, state):
     for old in conflicts(incoming, board):
         if (
             _dominates(old, incoming, board, equal_ok=True)
-            and not _replacement_payoff(board)
+            and not _replacement_payoff(board, incoming)
             and not re.search(r"\b(?:when|whenever|draw|then|if|sacrifice)\b", prompt, re.I)
         ):
             return "optional:decline", (
@@ -342,7 +371,7 @@ def redundant_legend_cast(state, card):
     }
     if any(word.strip() not in keywords for word in re.split(r"[,\n]", text(card)) if word.strip()):
         return ""
-    if _replacement_payoff(board) or any(
+    if _replacement_payoff(board, incoming) or any(
         re.search(r"\b(?:cast|prowess|magecraft)\b", text(c)) for c in board
     ):
         return ""

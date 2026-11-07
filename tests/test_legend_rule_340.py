@@ -427,3 +427,30 @@ def test_optional_named_legend_keeps_pumped_token_but_allows_entry_payoffs():
         prompt_text="Choose the legendary permanent that you wish to keep.",
     )
     assert legend_decision(keep, s)[0] == "sel:680"
+
+
+def test_alternate_printing_self_trigger_does_not_reward_duplicate_token():
+    from arenamcp.decisions import DecisionOption, PendingDecision
+    from arenamcp.legend_rule import legend_decision
+
+    token = creature(680, "Example", 1)
+    token.update(type_line="Token Legendary Creature", power=10, toughness=10, oracle_text="Haste")
+    other = {
+        "controller_seat_id": 2,
+        "name": "Displayed Legend",
+        "oracle_text": "When Alternate Name enters, create a 0/0 artifact creature token.",
+    }
+    s = {"local_seat_id": 1, "battlefield": [token, other]}
+    d = PendingDecision(
+        (530, 834),
+        "OptionalAction",
+        (DecisionOption("optional:decline", "Decline"),),
+        prompt_text="Create Example, a legendary 1/1 red Hamster creature token with trample and haste?",
+    )
+    assert legend_decision(d, s)[0] == "optional:decline"
+    s["battlefield"][1] = {
+        "controller_seat_id": 1,
+        "name": "Observer",
+        "oracle_text": "Whenever a creature you control enters, draw a card.",
+    }
+    assert legend_decision(d, s) is None
