@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from arenamcp.combat_keywords import has_combat_keyword, is_creature_now
 from arenamcp.combat_strategy import loyalty
+from arenamcp.loyalty_timing import LOYALTY_TIMING, walkers_in
 from arenamcp.mana import get_local_seat_id
 from arenamcp.ward import attached_to, ward_of
 
@@ -70,6 +71,30 @@ def _printed_power_draw(walker):
     return _POWER_DRAW.search(rules)
 
 
+def _power_draw_for_plan(walker, state):
+    """On our turn a known Arena menu takes precedence over a printed minus."""
+    from arenamcp.gre_action_matcher import describe_ability
+
+    ability = _printed_power_draw(walker)
+    if not ability or (loyalty(walker) or 0) < int(ability[1]):
+        return None
+    actions = state.get("_bridge_actions")
+    if actions is None:
+        actions = state.get("legal_actions_raw")
+    if actions is None or (state.get("turn") or {}).get("active_player") != get_local_seat_id(state):
+        return ability
+    for action in actions:
+        if (
+            action.get("instanceId") == walker.get("instance_id")
+            and action.get("actionType") in ("ActionType_Activate", "Activate")
+            and action.get("abilityGrpId")
+        ):
+            cost, _ = describe_ability(int(action["abilityGrpId"]))
+            if str(cost).replace("−", "-") == f"-{ability[1]}":
+                return ability
+    return None
+
+
 def engine_removal_note(state):
     """A concrete alternative for both the background planner and the current window."""
     from arenamcp.play_safety import _damage_protected, lethal_damage
@@ -81,8 +106,8 @@ def engine_removal_note(state):
     for walker in board:
         if walker.get("controller_seat_id") != local or walker.get("is_phased_out"):
             continue
-        ability = _printed_power_draw(walker)
-        if not ability or (loyalty(walker) or 0) < int(ability[1]):
+        ability = _power_draw_for_plan(walker, state)
+        if not ability:
             continue
         for target in board:
             if target.get("controller_seat_id") in (None, local) or not is_creature_now(target):
@@ -290,18 +315,20 @@ def loyalty_strategy_context(state):
     lines = [mana_engine_context(state)]
     turn = state.get("turn") or {}
     local = get_local_seat_id(state)
+    board = state.get("battlefield") or []
+    if any(w.get("controller_seat_id") == local and not w.get("is_phased_out") for w in walkers_in(board)):
+        lines.append(LOYALTY_TIMING)
     if (
         local is None
         or turn.get("active_player") != local
         or str(turn.get("phase")).lower().removeprefix("phase_") != "main1"
     ):
-        return lines[0]
-    board = state.get("battlefield") or []
+        return "\n".join(filter(None, lines))
     for walker in board:
         if walker.get("controller_seat_id") != local or walker.get("is_phased_out"):
             continue
-        ability = _printed_power_draw(walker)
-        if not ability or (loyalty(walker) or 0) < int(ability[1]):
+        ability = _power_draw_for_plan(walker, state)
+        if not ability:
             continue
         opponent = next(
             (p.get("seat_id") for p in state.get("players") or [] if p.get("seat_id") != local), None

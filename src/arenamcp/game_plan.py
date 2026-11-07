@@ -54,6 +54,12 @@ from types import SimpleNamespace
 from typing import Any
 
 from arenamcp.backend_health import is_backend_error_text
+from arenamcp.loyalty_timing import (
+    LOYALTY_TIMING,
+    additional_activation,
+    conflicting_loyalty_sequence,
+    walkers_in,
+)
 from arenamcp.plan_ledger import PlanLedger
 
 logger = logging.getLogger(__name__)
@@ -264,6 +270,7 @@ BOARD FACTS are computed from the live board (clocks through best blocks, race, 
 - Win conditions must be realistic for the CURRENT state: no empty-library/alternate wins while the library is large, and no combo whose pieces are not in hand or on the battlefield (label a needed draw explicitly).
 Use the deck list and remaining library to identify realistic engines, outs and backup plans; cards in the library are possibilities, not cards in hand or guaranteed draws. Rules are quoted for the cards seen this game and for the playbook's key cards; a library card listed by name only has no quoted rules, so do not invent abilities for it. Preserve the prior plan when still sound, and adapt when its assumptions change.
 Removal and tutoring are conditional decisions: compare the current threat, timing, mana and opportunity cost. Hold interaction when that protects the winning line; remove a threat when it prevents loss or unlocks progress. A tutor should find the currently useful legal card still in the library, with a feasible follow-up, rather than repeat an old preferred target.
+""" + LOYALTY_TIMING + """ For each turn using loyalty, list every planned activation in loyalty_activations, e.g. [{"source":"walker name","cost":1}]. Describe its purpose in hold.
 When an ability can spend an attacker, compare using it now with attacking first and activating after combat.
 Name the attacker in attack. For a postcombat loyalty sacrifice, add postcombat_sacrifice to that turn with the exact walker and attacker names and signed loyalty cost, e.g. {"source":"walker name","attacker":"creature name","cost":-2}. Omit this field for other lines. Compare removing a visible mana engine with pumping, using the actual combat forecast.
 Use the playbook's conditional decision rules, not just its archetype or finishers. Evaluate commander deployment/recovery from its actual rules and current tax. Do not treat a desirable library card as an available plan.
@@ -296,6 +303,7 @@ Use BOARD FACTS, the current hand, the mana available and the prior plan. Keep a
 Give one win condition, our next play or hold, and the specific opposing play or draw that
 would change it. Follow a feasible candidate line when one is supplied. Cast only cards
 available from hand, graveyard or command zone at their actual cost. Treat draws as conditional.
+""" + LOYALTY_TIMING + """ List each planned loyalty use in that turn's loyalty_activations, e.g. [{"source":"walker name","cost":1}], and describe it in hold.
 Return only this compact JSON, using short phrases. T is our next actionable turn and T+1
 is our following turn. For a planned postcombat loyalty sacrifice, name the attacker in attack and add postcombat_sacrifice to the turn: {"source":"walker name","attacker":"creature name","cost":-2}. Omit it for other plays.
 Compare disrupting visible mana engines with attacking. If the combat forecast holds, explain what changes that forecast before relying on attack damage.
@@ -570,6 +578,7 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
     from arenamcp.board_assessment import ROLE_AGGRESSOR, ROLE_CONTROL, ROLE_DEFENDER, ROLE_RACE, ROLES
 
     issues: list[str] = []
+    _check_loyalty_timing(plan, state, issues)
     if assessment is None:
         if plan.turn_plan:
             issues.append("turn plan dropped: no board facts to check it against")
@@ -664,6 +673,83 @@ def validate_plan(plan: GamePlan, assessment: Any, state: dict) -> GamePlan:
     _check_mana_holds(plan, assessment, state, issues)
     plan.issues = issues
     return plan
+
+
+def _check_loyalty_timing(plan: GamePlan, state: dict, issues: list[str]) -> None:
+    local = _local_seat(state)
+    board = [
+        c
+        for c in state.get("battlefield") or []
+        if not c.get("is_phased_out") and (c.get("controller_seat_id") or c.get("owner_seat_id")) == local
+    ]
+    walkers = walkers_in(
+        [
+            *board,
+            *[c for c in state.get("command") or [] if c.get("owner_seat_id") == local],
+            *(state.get("hand") or []),
+        ]
+    )
+    if not walkers or additional_activation(board):
+        return
+    fallback = "Choose one available loyalty ability this turn. Reassess the other on a later turn."
+    for attr in ("path", "develop_next", "role_reason", "threat"):
+        if conflicting_loyalty_sequence(getattr(plan, attr), walkers):
+            setattr(plan, attr, fallback)
+            issues.append(f"{attr}: corrected same-turn loyalty sequence.")
+    for attr in (
+        "win_conditions",
+        "active_mechanisms",
+        "resource_priorities",
+        "assumptions",
+        "switch_if",
+        "lessons",
+    ):
+        values = getattr(plan, attr)
+        checked = [v for v in values if not conflicting_loyalty_sequence(v, walkers)]
+        if len(checked) != len(values):
+            setattr(plan, attr, checked)
+            issues.append(f"{attr}: removed same-turn loyalty sequence.")
+    # Cards in hand and the command zone identify forecast sources, but do not
+    # give a permanent already on the battlefield another activation.
+    on_board = Counter(w["name"].casefold() for w in walkers_in(board) if w.get("name"))
+    known = {w["name"].casefold(): max(1, on_board[w["name"].casefold()]) for w in walkers if w.get("name")}
+    for index, step in enumerate(plan.turn_plan):
+        if not isinstance(step, dict):
+            continue
+        instruction = " ".join(str(step.get(k) or "") for k in ("attack", "hold"))
+        intent = step.get("postcombat_sacrifice")
+        # Generated turns can express activations explicitly. Count each permanent separately;
+        # the postcombat intent describes the same minus when it is already in this list.
+        activations = step.get("loyalty_activations")
+        uses = (
+            [
+                (str(a.get("source", "")).strip().casefold(), a.get("cost"))
+                for a in activations
+                if isinstance(a, dict) and type(a.get("cost")) is int
+            ]
+            if isinstance(activations, list)
+            else []
+        )
+        if isinstance(intent, dict) and type(intent.get("cost")) is int:
+            # The structured minus may be absent from the prose, or describe the very same activation.
+            if str(intent["cost"]) not in instruction.replace("−", "-"):
+                instruction += f" then {intent.get('source', '')} [{intent['cost']}]"
+            postcombat = (str(intent.get("source", "")).strip().casefold(), intent["cost"])
+            if postcombat not in uses:
+                uses.append(postcombat)
+        double_use = any(
+            n > known[name] for name, n in Counter(name for name, _cost in uses).items() if name in known
+        )
+        if not double_use and not conflicting_loyalty_sequence(instruction, walkers, turn_step=True):
+            continue
+        # Later steps can spend cards supposedly drawn or attack with bodies already spent.
+        # Keep the independent mana/cast checks, but rebuild the combat line from the board.
+        step.update(hold=fallback, attack="")
+        step.pop("postcombat_sacrifice", None)
+        step.pop("loyalty_activations", None)
+        del plan.turn_plan[index + 1 :]
+        issues.append(f"{step.get('turn', 'T')}: removed a second loyalty activation and dependent forecast.")
+        break
 
 
 def _check_dropped_cast_dependencies(plan: GamePlan, state: dict, issues: list[str]) -> None:

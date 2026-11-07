@@ -14,11 +14,20 @@ from collections import Counter
 from collections.abc import Collection
 from dataclasses import dataclass
 
+from arenamcp.loyalty_timing import (
+    LOYALTY_TIMING,
+    additional_activation,
+    conflicting_loyalty_sequence,
+    walkers_in,
+)
+
 PLAYBOOK_VERSION = 2
 
 DECK_ANALYSIS_PROMPT = """Analyze every card in the supplied Magic deck using its supplied Oracle text, costs, types and faces. Build a reusable playbook for both coaching and autoplay, not a generic archetype summary. Explicitly analyze each designated commander; a legendary card is not necessarily the commander. If there is no commander, analyze the deck's engines normally.
 
 Identify how resources become a win: setup, repeatable engines, payoffs, protection, interaction and recovery. Consider every supplied card, including lands. Record concise roles for the 8-15 cards that materially determine the plan (engines, payoffs, game-changers, key interaction, mana engines); do not spend the output budget restating every basic land or filler card. Explain the actual mechanisms, not just pairs of card names. Reserve the first mechanism(s) for the designated commander(s), including the commander card ID in cards; then cover the other key engines. For each mechanism list EVERY involved card by its supplied card ID. The application attaches those cards' original rules directly; never retype or invent quotations. Only reference supplied card IDs. Missing rules are unknown; do not invent abilities.
+
+""" + LOYALTY_TIMING + """ In the spoken summary, explicitly separate turns when describing consecutive loyalty abilities.
 
 Use the printed loyalty cost of each ability and the printed size of each new token. A named legendary token competes with an existing copy under the legend rule. Study trigger event, controller/owner, destination, token/nontoken restrictions, optionality, timing, once-per-turn limits, activation and additional costs, mana spending restrictions, summoning sickness and commander tax. Casting is different from entering; tutoring/returning to hand is different from putting onto the battlefield. Calculate resource changes after costs, sacrifices and losses. Do not assume a combo wins without sufficient mana, bodies, damage and timing.
 
@@ -269,6 +278,11 @@ class DeckPlaybook:
 
         for key in ("archetype", "primary_plan", "backup_plan", "spoken_summary"):
             require_text(data.get(key))
+        walkers = walkers_in(catalog.values())
+        if walkers and not additional_activation(catalog.values()):
+            for key in ("spoken_summary", "primary_plan", "backup_plan"):
+                if conflicting_loyalty_sequence(data[key], walkers):
+                    raise ValueError(f"{key} spends loyalty twice in one turn. {LOYALTY_TIMING}")
         roles = data.get("card_roles")
         if not isinstance(roles, dict):
             raise ValueError("Missing card_roles object")
