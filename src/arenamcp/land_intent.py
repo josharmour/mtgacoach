@@ -28,7 +28,9 @@ def _entry(state, land):
         return None
     text = str(land.get("oracle_text") or "")
     if re.search(
-        r"enters (?:the battlefield )?tapped unless you control two or more other lands", text, re.I
+        r"enters (?:the battlefield )?tapped unless you control (?:two or more other lands|(?:a|an) (?:Mountain|Forest|Plains|Swamp|Island)\.)",
+        text,
+        re.I,
     ):
         return enters_tapped(land, board)
     if re.search(r"pay.*life|reveal", text, re.I):

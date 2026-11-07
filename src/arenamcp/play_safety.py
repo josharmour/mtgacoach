@@ -1794,8 +1794,11 @@ def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict
     if removal_lacks_opponent_target(card, state, activation=action_type == "activate"):
         return "mandatory removal has no opposing target"
     if action_type == "cast":
+        from arenamcp.legend_rule import redundant_legend_cast
+
         reason = (
-            damage_removal_kills_nothing(card, state)
+            redundant_legend_cast(state, card)
+            or damage_removal_kills_nothing(card, state)
             or power_only_debuff_wasted(card, state)
             or temporary_shrink_wasted(card, state)
             or counter_tax_payable_wasted(card, state)

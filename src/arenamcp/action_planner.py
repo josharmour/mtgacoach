@@ -4856,6 +4856,16 @@ class ActionPlanner(_ActionLegalityMixin):
         context = game_state.get("decision_context") or {}
         raw = context.get("raw") or {}
         accept = decision.find("optional:accept")
+        if decision.request_type in {"OptionalAction", "SelectN"}:
+            from arenamcp.legend_rule import legend_decision
+
+            legend = legend_decision(decision, game_state)
+            if legend:
+                chosen, reason = legend
+                self._last_decision_option_ids = [chosen]
+                self._last_decision_reasoning = reason
+                self._last_decision_trace = {"policy": "legend_rule", "validated_ids": [chosen]}
+                return [chosen]
         if (
             decision.request_type == "OptionalAction"
             and context.get("type") == "optional_action"
@@ -4967,6 +4977,17 @@ class ActionPlanner(_ActionLegalityMixin):
             if decision.request_type == "Search" and decision.selection_is_valid([]):
                 return []
             return [DECLINE_DECISION]
+        from arenamcp.land_sequence import choose_land_sequence
+
+        land_pick, self._pending_land_sequence = choose_land_sequence(
+            decision, game_state, getattr(self, "_pending_land_sequence", None)
+        )
+        if land_pick:
+            chosen, reason = land_pick
+            self._last_decision_option_ids = [chosen]
+            self._last_decision_reasoning = reason
+            self._last_decision_trace = {"policy": "commander_land_sequence", "validated_ids": [chosen]}
+            return [chosen]
         loop_pick = self._drain_loop_pick(decision, game_state)
         if loop_pick:
             return loop_pick

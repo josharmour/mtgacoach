@@ -111,8 +111,15 @@ class PendingDecision:
 
     def selection_is_valid(self, chosen: list[str]) -> bool:
         """Validate distinct selection ids and the engine's count/weight bounds."""
-        if len(set(chosen)) != len(chosen) or not set(chosen).issubset(self.option_ids()):
+        if not set(chosen).issubset(self.option_ids()):
             return False
+        if len(set(chosen)) != len(chosen):
+            if self.request_type != "CastingTimeOptions" or not all(
+                self.find(oid).meta.get("choiceKind") == "modal"
+                and self.find(oid).meta.get("repeatedSelectAllowed") is True
+                for oid in chosen
+            ):
+                return False
         if not self.min_select <= len(chosen) <= self.max_select:
             return False
         if self.request_type == "CastingTimeOptions":

@@ -384,3 +384,46 @@ def test_legend_keep_prompt_uses_both_raw_instances_with_damage_and_readiness():
     assert "sel:286" in note and "sel:296" in note
     assert '"damage": 1' in note and '"summoning_sickness": true' in note
     assert "not a sacrifice or destruction" in note
+
+
+def test_optional_named_legend_keeps_pumped_token_but_allows_entry_payoffs():
+    from arenamcp.decisions import DecisionOption, PendingDecision
+    from arenamcp.legend_rule import legend_decision, redundant_legend_cast
+
+    strong = dict(
+        name="Example",
+        instance_id=680,
+        controller_seat_id=1,
+        type_line="Token Legendary Creature",
+        power=7,
+        toughness=7,
+        oracle_text="Haste",
+    )
+    weak = dict(strong, instance_id=714, power=1, toughness=1)
+    s = {"local_seat_id": 1, "battlefield": [strong]}
+    prompt = PendingDecision(
+        (250, 381),
+        "OptionalAction",
+        (DecisionOption("optional:decline", "Decline"),),
+        prompt_text="Create Example, a legendary 1/1 red Hamster creature token with trample and haste?",
+    )
+    assert legend_decision(prompt, s)[0] == "optional:decline"
+    assert redundant_legend_cast(s, weak)
+    assert not redundant_legend_cast(s, dict(weak, oracle_text="When this creature enters, draw a card."))
+    assert legend_decision(prompt, dict(s, battlefield=[])) is None
+    payoff = {"name": "Observer", "oracle_text": "Whenever another creature dies, draw a card."}
+    assert legend_decision(prompt, dict(s, battlefield=[strong, payoff])) is None
+    exempt = {
+        "name": "Exception",
+        "controller_seat_id": 1,
+        "oracle_text": "The legend rule doesn't apply to tokens you control.",
+    }
+    assert legend_decision(prompt, dict(s, battlefield=[strong, exempt])) is None
+    s["battlefield"].append(weak)
+    keep = PendingDecision(
+        (251, 384),
+        "SelectN",
+        tuple(DecisionOption(f"sel:{c['instance_id']}", "Example") for c in [weak, strong]),
+        prompt_text="Choose the legendary permanent that you wish to keep.",
+    )
+    assert legend_decision(keep, s)[0] == "sel:680"

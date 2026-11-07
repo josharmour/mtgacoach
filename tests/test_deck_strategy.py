@@ -431,3 +431,16 @@ def test_tactical_prompt_reuses_relevant_rules_without_repeating_full_playbook()
     assert book.data["primary_plan"] in prompt
     assert book.data["mechanisms"][0]["effect"] in prompt
     assert "KEY CARD ROLES" not in prompt
+
+
+def test_commander_playbook_rejects_invented_loyalty_activation(deck):
+    state, catalog, response = deck
+    gid = commander_ids(state)[0]
+    catalog[gid] = {
+        **catalog[gid],
+        "type_line": "Legendary Planeswalker",
+        "oracle_text": "[+1]: Draw a card.\n[-2]: Sacrifice a creature.",
+    }
+    response["card_roles"][str(gid)] = "Its -3 sacrifices a creature."
+    with pytest.raises(ValueError, match="loyalty abilities"):
+        DeckPlaybook.parse(json.dumps(response), catalog, [gid])

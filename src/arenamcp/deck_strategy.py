@@ -14,13 +14,13 @@ from collections import Counter
 from collections.abc import Collection
 from dataclasses import dataclass
 
-PLAYBOOK_VERSION = 1
+PLAYBOOK_VERSION = 2
 
 DECK_ANALYSIS_PROMPT = """Analyze every card in the supplied Magic deck using its supplied Oracle text, costs, types and faces. Build a reusable playbook for both coaching and autoplay, not a generic archetype summary. Explicitly analyze each designated commander; a legendary card is not necessarily the commander. If there is no commander, analyze the deck's engines normally.
 
 Identify how resources become a win: setup, repeatable engines, payoffs, protection, interaction and recovery. Consider every supplied card, including lands. Record concise roles for the 8-15 cards that materially determine the plan (engines, payoffs, game-changers, key interaction, mana engines); do not spend the output budget restating every basic land or filler card. Explain the actual mechanisms, not just pairs of card names. Reserve the first mechanism(s) for the designated commander(s), including the commander card ID in cards; then cover the other key engines. For each mechanism list EVERY involved card by its supplied card ID. The application attaches those cards' original rules directly; never retype or invent quotations. Only reference supplied card IDs. Missing rules are unknown; do not invent abilities.
 
-Study trigger event, controller/owner, destination, token/nontoken restrictions, optionality, timing, once-per-turn limits, activation and additional costs, mana spending restrictions, summoning sickness and commander tax. Casting is different from entering; tutoring/returning to hand is different from putting onto the battlefield. Calculate resource changes after costs, sacrifices and losses. Do not assume a combo wins without sufficient mana, bodies, damage and timing.
+Use the printed loyalty cost of each ability and the printed size of each new token. A named legendary token competes with an existing copy under the legend rule. Study trigger event, controller/owner, destination, token/nontoken restrictions, optionality, timing, once-per-turn limits, activation and additional costs, mana spending restrictions, summoning sickness and commander tax. Casting is different from entering; tutoring/returning to hand is different from putting onto the battlefield. Calculate resource changes after costs, sacrifices and losses. Do not assume a combo wins without sufficient mana, bodies, damage and timing.
 
 COMMANDER ACCESS RULE: A designated commander that dies can be moved from the graveyard to the command zone at the next state-based-action check, then cast again for its printed cost plus {2} per previous command-zone cast (subject to legal timing and other costs/restrictions). Choosing that recovery does NOT permanently lose access to the original or its future entry triggers. Tokens that leave the battlefield cease to exist and cannot be recast. Recovery costs mana/tempo and loses counters and attachments, so it is not automatically profitable.
 
@@ -105,6 +105,28 @@ def oracle_rules(card: dict) -> list[str]:
     return rules
 
 
+def _check_commander_loyalty(card, descriptions):
+    if "planeswalker" not in str(card.get("type_line") or "").lower():
+        return
+    printed = set(
+        re.findall(r"(?m)^\s*\[([+−-]?(?:\d+|X))\]:?", str(card.get("oracle_text") or "").replace("−", "-"))
+    )
+    if not printed:
+        return
+    for description in descriptions:
+        prose = str(description).replace("−", "-")
+        claims = re.findall(
+            r"\bactivate\s+([+-]\d+)\b|(?<![\w/])([+-]\d+)\s+(?:loyalty ability|ability|sacrific(?:e|es|ing))\b",
+            prose,
+            re.I,
+        )
+        for left, right in claims:
+            if (left or right) not in printed:
+                raise ValueError(
+                    f"{card['name']} has loyalty abilities {', '.join(sorted(printed))}; revise {left or right}"
+                )
+
+
 def analysis_reference(state: dict, catalog: dict[int, dict]) -> str:
     """Full card facts with stable rule handles; the model need not copy text."""
     from arenamcp.combat_recovery import entry_resources
@@ -126,7 +148,7 @@ def analysis_reference(state: dict, catalog: dict[int, dict]) -> str:
             bodies = entry.copies + sum(token[0] for token in entry.tokens)
             lines.append(
                 f"  Compiled entry resources: +{bodies} new token bodies, +{entry.cards} cards drawn, "
-                "in addition to the entering original. Existing survivors remain. This is a payoff "
+                "before applying the legend rule to same-named legendary permanents. This is a payoff "
                 "after a successful entry, not passive growth or a promise that recovery is payable. "
                 "Live combat forecasts price supported recasts from the surviving board and observed tax."
             )
@@ -283,6 +305,8 @@ class DeckPlaybook:
                 raise ValueError("Missing commander resource comparison")
             for key in ("starting_resources", "preserve_original", "spend_and_recover", "decision_test"):
                 require_text(comparison.get(key))
+            gid = policy["card"]
+            _check_commander_loyalty(catalog[gid], [roles[str(gid)], *policy.values(), *comparison.values()])
         mechanisms = data.get("mechanisms")
         if not isinstance(mechanisms, list) or not mechanisms:
             raise ValueError("Missing deck mechanisms")
