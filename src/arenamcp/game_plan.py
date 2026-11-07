@@ -264,6 +264,8 @@ BOARD FACTS are computed from the live board (clocks through best blocks, race, 
 - Win conditions must be realistic for the CURRENT state: no empty-library/alternate wins while the library is large, and no combo whose pieces are not in hand or on the battlefield (label a needed draw explicitly).
 Use the deck list and remaining library to identify realistic engines, outs and backup plans; cards in the library are possibilities, not cards in hand or guaranteed draws. Rules are quoted for the cards seen this game and for the playbook's key cards; a library card listed by name only has no quoted rules, so do not invent abilities for it. Preserve the prior plan when still sound, and adapt when its assumptions change.
 Removal and tutoring are conditional decisions: compare the current threat, timing, mana and opportunity cost. Hold interaction when that protects the winning line; remove a threat when it prevents loss or unlocks progress. A tutor should find the currently useful legal card still in the library, with a feasible follow-up, rather than repeat an old preferred target.
+When an ability can spend an attacker, compare using it now with attacking first and activating after combat.
+Name the attacker in attack. For a postcombat loyalty sacrifice, add postcombat_sacrifice to that turn with the exact walker and attacker names and signed loyalty cost, e.g. {"source":"walker name","attacker":"creature name","cost":-2}. Omit this field for other lines. Compare removing a visible mana engine with pumping, using the actual combat forecast.
 Use the playbook's conditional decision rules, not just its archetype or finishers. Evaluate commander deployment/recovery from its actual rules and current tax. Do not treat a desirable library card as an available plan.
 The MATCH LEDGER (when present) is the record of this match: each turn's planned step, what we actually did, and how life and board moved. Learn from it: keep the prior plan's win condition while the ledger shows progress toward it; change it when the ledger shows it failing (two of our turns without damage or board gain while pursuing it, a planned cast repeatedly not made, a large life loss). Carry forward the prior plan's lessons that still hold and add new ones from the ledger; a lesson is a short observation about this match, not a general principle.
 
@@ -295,7 +297,9 @@ Give one win condition, our next play or hold, and the specific opposing play or
 would change it. Follow a feasible candidate line when one is supplied. Cast only cards
 available from hand, graveyard or command zone at their actual cost. Treat draws as conditional.
 Return only this compact JSON, using short phrases. T is our next actionable turn and T+1
-is our following turn. Use exact card names and leave unavailable actions empty.
+is our following turn. For a planned postcombat loyalty sacrifice, name the attacker in attack and add postcombat_sacrifice to the turn: {"source":"walker name","attacker":"creature name","cost":-2}. Omit it for other plays.
+Compare disrupting visible mana engines with attacking. If the combat forecast holds, explain what changes that forecast before relying on attack damage.
+Use exact card names and leave unavailable actions empty.
 {"role":"assessed role","win_conditions":["line"],"path":"how we win","develop_next":"next priority",
  "turns":[{"turn":"T","land":"","cast":[],"attack":"","hold":""},
           {"turn":"T+1","land":"","cast":[],"attack":"","hold":""}],
@@ -813,6 +817,21 @@ def _turn_index(value: Any, k: int) -> int:
     return int(match.group(1)) if match else k
 
 
+def postcombat_sacrifice_step(raw, attack):
+    """Keep a structured timing intent only when the validated attack still includes its subject."""
+    intent = raw.get("postcombat_sacrifice")
+    if not isinstance(intent, dict):
+        return {}
+    source, attacker, cost = (intent.get(key) for key in ("source", "attacker", "cost"))
+    if not isinstance(source,str) or not isinstance(attacker,str) or type(cost) is not int or cost >= 0:
+        return {}
+    if not source.strip() or not attacker.strip() or _NO_ATTACK.match(_plain(attack)):
+        return {}
+    if not re.search(r"(?<!\w)"+re.escape(attacker.strip())+r"(?!\w)", attack, re.I):
+        return {}
+    return {"postcombat_sacrifice": {"source":source.strip(),"attacker":attacker.strip(),"cost":cost}}
+
+
 def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[str]) -> list[dict]:
     from arenamcp.board_assessment import NON_BOARD_ROLES, card_role
     from arenamcp.combat_keywords import has_combat_keyword
@@ -1049,6 +1068,7 @@ def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[
                 "cast": [c[0] for c in chosen],
                 "attack": attack,
                 "hold": "; ".join(holds)[:120],
+                **postcombat_sacrifice_step(raw, attack),
                 "mana": len(sources),
             }
         )
@@ -2737,6 +2757,8 @@ def _replace_t_step(
     step["land"] = new.land
     step["cast"] = [noted(name) for name in new.casts] + [f"landcycle {name}" for name in new.cycles]
     step["attack"] = ", ".join(new.attack) or "none"
+    if not postcombat_sacrifice_step(step, step["attack"]):
+        step.pop("postcombat_sacrifice", None)
     # The old hold planned around the old casts ("UU for Countersculpt" next to a 6-drop
     # that taps 6 of 7): the best line's own held instants, if any.
     step["hold"] = ", ".join(new.held)[:120]
@@ -2980,6 +3002,8 @@ def board_basis(state: dict | None) -> dict:
     from arenamcp.combat_keywords import has_combat_keyword, is_creature_modified
 
     battlefield = [c for c in state.get("battlefield") or [] if isinstance(c, dict)]
+    from arenamcp.loyalty_removal import mana_engine
+
     efacts = engine_facts(state)
     creatures, engines, ours = [], [], []
     our_power = 0
@@ -3003,7 +3027,7 @@ def board_basis(state: dict | None) -> dict:
                 "keywords": [kw for kw in _THREAT_KEYWORDS if has_combat_keyword(card, kw)],
                 "modified": is_creature_modified(card, battlefield=battlefield),
             }
-            if _round(card.get("instance_id"), -1) in efacts:
+            if _round(card.get("instance_id"), -1) in efacts or len(mana_engine(card,battlefield)) >= 2:
                 entry["engine"] = True
             creatures.append(entry)
         elif _is_engine(card):
@@ -3194,6 +3218,16 @@ def plan_refresh_note(plan: GamePlan | None, failed: tuple[int, str] | None) -> 
     )
 
 
+def removal_board_changed(plan, state):
+    if plan is None or not isinstance(state, dict) or "battlefield" not in state:
+        return False
+    required = {iid for step in plan.turn_plan for iid in step.get("removal_participants", [])}
+    if not required:
+        return False
+    present = {card.get("instance_id") for card in state["battlefield"] if not card.get("is_phased_out")}
+    return not required <= present
+
+
 def compose_strategy_block(
     assessment: Any,
     plan: GamePlan | None,
@@ -3218,6 +3252,8 @@ def compose_strategy_block(
     ``refresh_failed`` (turn, why): the plan was kept after a failed re-plan;
     its step and a PLAN NOT REFRESHED line say so (:func:`plan_refresh_note`).
     """
+    if removal_board_changed(plan, state):
+        plan = None  # Stop presenting the old line as current while its replacement is being prepared.
     extra = extra_facts.rstrip()
     refresh = plan_refresh_note(plan, refresh_failed)
     if assessment is None:
@@ -4200,6 +4236,16 @@ class GamePlanManager:
         plan = self._plan
         return plan.as_coach_intro() if plan else ""
 
+    def current_step(self, state):
+        """Only the installed step for this match and turn can reserve an activation."""
+        plan = self._plan
+        if not plan or not self._match_id or state.get("match_id") != self._match_id:
+            return None
+        phase = str((state.get("turn") or {}).get("phase")).lower().removeprefix("phase_")
+        if phase == "main2" and plan_board_changes(plan, state, threats_only=True):
+            return None
+        return plan.step_for((state.get("turn") or {}).get("turn_number"))
+
     def strategy_block(self, game_state: dict[str, Any] | None, *, with_lines: bool = True) -> str:
         """Fresh ROLE + this turn + facts for ``game_state``, then the plan spine.
 
@@ -4215,7 +4261,10 @@ class GamePlanManager:
         assessment = assess(state) if state is not None else None
         risk = opponent_interaction(state, self._tricks()) if state is not None else None
         verdict = risk.verdict_line() if risk is not None and risk.known else ""
-        extra = f"  OPP INTERACTION: {verdict}" if verdict else ""
+        from arenamcp.loyalty_removal import mana_engine_context
+
+        extra = "\n".join(filter(None, (f"  OPP INTERACTION: {verdict}" if verdict else "",
+                                        mana_engine_context(state) if state else "")))
         block = compose_strategy_block(
             assessment,
             plan,
@@ -4725,6 +4774,8 @@ class GamePlanManager:
         """
         if self._plan is None or self._last_sig is None:
             return "first plan"
+        if removal_board_changed(self._plan, state):
+            return "removal board changed"
         if board and plan_attackers_gone(self._plan, basis=board):
             return "planned attacker gone"
         if self._seed != self._last_seed:
@@ -5025,6 +5076,11 @@ class GamePlanManager:
         seed = self._seed_text(game_state)
         user_parts = [f"DECK PLAYBOOK / STRATEGY:\n{seed}\n"] if seed else []
         user_parts.append(context)
+        from arenamcp.loyalty_removal import mana_engine_context
+
+        removal = mana_engine_context(game_state)
+        if removal:
+            user_parts.append(removal)
         user_parts.append(_plan_availability_block(game_state, self._plan))
         if assessment is not None:
             logger.info(
@@ -5150,6 +5206,9 @@ class GamePlanManager:
             )
             if plan is None:
                 return None
+        from arenamcp.loyalty_removal import align_offered_removal
+
+        align_offered_removal(plan, game_state)
         if assessment is not None:
             plan.facts = assessment.as_payload()
         for issue in plan.issues:

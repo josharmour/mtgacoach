@@ -790,7 +790,7 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         self._decision_cancel_event = event
 
-    def set_game_plan_source(self, source: Callable[..., str] | None) -> None:
+    def set_game_plan_source(self, source: Callable[..., str] | None, *, step_source=None) -> None:
         """Render the strategy block per decision from the live snapshot.
 
         ``source(state, with_lines=...)`` (``GamePlanManager.strategy_block``)
@@ -798,6 +798,7 @@ class ActionPlanner(_ActionLegalityMixin):
         :meth:`set_game_plan` follows freshly computed board facts.
         """
         self._game_plan_source = source
+        self._plan_step_source = step_source
 
     def set_game_plan(self, plan_text: str | None) -> None:
         """Set the persistent strategic GAME PLAN block injected into prompts.
@@ -4977,16 +4978,21 @@ class ActionPlanner(_ActionLegalityMixin):
             if decision.request_type == "Search" and decision.selection_is_valid([]):
                 return []
             return [DECLINE_DECISION]
-        from arenamcp.loyalty_removal import choose_removal
+        from arenamcp.loyalty_removal import choose_removal, postcombat_activation, reserve_postcombat_loyalty
+
+        step_source = getattr(self, "_plan_step_source", None)
+        step = step_source(game_state) if callable(step_source) else None
+        decision = reserve_postcombat_loyalty(decision, game_state, step)
 
         removal, self._pending_loyalty_removal = choose_removal(
             decision, game_state, getattr(self, "_pending_loyalty_removal", None)
         )
-        if removal:
-            oid, reason = removal
+        planned = postcombat_activation(decision, game_state, step) if not removal else None
+        if removal or planned:
+            oid, reason = removal or planned
             self._last_decision_option_ids = [oid]
             self._last_decision_reasoning = reason
-            self._last_decision_trace = {"policy": "defensive_loyalty", "validated_ids": [oid]}
+            self._last_decision_trace = {"policy": "defensive_loyalty" if removal else "postcombat_loyalty", "validated_ids": [oid]}
             return [oid]
         from arenamcp.land_sequence import choose_land_sequence
 
