@@ -14,11 +14,7 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 from tests.website_app import WEBSITE_DIR, load_website_app
 
-PATREON_OAUTH = (
-    "https://www.patreon.com/oauth2/authorize?response_type=code&client_id="
-    "uhositmCwj3sei5XK9HBYOPxZF6-eiCJEr4xdNWcUX3TOQqAjQvhhe5NPc7LFWB0&redirect_uri="
-    "https%3A%2F%2Fmtgacoach.com%2Fpatreon%2Fcallback&scope=identity%20identity%5Bemail%5D%20identity.memberships"
-)
+PATREON_OAUTH = "/patreon/login"
 
 
 @pytest.fixture()
@@ -86,3 +82,4 @@ def test_subscribe_page_keeps_its_patreon_links(client) -> None:
     html = client.get("/subscribe").text
     assert 'href="https://www.patreon.com/c/mtgacoach"' in html
     assert f'href="{PATREON_OAUTH}"' in html
+    assert "oauth2/authorize?" not in html
