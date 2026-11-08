@@ -343,7 +343,7 @@ bepinex_bundle = resources_dir / "bepinex"
 check(bridge_dll.is_file(), f"missing packaged bridge DLL at {bridge_dll}")
 check(bridge_manifest.is_file(), f"missing packaged bridge manifest at {bridge_manifest}")
 if bridge_dll.is_file() and bridge_manifest.is_file():
-    bridge_meta = json.loads(bridge_manifest.read_text(encoding="utf-8"))
+    bridge_meta = json.loads(bridge_manifest.read_text(encoding="utf-8-sig"))
     actual_hash = hashlib.sha256(bridge_dll.read_bytes()).hexdigest()
     check(actual_hash == bridge_meta.get("dll_sha256"), f"bridge DLL hash {actual_hash} != manifest {bridge_meta.get('dll_sha256')!r}")
 check((bepinex_bundle / "BepInEx").is_dir(), f"missing packaged BepInEx bundle at {bepinex_bundle}")

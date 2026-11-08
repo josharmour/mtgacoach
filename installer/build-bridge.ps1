@@ -40,7 +40,7 @@ $Manifest = [ordered]@{
     reference_sha256 = $References
     dll_sha256 = $Hash
 }
-$Manifest | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 (Join-Path $ResourceDir "MtgaCoachBridge.build.json")
+[IO.File]::WriteAllText((Join-Path $ResourceDir "MtgaCoachBridge.build.json"), ($Manifest | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
 & $Python $Verifier
 if ($LASTEXITCODE -ne 0) { throw "Staged bridge verification failed" }
 Write-Host "Fresh bridge staged; build evidence: $Output"
