@@ -182,6 +182,44 @@ def unmet_modified_flag(
     return ""
 
 
+def attachment_combat_limits(attachments) -> tuple[bool, bool]:
+    """Unconditional attack/block bans imposed by the attachments on one host."""
+    attack = block = False
+    for attachment in attachments:
+        if attachment.get("is_phased_out"):
+            continue
+        text = re.sub(r"<[^>]+>", "", str(attachment.get("oracle_text") or "")).lower().replace("’", "'")
+        for match in re.finditer(
+            r"(?:^|(?<=[.\n]))\s*(?:enchanted|equipped) (?:creature|permanent) (?:can't|cannot) "
+            r"(attack or block|block or attack|attack|block)(?=[.]|, and |$)",
+            text,
+            re.MULTILINE,
+        ):
+            attack |= "attack" in match[1]
+            block |= "block" in match[1]
+    return attack, block
+
+
+def attachments_by_host(battlefield: list[dict]) -> dict[int, list[dict]]:
+    """Resolve the attachment's host ID, or the host's reverse link if the source omitted it."""
+    reverse = {}
+    for host in battlefield:
+        for iid in host.get("attached_with_ids") or ():
+            # Conflicting reverse links can't identify the current wearer.
+            host_id = host.get("instance_id")
+            reverse[iid] = host_id if reverse.get(iid, host_id) == host_id else None
+    by_host = {}
+    for attachment in battlefield:
+        host_id = attachment.get("attached_to_id", reverse.get(attachment.get("instance_id")))
+        if host_id and not attachment.get("is_phased_out"):
+            by_host.setdefault(host_id, []).append(attachment)
+    return by_host
+
+
+def attached_combat_limits(battlefield: list[dict]) -> dict[int, tuple[bool, bool]]:
+    return {host: attachment_combat_limits(cards) for host, cards in attachments_by_host(battlefield).items()}
+
+
 def is_creature_now(card: dict) -> bool:
     """A creature on the battlefield now: the GRE object's card types decide when it has them,
     the printed type line only without them.

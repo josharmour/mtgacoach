@@ -296,6 +296,30 @@ def test_watchdog_alerts_on_log_derived_request_the_bridge_cannot_see():
     assert advice and advice[0].startswith("MANUAL REQUIRED")
 
 
+@pytest.mark.parametrize("remaining,first_result", [(18, None), (4, "alerted")])
+def test_log_only_gap_after_cost_selection_gets_bounded_grace(remaining, first_result):
+    from arenamcp.decision_watchdog import DecisionWatchdog
+
+    coach = StandaloneCoach.__new__(StandaloneCoach)
+    now = [1000.1]
+    coach._decision_watchdog = DecisionWatchdog(monotonic=lambda: now[0])
+    bridge = _blind_bridge()
+    bridge.last_submission_at = 1000.0
+    coach._autopilot = make_engine(bridge=bridge)
+    coach._autopilot_enabled = True
+    coach._bridge_poller = SimpleNamespace(connected=True, _bridge=bridge, latest_pending=lambda: None)
+    coach.ui = MagicMock()
+    coach.speak_advice = MagicMock()
+    state = _blind_state()
+    state["timer_state"][2]["time_remaining_ms"] = remaining * 1000
+    assert coach._tick_decision_watchdog(state) == first_result
+    if first_result is None:
+        coach.speak_advice.assert_not_called()
+        now[0] += 2
+        # If the follow-up never appears, the original blind-bridge alarm still works.
+        assert coach._tick_decision_watchdog(state) == "alerted"
+
+
 def test_post_cast_yields_immediately_to_declaration_family():
     from arenamcp.decisions import build_pending_decision
 

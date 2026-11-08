@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from arenamcp.ladder import ranked_ladder
+from arenamcp.ladder import RANK_HISTORY_LIMIT, ranked_ladder
 from arenamcp.match_history import MatchHistory
 
 from . import theme
@@ -213,7 +213,7 @@ class PerformanceTab(QWidget):
                     rec
                     for rec in reversed(history.get_recent(history.total_games))
                     if ranked_ladder(rec.format_name) == self._ladder
-                ][:5]
+                ][:RANK_HISTORY_LIMIT]
             else:
                 records = list(reversed(history.get_recent(_MAX_ROWS)))
         except Exception:

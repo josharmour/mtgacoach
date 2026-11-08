@@ -1420,6 +1420,7 @@ class Step:
     their_creatures_after: int | None = None
     policy: str = ""  # their attack policy
     public_response: str = ""  # opponent response chosen before our adaptive attack
+    cast_trigger_lethal: bool = False  # one opposing noncreature spell makes the return attack lethal
     opponent_discards: int = 0
     draws: int = 0  # public draw count; the drawn card's identity is unknown
     greedy: bool = False
@@ -2404,6 +2405,18 @@ class Moves:
             for pump in cast_pumps(card)
             if pump[3] == "team"
         )
+        # Stress-test the first return attack using public triggers. The
+        # unknown spell contributes no damage, removal, or other effect itself.
+        self.their_cast_pumps = {}
+        if model.our_turn and model.their_hand and model.their_lands:
+            for body in model.theirs:
+                power = toughness = 0
+                for kind, p, t, who in self.cast_pump(body):
+                    if who == "self" and kind in ("any", "noncreature"):
+                        power += p
+                        toughness += t
+                if power or toughness:
+                    self.their_cast_pumps[body["instance_id"]] = (power, toughness)
         self.pumps_possible = (
             bool(self.board_pumps)
             or any(self.cast_pump(body) for body in (*model.ours, *model.our_stack_bodies))
@@ -4639,7 +4652,7 @@ class Moves:
         opponent_loss = opponent_loss.draw()
         carry["opponent_loss"] = opponent_loss
         gains = self.their_gains(mid)
-        hit = self.their_attack(
+        attack_args = dict(
             life=mid.our_life,
             opp_life=mid.opp_life,
             our_loss=node.our_loss,
@@ -4661,6 +4674,16 @@ class Moves:
             gains=gains,
             persistent=tuple(mid.persistent),
         )
+        hit = self.their_attack(**attack_args)
+        if (
+            node.k == 0
+            and self.their_cast_pumps
+            and not hit["dead"]
+            and mid.opponent_discards < self.model.their_hand
+            and any(b["instance_id"] in self.their_cast_pumps for b in attack_args["able"])
+        ):
+            response = self.their_attack(**attack_args, stress_cast=True)
+            step["cast_trigger_lethal"] = response["dead"]
         carry["our_loss"] = hit["our_loss"]
         if not hit["dead"] and hit["our_loss"].draw_loses:
             return dataclasses.replace(
@@ -5092,7 +5115,7 @@ class Moves:
         self, *, life, opp_life, ours, theirs, able, blockers, hand, entered, keep_tapped, spare, returning,
         index, turn, next_k, next_abs, fixed=None, variant="best", crack_exclude=frozenset(), tag="",
         blocks_locked=False, landfall=False, drops=None, crack_sources=None, spells=True, gains=0, drain_now=True,
-        combat_counters=True,
+        combat_counters=True, stress_cast=False,
         after_upkeep=False, persistent=(), our_loss=LossState(), opponent_loss=LossState(),
     ) -> dict:  # fmt: skip
         """Their attack: any lethal policy kills us; else the non-suicidal one worst for us, and
@@ -5174,6 +5197,7 @@ class Moves:
                         attackers,
                         hand_left,
                         *context,
+                        stress_cast=stress_cast,
                         drain=drain,
                         persistent=persistent,
                         our_loss=our_loss,
@@ -5209,7 +5233,7 @@ class Moves:
 
     def _policy(
         self, name, attackers, hand, life, opp_life, ours, theirs, defenders, removal, entered, keep_tapped,
-        returning, index, next_k, next_abs, tag, left=0, landfall=0, crack_sources=(), *, drain=0, persistent=(), our_loss=LossState(), opponent_loss=LossState(),
+        returning, index, next_k, next_abs, tag, left=0, landfall=0, crack_sources=(), *, stress_cast=False, drain=0, persistent=(), our_loss=LossState(), opponent_loss=LossState(),
     ) -> dict:  # fmt: skip
         persistent = list(persistent)
         declared = sorted(attackers, key=lambda b: b["instance_id"])
@@ -5240,6 +5264,11 @@ class Moves:
         if landfall:  # "gets +2/+2 until end of turn" per land (``landfall`` entries): this attack only
             fighting, back = self._pumped(fighting, landfall)
         round_tag = tag + ("proxy" if boost else "")
+        if stress_cast:
+            # Only this combat uses the hypothetical pump. Returning the
+            # original bodies also keeps later combat memo entries factual.
+            fighting, pump_tag = self.cast_pumped(fighting, self.their_cast_pumps)
+            round_tag += pump_tag
         terminal = our_loss.lost
         last_details = None
         counter_deltas = {}

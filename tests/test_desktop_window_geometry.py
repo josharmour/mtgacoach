@@ -63,6 +63,7 @@ def test_coach_stack_can_resize_to_sidebar_width(qapp):
     window._show_performance_view = Mock()
     window._restart_coach = Mock()
     window._reload_engine = Mock()
+    window._on_deck_invitation = Mock()
     MainWindow._build_central_widget(window)
     window.setMinimumWidth(320)
     window.show()

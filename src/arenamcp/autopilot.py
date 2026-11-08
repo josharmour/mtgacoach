@@ -404,7 +404,11 @@ class AutopilotEngine(
             source = getattr(mgr, "strategy_block", None)
             set_source = getattr(self._planner, "set_game_plan_source", None)
             if callable(source) and callable(set_source):
-                set_source(source)
+                step_source = getattr(mgr, "current_step", None)
+                if callable(step_source):
+                    set_source(source, step_source=step_source)
+                else:
+                    set_source(source)
             # The reform reads what we did since the last plan.
             feed = getattr(self._planner, "recent_decisions_text", None)
             set_feed = getattr(mgr, "set_recent_actions_source", None)
@@ -1192,39 +1196,9 @@ class AutopilotEngine(
 
     @staticmethod
     def _label_sibling_activations(decision: Any, describe: Any = None) -> Any:
-        """Name each ability when one permanent offers several activations.
+        from arenamcp.decisions import label_sibling_activations
 
-        Every activation was labelled "Activate: <source>", so a planeswalker's
-        loyalty abilities were identical options: the model asked for Jace's
-        draw and picked his surveil (bug_20261006_140351). Each sibling gets
-        its loyalty cost and rules text in brackets (label parsers stop at
-        "["); one that can't be told apart from its siblings is withheld.
-        """
-        from arenamcp.gre_action_matcher import ability_label, describe_ability, sibling_activation_groups
-
-        groups = sibling_activation_groups(option.meta for option in decision.options)
-        if not groups:
-            return decision
-        describe = describe or describe_ability
-        options = list(decision.options)
-        withheld: set[int] = set()
-        for indices in groups.values():
-            abilities = {int(options[i].meta.get("abilityGrpId") or 0) for i in indices}
-            texts = {aid: ability_label(*describe(aid)) if aid else "" for aid in abilities}
-            for i in indices:
-                text = texts[int(options[i].meta.get("abilityGrpId") or 0)]
-                if not text or sum(other.lower() == text.lower() for other in texts.values()) > 1:
-                    withheld.add(i)
-                else:
-                    options[i] = dataclasses.replace(options[i], label=f"{options[i].label} [{text}]")
-        if withheld:
-            logger.warning(
-                "Ambiguous activations: withholding %s — their abilities can't be told apart",
-                [(options[i].label, options[i].meta.get("abilityGrpId")) for i in sorted(withheld)],
-            )
-        return dataclasses.replace(
-            decision, options=tuple(option for i, option in enumerate(options) if i not in withheld)
-        )
+        return label_sibling_activations(decision, describe)
 
     def _pin_activation_ability(self, action: GameAction, game_state: dict[str, Any]) -> bool:
         """Bind a planned activation to one ability before it executes.
@@ -3446,9 +3420,11 @@ class AutopilotEngine(
             # Phase E, so priority windows are typed-path-owned too; the
             # legacy strategic path below only runs when the typed path
             # declines (returns None: no bridge, no options, dry run).
-            typed_handled = self._try_typed_decision_path(game_state, trigger)
-            if typed_handled is not None:
-                return typed_handled
+            typed_result = self._try_typed_decision_path(game_state, trigger)
+            if isinstance(typed_result, dict):
+                game_state = typed_result  # combat continues below on the caught-up board
+            elif typed_result is not None:
+                return typed_result
 
             # --- AFK MODE: auto-pass everything without LLM ---
             if self._config.afk_mode:
@@ -5535,8 +5511,10 @@ class AutopilotEngine(
 
     def _try_typed_decision_path(
         self, game_state: dict[str, Any], trigger: str, depth: int = 0
-    ) -> bool | None:
+    ) -> bool | dict[str, Any] | None:
         """Handle interactive requests via the typed PendingDecision pipeline.
+
+        A combat request hands its synchronized board back to the strategic planner.
 
         Returns True/False when the path owned the decision (submitted /
         definitively failed), or None to fall through to the legacy path
@@ -5621,6 +5599,11 @@ class AutopilotEngine(
         fp = decision_fingerprint(decision) if decision else None
         self._request_tracker.observe(fp, request_window(game_state))
         if decision is None or decision.request_type not in self._TYPED_DECISION_FAMILIES:
+            if (game_state.get("decision_context") or {}).get("type") in {
+                "declare_attackers",
+                "declare_blockers",
+            }:
+                return game_state
             return None
         assert fp is not None
         if self._typed_request_handed_to_user(decision, fp, game_state):

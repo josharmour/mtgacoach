@@ -143,6 +143,11 @@ def pick_color(decision: Any, game_state: dict[str, Any]) -> ColorPick | None:
     """
     if not is_color_choice(decision):
         return None
+    from arenamcp.land_sequence import landfall_color
+
+    immediate = landfall_color(decision, game_state)
+    if immediate:
+        return immediate
     seat = game_state.get("local_seat_id")
     if seat is None:
         for player in game_state.get("players") or []:

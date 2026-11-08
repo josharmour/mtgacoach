@@ -401,3 +401,20 @@ def test_coach_bottom_section_uses_the_real_count():
     lines = CoachEngine.__new__(CoachEngine)._format_mulligan_bottom(context, game_state)
     assert lines[0] == "!!! DECISION: MULLIGAN - PUT 2 CARD(S) ON BOTTOM !!!"
     assert lines[-1].startswith("Land/curve suggestion: bottom ")
+
+
+@pytest.mark.parametrize("land_count", [2, 3])
+def test_aura_payoffs_need_an_early_carrier_for_an_automatic_keep(land_count):
+    def hc(name, types, cost, text=""):
+        return mp.hand_card({"name": name, "type_line": types, "mana_cost": cost, "oracle_text": text})
+
+    land = hc("Plains", "Basic Land — Plains", "")
+    aura = hc(
+        "Unknown Blessing", "Enchantment — Aura", "{W}", "Enchant creature\nEnchanted creature gets +2/+2."
+    )
+    removal = hc("Answer", "Instant", "{W}", "Exile target tapped creature.")
+    cards = [land] * land_count + [aura] * (6 - land_count) + [removal]
+    found = mp.MulliganSituation(cards=cards, mulligans=0, on_play=False)
+    assert mp.mulligan_verdict(found) is None
+    cards[-2] = hc("Token Spell", "Sorcery", "{1}{W}", "Create two 1/1 white Soldier creature tokens.")
+    assert mp.mulligan_verdict(found)[0] == "keep"

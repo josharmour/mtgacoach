@@ -1702,7 +1702,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     "opponent's (OPP). For destructive effects (e.g. Cityscape Leveler, "
                     "removal spells, fight spells), ALWAYS target opponent permanents. "
                     "NEVER target your own permanents unless there are zero opponent targets on the board. "
-                    "Never put a beneficial aura on an opponent's permanent."
+                    "For Auras, apply the enchant restriction. Weigh a benefit to their creature against any independent entry payoff for you."
                 )
             elif dec_type == "modal_choice":
                 lines.append(
@@ -3098,6 +3098,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 hybrid = re.findall(r"\{[^}]+/[^}]+\}", cost)
                 cmc += len(hybrid)
 
+            matching_casts = []
             if engine_casts is not None and "land" not in type_line:
                 matching_casts = [
                     action
@@ -3135,14 +3136,20 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 if castable == "OK" and x_value == 0:
                     castable = "OK,X=0"
 
-            removal_info = self._analyze_removal(
-                oracle_lower,
-                opp_creatures,
-                opp_nonland,
-                all_creatures,
-                battlefield,
-                name,
-                no_target_card_names,
+            is_aura = "aura" in type_line and "enchantment" in type_line
+            # A later triggered ability has separate targets from casting the Aura.
+            removal_info = (
+                ""
+                if is_aura
+                else self._analyze_removal(
+                    oracle_lower,
+                    opp_creatures,
+                    opp_nonland,
+                    all_creatures,
+                    battlefield,
+                    name,
+                    no_target_card_names,
+                )
             )
 
             # Detect spells that require creatures we don't have
@@ -3150,7 +3157,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             # non-targeted effects, so casting is still valuable even when
             # later chapters need "target creature you control".
             is_saga = "saga" in type_line
-            if "land" not in type_line and "creature" not in type_line and not is_saga:
+            if "land" not in type_line and "creature" not in type_line and not is_saga and not is_aura:
                 my_creatures = [
                     c
                     for c in battlefield
@@ -3166,46 +3173,23 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                     removal_info += " [NO TARGETS]"
                     no_target_card_names.add(name)
 
-            # Auras must enchant a creature. A buff/protective Aura is only
-            # worth casting on a creature YOU control; if you control none, the
-            # only legal target is an opponent's creature and casting it just
-            # hands the enemy a free buff. A debuff/removal Aura (Pacifism-style)
-            # is the opposite — it needs an OPPONENT creature. Detect both so we
-            # don't recommend an Aura that can only hit the wrong side.
-            is_aura = "aura" in type_line and "enchantment" in type_line
-            if is_aura and "enchant creature" in oracle_lower and "[NO TARGETS]" not in removal_info:
+            if is_aura:
+                from arenamcp.target_effects import aura_entry_payoff, creature_aura_hosts, offered_target_ids
 
-                def _is_creature(c: dict) -> bool:
-                    tl = c.get("type_line", "").lower()
-                    return (
-                        "creature" in tl or "CardType_Creature" in c.get("card_types", [])
-                    ) and "land" not in tl
-
-                my_creatures = [
-                    c for c in battlefield if c.get("controller_seat_id") == local_seat and _is_creature(c)
-                ]
-                enemy_creatures = [
-                    c
-                    for c in battlefield
-                    if c.get("controller_seat_id") not in (None, local_seat) and _is_creature(c)
-                ]
-                debuff_markers = (
-                    "loses all abilities",
-                    "can't attack",
-                    "can't block",
-                    "doesn't untap",
-                    "base power and toughness",
-                    "is a coward",
-                    "can't be blocked by",
-                    "as long as enchanted",
-                )
-                is_debuff_aura = bool(re.search(r"gets? -\d+/-?\d+", oracle_lower)) or any(
-                    m in oracle_lower for m in debuff_markers
-                )
-                relevant = enemy_creatures if is_debuff_aura else my_creatures
-                if not relevant:
+                hosts = creature_aura_hosts(card, battlefield, local_seat)
+                if hosts == [] and any(offered_target_ids(action) for action in matching_casts):
+                    removal_info += " [Arena offers a target outside the current board snapshot]"
+                elif hosts == []:
                     removal_info += " [NO TARGETS]"
                     no_target_card_names.add(name)
+                elif hosts and all(
+                    c.get("controller_seat_id", c.get("owner_seat_id")) not in (None, local_seat)
+                    for c in hosts
+                ):
+                    removal_info += " [only opposing creature candidates]"
+                    payoff = aura_entry_payoff(card)
+                    if payoff:
+                        removal_info += f" [on entry: {payoff}; weigh against enchanting their creature]"
 
             is_basic_land = "land" in type_line and (
                 "basic" in type_line or name in ["Plains", "Island", "Swamp", "Mountain", "Forest"]

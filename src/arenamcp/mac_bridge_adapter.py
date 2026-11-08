@@ -2542,7 +2542,6 @@ class MacBridgeAdapter:
         if (
             not indices
             or any(type(index) is not int or not 0 <= index < len(entries) for index in indices)
-            or len(set(indices)) != len(indices)
             or len(expected) != len(indices)
         ):
             raise AdapterError("Invalid casting option indices or missing identities")
@@ -2564,6 +2563,8 @@ class MacBridgeAdapter:
         if not minimum <= len(selected) <= maximum:
             raise AdapterError(f"Casting request requires {minimum}-{maximum} modes, got {len(selected)}")
         groups = [entry["payload"]["grpId"] for entry in selected]
+        if len(set(groups)) != len(groups) and not first["payload"].get("repeatedSelectAllowed"):
+            raise AdapterError("This casting request requires distinct modes")
 
         def build(ops: _Ops, request: dict) -> None:
             ops.expect_class(H(first["child_handle"]), first["child_class"])
@@ -3791,6 +3792,8 @@ def casting_time_entries(request: dict) -> list[dict[str, Any]]:
         if kind == "CastingTimeOption_ModalRequest":
             for option, option_grp in enumerate(num(v) for v in items(field(child, "ModalOptions"))):
                 extra: dict[str, Any] = {}
+                if num(field(child, "RepeatSelectionAllowed")):
+                    extra["repeatedSelectAllowed"] = True
                 if num(field(child, "AbilityGrpId")):
                     extra["abilityGrpId"] = num(field(child, "AbilityGrpId"))
                 if num(field(child, "Min")) > 0:

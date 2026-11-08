@@ -1056,7 +1056,10 @@ class RulesEngine:
         # contexts; inside the step they misfire — an attacker being declared
         # reads is_tapped=True, which dropped a 12/10 lethal attacker from the
         # menu with the opponent at 3 (bug_20260920_221251).
-        if turn.get("step") == "Step_DeclareAttack" and turn.get("active_player") == local_seat:
+        if game_state.get("_bridge_request_type") == "DeclareAttackers" or (
+            turn.get("step") in ("Step_DeclareAttack", "DeclareAttack")
+            and turn.get("active_player") == local_seat
+        ):
             return list(legal_attackers)
         valid_name_counts: dict[str, int] = {}
         saw_local_creature = False
@@ -1449,49 +1452,17 @@ class RulesEngine:
             can_afford = RulesEngine._can_afford(card.get("mana_cost", ""), mana_pool)
 
             if can_cast_timing and can_afford:
-                # Aura target check: Auras require a valid target to cast.
-                # Beneficial Auras (+X/+X, keyword grants) need a friendly creature;
-                # detrimental Auras (Pacifism, -X/-X, "can't") need an enemy creature.
-                if "Aura" in type_line:
-                    oracle = card.get("oracle_text", "").lower()
-                    if "enchant creature" in oracle:
-                        my_creatures = [
-                            c
-                            for c in battlefield
-                            if c.get("owner_seat_id") == local_seat and "Creature" in c.get("type_line", "")
-                        ]
-                        opp_creatures = [
-                            c
-                            for c in battlefield
-                            if c.get("owner_seat_id") != local_seat and "Creature" in c.get("type_line", "")
-                        ]
-                        # Heuristic: detrimental if it weakens or restricts the target
-                        is_detrimental = any(
-                            kw in oracle
-                            for kw in (
-                                "-1/",
-                                "-2/",
-                                "-3/",
-                                "-4/",
-                                "can't attack",
-                                "can't block",
-                                "doesn't untap",
-                                "sacrifice enchanted",
-                            )
-                        )
-                        if is_detrimental:
-                            if not opp_creatures:
-                                continue  # No enemy targets for detrimental Aura
-                        else:
-                            if not my_creatures:
-                                continue  # No friendly targets for beneficial Aura
+                from arenamcp.target_effects import creature_aura_hosts
+
+                if creature_aura_hosts(card, battlefield, local_seat) == []:
+                    continue
 
                 # Non-Aura targeted removal: spells/enchantments that exile or
                 # destroy a target opponent's permanent need a valid target.
                 # Without this check the RulesEngine suggests cards like
                 # Seam Rip when the opponent has no valid targets.
                 oracle = card.get("oracle_text", "").lower()
-                if "target" in oracle and "opponent controls" in oracle:
+                if "Aura" not in type_line and "target" in oracle and "opponent controls" in oracle:
                     opp_nonlands = [
                         c
                         for c in battlefield

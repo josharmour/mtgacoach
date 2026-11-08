@@ -41,12 +41,14 @@ from arenamcp.situational_rules import compose as compose_rules
 from arenamcp.situational_rules import subjects_in_play
 from arenamcp.target_effects import (
     GOOD_TARGET,
+    aura_entry_payoff,
     effect_mentions_benefit,
     effect_mentions_blink,
     effect_mentions_harm,
     enchant_effect_text,
     highlight_is_bad,
     names_a_target_you_control,
+    offered_target_ids,
     source_effect_text,
     target_effect_has_polarity,
     target_effect_is_harmful,
@@ -790,7 +792,7 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         self._decision_cancel_event = event
 
-    def set_game_plan_source(self, source: Callable[..., str] | None) -> None:
+    def set_game_plan_source(self, source: Callable[..., str] | None, *, step_source=None) -> None:
         """Render the strategy block per decision from the live snapshot.
 
         ``source(state, with_lines=...)`` (``GamePlanManager.strategy_block``)
@@ -798,6 +800,7 @@ class ActionPlanner(_ActionLegalityMixin):
         :meth:`set_game_plan` follows freshly computed board facts.
         """
         self._game_plan_source = source
+        self._plan_step_source = step_source
 
     def set_game_plan(self, plan_text: str | None) -> None:
         """Set the persistent strategic GAME PLAN block injected into prompts.
@@ -4856,6 +4859,16 @@ class ActionPlanner(_ActionLegalityMixin):
         context = game_state.get("decision_context") or {}
         raw = context.get("raw") or {}
         accept = decision.find("optional:accept")
+        if decision.request_type in {"OptionalAction", "SelectN"}:
+            from arenamcp.legend_rule import legend_decision
+
+            legend = legend_decision(decision, game_state)
+            if legend:
+                chosen, reason = legend
+                self._last_decision_option_ids = [chosen]
+                self._last_decision_reasoning = reason
+                self._last_decision_trace = {"policy": "legend_rule", "validated_ids": [chosen]}
+                return [chosen]
         if (
             decision.request_type == "OptionalAction"
             and context.get("type") == "optional_action"
@@ -4967,6 +4980,49 @@ class ActionPlanner(_ActionLegalityMixin):
             if decision.request_type == "Search" and decision.selection_is_valid([]):
                 return []
             return [DECLINE_DECISION]
+        if decision.request_type == "ActionsAvailable" and decision.find("pass") is not None:
+            from dataclasses import replace
+
+            from arenamcp.play_safety import empty_team_activation
+
+            kept = tuple(o for o in decision.options if not empty_team_activation(o, game_state))
+            if len(kept) < len(decision.options):
+                decision = replace(decision, options=kept)
+                if decision.option_ids() == {"pass"}:
+                    self._last_decision_option_ids = ["pass"]
+                    self._last_decision_reasoning = "The team ability has no creatures to affect."
+                    self._last_decision_trace = {"policy": "empty_team_activation", "validated_ids": ["pass"]}
+                    return ["pass"]
+        from arenamcp.loyalty_removal import choose_removal, postcombat_activation, reserve_postcombat_loyalty
+
+        step_source = getattr(self, "_plan_step_source", None)
+        step = step_source(game_state) if callable(step_source) else None
+        decision = reserve_postcombat_loyalty(decision, game_state, step)
+
+        removal, self._pending_loyalty_removal = choose_removal(
+            decision, game_state, getattr(self, "_pending_loyalty_removal", None)
+        )
+        planned = postcombat_activation(decision, game_state, step) if not removal else None
+        if removal or planned:
+            oid, reason = removal or planned
+            self._last_decision_option_ids = [oid]
+            self._last_decision_reasoning = reason
+            self._last_decision_trace = {
+                "policy": "defensive_loyalty" if removal else "postcombat_loyalty",
+                "validated_ids": [oid],
+            }
+            return [oid]
+        from arenamcp.land_sequence import choose_land_sequence
+
+        land_pick, self._pending_land_sequence = choose_land_sequence(
+            decision, game_state, getattr(self, "_pending_land_sequence", None)
+        )
+        if land_pick:
+            chosen, reason = land_pick
+            self._last_decision_option_ids = [chosen]
+            self._last_decision_reasoning = reason
+            self._last_decision_trace = {"policy": "commander_land_sequence", "validated_ids": [chosen]}
+            return [chosen]
         loop_pick = self._drain_loop_pick(decision, game_state)
         if loop_pick:
             return loop_pick
@@ -5044,6 +5100,12 @@ class ActionPlanner(_ActionLegalityMixin):
                         self._last_decision_option_ids = chosen
                         self._last_decision_reasoning = correction
                         logger.warning("Kicker affordability guard: %s", correction)
+                    from arenamcp.sweep_sequence import repeat_sweep
+
+                    if correction := repeat_sweep(decision, game_state, chosen):
+                        chosen, why = correction
+                        self._note_target_choice(chosen, why)
+                        self._last_decision_trace["validated_ids"] = chosen
                     self._remember_chosen_x(decision, chosen)
                 return chosen
             chosen = [c for c in chosen if c in valid]
@@ -5074,6 +5136,7 @@ class ActionPlanner(_ActionLegalityMixin):
                 chosen = self._apply_role_guard(decision, game_state, chosen)
             if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
                 chosen = self._apply_landfall_order(decision, game_state, chosen)
+                chosen = self._sequence_sweep(decision, game_state, chosen)
             if chosen and decision.min_weight is not None:
                 chosen = list(dict.fromkeys(chosen))
                 if decision.selection_is_valid(chosen):
@@ -5090,6 +5153,7 @@ class ActionPlanner(_ActionLegalityMixin):
                     chosen = self._verify_shrink_pick(decision, game_state, chosen)
                 if chosen not in sentinels:
                     chosen = self._avoid_unpayable_ward_targets(decision, game_state, chosen)
+                    chosen = self._avoid_hit_reward(decision, game_state, chosen)
                 self._last_decision_trace["validated_ids"] = [] if chosen in sentinels else chosen
                 self._last_decision_trace["target_validation"] = (
                     "declined"
@@ -5158,7 +5222,7 @@ class ActionPlanner(_ActionLegalityMixin):
         if isinstance(trace, dict):
             trace["llm_failure"] = self.last_llm_failure
         if decision.request_type == "ActionsAvailable":
-            return self._board_math_fallback(decision, game_state)
+            return self._sequence_sweep(decision, game_state, self._board_math_fallback(decision, game_state))
         if decision.request_type == "SelectTargets":
             picked = self.targeting_fallback_choice(decision, game_state)
             if picked == [DECLINE_DECISION]:
@@ -5372,7 +5436,7 @@ class ActionPlanner(_ActionLegalityMixin):
             hard = [
                 (kind, text)
                 for kind, text in concerns
-                if kind in ("false_lethal", "attack_only", "damage_attribution")
+                if kind in ("false_lethal", "attack_only", "damage_attribution", "false_combat_board")
             ]
             if not hard:
                 logger.info(
@@ -5434,6 +5498,12 @@ class ActionPlanner(_ActionLegalityMixin):
                 "refuted_claims": attribution,
             }
             raise SecondLookError(f"second-look damage attribution refuted: {attribution[0]}")
+        from arenamcp.damage_decisions import combat_contradiction
+
+        if any(kind == "false_combat_board" for kind, _ in concerns) and combat_contradiction(
+            game_state, new_data.get("reasoning")
+        ):
+            raise SecondLookError("second look still relies on a contradicted combat board")
         if new_chosen == chosen:
             from arenamcp.game_plan import decision_claim_notes
 
@@ -6038,6 +6108,10 @@ class ActionPlanner(_ActionLegalityMixin):
             or not _local_turn(game_state)
         ):
             return []
+        from arenamcp.damage_decisions import combat_contradiction
+
+        if note := combat_contradiction(game_state, reasoning):
+            return [("false_combat_board", note)]
         found: list[tuple[str, str]] = []
         from arenamcp.cast_payoffs import cast_payoff_concern
         from arenamcp.equipment_opportunities import equipment_pass_concern
@@ -7764,6 +7838,39 @@ class ActionPlanner(_ActionLegalityMixin):
             )
         return verdict
 
+    def _sequence_sweep(self, decision, state, chosen):
+        from arenamcp.sweep_sequence import before_selected_sweep
+
+        pick = before_selected_sweep(decision, state, chosen, self._last_decision_reasoning)
+        if pick:
+            oid, line = pick
+            key = state.get("match_id"), (state.get("turn") or {}).get("turn_number")
+            if all(key):
+                self._pending_loyalty_removal = key, decision.request_id[0], line
+                self._note_target_choice([oid], line.reason)
+                self._last_decision_trace["validated_ids"] = [oid]
+                return [oid]
+        return chosen
+
+    def _avoid_hit_reward(self, decision, state, chosen):
+        from arenamcp.damage_decisions import safer_damage_target
+
+        intent = self._cast_intent_for(decision) or self._entry_intent(decision, state)
+        stated = (intent or {}).get("stated_damage_target")
+        desired = f"tgt:{stated}" if stated and decision.find(f"tgt:{stated}") else None
+        if not desired and intent:
+            desired = self._line_target_option(decision, state, intent)
+        pick = safer_damage_target(
+            decision, state, chosen, self._decision_source_oracle(decision, state), desired
+        )
+        if pick:
+            chosen, reason = pick
+            self._note_target_choice(chosen, reason)
+            trace = getattr(self, "_last_decision_trace", None)
+            if isinstance(trace, dict):
+                trace["validated_ids"] = chosen
+        return chosen
+
     def targeting_fallback_choice(self, decision: Any, game_state: dict[str, Any]) -> list[str]:
         """The model gave no usable target: the controller-aware pick, aimed so removal kills.
 
@@ -7788,6 +7895,7 @@ class ActionPlanner(_ActionLegalityMixin):
             picked = self._prefer_lethal_shrink_target(decision, game_state, picked)
         if picked and picked not in sentinels:
             picked = self._avoid_unpayable_ward_targets(decision, game_state, picked)
+            picked = self._avoid_hit_reward(decision, game_state, picked)
         return picked
 
     # How long a cast stays linked to the target request that follows it.
@@ -7840,8 +7948,18 @@ class ActionPlanner(_ActionLegalityMixin):
             return
         if not name:
             return
+        from arenamcp.damage_decisions import named_damage_recipient
+
         target, target_id = self._searched_line_target(game_state, name)
         self._cast_intent = {
+            "stated_damage_target": named_damage_recipient(game_state, reasoning),
+            "window": (
+                game_state.get("match_id"),
+                game_state.get("game_number"),
+                (game_state.get("turn") or {}).get("turn_number"),
+            ),
+            "grp_id": meta.get("grpId"),
+            "gsid": decision.request_id[0],
             "card": name,
             "said": " ".join(str(reasoning or "").split()[: self._MEMORY_REASONING_WORDS]),
             "line_target": target,
@@ -8160,9 +8278,43 @@ class ActionPlanner(_ActionLegalityMixin):
             trace["line_over_face"] = {"model": chosen, "line": line_option, "card": intent["card"]}
         return [line_option]
 
+    def _entry_intent(self, decision, state):
+        # A permanent entering changes instance IDs. Bind its triggered ability
+        # to the actual parent, same turn, recent cast, and a newly entered body.
+        from arenamcp.mana import get_local_seat_id
+
+        intent = getattr(self, "_cast_intent", None)
+        ctx = state.get("decision_context") or {}
+        turn = (state.get("turn") or {}).get("turn_number")
+        if (
+            not intent
+            or not intent.get("grp_id")
+            or not state.get("match_id")
+            or not turn
+            or intent.get("window") != (state["match_id"], state.get("game_number"), turn)
+            or time.monotonic() - intent["at"] > self._CAST_INTENT_TTL_S
+            or not 0 < decision.request_id[0] - intent["gsid"] <= 12
+            or "enters" not in str(ctx.get("source_oracle_text") or "").lower()
+        ):
+            return None
+        parents = [
+            c
+            for c in state.get("battlefield") or []
+            if c.get("grp_id") == intent["grp_id"]
+            and c.get("controller_seat_id") == get_local_seat_id(state)
+            and c.get("turn_entered_battlefield") == turn
+        ]
+        if (
+            len(parents) == 1
+            and parents[0].get("instance_id") == ctx.get("source_parent_instance_id")
+            and decision.source_label == parents[0].get("name", "") + " ability"
+        ):
+            return intent
+        return None
+
     def _cast_intent_note(self, decision: Any, game_state: dict[str, Any]) -> str:
         """The SelectTargets prompt's reminder of why this spell was cast and where the line aims it."""
-        intent = self._cast_intent_for(decision)
+        intent = self._cast_intent_for(decision) or self._entry_intent(decision, game_state)
         if intent is None:
             return ""
         parts = [f"CAST INTENT: this window you cast {intent['card']}"]
@@ -8383,6 +8535,23 @@ class ActionPlanner(_ActionLegalityMixin):
                 logger.warning("Declining opponent blink %s: %s", oid, self._decline_reason)
                 return [DECLINE_DECISION]
             hint = hints.get(iid, "")
+            # A Cold hint describes the target, not the payoff to the caster.
+            # Preserve a deliberate pick for a real entry payoff when every
+            # candidate is opposing. Never infer that payoff from a future permanent.
+            if ctrl != local_seat and not justified:
+                aura = next(
+                    (
+                        c
+                        for c in game_state.get("stack") or []
+                        if c.get("instance_id") == self._decision_source_instance(game_state)
+                        and c.get("object_kind") != "ABILITY"
+                    ),
+                    {},
+                )
+                if aura_entry_payoff(aura) and all(
+                    controllers.get(i) == ctrl for i in self._slot_candidates(decision, iid)
+                ):
+                    continue
             if highlight_is_bad(hint) and not justified:
                 arena_bad.append(oid)
                 continue
@@ -9277,6 +9446,13 @@ class ActionPlanner(_ActionLegalityMixin):
                 source_card = find_source(game_state, o.meta) or {}
                 from arenamcp.legend_rule import cast_note as legend_cast_note
 
+                if payoff := aura_entry_payoff(source_card):
+                    offered = [
+                        str(target_objects.get(i, {}).get("name") or f"object {i}")
+                        for i in offered_target_ids(o.meta)
+                    ]
+                    if offered:
+                        note += f" [Arena enchant candidates: {', '.join(offered)}. On entry you {payoff.removeprefix('you ')}; weigh the effect on the host.]"
                 note += legend_cast_note(game_state, source_card)
                 note += combat_cast_note(game_state, source_card)
                 note += trick_timing_note(game_state, source_card)
@@ -9329,6 +9505,10 @@ class ActionPlanner(_ActionLegalityMixin):
                     from arenamcp.play_safety import creature_state_facts
 
                     facts.update(creature_state_facts(card, mine=ctrl is not None and ctrl == local_seat))
+                    from arenamcp.damage_decisions import hit_reward
+
+                    if reward := hit_reward(card):
+                        facts["when_dealt_damage_even_if_lethal"] = reward
                     pending_damage = pending_target_damage.get(card.get("instance_id"), 0)
                     if pending_damage:
                         facts["pending_damage_if_resolves"] = pending_damage

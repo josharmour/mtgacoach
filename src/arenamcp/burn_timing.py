@@ -277,7 +277,14 @@ def two_turn_reach(state: dict) -> str:
     from arenamcp.decision_memory import _TURN_STEPS, mana_available, turn_window
 
     window = turn_window(state)
-    creatures = [c for c in _ours(state) if "creature" in _types(c)]
+    from arenamcp.combat_keywords import attached_combat_limits, is_creature_now
+
+    limits = attached_combat_limits(state.get("battlefield") or [])
+    creatures = [
+        c
+        for c in _ours(state)
+        if is_creature_now(c) and not limits.get(c.get("instance_id"), (False, False))[0]
+    ]
     now = 0
     if window is not None and window <= _TURN_STEPS.index("declareattack"):
         from arenamcp.combat_strategy import able_attackers

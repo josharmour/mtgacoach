@@ -26,6 +26,8 @@ import time
 from collections import deque
 from typing import Any
 
+from arenamcp.mana import SPELL_CAST_TYPES
+
 logger = logging.getLogger(__name__)
 
 COMMAND_TIMEOUT = 5.0
@@ -2735,9 +2737,7 @@ _PRIORITY_ACTION_PREFIXES = ("play land:", "cast ", "activate", "action: ", "pas
 _PRIORITY_RAW_ACTION_TYPES = {
     "ActionType_Play",
     "ActionType_PlayMDFC",
-    "ActionType_Cast",
-    "ActionType_CastLeft",
-    "ActionType_CastRight",
+    *("ActionType_" + t for t in SPELL_CAST_TYPES),
     "ActionType_Activate",
     "ActionType_Activate_Mana",
     "ActionType_Pass",

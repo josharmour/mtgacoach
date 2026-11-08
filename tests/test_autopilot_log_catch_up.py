@@ -137,3 +137,53 @@ def test_a_summary_before_newer_detail_still_waits():
     older_summary = {"_log_game_state_id": 589, "_log_summarized_at_gsid": 580}
     engine = _engine([older_summary])
     assert engine._await_log_catch_up(_poll(602), older_summary) is None
+
+
+def test_strategic_combat_receives_fresh_board_and_all_offered_ids():
+    from arenamcp.rules_engine import RulesEngine
+
+    stale = {"_log_game_state_id": 100, "battlefield": []}
+    fresh = {
+        "_log_game_state_id": 101,
+        "battlefield": [
+            {
+                "instance_id": 45,
+                "name": "Hasty Recruit",
+                "type_line": "Creature",
+                "power": 2,
+                "toughness": 1,
+                "controller_seat_id": 1,
+            }
+        ],
+        "players": [{"seat_id": 1, "is_local": True}],
+        "turn": {"phase": "Main1", "active_player": 1},
+    }
+    engine = _engine([fresh])
+    engine._gre_bridge.get_pending_actions.return_value = {
+        "game_state_id": 101,
+        "has_pending": True,
+        "request_type": "DeclareAttackers",
+        "request_class": "DeclareAttackersRequest",
+        "attackers": [{"attackerInstanceId": 45}, {"attackerInstanceId": 46}],
+    }
+    combat = engine._try_typed_decision_path(stale, "decision_required")
+    assert combat["_log_game_state_id"] == 101
+    menu = RulesEngine.get_legal_actions(combat)
+    assert "Attack with: Hasty Recruit (2/1)" in menu
+    assert "Attack with: Creature 46" in menu
+    assert stale["battlefield"] == []
+
+
+def test_process_trigger_plans_combat_from_the_handoff_snapshot(monkeypatch):
+    from copy import deepcopy
+
+    from tests.test_combat_step_guard_names import _engine as combat_engine
+    from tests.test_combat_step_guard_names import _run, _state
+
+    fresh = _state("DeclareBlock", log_names=True, context=True)
+    stale = deepcopy(fresh)
+    stale["decision_context"] = {"type": "declare_blockers", "legal_blockers": ["Old board"]}
+    engine, planner, _executed = combat_engine(monkeypatch, fresh)
+    monkeypatch.setattr(engine, "_try_typed_decision_path", lambda *args: deepcopy(fresh))
+    assert _run(engine, stale, "decision_required") is None
+    assert planner.contexts[-1] == fresh["decision_context"]

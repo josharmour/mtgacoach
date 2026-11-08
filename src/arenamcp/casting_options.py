@@ -293,13 +293,20 @@ def casting_fallback_choice(
     modal = by_kind.get("modal")
     if modal:
         minimum = casting_selection_bounds(modal[0].meta or {})[0]
+        if minimum > 1:
+            from arenamcp.sweep_sequence import fallback_sweep
+
+            if pick := fallback_sweep(decision, state):
+                return pick
         if minimum == 1:
             best, why = _best_mode(decision, state, modal, comparison)
             if best:
                 return [best], f"cast {name}: {why}"
         first = [option.option_id for option in modal[: max(1, minimum)]]
+        if minimum > len(first) and modal[0].meta.get("repeatedSelectAllowed"):
+            first.extend([first[0]] * (minimum - len(first)))
         if decision.selection_is_valid(first):
-            labels = ", ".join(option.label for option in modal[: len(first)])
+            labels = ", ".join(decision.find(oid).label for oid in first)
             return first, f"cast {name} with its first legal mode ({labels})"
     numeric = by_kind.get("numeric_input")
     if numeric:

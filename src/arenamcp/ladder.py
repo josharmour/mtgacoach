@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 LADDERS = ("Constructed", "Limited")
+RANK_HISTORY_LIMIT = 10
 
 
 def ranked_ladder(event_name: str) -> str | None:

@@ -185,6 +185,10 @@ class DecksTab(QWidget):
         self.collection_btn.clicked.connect(self.refresh_collection)
         header.addWidget(self.collection_btn, 0, Qt.AlignTop)
         lay.addLayout(header)
+        self.builder_btn = QPushButton("Build a stronger deck")
+        self.builder_btn.setToolTip("Find source decks using owned cards or your wildcard balance")
+        self.builder_btn.clicked.connect(self.open_builder)
+        lay.addWidget(self.builder_btn)
 
         self._table = QTableWidget(0, len(_COLUMNS))
         self._table.setHorizontalHeaderLabels(_COLUMNS)
@@ -239,6 +243,20 @@ class DecksTab(QWidget):
         if self._session is not None:
             self._summary.setText("Reading decks…")
             self._session.request_deck_list()
+
+    def open_builder(self) -> None:
+        from .deck_builder import DeckBuilderDialog
+
+        builder = getattr(self, "_builder", None)
+        if builder is None:
+            builder = self._builder = DeckBuilderDialog(self._session, parent=self.window())
+        if self._session is not None:
+            self._session.set_auto_queue(False)
+        builder.show()
+        builder.raise_()
+        builder.activateWindow()
+        if builder._collection is None:
+            builder.refresh()
 
     # -- collection, editing and crafting (feature #204) -----------------------
     def refresh_collection(self) -> None:

@@ -164,6 +164,12 @@ class Line:
     @property
     def ranked(self) -> tuple[int, int, float]:
         """The key lines are ranked by: ``score``, but a distant win ranks as alive (#158)."""
+        if self.cls != DEAD and self.steps and self.steps[0].cast_trigger_lethal:
+            # Keep the observed-board outcome, but prefer a surviving line
+            # whose next combat survives a single opposing cast trigger too.
+            if self.cls == WIN and self.distant_v is None:
+                return (ALIVE, -1, self.timing)
+            return (ALIVE, -2, self.distant_v if self.distant_v is not None else self.v)
         if self.distant_v is not None:
             return (ALIVE, 0, self.distant_v)
         return self.score
@@ -197,6 +203,8 @@ class Line:
         prefix = ""
         if any(s.public_response for s in self.steps) and not (self.cls == WIN and self.win_at == 1):
             prefix = "conditional on the one-turn response policy: "
+        if self.steps and self.steps[0].cast_trigger_lethal:
+            prefix += "one opposing noncreature cast threatens lethal first; otherwise "
         return prefix + self._outcome_text()
 
     def _outcome_text(self) -> str:
@@ -263,6 +271,7 @@ class Line:
                     "held": list(s.held),
                     "targets": dict(s.targets),
                     "public_response": s.public_response,
+                    "cast_trigger_lethal": s.cast_trigger_lethal,
                     "opponent_discards": s.opponent_discards,
                     "life_after": s.life_after,
                     "opp_life_after": s.opp_life_after,
@@ -350,6 +359,7 @@ class LineSearchResult:
     greedy_dies: bool = False
     unsupported: tuple[str, ...] = ()
     choice_caveats: tuple[str, ...] = ()
+    cast_trigger_risk: bool = False  # at least one first-turn choice exposes us to lethal
 
     def stats(self) -> dict[str, Any]:
         return {
@@ -373,6 +383,8 @@ class LineSearchResult:
         if self.unsupported:
             return ("LINES UNSUPPORTED: " + "; ".join(self.unsupported))[:max_chars]
         head = "LINES (2-turn search, greedy 3rd; their new cards/tricks not modelled): "
+        if self.cast_trigger_risk:
+            head = "LINES (one opposing noncreature spell could pump their attackers to lethal): "
         if self.choice_caveats:
             head = "LINES (bounded public sacrifice choices; advisory): "
         parts = [f"best {self.best.summary()}{_unmodelled_mark(self.best, unmodelled)}"]
@@ -747,7 +759,7 @@ class _Search(Moves):
             tuple(c.get("instance_id") for c in node.persistent),
             tuple(sorted(s.name for s in node.played)), len(node.rocks), ids_of(node.returning),
             node.dead_at, node.win_at, node.overkill, node.block, node.walkers, node.our_loss, node.opponent_loss,
-            node.opponent_discards, node.draws,
+            node.opponent_discards, node.draws, bool(node.history and node.history[0].cast_trigger_lethal),
         )  # fmt: skip
 
     def _rank(self, group: _Group) -> tuple:
@@ -884,6 +896,7 @@ class _Search(Moves):
             model=self.model,
             _search=self,
             choice_caveats=tuple(sorted(self.choice_caveats)),
+            cast_trigger_risk=any(g.node.history and g.node.history[0].cast_trigger_lethal for g in main),
         )
 
     @staticmethod

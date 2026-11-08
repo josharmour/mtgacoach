@@ -13,6 +13,38 @@ ALL_MANA_COLORS = frozenset({"W", "U", "B", "R", "G", "C"})
 _MANA_SYMBOL_RE = re.compile(r"\{([^}]+)\}")
 
 
+# The face supplied by GRE has its own name, timing and payment solution.
+SPELL_CAST_TYPES = frozenset(
+    {
+        "Cast",
+        "CastLeft",
+        "CastRight",
+        "CastAdventure",
+        "CastMDFC",
+        "CastPrototype",
+        "CastLeftRoom",
+        "CastRightRoom",
+        "CastOmen",
+    }
+)
+
+
+def face_payment(action: dict[str, Any]) -> bool | None:
+    if (
+        has_autotap_solution(action)
+        or action.get("manaPaymentOptions")
+        or action.get("manaPaymentOptionsCount", 0)
+    ):
+        return True
+    if any(
+        isinstance(part, dict) and str(part.get("count", "")).isdecimal() and int(part["count"]) > 0
+        for part in action.get("manaCost") or []
+    ):
+        return False
+    # A free or nonmana alternative can have no autotap response.
+    return None
+
+
 def has_autotap_solution(action: dict[str, Any]) -> bool:
     """Whether Arena supplied a payment solution, including a zero-cost one."""
     return bool(action.get("hasAutoTap")) or isinstance(action.get("autoTapSolution"), dict)

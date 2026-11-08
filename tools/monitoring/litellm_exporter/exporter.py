@@ -15,7 +15,7 @@ from contextlib import suppress
 from prometheus_client import Counter, Gauge, start_http_server
 
 # ── Config from env ─────────────────────────────────────────────────────
-DB_HOST = os.getenv("DB_HOST", "10.0.0.100")
+DB_HOST = os.getenv("DB_HOST", "litellm-db")
 DB_PORT = int(os.getenv("DB_PORT", "5432"))
 DB_USER = os.getenv("DB_USER", "litellm")
 DB_PASS = os.getenv("DB_PASS", "")

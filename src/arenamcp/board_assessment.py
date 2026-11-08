@@ -573,12 +573,11 @@ def _body(
     can_attack = not has_combat_keyword(card, "defender") and not _CANT_ATTACK.search(text)
     can_block = not _CANT_BLOCK.search(text)
     card_attached = (attached or {}).get(_int(card.get("instance_id")) or -1, [])
-    for aura in card_attached:
-        aura_text = _text(aura)
-        if "enchanted creature can't attack" in aura_text:
-            can_attack = False
-        if "enchanted creature can't block" in aura_text or "can't attack or block" in aura_text:
-            can_block = False
+    from arenamcp.combat_keywords import attachment_combat_limits
+
+    attack_banned, block_banned = attachment_combat_limits(card_attached)
+    can_attack = can_attack and not attack_banned
+    can_block = can_block and not block_banned
     # cant_be_blocked: combat_keywords.annotate_cant_be_blocked (own text named
     # by card name, attached Auras/Equipment) when the snapshot was marked.
     unblockable = (

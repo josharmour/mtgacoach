@@ -117,6 +117,96 @@ def enchant_effect_text(ability_text: str, card_text: str) -> str:
     return "\n".join([line, *effect])
 
 
+def creature_aura_scope(card: dict) -> str:
+    """Controller restriction on a simple creature Aura's enchant ability."""
+    if "aura" not in str(card.get("type_line") or "").lower():
+        return ""
+    text = re.sub(r"<[^>]+>", "", str(card.get("oracle_text") or "")).replace("’", "'")
+    match = re.search(
+        r"^\s*enchant creature( you control| an opponent controls| you don't control)?[.]?\s*$",
+        text,
+        re.I | re.M,
+    )
+    if not match:
+        return ""
+    restriction = (match[1] or "").lower()
+    if not restriction:
+        return "either"
+    return "self" if restriction == " you control" else "opponent"
+
+
+def offered_target_ids(action: dict) -> list[int]:
+    """Explicit candidates in the GRE cast action, including ones not yet on the log board."""
+    return list(
+        dict.fromkeys(
+            iid
+            for slot in action.get("targets") or []
+            if isinstance(slot, dict)
+            for candidate in slot.get("targets") or []
+            if isinstance(candidate, dict)
+            if isinstance(iid := candidate.get("targetInstanceId"), int) and iid > 0
+        )
+    )
+
+
+def creature_aura_hosts(card: dict, battlefield: list[dict], local: int | None) -> list[dict] | None:
+    """Board candidates for the enchant line, before ward/protection. None means unknown."""
+    from arenamcp.combat_keywords import is_creature_now
+
+    scope = creature_aura_scope(card)
+    if not scope or local is None:
+        return None
+    hosts = []
+    for body in battlefield:
+        if not is_creature_now(body) or body.get("is_phased_out"):
+            continue
+        seat = body.get("controller_seat_id") or body.get("owner_seat_id")
+        if scope == "either" or seat is None or (scope == "self") == (seat == local):
+            hosts.append(body)
+    return hosts
+
+
+def aura_entry_payoff(card: dict) -> str:
+    """A printed reward its controller gets independently of the enchanted host."""
+    if creature_aura_scope(card) != "either":
+        return ""
+    name = re.escape(str(card.get("name") or "CARDNAME"))
+    text = re.sub(r"<[^>]+>", "", str(card.get("oracle_text") or ""))
+    match = re.search(
+        rf"^when (?:{name}|cardname|~|this (?:aura|enchantment|permanent)) enters(?: the battlefield)?, "
+        r"(draw (?:a card|two cards)|scry \d+|you gain \d+ life)\.?\s*$",
+        text,
+        re.I | re.M,
+    )
+    return match[1] if match else ""
+
+
+def resolves_to_creature(card: dict) -> bool:
+    """A creature spell, or a spell/ability that produces a body on resolution or entry."""
+    types = str(card.get("type_line") or "").lower()
+    if "creature" in types and card.get("object_kind") != "ABILITY":
+        return True
+    text = re.sub(r"<[^>]+>", "", str(card.get("oracle_text") or ""))
+    if "creature token" not in text.lower():
+        return False
+    name = re.escape(str(card.get("name") or "CARDNAME"))
+    for line in text.splitlines():
+        # Only the first chapter or an unconditional self-entry trigger is
+        # imminent on a permanent spell. Later chapters/activated costs aren't.
+        if "saga" in types and card.get("object_kind") != "ABILITY":
+            line = re.sub(r"^I(?:, II+)*\s*[—–-]\s*", "", line, flags=re.I) if re.match(r"^I\b", line) else ""
+        elif not ("instant" in types or "sorcery" in types or card.get("object_kind") == "ABILITY"):
+            entry = re.match(
+                rf"^when (?:{name}|cardname|~|this \w+) enters(?: the battlefield)?, (.*)", line, re.I
+            )
+            line = entry[1] if entry else ""
+        if re.search(r"under (?!your control)[^.]*control", line, re.I):
+            continue
+        if re.match(r"^create\b[^.;:\n]*\bcreature tokens?\b", line, re.I):
+            return True
+    return False
+
+
 def names_a_target_you_control(oracle: str) -> bool:
     """The text restricts a target to your own side ("target creature you control")."""
     text = re.sub(r"<[^>]*>", "", (oracle or "").lower())

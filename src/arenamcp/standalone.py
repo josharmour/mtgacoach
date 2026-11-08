@@ -1354,7 +1354,11 @@ class StandaloneCoach(
                 # safe default that could ever submit — fall through to the
                 # loud alert instead of deferring until Arena's rope expires.
                 log_derived = isinstance(resp, dict) and bool(resp.get("_log_derived"))
-                if detail == "autopilot busy" or not log_derived:
+                # A log-only signal just after a successful submission can be
+                # the gap between a cost and its search. Give the bridge a
+                # bounded chance to publish the successor, unless time is critical.
+                settling = log_derived and watchdog.bridge_settling(last_answer, step)
+                if detail == "autopilot busy" or not log_derived or settling:
                     logger.info(f"[WATCHDOG] safe default deferred for {step.label}: {detail}")
                     watchdog.retry_safe_default()
                     return None

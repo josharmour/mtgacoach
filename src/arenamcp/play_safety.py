@@ -32,24 +32,29 @@ def _local_seat(state: dict) -> int | None:
 
 def aura_waits_for_creature(state: dict, card: dict) -> bool:
     """Hold a beneficial creature Aura while our first creature is still a spell."""
-    from arenamcp.target_effects import enchant_effect_text, target_effect_is_harmful
+    from arenamcp.target_effects import (
+        creature_aura_scope,
+        enchant_effect_text,
+        resolves_to_creature,
+        target_effect_is_harmful,
+    )
 
     local = _local_seat(state)
     if local is None or "battlefield" not in state:
         return False
+    scope = creature_aura_scope(card)
+    if scope not in ("either", "self"):
+        return False
     oracle = str(card.get("oracle_text") or "")
-    enchant = re.search(r"^\s*Enchant creature(?: you control)?\s*$", oracle, re.I | re.M)
-    if "aura" not in str(card.get("type_line") or "").lower() or not enchant:
+    if (
+        scope == "either"
+        and target_effect_is_harmful(enchant_effect_text("Enchant creature", oracle)) is not False
+    ):
         return False
-    if target_effect_is_harmful(enchant_effect_text(enchant.group(), oracle)) is not False:
-        return False
-
-    def creature(obj: dict) -> bool:
-        return "creature" in str(obj.get("type_line") or "").lower()
 
     # Unknown controllers may be ours: do not infer the lack of a target.
     if any(
-        creature(obj) and obj.get("controller_seat_id") in (None, local)
+        is_creature_now(obj) and obj.get("controller_seat_id") in (None, local)
         for obj in state.get("battlefield") or []
     ):
         return False
@@ -57,7 +62,7 @@ def aura_waits_for_creature(state: dict, card: dict) -> bool:
     return (
         bool(stack)
         and all(obj.get("controller_seat_id") == local for obj in stack)
-        and any(creature(obj) and obj.get("object_kind") != "ABILITY" for obj in stack)
+        and any(resolves_to_creature(obj) for obj in stack)
     )
 
 
@@ -1228,6 +1233,48 @@ def _offered_ability(card: dict, metadata: dict | None) -> tuple[str, str]:
     return abilities[0] if len(abilities) == 1 else ("", "")
 
 
+def empty_team_activation(option, state: dict) -> bool:
+    """A pure team enhancement has no recipients. Keep uncertain boards and other costs/effects."""
+    meta = option.meta or {}
+    if meta.get("actionType") != "ActionType_Activate" or "battlefield" not in state:
+        return False
+    card = find_source(state, meta)
+    if not card:
+        return False
+    # The label contains the resolved ability, including for multi-ability sources.
+    selected = re.search(r"\[([^\[\]]+)\]$", option.label or "")
+    cost, effect = _offered_ability(
+        card, {**meta, "ability_text": meta.get("ability_text") or (selected[1] if selected else "")}
+    )
+    if not re.fullmatch(r"(?:\s*\{o?(?:[WUBRGCT]|\d+)\}\s*,?)+", cost, re.I):
+        return False
+    if not re.fullmatch(
+        r"(?:put (?:a|one|two|three|\d+) \+\d+/\+\d+ counters? on each creature you control"
+        r"|creatures you control get \+\d+/\+\d+ until end of turn)\.?",
+        effect,
+        re.I,
+    ):
+        return False
+    local = _local_seat(state)
+    if local is None:
+        return False
+    for permanent in state["battlefield"]:
+        if not (permanent.get("type_line") or permanent.get("card_types")):
+            return False
+        if is_creature_now(permanent) and (
+            permanent.get("controller_seat_id") or permanent.get("owner_seat_id")
+        ) in (local, None):
+            return False
+        # Paying the tap cost or activating can itself trigger another permanent.
+        if re.search(
+            r"\bwhen(?:ever)? [^.\n]*(?:becomes? tapped|you (?:tap|activate))",
+            permanent.get("oracle_text") or "",
+            re.I,
+        ):
+            return False
+    return True
+
+
 def _cast_effects(card: dict) -> list[str]:
     """An instant's or sorcery's effects, one per line or mode (costs and 'choose one' headers aside)."""
     type_line = str(card.get("type_line") or "").lower()
@@ -1794,8 +1841,11 @@ def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict
     if removal_lacks_opponent_target(card, state, activation=action_type == "activate"):
         return "mandatory removal has no opposing target"
     if action_type == "cast":
+        from arenamcp.legend_rule import redundant_legend_cast
+
         reason = (
-            damage_removal_kills_nothing(card, state)
+            redundant_legend_cast(state, card)
+            or damage_removal_kills_nothing(card, state)
             or power_only_debuff_wasted(card, state)
             or temporary_shrink_wasted(card, state)
             or counter_tax_payable_wasted(card, state)
@@ -1885,8 +1935,12 @@ def filter_play_options(decision: Any, state: dict) -> Any:
             not reason
             and str(metadata.get("actionType", "")).removeprefix("ActionType_").lower() == "activate"
         ):
-            reason = tap_forfeits_free_attack(option.label, source, state) or loyalty_minus_exposes_walker(
-                option.label, source, state
+            from arenamcp.equipment_opportunities import defer_attack_equip
+
+            reason = (
+                defer_attack_equip(option, source, state)
+                or tap_forfeits_free_attack(option.label, source, state)
+                or loyalty_minus_exposes_walker(option.label, source, state)
             )
         if option.payable is not False and not reason:
             kept.append(option)
@@ -2198,6 +2252,16 @@ def loyalty_minus_exposes_walker(label: str, source: dict, state: dict) -> str:
     # bug_20261018_224732: Jace at 1 loyalty (abilities -1 and -3 only) had its
     # -1 withheld every turn, so the walker could never be used again.
     if threat <= 0 or after > threat or after <= 0:
+        return ""
+    # Removal changes the very attack used to compute the floor. Leave that
+    # activation available for strategic evaluation even when the effect is
+    # outside our bounded combat forecast.
+    ability = _ABILITY_TEXT.search(label)
+    if (
+        ability
+        and re.search(r"\b(?:damage|destroy|exile|tap|return)\b", ability["text"], re.I)
+        and "target" in ability["text"].lower()
+    ):
         return ""
     gained = loyalty_minus_value(label, state)
     if gained > 2.0 * max(0, after):

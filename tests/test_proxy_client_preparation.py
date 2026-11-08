@@ -20,7 +20,7 @@ def install_client(monkeypatch, factory=None):
     return constructor, client
 
 
-@pytest.mark.parametrize("url", ["http://10.0.0.100:8444/v1", ONLINE_BASE_URL])
+@pytest.mark.parametrize("url", ["http://10.0.0.10:8444/v1", ONLINE_BASE_URL])
 def test_prepare_remote_client_never_sends_inference_or_marks_health_ready(monkeypatch, url):
     monkeypatch.delenv("ARENAMCP_ENGINE_RELOAD", raising=False)
     constructor, client = install_client(monkeypatch)
@@ -116,9 +116,9 @@ def test_gateway_url_override_from_settings_and_env(monkeypatch):
     assert kwargs["api_key"] == "sk-lan-key"
     assert kwargs["default_headers"] == get_client_headers()
 
-    monkeypatch.setenv("ARENAMCP_GATEWAY_URL", "http://10.0.0.100:8444/v1/")
+    monkeypatch.setenv("ARENAMCP_GATEWAY_URL", "http://10.0.0.10:8444/v1/")
     backend2 = create_backend("online")
-    assert backend2._base_url == "http://10.0.0.100:8444/v1"
+    assert backend2._base_url == "http://10.0.0.10:8444/v1"
 
 
 def test_public_gateway_canary_alerts_when_api_mtgacoach_goes_down_and_recovers(monkeypatch):

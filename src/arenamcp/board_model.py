@@ -48,7 +48,7 @@ from arenamcp.board_assessment import (
     engine_role,
     extra_mana_cost,
 )
-from arenamcp.combat_keywords import has_combat_keyword, printed_combat_keywords
+from arenamcp.combat_keywords import attachments_by_host, has_combat_keyword, printed_combat_keywords
 from arenamcp.death_triggers import annotate_death_swings
 from arenamcp.mulligan_policy import _land_colors, _mana_value, _symbols, hand_card
 
@@ -644,11 +644,7 @@ def build_board_model(state: dict) -> BoardModel | None:
     from arenamcp.legend_rule import resolve_legends
 
     battlefield = resolve_legends(battlefield, battlefield=battlefield)
-    attached: dict[int, list[dict]] = {}
-    for card in battlefield:
-        target = _int(card.get("attached_to_id"))
-        if target:
-            attached.setdefault(target, []).append(card)
+    attached = attachments_by_host(battlefield)
 
     annotate_death_swings(battlefield)
     our_rules, their_rules = _side_rules(battlefield, local), _side_rules(battlefield, opponent)
