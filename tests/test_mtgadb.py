@@ -201,3 +201,15 @@ def test_find_mtga_database_checks_settings_dir(tmp_path, monkeypatch) -> None:
 
     resolved = find_mtga_database()
     assert resolved == db_file
+
+
+def test_localized_ability_keeps_its_own_loyalty_cost(tmp_path):
+    path = tmp_path / "loyalty.sqlite"
+    _create_test_db(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE Abilities ADD COLUMN LoyaltyCost TEXT")
+        connection.executemany(
+            "INSERT INTO Abilities(Id,TextId,LoyaltyCost) VALUES(?,?,?)", [(1, 3001, "+1"), (2, 3002, "-2")]
+        )
+    db = MTGADatabase(path)
+    assert db.get_card(1001).oracle_text.splitlines() == ["[+1]: Flying", "[-2]: Draw a card."]

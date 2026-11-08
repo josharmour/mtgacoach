@@ -1469,3 +1469,21 @@ def test_bepinex_result_poll_distinguishes_scene_transition_from_home():
     home = adapter.handle({"action": "get_match_end"})
     assert home["is_open"] is False and home["home_active"] is True
     assert not clicks(world)
+
+
+def test_repeatable_casting_modes_reach_arena_in_one_submission():
+    from arenamcp.casting_options import casting_fallback_choice
+    from arenamcp.decisions import build_pending_decision, submit_option
+
+    request = choose_two_request()
+    child = request["ChildRequests"]["$items"][0]
+    child.update(ModalOptions=listing(167295, 167296), Min=3, Max=3, RepeatSelectionAllowed=True)
+    game = FakeGame(request, {"Type": enum("CastingTimeOptions", 1)})
+    adapter = adapter_for(game)
+    bridge = GREBridge()
+    bridge._send_safe = adapter.handle
+    decision = build_pending_decision(adapter.handle({"action": "get_pending_actions"}))
+    assert decision.selection_is_valid(casting_fallback_choice(decision, {})[0])
+    assert submit_option(bridge, decision, ["idx:1"] * 3)
+    [batch] = game.submits()
+    assert submitted_uint_values(batch) == [167296] * 3

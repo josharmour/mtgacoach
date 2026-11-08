@@ -215,3 +215,32 @@ def test_submit_option_multi_select():
     )
     assert submit_option(bridge, d, ["sel:10", "sel:12"]) is True
     assert bridge.calls == [("selection", [10, 12])]
+
+
+def test_adventure_uses_its_own_cost_and_payment_solution():
+    from arenamcp.play_safety import filter_play_options
+
+    front = dict(actionType="Cast", instanceId=705, grpId=100, manaCost=[{"count": 3}])
+    adventure = dict(
+        actionType="CastAdventure",
+        instanceId=705,
+        grpId=101,
+        manaCost=[{"color": "Generic", "count": 1}, {"color": "Red", "count": 1}],
+    )
+
+    def build(paid):
+        return build_pending_decision(
+            dict(
+                has_pending=True,
+                request_type="ActionsAvailable",
+                can_pass=True,
+                actions=[front, {**adventure, "hasAutoTap": paid}],
+            ),
+            resolve_name=lambda gid: {100: "Giant", 101: "Stomp"}[gid],
+        )
+
+    unpaid = build(False)
+    assert unpaid.find("idx:1").label == "Cast Stomp (cannot auto-pay)"
+    assert filter_play_options(unpaid, {}).option_ids() == {"pass"}
+    paid = build(True)
+    assert filter_play_options(paid, {}).option_ids() == {"idx:1", "pass"}

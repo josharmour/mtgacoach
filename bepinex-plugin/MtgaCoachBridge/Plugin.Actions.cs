@@ -854,13 +854,12 @@ namespace MtgaCoachBridge
                 cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "Missing casting option identities" });
                 return;
             }
-            var seen = new HashSet<int>();
             var groups = new List<uint>();
             int childIndex = -1;
             for (int i = 0; i < indices.Count; i++)
             {
                 int index = indices[i].Value<int>();
-                if (index < 0 || index >= entries.Count || !seen.Add(index))
+                if (index < 0 || index >= entries.Count)
                 {
                     cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "Invalid casting option indices" });
                     return;
@@ -888,6 +887,11 @@ namespace MtgaCoachBridge
                 || !(children[childIndex] is CastingTimeOption_ModalRequest modal))
             {
                 cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "Missing modal child request" });
+                return;
+            }
+            if (!modal.RepeatSelectionAllowed && new HashSet<uint>(groups).Count != groups.Count)
+            {
+                cmd.SetResponse(new JObject { ["ok"] = false, ["error"] = "This casting request requires distinct modes" });
                 return;
             }
             if (groups.Count < modal.Min || groups.Count > modal.Max)
@@ -3200,6 +3204,8 @@ namespace MtgaCoachBridge
                                 $"Mode {optionIndex + 1}",
                                 optionIndex,
                                 grpId);
+                            if (modalReq.RepeatSelectionAllowed)
+                                payload["repeatedSelectAllowed"] = true;
                             if (modalReq.AbilityGrpId != 0)
                                 payload["abilityGrpId"] = (int)modalReq.AbilityGrpId;
                             if (modalReq.Min > 0)

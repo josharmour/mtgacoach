@@ -1794,8 +1794,11 @@ def unsafe_play_reason(state: dict, card: dict, action_type: str, metadata: dict
     if removal_lacks_opponent_target(card, state, activation=action_type == "activate"):
         return "mandatory removal has no opposing target"
     if action_type == "cast":
+        from arenamcp.legend_rule import redundant_legend_cast
+
         reason = (
-            damage_removal_kills_nothing(card, state)
+            redundant_legend_cast(state, card)
+            or damage_removal_kills_nothing(card, state)
             or power_only_debuff_wasted(card, state)
             or temporary_shrink_wasted(card, state)
             or counter_tax_payable_wasted(card, state)
@@ -1885,9 +1888,10 @@ def filter_play_options(decision: Any, state: dict) -> Any:
             not reason
             and str(metadata.get("actionType", "")).removeprefix("ActionType_").lower() == "activate"
         ):
-            reason = tap_forfeits_free_attack(option.label, source, state) or loyalty_minus_exposes_walker(
-                option.label, source, state
-            )
+            from arenamcp.equipment_opportunities import defer_attack_equip
+
+            reason = (defer_attack_equip(option, source, state) or tap_forfeits_free_attack(option.label, source, state)
+                      or loyalty_minus_exposes_walker(option.label, source, state))
         if option.payable is not False and not reason:
             kept.append(option)
         elif reason:
@@ -2198,6 +2202,12 @@ def loyalty_minus_exposes_walker(label: str, source: dict, state: dict) -> str:
     # bug_20261018_224732: Jace at 1 loyalty (abilities -1 and -3 only) had its
     # -1 withheld every turn, so the walker could never be used again.
     if threat <= 0 or after > threat or after <= 0:
+        return ""
+    # Removal changes the very attack used to compute the floor. Leave that
+    # activation available for strategic evaluation even when the effect is
+    # outside our bounded combat forecast.
+    ability = _ABILITY_TEXT.search(label)
+    if ability and re.search(r"\b(?:damage|destroy|exile|tap|return)\b", ability["text"], re.I) and "target" in ability["text"].lower():
         return ""
     gained = loyalty_minus_value(label, state)
     if gained > 2.0 * max(0, after):

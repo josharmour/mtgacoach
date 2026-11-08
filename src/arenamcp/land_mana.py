@@ -68,6 +68,12 @@ def enters_tapped(card: dict, permanents=()) -> bool:
             )
             < 2
         )
+    check = re.search(
+        r"enters (?:the battlefield )?tapped unless you control (?:a|an) (plains|island|swamp|mountain|forest)\b(?: or (?:a|an) (plains|island|swamp|mountain|forest)\b)?\.",
+        text,
+    )
+    if check:
+        return not any(basic_types(c) & set(check.groups()) for c in permanents if not c.get("is_phased_out"))
     return True
 
 

@@ -189,6 +189,7 @@ class MTGADatabase:
         # Whether this DB build exposes the printed-type-line localization
         # columns. Probed rather than assumed so a schema change degrades to
         # "no type line" instead of making every card lookup fail.
+        self._has_ability_loyalty = False
         self._has_type_text_cols = False
         self._card_columns: set[str] = set()
 
@@ -221,6 +222,9 @@ class MTGADatabase:
                 self._conn.row_factory = sqlite3.Row
                 self._available = True
                 try:
+                    self._has_ability_loyalty = any(
+                        row["name"] == "LoyaltyCost" for row in self._conn.execute("PRAGMA table_info(Abilities)")
+                    )
                     cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(Cards)")}
                     self._card_columns = cols
                     self._has_type_text_cols = {"TypeTextId", "SubtypeTextId"} <= cols
@@ -258,47 +262,32 @@ class MTGADatabase:
                 return ""
 
             try:
-                # Parse 'AbilityGrpId:TextId' pairs — convert to integers,
-                # skipping malformed entries that would cause SQLite MISUSE errors.
-                text_ids: list[int] = []
+                requested = []
                 for pair in str(ability_ids_str).split(","):
                     parts = pair.split(":")
-                    if len(parts) >= 2:
-                        raw = parts[1].strip()
-                        if raw:
-                            try:
-                                text_ids.append(int(raw))
-                            except ValueError:
-                                continue
-
-                if not text_ids:
+                    if len(parts) >= 2 and parts[1].strip().isdigit():
+                        ability = int(parts[0]) if parts[0].strip().isdigit() else 0
+                        requested.append((len(requested), ability, int(parts[1])))
+                if not requested:
                     return ""
-
-                # Query all text IDs at once, preserving original order
-                placeholders = ",".join("?" * len(text_ids))
-                # Embed integer IDs directly in CASE WHEN — SQLite doesn't support
-                # parameterized ? placeholders in CASE expressions (causes MISUSE error).
-                # Safe because text_ids are validated ints parsed above.
-                case_whens = " ".join(f"WHEN {tid} THEN {i}" for i, tid in enumerate(text_ids))
+                values = ", ".join("(?, ?, ?)" for _ in requested)
+                loyalty = "a.LoyaltyCost" if self._has_ability_loyalty else "NULL"
+                abilities = "LEFT JOIN Abilities a ON a.Id = r.ability" if self._has_ability_loyalty else ""
                 cursor = self._conn.execute(
                     f"""
-                    SELECT Loc FROM Localizations_enUS
-                    WHERE LocId IN ({placeholders}) AND Formatted = 1
-                    ORDER BY CASE LocId
-                        {case_whens}
-                    END
-                """,
-                    text_ids,
+                    WITH requested(seq, ability, loc) AS (VALUES {values})
+                    SELECT l.Loc, {loyalty} AS loyalty FROM requested r
+                    JOIN Localizations_enUS l ON l.LocId = r.loc AND l.Formatted = 1
+                    {abilities} ORDER BY r.seq
+                    """,
+                    [v for row in requested for v in row],
                 )
-
-                # Each text has three Formatted variants (0, 1, 2); without the
-                # filter above every ability came back three times (2026-10-18).
-                # <nobr> keeps "+1/+1" on one line in Arena's UI; it is not rules text.
-                texts = [
-                    row["Loc"].replace("<nobr>", "").replace("</nobr>", "")
-                    for row in cursor.fetchall()
-                    if row["Loc"]
-                ]
+                texts = []
+                for row in cursor:
+                    if row["Loc"]:
+                        line = row["Loc"].replace("<nobr>", "").replace("</nobr>", "")
+                        cost = row["loyalty"]
+                        texts.append(f"[{cost}]: {line}" if cost is not None and cost != "" else line)
                 return "\n".join(texts)
 
             except Exception as e:

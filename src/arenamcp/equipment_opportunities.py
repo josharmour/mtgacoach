@@ -172,3 +172,57 @@ def correct_equipment_payoff_claim(decision, state, chosen, data, trace):
         "reasoning": "Passing despite a supported free-equip mana route to a spell in hand. "
         "The model did not justify foregoing that payment opportunity; recheck the relay before treating it as no tap payoff.",
     }
+
+
+def defer_attack_equip(option, equipment, state):
+    """Postpone paying life for a pure attacking-body trigger when combat calls for a hold."""
+    if not re.search(r"\[Equip[—-]Pay \d+ life\.?\]", option.label, re.I):
+        return ""
+    text = re.sub(r"<[^>]*>", "", equipment.get("oracle_text") or "").strip()
+    trigger = re.fullmatch(
+        r'(?:Equipped creature has ["“]Whenever this creature attacks|Whenever equipped creature attacks), '
+        r'(?P<effect>[^.]+)\.["”]?\s*Equip[—-]Pay (?P<life>\d+) life\.',
+        text,
+        re.I,
+    )
+    if not trigger or state.get("stack"):
+        return ""
+    from arenamcp.board_assessment import assess
+    from arenamcp.card_db import get_card_database
+    from arenamcp.combat_strategy import able_attackers
+
+    board = assess(state)
+    if board is None or board.posture != "hold" or board.all_in or board.lethal_now:
+        return ""
+    # The searched hold line does not include the conjured body. Even an
+    # unblocked attack with it must fall short before we defer the equip.
+    effect = trigger["effect"]
+    conjured = re.fullmatch(
+        r"conjure a card named (.+?) onto the battlefield tapped and attacking", effect, re.I
+    )
+    created = re.fullmatch(
+        r"create (?:an?|one) (\d+)/(\d+) [\w -]+ creature token (?:that.s |that's )?tapped and attacking",
+        effect,
+        re.I,
+    )
+    if conjured:
+        db = get_card_database().get_raw_mtgadb()
+        ids = db.grp_ids_by_name(conjured[1]) if db else []
+        extra = db.get_card(ids[0]) if ids else None
+        if extra is None or not str(extra.power).isdigit():
+            return ""
+        rules = re.sub(r"\([^)]*\)", "", extra.oracle_text or "")
+        if re.search(r"\b(?:whenever|when|double strike|enters|deals? .* damage)\b", rules, re.I):
+            return ""
+        added_power = int(extra.power)
+    elif created:
+        added_power = int(created[1])
+    else:
+        return ""  # Other triggers could independently justify the attack.
+    able = able_attackers(state)
+    ceiling = added_power + sum(
+        max(0, c.get("power") or 0) * (2 if has_combat_keyword(c, "double strike") else 1) for c in able
+    )
+    if ceiling >= board.opp_life:
+        return ""
+    return f"Keep {trigger['life']} life: combat favors holding, so the attack trigger would add no attacker this turn."

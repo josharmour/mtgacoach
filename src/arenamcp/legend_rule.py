@@ -214,3 +214,170 @@ def keep_note(state: dict, decision) -> str:
         "The other copy goes to the graveyard (not a sacrifice or destruction). CURRENT INSTANCES: "
         + json.dumps(choices, ensure_ascii=False)
     )
+
+
+# A standalone Arena prompt describes the entering token, independently of the
+# model's plan. Compound optional effects must be evaluated as a whole.
+_CREATE_LEGEND = re.compile(
+    r"Create (?P<name>.+?), a legendary (?P<p>\d+)/(?P<t>\d+) [\w -]+ creature token"
+    r"(?: with [\w ,'-]+)?\?",
+    re.I,
+)
+
+
+def _replacement_payoff(board, incoming):
+    """Match the entering/dying object, including who controls it.
+
+    A named self trigger may use the name of an alternate printing. A
+    permanent already on the battlefield does not enter when our token does.
+    """
+    for obj in board:
+        if card_of(obj).get("is_phased_out"):
+            continue
+        rules = text(obj)
+        for m in re.finditer(r"\b(?:when|whenever|if)\s+([^.,\n]+)", rules):
+            clause = m[1]
+            event = re.search(
+                r"\b(?:dies?|leaves?|enters?|is put into a graveyard|are put into a graveyard)\b", clause
+            )
+            if not event:
+                continue
+            subject = clause[: event.start()].strip()
+            if "nontoken" in subject and token(incoming):
+                continue
+            if "you control" in clause and controller(obj) != controller(incoming):
+                continue
+            if "opponent controls" in clause and controller(obj) == controller(incoming):
+                continue
+            if subject.startswith(("this ", "cardname", "~")) or subject in {
+                name_of(obj),
+                name_of(obj).split(",", 1)[0],
+            }:
+                if name_of(obj) == name_of(incoming):
+                    return True
+                continue
+            object_types = set(re.findall(r"\w+", str(incoming.get("type_line") or "").lower()))
+            if any(
+                k in subject.split() and k not in object_types
+                for k in ("artifact", "land", "enchantment", "creature", "planeswalker")
+            ):
+                continue
+            if subject == name_of(incoming) or re.search(
+                r"\b(?:a|an|any|another|other|one or more|one of your|each|any number of)\b", subject
+            ):
+                return True
+        if re.search(r"\b(?:if|whenever) (?:you|a player|an opponent) (?:would )?create", rules):
+            return True
+    return False
+
+
+def legend_decision(decision, state):
+    """Resolve a clearly inferior duplicate; defer ambiguous replacements."""
+    board = state.get("battlefield") or []
+    seat = state.get("local_seat_id")
+    if seat is None or decision.request_type not in {"OptionalAction", "SelectN"}:
+        return None
+    prompt = decision.prompt_text or ""
+    if decision.request_type == "SelectN":
+        if "legendary permanent" not in prompt.lower() or "wish to keep" not in prompt.lower():
+            return None
+        instances = {f"sel:{c.get('instance_id')}": c for c in board if controller(c) == seat}
+        cards = [instances.get(o.option_id) for o in decision.options]
+        if len(cards) < 2 or any(c is None for c in cards):
+            return None
+        if len({(name_of(c), text(c)) for c in cards}) != 1:
+            return None
+        for option, card in zip(decision.options, cards, strict=True):
+            if all(c is card or _dominates(card, c, board) for c in cards):
+                return (
+                    option.option_id,
+                    f"Keep the stronger {card['power']}/{card['toughness']} {card['name']}.",
+                )
+        return None
+    match = _CREATE_LEGEND.fullmatch(prompt.strip())
+    if not match or not decision.find("optional:decline"):
+        return None
+    incoming = {
+        "name": match["name"],
+        "is_legendary": True,
+        "is_token": True,
+        "controller_seat_id": seat,
+        "type_line": "Token Legendary Creature",
+        "power": int(match["p"]),
+        "toughness": int(match["t"]),
+    }
+    for old in conflicts(incoming, board):
+        if (
+            _dominates(old, incoming, board, equal_ok=True)
+            and not _replacement_payoff(board, incoming)
+            and not re.search(r"\b(?:when|whenever|draw|then|if|sacrifice)\b", prompt, re.I)
+        ):
+            return "optional:decline", (
+                f"Keep the {old['power']}/{old['toughness']} {old['name']}. The new "
+                f"{incoming['power']}/{incoming['toughness']} token cannot stay alongside it."
+            )
+    return None
+
+
+def _dominates(old, new, board, *, equal_ok=False):
+    if any(not isinstance(c.get(key), int) for c in (old, new) for key in ("power", "toughness")):
+        return False
+    # Refreshing a tapped, impaired or enchanted body can be useful. Defer
+    # if one copy has a materially different use than its raw stats suggest.
+    if (
+        old.get("damage")
+        or old.get("is_tapped")
+        or any(
+            c.get("attached_to_id") in {old.get("instance_id"), new.get("instance_id")}
+            for c in board
+            if c.get("attached_to_id")
+        )
+    ):
+        return False
+    return (
+        old["power"] >= new["power"]
+        and old["toughness"] >= new["toughness"]
+        and (equal_ok or old["power"] > new["power"] or old["toughness"] > new["toughness"])
+    )
+
+
+def redundant_legend_cast(state, card):
+    """A second plain legendary creature adds no body; preserve positive cast/ETB lines."""
+    if not legendary(card) or "creature" not in str(card.get("type_line")).lower() or state.get("stack"):
+        return ""
+    if len(state.get("hand") or []) > 7 or "oracle_text" not in card:
+        return ""
+    board = state.get("battlefield") or []
+    incoming = dict(card, controller_seat_id=state.get("local_seat_id"))
+    existing = conflicts(incoming, board)
+    if not existing:
+        return ""
+    # Complex text (notably ETB, dash, transform and loyalty) stays with the
+    # strategic planner. External cast, death or token triggers can pay for
+    # an otherwise redundant body, as can replacing a tapped/enchanted one.
+    keywords = {
+        "flying",
+        "vigilance",
+        "trample",
+        "haste",
+        "reach",
+        "deathtouch",
+        "lifelink",
+        "menace",
+        "first strike",
+        "double strike",
+        "hexproof",
+        "indestructible",
+    }
+    if any(word.strip() not in keywords for word in re.split(r"[,\n]", text(card)) if word.strip()):
+        return ""
+    if _replacement_payoff(board, incoming) or any(
+        re.search(r"\b(?:cast|prowess|magecraft)\b", text(c)) for c in board
+    ):
+        return ""
+    for old in existing:
+        if text(old) == text(card) and _dominates(old, incoming, board, equal_ok=True):
+            return (
+                f"Already control {old['name']}; casting this copy adds no body or supported entry benefit."
+            )
+    return ""
