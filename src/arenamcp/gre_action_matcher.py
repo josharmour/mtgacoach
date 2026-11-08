@@ -444,7 +444,9 @@ def match_action_to_gre(
     # --- CAST SPELL ----------------------------------------------------
     if atype == ActionType.CAST_SPELL:
         casts = [
-            r for r in raw_actions if _norm_atype(r.get("actionType", "")) in _CAST_ATYPES
+            r
+            for r in raw_actions
+            if _norm_atype(r.get("actionType", "")) in _CAST_ATYPES
             and (_norm_atype(r["actionType"]) == "cast" or face_payment(r) is not False)
         ]
         for raw in casts:

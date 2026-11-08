@@ -1937,8 +1937,11 @@ def filter_play_options(decision: Any, state: dict) -> Any:
         ):
             from arenamcp.equipment_opportunities import defer_attack_equip
 
-            reason = (defer_attack_equip(option, source, state) or tap_forfeits_free_attack(option.label, source, state)
-                      or loyalty_minus_exposes_walker(option.label, source, state))
+            reason = (
+                defer_attack_equip(option, source, state)
+                or tap_forfeits_free_attack(option.label, source, state)
+                or loyalty_minus_exposes_walker(option.label, source, state)
+            )
         if option.payable is not False and not reason:
             kept.append(option)
         elif reason:
@@ -2254,7 +2257,11 @@ def loyalty_minus_exposes_walker(label: str, source: dict, state: dict) -> str:
     # activation available for strategic evaluation even when the effect is
     # outside our bounded combat forecast.
     ability = _ABILITY_TEXT.search(label)
-    if ability and re.search(r"\b(?:damage|destroy|exile|tap|return)\b", ability["text"], re.I) and "target" in ability["text"].lower():
+    if (
+        ability
+        and re.search(r"\b(?:damage|destroy|exile|tap|return)\b", ability["text"], re.I)
+        and "target" in ability["text"].lower()
+    ):
         return ""
     gained = loyalty_minus_value(label, state)
     if gained > 2.0 * max(0, after):

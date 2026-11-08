@@ -259,7 +259,8 @@ STRATEGIC_LANE = StrategicLane()
 
 # Strong, compact instruction. The model returns STRICT JSON so we can render a
 # stable prompt block for the planner and a one-line intro for spoken advice.
-GAME_PLAN_PROMPT = """You are a Magic: The Gathering strategic planner forming a PERSISTENT GAME PLAN.
+GAME_PLAN_PROMPT = (
+    """You are a Magic: The Gathering strategic planner forming a PERSISTENT GAME PLAN.
 Given the current board, hand, mana, life totals, the deterministic BOARD FACTS and the Oracle-grounded deck playbook, decide WHO IS THE BEATDOWN, how this game is won, and what to do on each of our next three turns, like a strong human player looking 2-3 turns ahead.
 
 BOARD FACTS are computed from the live board (clocks through best blocks, race, lethal flags, mana budget per turn). Treat them as hard facts:
@@ -270,7 +271,9 @@ BOARD FACTS are computed from the live board (clocks through best blocks, race, 
 - Win conditions must be realistic for the CURRENT state: no empty-library/alternate wins while the library is large, and no combo whose pieces are not in hand or on the battlefield (label a needed draw explicitly).
 Use the deck list and remaining library to identify realistic engines, outs and backup plans; cards in the library are possibilities, not cards in hand or guaranteed draws. Rules are quoted for the cards seen this game and for the playbook's key cards; a library card listed by name only has no quoted rules, so do not invent abilities for it. Preserve the prior plan when still sound, and adapt when its assumptions change.
 Removal and tutoring are conditional decisions: compare the current threat, timing, mana and opportunity cost. Hold interaction when that protects the winning line; remove a threat when it prevents loss or unlocks progress. A tutor should find the currently useful legal card still in the library, with a feasible follow-up, rather than repeat an old preferred target.
-""" + LOYALTY_TIMING + """ For each turn using loyalty, list every planned activation in loyalty_activations, e.g. [{"source":"walker name","cost":1}]. Describe its purpose in hold.
+"""
+    + LOYALTY_TIMING
+    + """ For each turn using loyalty, list every planned activation in loyalty_activations, e.g. [{"source":"walker name","cost":1}]. Describe its purpose in hold.
 When an ability can spend an attacker, compare using it now with attacking first and activating after combat.
 Name the attacker in attack. For a postcombat loyalty sacrifice, add postcombat_sacrifice to that turn with the exact walker and attacker names and signed loyalty cost, e.g. {"source":"walker name","attacker":"creature name","cost":-2}. Omit this field for other lines. Compare removing a visible mana engine with pumping, using the actual combat forecast.
 Use the playbook's conditional decision rules, not just its archetype or finishers. Evaluate commander deployment/recovery from its actual rules and current tax. Do not treat a desirable library card as an available plan.
@@ -295,15 +298,19 @@ Respond with ONLY a JSON object, no prose, no markdown:
   "assumptions": ["mana, timing, survival or availability condition to recheck"],
   "lessons": ["what has worked or failed so far THIS match, from the ledger (<=12 words each, up to 4)"]
 }"""
+)
 
 
 # A short update uses the same validated GamePlan fields as a full strategic review.
-LIVE_PLAN_PROMPT = """Choose the line from the supplied deck playbook that fits this match.
+LIVE_PLAN_PROMPT = (
+    """Choose the line from the supplied deck playbook that fits this match.
 Use BOARD FACTS, the current hand, the mana available and the prior plan. Keep a sound line.
 Give one win condition, our next play or hold, and the specific opposing play or draw that
 would change it. Follow a feasible candidate line when one is supplied. Cast only cards
 available from hand, graveyard or command zone at their actual cost. Treat draws as conditional.
-""" + LOYALTY_TIMING + """ List each planned loyalty use in that turn's loyalty_activations, e.g. [{"source":"walker name","cost":1}], and describe it in hold.
+"""
+    + LOYALTY_TIMING
+    + """ List each planned loyalty use in that turn's loyalty_activations, e.g. [{"source":"walker name","cost":1}], and describe it in hold.
 Return only this compact JSON, using short phrases. T is our next actionable turn and T+1
 is our following turn. For a planned postcombat loyalty sacrifice, name the attacker in attack and add postcombat_sacrifice to the turn: {"source":"walker name","attacker":"creature name","cost":-2}. Omit it for other plays.
 Compare disrupting visible mana engines with attacking. If the combat forecast holds, explain what changes that forecast before relying on attack damage.
@@ -312,6 +319,7 @@ Use exact card names and leave unavailable actions empty.
  "turns":[{"turn":"T","land":"","cast":[],"attack":"","hold":""},
           {"turn":"T+1","land":"","cast":[],"attack":"","hold":""}],
  "switch_if":["specific change"]}"""
+)
 
 
 # The assessed race reasons that attacking is what survives (``board_assessment._role``, ledger #161).
@@ -909,13 +917,13 @@ def postcombat_sacrifice_step(raw, attack):
     if not isinstance(intent, dict):
         return {}
     source, attacker, cost = (intent.get(key) for key in ("source", "attacker", "cost"))
-    if not isinstance(source,str) or not isinstance(attacker,str) or type(cost) is not int or cost >= 0:
+    if not isinstance(source, str) or not isinstance(attacker, str) or type(cost) is not int or cost >= 0:
         return {}
     if not source.strip() or not attacker.strip() or _NO_ATTACK.match(_plain(attack)):
         return {}
-    if not re.search(r"(?<!\w)"+re.escape(attacker.strip())+r"(?!\w)", attack, re.I):
+    if not re.search(r"(?<!\w)" + re.escape(attacker.strip()) + r"(?!\w)", attack, re.I):
         return {}
-    return {"postcombat_sacrifice": {"source":source.strip(),"attacker":attacker.strip(),"cost":cost}}
+    return {"postcombat_sacrifice": {"source": source.strip(), "attacker": attacker.strip(), "cost": cost}}
 
 
 def _validate_turns(raw_turns: list, assessment: Any, state: dict, issues: list[str]) -> list[dict]:
@@ -3113,7 +3121,7 @@ def board_basis(state: dict | None) -> dict:
                 "keywords": [kw for kw in _THREAT_KEYWORDS if has_combat_keyword(card, kw)],
                 "modified": is_creature_modified(card, battlefield=battlefield),
             }
-            if _round(card.get("instance_id"), -1) in efacts or len(mana_engine(card,battlefield)) >= 2:
+            if _round(card.get("instance_id"), -1) in efacts or len(mana_engine(card, battlefield)) >= 2:
                 entry["engine"] = True
             creatures.append(entry)
         elif _is_engine(card):
@@ -4350,8 +4358,16 @@ class GamePlanManager:
         from arenamcp.damage_decisions import strategy_facts
         from arenamcp.loyalty_removal import loyalty_strategy_context
 
-        extra = "\n".join(filter(None, (strategy_facts(state) if state else "", f"  OPP INTERACTION: {verdict}" if verdict else "",
-                                        loyalty_strategy_context(state) if state else "")))
+        extra = "\n".join(
+            filter(
+                None,
+                (
+                    strategy_facts(state) if state else "",
+                    f"  OPP INTERACTION: {verdict}" if verdict else "",
+                    loyalty_strategy_context(state) if state else "",
+                ),
+            )
+        )
         block = compose_strategy_block(
             assessment,
             plan,

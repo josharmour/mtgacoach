@@ -223,7 +223,8 @@ class MTGADatabase:
                 self._available = True
                 try:
                     self._has_ability_loyalty = any(
-                        row["name"] == "LoyaltyCost" for row in self._conn.execute("PRAGMA table_info(Abilities)")
+                        row["name"] == "LoyaltyCost"
+                        for row in self._conn.execute("PRAGMA table_info(Abilities)")
                     )
                     cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(Cards)")}
                     self._card_columns = cols

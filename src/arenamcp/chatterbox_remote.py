@@ -193,6 +193,7 @@ def render_remote(
     text: str,
     voice: str = "server_default",
     speed: float = 1.0,
+    excitement: str | None = None,
     timeout: float = 4.0,
     cancelled: threading.Event | None = None,
     opener=None,
@@ -203,6 +204,10 @@ def render_remote(
     The timeout bounds individual socket operations; the monotonic deadline also
     rejects a slow/trickling response. Cancellation is checked between reads.
     """
+    from .commentary.delivery import ENERGY
+
+    if excitement is not None and excitement not in ENERGY:
+        raise ChatterboxError("Invalid speech excitement.")
     if not text.strip() or len(text) > 600 or voice not in VOICES:
         raise ChatterboxError("Chatterbox requires 1–600 characters and an Atlas, Mira, or Default voice.")
     if (
@@ -224,6 +229,8 @@ def render_remote(
     url = speech_endpoint(endpoint)
     key = read_speech_key(key_file)
     payload = {"input": text, "speed": speed, "energy": 0.5}
+    if excitement is not None:
+        payload.update(excitement=excitement, energy=ENERGY[excitement])
     if voice != "server_default":
         payload["voice"] = voice
     request = urllib.request.Request(

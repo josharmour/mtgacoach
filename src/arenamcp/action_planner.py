@@ -5007,7 +5007,10 @@ class ActionPlanner(_ActionLegalityMixin):
             oid, reason = removal or planned
             self._last_decision_option_ids = [oid]
             self._last_decision_reasoning = reason
-            self._last_decision_trace = {"policy": "defensive_loyalty" if removal else "postcombat_loyalty", "validated_ids": [oid]}
+            self._last_decision_trace = {
+                "policy": "defensive_loyalty" if removal else "postcombat_loyalty",
+                "validated_ids": [oid],
+            }
             return [oid]
         from arenamcp.land_sequence import choose_land_sequence
 

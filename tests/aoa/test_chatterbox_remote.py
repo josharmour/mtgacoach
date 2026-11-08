@@ -142,6 +142,22 @@ def test_server_default_omits_voice_while_original_is_an_explicit_override(confi
     assert json.loads(opener.open.call_args.args[0].data)["voice"] == "default"
 
 
+@pytest.mark.parametrize("level,energy", [("calm", 0.3), ("normal", 0.5), ("tense", 0.65), ("electric", 0.8)])
+def test_remote_synthesis_receives_emotion_and_energy(config, level, energy):
+    opener = Mock(open=Mock(return_value=Response()))
+    cb.render_remote(**config, opener=opener, excitement=level)
+    body = json.loads(opener.open.call_args.args[0].data)
+    assert body["excitement"] == level and body["energy"] == energy
+    assert body["speed"] == 1
+
+
+def test_invalid_excitement_never_reaches_server(config):
+    opener = Mock()
+    with pytest.raises(cb.ChatterboxError):
+        cb.render_remote(**config, opener=opener, excitement="invented")
+    opener.open.assert_not_called()
+
+
 def test_long_advice_splits_without_losing_words_and_joins_pcm(config):
     text = "Hold up two mana for the counterspell. " * 40
     chunks = cb.speech_chunks(text)
