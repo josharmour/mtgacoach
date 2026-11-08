@@ -1430,3 +1430,82 @@ def test_land_drop_adds_the_colour_the_board_lacks_over_a_fifth_copy():
     result = _search(source)
     assert result.best.steps[0].land == "Mountain"
     assert ("land", (frozenset("R"), False)) in result.first_action
+
+
+def _slickshot_return_attack():
+    board = state(
+        turn=8,
+        active=1,
+        phase="Phase_Combat",
+        step="Step_DeclareAttack",
+        life={1: 6, 2: 14},
+        lands_played={1: 1, 2: 0},
+        library=25,
+        opponent_hand=2,
+        battlefield=[(11, "Fatehold Chronologist", 1, False, 4), (20, "Mountain", 2, True, 1)],
+        hand=[],
+        graveyard=[],
+    )
+    board["battlefield"][0].update(power=6, toughness=6)
+    for iid in (21, 22):
+        board["battlefield"].append(
+            {
+                "name": "Slickshot Show-Off",
+                "mana_cost": "{1}{R}",
+                "instance_id": iid,
+                "controller_seat_id": 2,
+                "owner_seat_id": 2,
+                "type_line": "Creature — Bird Wizard",
+                "power": 1,
+                "toughness": 2,
+                "is_tapped": True,
+                "keywords": ["flying", "haste"],
+                "oracle_text": "Flying, haste\nWhenever you cast a noncreature spell, this creature gets +2/+0 until end of turn.",
+            }
+        )
+    return board
+
+
+def test_two_tapped_slickshots_threaten_lethal_after_one_noncreature_cast(monkeypatch):
+    from arenamcp.line_guard import attack_line_guard
+
+    board = _slickshot_return_attack()
+    result = _search(board)
+    swing = result.first_action[("attack", frozenset({11}))]
+    assert swing.steps[0].cast_trigger_lethal
+    assert swing.steps[0].life_after == 4  # ordinary visible-board damage stays factual
+    assert not result.best.steps[0].attack
+    assert not result.best.steps[0].cast_trigger_lethal
+    monkeypatch.setenv("ARENAMCP_ATTACK_LINE_GUARD", "on")
+    verdict = attack_line_guard(result, [11], board, lethal_now=False, all_in=False)
+    assert verdict.applies and verdict.hold_ids == [11]
+    board["zones"]["opponent_hand_count"] = 0
+    assert not _search(board).first_action[("attack", frozenset({11}))].steps[0].cast_trigger_lethal
+
+
+def test_last_mana_compares_removal_and_ground_creature_against_the_return_attack():
+    board = _slickshot_return_attack()
+    board["turn"].update(phase="Phase_Main1", step="")
+    board["battlefield"][0]["is_tapped"] = True
+    board["battlefield"].append(card(30, "Plains", 1, is_tapped=False))
+    board["hand"] = [
+        {
+            "instance_id": 41,
+            "name": "Seam Rip",
+            "type_line": "Enchantment",
+            "mana_cost": "{W}",
+            "oracle_text": "When this enchantment enters, exile target nonland permanent an opponent controls with mana value 2 or less until this enchantment leaves the battlefield.",
+        },
+        {
+            "instance_id": 42,
+            "name": "Savannah Lions",
+            "type_line": "Creature — Cat",
+            "mana_cost": "{W}",
+            "power": 2,
+            "toughness": 1,
+        },
+    ]
+    result = _search(board)
+    assert result.best.steps[0].casts == ("Seam Rip",)
+    assert not result.best.steps[0].cast_trigger_lethal
+    assert result.first_action[("cast", 42, None)].steps[0].cast_trigger_lethal

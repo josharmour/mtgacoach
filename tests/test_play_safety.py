@@ -342,3 +342,67 @@ def test_executor_and_emergency_fallback_do_not_submit_useless_x_zero(state):
     assert engine._try_interactive_safe_default(state, "decision_required") is False
     assert engine._try_auto_respond_escape(state, "stuck X chooser") is False
     engine._gre_bridge.auto_respond.assert_not_called()
+
+
+@pytest.mark.parametrize("name", ["Abandoned Air Temple", "Unfamiliar Sanctuary"])
+def test_empty_team_activation_uses_effect_and_current_recipients(name):
+    from tests.test_burn_timing_20261019 import _down
+
+    from arenamcp.decisions import DecisionOption, PendingDecision
+    from arenamcp.play_safety import empty_team_activation
+
+    card = {
+        "instance_id": 91,
+        "name": name,
+        "type_line": "Land",
+        "controller_seat_id": 1,
+        "oracle_text": "{T}: Add {W}.\n{3}{W}, {T}: Put a +1/+1 counter on each creature you control.",
+    }
+    s = {"local_seat_id": 1, "battlefield": [card], "stack": [], "hand": []}
+    option = DecisionOption(
+        "idx:0",
+        f"Activate: {name} [{{3}}{{W}}, {{T}}: Put a +1/+1 counter on each creature you control.]",
+        True,
+        {"actionType": "ActionType_Activate", "instanceId": 91, "hasAutoTap": True},
+    )
+    menu = PendingDecision(
+        (1, 1), "ActionsAvailable", (option, DecisionOption("pass", "Pass")), can_pass=True
+    )
+    p = _down()
+    assert empty_team_activation(option, s)
+    assert p._plan_decision_options(menu, s) == ["pass"]
+    assert p.get_last_decision_trace()["policy"] == "empty_team_activation"
+    s["battlefield"].append({"type_line": "Land Creature", "controller_seat_id": 1, "instance_id": 92})
+    assert not empty_team_activation(option, s)
+    s["battlefield"].pop()
+    s["battlefield"].append(
+        {
+            "type_line": "Enchantment",
+            "oracle_text": "Whenever a land you control becomes tapped, you gain 1 life.",
+        }
+    )
+    assert not empty_team_activation(option, s)
+    s.pop("battlefield")
+    assert not empty_team_activation(option, s)
+
+
+def test_team_activation_preserves_unknown_effects_and_nonmana_costs():
+    from arenamcp.decisions import DecisionOption
+    from arenamcp.play_safety import empty_team_activation
+
+    s = {
+        "local_seat_id": 1,
+        "battlefield": [{"instance_id": 1, "type_line": "Artifact", "controller_seat_id": 1}],
+    }
+    for effect in (
+        "Put a +1/+1 counter on each creature you control. Draw a card.",
+        "Create a 1/1 Soldier creature token.",
+        "Sacrifice this artifact: Put a +1/+1 counter on each creature you control.",
+    ):
+        o = DecisionOption(
+            "idx:0",
+            f"Activate: Engine [{{2}}, {{T}}: {effect}]",
+            True,
+            {"actionType": "ActionType_Activate", "instanceId": 1},
+        )
+        assert not empty_team_activation(o, s)

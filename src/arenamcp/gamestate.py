@@ -347,7 +347,28 @@ class GameState(_GameStateAnnotationsMixin):
         "format_profile": None,
     }
 
-    def _apply_field_defaults(self) -> None:
+    # A fresh board within one BO3 room retains the seat and submitted deck.
+    _ROOM_FIELDS = frozenset(
+        {
+            "match_id",
+            "local_seat_id",
+            "_seat_source",
+            "player_names",
+            "_player_names_match_id",
+            "opponent_name",
+            "format_name",
+            "event_id",
+            "format_profile",
+            "deck_cards",
+            "sideboard_cards",
+            "commander_grp_ids",
+            "_connection_deck_metadata",
+            "_awaiting_connection_match_id",
+            "_card_name_cache",
+        }
+    )
+
+    def _apply_field_defaults(self, *, keep_room: bool = False) -> None:
         """Set every resettable field to its default value.
 
         For entries whose value is a *type* (``dict``, ``list``, ``set``),
@@ -355,6 +376,8 @@ class GameState(_GameStateAnnotationsMixin):
         used directly.
         """
         for attr, default in self._RESETTABLE_DEFAULTS.items():
+            if keep_room and attr in self._ROOM_FIELDS:
+                continue
             if isinstance(default, type):
                 setattr(self, attr, default())
             else:
@@ -419,8 +442,8 @@ class GameState(_GameStateAnnotationsMixin):
         self._published_snapshot: dict[str, Any] = {}
         self.publish_snapshot()
 
-    def reset(self) -> None:
-        """Reset the game state for a new match.
+    def reset(self, *, keep_room: bool = False) -> None:
+        """Reset for a new game, optionally keeping the existing room and deck.
 
         Clears all per-game fields via ``_apply_field_defaults()``.
         Fields that must survive across matches (``last_game_result``,
@@ -428,8 +451,8 @@ class GameState(_GameStateAnnotationsMixin):
         ``_pre_reset_snapshot``) are intentionally preserved -- they are
         consumed by the coaching loop after the reset.
         """
-        logger.info("Resetting GameState for new match")
-        self._apply_field_defaults()
+        logger.info("Resetting GameState (keep room: %s)", keep_room)
+        self._apply_field_defaults(keep_room=keep_room)
         self.log_game_state_id = 0  # gameStateIds restart every game
         self.log_summarized_at_gsid = -1
         self.turn_info = TurnInfo()
@@ -2056,9 +2079,22 @@ class GameState(_GameStateAnnotationsMixin):
             message: The GameStateMessage dict from parsed log event.
         """
         with self._state_lock:
-            # Extract type (full vs diff) - not currently used but logged
             msg_type = message.get("type", "Unknown")
             logger.debug(f"Processing GameStateMessage type: {msg_type}")
+
+            # Between BO3 games, late sideboard diffs can restore the previous
+            # turn after IntermissionReq reset us. Arena starts the next game
+            # with a full pregame board whose turnInfo omits turnNumber. Clear
+            # the old game *before* applying that board and its opening draw.
+            info = message.get("gameInfo") or {}
+            if (
+                msg_type == "GameStateType_Full"
+                and info.get("stage") == "GameStage_Start"
+                and self.turn_info.turn_number > 0
+            ):
+                match_id = info.get("matchID") or info.get("matchId")
+                same_room = match_id and self.match_id in (None, match_id)
+                self.reset(keep_room=bool(same_room))
 
             # Newest gameStateId this log has applied: lets the autopilot tell when
             # the bridge's live request is ahead of the board it would plan on.

@@ -842,10 +842,14 @@ def _is_int(value) -> bool:
 
 
 def _eligible_blockers(state: dict, opponent_seat: int) -> list[dict]:
+    from arenamcp.combat_keywords import attached_combat_limits
+
     blockers = []
+    limits = attached_combat_limits(state.get("battlefield") or [])
     for card in state.get("battlefield") or []:
         if (
-            _controller(card) != opponent_seat
+            limits.get(card.get("instance_id"), (False, False))[1]
+            or _controller(card) != opponent_seat
             or not is_creature_now(card)
             or card.get("is_tapped")
             or card.get("is_attacking")
@@ -1947,9 +1951,14 @@ def able_attackers(state: dict) -> list[dict]:
     if local is None:
         return []
     turn = int((state.get("turn") or {}).get("turn_number") or 0)
+    from arenamcp.combat_keywords import attached_combat_limits
+
+    limits = attached_combat_limits(state.get("battlefield") or [])
     result = []
     for card in state.get("battlefield") or []:
-        if _controller(card) != local.get("seat_id") or "creature" not in _types(card):
+        if limits.get(card.get("instance_id"), (False, False))[0]:
+            continue
+        if _controller(card) != local.get("seat_id") or not is_creature_now(card):
             continue
         if card.get("is_tapped") or card.get("is_phased_out"):
             continue

@@ -700,13 +700,27 @@ def _attack_line_guard(result, declared_ids, state, *, lethal_now, all_in, unkno
             if len(key) == 2 and key[0] == "attack" and home <= set(key[1]) <= declared
         ]
         attacking = max(sending, key=lambda line: line.score) if sending else None
-    if attacking is None or attacking.cls != DEAD:
+    if attacking is None:
         return None
-    if _dies_at(best) - _dies_at(attacking) < ATTACK_LINE_MARGIN:
-        return None
-    proxy = _proxy_check((result, best), (result, attacking), by_value=False)
-    if proxy is None or not proxy[0]:
-        return None
+    cast_risk = (
+        attacking is result.first_action.get(("attack", declared))
+        and attacking.steps
+        and attacking.steps[0].cast_trigger_lethal
+        and best.steps
+        and not best.steps[0].cast_trigger_lethal
+        and best_attack <= declared
+    )
+    if cast_risk:
+        # Compared the actual attack and a subset that holds blockers back,
+        # with the same one-spell assumption and the opponent's best attack.
+        robust, comparison = False, "one opposing noncreature spell pumps their attackers"
+    else:
+        if attacking.cls != DEAD or _dies_at(best) - _dies_at(attacking) < ATTACK_LINE_MARGIN:
+            return None
+        proxy = _proxy_check((result, best), (result, attacking), by_value=False)
+        if proxy is None or not proxy[0]:
+            return None
+        _, robust, comparison = proxy
     names = {
         _int(card.get("instance_id")): _name(card)
         for card in state.get("battlefield") or []
@@ -717,7 +731,7 @@ def _attack_line_guard(result, declared_ids, state, *, lethal_now, all_in, unkno
     attack_text, hold_text = attacking.outcome_text(), best.outcome_text()
     reason = (
         f"attack {_outcome_brief(attacking)}, hold {_outcome_brief(best)}; best line: {best.summary()} "
-        f"[{proxy[2]}]"
+        f"[{comparison}]"
     )
     summary = (
         f"Holding {', '.join(hold_names)} back: by the line search, attacking is {attack_text}, "
@@ -732,7 +746,7 @@ def _attack_line_guard(result, declared_ids, state, *, lethal_now, all_in, unkno
         summary=_clip(summary, _SUMMARY_MAX),
         attack_text=attack_text,
         hold_text=hold_text,
-        robust=proxy[1],
+        robust=robust,
         applies=setting == "on",
         setting=setting,
     )
@@ -919,9 +933,14 @@ def attack_line_note(result: LineSearchResult | None, state: dict) -> str:
             return ""
         if result.posture not in ("attack", "hold") or not result.posture_reason:
             return ""
+        assumptions = (
+            "one opposing noncreature cast tested"
+            if result.cast_trigger_risk
+            else "their new cards and tricks not modelled"
+        )
         head = (
-            "ATTACK vs HOLD (board-math line search, 2 turns + greedy 3rd; their new cards and tricks "
-            f"not modelled): {result.posture_reason}. Verdict: {result.posture.upper()}"
+            f"ATTACK vs HOLD (board-math line search, 2 turns + greedy 3rd; {assumptions}): "
+            f"{result.posture_reason}. Verdict: {result.posture.upper()}"
         )
         if result.posture == "hold":
             return (
@@ -940,6 +959,8 @@ def attack_line_note(result: LineSearchResult | None, state: dict) -> str:
 
 def _life_parts(line: Line, *, modal: bool = False) -> list[str]:
     """'7 after T13', ... ending in 'dead T15' / 'lethal T15' (modal: 'survives T15 at 2' first)."""
+    if line.steps and line.steps[0].cast_trigger_lethal:
+        return ["one opposing noncreature cast threatens lethal first"]
     if line.cls == WIN:
         return [f"lethal T{line.win_turn}"]
     parts = []

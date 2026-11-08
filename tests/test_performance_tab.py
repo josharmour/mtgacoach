@@ -283,11 +283,14 @@ def test_sidebar_ranks_open_recent_ladder_matches(seeded_file, qapp, monkeypatch
             "Bronze 3",
             "0 pips",
         ]
-        for ladder, expected in (("Limited", ["draft"]), ("Constructed", ["23", "22", "21", "20", "19"])):
+        for ladder, expected in (
+            ("Limited", ["draft"]),
+            ("Constructed", [str(i) for i in range(23, 13, -1)]),
+        ):
             strip.buttons[ladder].click()
             assert win.coach_panel.isVisible()
             assert [row.match_id for row in strip.recent[ladder]] == expected
-            assert f"Recent {ladder}" in win.coach_panel.detail_pager.title.text()
+            assert f"Recent {ladder} · newest first" in win.coach_panel.detail_pager.title.text()
             win.coach_panel._close_detail()
         next(action for action in win.findChildren(QAction) if action.text() == "Match History…").trigger()
         assert win.performance_tab._row_records[0].match_id == "casual"
@@ -336,18 +339,32 @@ def test_rank_strip_picks_up_new_result_without_changing_geometry(seeded_file, q
     monkeypatch.setenv("MTGA_LOG_PATH", str(tmp_path / "missing.log"))
     monkeypatch.setenv("MTGACOACH_GAME_DEVICE", "desktop")
     strip = RankStrip()
-    strip.resize(304, 64)
+    strip.resize(600, 100)
     strip.show()
     strip.refresh()
     before = strip.size()
     history = MatchHistory()
-    for i, result in enumerate(("win", "loss", "win", "loss", "win", "draw")):
+    for i, result in enumerate(("loss", "win") * 5 + ("draw",)):
         history.add_record(MatchRecord(match_id=str(i), format_name="Ladder", result=result))
     strip.refresh()
-    assert [r.match_id for r in strip.recent["Constructed"]] == ["5", "4", "3", "2", "1"]
-    assert "L  W  L  W  D" in strip.buttons["Constructed"].text()
-    history.set_result("5", "win")
+    assert [r.match_id for r in strip.recent["Constructed"]] == [str(i) for i in range(10, 0, -1)]
+    assert strip.buttons["Constructed"].text().endswith("Newest → oldest\nD W L W L W L W L W")
+    history.set_result("10", "win")
     strip.refresh()
-    assert "L  W  L  W  W" in strip.buttons["Constructed"].text()
+    assert strip.buttons["Constructed"].text().endswith("Newest → oldest\nW W L W L W L W L W")
     assert strip.size() == before
+    strip.recent["Constructed"] = [MatchRecord(result="win")] * 10
+    strip.resize(304, 100)
+    qapp.processEvents()
+    button = strip.buttons["Constructed"]
+    lines = button.text().splitlines()[-2:]
+    if lines[0] == "Newest → oldest":
+        assert lines[1] == "WWWWWWWWWW"
+    else:
+        assert lines[0] in ("Newest WWWWW", "New WWWWW")
+        assert lines[1] in ("WWWWW Oldest", "WWWWW Old")
+    assert all(
+        button.fontMetrics().horizontalAdvance(line) <= button.width() - 28
+        for line in button.text().splitlines()
+    )
     strip.close()

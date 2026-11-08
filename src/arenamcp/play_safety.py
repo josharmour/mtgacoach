@@ -32,24 +32,29 @@ def _local_seat(state: dict) -> int | None:
 
 def aura_waits_for_creature(state: dict, card: dict) -> bool:
     """Hold a beneficial creature Aura while our first creature is still a spell."""
-    from arenamcp.target_effects import enchant_effect_text, target_effect_is_harmful
+    from arenamcp.target_effects import (
+        creature_aura_scope,
+        enchant_effect_text,
+        resolves_to_creature,
+        target_effect_is_harmful,
+    )
 
     local = _local_seat(state)
     if local is None or "battlefield" not in state:
         return False
+    scope = creature_aura_scope(card)
+    if scope not in ("either", "self"):
+        return False
     oracle = str(card.get("oracle_text") or "")
-    enchant = re.search(r"^\s*Enchant creature(?: you control)?\s*$", oracle, re.I | re.M)
-    if "aura" not in str(card.get("type_line") or "").lower() or not enchant:
+    if (
+        scope == "either"
+        and target_effect_is_harmful(enchant_effect_text("Enchant creature", oracle)) is not False
+    ):
         return False
-    if target_effect_is_harmful(enchant_effect_text(enchant.group(), oracle)) is not False:
-        return False
-
-    def creature(obj: dict) -> bool:
-        return "creature" in str(obj.get("type_line") or "").lower()
 
     # Unknown controllers may be ours: do not infer the lack of a target.
     if any(
-        creature(obj) and obj.get("controller_seat_id") in (None, local)
+        is_creature_now(obj) and obj.get("controller_seat_id") in (None, local)
         for obj in state.get("battlefield") or []
     ):
         return False
@@ -57,7 +62,7 @@ def aura_waits_for_creature(state: dict, card: dict) -> bool:
     return (
         bool(stack)
         and all(obj.get("controller_seat_id") == local for obj in stack)
-        and any(creature(obj) and obj.get("object_kind") != "ABILITY" for obj in stack)
+        and any(resolves_to_creature(obj) for obj in stack)
     )
 
 
@@ -1226,6 +1231,48 @@ def _offered_ability(card: dict, metadata: dict | None) -> tuple[str, str]:
         return cost.strip(), effect.strip()
     abilities = _activated_abilities(card)
     return abilities[0] if len(abilities) == 1 else ("", "")
+
+
+def empty_team_activation(option, state: dict) -> bool:
+    """A pure team enhancement has no recipients. Keep uncertain boards and other costs/effects."""
+    meta = option.meta or {}
+    if meta.get("actionType") != "ActionType_Activate" or "battlefield" not in state:
+        return False
+    card = find_source(state, meta)
+    if not card:
+        return False
+    # The label contains the resolved ability, including for multi-ability sources.
+    selected = re.search(r"\[([^\[\]]+)\]$", option.label or "")
+    cost, effect = _offered_ability(
+        card, {**meta, "ability_text": meta.get("ability_text") or (selected[1] if selected else "")}
+    )
+    if not re.fullmatch(r"(?:\s*\{o?(?:[WUBRGCT]|\d+)\}\s*,?)+", cost, re.I):
+        return False
+    if not re.fullmatch(
+        r"(?:put (?:a|one|two|three|\d+) \+\d+/\+\d+ counters? on each creature you control"
+        r"|creatures you control get \+\d+/\+\d+ until end of turn)\.?",
+        effect,
+        re.I,
+    ):
+        return False
+    local = _local_seat(state)
+    if local is None:
+        return False
+    for permanent in state["battlefield"]:
+        if not (permanent.get("type_line") or permanent.get("card_types")):
+            return False
+        if is_creature_now(permanent) and (
+            permanent.get("controller_seat_id") or permanent.get("owner_seat_id")
+        ) in (local, None):
+            return False
+        # Paying the tap cost or activating can itself trigger another permanent.
+        if re.search(
+            r"\bwhen(?:ever)? [^.\n]*(?:becomes? tapped|you (?:tap|activate))",
+            permanent.get("oracle_text") or "",
+            re.I,
+        ):
+            return False
+    return True
 
 
 def _cast_effects(card: dict) -> list[str]:

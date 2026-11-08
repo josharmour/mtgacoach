@@ -41,12 +41,14 @@ from arenamcp.situational_rules import compose as compose_rules
 from arenamcp.situational_rules import subjects_in_play
 from arenamcp.target_effects import (
     GOOD_TARGET,
+    aura_entry_payoff,
     effect_mentions_benefit,
     effect_mentions_blink,
     effect_mentions_harm,
     enchant_effect_text,
     highlight_is_bad,
     names_a_target_you_control,
+    offered_target_ids,
     source_effect_text,
     target_effect_has_polarity,
     target_effect_is_harmful,
@@ -4978,6 +4980,19 @@ class ActionPlanner(_ActionLegalityMixin):
             if decision.request_type == "Search" and decision.selection_is_valid([]):
                 return []
             return [DECLINE_DECISION]
+        if decision.request_type == "ActionsAvailable" and decision.find("pass") is not None:
+            from dataclasses import replace
+
+            from arenamcp.play_safety import empty_team_activation
+
+            kept = tuple(o for o in decision.options if not empty_team_activation(o, game_state))
+            if len(kept) < len(decision.options):
+                decision = replace(decision, options=kept)
+                if decision.option_ids() == {"pass"}:
+                    self._last_decision_option_ids = ["pass"]
+                    self._last_decision_reasoning = "The team ability has no creatures to affect."
+                    self._last_decision_trace = {"policy": "empty_team_activation", "validated_ids": ["pass"]}
+                    return ["pass"]
         from arenamcp.loyalty_removal import choose_removal, postcombat_activation, reserve_postcombat_loyalty
 
         step_source = getattr(self, "_plan_step_source", None)
@@ -8517,6 +8532,23 @@ class ActionPlanner(_ActionLegalityMixin):
                 logger.warning("Declining opponent blink %s: %s", oid, self._decline_reason)
                 return [DECLINE_DECISION]
             hint = hints.get(iid, "")
+            # A Cold hint describes the target, not the payoff to the caster.
+            # Preserve a deliberate pick for a real entry payoff when every
+            # candidate is opposing. Never infer that payoff from a future permanent.
+            if ctrl != local_seat and not justified:
+                aura = next(
+                    (
+                        c
+                        for c in game_state.get("stack") or []
+                        if c.get("instance_id") == self._decision_source_instance(game_state)
+                        and c.get("object_kind") != "ABILITY"
+                    ),
+                    {},
+                )
+                if aura_entry_payoff(aura) and all(
+                    controllers.get(i) == ctrl for i in self._slot_candidates(decision, iid)
+                ):
+                    continue
             if highlight_is_bad(hint) and not justified:
                 arena_bad.append(oid)
                 continue
@@ -9411,6 +9443,13 @@ class ActionPlanner(_ActionLegalityMixin):
                 source_card = find_source(game_state, o.meta) or {}
                 from arenamcp.legend_rule import cast_note as legend_cast_note
 
+                if payoff := aura_entry_payoff(source_card):
+                    offered = [
+                        str(target_objects.get(i, {}).get("name") or f"object {i}")
+                        for i in offered_target_ids(o.meta)
+                    ]
+                    if offered:
+                        note += f" [Arena enchant candidates: {', '.join(offered)}. On entry you {payoff.removeprefix('you ')}; weigh the effect on the host.]"
                 note += legend_cast_note(game_state, source_card)
                 note += combat_cast_note(game_state, source_card)
                 note += trick_timing_note(game_state, source_card)

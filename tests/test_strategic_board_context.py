@@ -295,11 +295,8 @@ def test_format_game_context_filters_non_ok_command_zone_casts():
     assert '"grpId":98284' not in context
 
 
-def test_buff_aura_with_only_enemy_creature_is_marked_no_targets():
-    """Regression for issue #236: coach recommended casting Radiant Grace (a buff
-    Aura) when the local player controlled no creatures and the only enchantable
-    creature belonged to the opponent. Buffing the enemy's creature is never the
-    play, so the card must be flagged [NO TARGETS] and dropped from Legal."""
+def test_unrestricted_buff_aura_distinguishes_enemy_target_from_no_target():
+    """Only an opponent's creature is available: show that tradeoff in the legal menu."""
     coach = _engine()
     game_state = {
         "players": [
@@ -373,8 +370,8 @@ def test_buff_aura_with_only_enemy_creature_is_marked_no_targets():
 
     context = coach._format_game_context(game_state)
 
-    assert "Radiant Grace (AURA) {W} [S,OK] [NO TARGETS]" in context
-    assert "Cast Radiant Grace" not in context.split("Legal:", 1)[1].split("\n", 1)[0]
+    assert "Radiant Grace (AURA) {W} [S,OK] [only opposing creature candidates]" in context
+    assert "Cast Radiant Grace" in context.split("Legal:", 1)[1].split("\n", 1)[0]
 
 
 def test_debuff_aura_with_enemy_creature_is_castable():

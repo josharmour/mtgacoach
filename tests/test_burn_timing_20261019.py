@@ -683,3 +683,44 @@ def test_in_our_combat_burn_that_matters_now_is_not_held(case):
     planner.plan_decision_options(_menu(state, (301, True)), state)
     assert model.efforts, case
     assert "Cast Lightning Strike" in model.prompts[0][model.prompts[0].index("OPTIONS:") :]
+
+
+def test_attached_restrictions_apply_to_cast_pump_payoffs():
+    from arenamcp.burn_timing import cast_pumped_attackers
+    from arenamcp.combat_keywords import attached_combat_limits
+    from arenamcp.combat_strategy import able_attackers
+
+    s = {
+        "turn": {"active_player": 1, "turn_number": 5, "phase": "Phase_Main1"},
+        "local_seat_id": 1,
+        "players": [{"seat_id": 1, "is_local": True}],
+        "battlefield": [
+            {
+                "name": "Prowess Adept",
+                "type_line": "Creature — Monk",
+                "keywords": ["prowess"],
+                "power": 2,
+                "toughness": 2,
+                "controller_seat_id": 1,
+                "instance_id": 10,
+            },
+            {
+                "name": "Binding Vow",
+                "type_line": "Enchantment — Aura",
+                "attached_to_id": 10,
+                "oracle_text": "Enchanted creature can’t attack or block, and its activated abilities can’t be activated.",
+            },
+        ],
+    }
+    assert not able_attackers(s)
+    assert not cast_pumped_attackers(s)
+    assert attached_combat_limits(s["battlefield"])[10] == (True, True)
+    s["battlefield"][0]["attached_with_ids"] = [22]
+    s["battlefield"][1]["instance_id"] = 22
+    del s["battlefield"][1]["attached_to_id"]
+    assert not cast_pumped_attackers(s)
+    s["battlefield"][1]["attached_to_id"] = 0  # explicit detach overrides the earlier reverse list
+    assert cast_pumped_attackers(s) == ["Prowess Adept"]
+    s["battlefield"][1]["attached_to_id"] = 10
+    s["battlefield"][1]["oracle_text"] = "Enchanted creature can't attack alone."
+    assert cast_pumped_attackers(s) == ["Prowess Adept"]

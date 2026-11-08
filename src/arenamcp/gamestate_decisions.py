@@ -436,8 +436,10 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
                 )
             )
             obj = game_state.game_objects.get(obj_id)
-            if obj:
-                attacker_names.append(game_state._resolve_card_name(obj.grp_id))
+            if obj_id > 0 and obj_id not in attacker_ids:
+                attacker_names.append(
+                    game_state._resolve_object_display_name(obj) if obj else f"Creature {obj_id}"
+                )
                 attacker_ids.append(obj_id)
         logger.info(f"Captured Decision: Declare Attackers ({len(attacker_names)} legal)")
         game_state.pending_decision = "Declare Attackers"
@@ -469,8 +471,10 @@ def _handle_decision_message(game_state: "GameState", msg_type: str, msg: dict) 
                 )
             )
             obj = game_state.game_objects.get(obj_id)
-            if obj:
-                blocker_names.append(game_state._resolve_card_name(obj.grp_id))
+            if obj_id > 0 and obj_id not in blocker_ids:
+                blocker_names.append(
+                    game_state._resolve_object_display_name(obj) if obj else f"Creature {obj_id}"
+                )
                 blocker_ids.append(obj_id)
             # Each Blocker entry names the attackers it may legally block
             # (GreProtobuf Blocker.attackerInstanceIds). Their union is every

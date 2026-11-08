@@ -3420,9 +3420,11 @@ class AutopilotEngine(
             # Phase E, so priority windows are typed-path-owned too; the
             # legacy strategic path below only runs when the typed path
             # declines (returns None: no bridge, no options, dry run).
-            typed_handled = self._try_typed_decision_path(game_state, trigger)
-            if typed_handled is not None:
-                return typed_handled
+            typed_result = self._try_typed_decision_path(game_state, trigger)
+            if isinstance(typed_result, dict):
+                game_state = typed_result  # combat continues below on the caught-up board
+            elif typed_result is not None:
+                return typed_result
 
             # --- AFK MODE: auto-pass everything without LLM ---
             if self._config.afk_mode:
@@ -5509,8 +5511,10 @@ class AutopilotEngine(
 
     def _try_typed_decision_path(
         self, game_state: dict[str, Any], trigger: str, depth: int = 0
-    ) -> bool | None:
+    ) -> bool | dict[str, Any] | None:
         """Handle interactive requests via the typed PendingDecision pipeline.
+
+        A combat request hands its synchronized board back to the strategic planner.
 
         Returns True/False when the path owned the decision (submitted /
         definitively failed), or None to fall through to the legacy path
@@ -5595,6 +5599,11 @@ class AutopilotEngine(
         fp = decision_fingerprint(decision) if decision else None
         self._request_tracker.observe(fp, request_window(game_state))
         if decision is None or decision.request_type not in self._TYPED_DECISION_FAMILIES:
+            if (game_state.get("decision_context") or {}).get("type") in {
+                "declare_attackers",
+                "declare_blockers",
+            }:
+                return game_state
             return None
         assert fp is not None
         if self._typed_request_handed_to_user(decision, fp, game_state):

@@ -347,3 +347,38 @@ def test_bridge_overlay_requires_complete_materialized_hand(monkeypatch):
     assert overlay(None, [])["hand_complete"] is False
     assert overlay(False, [])["hand_complete"] is False
     assert overlay(0, [])["hand_complete"] is True
+
+
+def test_bo3_pregame_full_retires_late_sideboard_turn_before_opening_draw():
+    state = GameState()
+    state.match_id = "same-match"
+    state.set_local_seat_id(1)
+    state.deck_cards = [1234]
+    state.update_from_message(
+        {**hand_message([99], [99]), "turnInfo": {"turnNumber": 12}, "gameStateId": 279}
+    )
+    state.update_from_message(
+        {
+            "type": "GameStateType_Full",
+            "gameInfo": {"matchID": "same-match", "gameNumber": 2, "stage": "GameStage_Start"},
+            "gameStateId": 1,
+            "turnInfo": {"decisionPlayer": 1},
+        }
+    )
+    cards = list(range(1, 8))
+    state.update_from_message({**hand_message(cards, cards), "gameStateId": 2})
+    create_game_state_handler(state)(
+        {
+            "greToClientMessages": [
+                {"type": "GREMessageType_MulliganReq", "gameStateId": 2, "systemSeatIds": [1]}
+            ]
+        }
+    )
+    snap = state.get_published_snapshot()
+    assert snap["pending_decision"] == "Mulligan"
+    assert snap["turn_info"]["turn_number"] == 0
+    assert snap["game_number"] == 2
+    assert state.log_game_state_id == 2
+    assert state.deck_cards == [1234]
+    assert 99 not in state.game_objects
+    assert [card["instance_id"] for card in snap["zones"]["my_hand"]] == cards

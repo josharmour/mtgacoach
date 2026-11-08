@@ -17,7 +17,7 @@ server:
 # Current hosted model; gateway credentials come from the server environment.
 providers:
   - name: hosted-glm53
-    base_url: "http://10.0.0.100:8444/v1"
+    base_url: "http://10.0.0.10:8444/v1"
     api_key: "${LITELLM_MASTER_KEY}"
     models: ["glm-5.3-flash"]
     enabled: true

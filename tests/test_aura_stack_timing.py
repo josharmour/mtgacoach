@@ -78,3 +78,43 @@ def test_hold_does_not_block_other_plays(change):
     else:
         s.pop("battlefield")
     assert not aura_waits_for_creature(s, s["hand"][0])
+
+
+@pytest.mark.parametrize(
+    "kind,text,wait",
+    [
+        ("Sorcery", "Create two 1/1 red Goblin creature tokens.", True),
+        ("Enchantment — Saga", "I — Create a 3/3 green Beast creature token.\nII — Draw a card.", True),
+        ("Enchantment — Saga", "I — Scry 1.\nII — Create a 3/3 green Beast creature token.", False),
+        ("Artifact", "{T}: Create a 1/1 green Saproling creature token.", False),
+    ],
+)
+def test_wait_checks_what_the_current_spell_produces(kind, text, wait):
+    s = state()
+    s["stack"] = [{"type_line": kind, "controller_seat_id": 1, "oracle_text": text}]
+    assert aura_waits_for_creature(s, s["hand"][0]) is wait
+
+
+def test_controller_restrictions_and_independent_entry_reward():
+    from tests.test_targeting_fallback_decline import _decision, _planner
+
+    from arenamcp.action_planner import DECLINE_DECISION
+    from arenamcp.target_effects import creature_aura_hosts
+
+    s = state()
+    s["battlefield"][0]["instance_id"] = 54
+    aura = dict(
+        s["hand"][0],
+        name="Scout's Boon",
+        oracle_text="Enchant creature\nWhen this enchantment enters, scry 2.\nEnchanted creature has flying.",
+    )
+    s["stack"] = [aura]
+    s["decision_context"] = {"source_id": aura["instance_id"]}
+    p = _planner()
+    p._target_highlights = lambda *args: {54: "Cold"}
+    assert creature_aura_hosts(aura, s["battlefield"], 1) == s["battlefield"]
+    assert p._gate_harmful_llm_target_picks(_decision([54]), s, ["tgt:54"]) == ["tgt:54"]
+    aura["oracle_text"] = aura["oracle_text"].replace("When this enchantment enters, scry 2.\n", "")
+    assert p._gate_harmful_llm_target_picks(_decision([54]), s, ["tgt:54"]) == [DECLINE_DECISION]
+    aura["oracle_text"] = "Enchant creature you control"
+    assert creature_aura_hosts(aura, s["battlefield"], 1) == []

@@ -53,7 +53,8 @@ MULLIGAN_POLICY = (
     "Keeping 5: keep unless unplayable (0 lands, all lands, or 1 land with no cheap plays). "
     "Never go to 4 except for 0-land or near-all-land hands. "
     "Read each card's real mana value below; landcycling cards are extra land drops once you have "
-    "the mana (count them as about half a land); cheap instants are early plays. "
+    "the mana (count them as about half a land). Auras and protective tricks need their targets; "
+    "count them as development only when this hand can deploy a compatible creature early. "
     "Do not mulligan a functional hand for a better curve or for one awkward color."
 )
 
@@ -74,6 +75,8 @@ class HandCard:
     rarity: str
     # What the spell does, for ties the land/curve score leaves (see _role_value).
     role: float = 0.0
+    needs_carrier: bool = False
+    makes_carrier: bool = False
 
 
 # A spell that can kill or stop a creature: damage it can aim at one (or at
@@ -202,7 +205,18 @@ def hand_card(card: dict) -> HandCard:
     is_land = "land" in card_types or bool(re.search(r"\bland\b", supertypes))
     types = f"{type_line} {' '.join(card_types)}".lower()
     cost = str(card.get("mana_cost") or "")
+    from arenamcp.target_effects import (
+        creature_aura_scope,
+        enchant_effect_text,
+        resolves_to_creature,
+        target_effect_is_harmful,
+    )
+
     instant_speed = "instant" in types or bool(flash)
+    scope = creature_aura_scope(card)
+    needs_carrier = scope == "self" or (
+        scope == "either" and target_effect_is_harmful(enchant_effect_text("Enchant creature", text)) is False
+    )
     return HandCard(
         instance_id=int(card.get("instance_id") or 0),
         name=str(card.get("name") or "?"),
@@ -216,6 +230,8 @@ def hand_card(card: dict) -> HandCard:
         mana_cost=cost,
         rarity=_rarity(card),
         role=0.0 if is_land else _role_value(text.lower(), types, instant_speed),
+        needs_carrier=needs_carrier,
+        makes_carrier=resolves_to_creature(card),
     )
 
 
@@ -278,11 +294,13 @@ def _keep_land_values(keep: int) -> tuple[float, ...]:
 def hand_score(kept: list[HandCard], land_values: tuple[float, ...] = _LAND_VALUES) -> float:
     lands = [card for card in kept if card.is_land]
     score = sum(land_values[index] for index in range(min(len(lands), len(land_values))))
+    carrier = any(card.makes_carrier and card.mana_value <= 3 and castable_with(card, lands) for card in kept)
     seen: Counter = Counter()
     for card in kept:
         if card.is_land:
             continue
-        score += _card_value(card, lands, seen[card.name])
+        value = _card_value(card, lands, seen[card.name])
+        score += min(value, 1.0) if card.needs_carrier and not carrier else value
         seen[card.name] += 1
     return score
 
@@ -437,6 +455,10 @@ def situation(state: dict, mulligans: int | None = None) -> MulliganSituation:
 def _plays(kept: list[HandCard]) -> tuple[list[HandCard], list[HandCard], list[HandCard]]:
     lands = [card for card in kept if card.is_land]
     spells = [card for card in kept if not card.is_land]
+    carrier = any(
+        card.makes_carrier and card.mana_value <= 3 and castable_with(card, lands) for card in spells
+    )
+    spells = [card for card in spells if not card.needs_carrier or carrier]
     early = [card for card in spells if card.mana_value <= 3 and castable_with(card, lands)]
     cheap = [card for card in spells if card.mana_value <= 2 and colors_reachable(card, lands)]
     covered = [card for card in spells if colors_reachable(card, lands)]
@@ -470,6 +492,12 @@ def mulligan_verdict(found: MulliganSituation) -> tuple[str, str] | None:
     # Shock)" here, from a tie broken by list position, and the bottom step's
     # model followed it "consistent with my earlier keep decision".
 
+    if (
+        keep_size in (7, 6, None)
+        and sum(card.needs_carrier for card in kept) >= 2
+        and not any(card.makes_carrier for card in early)
+    ):
+        return None  # dependent payoffs need strategic evaluation, not a mana-only auto-keep
     if keep_size in (7, None):
         if 3 <= lands <= 4 and early and len(covered) >= 2:
             return "keep", f"{lands} lands with early plays ({_names(early)}) on 7, {where}"
@@ -559,6 +587,12 @@ def describe(state: dict, mulligans: int | None = None) -> list[str]:
         f"{len(found.cards) - len(lands)} spells; land-ish total {len(lands) + 0.5 * len(cyclers):g} "
         "(each landcycling card counts as half a land)."
     )
+    early, _, _ = _plays(found.cards)
+    dependent = [c for c in found.cards if c.needs_carrier]
+    if dependent and not any(c.makes_carrier for c in early):
+        lines.append(
+            f"No early carrier in this hand for {_names(dependent)}. Compare a mulligan with its independent plays and any available commander."
+        )
     for card in found.cards:
         if card.is_land:
             lines.append(
@@ -568,7 +602,7 @@ def describe(state: dict, mulligans: int | None = None) -> list[str]:
         tags = []
         if card.instant_speed:
             tags.append("instant speed")
-        if card.instant_speed and card.mana_value <= 2:
+        if card.instant_speed and card.mana_value <= 2 and not card.needs_carrier:
             tags.append("cheap interaction")
         if card.landcycling is not None:
             tags.append(

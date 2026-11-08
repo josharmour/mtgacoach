@@ -927,7 +927,7 @@ class CompactCoachPanel(QWidget):
             )
         elif kind.startswith("history:"):
             ladder = kind.split(":", 1)[1]
-            title = f"Recent {ladder}"
+            title = f"Recent {ladder} · newest first"
             rows = self.rank_strip.recent.get(ladder, [])
             text = (
                 "".join(
