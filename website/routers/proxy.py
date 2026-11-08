@@ -23,7 +23,7 @@ from abuse_protection import (
     reserve_code_request,
     reserve_signup,
 )
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from state import _extract_client_metadata, _get_db, _record_trial_event
 
 
@@ -151,15 +151,34 @@ def _mint_context(request: Request, app_version: str) -> dict[str, str]:
     }
 
 
+def _verify_trial_code(
+    body: dict, machine_id: str, now: datetime, request: Request, app_version: str
+) -> None:
+    email = _clean_email(body)
+    code = str(body.get("code", "")).strip()
+    if not email or not code:
+        _record_trial_event(request, "email_verification_required", machine_id, app_version)
+        raise HTTPException(422, "email_verification_required")
+    verified = _get_db().verify_and_consume_trial_email_code(
+        machine_id, email, _hash_trial_code(code, machine_id), now, MAX_CODE_ATTEMPTS
+    )
+    if not verified:
+        _record_trial_event(request, "invalid_code", machine_id, app_version)
+        raise HTTPException(422, "invalid_code")
+
+
 @router.post("/api/trial")
-async def request_trial(request: Request):
+async def request_trial(request: Request, response: Response):
     """Auto-provision a 7-day trial key on the desktop app's first run.
 
     One trial per machine_id, ever. While the trial is active, repeat calls
     return the same key; after it lapses, 403 gates on a Patreon subscription.
     New mints require an email address verified via /api/trial/request-code;
-    already-provisioned machines stay back-compat and need no code.
+    recovery requires the existing bearer key or verification of the email
+    already bound to that trial. A machine identifier is not authentication.
     """
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
     try:
         body = await request.json()
     except Exception:
@@ -183,11 +202,25 @@ async def request_trial(request: Request):
         except ValueError:
             expires = now  # unparseable record â€” treat as lapsed
         if expires > now:
-            # Back-compat: already-provisioned machines keep getting their key
-            # without re-verifying; backfill the verified email when we learn it.
-            email = _clean_email(body)
-            if not existing.get("email") and _EMAIL_RE.fullmatch(email):
-                _get_db().set_trial_email(machine_id, email)
+            # Knowing a machine identifier must never reveal its bearer key.
+            authorization = request.headers.get("Authorization", "")
+            scheme, _, supplied_key = authorization.partition(" ")
+            key_matches = (
+                scheme.lower() == "bearer"
+                and bool(supplied_key)
+                and hmac.compare_digest(supplied_key.encode(), str(existing["litellm_key"]).encode())
+            )
+            if not key_matches:
+                email = _clean_email(body)
+                if (
+                    not existing.get("recovery_email_verified")
+                    or not existing.get("email")
+                    or email != str(existing["email"]).strip().lower()
+                ):
+                    _record_trial_event(request, "recovery_required", machine_id, app_version)
+                    raise HTTPException(422, "trial_recovery_required")
+                _verify_trial_code(body, machine_id, now, request, app_version)
+            # Do not bind a new email here, even when a valid bearer is supplied.
             _record_trial_event(request, "existing", machine_id, app_version)
             return {
                 "key": existing["litellm_key"],
@@ -207,32 +240,7 @@ async def request_trial(request: Request):
 
     # New mints require a freshly verified email address.
     email = _clean_email(body)
-    code = str(body.get("code", "")).strip()
-    if not email or not code:
-        _record_trial_event(request, "email_verification_required", machine_id, app_version)
-        raise HTTPException(422, "email_verification_required")
-
-    pending = _get_db().get_trial_email_code(machine_id)
-    verified = False
-    if pending:
-        try:
-            pending_expires = _parse_trial_iso(pending["expires_at"] or "")
-        except ValueError:
-            pending_expires = now
-        verified = (
-            pending_expires > now
-            and str(pending.get("email") or "").lower() == email
-            and int(pending.get("attempts") or 0) < MAX_CODE_ATTEMPTS
-            and hmac.compare_digest(
-                str(pending.get("code_hash") or ""), _hash_trial_code(code, machine_id)
-            )
-        )
-    if not verified:
-        if pending:
-            _get_db().record_failed_code_attempt(machine_id)
-        _record_trial_event(request, "invalid_code", machine_id, app_version)
-        raise HTTPException(422, "invalid_code")
-    _get_db().consume_trial_email_code(machine_id)
+    _verify_trial_code(body, machine_id, now, request, app_version)
 
     # Per-machine and per-network issuance limits (429 + Retry-After).
     try:
@@ -251,7 +259,9 @@ async def request_trial(request: Request):
         raise HTTPException(503, "Trial provisioning is temporarily unavailable. Try again later.")
 
     expires_at = _trial_iso(now + timedelta(days=TRIAL_DAYS))
-    _get_db().create_trial(machine_id, key, _trial_iso(now), expires_at, email=email)
+    _get_db().create_trial(
+        machine_id, key, _trial_iso(now), expires_at, email=email, recovery_email_verified=True
+    )
     finish_signup(_get_db().get_db, machine_id, True)
     _record_trial_event(request, "created", machine_id, app_version)
     logger.info(

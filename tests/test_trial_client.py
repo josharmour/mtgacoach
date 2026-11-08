@@ -281,3 +281,15 @@ def _models_response():
     resp = _http_response({"data": [{"id": "glm-5.3-flash"}]})
     resp.status = 200
     return resp
+
+
+def test_request_trial_key_explains_secure_recovery(monkeypatch):
+    monkeypatch.setattr(
+        subscription.urllib.request,
+        "urlopen",
+        mock.Mock(side_effect=_http_error(422, {"detail": "trial_recovery_required"})),
+    )
+    result = subscription.request_trial_key("me@example.com", "123456")
+    assert result["status"] == "trial_recovery_required"
+    assert "originally verified" in result["message"]
+    assert "support@mtgacoach.com" in result["message"]

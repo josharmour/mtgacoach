@@ -1,9 +1,11 @@
 """SQLite database for subscriber management."""
 
+import hmac
 import secrets
 import sqlite3
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -138,6 +140,10 @@ def init_db():
             conn.execute("ALTER TABLE trials ADD COLUMN email TEXT")
         if trial_cols and "email_verified" not in trial_cols:
             conn.execute("ALTER TABLE trials ADD COLUMN email_verified INTEGER DEFAULT 0")
+        # Historical email_verified values could come from unauthenticated
+        # backfill. Never promote them to recovery credentials automatically.
+        if trial_cols and "recovery_email_verified" not in trial_cols:
+            conn.execute("ALTER TABLE trials ADD COLUMN recovery_email_verified INTEGER DEFAULT 0")
         if trial_cols and "expired_email_sent_at" not in trial_cols:
             conn.execute("ALTER TABLE trials ADD COLUMN expired_email_sent_at TEXT")
 
@@ -288,13 +294,18 @@ def create_trial(
     created_at: str,
     expires_at: str,
     email: str = "",
+    *,
+    recovery_email_verified: bool = False,
 ) -> None:
     """Record a newly-minted trial key for a machine (one trial per machine, ever)."""
     with get_db() as conn:
         conn.execute(
-            "INSERT INTO trials (machine_id, litellm_key, created_at, expires_at, email, email_verified) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (machine_id, litellm_key, created_at, expires_at, email, 1 if email else 0),
+            "INSERT INTO trials (machine_id, litellm_key, created_at, expires_at, email, email_verified, "
+            "recovery_email_verified) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                machine_id, litellm_key, created_at, expires_at, email, 1 if email else 0,
+                int(bool(email) and recovery_email_verified),
+            ),
         )
 
 
@@ -388,6 +399,43 @@ def consume_trial_email_code(machine_id: str) -> None:
     """Delete the pending row once the code verified successfully."""
     with get_db() as conn:
         conn.execute("DELETE FROM trial_email_codes WHERE machine_id = ?", (machine_id,))
+
+
+def verify_and_consume_trial_email_code(
+    machine_id: str, email: str, code_hash: str, now: datetime, max_attempts: int
+) -> bool:
+    """Serialize verification, guess counting and one-time consumption.
+
+    The write lock prevents concurrent workers from accepting one code twice
+    or racing past the failed-attempt limit.
+    """
+    with get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM trial_email_codes WHERE machine_id = ?", (machine_id,)
+        ).fetchone()
+        if not row:
+            return False
+        try:
+            expires = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            expires = now
+        valid = (
+            expires > now
+            and str(row["email"]).lower() == email
+            and int(row["attempts"] or 0) < max_attempts
+            and hmac.compare_digest(str(row["code_hash"]), code_hash)
+        )
+        if valid:
+            conn.execute("DELETE FROM trial_email_codes WHERE machine_id = ?", (machine_id,))
+        else:
+            conn.execute(
+                "UPDATE trial_email_codes SET attempts = attempts + 1 WHERE machine_id = ?",
+                (machine_id,),
+            )
+        return valid
 
 
 TRIAL_EVENT_FIELDS = (

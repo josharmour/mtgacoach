@@ -23,3 +23,23 @@ Run `python -m pytest tests/test_transactional_email.py -q` to check the sender,
 Verify the public landing page, its platform download links, and the website’s `/health` route. For account changes, also test email-code verification, trial issuance, expiration, and subscriber access with a test account. A healthy website alone does not establish that an inference request will succeed.
 
 Production uses a separately managed container configuration. Confirm the live image, mounts, and persistent data before a deployment. Keep provider, mail, Patreon, and gateway credentials in the deployment environment. For ArenaOnAir match accounting and verification, see [ARENAONAIR.md](ARENAONAIR.md).
+
+## Account recovery security
+
+Patreon sign-in starts at `/patreon/login`. The callback requires the browser's
+short-lived, secure OAuth state cookie, a verified Patreon email, and an active
+membership linked to campaign `1310866` (the official mtgacoach campaign).
+`PATREON_CAMPAIGN_ID` can explicitly override that ID for a separate deployment.
+Missing membership information fails closed. Webhook gateway revocation errors
+return a retryable failure without marking the local subscriber revoked.
+
+A machine ID is an identifier, never proof of trial ownership. Active trial
+recovery requires the existing bearer key or a fresh single-use email code for
+the original trusted signup email. The database migration adds
+`recovery_email_verified`, defaulting false for older records because the former
+email-backfill endpoint could mark unverified input as verified. Existing cached
+keys remain usable. Historical lost-key cases require support and independently
+verified ownership; do not promote historical email flags in bulk.
+
+These checks prevent future unauthorized recovery. They do not establish whether
+previously returned bearer keys were copied or invalidate any such copies.

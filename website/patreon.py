@@ -18,26 +18,30 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import html
 import json
 import logging
 import os
+import re
 import secrets
 import smtplib
 import time
 from email.message import EmailMessage
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 import db
 import httpx
 from abuse_protection import PATRON_LIMITS, TRIAL_LIMITS
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 PATREON_CLIENT_ID = os.environ.get("PATREON_CLIENT_ID", "")
+PATREON_CAMPAIGN_ID = os.environ.get("PATREON_CAMPAIGN_ID", "1310866")
 PATREON_CLIENT_SECRET = os.environ.get("PATREON_CLIENT_SECRET", "")
 PATREON_WEBHOOK_SECRET = os.environ.get("PATREON_WEBHOOK_SECRET", "")
 
@@ -47,7 +51,7 @@ LITELLM_URL = os.environ.get("LITELLM_URL", "http://10.0.0.2:8444").rstrip("/")
 LITELLM_MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
 
 # What a patron key is allowed to do — mirrors the manually-migrated keys.
-PATRON_KEY_MODELS = ["glm-5.3-flash"]
+PATRON_KEY_MODELS = ["current-standard"]
 PATRON_KEY_BUDGET = float(os.environ.get("MTGACOACH_PATRON_BUDGET", "25"))
 PATRON_KEY_BUDGET_DURATION = "30d"
 
@@ -78,9 +82,7 @@ _http_client: Optional[httpx.AsyncClient] = None
 def _http() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None:
-        _http_client = httpx.AsyncClient(
-            timeout=30.0, headers={"User-Agent": _USER_AGENT}
-        )
+        _http_client = httpx.AsyncClient(timeout=30.0, headers={"User-Agent": _USER_AGENT})
     return _http_client
 
 
@@ -111,9 +113,7 @@ async def mint_litellm_key(email: str, name: str, patron_id: str) -> str:
         },
     }
     for attempt in (1, 2):
-        resp = await _http().post(
-            f"{LITELLM_URL}/key/generate", json=payload, headers=_admin_headers()
-        )
+        resp = await _http().post(f"{LITELLM_URL}/key/generate", json=payload, headers=_admin_headers())
         if resp.status_code == 200:
             key = resp.json().get("key", "")
             if not key:
@@ -125,9 +125,7 @@ async def mint_litellm_key(email: str, name: str, patron_id: str) -> str:
         if attempt == 1 and resp.status_code == 400:
             payload["key_alias"] = f"patreon-{email}-{secrets.token_hex(3)}"
             continue
-        raise RuntimeError(
-            f"LiteLLM /key/generate failed: {resp.status_code} {resp.text[:300]}"
-        )
+        raise RuntimeError(f"LiteLLM /key/generate failed: {resp.status_code} {resp.text[:300]}")
     raise RuntimeError("unreachable")
 
 
@@ -152,9 +150,7 @@ async def mint_trial_key(machine_id: str, context: Optional[dict[str, str]] = No
         },
     }
     for attempt in (1, 2):
-        resp = await _http().post(
-            f"{LITELLM_URL}/key/generate", json=payload, headers=_admin_headers()
-        )
+        resp = await _http().post(f"{LITELLM_URL}/key/generate", json=payload, headers=_admin_headers())
         if resp.status_code == 200:
             key = resp.json().get("key", "")
             if not key:
@@ -167,18 +163,14 @@ async def mint_trial_key(machine_id: str, context: Optional[dict[str, str]] = No
         if attempt == 1 and resp.status_code == 400:
             payload["key_alias"] = f"trial-{machine_id[:12]}-{secrets.token_hex(3)}"
             continue
-        raise RuntimeError(
-            f"LiteLLM /key/generate failed: {resp.status_code} {resp.text[:300]}"
-        )
+        raise RuntimeError(f"LiteLLM /key/generate failed: {resp.status_code} {resp.text[:300]}")
     raise RuntimeError("unreachable")
 
 
 async def delete_litellm_key(key: str) -> bool:
     """Best-effort delete of a gateway key. Returns True if it was deleted."""
     try:
-        resp = await _http().post(
-            f"{LITELLM_URL}/key/delete", json={"keys": [key]}, headers=_admin_headers()
-        )
+        resp = await _http().post(f"{LITELLM_URL}/key/delete", json={"keys": [key]}, headers=_admin_headers())
         if resp.status_code == 200:
             return True
         logger.warning(f"LiteLLM /key/delete {key[:12]}...: {resp.status_code} {resp.text[:200]}")
@@ -194,9 +186,7 @@ async def delete_litellm_key(key: str) -> bool:
 
 def _subscriber_by_email(email: str) -> Optional[dict]:
     with db.get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM subscribers WHERE email = ?", (email,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM subscribers WHERE email = ?", (email,)).fetchone()
     return dict(row) if row else None
 
 
@@ -204,9 +194,7 @@ def _record_key(email: str, name: str, key: str, notes: str) -> None:
     """Insert or replace the subscriber row for email with the new key."""
     now = time.time()
     with db.get_db() as conn:
-        existing = conn.execute(
-            "SELECT license_key FROM subscribers WHERE email = ?", (email,)
-        ).fetchone()
+        existing = conn.execute("SELECT license_key FROM subscribers WHERE email = ?", (email,)).fetchone()
         if existing:
             conn.execute(
                 "UPDATE subscribers SET license_key = ?, status = 'active', "
@@ -221,9 +209,28 @@ def _record_key(email: str, name: str, key: str, notes: str) -> None:
             )
 
 
+def _check_patron_identity(sub: dict, patron_id: str, *, verified_oauth: bool = False) -> None:
+    """Do not let an email change transfer another patron's existing key."""
+    match = re.search(r"(?:^|\()patron_id=([^()]+)\)", str(sub.get("notes") or ""))
+    if match:
+        if match.group(1) != patron_id:
+            raise HTTPException(409, "Subscriber identity mismatch; contact support")
+    elif sub["license_key"].startswith("sk-"):
+        if not verified_oauth:
+            raise HTTPException(409, "Subscriber identity requires verified OAuth; contact support")
+        # Only the verified-email OAuth flow can bind a historical subscriber.
+        with db.get_db() as conn:
+            conn.execute(
+                "UPDATE subscribers SET notes = COALESCE(notes, '') || ? WHERE license_key = ?",
+                (f" (patron_id={patron_id})", sub["license_key"]),
+            )
+
+
 async def ensure_active_key(email: str, name: str, patron_id: str, source: str) -> str:
     """Return the patron's working sk- key, minting/replacing as needed."""
     sub = _subscriber_by_email(email)
+    if sub:
+        _check_patron_identity(sub, patron_id, verified_oauth=source.startswith("oauth ("))
     if sub and sub["status"] == "active" and sub["license_key"].startswith("sk-"):
         return sub["license_key"]
 
@@ -231,7 +238,8 @@ async def ensure_active_key(email: str, name: str, patron_id: str, source: str) 
     # gets a fresh gateway key. A revoked row's old sk- key was already
     # deleted at the gateway; delete defensively anyway.
     if sub and sub["license_key"].startswith("sk-"):
-        await delete_litellm_key(sub["license_key"])
+        if not await delete_litellm_key(sub["license_key"]):
+            raise HTTPException(503, "Gateway key revocation failed; retry required")
 
     key = await mint_litellm_key(email, name, patron_id)
     _record_key(email, name, key, f"Patreon {source} (patron_id={patron_id})")
@@ -240,12 +248,14 @@ async def ensure_active_key(email: str, name: str, patron_id: str, source: str) 
     return key
 
 
-async def revoke_access(email: str, reason: str) -> None:
+async def revoke_access(email: str, reason: str, patron_id: str) -> None:
     sub = _subscriber_by_email(email)
     if not sub:
         return
+    _check_patron_identity(sub, patron_id)
     if sub["license_key"].startswith("sk-"):
-        await delete_litellm_key(sub["license_key"])
+        if not await delete_litellm_key(sub["license_key"]):
+            raise HTTPException(503, "Gateway key revocation failed; retry required")
     db.revoke_subscriber(sub["license_key"])
     logger.info(f"Patreon: revoked {email} ({reason})")
 
@@ -397,17 +407,19 @@ async def patreon_webhook(request: Request):
         logger.error("Patreon webhook secret is not configured")
         raise HTTPException(503, "Webhook is not configured")
     signature = request.headers.get("X-Patreon-Signature", "")
-    expected = hmac.new(
-        PATREON_WEBHOOK_SECRET.encode(), body_bytes, hashlib.md5
-    ).hexdigest()
+    expected = hmac.new(PATREON_WEBHOOK_SECRET.encode(), body_bytes, hashlib.md5).hexdigest()
     if not hmac.compare_digest(signature, expected):
         logger.warning("Patreon webhook: invalid signature")
         raise HTTPException(403, "Invalid signature")
 
     event_type = request.headers.get("X-Patreon-Event", "")
     supported_events = {
-        "members:create", "members:update", "members:delete",
-        "members:pledge:create", "members:pledge:update", "members:pledge:delete",
+        "members:create",
+        "members:update",
+        "members:delete",
+        "members:pledge:create",
+        "members:pledge:update",
+        "members:pledge:delete",
     }
     if event_type not in supported_events:
         return {"ok": True, "ignored": "unsupported event"}
@@ -418,6 +430,9 @@ async def patreon_webhook(request: Request):
         member = data["data"]
         if member.get("type") != "member":
             raise ValueError("Expected a v2 member")
+        campaign = member["relationships"]["campaign"]["data"]
+        if campaign.get("type") != "campaign" or campaign.get("id") != PATREON_CAMPAIGN_ID:
+            raise ValueError("Unexpected campaign")
         attrs = member["attributes"]
         # Included can contain the creator as well as the patron. Never choose
         # a user by array position, or confuse a member ID with a user ID.
@@ -426,8 +441,11 @@ async def patreon_webhook(request: Request):
             raise ValueError("Missing member user relationship")
         patron_id = user_ref["id"]
         user_attrs = next(
-            (item.get("attributes", {}) for item in data.get("included", [])
-             if item.get("type") == "user" and item.get("id") == patron_id),
+            (
+                item.get("attributes", {})
+                for item in data.get("included", [])
+                if item.get("type") == "user" and item.get("id") == patron_id
+            ),
             {},
         )
         patron_email = attrs.get("email") or user_attrs.get("email")
@@ -437,7 +455,10 @@ async def patreon_webhook(request: Request):
             raise ValueError("Missing member email; check webhook scopes")
         # Missing fields must not silently revoke a working subscription.
         if "patron_status" not in attrs or status not in (
-            "active_patron", "declined_patron", "former_patron", None,
+            "active_patron",
+            "declined_patron",
+            "former_patron",
+            None,
         ):
             raise ValueError("Missing or unknown membership status")
     except (ValueError, KeyError, TypeError, AttributeError, StopIteration):
@@ -450,7 +471,7 @@ async def patreon_webhook(request: Request):
     if status == "active_patron":
         await ensure_active_key(patron_email, patron_name, patron_id, "webhook membership")
     else:
-        await revoke_access(patron_email, "membership inactive")
+        await revoke_access(patron_email, "membership inactive", patron_id)
 
     return {"ok": True}
 
@@ -461,27 +482,47 @@ async def patreon_webhook(request: Request):
 
 
 def _membership_allows_key(identity: dict) -> tuple[bool, str]:
-    """Decide from the /identity response whether this user gets a key.
-
-    Fail-closed when Patreon positively reports no active pledge; fail-open
-    (with a loud log) when membership data is absent/ambiguous, so an API
-    shape change can't lock every patron out of key recovery.
-    """
-    members = [
-        item for item in identity.get("included", [])
-        if item.get("type") == "member"
-    ]
-    if not members:
-        logger.warning(
-            "Patreon OAuth: no membership data in identity response; allowing. "
-            f"payload keys: {list(identity.keys())}"
-        )
-        return True, "unverified"
-    for m in members:
-        if m.get("attributes", {}).get("patron_status") == "active_patron":
+    """Only a linked, active membership in our own campaign permits recovery."""
+    data = identity.get("data") or {}
+    if data.get("type") != "user" or not data.get("id"):
+        return False, "invalid_identity"
+    refs = data.get("relationships", {}).get("memberships", {}).get("data", [])
+    member_ids = {r.get("id") for r in refs if r.get("type") == "member"}
+    included = identity.get("included") or []
+    for member in included:
+        if member.get("type") != "member" or member.get("id") not in member_ids:
+            continue
+        campaign = member.get("relationships", {}).get("campaign", {}).get("data") or {}
+        if campaign.get("type") != "campaign" or not campaign.get("id"):
+            continue
+        matches = bool(PATREON_CAMPAIGN_ID) and campaign["id"] == PATREON_CAMPAIGN_ID
+        if matches and member.get("attributes", {}).get("patron_status") == "active_patron":
             return True, "active_patron"
-    statuses = [m.get("attributes", {}).get("patron_status") for m in members]
-    return False, ",".join(str(s) for s in statuses)
+    return False, "no_verified_campaign_membership"
+
+
+@router.get("/patreon/login")
+async def patreon_login():
+    if not PATREON_CLIENT_ID:
+        raise HTTPException(503, "Patreon login is not configured")
+    state = secrets.token_urlsafe(32)
+    response = RedirectResponse(
+        "https://www.patreon.com/oauth2/authorize?"
+        + urlencode(
+            {
+                "response_type": "code",
+                "client_id": PATREON_CLIENT_ID,
+                "redirect_uri": "https://mtgacoach.com/patreon/callback",
+                "scope": "identity identity[email] identity.memberships",
+                "state": state,
+            }
+        )
+    )
+    response.set_cookie(
+        "__Host-patreon-state", state, max_age=600, secure=True, httponly=True, samesite="lax", path="/"
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 _PAGE_STYLE = """
@@ -516,7 +557,20 @@ def _error_page(title: str, message: str, status: int = 400) -> HTMLResponse:
 
 @router.get("/patreon/callback")
 async def patreon_callback(request: Request):
+    response = await _patreon_callback(request)
+    response.delete_cookie("__Host-patreon-state", secure=True, httponly=True, samesite="lax", path="/")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+async def _patreon_callback(request: Request):
     """Patron links their Patreon account and gets their license key."""
+    state = request.query_params.get("state", "")
+    expected = request.cookies.get("__Host-patreon-state", "")
+    if not state or not expected or not hmac.compare_digest(state.encode(), expected.encode()):
+        return _error_page("Login expired", "Start again from the subscribe page.", status=403)
     code = request.query_params.get("code", "")
     if not code:
         return _error_page("Error", "No authorization code received.")
@@ -532,26 +586,29 @@ async def patreon_callback(request: Request):
                 "redirect_uri": "https://mtgacoach.com/patreon/callback",
             },
         )
+        token_resp.raise_for_status()
         access_token = token_resp.json().get("access_token", "")
         if not access_token:
-            logger.error(f"Patreon OAuth failed: {token_resp.text[:300]}")
+            logger.error("Patreon OAuth returned no access token")
             return _error_page("Error", "Could not authenticate with Patreon.")
 
         identity_resp = await _http().get(
             "https://www.patreon.com/api/oauth2/v2/identity"
-            "?fields%5Buser%5D=email,full_name"
-            "&include=memberships"
+            "?fields%5Buser%5D=email,full_name,is_email_verified"
+            "&include=memberships.campaign"
+            "&fields%5Bcampaign%5D=url"
             "&fields%5Bmember%5D=patron_status",
             headers={"Authorization": f"Bearer {access_token}"},
         )
+        identity_resp.raise_for_status()
         identity = identity_resp.json()
         user_data = identity.get("data", {}).get("attributes", {})
         patron_email = user_data.get("email", "")
         patron_name = user_data.get("full_name", "")
         patron_id = identity.get("data", {}).get("id", "")
 
-        if not patron_email:
-            return _error_page("Error", "Could not get your email from Patreon.")
+        if not patron_email or user_data.get("is_email_verified") is not True:
+            return _error_page("Error", "Verify your email in Patreon before retrieving your key.")
 
         allowed, status = _membership_allows_key(identity)
         if not allowed:
@@ -559,23 +616,18 @@ async def patreon_callback(request: Request):
             return _error_page(
                 "No active pledge",
                 "We couldn't find an active mtgacoach pledge on this Patreon "
-                'account. If you just pledged, wait a minute and retry; otherwise '
+                "account. If you just pledged, wait a minute and retry; otherwise "
                 'pledge at <a href="https://www.patreon.com/mtgacoach">patreon.com/mtgacoach</a>.',
                 status=403,
             )
 
-        license_key = await ensure_active_key(
-            patron_email, patron_name, patron_id, f"oauth ({status})"
-        )
+        license_key = await ensure_active_key(patron_email, patron_name, patron_id, f"oauth ({status})")
 
-        copy_js = (
-            f"navigator.clipboard.writeText('{license_key}')"
-            ".then(()=>this.textContent='Copied!')"
-        )
+        copy_js = f"navigator.clipboard.writeText('{license_key}').then(()=>this.textContent='Copied!')"
         return HTMLResponse(
             f"<html><head><title>mtgacoach - Welcome!</title>{_PAGE_STYLE}</head><body>"
             '<div class="card">'
-            f"<h1>Welcome, {patron_name or 'Patron'}!</h1>"
+            f"<h1>Welcome, {html.escape(patron_name or 'Patron')}!</h1>"
             "<p>Your license key is:</p>"
             f'<div class="key" onclick="{copy_js}" title="Click to copy">{license_key}</div>'
             "<p>Enter it in the mtgacoach app under <code>Settings &rarr; License Key</code>.</p>"
