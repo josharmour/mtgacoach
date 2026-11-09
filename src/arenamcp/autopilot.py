@@ -118,6 +118,7 @@ class AutopilotEngine(
         bug_report_fn: Callable[[str, dict], None] | None = None,
         ui_turn_plan_fn: Callable[[dict[str, Any] | None], None] | None = None,
         ui_game_plan_fn: Callable[[dict[str, Any] | None], None] | None = None,
+        decision_progress_fn: Callable[[], None] | None = None,
     ):
         """Initialize the autopilot engine."""
         self._planner = planner
@@ -125,6 +126,7 @@ class AutopilotEngine(
         self._config = config or AutopilotConfig()
         self._speak_fn = speak_fn
         self._ui_advice_fn = ui_advice_fn
+        self._decision_progress_fn = decision_progress_fn
         self._bug_report_fn = bug_report_fn
         self._stuck_report_fn: Callable[[str, dict], None] | None = None
         # Set by standalone: (kind, key, detail, game_state) -> None. Reports
@@ -5823,6 +5825,15 @@ class AutopilotEngine(
         labels = [(decision.find(oid).label if decision.find(oid) else oid) for oid in option_ids]
         bridge = self._progress_bridge(game_state, poll=fresh_poll)
         if submit_option(bridge, decision, option_ids):
+            # A nested post-cast decision can finish without returning to the
+            # outer coaching loop. Count actual submitted decisions as progress,
+            # not polling/model tokens, so a genuinely stuck call still warns.
+            progress = getattr(self, "_decision_progress_fn", None)
+            if progress is not None:
+                try:
+                    progress()
+                except Exception as error:
+                    logger.debug("Decision progress callback failed: %s", error)
             # A previous transient "unidentified Search" manual hold must not
             # disable the retry/verification backstop for this later submission.
             # The request tracker still requires Arena to advance and caps retries.

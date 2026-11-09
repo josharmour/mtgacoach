@@ -1126,6 +1126,7 @@ class StandaloneCoach(
                 config=config,
                 speak_fn=lambda text, blocking: self.speak_advice(text, blocking, speech_category="routine"),
                 ui_advice_fn=self.ui.advice if self.ui else None,
+                decision_progress_fn=self._mark_coaching_progress,
                 bug_report_fn=self._auto_bug_report_bridge_fallback,
                 ui_turn_plan_fn=(self.ui.turn_plan if self.ui and hasattr(self.ui, "turn_plan") else None),
                 ui_game_plan_fn=(self.ui.game_plan if self.ui and hasattr(self.ui, "game_plan") else None),
@@ -1830,6 +1831,12 @@ class StandaloneCoach(
             with contextlib.suppress(Exception):
                 self.ui.status("MANUAL", f"Select target for {name} in MTGA")
         return True
+
+    def _mark_coaching_progress(self) -> None:
+        """A submitted nested decision is progress even before the loop cycles."""
+        # Background/UI activity must not conceal a blocked coaching thread.
+        if threading.current_thread() is getattr(self, "_coaching_thread", None):
+            self._loop_heartbeat = time.monotonic()
 
     _LOOP_STALL_WARN_S = 15.0
     _LOOP_STALL_POLL_S = 2.0

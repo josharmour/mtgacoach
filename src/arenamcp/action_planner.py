@@ -3735,6 +3735,16 @@ class ActionPlanner(_ActionLegalityMixin):
             if choice is not None:
                 parts.append("Computed recipient-aware attack: " + choice.explanation)
 
+        # Show the guard's concrete counter-block before asking the model to
+        # choose. Match 22bea7bf (2026-11-08): Boo was proposed as a trade into
+        # Vaultborn Tyrant, ignoring the opponent's surviving Colossus block.
+        if str(dec_ctx.get("type") or "").lower() == "declare_attackers":
+            from arenamcp.combat_strategy import losing_attack_prompt
+
+            warning = losing_attack_prompt(game_state, dec_ctx)
+            if warning:
+                parts.append(warning)
+
         parts.append("\nRespond with ONLY a JSON action plan matching the schema.")
 
         return with_deck_reference("\n".join(parts), game_state)
