@@ -5108,6 +5108,13 @@ class ActionPlanner(_ActionLegalityMixin):
                         self._last_decision_trace["validated_ids"] = chosen
                     self._remember_chosen_x(decision, chosen)
                 return chosen
+            # An explicit empty answer is legal for an "up to" target request.
+            # Do this before filtering invalid IDs: a bogus nonempty answer must
+            # still use the guarded fallback, not become an accidental decline.
+            if decision.request_type == "SelectTargets" and chosen == [] and decision.selection_is_valid([]):
+                self._last_decision_trace["validated_ids"] = []
+                self._last_decision_trace["target_validation"] = "no_targets"
+                return []
             chosen = [c for c in chosen if c in valid]
             if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
                 from arenamcp.decisions import reasoning_choice_conflict
@@ -9348,6 +9355,12 @@ class ActionPlanner(_ActionLegalityMixin):
                 lines.insert(1, selection_note)
         if decision.request_type == "SelectTargets":
             lines.insert(1, f"YOU ARE SEAT {local_seat}; control determines YOURS/opponent, not ownership.")
+            lines.append(
+                "TARGET AVAILABILITY: Arena's listed target IDs are legal candidates even when their "
+                "names or zones are missing from the snapshot. Do not infer that a graveyard is empty "
+                "or that no legal target exists from an incomplete zone list. Choose only listed IDs; "
+                "option_ids: [] is allowed only when this request permits zero remaining targets."
+            )
             lines.insert(
                 2,
                 "SOURCE EFFECT: "

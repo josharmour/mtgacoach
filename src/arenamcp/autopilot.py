@@ -5925,7 +5925,11 @@ class AutopilotEngine(
                 # bridge reported the old decision cleared and never surfaced
                 # it — poll for it here instead of going silent for 45 s.
                 self._surface_post_cast_priority(decision, option_ids, fresh_poll, game_state, trigger, depth)
-            self._state = AutopilotState.IDLE
+            # A chained target/payment request can require manual intervention.
+            # Do not erase its PAUSED state after the outer cast succeeded: the
+            # dwell reporter must not call the still-pending request resolved.
+            if self._state != AutopilotState.PAUSED:
+                self._state = AutopilotState.IDLE
             return True
         if self._abort_event.is_set():
             return True
