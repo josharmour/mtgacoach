@@ -418,3 +418,23 @@ def test_aura_payoffs_need_an_early_carrier_for_an_automatic_keep(land_count):
     assert mp.mulligan_verdict(found) is None
     cards[-2] = hc("Token Spell", "Sorcery", "{1}{W}", "Create two 1/1 white Soldier creature tokens.")
     assert mp.mulligan_verdict(found)[0] == "keep"
+
+
+@pytest.mark.parametrize("visible_count", [0, 1, 6])
+def test_mulligan_waits_for_complete_hand_without_model_or_count_change(visible_count):
+    backend = Backend('{"option_ids": ["mull:mull"], "reasoning": "guess from deck"}')
+    planner = ActionPlanner(backend, timeout=5, land_drop_first=False)
+    game = state([MOUNTAIN] * 7, 0)
+    game["hand"] = game["hand"][:visible_count]
+    decision = PendingDecision(
+        request_id=(3, 12),
+        request_type="Mulligan",
+        options=(DecisionOption("mull:keep", "Keep"), DecisionOption("mull:mull", "Mulligan")),
+    )
+    assert planner.plan_decision_options(decision, game) == []
+    assert not backend.prompts
+    assert getattr(planner, "_mulligan_track", None) is None
+    # The request is still actionable as soon as the same hand is hydrated.
+    hydrated = state(G1_SIX, 0)
+    assert planner.plan_decision_options(decision, hydrated) == ["mull:keep"]
+    assert not backend.prompts

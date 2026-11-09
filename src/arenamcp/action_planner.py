@@ -6966,6 +6966,18 @@ class ActionPlanner(_ActionLegalityMixin):
         """
         from arenamcp import mulligan_policy
 
+        # Windows f4741c8e: the live mulligan request arrived before the hand.
+        # Asking the model on an empty snapshot made it redraw unseen cards
+        # based only on the cached deck plan. London always presents seven;
+        # yield until the hand update retriggers this same request.
+        hand = game_state.get("hand") or []
+        if len(hand) != 7 or any(not isinstance(card, dict) for card in hand):
+            logger.info("Mulligan: waiting for the complete seven-card hand")
+            self._last_decision_option_ids = []
+            self._last_decision_reasoning = "Waiting for the complete opening hand."
+            self._last_decision_trace = {"policy": "mulligan_wait_for_hand", "validated_ids": []}
+            return []
+
         taken = self._mulligans_taken(game_state)
         state = {**game_state, "_mulligans_taken": taken} if taken is not None else game_state
         verdict = mulligan_policy.mulligan_verdict(mulligan_policy.situation(state))
