@@ -334,6 +334,18 @@ class _BridgeSubmitMixin:
                     game_state,
                 )
             if action.action_type == ActionType.CLICK_BUTTON and request_type:
+                if request_type in (
+                    "Order",
+                    "OrderReq",
+                    "OrderRequest",
+                    "OrderTriggers",
+                    "OrderTriggersReq",
+                    "OrderTriggersRequest",
+                ) and (action.card_name or "").lower().strip() in ("done", "confirm", "submit"):
+                    # Sylvan Library's put-back ordering is an OrderRequest,
+                    # not priority. Keep its offered order through SubmitOrder.
+                    # Return even on failure: never fall through to submit_pass.
+                    return self._try_gre_bridge_order(action, game_state)
                 if "SelectReplacement" in request_type:
                     # Order Replacement's "Done" keeps Arena's first/default
                     # replacement; submit_pass is refused on this request
