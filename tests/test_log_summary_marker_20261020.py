@@ -8,6 +8,7 @@ autopilot's log catch-up gate waited for gameStateId 234 that the log never reac
 
 from unittest.mock import MagicMock
 
+import pytest
 from tests.fakes import make_engine
 
 from arenamcp.gamestate import GameState, create_game_state_handler
@@ -66,12 +67,36 @@ def test_an_optional_action_summary_marks_the_log_state_id():
     assert state.pending_decision is None  # the bridge, not the summary, reports the Optional Action
 
 
-def test_the_catch_up_gate_stops_waiting_after_that_summary():
+@pytest.mark.parametrize(
+    "visible_evidence,can_proceed",
+    [
+        ({"_bridge_visible_game_state_id": 234, "_bridge_connected": True}, True),
+        ({"_bridge_game_state_id": 234, "_bridge_connected": True}, False),
+        ({"_bridge_visible_game_state_id": 233, "_bridge_connected": True}, False),
+        ({"_bridge_visible_game_state_id": 234, "_bridge_connected": False}, False),
+        (
+            {
+                "_bridge_visible_game_state_id": 234,
+                "_bridge_connected": True,
+                "_bridge_state_incomplete": True,
+            },
+            False,
+        ),
+    ],
+)
+def test_the_catch_up_gate_requires_current_visible_board_after_summary(visible_evidence, can_proceed):
     state, _ = _parse(OPTIONAL_ACTION_SUMMARY, 227)
-    snapshot = state.get_snapshot()
+    snapshot = {**state.get_snapshot(), **visible_evidence}
     bridge = MagicMock()
-    bridge.connected = True
+    bridge.connected = visible_evidence["_bridge_connected"]
+    bridge.connect.return_value = bridge.connected
     engine = make_engine(bridge, MagicMock(), game_state=lambda: snapshot)
-    engine._LOG_CATCH_UP_TIMEOUT_S = 0.05  # without the marker the gate times out and returns None
+    engine._LOG_CATCH_UP_TIMEOUT_S = 0.05
+    # The summary is evidence that detail may never arrive, not proof that
+    # the old board survived the wipe. Only the visible board can certify it.
     poll = {"has_pending": True, "game_state_id": 234, "request_type": "OptionalAction"}
-    assert engine._await_log_catch_up(poll, snapshot) is snapshot
+    result = engine._await_log_catch_up(poll, snapshot)
+    if can_proceed:
+        assert result is snapshot
+    else:
+        assert result is None
