@@ -173,6 +173,16 @@ async def delete_litellm_key(key: str) -> bool:
         resp = await _http().post(f"{LITELLM_URL}/key/delete", json={"keys": [key]}, headers=_admin_headers())
         if resp.status_code == 200:
             return True
+        if resp.status_code == 404:
+            # LiteLLM /key/info also returns archived records. Confirm absence
+            # using the live-key list before treating a repeated delete as done.
+            check = await _http().get(
+                f"{LITELLM_URL}/key/list",
+                params={"key_hash": hashlib.sha256(key.encode()).hexdigest()},
+                headers=_admin_headers(),
+            )
+            if check.status_code == 200 and check.json().get("keys") == []:
+                return True
         logger.warning(f"LiteLLM /key/delete {key[:12]}...: {resp.status_code} {resp.text[:200]}")
     except Exception as e:
         logger.warning(f"LiteLLM /key/delete {key[:12]}... errored: {e}")

@@ -427,3 +427,24 @@ def test_webhook_cannot_revoke_unbound_manual_key(env):
     assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 409
     assert not fake.deleted and not fake.minted
     assert db.list_subscribers()[0]["status"] == "active"
+
+
+@pytest.mark.parametrize("live_keys, expected", [([], True), (["existing-hash"], False), (None, False)])
+def test_delete_404_only_succeeds_when_live_list_confirms_absence(env, monkeypatch, live_keys, expected):
+    import asyncio
+
+    import httpx
+
+    patreon = env[0]
+
+    class API:
+        async def post(self, url, **kwargs):
+            return httpx.Response(404, json={"detail": "Key not found"})
+
+        async def get(self, url, **kwargs):
+            assert url.endswith("/key/list")
+            assert kwargs["params"]["key_hash"] == hashlib.sha256(b"sk-test").hexdigest()
+            return httpx.Response(200, json={"keys": live_keys})
+
+    monkeypatch.setattr(patreon, "_http", lambda: API())
+    assert asyncio.run(patreon.delete_litellm_key("sk-test")) is expected
