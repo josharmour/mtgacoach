@@ -776,8 +776,17 @@ class _GameStateAnnotationsMixin:
                     ):
                         grp_id = _coerce_int(detail_map.get("grpid"), 0)
                         tax = _coerce_optional_int(detail_map.get("CostIncrease"))
-                        if grp_id > 0 and tax is not None and tax >= 0 and tax % 2 == 0:
+                        if grp_id > 4 and tax is not None and tax >= 0 and tax % 2 == 0:
                             self.commander_casts[grp_id] = tax // 2
+                            # Reconnect can omit both commanderGrpIds and the
+                            # commander object. This local-player designation
+                            # identifies the physical commander in any zone.
+                            if grp_id not in self.commander_grp_ids:
+                                self.commander_grp_ids.append(grp_id)
+                            if self._connection_deck_metadata is not None:
+                                self._connection_deck_metadata["commander_grp_ids"] = list(
+                                    self.commander_grp_ids
+                                )
                     designation = detail_map.get("designation", detail_map.get("value", ""))
                     for obj_id in affected_ids:
                         # Designations apply to players (seat IDs)

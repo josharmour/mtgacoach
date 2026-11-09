@@ -88,7 +88,12 @@ def commander_ids(state: dict) -> list[int]:
             and (zone == "command" or card.get("instance_id") in instances)
             and card.get("grp_id", 0) > 4
             and not card.get("is_token")
-            and "token" not in str(card.get("object_kind", "")).lower()
+            and str(card.get("object_kind") or "CARD").upper() in ("CARD", "UNKNOWN")
+            and not re.search(
+                r"\b(?:emblem|dungeon|plane|phenomenon|scheme|conspiracy|vanguard)\b",
+                str(card.get("type_line") or ""),
+                re.I,
+            )
         }
     )
 
