@@ -5413,17 +5413,19 @@ class AutopilotEngine(
         have = int(game_state.get("_log_game_state_id", 0) or 0)
         if not want or not have or have >= want:
             return game_state
-        if int(game_state.get("_log_summarized_at_gsid", -1) or -1) == have:
-            # Ledger #174 (2026-10-19 15:54, after an MTGA crash + reconnect, and 2b77f14d
-            # T10): Arena summarized the messages after gameStateId `have` in Player.log, so
-            # their details never arrive; waiting yielded until Arena's clock ran out. The
-            # snapshot already carries the bridge overlay: use it.
-            logger.info(
-                "typed-decision: Player.log summarized the messages after gameStateId %s; "
-                "using the bridge state (%s)",
-                have,
-                want,
+
+        def visible_board_is_current(state: dict[str, Any]) -> bool:
+            # A summarized log may never catch up. Only a complete visible
+            # board from the bridge can replace it; the request id alone says
+            # nothing about the cards playback is currently showing.
+            return (
+                int(state.get("_bridge_visible_game_state_id") or 0) >= want
+                and not state.get("_bridge_state_stale")
+                and not state.get("_bridge_state_incomplete")
+                and state.get("_bridge_connected") is True
             )
+
+        if visible_board_is_current(game_state):
             return game_state
         deadline = time.monotonic() + self._LOG_CATCH_UP_TIMEOUT_S
         while time.monotonic() < deadline:
@@ -5438,8 +5440,8 @@ class AutopilotEngine(
                     logger.debug("poll_log during log catch-up failed: %s", error)
             fresh = self._get_game_state()
             have = int(fresh.get("_log_game_state_id", 0) or 0)
-            if have >= want:
-                logger.info("typed-decision: waited for the log to reach gameStateId %s", want)
+            if have >= want or visible_board_is_current(fresh):
+                logger.info("typed-decision: board caught up to gameStateId %s", want)
                 return fresh
         logger.info("typed-decision: log still behind the bridge (gameStateId %s < %s); yielding", have, want)
         return None

@@ -129,7 +129,12 @@ def test_a_summarized_log_does_not_block_the_decision():
     """Ledger #174 (2026-10-19 15:54, after an MTGA crash and reconnect): Arena summarized the
     ConnectResp/GameState/ActionsAvailable event in Player.log, the log stayed at 589 while the
     bridge was at 602, and the gate yielded until Arena's clock ran out."""
-    summarized = {"_log_game_state_id": 589, "_log_summarized_at_gsid": 589}
+    summarized = {
+        "_log_game_state_id": 589,
+        "_log_summarized_at_gsid": 589,
+        "_bridge_visible_game_state_id": 602,
+        "_bridge_connected": True,
+    }
     engine = _engine([summarized])
     assert engine._await_log_catch_up(_poll(602), summarized) is summarized
 
@@ -250,3 +255,60 @@ def test_raw_sole_pass_still_revalidates_live_request(fresh):
     engine._gre_bridge.get_pending_actions.side_effect = [_pass_only_poll(), fresh]
     assert engine._try_typed_decision_path(stale, "decision_required") is True
     engine._gre_bridge.submit_pass.assert_not_called()
+
+
+def test_summarized_log_without_visible_board_does_not_certify_freshness():
+    stale = {
+        "_log_game_state_id": 431,
+        "_log_summarized_at_gsid": 431,
+        "_bridge_game_state_id": 438,
+        "_bridge_connected": True,
+    }
+    engine = _engine([stale])
+    assert (
+        engine._await_log_catch_up({"request_type": "DeclareAttackers", "game_state_id": 438}, stale) is None
+    )
+
+
+def test_combat_uses_verified_visible_board_without_waiting_for_summarized_log():
+    fresh = {
+        "_log_game_state_id": 431,
+        "_log_summarized_at_gsid": 430,
+        "_bridge_visible_game_state_id": 438,
+        "_bridge_connected": True,
+    }
+    engine = _engine([fresh])
+    assert (
+        engine._await_log_catch_up({"request_type": "DeclareAttackers", "game_state_id": 438}, fresh) is fresh
+    )
+
+
+def test_visible_board_catching_up_during_wait_unblocks_combat():
+    stale = {"_log_game_state_id": 431}
+    fresh = {**stale, "_bridge_visible_game_state_id": 438, "_bridge_connected": True}
+    engine = _engine([fresh])
+    assert (
+        engine._await_log_catch_up({"request_type": "DeclareBlockers", "game_state_id": 438}, stale) is fresh
+    )
+
+
+def test_old_incomplete_or_disconnected_visible_boards_do_not_unblock_combat():
+    for overrides in (
+        {"_bridge_visible_game_state_id": 437},
+        {"_bridge_state_stale": True},
+        {"_bridge_state_incomplete": True},
+        {"_bridge_connected": False},
+    ):
+        stale = {
+            "_log_game_state_id": 431,
+            "_log_summarized_at_gsid": 431,
+            "_bridge_visible_game_state_id": 438,
+            "_bridge_connected": True,
+            **overrides,
+        }
+        engine = _engine([stale])
+        engine._get_game_state = lambda stale=stale: stale
+        assert (
+            engine._await_log_catch_up({"request_type": "DeclareAttackers", "game_state_id": 438}, stale)
+            is None
+        )

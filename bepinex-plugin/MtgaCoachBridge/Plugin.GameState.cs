@@ -204,7 +204,7 @@ namespace MtgaCoachBridge
 
             try
             {
-                var resp = new JObject { ["ok"] = true };
+                var resp = new JObject { ["ok"] = true, ["game_state_id"] = gs.Id };
 
                 // Turn info
                 resp["turn"] = new JObject
