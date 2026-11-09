@@ -131,7 +131,7 @@ def test_shorter_declaration_deadline_cancels_both_legs():
     assert all(event.wait(1) for event in stopped.values())
 
 
-@pytest.mark.parametrize("spent", [7.0, 10.0, 11.0])
+@pytest.mark.parametrize("spent", [4.0, 7.0, 10.0, 11.0])
 def test_strategy_json_retry_shares_the_original_reform_budget(monkeypatch, spent):
     clock = [100.0]
     budgets = []
@@ -150,11 +150,11 @@ def test_strategy_json_retry_shares_the_original_reform_budget(monkeypatch, spen
 
     manager = GamePlanManager(Backend(), timeout=10)
     plan = manager.maybe_reform(_state(turn=3))
-    if spent < 10:
-        assert budgets == [10.0, 3.0]
+    if spent <= 5:
+        assert budgets == [10.0, 10.0 - spent]
         assert plan is not None
     else:
-        assert budgets == [10.0], "expired reform must not start another model request"
+        assert budgets == [10.0], "insufficient remaining budget must not start another model request"
         assert plan is None
 
 
@@ -213,7 +213,7 @@ def test_first_hosted_plan_repair_keeps_fast_mode_and_shared_budget(monkeypatch)
         model = "current"
 
         def complete(self, *args, **kwargs):
-            clock[0] += 7
+            clock[0] += 4
             return super().complete(*args, **kwargs)
 
     backend = Backend(["malformed", _plan_json()])
@@ -221,7 +221,7 @@ def test_first_hosted_plan_repair_keeps_fast_mode_and_shared_budget(monkeypatch)
     plan = manager.maybe_reform(_state(turn=3))
     assert plan is not None and plan.effort == "none"
     assert [r[2]["reasoning_effort"] for r in backend.requests] == ["none", "none"]
-    assert [r[2]["request_timeout_s"] for r in backend.requests] == [10, 3]
+    assert [r[2]["request_timeout_s"] for r in backend.requests] == [10, 6]
 
 
 def test_fast_initial_plan_reaches_proxy_without_hidden_reasoning(monkeypatch):

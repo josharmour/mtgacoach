@@ -636,12 +636,12 @@ def test_compact_opening_uses_playbook_then_reuses_a_covered_turn():
     assert backend.requests[0][0] == LIVE_PLAN_PROMPT
     assert "early creatures" in backend.requests[0][1]
     assert backend.requests[0][2]["reasoning_effort"] == "none"
-    assert backend.caps == [512]
+    assert backend.caps == [2048]
     assert backend.requests[0][2]["response_format"] == {"type": "json_object"}
     their_turn = _state(turn=2)
     their_turn["turn"]["active_player"] = 2
     assert mgr.maybe_reform(their_turn) is plan
-    assert backend.caps == [512]
+    assert backend.caps == [2048]
 
     # Once the playbook line runs out, adapt it in the same short format.
     later = _state(turn=4)
@@ -649,7 +649,7 @@ def test_compact_opening_uses_playbook_then_reuses_a_covered_turn():
     assert mgr.maybe_reform(later) is not plan
     assert backend.requests[-1][0] == LIVE_PLAN_PROMPT
     assert "Attack with Bears" in backend.requests[-1][1]
-    assert backend.caps == [512, 512]
+    assert backend.caps == [2048, 2048]
 
 
 def test_covered_step_cannot_hide_missing_cards_or_a_lethal_flip():

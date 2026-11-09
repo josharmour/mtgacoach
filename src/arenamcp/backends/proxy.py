@@ -2064,7 +2064,13 @@ class ProxyBackend:
             content = "".join(chunks)
             if "</think>" in content:
                 content = content.split("</think>")[-1].strip()
-            if not content and reasoning_chunks:
+            if call is not None and call.call_class == "background.game_plan" and finish_reason == "length":
+                # A truncated JSON prefix can look like a usable partial plan,
+                # and reasoning salvage can turn an unfinished thought into one.
+                # Let the manager keep its old plan and make its bounded repair.
+                logger.warning("[PROXY] Truncated game-plan answer; retaining prior plan")
+                content = ""
+            elif not content and reasoning_chunks:
                 content = _salvage_reasoning_answer("".join(reasoning_chunks))
                 if content:
                     logger.warning(
@@ -2129,7 +2135,14 @@ class ProxyBackend:
             or _field(getattr(message, "model_extra", None), "reasoning")
             or getattr(message, "reasoning", None)
         )
-        if not content and reasoning:
+        if (
+            call is not None
+            and call.call_class == "background.game_plan"
+            and getattr(response.choices[0], "finish_reason", None) == "length"
+        ):
+            logger.warning("[PROXY] Truncated game-plan answer; retaining prior plan")
+            content = ""
+        elif not content and reasoning:
             content = _salvage_reasoning_answer(reasoning)
             if content:
                 logger.warning("[PROXY] Empty content — using salvaged answer (%s chars)", len(content))
