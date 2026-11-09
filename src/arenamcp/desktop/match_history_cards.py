@@ -65,12 +65,11 @@ class MatchHistoryCards(QScrollArea):
             if self._layout.indexOf(button) != index:
                 self._layout.removeWidget(button)
                 self._layout.insertWidget(index, button)
-            score = f"{int(rec.coach_rating)}/10" if rec.coach_rating is not None else "unrated"
             text = (
-                f"{(rec.result or '?').upper()} · {score} · {rec.opponent_name or 'opponent'}\n"
+                f"{(rec.result or '?').upper()} · {rec.opponent_name or 'opponent'}\n"
                 f"{rec.format_name or 'Unknown format'} · {rec.turns or 0} turns · {_fmt_ts(rec.timestamp)}"
             )
             button.findChild(QLabel).setText(text)
             button.setAccessibleName(text)
-            button.setToolTip(rec.coach_score_reason or "Post-match analysis not run")
+            button.setToolTip("Select to review the recorded result; legacy model notes are unverified.")
             button.setChecked(rec.match_id == self._selected_id)
