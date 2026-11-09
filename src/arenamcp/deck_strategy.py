@@ -34,6 +34,8 @@ Identify how resources become a win: setup, repeatable engines, payoffs, protect
 
 Use the printed loyalty cost of each ability and the printed size of each new token. A named legendary token competes with an existing copy under the legend rule. Study trigger event, controller/owner, destination, token/nontoken restrictions, optionality, timing, once-per-turn limits, activation and additional costs, mana spending restrictions, summoning sickness and commander tax. Casting is different from entering; tutoring/returning to hand is different from putting onto the battlefield. Calculate resource changes after costs, sacrifices and losses. Do not assume a combo wins without sufficient mana, bodies, damage and timing.
 
+MULLIGAN COST RULE: A deck list or format name does not establish a free mulligan. Keep mulligan advice conditional on the current Arena request and explicitly granted free-mulligan count; never promise a free Brawl mulligan. Price paid redraws by the resulting London hand size.
+
 COMMANDER ACCESS RULE: A designated commander that dies can be moved from the graveyard to the command zone at the next state-based-action check, then cast again for its printed cost plus {2} per previous command-zone cast (subject to legal timing and other costs/restrictions). Choosing that recovery does NOT permanently lose access to the original or its future entry triggers. Tokens that leave the battlefield cease to exist and cannot be recast. Recovery costs mana/tempo and loses counters and attachments, so it is not automatically profitable.
 
 RESOURCE CONSERVATION EXAMPLE (apply this bookkeeping, not a fixed strategy): Starting creatures [commander A, body B, body C]. If B alone dies, survivors are [A,C]: 2 bodies. If A alone dies, survivors are [B,C]: 2 bodies. Recovering/casting A then gives [new A,B,C]: 3 bodies BEFORE any new cast/entry effects. Add or subtract ONLY what the supplied Oracle effects actually do. Neither B nor C disappeared in the A-dies branch. Still price the mana, lost counters/ongoing effects, timing, and alternative plays before preferring either line.
@@ -487,6 +489,24 @@ class DeckPlaybook:
                     f"Mechanism {mechanism['id']}: {mechanism['effect']} "
                     f"Requires: {'; '.join(mechanism['requires'])}. "
                     f"Avoid: {'; '.join(mechanism['avoid'])}."
+                )
+        if "mulligan" in kinds:
+            from arenamcp.mulligan_policy import free_mulligans_from_state, mulligans_from_state
+
+            free = free_mulligans_from_state(state)
+            taken = mulligans_from_state(state)
+            lines.append(
+                "LIVE MULLIGAN COST OVERRIDE: "
+                f"explicitly granted free mulligans={free}; "
+                f"redraws already taken={taken if taken is not None else 'UNKNOWN'}. "
+                "A deck playbook or Brawl format label cannot grant a free mulligan. "
+                "Ignore any cached rule claiming one without current explicit evidence."
+            )
+            if taken is not None:
+                bottom = max(0, taken - free)
+                lines.append(
+                    f"Keeping this London hand bottoms {bottom} and keeps {max(0, 7 - bottom)} "
+                    "of the seven shown cards; Arena's actual bottom request remains authoritative."
                 )
         return "\n".join(lines)
 
