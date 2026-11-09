@@ -5389,6 +5389,26 @@ class AutopilotEngine(
         """
         if poll.get("request_type") in {"Search", "SearchRequest", "SelectN", "SelectNRequest"}:
             return game_state
+        # Windows 6f45efd6: a summarized event left the log at 199 while
+        # request 204 offered only Pass. Waiting for board details that never
+        # arrive wastes 31 seconds before the watchdog sends the same answer.
+        # Inspect the RAW menu: filtering casts/mana on a stale board must not
+        # turn a real choice into an apparent forced pass. Normal request and
+        # game-boundary revalidation still runs immediately before submission.
+        actions = poll.get("actions")
+        if (
+            poll.get("ok") is not False
+            and poll.get("has_pending") is True
+            and poll.get("request_type")
+            in {"ActionsAvailable", "ActionsAvailableReq", "ActionsAvailableRequest"}
+            and poll.get("can_pass") is True
+            and not poll.get("can_cancel")
+            and isinstance(actions, list)
+            and len(actions) == 1
+            and isinstance(actions[0], dict)
+            and actions[0].get("actionType") in {"Pass", "ActionType_Pass"}
+        ):
+            return game_state
         want = int(poll.get("game_state_id") or 0)
         have = int(game_state.get("_log_game_state_id", 0) or 0)
         if not want or not have or have >= want:

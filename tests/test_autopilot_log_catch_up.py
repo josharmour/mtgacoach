@@ -5,6 +5,7 @@ whole turn was skipped)."""
 
 from unittest.mock import MagicMock
 
+import pytest
 from tests.fakes import make_engine
 
 
@@ -187,3 +188,65 @@ def test_process_trigger_plans_combat_from_the_handoff_snapshot(monkeypatch):
     monkeypatch.setattr(engine, "_try_typed_decision_path", lambda *args: deepcopy(fresh))
     assert _run(engine, stale, "decision_required") is None
     assert planner.contexts[-1] == fresh["decision_context"]
+
+
+def _pass_only_poll():
+    return {
+        "ok": True,
+        "has_pending": True,
+        "request_type": "ActionsAvailable",
+        "game_state_id": 204,
+        "can_pass": True,
+        "can_cancel": False,
+        "actions": [{"actionType": "ActionType_Pass"}],
+    }
+
+
+@pytest.mark.parametrize("action_type", ["Pass", "ActionType_Pass"])
+def test_raw_sole_pass_does_not_wait_for_missing_log_detail(action_type):
+    stale = {"_log_game_state_id": 199, "_log_summarized_at_gsid": 199}
+    engine = _engine([stale])
+    poll = _pass_only_poll()
+    poll["actions"][0]["actionType"] = action_type
+    engine._poll_log_fn = MagicMock()
+    assert engine._await_log_catch_up(poll, stale) is stale
+    engine._poll_log_fn.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"actions": []},
+        {"actions": [{"actionType": "Cast", "hasAutoTap": False}]},
+        {"actions": [{"actionType": "Pass"}, {"actionType": "Activate_Mana"}]},
+        {"actions": [{"actionType": "Pass"}, {"actionType": "Cast", "hasAutoTap": False}]},
+        {"actions": [{}]},
+        {"request_type": "SelectTargets"},
+        {"can_cancel": True},
+        {"can_pass": False},
+        {"has_pending": False},
+        {"ok": False},
+    ],
+)
+def test_sole_pass_exception_does_not_hide_real_or_unproven_choices(change):
+    stale = {"_log_game_state_id": 199}
+    engine = _engine([stale])
+    engine._LOG_CATCH_UP_TIMEOUT_S = 0
+    assert engine._await_log_catch_up({**_pass_only_poll(), **change}, stale) is None
+
+
+def test_raw_sole_pass_is_submitted_despite_summarized_log_gap():
+    stale = {"_log_game_state_id": 199, "_log_summarized_at_gsid": 199}
+    engine = _engine([stale])
+    engine._gre_bridge.get_pending_actions.return_value = _pass_only_poll()
+    assert engine._try_typed_decision_path(stale, "decision_required") is True
+    engine._gre_bridge.submit_pass.assert_called_once()
+
+
+@pytest.mark.parametrize("fresh", [_poll(205), {"has_pending": False}])
+def test_raw_sole_pass_still_revalidates_live_request(fresh):
+    stale = {"_log_game_state_id": 199}
+    engine = _engine([stale])
+    engine._gre_bridge.get_pending_actions.side_effect = [_pass_only_poll(), fresh]
+    assert engine._try_typed_decision_path(stale, "decision_required") is True
+    engine._gre_bridge.submit_pass.assert_not_called()
