@@ -320,9 +320,20 @@ def test_unpayable_ward_prefers_an_unwarded_enemy():
     for pick in ('["tgt:226"]', '["tgt:226", "tgt:300"]'):
         planner = _planner('{"option_ids": ' + pick + ', "reasoning": "stun"}')
         assert planner.plan_decision_options(decision, state) == ["tgt:300"]
-    # The fallback (no usable model answer) ranks a warded enemy last even when it is bigger.
+    # A malformed answer, not the legal optional [], exercises fallback:
+    # rank a warded enemy last even when it is bigger.
     state["battlefield"][4]["power"] = 5
-    assert _planner().plan_decision_options(decision, state) == ["tgt:300"]
+    assert _planner("not JSON").plan_decision_options(decision, state) == ["tgt:300"]
+
+
+def test_explicit_no_targets_is_honored_even_with_an_unwarded_enemy():
+    keeper = _creature(300, "Keeper of the Quiet Hour", OPP, 3, 2)
+    state = _stun_state(extra=(keeper,))
+    decision = _stun_decision(226, 263, 300)
+    planner = _planner('{"option_ids": [], "reasoning": "save the optional stun"}')
+    assert planner.plan_decision_options(decision, state) == []
+    assert planner.last_llm_failure == ""
+    assert planner.get_last_decision_trace()["target_validation"] == "no_targets"
 
 
 def test_required_target_with_unpayable_ward_keeps_existing_choice():
