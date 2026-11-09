@@ -412,7 +412,7 @@ def mulligans_from_state(state: dict) -> int | None:
 
 
 def free_mulligans_from_state(state: dict) -> int:
-    """Free mulligans granted this game (e.g. Brawl's first free mulligan)."""
+    """Use explicit game evidence; a format name does not grant free mulligans."""
     value = state.get("_free_mulligans")
     if value is None:
         ctx = state.get("decision_context") or {}
