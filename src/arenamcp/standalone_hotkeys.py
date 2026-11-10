@@ -270,6 +270,19 @@ class _StandaloneHotkeysMixin:
                     self._voice_input.transcription_enabled = True
                     logger.info("Voice transcription enabled: True")
 
+            # The autopilot answers decisions through its own backend. Without
+            # this the switch changed the coach and plan calls only: on
+            # 2026-11-09 23:17, after a switch to an outside test model, the next
+            # five decision.typed calls still went to "current".
+            self._model_name = model
+            autopilot_backend = getattr(self, "_autopilot_backend", None)
+            if autopilot_backend is not None and autopilot_backend is not getattr(self._coach, "_backend", None):
+                if hasattr(autopilot_backend, "close"):
+                    autopilot_backend.close()
+                autopilot_backend.model = model
+                if hasattr(autopilot_backend, "_persistent_failed"):
+                    autopilot_backend._persistent_failed = False
+
             self.backend_name = provider
             self.model_name = model
             self.ui.status("PROVIDER", f"Switched to {provider.upper()} ({actual_model})")

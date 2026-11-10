@@ -144,6 +144,12 @@ class StandaloneCoach(
         else:
             saved_model = self.settings.get("model")
             saved_mode = self.settings.get("mode", "online")
+            from arenamcp.gateway_models import is_test_model
+
+            if is_test_model(saved_model):
+                # An outside test model is a per-session choice. A restart
+                # goes back to the served model, never silently to a paid one.
+                saved_model = None
             if saved_model and saved_mode == self._backend_name:
                 self._model_name = saved_model
             else:
@@ -981,6 +987,10 @@ class StandaloneCoach(
     @model_name.setter
     def model_name(self, value: str | None):
         self._model_name = value
+        from arenamcp.gateway_models import is_test_model
+
+        if is_test_model(value):
+            return  # never the saved default: see __init__
         if value:
             self.settings.set("model", value)
 

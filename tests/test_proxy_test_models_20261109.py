@@ -70,3 +70,29 @@ def test_source_checkout_launch_counts_as_developer_mode(monkeypatch):
     assert settings.is_developer_mode() is False
     monkeypatch.setenv("MTGACOACH_DEV_CHECKOUT", "/some/checkout")
     assert settings.is_developer_mode() is True
+
+
+def test_switch_reaches_the_autopilot_backend_and_is_not_saved(monkeypatch):
+    """2026-11-09 23:17: after a switch, decision.typed calls still went to "current"."""
+    from types import SimpleNamespace
+
+    from arenamcp.standalone import StandaloneCoach
+
+    saved = {}
+    coach = StandaloneCoach.__new__(StandaloneCoach)
+    coach.draft_mode = False
+    coach._backend_name = "online"
+    coach._model_name = "current"
+    coach.settings = SimpleNamespace(set=lambda key, value, save=True: saved.__setitem__(key, value))
+    coach.ui = SimpleNamespace(status=lambda *a: None, error=lambda *a: None)
+    coach._coach = SimpleNamespace(_backend=SimpleNamespace(model="current", _turns=3))
+    coach._autopilot_backend = SimpleNamespace(model="current")
+    coach._backend_failed = False
+    coach._consecutive_errors = 0
+    coach.set_backend("online", "or-gemma-4-26b")
+    assert coach._coach._backend.model == "or-gemma-4-26b"
+    assert coach._autopilot_backend.model == "or-gemma-4-26b"
+    assert coach.model_name == "or-gemma-4-26b"
+    assert "model" not in saved
+    coach.set_backend("online", "current")
+    assert coach._autopilot_backend.model == "current" and saved["model"] == "current"
