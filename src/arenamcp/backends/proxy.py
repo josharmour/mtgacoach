@@ -635,6 +635,32 @@ def _normalize_reasoning_effort(model: str, effort):
     return "high"
 
 
+def _alias_effort(model: str, call_class: str, reasoning_effort):
+    """The effort to send for the moving alias, DeepSeek names and outside test models."""
+    from arenamcp.gateway_models import is_test_model
+
+    name = str(model or "").lower()
+    test_model = is_test_model(name)
+    if not (name == "current" or test_model or any(part in name for part in ("deepseek", "dsv4"))):
+        return reasoning_effort
+    if call_class.startswith("decision.") or call_class in {
+        "background.commentary",
+        "background.deck_playbook",
+        "probe",
+    }:
+        return "none"
+    if call_class == "background.game_plan":
+        if test_model:
+            # 2026-11-09 23:24 (match eedf1ae3): Gemma 4 26B at "low" spent 4,613
+            # thinking tokens a plan, 17 s at the median and 43 s at worst; five
+            # of ten plan calls were cancelled and no plan existed until turn 5.
+            # The served model spends about 320 tokens and 7 s on the same call.
+            return "none"
+        if reasoning_effort in {"high", "max"}:
+            return "low"
+    return reasoning_effort
+
+
 def _effective_effort(params: dict | None):
     """The effort actually requested, for metrics ("default" = template default)."""
     if not params:
@@ -1383,24 +1409,10 @@ class ProxyBackend:
                 and selective_enabled(self.model)
                 and call.call_class == "decision.typed"
             )
-            from arenamcp.gateway_models import is_test_model
-
             # Outside test models get the settings the served model gets today
             # (decisions without thinking), so a head-to-head run compares models
             # and not thinking budgets.
-            if (
-                self.model.lower() == "current"
-                or is_test_model(self.model)
-                or any(name in self.model.lower() for name in ("deepseek", "dsv4"))
-            ):
-                if call.call_class.startswith("decision.") or call.call_class in {
-                    "background.commentary",
-                    "background.deck_playbook",
-                    "probe",
-                }:
-                    reasoning_effort = "none"
-                elif call.call_class == "background.game_plan" and reasoning_effort in {"high", "max"}:
-                    reasoning_effort = "low"
+            reasoning_effort = _alias_effort(self.model, call.call_class, reasoning_effort)
             if bounded_thinking:
                 thinking_enabled = True
                 reasoning_effort = 1

@@ -96,3 +96,15 @@ def test_switch_reaches_the_autopilot_backend_and_is_not_saved(monkeypatch):
     assert "model" not in saved
     coach.set_backend("online", "current")
     assert coach._autopilot_backend.model == "current" and saved["model"] == "current"
+
+
+def test_effort_by_call_class_for_the_alias_and_test_models():
+    from arenamcp.backends.proxy import _alias_effort
+
+    assert _alias_effort("current", "decision.typed", "low") == "none"
+    assert _alias_effort("current", "background.game_plan", "high") == "low"
+    assert _alias_effort("or-gemma-4-26b", "decision.typed", "low") == "none"
+    # A test model's plan call ran 17-43 s with thinking on (match eedf1ae3).
+    assert _alias_effort("or-gemma-4-26b", "background.game_plan", "high") == "none"
+    assert _alias_effort("glm-5.3-flash", "decision.typed", "low") == "low"
+    assert _alias_effort("glm-5.3-flash", "background.game_plan", "high") == "high"
