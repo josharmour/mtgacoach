@@ -1,6 +1,48 @@
 # Historical decision and verification log
 
-Entries below describe the code, models, and installations observed on their recorded dates. For current behavior, use the [development index](README.md), [active work queue](autopilot-active-work.md), and [release guide](../RELEASE.md).
+Entries below describe the code, models, and installations observed on their recorded dates. For current behavior, use the [development index](README.md), [archived November work queue](archive/backlog-2026-11/autopilot-active-work.md), and [release guide](../RELEASE.md).
+
+---
+
+## 2026-11-09 — Earlier decisions reviewed against current facts
+
+Both accounts have reached Mythic under autopilot (the second on this date, on
+Minsc & Boo in ranked Brawl). Measured win rate is 52 to 54% on every account
+and deck checked. Josh reviewed the standing decisions below with that in view.
+
+**Superseded**
+
+- *Diamond is the autopilot's benchmark* (2026-10-19). Passed. The bar is now
+  reaching Mythic reliably, for customers' decks as well as the owner's.
+- *Fixes go to master because the live coach runs from master* (2026-10-20).
+  The live coach now runs from a separate checkout on another branch. Committing
+  verified work to master still stands; how it reaches the running coach and
+  customers is an open owner decision.
+- *No offline measurement* (2026-09-23 removal, confirmed 2026-10-06). Reopened
+  in part. A benchmark that replays single recorded decisions from match bundles
+  is approved: the same code went 2–8 and then 26–19 in one evening, so win rate
+  cannot judge a change. It needs no simulator, self-play or training.
+
+**Ready to decide**
+
+- *Mode guard and attack-line guard stay in shadow mode* (2026-10-20). Three
+  weeks of shadow data exist. A report on what each would have changed comes first.
+- *Playbook thinking is off for the `current` model alias.* The cap was added
+  for a hosted model that timed out during matches. The only model server
+  running is the local GLM. Builds outside a match should think.
+
+**Still stand**
+
+- Stay on the local GLM; no hosted strategic model. Decisions were measured at
+  96 thinking tokens after 8,800 input tokens, with no input caching. The limit
+  is how the model is used, not the model.
+- No self-play, fine-tuning or MageZero.
+- Planner scoring stays hand-tuned. A learned value model stays deferred until
+  the decision benchmark exists to judge one.
+- Chat modes, topic commentary and the Mac screenshot autopilot stay removed.
+  Announcer work builds on the ArenaOnAir booth, which is a different feature.
+- Internal bugs stay out of GitHub issues. The local ledger is now history;
+  current work is in the maintainer's local plan.
 
 ---
 
