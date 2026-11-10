@@ -157,6 +157,18 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Copied commit {commit[:7]}", 3000)
 
         button.clicked.connect(copy_commit)
+        # Which model is answering, beside the commit: the switch itself has no
+        # visible control, so this label is how the developer sees its state.
+        model_label = QLabel("Model: starting", self)
+        model_label.setToolTip("The model this Coach is sending decisions to.")
+
+        def show_model(key: str, value: str) -> None:
+            if key == "MODEL":
+                model_label.setText("Model: " + (str(value).rsplit("/", 1)[-1] or "default"))
+
+        self._session.statusChanged.connect(show_model)
+        self.statusBar().addPermanentWidget(model_label)
+        self.dev_model_label = model_label
         self.statusBar().addPermanentWidget(button)
         self.dev_commit_button = button
 
