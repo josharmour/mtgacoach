@@ -961,6 +961,15 @@ def _build_actions_available(
         alternative_text = ""
         if atype.removeprefix("ActionType_") in SPELL_CAST_TYPES:
             payable = has_autotap_solution(action) if atype == "ActionType_Cast" else face_payment(action)
+            # A spell that costs no mana has nothing to tap, so Arena sends it
+            # with neither manaCost nor an AutoTap solution; it is free, not
+            # unpayable. 2026-11-08 21:26 (match b55e160b): Chrome Mox was
+            # offered every turn as {"actionType": "ActionType_Cast", "grpId":
+            # 19831, "instanceId": 352, "shouldStop": true}, was withheld as
+            # "cannot auto-pay" and never cast in any logged game, while the
+            # mulligan policy kept two-land hands because of it.
+            if payable is False and face_payment(action) is None:
+                payable = None
             alternative = _alternative_cost_kind(action)
             if alternative:
                 _, alternative_text = _default_ability_description(int(action["alternativeGrpId"]))

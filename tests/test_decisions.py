@@ -55,7 +55,13 @@ def test_actions_available_builds_options_with_payability():
                 "instanceId": 320,
                 "autoTapSolution": {"mana": []},
             },
-            {"actionType": "ActionType_Cast", "grpId": 94899, "instanceId": 164, "autoTapSolution": None},
+            {
+                "actionType": "ActionType_Cast",
+                "grpId": 94899,
+                "instanceId": 164,
+                "autoTapSolution": None,
+                "manaCost": [{"color": ["ManaColor_Black"], "count": 1}],
+            },
             {"actionType": "ActionType_Play", "grpId": 75557, "instanceId": 167},
             {"actionType": "ActionType_Pass"},
         ],
@@ -80,7 +86,7 @@ def test_live_bridge_cast_payability_is_enforced():
             "has_pending": True,
             "request_type": "ActionsAvailable",
             "actions": [
-                {"actionType": "Cast", "grpId": 94899, "hasAutoTap": False},
+                {"actionType": "Cast", "grpId": 94899, "hasAutoTap": False, "manaCost": [{"color": ["ManaColor_Black"], "count": 2}]},
                 {"actionType": "Cast", "grpId": 91644, "hasAutoTap": True},
                 {"actionType": "Pass"},
             ],
@@ -107,7 +113,8 @@ def test_actions_available_excludes_mana_abilities_and_passes_priority():
         "request_type": "ActionsAvailable",
         "can_pass": True,
         "actions": [
-            {"actionType": "ActionType_Cast", "grpId": 94899, "hasAutoTap": False},  # Unpayable
+            # Unpayable: Arena sends the cost with no AutoTap solution.
+            {"actionType": "ActionType_Cast", "grpId": 94899, "hasAutoTap": False, "manaCost": [{"color": ["ManaColor_Black"], "count": 2}]},
             {"actionType": "ActionType_Activate_Mana", "grpId": 75553, "instanceId": 444},
             {"actionType": "ActionType_Activate_Mana", "grpId": 75553, "instanceId": 456},
             {"actionType": "ActionType_FloatMana"},
@@ -244,3 +251,35 @@ def test_adventure_uses_its_own_cost_and_payment_solution():
     assert filter_play_options(unpaid, {}).option_ids() == {"pass"}
     paid = build(True)
     assert filter_play_options(paid, {}).option_ids() == {"idx:1", "pass"}
+
+
+def test_zero_cost_spell_is_offered_not_withheld_as_unpayable():
+    """Chrome Mox as Arena sent it (match b55e160b, 2026-11-08): no manaCost, no AutoTap solution."""
+    from arenamcp.play_safety import filter_play_options
+
+    decision = build_pending_decision(
+        {
+            "has_pending": True,
+            "request_type": "ActionsAvailable",
+            "can_pass": True,
+            "actions": [
+                {
+                    "actionType": "ActionType_Cast",
+                    "grpId": 81841,
+                    "instanceId": 248,
+                    "manaCost": [
+                        {"color": ["ManaColor_Generic"], "count": 2},
+                        {"color": ["ManaColor_Red"], "count": 1},
+                        {"color": ["ManaColor_Green"], "count": 1},
+                    ],
+                },
+                {"actionType": "ActionType_Cast", "grpId": 19831, "instanceId": 352, "facetId": 352},
+                {"actionType": "ActionType_Pass"},
+            ],
+        },
+        resolve_name=lambda gid: {81841: "Minsc & Boo, Timeless Heroes", 19831: "Chrome Mox"}[gid],
+    )
+    mox = decision.find("idx:1")
+    assert mox.label == "Cast Chrome Mox" and mox.payable is None
+    assert decision.find("idx:0").payable is False
+    assert filter_play_options(decision, {}).option_ids() == {"idx:1", "pass"}
