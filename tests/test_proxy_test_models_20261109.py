@@ -108,3 +108,10 @@ def test_effort_by_call_class_for_the_alias_and_test_models():
     assert _alias_effort("or-gemma-4-26b", "background.game_plan", "high") == "none"
     assert _alias_effort("glm-5.3-flash", "decision.typed", "low") == "low"
     assert _alias_effort("glm-5.3-flash", "background.game_plan", "high") == "high"
+
+
+def test_a_new_backend_keeps_a_test_model_and_pins_everything_else():
+    """2026-11-09 23:33: an autopilot created after the switch came up on "current"."""
+    assert ProxyBackend.create_online(model="or-gemma-4-26b", license_key="k").model == "or-gemma-4-26b"
+    assert ProxyBackend.create_online(model="glm-5.3-flash", license_key="k").model == "current"
+    assert ProxyBackend.create_online(model=None, license_key="k").model == "current"

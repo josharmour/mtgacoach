@@ -1211,6 +1211,14 @@ class ProxyBackend:
         # Hosted service currently runs one model. Migrate saved selections from
         # retired aliases; custom providers still keep their explicit model.
         resolved_model = "current"
+        from arenamcp.gateway_models import is_test_model
+
+        if is_test_model(model):
+            # A developer's outside test model. On 2026-11-09 23:33 the autopilot
+            # was created after such a switch, came up on "current", and the
+            # match's decisions went there while its plan calls went to the
+            # test model. Customer keys cannot call a test model at all.
+            resolved_model = str(model)
         resolved_url = resolve_online_base_url(base_url)
         instance = cls(
             model=resolved_model,
