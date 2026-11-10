@@ -37,6 +37,24 @@ def _journal_path(match_id: str) -> Path:
     return PACKETS_DIR / LIVE_SUBDIR / f"{safe}.jsonl"
 
 
+def _state_snapshot(game_state: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Compact board snapshot for a decision entry (Fable Nov B1).
+
+    Built from the very game_state the planner was given — never rebuilt from
+    logs — so a bundled decision can be replayed. Failure to snapshot must
+    never break decision recording.
+    """
+    if not isinstance(game_state, dict):
+        return None
+    try:
+        from arenamcp.decision_snapshot import build_decision_snapshot
+
+        return build_decision_snapshot(game_state)
+    except Exception:
+        logger.debug("decision snapshot failed", exc_info=True)
+        return None
+
+
 def _as_fingerprint(value: Any) -> Any:
     """A fingerprint read back from JSON (lists) as the tuple ``decision_fingerprint`` makes."""
     return tuple(_as_fingerprint(v) for v in value) if isinstance(value, list) else value
@@ -167,6 +185,9 @@ class MatchPacket:
         turn = (game_state or {}).get("turn") if isinstance(game_state, dict) else None
         if isinstance(turn, dict):
             entry["turn"] = {k: turn.get(k) for k in ("turn_number", "phase", "step", "active_player")}
+        snapshot = _state_snapshot(game_state)
+        if snapshot:
+            entry["state_snapshot"] = snapshot
         self._record(entry)
 
     def add_combat_decision(
@@ -202,6 +223,9 @@ class MatchPacket:
         turn = (game_state or {}).get("turn") if isinstance(game_state, dict) else None
         if isinstance(turn, dict):
             entry["turn"] = {k: turn.get(k) for k in ("turn_number", "phase", "step", "active_player")}
+        snapshot = _state_snapshot(game_state)
+        if snapshot:
+            entry["state_snapshot"] = snapshot
         self._record(entry)
 
     def recent_decisions(self, count: int = 40) -> list[dict[str, Any]]:
