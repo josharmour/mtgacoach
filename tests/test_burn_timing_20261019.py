@@ -121,6 +121,9 @@ def _menu(state, *casts, special=()):
             "grpId": by_id[iid]["grp_id"],
             "instanceId": iid,
             "hasAutoTap": payable,
+            # Arena sends an unpayable cast with its cost and no AutoTap solution; a cast
+            # with neither is a free spell (Chrome Mox).
+            **({} if payable else {"manaCost": [{"color": ["ManaColor_Generic"], "count": 2}]}),
         }
         for iid, payable in casts
     ]
