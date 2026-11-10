@@ -1033,6 +1033,16 @@ class PipeAdapter:
             mode = "online"
 
             models = get_models_for_mode(mode)
+            # Developer machines also see the gateway's outside test models
+            # (names starting "or-"), for head-to-head comparison runs.
+            from arenamcp.backends.proxy import resolve_online_base_url
+            from arenamcp.client_metadata import get_client_headers
+            from arenamcp.gateway_models import developer_test_models
+            from arenamcp.settings import get_settings
+
+            models = list(models) + developer_test_models(
+                resolve_online_base_url(), get_settings().get("license_key", ""), get_client_headers()
+            )
             if len(models) <= 1:
                 self.log(f"Only one model for {mode}")
                 return

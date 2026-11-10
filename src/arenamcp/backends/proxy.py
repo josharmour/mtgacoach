@@ -1383,8 +1383,15 @@ class ProxyBackend:
                 and selective_enabled(self.model)
                 and call.call_class == "decision.typed"
             )
-            if self.model.lower() == "current" or any(
-                name in self.model.lower() for name in ("deepseek", "dsv4")
+            from arenamcp.gateway_models import is_test_model
+
+            # Outside test models get the settings the served model gets today
+            # (decisions without thinking), so a head-to-head run compares models
+            # and not thinking budgets.
+            if (
+                self.model.lower() == "current"
+                or is_test_model(self.model)
+                or any(name in self.model.lower() for name in ("deepseek", "dsv4"))
             ):
                 if call.call_class.startswith("decision.") or call.call_class in {
                     "background.commentary",
@@ -1592,6 +1599,19 @@ class ProxyBackend:
         if response_format is not None:
             params["response_format"] = response_format
 
+        from arenamcp.gateway_models import is_test_model
+
+        if is_test_model(self.model):
+            # Served through OpenRouter, which takes its own "reasoning" field
+            # and ignores the local server's chat-template options.
+            if reasoning_effort == "none" or (not thinking_enabled and not reasoning_effort):
+                reasoning = {"enabled": False}
+            else:
+                effort = reasoning_effort if reasoning_effort in ("low", "medium", "high") else None
+                reasoning = {"effort": effort or ("high" if reasoning_effort == "max" else "low")}
+            params["extra_body"] = {"reasoning": reasoning}
+            return params
+
         # GLM's separated-reasoning workaround is model-specific. The stable
         # current alias must honor thinking=False when its engine changes.
         if "glm" in self.model.lower():
@@ -1615,7 +1635,10 @@ class ProxyBackend:
         capability = getattr(self, "_priority_capability", None)
         if capability is not None:
             return capability is True
-        return "glm" in str(getattr(self, "model", "") or "").lower()
+        from arenamcp.gateway_models import is_test_model
+
+        model = str(getattr(self, "model", "") or "")
+        return "glm" in model.lower() and not is_test_model(model)
 
     def _resolve_priority(self, priority, is_background: bool) -> int | None:
         """The priority to send, or None to omit the field."""
