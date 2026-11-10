@@ -58,6 +58,7 @@ from arenamcp.loyalty_timing import (
     LOYALTY_TIMING,
     additional_activation,
     conflicting_loyalty_sequence,
+    strip_conflicting_activation,
     walkers_in,
 )
 from arenamcp.plan_ledger import PlanLedger
@@ -701,9 +702,21 @@ def _check_loyalty_timing(plan: GamePlan, state: dict, issues: list[str]) -> Non
         return
     fallback = "Choose one available loyalty ability this turn. Reassess the other on a later turn."
     for attr in ("path", "develop_next", "role_reason", "threat"):
-        if conflicting_loyalty_sequence(getattr(plan, attr), walkers):
+        value = getattr(plan, attr)
+        if not conflicting_loyalty_sequence(value, walkers):
+            continue
+        stripped, changed = strip_conflicting_activation(value, walkers)
+        if changed and stripped.strip():
+            # Keep the plan's own strategy; drop only the repeated activation.
+            setattr(plan, attr, stripped)
+            issues.append(f"{attr}: rewrote same-turn loyalty sequence.")
+        elif changed:
+            # The text was nothing but the offending clause.
             setattr(plan, attr, fallback)
             issues.append(f"{attr}: corrected same-turn loyalty sequence.")
+        else:
+            # No safe clause boundary: keep the model's path and report it.
+            issues.append(f"{attr}: kept same-turn loyalty sequence; could not isolate the clause.")
     for attr in (
         "win_conditions",
         "active_mechanisms",
@@ -713,10 +726,28 @@ def _check_loyalty_timing(plan: GamePlan, state: dict, issues: list[str]) -> Non
         "lessons",
     ):
         values = getattr(plan, attr)
-        checked = [v for v in values if not conflicting_loyalty_sequence(v, walkers)]
-        if len(checked) != len(values):
+        checked = []
+        removed = False
+        kept = False
+        for value in values:
+            if not conflicting_loyalty_sequence(value, walkers):
+                checked.append(value)
+                continue
+            stripped, changed = strip_conflicting_activation(value, walkers)
+            if changed and stripped.strip():
+                checked.append(stripped)
+                removed = True
+            elif changed:
+                # The entry was nothing but the offending clause.
+                removed = True
+            else:
+                checked.append(value)
+                kept = True
+        if removed:
             setattr(plan, attr, checked)
             issues.append(f"{attr}: removed same-turn loyalty sequence.")
+        if kept:
+            issues.append(f"{attr}: kept same-turn loyalty sequence; could not isolate the clause.")
     # Cards in hand and the command zone identify forecast sources, but do not
     # give a permanent already on the battlefield another activation.
     on_board = Counter(w["name"].casefold() for w in walkers_in(board) if w.get("name"))

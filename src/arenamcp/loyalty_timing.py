@@ -34,17 +34,17 @@ def walkers_in(cards):
     ]
 
 
-def conflicting_loyalty_sequence(text, walkers, *, turn_step=False):
-    """Identify a same-turn pair on one source. Leave alternatives/uncertain attribution alone."""
+def _single_named_source(text, walkers):
+    """Return the one walker the prose attributes loyalty costs to, or None."""
     if not walkers or not text:
-        return False
+        return None
     prose = text.replace("−", "-")
     if not re.search(r"[+-]\d|\[0\]", prose):
-        return False
+        return None
     names = {w.get("name", "").split(",")[0].lower() for w in walkers}
     named = {n for n in names if n and n in prose.lower()}
     if len(named or names) != 1:
-        return False
+        return None
     source = next(w for w in walkers if w.get("name", "").split(",")[0].lower() in (named or names))
     # Distinct battlefield instances can have independent activations.
     if (
@@ -59,7 +59,12 @@ def conflicting_loyalty_sequence(text, walkers, *, turn_step=False):
         )
         > 1
     ):
-        return False
+        return None
+    return source
+
+
+def _offending_pair(prose, source, *, turn_step=False):
+    """Return the (first, second) cost matches of a same-turn pair, or None."""
     # Remove stat adjustments before looking for costs, preserving mixed-sign loyalty shorthand.
     prose = re.sub(r"([+-])\d+/\1\d+\b", "stats", prose)
     costs = list(re.finditer(r"(?<![\w+])(?:\[([+-]?\d+)\]|([+-]\d+))(?!\w)", prose))
@@ -78,8 +83,61 @@ def conflicting_loyalty_sequence(text, walkers, *, turn_step=False):
         )
         if printed and not all((m[1] or m[2]) in printed for m in (first, second)):
             continue
-        return True
-    return False
+        return first, second
+    return None
+
+
+def conflicting_loyalty_sequence(text, walkers, *, turn_step=False):
+    """Identify a same-turn pair on one source. Leave alternatives/uncertain attribution alone."""
+    source = _single_named_source(text, walkers)
+    if source is None:
+        return False
+    return _offending_pair(text.replace("−", "-"), source, turn_step=turn_step) is not None
+
+
+_CLAUSE_END = re.compile(r"[.;,\n]")
+_CLAUSE_START = re.compile(r"(?:\b(?:then|and)\b|[;:,])\s*$")
+
+
+def strip_conflicting_activation(text, walkers, *, turn_step=False):
+    """Remove only the clause that repeats one walker's activation in the same turn.
+
+    Returns ``(new_text, changed)``. The first activation and all surrounding
+    strategy survive. When the second activation has no clause boundary to cut
+    at (no connector word or punctuation right before it), the text cannot be
+    isolated safely and comes back unchanged.
+    """
+    source = _single_named_source(text, walkers)
+    if source is None:
+        return text, False
+    prose = text.replace("−", "-")
+    result = prose
+    for _ in range(8):
+        pair = _offending_pair(result, source, turn_step=turn_step)
+        if pair is None:
+            return result.strip(), result != prose
+        first, second = pair
+        if second.start() - first.end() <= 2:
+            # Tight shorthand such as "+1/-2": both costs form one clause.
+            start = first.start()
+        else:
+            window = result[max(0, second.start() - 16) : second.start()]
+            boundary = _CLAUSE_START.search(window)
+            if not boundary:
+                return prose, False
+            start = max(0, second.start() - 16) + boundary.start()
+        end_match = _CLAUSE_END.search(result, second.end())
+        end = end_match.start() if end_match else len(result)
+        if end <= start:
+            return prose, False
+        result = (result[:start] + result[end:]).strip()
+        result = re.sub(r"\s{2,}", " ", result)
+        result = re.sub(r"\s+([;,:])", r"\1", result)
+        result = re.sub(r"([;,:])(?:\s*[;,:])+", r"\1", result)
+        result = result.strip().rstrip(" ,;:")
+        if not result:
+            return "", True
+    return prose, False
 
 
 def additional_activation(cards):
