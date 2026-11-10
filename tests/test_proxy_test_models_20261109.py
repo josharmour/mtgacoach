@@ -35,6 +35,8 @@ def test_effort_is_mapped_for_a_test_model():
 def test_hosted_glm_test_model_is_not_treated_as_the_local_glm():
     params = _params("or-glm-5.3-flash", thinking_enabled=False, reasoning_effort="none")
     assert "chat_template_kwargs" not in params["extra_body"]
+    # Its endpoint rejects reasoning switched off; the lowest effort is sent.
+    assert params["extra_body"] == {"reasoning": {"effort": "low"}}
     backend = ProxyBackend.__new__(ProxyBackend)
     backend.model = "or-glm-5.3-flash"
     assert backend._priority_supported() is False

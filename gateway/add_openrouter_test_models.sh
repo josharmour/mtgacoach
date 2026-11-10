@@ -4,15 +4,18 @@
 # Run on blackwell (10.0.0.10). UNTESTED as written on 2026-11-09 against
 # LiteLLM v1.106.4: run with --dry-run first and read what it would send.
 #
-# Before running, the owner must:
-#   1. Create an OpenRouter account and API key (and buy credits if paid models
-#      are wanted; the free ":free" variants allow about 1,000 requests a day
-#      once $10 of credits has ever been bought, 50 a day otherwise).
-#   2. Put OPENROUTER_API_KEY=<key> in the litellm service's environment in the
-#      compose stack and recreate the litellm container.
+# The OpenRouter key reaches the gateway one of two ways:
+#   --key-stdin   read the key from standard input and store it in each model
+#                 entry (the gateway encrypts model parameters in its database).
+#                 No container restart. Example, run from the machine holding
+#                 the key file, which never displays it:
+#                   grep -ao 'sk-or-v1-[A-Za-z0-9]*' key-file | head -1 \
+#                     | ssh blackwell 'bash add_openrouter_test_models.sh --key-stdin'
+#   (default)     refer to "os.environ/OPENROUTER_API_KEY", which must then be
+#                 set in the litellm container's environment (needs a recreate).
 #
-# This script never reads, prints or stores the OpenRouter key. Each model entry
-# refers to it as "os.environ/OPENROUTER_API_KEY", resolved inside the gateway.
+# The script never prints the key, never puts it on a command line, and prints
+# only each call's HTTP status.
 #
 # Every entry is placed in the access group "openrouter-test". No existing key
 # has that group, so no customer can call these models. Afterwards, add the
@@ -29,51 +32,68 @@ GATEWAY=${GATEWAY:-http://localhost:8444}
 GROUP=openrouter-test
 DRY=0
 REMOVE=0
+KEY_STDIN=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY=1 ;;
     --remove) REMOVE=1 ;;
+    --key-stdin) KEY_STDIN=1 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
 
 # gateway model name | OpenRouter model id   (prices per million tokens, 2026-11-09)
 MODELS=(
-  "or-gemma-4-26b|google/gemma-4-26b-a4b-it"          # in \$0.08  out \$0.10
+  "or-gemma-4-26b|google/gemma-4-26b-a4b-it"          # in $0.08  out $0.10
   "or-gemma-4-26b-free|google/gemma-4-26b-a4b-it:free"
-  "or-gemma-4-31b|google/gemma-4-31b-it"              # in \$0.20  out \$0.40
+  "or-gemma-4-31b|google/gemma-4-31b-it"              # in $0.20  out $0.40
   "or-gemma-4-31b-free|google/gemma-4-31b-it:free"
-  "or-qwen3.8-27b|qwen/qwen3.8-27b"                   # in \$0.15  out \$1.875
-  "or-qwen3.6-35b-a3b|qwen/qwen3.6-35b-a3b"           # in \$0.10  out \$0.90
-  "or-qwen3.7-flash|qwen/qwen3.7-flash"               # in \$0.03  out \$0.13
-  "or-glm-5.3-flash|z-ai/glm-5.3-flash"               # in \$0.15  out \$0.50  (hosted control for the local model)
+  "or-qwen3.8-27b|qwen/qwen3.8-27b"                   # in $0.15  out $1.875
+  "or-qwen3.6-35b-a3b|qwen/qwen3.6-35b-a3b"           # in $0.10  out $0.90
+  "or-qwen3.7-flash|qwen/qwen3.7-flash"               # in $0.03  out $0.13
+  "or-glm-5.3-flash|z-ai/glm-5.3-flash"               # in $0.15  out $0.50  (hosted control for the local model)
 )
 
 MASTER=$(sudo docker exec litellm printenv LITELLM_MASTER_KEY)
 [[ -n "$MASTER" ]] || { echo "LITELLM_MASTER_KEY is not set in the litellm container" >&2; exit 1; }
-if [[ $REMOVE -eq 0 && $DRY -eq 0 ]]; then
+
+export OR_KEY_REF="os.environ/OPENROUTER_API_KEY"
+if [[ $KEY_STDIN -eq 1 ]]; then
+  IFS= read -r OR_KEY_REF || true
+  [[ "$OR_KEY_REF" == sk-or-* ]] || { echo "standard input did not hold an OpenRouter key" >&2; exit 1; }
+  export OR_KEY_REF
+elif [[ $REMOVE -eq 0 && $DRY -eq 0 ]]; then
   sudo docker exec litellm sh -c '[ -n "${OPENROUTER_API_KEY:-}" ]' \
-    || { echo "OPENROUTER_API_KEY is not set in the litellm container; see the header of this script" >&2; exit 1; }
+    || { echo "OPENROUTER_API_KEY is not set in the litellm container; use --key-stdin or see the header" >&2; exit 1; }
 fi
 
-call() { # method path json
-  if [[ $DRY -eq 1 ]]; then
-    echo "DRY RUN: $1 $GATEWAY$2"; echo "  $3"
-  else
-    curl -sS -m 30 -X "$1" "$GATEWAY$2" -H "Authorization: Bearer $MASTER" \
-      -H 'Content-Type: application/json' -d "$3" | head -c 400; echo
-  fi
+post() { # path, JSON on standard input; prints the HTTP status only
+  curl -sS -m 30 -o /dev/null -w '%{http_code}' -X POST "$GATEWAY$1" \
+    -H "Authorization: Bearer $MASTER" -H 'Content-Type: application/json' --data @-
 }
+
+EXISTING=$(curl -sS -m 30 "$GATEWAY/model/info" -H "Authorization: Bearer $MASTER" \
+  | python3 -c "import sys,json; print('\n'.join(m['model_name']+'|'+m['model_info']['id'] for m in json.load(sys.stdin)['data']))")
 
 for entry in "${MODELS[@]}"; do
   name=${entry%%|*}; rest=${entry#*|}; model=${rest%% *}
+  id=$(printf '%s\n' "$EXISTING" | awk -F'|' -v n="$name" '$1==n{print $2; exit}')
   if [[ $REMOVE -eq 1 ]]; then
-    id=$(curl -sS -m 30 "$GATEWAY/model/info" -H "Authorization: Bearer $MASTER" \
-      | python3 -c "import sys,json; print(next((m['model_info']['id'] for m in json.load(sys.stdin)['data'] if m['model_name']=='$name'),''))")
-    [[ -n "$id" ]] && call POST /model/delete "{\"id\": \"$id\"}" || echo "$name: not present"
-  else
-    call POST /model/new "{\"model_name\": \"$name\", \"litellm_params\": {\"model\": \"openrouter/$model\", \"api_key\": \"os.environ/OPENROUTER_API_KEY\"}, \"model_info\": {\"access_groups\": [\"$GROUP\"]}}"
+    if [[ -z "$id" ]]; then echo "$name: not present"; continue; fi
+    if [[ $DRY -eq 1 ]]; then echo "DRY RUN: would delete $name"; continue; fi
+    echo "$name: delete -> HTTP $(printf '{"id": "%s"}' "$id" | post /model/delete)"
+    continue
   fi
+  if [[ -n "$id" ]]; then echo "$name: already present, skipped"; continue; fi
+  if [[ $DRY -eq 1 ]]; then echo "DRY RUN: would add $name -> openrouter/$model (group $GROUP)"; continue; fi
+  status=$(NAME="$name" MODEL="$model" GROUP="$GROUP" python3 -c '
+import json, os
+print(json.dumps({
+    "model_name": os.environ["NAME"],
+    "litellm_params": {"model": "openrouter/" + os.environ["MODEL"], "api_key": os.environ["OR_KEY_REF"]},
+    "model_info": {"access_groups": [os.environ["GROUP"]]},
+}))' | post /model/new)
+  echo "$name: add -> HTTP $status"
 done
 
 [[ $REMOVE -eq 1 ]] || echo "Done. Add the access group '$GROUP' to your own developer key, then test one call per model."

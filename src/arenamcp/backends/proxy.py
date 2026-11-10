@@ -1605,7 +1605,10 @@ class ProxyBackend:
             # Served through OpenRouter, which takes its own "reasoning" field
             # and ignores the local server's chat-template options.
             if reasoning_effort == "none" or (not thinking_enabled and not reasoning_effort):
-                reasoning = {"enabled": False}
+                # OpenRouter's hosted GLM refuses a request with reasoning off
+                # (HTTP 400 "Reasoning is mandatory for this endpoint", seen
+                # 2026-11-09), so it gets the lowest effort instead.
+                reasoning = {"effort": "low"} if "glm" in self.model.lower() else {"enabled": False}
             else:
                 effort = reasoning_effort if reasoning_effort in ("low", "medium", "high") else None
                 reasoning = {"effort": effort or ("high" if reasoning_effort == "max" else "low")}
