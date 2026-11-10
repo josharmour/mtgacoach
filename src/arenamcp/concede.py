@@ -631,12 +631,29 @@ def _scan_outs(
         if how:
             outs.append(f"{name} ({how})")
 
-    # Command zone: a commander we can cast (tax unknown: the base cost counts).
+    # Command zone: a commander we can cast at its taxed cost. 2026-11-09 23:42
+    # (match c74c0266): Laelia had died six times and cost {12}{R}; the base
+    # {2}{R} counted, "possible out: Laelia (command zone, castable now)" held
+    # the estimate at 0.60 through our whole turn at 5 life against 19 damage,
+    # and the countdown only started on their turn, too late to finish.
+    casts_by_card = state.get("commander_casts") or {}
     for card in state.get("command") or []:
         if not isinstance(card, dict) or _owner(card) != local:
             continue
         if _EMBLEM.search(_types(card)) or "emblem" in str(card.get("object_kind") or "").lower():
             continue
+        casts = _int(card.get("commander_casts"))
+        if casts is None and isinstance(casts_by_card, dict):
+            grp = card.get("grp_id")
+            casts = _int(casts_by_card.get(grp, casts_by_card.get(str(grp))))
+        if casts:
+            tax = "{" + str(2 * casts) + "}"
+            card = dict(
+                card,
+                mana_cost=" // ".join(
+                    tax + part.strip() for part in str(card.get("mana_cost") or "").split("//") if part.strip()
+                ),
+            )
         how, _ = _castable_faces(
             card, flash_granted=flash_granted, sorcery_window=sorcery_window, sources=sources, life=our_life
         )
