@@ -464,6 +464,12 @@ class MainWindow(QMainWindow):
         self._hotkeys.register("Ctrl+Shift+D", self._session.trigger_debug_report)
         if sys.platform == "darwin":
             self._hotkeys.register("F11", lambda: self._session.send_command("force_stop"))
+        from arenamcp.settings import is_developer_mode
+
+        if is_developer_mode():
+            # Developer machines only: step through "current" and the gateway's
+            # outside test models. The engine ignores the command for customers.
+            self._hotkeys.register("Ctrl+Shift+M", lambda: self._session.send_command("cycle_model"))
 
     def _show_coach_view(self) -> None:
         self._stack.setCurrentIndex(0)
