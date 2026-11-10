@@ -157,9 +157,41 @@ def _clean(text: str) -> str:
     return re.sub(r"<[^>]*>", "", text or "")
 
 
+# "If this land has a luck counter on it, instead add one mana of any color."
+_COUNTER_MANA = re.compile(r"\bif [^.]*\bhas an? (\w+) counter on it, instead add [^.]*\.")
+
+
+def _without_unmet_counter_mana(card: dict, text: str) -> tuple[str, bool]:
+    """Rules text minus mana that needs a counter the card lacks, and whether any was cut.
+
+    2026-11-08 21:26 (match b55e160b): Gemstone Caverns, played as a land drop with no
+    luck counter, counted as a five-colour source. The line search's best line was
+    "Gemstone Caverns + Chrome Mox + Delighted Halfling" with a Mountain as the only
+    other land, the model played it "to cast Delighted Halfling now", and the Halfling
+    stayed in hand.
+    """
+    held = {
+        str(kind).lower().removeprefix("countertype_")
+        for kind, count in (card.get("counters") or {}).items()
+        if isinstance(count, (int, float)) and count > 0
+    }
+    cut = False
+
+    def drop(match: re.Match) -> str:
+        nonlocal cut
+        if match.group(1) in held:
+            return match.group(0)
+        cut = True
+        return ""
+
+    return _COUNTER_MANA.sub(drop, text), cut
+
+
 def _land_colors(card: dict) -> frozenset[str]:
     colors = set()
-    for name in card.get("color_production") or []:
+    text, conditional = _without_unmet_counter_mana(card, _clean(card.get("oracle_text") or "").lower())
+    # Card data lists every colour the card can ever make; with its counter missing that overstates.
+    for name in () if conditional else card.get("color_production") or []:
         color = _COLOR_NAMES.get(str(name).strip().lower())
         if color:
             colors.add(color)
@@ -167,7 +199,6 @@ def _land_colors(card: dict) -> frozenset[str]:
     for word in re.findall(r"[a-z]+", words.lower()):
         if word in _BASIC_TYPES:
             colors.add(_BASIC_TYPES[word])
-    text = _clean(card.get("oracle_text") or "").lower()
     if re.search(r"mana of any (?:one )?colou?r|mana of the chosen colou?r|any colou?r", text):
         colors.update(COLORS)
     for clause in re.findall(r"\badd\b([^.]*)", text):
