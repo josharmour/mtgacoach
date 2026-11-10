@@ -1543,3 +1543,33 @@ def test_printed_stats_are_added_on_our_turn_only(monkeypatch):
     assert lookups == [555]  # cached
     theirs = {"local_seat_id": 1, "turn": {"active_player": 2}, "battlefield": [faerie]}
     assert runtime._with_printed_stats(theirs) is theirs
+
+
+def test_a_taxed_commander_we_cannot_afford_is_not_an_out(monkeypatch):
+    """2026-11-09 23:42 (match c74c0266): a commander at {12}{R} was called "castable now"."""
+    attackers = [
+        creature(10, "Huge", 2, 8, 8, is_attacking=True, tapped=True, attack_target_id=1),
+        creature(11, "Small", 2, 2, 2, is_attacking=True, tapped=True, attack_target_id=1),
+    ]
+    islands = [basic(100 + i) for i in range(7)]
+    horror = spell(
+        70, "Hullbreaker Horror", "Creature — Kraken Horror", "{5}{U}{U}", HULLBREAKER, power=7, toughness=8
+    )
+    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "0")
+
+    def state(casts):
+        return board(
+            attackers + islands,
+            life=5,
+            phase="Phase_Combat",
+            step="Step_DeclareAttack",
+            command=[dict(horror, commander_casts=casts)],
+        )
+
+    # Never cast: seven Islands pay {5}{U}{U}, so it is still an out.
+    untaxed = estimate_loss(state(0))
+    assert untaxed.confidence < 0.95 and any("command zone" in out for out in untaxed.facts["outs"])
+    # Cast once already: {2} more than seven Islands make. Dead, and no out is named.
+    taxed = estimate_loss(state(1))
+    assert taxed.confidence >= 0.95
+    assert not any("command zone" in out for out in taxed.facts.get("outs", []))
