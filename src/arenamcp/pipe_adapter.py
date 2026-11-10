@@ -70,6 +70,15 @@ def health_tag_of(text: str) -> str:
     return ""
 
 
+
+def _spoken_model_name(model) -> str:
+    """A model id as a short spoken sentence ("or-gemma-4-26b" -> "Model: OpenRouter gemma 4 26b")."""
+    name = str(model or "default").strip()
+    if name.lower().startswith("or-"):
+        name = "OpenRouter " + name[3:]
+    return "Model: " + name.replace("-", " ").replace("_", " ")
+
+
 class PipeAdapter:
     """UIAdapter that communicates via JSON lines over stdin/stdout."""
 
@@ -1064,6 +1073,12 @@ class PipeAdapter:
                     actual_model = coach.model_name
                     self.status("MODEL", actual_model or "default")
                     self.log(f"Switched to {actual_model}")
+                    # Say it: the switch has no on-screen control, so the voice
+                    # is the confirmation of which model is now playing.
+                    try:
+                        coach.speak_advice(_spoken_model_name(actual_model), blocking=False)
+                    except Exception as error:
+                        logger.debug("Model switch announcement failed: %s", error)
                 except Exception as e:
                     self.error(f"Model switch failed: {e}")
 

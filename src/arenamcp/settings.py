@@ -325,4 +325,9 @@ def is_developer_mode() -> bool:
 
     if os.environ.get("MTGACOACH_DEV", "").strip().lower() in ("1", "true", "yes"):
         return True
+    # The Dev app runs the engine from a source checkout and says so with this
+    # variable; a packaged customer install never sets it. On 2026-11-09 the
+    # owner's Dev app had it set and MTGACOACH_DEV unset.
+    if os.environ.get("MTGACOACH_DEV_CHECKOUT", "").strip():
+        return True
     return bool(get_settings().get("developer_mode", False))

@@ -49,3 +49,22 @@ def test_served_models_keep_their_parameters():
     assert _params("glm-5.3-flash", thinking_enabled=True, reasoning_effort="low")["extra_body"] == {
         "chat_template_kwargs": {"thinking": True, "reasoning_effort": "low"}
     }
+
+
+def test_model_switch_is_announced_in_words():
+    from arenamcp.pipe_adapter import _spoken_model_name
+
+    assert _spoken_model_name("or-gemma-4-26b") == "Model: OpenRouter gemma 4 26b"
+    assert _spoken_model_name("current") == "Model: current"
+    assert _spoken_model_name(None) == "Model: default"
+
+
+def test_source_checkout_launch_counts_as_developer_mode(monkeypatch):
+    from arenamcp import settings
+
+    monkeypatch.delenv("MTGACOACH_DEV", raising=False)
+    monkeypatch.delenv("MTGACOACH_DEV_CHECKOUT", raising=False)
+    monkeypatch.setattr(settings, "get_settings", lambda: {})
+    assert settings.is_developer_mode() is False
+    monkeypatch.setenv("MTGACOACH_DEV_CHECKOUT", "/some/checkout")
+    assert settings.is_developer_mode() is True
