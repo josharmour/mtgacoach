@@ -302,6 +302,74 @@ def test_lookup_serves_legacy_nonfinite_row_as_missing_instead_of_500(env):
     assert body["missing"] == [h_bad]
 
 
+def test_admin_upsert_rejects_lone_surrogate_strings_and_lookup_stays_clean(env):
+    """bug: Dotty verification of 55a8f20 — an escaped lone surrogate
+    (\\ud800) in an ordinary payload field was stored (json.dumps re-escapes
+    it into ASCII-safe payload text) and the next customer lookup failed
+    with 500 when the response layer serialized it back; the same string in
+    ``name`` failed the admin request itself when SQLite encoded the column.
+    Intake now rejects any string that is not valid Unicode, in values and
+    in object keys alike, without aborting the rest of the batch."""
+    _, proxy_db, _, _, _, client, _tmp = env
+    good = _record(_hash(21))
+    bad_value = {"rules_hash": _hash(22), "name": "Bad Value", "schema_version": 1, "v": "\ud800"}
+    bad_key = {"rules_hash": _hash(23), "name": "Bad Key", "schema_version": 1, "\ud800": 1}
+    bad_name = {"rules_hash": _hash(24), "name": "\ud800", "schema_version": 1}
+    raw = json.dumps({"records": [good, bad_value, bad_key, bad_name]}).encode()
+    resp = client.post("/v1/card-facts/admin/upsert", content=raw, headers=ADMIN)
+    assert resp.status_code == 200, resp.text
+    result = resp.json()
+    assert result["stored"] == 1
+    assert [r["index"] for r in result["rejected"]] == [1, 2, 3]
+    assert all("not valid Unicode" in r["reason"] for r in result["rejected"])
+    with proxy_db.get_db() as conn:
+        stored = {r["rules_hash"] for r in conn.execute("SELECT rules_hash FROM card_facts")}
+    assert stored == {_hash(21)}
+    body = _lookup(client, [_hash(i) for i in range(21, 25)]).json()
+    assert set(body["found"]) == {_hash(21)}
+    assert body["missing"] == [_hash(i) for i in range(22, 25)]
+
+
+def test_lookup_serves_legacy_lone_surrogate_row_as_missing_instead_of_500(env):
+    """bug: Dotty verification of 55a8f20 — a row whose payload carries an
+    escaped lone surrogate (written before intake validated strings) made
+    customer lookup return 500 at response serialization.  Such a row is
+    now served as missing, like the non-finite legacy rows."""
+    _, proxy_db, _, _, _, client, _tmp = env
+    h_bad, h_good = _hash(31), _hash(32)
+    with proxy_db.get_db() as conn:
+        conn.execute(
+            "INSERT INTO card_facts (rules_hash, name, schema_version, payload, updated_at, status)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (h_bad, "Surrogated Row", 1, '{"v":"\\ud800"}', time.time(), "ok"),
+        )
+    _store(client, _record(h_good))
+    resp = _lookup(client, [h_bad, h_good])
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert set(body["found"]) == {h_good}
+    assert body["missing"] == [h_bad]
+
+
+def test_normal_unicode_round_trips_through_store_and_lookup(env):
+    """Guard for the surrogate rejection: ordinary non-ASCII text (accents,
+    emoji beyond the BMP, CJK) must keep storing and looking up unchanged,
+    in payload values and in the name column alike."""
+    _, proxy_db, _, _, _, client, _tmp = env
+    h = _hash(41)
+    record = _record(h, name="José's Ætherflux 🚀 渦", oracle_text="Trample — deals ⚡ damage")
+    result = _store(client, record)
+    assert result == {"stored": 1, "rejected": []}
+    with proxy_db.get_db() as conn:
+        (name,) = conn.execute("SELECT name FROM card_facts WHERE rules_hash = ?", (h,)).fetchone()
+    assert name == "José's Ætherflux 🚀 渦"
+    resp = _lookup(client, [h])
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["missing"] == []
+    assert body["found"][h] == record
+
+
 def test_admin_upsert_batch_limit(env):
     _, _, _, cf, _, client, _tmp = env
     original = cf.MAX_BATCH_RECORDS

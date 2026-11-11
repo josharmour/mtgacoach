@@ -60,22 +60,40 @@ def _check_strict_json(value: Any) -> None:
     """Raise ValueError unless value is strict finite JSON.
 
     Applied to every record at intake and again to every payload at
-    serialization, so a non-finite or out-of-range number can never reach
-    a stored row or a customer response.
+    serialization, so a non-finite number, an out-of-range integer or a
+    string that cannot be encoded as UTF-8 (e.g. a lone surrogate escape
+    like ``\\ud800``) can never reach a stored row or a customer response.
     """
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError("non-finite number (NaN/Infinity)")
     elif isinstance(value, int) and not _INT64_MIN <= value <= _INT64_MAX:
         raise ValueError("integer outside the signed 64-bit range")
+    elif isinstance(value, str):
+        _check_encodable_utf8(value)
     elif isinstance(value, dict):
         for key, item in value.items():
             if not isinstance(key, str):
                 raise ValueError("object key is not a string")
+            _check_encodable_utf8(key)
             _check_strict_json(item)
     elif isinstance(value, list):
         for item in value:
             _check_strict_json(item)
+
+
+def _check_encodable_utf8(text: str) -> None:
+    """Reject strings SQLite and the JSON response layer cannot encode.
+
+    ``json.loads`` happily turns an escaped lone surrogate (``"\\ud800"``)
+    into a Python str, but binding it to a TEXT column or emitting it in an
+    ``ensure_ascii=False`` response raises UnicodeEncodeError.  Only
+    well-formed Unicode may be stored or served.
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"string is not valid Unicode ({exc})") from exc
 
 
 MAX_HASHES_PER_LOOKUP = 300
@@ -340,7 +358,9 @@ def _validate_admin_record(
         # allow_nan=False makes the serializer itself reject NaN/Infinity
         # (however they arrived: literals like NaN in the raw body or numbers
         # like 1e400 that parse to inf); the walk also rejects integers
-        # outside SQLite's 64-bit range before they can hit a column.
+        # outside SQLite's 64-bit range and strings that are not valid
+        # Unicode (lone surrogate escapes) before they can hit a column or
+        # a customer response.
         payload = json.dumps(record, allow_nan=False)
         _check_strict_json(record)
     except (TypeError, ValueError) as exc:
