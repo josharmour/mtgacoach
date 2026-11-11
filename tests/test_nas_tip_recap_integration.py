@@ -3,9 +3,10 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from tests.test_session_recaps import record
+
 from arenamcp.loss_streak import LossStreakStore
 from arenamcp.standalone_loss_streak import LossStreakMixin
-from tests.test_session_recaps import record
 
 
 def test_main_window_constructs_exactly_one_recap_controller(qapp, monkeypatch):
