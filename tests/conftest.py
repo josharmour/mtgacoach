@@ -439,6 +439,20 @@ def _strategic_lane_is_free_between_tests():
     assert STRATEGIC_LANE.wait_idle(10), f"a test leaked the strategic lane to {STRATEGIC_LANE.holder}"
 
 
+@pytest.fixture(autouse=True)
+def _card_facts_hooks_are_inert(monkeypatch):
+    """The S3 card-facts hooks stay fire-and-forget no-ops in tests.
+
+    ``prefetch_grp_ids`` normally starts a background daemon thread that talks
+    to the card-facts server. Tests patch ``threading.Thread`` widely and must
+    not observe (or trigger) that worker, so the hook is neutralised here;
+    tests that exercise the hook or the client override it themselves.
+    """
+    monkeypatch.setattr(
+        "arenamcp.card_facts.client.prefetch_grp_ids", lambda grp_ids: None
+    )
+
+
 @pytest.fixture(scope="session")
 def qapp_args():
     """Arguments passed to QApplication when created for testing."""

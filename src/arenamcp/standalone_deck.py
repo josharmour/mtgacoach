@@ -127,6 +127,22 @@ class _DeckAnalysisMixin:
         ):
             return False
         snapshot = deepcopy(state)
+        # Fable Nov S3: warm the card-facts cache for this deck in the
+        # background so the rules lookups are ready before advice is rendered.
+        # Never blocks and never raises into the analysis path.
+        try:
+            from arenamcp.card_facts.client import prefetch_grp_ids
+
+            prefetch_grp_ids(
+                list(dict.fromkeys(
+                    gid
+                    for gid in (snapshot.get("deck_cards") or [])
+                    if isinstance(gid, int)
+                ))
+                + list(commander_ids(state))
+            )
+        except Exception as error:
+            logger.debug("card facts prefetch skipped: %s", error)
         generation = coach.begin_deck_analysis(identity)
         self._deck_analysis_attempts += 1
         self._last_deck_analysis_attempt = time.monotonic()
