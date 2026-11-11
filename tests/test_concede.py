@@ -11,6 +11,18 @@ from typing import Any
 
 import pytest
 from tests.bug_180436_states import DARKNESS, ISLAND, TAPPED, bug_state
+from tests.bug_c74c0266_states import (
+    attack_state as c74c0266_attack,
+)
+from tests.bug_c74c0266_states import (
+    our_turn_28_state as c74c0266_our_turn_28,
+)
+from tests.bug_c74c0266_states import (
+    our_turn_30_state as c74c0266_our_turn_30,
+)
+from tests.bug_c74c0266_states import (
+    post_combat_state as c74c0266_post_combat,
+)
 from tests.concede_fakes import Harness
 from tests.mac_world import FakeTime, Obj, World
 
@@ -1573,3 +1585,65 @@ def test_a_taxed_commander_we_cannot_afford_is_not_an_out(monkeypatch):
     taxed = estimate_loss(state(1))
     assert taxed.confidence >= 0.95
     assert not any("command zone" in out for out in taxed.facts.get("outs", []))
+
+
+# --- match c74c0266: the commander who could not save us ----------------------------
+#
+# 2026-11-09 23:42-23:55 (standalone.log): their turn-27 attack was announced at
+# 0.97, dealt only 3 damage (5 -> 2 life), and the countdown aborted at "not dead
+# next attack". Packet decision index 36 (our turn 28, 23:44:06): Laelia sat in
+# the command zone at her printed {12}{R} - eleven untapped Mountains plus the
+# land drop make twelve, so she was never even offered - while their four
+# untapped creatures totalled 27 power vs our 2 life. Packet decision index 40
+# (our turn 30, 23:49:15): thirteen untapped Mountains paid {12}{R} exactly and
+# "Cast Laelia" WAS offered and passed, though her fresh 2/2 could not stop the
+# lethal attack (55 power vs 2 life). The game dragged ~13 minutes and was lost.
+
+
+def test_c74c0266_their_declared_attack_estimates_full_confidence():
+    estimate = estimate_loss(c74c0266_attack())
+    assert estimate.confidence >= 0.95, estimate.blockers
+    assert "Herald of Eternal Dawn" in estimate.reason and "your 5 life" in estimate.reason
+    assert estimate.facts["outs"] == []
+
+
+def test_c74c0266_our_turn_28_uncastable_commander_is_no_out():
+    # Packet decision index 36 (our turn 28): Laelia's printed {12}{R} exceeds
+    # the twelve mana available (eleven untapped Mountains + land drop), so she
+    # is uncastable and therefore no out; the estimate clears the out cap.
+    # (Before the fix this held at 0.60 with "possible out: Laelia (command
+    # zone, castable now)" every turn.)
+    estimate = estimate_loss(c74c0266_our_turn_28())
+    assert estimate.confidence >= 0.95, estimate.blockers
+    assert estimate.facts["outs"] == []
+
+
+def test_c74c0266_our_turn_30_castable_commander_still_caps_the_estimate():
+    # Packet decision index 40 (our turn 30): "Cast Laelia" was offered at her
+    # printed {12}{R} with exactly thirteen untapped Mountains and an empty
+    # hand - and passed. She is castable, so the estimator still names her as a
+    # possible out and caps the estimate at 0.60. This is the accepted residual,
+    # not a defect this chunk claims to fix: the logged Done-when is met on our
+    # turn 28, where she is uncastable and the estimate clears the cap, and
+    # review round 2 (Dotty, 2026-11-11) found no logged game where a castable
+    # body that cannot stop the attack ever decided the outcome - so no
+    # chump-bound rule was added and the conservative out stands.
+    estimate = estimate_loss(c74c0266_our_turn_30())
+    assert estimate.confidence <= 0.60, estimate.blockers
+    assert any("Laelia" in out for out in estimate.facts["outs"])
+
+
+def test_c74c0266_concedes_on_our_turn_after_the_aborted_countdown():
+    # The logged trajectory: armed on their declared attack (23:42:50), aborted
+    # when the smaller-than-lethal attack landed (23:42:53), then — the part the
+    # coach missed — re-armed on our turn-28 draw and conceded instead of
+    # dragging ~13 minutes to the loss at 23:55:53.
+    harness = Harness(c74c0266_attack())
+    harness.observe()
+    harness.state = c74c0266_post_combat()
+    harness.run_countdown()
+    assert harness.concedes == [] and harness.states[-1] == "aborted"
+    harness.state = c74c0266_our_turn_28()
+    harness.observe(times=1)
+    harness.run_countdown()
+    assert len(harness.concedes) == 1
