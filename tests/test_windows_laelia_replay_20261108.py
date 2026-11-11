@@ -2,6 +2,12 @@
 
 No game, card-server or model calls. Fixtures retain exact offered action and
 source IDs; stale/fresh public snapshots model the observed parser lag.
+
+Provenance split: fixtures/windows_laelia_20261108.json is the raw historical
+packet (recorded request/action IDs only, never modified here). Board
+snapshots in this module are synthetic constructions; the single
+visible-board freshness stamp is a clearly labelled synthetic contract
+fixture (owner-authorized 2026-11-11), not recorded evidence.
 """
 
 import json
@@ -67,18 +73,39 @@ def test_favor_source_transition_waits_for_real_board_then_keeps_safe_target(mon
     assert planner._gate_harmful_llm_target_picks(decision, selected, ["tgt:481"]) == ["tgt:481"]
 
 
-@pytest.mark.parametrize("bridge_id", [0, 207, 212])
+@pytest.mark.parametrize("bridge_id", [0, 207, 212, 213])
 def test_summarized_log_is_not_proof_stale_bridge_board_is_current(bridge_id):
     poll, stale, _ = favor_case()
+    # 213 is included deliberately: the raw historical packet proves only the
+    # SelectTargets request id 213 (source 619). A request id alone — with no
+    # certified visible-board snapshot — never authorizes recovery.
     stale["_bridge_game_state_id"] = bridge_id
     engine = _engine([stale])
     engine._LOG_CATCH_UP_TIMEOUT_S = 0
     assert engine._await_log_catch_up(poll, stale) is None
 
 
-def test_summarized_log_can_recover_through_current_bridge_without_log_detail():
+def test_synthetic_visible_board_contract_recovers_through_current_bridge_without_log_detail():
+    """SYNTHETIC CONTRACT TEST — owner-authorized 2026-11-11 (t_ae19e37a).
+
+    The visible-board snapshot below is constructed synthetically to exercise
+    the producer contract: the server stamps ``_bridge_visible_game_state_id``
+    only after complete zones/counts, turn, players and a connected bridge,
+    and such a certified visible board recovers a summarized log without log
+    detail. This is NOT recorded evidence and does not claim to reproduce the
+    missing capture for match 34711245; the raw historical packet
+    (fixtures/windows_laelia_20261108.json) is unchanged and still proves only
+    the SelectTargets request 213 / source 619. Runtime freshness guards are
+    untouched.
+    """
     poll, stale, fresh = favor_case()
-    fresh.update(_log_game_state_id=207, _bridge_game_state_id=213)
+    # Synthetic snapshot: log still behind (207); the bridge reports pending
+    # request 213 AND certifies visible-board freshness at 213.
+    fresh.update(
+        _log_game_state_id=207,
+        _bridge_game_state_id=213,
+        _bridge_visible_game_state_id=213,
+    )
     assert _engine([fresh])._await_log_catch_up(poll, stale) is fresh
 
 
