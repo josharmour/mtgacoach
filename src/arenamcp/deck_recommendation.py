@@ -23,14 +23,16 @@ class DeckInvitation:
     rank: str
     threshold: float
     event: str
+    deck: str = ""
 
     @property
     def message(self) -> str:
         rate = self.wins / (self.wins + self.losses)
+        pool = f"ranked games with {self.deck}" if self.deck else "ranked results"
         return (
             "Your recent win/loss record suggests trying a new deck. "
             "Would you like help building one?\n\n"
-            f"Your last {self.wins + self.losses} ranked results in {self.event}: "
+            f"Your last {self.wins + self.losses} {pool} in {self.event}: "
             f"{self.wins} wins, {self.losses} losses ({rate:.1%}). "
             f"At {self.rank}, the baseline for gaining rank progress is above {self.threshold:.1%}. "
             "Rank protection can soften losses; a different deck is no guarantee of wins."
@@ -40,8 +42,10 @@ class DeckInvitation:
 def invitation(records: list[MatchRecord], snapshot: dict, *, now: datetime | None = None):
     """Evaluate one queue, excluding draws, old results, and per-game Bo3 records.
 
-    History predates deck identity tracking, so this deliberately describes the
-    player's recent ranked results, never a measured win rate for a named deck.
+    The evidence is per-deck: only games the autopilot played with the SAME
+    deck as the latest game count towards the sample (matched by deck
+    identity, falling back to the deck name). Advisor-mode games and other
+    decks measure the player, not this deck, so they never enter the pool.
     Mythic has opponent-dependent rating gains, not a fixed climb threshold.
     Thresholds follow https://magic.wizards.com/en/mtgarena/getting-started
     (checked November 2026). These are expected pip progress, not a guarantee.
@@ -59,11 +63,20 @@ def invitation(records: list[MatchRecord], snapshot: dict, *, now: datetime | No
     normalized = event.lower().replace("_", " ")
     if ranked_ladder(event) != "Constructed" or any(x in normalized for x in ("traditional", "trad", "bo3")):
         return None
+    # Without a deck identity on the latest game there is no per-deck sample.
+    deck_key = getattr(latest, "deck_identity", "") or getattr(latest, "deck_name", "")
+    if not deck_key:
+        return None
     now = now or datetime.now(timezone.utc)
     recent = []
     seen = set()
     for rec in reversed(records):
         if rec.format_name != event or rec.result not in ("win", "loss") or not rec.match_id:
+            continue
+        # Same deck as the game just ended, and the autopilot played it.
+        if getattr(rec, "autopilot", None) is not True:
+            continue
+        if (getattr(rec, "deck_identity", "") or getattr(rec, "deck_name", "")) != deck_key:
             continue
         if rec.match_id in seen:
             continue
@@ -82,7 +95,7 @@ def invitation(records: list[MatchRecord], snapshot: dict, *, now: datetime | No
     wins = sum(rec.result == "win" for rec in recent)
     if wins / len(recent) >= threshold:
         return None
-    return DeckInvitation(wins, len(recent) - wins, rank, threshold, event)
+    return DeckInvitation(wins, len(recent) - wins, rank, threshold, event, latest.deck_name)
 
 
 def claim_invitation(path: Path, match_id: str, *, now: datetime | None = None) -> bool:

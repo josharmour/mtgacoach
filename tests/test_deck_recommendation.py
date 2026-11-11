@@ -12,12 +12,17 @@ NOW = datetime(2026, 11, 5, tzinfo=timezone.utc)
 
 
 def records(wins, losses, event="Ladder"):
+    # Post-P1 shape: every record carries the deck identity + autopilot flag
+    # written at game end (see match_history.record_from_game_end).
     return [
         MatchRecord(
             match_id=str(i),
             timestamp=(NOW - timedelta(minutes=losses + wins - i)).isoformat(),
             result=result,
             format_name=event,
+            deck_identity="deck-hash-" + event,
+            deck_name="Test Deck",
+            autopilot=True,
         )
         for i, result in enumerate(["win"] * wins + ["loss"] * losses)
     ]
@@ -172,3 +177,55 @@ def test_goldfish_reads_current_public_deck_data(monkeypatch):
     assert deck["sideboard"] == ["2 Answer"]
     assert "Sideboard\n2 Answer" in arena_export(deck)
     client._write_cache.assert_called_once()
+
+
+def test_invitation_pools_only_same_deck_autopilot_games():
+    """Real logged case: evidence bundle 00651f77… (2026-11-10 Ladder loss,
+    autopilot enabled). The sample must count only games the autopilot played
+    with the SAME deck as the game just ended — advisor-mode games, other
+    decks, and pre-P1 records (autopilot unknown) measure other things."""
+    noise = [
+        # Advisor game (the player drove): same deck, must not count.
+        MatchRecord(
+            match_id="advisor",
+            timestamp=(NOW - timedelta(minutes=1)).isoformat(),
+            result="win",
+            format_name="Ladder",
+            deck_identity="deck-hash-Ladder",
+            deck_name="Test Deck",
+            autopilot=False,
+        ),
+        # Autopilot but a different deck.
+        MatchRecord(
+            match_id="other-deck",
+            timestamp=(NOW - timedelta(minutes=2)).isoformat(),
+            result="win",
+            format_name="Ladder",
+            deck_identity="other-hash",
+            deck_name="Other Deck",
+            autopilot=True,
+        ),
+        # Pre-P1 record: autopilot unknown, no identity.
+        MatchRecord(
+            match_id="legacy",
+            timestamp=(NOW - timedelta(minutes=3)).isoformat(),
+            result="win",
+            format_name="Ladder",
+        ),
+    ]
+    result = invitation(noise + records(0, 20), {"constructedClass": "Gold"}, now=NOW)
+
+    assert result is not None
+    assert (result.wins, result.losses) == (0, 20)
+    assert result.deck == "Test Deck"
+    assert "with Test Deck" in result.message
+
+
+def test_invitation_needs_deck_identity_on_latest_game():
+    """Pre-P1 history (no deck identity) has no per-deck sample: no invitation
+    may quote a win rate it cannot attribute to a deck."""
+    legacy = records(0, 20)
+    for rec in legacy:
+        rec.deck_identity = ""
+        rec.autopilot = None
+    assert invitation(legacy, {"constructedClass": "Gold"}, now=NOW) is None

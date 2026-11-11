@@ -14,7 +14,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from arenamcp.desktop.performance_tab import PerformanceTab
+from arenamcp.desktop.performance_tab import PerformanceTab, autopilot_deck_results
 from arenamcp.match_history import MatchHistory, record_from_game_end
 from arenamcp.standalone_postmatch import _PostMatchMixin
 
@@ -370,3 +370,95 @@ def test_rank_strip_picks_up_new_result_without_changing_geometry(seeded_file, q
         for line in button.text().splitlines()
     )
     strip.close()
+
+
+# ---- per-deck autopilot results (P1) --------------------------------------
+
+
+def _deck_record(match_id, result, *, autopilot=True, identity="hash-mono-blue", name="Mono Blue Tempo"):
+    from arenamcp.match_history import MatchRecord
+
+    return MatchRecord(
+        match_id=match_id,
+        timestamp="2026-11-10T12:00:00+00:00",
+        result=result,
+        format_name="Ladder",
+        deck_identity=identity,
+        deck_name=name,
+        autopilot=autopilot,
+    )
+
+
+def test_autopilot_deck_results_count_only_autopilot_games_of_one_deck():
+    """Real logged case: evidence bundle 00651f77… (2026-11-10 Ladder loss,
+    autopilot enabled, 60-card deck). Aggregation must group by deck identity,
+    count only autopilot games, exclude draws, and fall back to the deck name
+    for records written before identity tracking existed."""
+    records = [
+        _deck_record("a1", "win"),
+        _deck_record("a2", "loss"),
+        _deck_record("a3", "draw"),  # not a decided game
+        _deck_record("a4", "win", autopilot=False),  # advisor game: the player drove
+        _deck_record("a5", "win", identity="", name="Mono Blue Tempo"),  # pre-identity record
+        _deck_record("b1", "loss", identity="hash-other", name="Other Deck"),
+    ]
+
+    entries = autopilot_deck_results(records)
+
+    by_name = {entry["name"]: entry for entry in entries}
+    assert by_name["Mono Blue Tempo"]["games"] == 3  # a1, a2, a5 — not the draw or advisor win
+    assert (by_name["Mono Blue Tempo"]["wins"], by_name["Mono Blue Tempo"]["losses"]) == (2, 1)
+    assert by_name["Other Deck"]["games"] == 1
+    # Sorted most-played first.
+    assert [entry["name"] for entry in entries] == ["Mono Blue Tempo", "Other Deck"]
+
+
+def test_win_rate_hidden_below_twenty_decided_autopilot_games():
+    """A win rate is noise below the 20-decided-game sample floor (same floor
+    the deck-building invitation uses); it appears at exactly 20."""
+    nineteen = [_deck_record(f"n{i}", "loss") for i in range(19)]
+    assert all(entry["win_rate"] is None for entry in autopilot_deck_results(nineteen))
+
+    twenty = nineteen + [_deck_record("n19", "win")]
+    (entry,) = autopilot_deck_results(twenty)
+    assert entry["win_rate"] == pytest.approx(1 / 20)
+
+
+def test_performance_tab_shows_per_deck_section_only_with_autopilot_history(seeded_file, qapp):
+    """The section stays hidden while history has no autopilot games (legacy
+    records), and appears once per-deck autopilot results exist."""
+    tab = PerformanceTab()
+    tab.refresh()
+    assert not tab._decks.isVisibleTo(tab)  # seeded records predate P1
+
+    import arenamcp.match_history as mh
+
+    history = mh.MatchHistory()
+    for i in range(20):
+        history.add_record(_deck_record(f"d{i}", "win" if i % 3 == 0 else "loss"))
+
+    tab.refresh()
+    assert tab._decks.isVisibleTo(tab)
+    assert "AUTOPILOT RESULTS BY DECK" in tab._decks_caption.text()
+    # 7 wins (i % 3 == 0 -> i in 0..18 step 3), 13 losses, 20 decided games.
+    assert "Mono Blue Tempo · 20 games · 7W–13L · 35% win rate" in tab._decks.text()
+
+
+def test_write_performance_record_stamps_autopilot_and_deck_identity(tmp_path, monkeypatch):
+    """Game-end capture: the record written by the coach carries the autopilot
+    flag and the deck identity derived from the final state's deck list."""
+    import arenamcp.match_history as mh
+
+    monkeypatch.setattr(mh, "HISTORY_FILE", tmp_path / "h.json")
+    host = _Host('{"rating": 5}')
+    final_state = {
+        "opponent_played_cards": [{"name": "Lightning Helix", "mana_cost": "{R}{W}"}],
+        "format_name": "Ladder",
+        "deck_cards": [111] * 4 + [222] * 20 + [333] * 36,
+    }
+    host._autopilot_enabled = True
+    host._write_performance_record("m_p1", "loss", final_state, replay_path="")
+
+    rec = mh.MatchHistory().get_recent(10)[0]
+    assert rec.autopilot is True
+    assert rec.deck_identity

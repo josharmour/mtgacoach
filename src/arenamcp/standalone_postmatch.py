@@ -1078,18 +1078,37 @@ class _PostMatchMixin(LossStreakMixin):
         if isinstance(final_state, dict):
             opponent_cards = final_state.get("opponent_played_cards", []) or []
 
+        # Mirror the advisor/autopilot labelling used at game end: a paused
+        # autopilot did not play this game.
+        paused = getattr(getattr(getattr(self, "_autopilot", None), "state", None), "value", None) == "paused"
+        autopilot = bool(getattr(self, "_autopilot_enabled", False)) and not paused
+
         rec = record_from_game_end(
             match_id=match_id or "",
             result=str(result) if result else "unknown",
             game_state_snapshot=final_state or {},
             opponent_cards=opponent_cards,
             replay_path=replay_path or "",
+            autopilot=autopilot,
         )
         if isinstance(final_state, dict):
             for key in ("format_name", "event_id", "event_name", "super_format", "match_format"):
                 if final_state.get(key) and not rec.format_name:
                     rec.format_name = str(final_state[key]).replace("_", " ").replace("Play ", "").strip()
                     break
+        # Best-effort display name: match the recorded deck identity against
+        # the deck library parsed from the player log (no bridge round-trip
+        # in the game-end path).
+        if not rec.deck_name and rec.deck_identity:
+            try:
+                from arenamcp.deck_library import load_log_decks
+
+                for deck_record in load_log_decks().values():
+                    if deck_record.identity() == rec.deck_identity:
+                        rec.deck_name = deck_record.name
+                        break
+            except Exception as error:
+                logger.debug("Deck name lookup failed: %s", error)
         if replay_path:
             try:
                 cos = parse_replay_cosmetics(replay_path)

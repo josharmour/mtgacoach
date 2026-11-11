@@ -31,6 +31,88 @@ _MAX_ROWS = 20
 WIDE_LAYOUT_PX = 520
 _USE_TABLES = sys.platform != "darwin"  # QTBUG-149612: Cocoa selected-cell cache ownership
 
+# A win rate is only shown once a deck has this many decided autopilot games;
+# smaller samples get no percentage (noise, not signal).
+MIN_GAMES_FOR_WIN_RATE = 20
+
+
+def autopilot_deck_results(records) -> list[dict]:
+    """Aggregate per-deck results for games the autopilot played.
+
+    Only records where ``autopilot`` is True count (advisor-mode games are the
+    player's own play). Games are grouped by deck identity — falling back to
+    the deck name when a record predates identity tracking — and only decided
+    games (win/loss) are counted. A deck's ``win_rate`` is None until it has
+    at least MIN_GAMES_FOR_WIN_RATE decided games.
+    """
+    groups: dict[str, dict] = {}
+    legacy_keys: set[str] = set()
+    for rec in records:
+        if getattr(rec, "autopilot", None) is not True:
+            continue
+        result = (rec.result or "").lower()
+        if result not in ("win", "loss"):
+            continue
+        identity = getattr(rec, "deck_identity", "") or ""
+        name = getattr(rec, "deck_name", "") or ""
+        key = identity or name
+        if not key:
+            continue
+        if not identity:
+            legacy_keys.add(key)
+        group = groups.setdefault(key, {"name": name, "wins": 0, "losses": 0})
+        if name and not group["name"]:
+            group["name"] = name
+        group["wins" if result == "win" else "losses"] += 1
+
+    entries = []
+    for group in groups.values():
+        games = group["wins"] + group["losses"]
+        entries.append(
+            {
+                "name": group["name"] or "Unnamed deck",
+                "games": games,
+                "wins": group["wins"],
+                "losses": group["losses"],
+                # No percentage below the sample-size floor.
+                "win_rate": (group["wins"] / games) if games >= MIN_GAMES_FOR_WIN_RATE else None,
+            }
+        )
+
+    # Records written before identity tracking carry only a deck name. Fold a
+    # legacy bucket into an identified deck when the display name matches
+    # exactly one identified deck, so one deck never shows as two rows — but
+    # never merge two different identities on a name alone.
+    by_name: dict[str, list[dict]] = {}
+    for entry in entries:
+        by_name.setdefault(entry["name"], []).append(entry)
+    for key in legacy_keys:
+        legacy_entry = next((e for e in entries if e["name"] == groups[key]["name"]), None)
+        if legacy_entry is None or len(by_name[legacy_entry["name"]]) < 2:
+            continue  # unique display name: nothing to fold into
+        identified = [e for e in by_name[legacy_entry["name"]] if e is not legacy_entry]
+        if len(identified) == 1:
+            target = identified[0]
+            target["wins"] += legacy_entry["wins"]
+            target["losses"] += legacy_entry["losses"]
+            target["games"] = target["wins"] + target["losses"]
+            target["win_rate"] = (
+                (target["wins"] / target["games"])
+                if target["games"] >= MIN_GAMES_FOR_WIN_RATE
+                else None
+            )
+            entries.remove(legacy_entry)
+
+    entries.sort(key=lambda e: (-e["games"], e["name"]))
+    return entries
+
+
+def _format_deck_result(entry: dict) -> str:
+    line = f"{entry['name']} · {entry['games']} games · {entry['wins']}W–{entry['losses']}L"
+    if entry["win_rate"] is not None:
+        line += f" · {entry['win_rate'] * 100:.0f}% win rate"
+    return line
+
 
 def _fmt_ts(ts: str) -> str:
     if not ts:
@@ -79,6 +161,18 @@ class PerformanceTab(QWidget):
         header.addWidget(self._summary, 1)
         header.addWidget(refresh, 0, Qt.AlignTop)
         lay.addLayout(header)
+
+        # Per-deck autopilot results (hidden until at least one autopilot
+        # game with a known deck is recorded).
+        self._decks_caption = QLabel("AUTOPILOT RESULTS BY DECK")
+        self._decks_caption.setProperty("role", "caption")
+        self._decks_caption.hide()
+        lay.addWidget(self._decks_caption)
+        self._decks = QLabel("")
+        self._decks.setWordWrap(True)
+        self._decks.setProperty("role", "muted")
+        self._decks.hide()
+        lay.addWidget(self._decks)
 
         if not _USE_TABLES:
             from .match_history_cards import MatchHistoryCards
@@ -200,15 +294,17 @@ class PerformanceTab(QWidget):
             # Fresh instance every time: re-reads match_history from disk so
             # results written by the coach subprocess are always visible.
             history = MatchHistory()
+            all_records = list(reversed(history.get_recent(history.total_games)))
             if self._ladder:
                 records = [
                     rec
-                    for rec in reversed(history.get_recent(history.total_games))
+                    for rec in all_records
                     if ranked_ladder(rec.format_name) == self._ladder
                 ][:RANK_HISTORY_LIMIT]
             else:
-                records = list(reversed(history.get_recent(_MAX_ROWS)))
+                records = all_records[:_MAX_ROWS]
         except Exception:
+            all_records = []
             records = []
 
         # Preserve the selected row's explanation across the 3s auto-refresh so
@@ -224,6 +320,7 @@ class PerformanceTab(QWidget):
             else:
                 self._detail.setText("Select a game to review its recorded result.")
             self._update_summary(records)
+            self._update_deck_results(all_records)
             return
 
         for table in (self._table, self._compact):
@@ -298,6 +395,16 @@ class PerformanceTab(QWidget):
                     break
 
         self._update_summary(records)
+        self._update_deck_results(all_records)
+
+    def _update_deck_results(self, records) -> None:
+        """Per-deck autopilot results, drawn from the full history (not the
+        row-display limit) so the 20-game sample floor is reachable."""
+        entries = autopilot_deck_results(records)
+        self._decks.setText("\n".join(_format_deck_result(entry) for entry in entries))
+        has_entries = bool(entries)
+        self._decks.setVisible(has_entries)
+        self._decks_caption.setVisible(has_entries)
 
     def _update_summary(self, records) -> None:
         wins = sum((r.result or "").lower() == "win" for r in records)

@@ -73,3 +73,40 @@ def test_parse_replay_cosmetics_reads_the_replay_header(tmp_path):
     not_a_replay.write_text(json.dumps(header) + "\n", encoding="utf-8")
     assert parse_replay_cosmetics(str(not_a_replay)) is None
     assert parse_replay_cosmetics(str(tmp_path / "missing.rply")) is None
+
+
+def test_record_from_game_end_records_deck_identity_and_autopilot_flag():
+    """Real logged case: evidence bundle 00651f77… (2026-11-10 Ladder loss,
+    game 1, autopilot enabled) carries final_state.deck_cards (grpIds) and
+    settings autopilot_enabled — the game-end record must preserve both so
+    per-deck autopilot results are possible."""
+    snapshot = {
+        "opponent_name": "Opponent",
+        "format_name": "Ladder",
+        "turn": {"turn_number": 9},
+        "deck_cards": [111] * 4 + [222] * 20 + [333] * 36,
+    }
+
+    rec = record_from_game_end("match-deck", "loss", snapshot, autopilot=True)
+
+    assert rec.deck_identity  # stable hash of the deck's card list
+    assert rec.autopilot is True
+
+    # The same card list must yield the same identity as the playbook cache
+    # key (deck_strategy.deck_identity), so per-deck rows line up with the
+    # deck the coach actually prepared for.
+    again = record_from_game_end("match-deck-2", "win", dict(snapshot), autopilot=False)
+    assert again.deck_identity == rec.deck_identity
+    assert again.autopilot is False
+
+
+def test_legacy_record_leaves_autopilot_unknown_and_has_no_deck_identity():
+    """Callers that predate per-deck tracking pass no autopilot flag: the
+    record must stay 'unknown' (None), not silently count as autopilot."""
+    snapshot = {"opponent_name": "Opponent", "format_name": "Ladder"}
+
+    rec = record_from_game_end("match-old", "win", snapshot)
+
+    assert rec.autopilot is None
+    assert rec.deck_identity == ""
+    assert rec.deck_name == ""

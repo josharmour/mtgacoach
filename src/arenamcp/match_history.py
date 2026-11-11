@@ -51,6 +51,14 @@ class MatchRecord:
     coach_rating: int | None = None
     # One-sentence explanation behind coach_rating (why this score was given).
     coach_score_reason: str = ""
+    # Deck identity (sha256 of the deck's card list, see deck_strategy) and
+    # display name, recorded at game end. Empty for records written before
+    # per-deck tracking existed.
+    deck_identity: str = ""
+    deck_name: str = ""
+    # Whether the autopilot played this game (None = unknown, pre-P1 record;
+    # the per-deck results view only counts records where this is True).
+    autopilot: bool | None = None
 
 
 class MatchHistory:
@@ -218,11 +226,15 @@ def record_from_game_end(
     game_state_snapshot: dict[str, Any],
     opponent_cards: list[dict[str, Any]] = None,
     replay_path: str = "",
+    autopilot: bool | None = None,
 ) -> MatchRecord:
     """Create a MatchRecord from a game end event and snapshot.
 
     This is the primary way to record matches — called from standalone.py
     when a game ends, using the final game state snapshot.
+
+    ``autopilot`` records whether the autopilot played this game (True/False);
+    leave it unset for legacy callers so old records stay "unknown".
     """
     from datetime import datetime, timezone
 
@@ -231,6 +243,7 @@ def record_from_game_end(
         timestamp=datetime.now(timezone.utc).isoformat(),
         result=result,
         replay_path=replay_path,
+        autopilot=autopilot,
     )
 
     # Extract from game state snapshot
@@ -251,6 +264,14 @@ def record_from_game_end(
             or game_state_snapshot.get("match_format")
             or ""
         )
+
+        # Deck identity + name. The identity is the same stable hash the
+        # playbook cache uses (deck_strategy.deck_identity), so per-deck
+        # results line up with the deck the coach actually prepared for.
+        from arenamcp.deck_strategy import deck_identity
+
+        record.deck_identity = deck_identity(game_state_snapshot)
+        record.deck_name = str(game_state_snapshot.get("deck_name") or "")
 
         players = game_state_snapshot.get("players", [])
         for p in players:
