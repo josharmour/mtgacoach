@@ -191,3 +191,18 @@ def test_typed_prompt_uses_current_decision_instead_of_stale_snapshot():
     assert "NEED:" not in backend.prompt
     assert "payable individually now" in backend.system
     assert state == previous
+
+
+def test_logged_priority_menu_supplies_payment_when_bridge_snapshot_missing():
+    state = _state(None)
+    state.update(
+        _bridge_request_type=None,
+        _bridge_connected=True,
+        decision_context={"type": "actions_available"},
+        legal_actions_raw=[_cast(hasAutoTap=True)],
+    )
+    coach = CoachEngine.__new__(CoachEngine)
+    context = coach._format_game_context(state, for_planner=True)
+    assert "[S,OK]" in context and "NOT AVAILABLE" not in context
+    state["decision_context"] = {"type": "select_targets"}
+    assert coach._resolve_raw_legal_actions(state) == []

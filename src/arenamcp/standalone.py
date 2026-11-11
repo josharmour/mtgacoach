@@ -57,6 +57,7 @@ from arenamcp.backend_health import (
     strip_health_tags,
 )
 from arenamcp.decision_arbiter import arbitrate
+from arenamcp.emote_replies import _EmoteRepliesMixin
 from arenamcp.game_plan import STRATEGIC_LANE, background_llm_allowed, circuit_snapshot, llm_available
 from arenamcp.logging_config import LOG_DIR, LOG_FILE, configure_logging
 from arenamcp.mana import get_local_seat_id
@@ -100,6 +101,7 @@ class StandaloneCoach(
     _AutopilotCaptureMixin,
     _ConcedeMixin,
     _OopsMixin,
+    _EmoteRepliesMixin,
     _StartupMixin,
     _DeckAnalysisMixin,
     _DeckLibraryMixin,
@@ -2310,6 +2312,11 @@ class StandaloneCoach(
                 ):
                     self._note_watched_game(curr_match_id, curr_state.get("game_number"))
 
+                try:
+                    self._observe_loss_review(curr_state, gs)
+                except Exception:
+                    logger.exception("Loss-streak observation failed")
+
                 # Debug: Log if turn_num is 0 (every 30 seconds)
                 if turn_num == 0:
                     if not hasattr(self, "_last_turn0_log"):
@@ -2421,6 +2428,7 @@ class StandaloneCoach(
                 self._observe_concede(curr_state, (curr_match_id, self._match_number))
                 # Stuck or clear blunder with autoplay on? Send Arena's "Oops" emote.
                 self._observe_oops(curr_state, (curr_match_id, self._match_number))
+                self._observe_emote_replies(curr_state)
 
                 # FORCE CHECK: Always check triggers if trigger detector exists.
                 # prev_state starts as {} (falsy) but check_triggers handles empty

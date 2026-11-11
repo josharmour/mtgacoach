@@ -106,7 +106,8 @@ def decks():
     ]
 
 
-def test_rows_show_strategy_status_and_the_report_on_selection(qapp):
+def test_rows_show_strategy_status_and_the_report_on_selection(qapp, monkeypatch):
+    monkeypatch.setattr("PySide6.QtWidgets.QApplication.platformName", lambda: "offscreen")
     session = FakeSession()
     tab = DecksTab(session=session)
     tab.refresh()
@@ -125,7 +126,8 @@ def test_rows_show_strategy_status_and_the_report_on_selection(qapp):
     assert not tab.strategy_btn.isEnabled() and "Card list unknown" in tab._detail.text()
 
 
-def test_strategy_button_sends_the_command_and_streams_progress(qapp):
+def test_strategy_button_sends_the_command_and_streams_progress(qapp, monkeypatch):
+    monkeypatch.setattr("PySide6.QtWidgets.QApplication.platformName", lambda: "offscreen")
     session = FakeSession()
     tab = DecksTab(session=session)
     session.deckListChanged.emit(decks(), "")
@@ -161,3 +163,18 @@ def test_report_html_covers_every_section_and_escapes():
         assert heading in html
     assert "&lt;b&gt;raw&lt;/b&gt;" in html and "<b>raw</b>" not in html
     assert report_html({})  # an empty report still renders a placeholder
+
+
+def test_cocoa_deck_buttons_keep_selection_across_refresh(qapp, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+
+    monkeypatch.setattr(QApplication, "platformName", lambda: "cocoa")
+    tab = DecksTab(session=FakeSession())
+    tab.set_decks(decks())
+    assert tab._table is None
+    button = tab._deck_buttons["b"]
+    button.click()
+    tab.set_decks(list(reversed(decks())))
+    assert tab.selected_deck_id() == "b" and tab._deck_buttons["b"] is button
+    tab.set_decks([deck for deck in decks() if deck["deck_id"] != "b"])
+    assert tab.selected_deck_id() is None

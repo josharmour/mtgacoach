@@ -26,6 +26,8 @@ PLAYBOOK_VERSION = 2
 DECK_ANALYSIS_PROMPT = (
     """Analyze every card in the supplied Magic deck using its supplied Oracle text, costs, types and faces. Build a reusable playbook for both coaching and autoplay, not a generic archetype summary. Explicitly analyze each designated commander; a legendary card is not necessarily the commander. If there is no commander, analyze the deck's engines normally.
 
+Ground the opening-hand plan, sequencing and recovery lines in actual card counts. Identify a representative winning turn and what changes against blockers or interaction. Check all costs and targets, and distinguish reliable outcomes from draws the deck merely could produce. Use deck multiplicities and effect thresholds to identify what an exile-until search can actually hit. Cascade and discover exile one card at a time, including when no eligible nonland remains. Evaluate triggers per card exiled, the no-hit outcome, blockers and trample before projecting combat damage. Permission to play a card uses normal costs and land-drop limits unless an effect explicitly waives them. Apply these facts to opening hands and precombat sequencing when relevant.
+
 Identify how resources become a win: setup, repeatable engines, payoffs, protection, interaction and recovery. Consider every supplied card, including lands. Record concise roles for the 8-15 cards that materially determine the plan (engines, payoffs, game-changers, key interaction, mana engines); do not spend the output budget restating every basic land or filler card. Explain the actual mechanisms, not just pairs of card names. Reserve the first mechanism(s) for the designated commander(s), including the commander card ID in cards; then cover the other key engines. For each mechanism list EVERY involved card by its supplied card ID. The application attaches those cards' original rules directly; never retype or invent quotations. Only reference supplied card IDs. Missing rules are unknown; do not invent abilities.
 
 """
@@ -147,6 +149,16 @@ def analysis_reference(state: dict, catalog: dict[int, dict]) -> str:
     counts = Counter(state.get("deck_cards") or [])
     commanders = commander_ids(state)
     lines = ["COMPLETE DECK ORACLE REFERENCE (printed facts, not a current board):"]
+    if counts and all(catalog.get(gid, {}).get("type_line") for gid in counts):
+        lands = sum(
+            count
+            for gid, count in counts.items()
+            if re.search(r"\bLand\b", catalog[gid]["type_line"].split(" // ")[0].split(" — ")[0])
+        )
+        total = sum(counts.values())
+        lines.append(
+            f"Main deck by copy count: {total} cards, {lands} lands ({lands / total:.1%}), {total - lands} nonlands."
+        )
     for gid, card in sorted(catalog.items(), key=lambda item: (item[0] not in commanders, item[0])):
         designation = " DESIGNATED COMMANDER" if gid in commanders else ""
         lines.append(
@@ -261,6 +273,7 @@ class DeckPlaybook:
     catalog: dict[int, dict]
     commanders: list[int]
     identity: str = ""
+    saved_strategy_sha256: str = ""
 
     @classmethod
     def parse(cls, response: str, catalog: dict[int, dict], commanders: list[int], identity=""):

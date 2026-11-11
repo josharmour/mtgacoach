@@ -16,6 +16,11 @@ class _AutoQueueMixin(AutoQuestMixin):
         if getattr(self, "_auto_quest", None):
             self._auto_quest = None
             self.ui.status("GRIND", "OFF")
+        if bool(enabled) != bool(getattr(self, "_auto_queue_enabled", False)):
+            try:
+                self._loss_store().new_session()
+            except Exception:
+                logger.debug("Could not persist auto-queue review session", exc_info=True)
         self._auto_queue_enabled = bool(enabled)
         self.settings.set("auto_queue_enabled", self._auto_queue_enabled)
         self._auto_queue_since = time.time()

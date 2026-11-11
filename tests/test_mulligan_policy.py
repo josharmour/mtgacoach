@@ -418,3 +418,28 @@ def test_aura_payoffs_need_an_early_carrier_for_an_automatic_keep(land_count):
     assert mp.mulligan_verdict(found) is None
     cards[-2] = hc("Token Spell", "Sorcery", "{1}{W}", "Create two 1/1 white Soldier creature tokens.")
     assert mp.mulligan_verdict(found)[0] == "keep"
+
+
+@pytest.mark.parametrize("mulligans", [0, 1, 2])
+def test_laelia_keeps_exile_payoff_with_six_mountains(mulligans):
+    game = state([MOUNTAIN] * 7, mulligans)
+    game.update(
+        format_name="Brawl Ladder", commander_grp_ids=[83081], deck_cards=[MOUNTAIN] * 91 + [71491] * 8
+    )
+    game["hand"][-1].update(
+        name="Throes of Chaos",
+        grp_id=71491,
+        type_line="Sorcery",
+        oracle_text="Cascade\nRetrace",
+        mana_cost="{3}{R}",
+    )
+    assert mp.mulligan_verdict(mp.situation(game))[0] == "keep"
+    ids = [card["instance_id"] for card in game["hand"]]
+    assert ids[-1] not in mp.bottom_choice(game, ids, 2)
+    planner = ActionPlanner(Backend(), timeout=5, land_drop_first=False)
+    decision = bottom_decision(game, 4)
+    picked = planner.plan_decision_options(decision, game)
+    assert len(picked) == 4 and f"grp:{ids[-1]}" not in picked
+    assert mp.situation(game).free_mulligans == 1
+    game["commander_grp_ids"] = [123]
+    assert not mp.situation(game).exile_enabler

@@ -400,6 +400,7 @@ class MulliganSituation:
     mulligans: int | None
     on_play: bool | None
     free_mulligans: int = 0
+    exile_enabler: str = ""
 
     @property
     def bottom_count(self) -> int | None:
@@ -459,7 +460,9 @@ def free_mulligans_from_state(state: dict) -> int:
     if isinstance(value, bool):
         return 0
     try:
-        return max(0, int(value)) if value is not None else 0
+        if value is None:
+            return int("brawl" in str(state.get("format_name") or "").lower())
+        return max(0, int(value))
     except (TypeError, ValueError):
         return 0
 
@@ -473,6 +476,45 @@ def on_the_play(state: dict) -> bool | None:
     return active == seat
 
 
+_LAELIA_PAYOFF_NAMES = {
+    "Etali's Favor",
+    "Meteoric Mace",
+    "Throes of Chaos",
+    "Volcanic Torrent",
+    "Daring Discovery",
+    "Trumpeting Carnosaur",
+    "Hidden Volcano",
+    "Geological Appraiser",
+    "A-Geological Appraiser",
+}
+
+
+def _laelia_enabler(state: dict, hand: list[dict]) -> str:
+    """Recognize the land-heavy Laelia plan from the starting list and this hand."""
+    from arenamcp.deck_strategy import commander_ids
+
+    # Arena group 83081 is Laelia, the Blade Reforged.
+    if 83081 not in commander_ids(state):
+        return ""
+    deck = state.get("deck_cards") or []
+    mountains = [c for c in hand if c.get("name") == "Mountain"]
+    if len(mountains) < 3:
+        return ""
+    # The opening snapshot can have names before it has Oracle text.
+    from arenamcp.laelia_strategy import is_laelia_list
+
+    if is_laelia_list(state):
+        return next((c["name"] for c in hand if c.get("name") in _LAELIA_PAYOFF_NAMES), "")
+    basic_ids = {c.get("grp_id") for c in mountains if c.get("grp_id")}
+    if len(deck) < 60 or sum(gid in basic_ids for gid in deck) < len(deck) * 0.8:
+        return ""
+    for card in hand:
+        if re.search(r"\b(?:cascade|discover \d+)\b", str(card.get("oracle_text") or ""), re.I):
+            if colors_reachable(hand_card(card), [hand_card(land) for land in mountains]):
+                return str(card.get("name") or "")
+    return ""
+
+
 def situation(state: dict, mulligans: int | None = None) -> MulliganSituation:
     hand = [card for card in state.get("hand") or [] if isinstance(card, dict)]
     return MulliganSituation(
@@ -480,6 +522,7 @@ def situation(state: dict, mulligans: int | None = None) -> MulliganSituation:
         mulligans=mulligans if mulligans is not None else mulligans_from_state(state),
         on_play=on_the_play(state),
         free_mulligans=free_mulligans_from_state(state),
+        exile_enabler=_laelia_enabler(state, hand),
     )
 
 
@@ -514,6 +557,8 @@ def mulligan_verdict(found: MulliganSituation) -> tuple[str, str] | None:
     where = {True: "on the play", False: "on the draw", None: "play/draw unknown"}[found.on_play]
     if keep_size is not None and keep_size <= 4:
         return "keep", f"keeping {keep_size}: never mulligan to {keep_size - 1}"
+    if found.exile_enabler:
+        return "keep", f"Mountains cast Laelia and {found.exile_enabler} supplies the exile payoff"
     kept, _bottom = best_keep(cards, keep_size or 7)
     kept_lands = [card for card in kept if card.is_land]
     early, cheap, covered = _plays(kept)
@@ -654,6 +699,25 @@ def describe(state: dict, mulligans: int | None = None) -> list[str]:
     return lines
 
 
+def laelia_bottom_choice(state: dict, instance_ids: list[int], count: int, offered_names=None) -> list[int]:
+    if not 0 < count < len(instance_ids):
+        return []
+    hand = state.get("hand") or []
+    names = {card.get("instance_id"): card.get("name") for card in hand}
+    names.update({iid: name for iid, name in (offered_names or {}).items() if name})
+    if not _laelia_enabler(state, hand):
+        from arenamcp.laelia_strategy import is_laelia_list
+
+        if not is_laelia_list(state):
+            return []
+        # Every non-Mountain card in this exact starting library is an enabler.
+        # Unknown or incomplete group data cannot prove a payoff.
+        if not any(names.get(i) in _LAELIA_PAYOFF_NAMES for i in instance_ids):
+            return []
+    eligible = [i for i in instance_ids if names.get(i) == "Mountain"]
+    return eligible[-count:] if len(eligible) - count >= 2 else []
+
+
 def bottom_choice(state: dict, instance_ids: list[int], count: int) -> list[int]:
     """Instance ids to bottom: keep lands toward 2-3, cheap plays and rares; bottom the expensive."""
     by_id = {
@@ -662,6 +726,9 @@ def bottom_choice(state: dict, instance_ids: list[int], count: int) -> list[int]
     cards = [hand_card(by_id[i]) if i in by_id else None for i in instance_ids]
     if any(card is None for card in cards) or not 0 < count < len(cards):
         return []
+    protected = laelia_bottom_choice(state, instance_ids, count)
+    if protected:
+        return protected
     kept, bottom = best_keep(cards, len(cards) - count)
     return [card.instance_id for card in bottom]
 

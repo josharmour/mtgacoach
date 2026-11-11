@@ -174,3 +174,36 @@ def test_legacy_unstructured_summary_is_reanalyzed_after_reload(resume_path):
     assert not runtime._deck_analyzed
     assert runtime._coach._deck_strategy is None
     assert runtime._coach._deck_playbook is None
+
+
+def test_active_autoplay_reload_adopts_updated_saved_strategy(resume_path, monkeypatch):
+    from arenamcp import server
+    from arenamcp.coach import CoachEngine
+
+    monkeypatch.setattr("arenamcp.logging_config.LOG_DIR", resume_path.parent)
+    current = state()
+    old = Runtime()
+    old._autopilot_control_status = lambda: "AP:ON"
+    old._auto_queue_export = lambda: {"match_id": "match-one"}
+    old._suspend_auto_queue = Mock()
+    monkeypatch.setattr(server, "game_state", SimpleNamespace(get_published_snapshot=lambda: current))
+    monkeypatch.setattr(server, "watcher", None)
+    monkeypatch.setattr("arenamcp.gamestate_persistence.save_match_state", Mock())
+    old.prepare_engine_reload()
+    assert not old._running
+    old._autopilot.on_abort.assert_called_once()
+
+    updated = playbook_for()
+    updated.data["primary_plan"] = "Preserve the lone payoff and play it before combat."
+    CoachEngine(backend=Mock()).save_deck_strategy(updated)
+    new = Runtime()
+    new.manager.restore_after_reload = Mock()
+    new._load_engine_resume()
+    new._try_restore_engine_resume(current)
+    assert new._autopilot_enabled
+    assert new._auto_queue_resume == {"match_id": "match-one"}
+    assert new._coach._deck_playbook.data == updated.data
+    assert new._coach._deck_playbook.saved_strategy_sha256
+    assert new._deck_analyzed
+    new.manager.restore_after_reload.assert_not_called()
+    new.manager._backend.complete.assert_not_called()

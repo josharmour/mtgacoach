@@ -2588,13 +2588,13 @@ namespace MtgaCoachBridge
             ExecutePipeCommand(cmd);
         }
 
-        // Send Arena's "Oops" emote exactly the way a click on the emote wheel does:
+        // Send Arena's predefined emotes exactly the way a click on the emote wheel does:
         // EmoteOptionsController.EmoteClicked(id) -> OnEmoteOptionClicked ->
         // LocalPlayerDialogController._sendEmoteDataPacket -> UIMessageHandler.TrySendEmote
         // -> GreInterface.SubmitUIMessage (UIMessage { OnChat { Text = id } } to the
         // opponent's seat). Refuses outside a game in play, in the tutorial, and when
-        // Oops is not on this deck's wheel. Mirrors MacBridgeAdapter._cmd_send_emote.
-        private const string OopsEmoteId = "Phrase_Basic_Oops";
+        // the requested emote is not on this deck's wheel. Mirrors MacBridgeAdapter._cmd_send_emote.
+
 
         private void HandleSendEmote(PipeCommand cmd)
         {
@@ -2602,7 +2602,15 @@ namespace MtgaCoachBridge
             const BindingFlags Members = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
 
             string kind = (cmd.Json.Value<string>("emote") ?? "oops").Trim().ToLowerInvariant();
-            if (kind != "oops")
+            string emoteId = kind switch
+            {
+                "oops" => "Phrase_Basic_Oops",
+                "good_game" => "Phrase_Basic_GoodGame",
+                "hello" => "Phrase_Basic_Hello",
+                "thanks" => "Phrase_Basic_Thanks",
+                _ => null
+            };
+            if (emoteId == null)
             {
                 cmd.SetResponse(Fail($"Unsupported emote: {kind}"));
                 return;
@@ -2703,18 +2711,37 @@ namespace MtgaCoachBridge
             }
             var wheelType = wheel.GetType();
             var byId = wheelType.GetField("_emotesByIdMap", Members)?.GetValue(wheel) as IDictionary;
-            if (byId == null || !byId.Contains(OopsEmoteId))
+            // Contextual replies such as Thanks may be on the temporary wheel.
+            // Only accept an actual entry; never manufacture or submit an emote packet.
+            var temporary = wheelType.GetField("_temporaryEmotes", Members)?.GetValue(wheel);
+            bool onTemporaryWheel = temporary is IDictionary map && map.Contains(emoteId);
+            if (!onTemporaryWheel && temporary is IEnumerable entries)
             {
-                cmd.SetResponse(Fail($"{OopsEmoteId} is not on this deck's emote wheel"));
+                foreach (var entry in entries)
+                {
+                    if (entry == null) continue;
+                    var entryType = entry.GetType();
+                    var id = entryType.GetProperty("Id", Members)?.GetValue(entry)
+                        ?? entryType.GetField("Id", Members)?.GetValue(entry);
+                    if (id is string value && value == emoteId)
+                    {
+                        onTemporaryWheel = true;
+                        break;
+                    }
+                }
+            }
+            if ((byId == null || !byId.Contains(emoteId)) && !onTemporaryWheel)
+            {
+                cmd.SetResponse(Fail($"{emoteId} is not on this deck's emote wheel"));
                 return;
             }
             var click = wheelType.GetMethod("EmoteClicked", Members, null, new[] { typeof(string) }, null);
             if (click == null) { cmd.SetResponse(Fail("Emote wheel unavailable (no EmoteClicked)")); return; }
 
-            _log.LogInfo($"Sending emote {OopsEmoteId} via the emote wheel (game {info.GameNumber} of {info.MatchID}, turn {gs.GameWideTurn}; requested by mtgacoach)");
+            _log.LogInfo($"Sending emote {emoteId} via the emote wheel (game {info.GameNumber} of {info.MatchID}, turn {gs.GameWideTurn}; requested by mtgacoach)");
             try
             {
-                click.Invoke(wheel, new object[] { OopsEmoteId });
+                click.Invoke(wheel, new object[] { emoteId });
             }
             catch (Exception ex)
             {
@@ -2733,7 +2760,7 @@ namespace MtgaCoachBridge
                 ["ok"] = true,
                 ["submitted_type"] = "Emote",
                 ["emote"] = kind,
-                ["emote_id"] = OopsEmoteId,
+                ["emote_id"] = emoteId,
                 ["match_id"] = info.MatchID,
                 ["game_number"] = info.GameNumber,
                 ["turn"] = gs.GameWideTurn

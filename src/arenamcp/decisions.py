@@ -2041,7 +2041,7 @@ def _build_group(
             DecisionOption(
                 option_id=f"grp:{iid}",
                 label=(f"Bottom {name}" if name else f"Bottom card #{iid}"),
-                meta={"instance_id": iid},
+                meta={"instance_id": iid, "london_mulligan": True, "card_name": name},
             )
         )
     return PendingDecision(

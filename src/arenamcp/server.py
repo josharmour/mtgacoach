@@ -962,6 +962,14 @@ def _handle_match_created(payload: dict) -> None:
                     our_team = player.get("team_id")
                     break
 
+        # Session reviews require the MATCH outcome; game corrections below
+        # deliberately choose game scope and cannot be used for BO3 streaks.
+        from arenamcp.loss_streak import resolve_match_result
+
+        match_outcome = resolve_match_result(results, our_seat, our_team)
+        if match_id and match_outcome:
+            game_state._loss_review_final_result = (match_id, match_outcome)
+
         # The resultList holds every game of the match: describe the game that
         # just ended (the last one), not game 1 of a Bo3.
         ended_game_number = (

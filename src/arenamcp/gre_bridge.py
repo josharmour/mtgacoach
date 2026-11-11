@@ -51,7 +51,7 @@ EMOTE_PLUGIN_VERSION = "0.6.5"
 EMOTE_EXPIRES_MS = 3000
 # Emotes the bridge can send (arenamcp.oops sends Arena's "Oops"; an
 # auto-concede sends "Good Game" first). The BepInEx plugin sends only "oops".
-EMOTE_KINDS = ("oops", "good_game")
+EMOTE_KINDS = ("oops", "good_game", "hello", "thanks")
 
 
 def _version_tuple(version: str | None) -> tuple[int, ...]:
@@ -1879,6 +1879,12 @@ class GREBridge:
         if self._adapter_plays:
             return True
         return _version_tuple(self.plugin_version) >= _version_tuple(EMOTE_PLUGIN_VERSION)
+
+    @property
+    def reply_emotes_supported(self) -> bool:
+        return self.emote_supported and (
+            self._adapter_plays or _version_tuple(self.plugin_version) >= _version_tuple("0.7.5")
+        )
 
     def send_emote(
         self,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 LADDERS = ("Constructed", "Limited")
@@ -47,10 +48,50 @@ class RankLog:
 
     def _reset(self) -> None:
         self.snapshot: dict = {}
+        self.account_name = ""
+        self._account_id = ""
         self._identity = None
         self._offset = 0
         self._anchor = b""
         self._awaiting_rank = False
+
+    def _observe_account(self, line: bytes) -> None:
+        """Use only local login identity, never an opponent or a credential."""
+        text = line.decode("utf-8", errors="replace")
+        marker = "[Accounts - Login] Logged in successfully. Display Name: "
+        if marker in text:
+            name = text.split(marker, 1)[1].strip()
+            if name != self.account_name:
+                self.snapshot = {}
+                self._account_id = ""
+            self.account_name = name
+        elif "[Accounts - Logout]" in text:
+            self.account_name = ""
+            self._account_id = ""
+            self.snapshot = {}
+        if '"authenticateResponse"' not in text:
+            return
+        # Authentication is embedded in a prefixed log JSON line. Restrict the
+        # extraction to this object so other players' screen names cannot win.
+        match = re.search(r'"authenticateResponse"\s*:\s*(\{[^{}]*\})', text)
+        if not match:
+            return
+        try:
+            auth = json.loads(match.group(1))
+        except ValueError:
+            return
+        account_id = auth.get("clientId")
+        name = auth.get("screenName")
+        if not isinstance(account_id, str) or not account_id:
+            return
+        if self._account_id and account_id != self._account_id:
+            self.snapshot = {}
+            self.account_name = ""
+        self._account_id = account_id
+        if isinstance(name, str) and name.strip():
+            if self.account_name and self.account_name != name.strip():
+                self.snapshot = {}
+            self.account_name = name.strip()
 
     def read(self, path: Path) -> bool:
         """Read a bounded batch. Return True when more complete lines are ready."""
@@ -68,6 +109,7 @@ class RankLog:
                     if not line.endswith(b"\n"):
                         break  # Retry the incomplete line on the next poll.
                     self._offset += len(line)
+                    self._observe_account(line)
                     if self._awaiting_rank:
                         try:
                             payload = json.loads(line)

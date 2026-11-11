@@ -161,3 +161,25 @@ def test_plan_cannot_legally_submit():
     assert Engine._plan_cannot_legally_submit(pass_plan) is True
     assert Engine._plan_cannot_legally_submit(ap.ActionPlan(actions=[])) is True
     assert Engine._plan_cannot_legally_submit(real_plan) is False
+
+
+def test_bridge_fallback_keeps_lone_appraiser_after_four_mulligans():
+    from copy import deepcopy
+
+    pending = deepcopy(_LONDON_PENDING)
+    pending["group_specs"][1].update(lowerBound=4, upperBound=4)
+    pending["group_specs"][0].update(lowerBound=3, upperBound=3)
+    state = _london_game_state()
+    state.update(
+        commander_grp_ids=[83081],
+        deck_cards=[65385] * 91 + [71491, 91109, 98652, 87291, 87300, 87325, 87443, 87301],
+    )
+    state["hand"] = [
+        {"instance_id": iid, "name": "Geological Appraiser" if iid == 106 else "Mountain"}
+        for iid in pending["group_instance_ids"]
+    ]
+    bridge = _FakeBridge(pending)
+    engine, _ = _engine(bridge)
+    assert engine._try_interactive_safe_default(state, "decision_required")
+    keep, bottom = bridge.group_calls[0]
+    assert 106 in keep["ids"] and len(bottom["ids"]) == 4

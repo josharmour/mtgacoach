@@ -105,6 +105,13 @@ class MainWindow(QMainWindow):
         # closed (a start after shutdown would orphan a coach process).
         self._closed = False
         QTimer.singleShot(100, self._start_session)
+        self._session_recap = None
+        try:
+            from .session_recap import SessionRecapController
+
+            self._session_recap = SessionRecapController(self)
+        except Exception:
+            logger.warning("Session recap initialization failed", exc_info=True)
 
         # ANR Watchdog
         if WatchdogPingBridge is not None:
@@ -701,6 +708,9 @@ class MainWindow(QMainWindow):
             self._session.start()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
+        if not self._closed and self._session_recap is not None and not self._session_recap.closing():
+            event.ignore()
+            return
         self._closed = True
         if not self.isMaximized() and not self.isMinimized():
             geom = self.frameGeometry()

@@ -436,6 +436,8 @@ class GameState(_GameStateAnnotationsMixin):
         # and the time it was seen.
         self._oops_facts: deque = deque(maxlen=64)
         self._oops_fact_seq = 0
+        self._opponent_emotes: deque = deque(maxlen=32)
+        self._emote_seq = 0
 
         # Published immutable snapshot for lock-safe readers
         self._state_lock = threading.RLock()
@@ -3101,11 +3103,36 @@ class GameState(_GameStateAnnotationsMixin):
         if len(self.raw_gre_events) > self._max_raw_gre_events:
             self.raw_gre_events.pop(0)
 
-    def _record_ui_message_event(self, msg: dict[str, Any]) -> bool:
+    def opponent_emotes_since(self, seq: int) -> tuple[list[dict], int]:
+        with self._state_lock:
+            return [dict(e) for e in self._opponent_emotes if e["seq"] > seq], self._emote_seq
+
+    def _record_ui_message_event(self, msg: dict[str, Any], received_at: float | None = None) -> bool:
         """Capture a summarized recent-event entry for GRE UI messages when useful."""
         ui_payload = msg.get("uiMessage", {})
         if not isinstance(ui_payload, dict):
             ui_payload = {}
+
+        # In incoming GRE UI messages systemSeatIds identifies the recipient;
+        # uiMessage.seatIds identifies the sending opponent (verified in replays).
+        chat = ui_payload.get("onChat")
+        if (
+            isinstance(chat, dict)
+            and msg.get("systemSeatIds") == [self.local_seat_id]
+            and self.local_seat_id in (1, 2)
+            and ui_payload.get("seatIds") == [3 - self.local_seat_id]
+            and chat.get("text") in ("Phrase_Basic_Hello", "Phrase_Basic_Nice")
+        ):
+            self._emote_seq += 1
+            self._opponent_emotes.append(
+                {
+                    "seq": self._emote_seq,
+                    "text": chat["text"],
+                    "match_id": self.match_id,
+                    "game_number": self.game_number,
+                    "received_at": received_at,
+                }
+            )
 
         texts = _collect_text_fragments(ui_payload)
         kind = _detect_ui_message_kind(ui_payload)
@@ -3638,7 +3665,7 @@ def create_game_state_handler(game_state: GameState) -> Callable[[dict], None]:
                             )
 
                 elif msg_type == "GREMessageType_UIMessage":
-                    if game_state._record_ui_message_event(msg):
+                    if game_state._record_ui_message_event(msg, event_wall_time(payload)):
                         snapshot_dirty = True
 
                 elif msg_type == "GREMessageType_TimeoutMessage":

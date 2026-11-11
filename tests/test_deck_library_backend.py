@@ -138,6 +138,9 @@ class FakeCoach:
     def _cached_playbook(self, identity, state):
         return self.cached
 
+    def save_deck_strategy(self, playbook):
+        self.saved = playbook
+
     def prepare_playbook(self, state, backend=None, *, refresh=False, progress=None, cancel=None):
         self.prepared.append((state["deck_name"], refresh))
         if progress:
@@ -208,6 +211,7 @@ def test_analysis_runs_outside_the_match_and_streams_its_stages(library):
     payload = lib.analyze_deck_record(lib._deck_library["a"], refresh=True)
     assert payload["status"] == "ready" and payload["archetype"] == "Burn"
     assert coach.prepared == [("Burn", True)]
+    assert coach.saved.data["archetype"] == "Burn"
     stages = [call.args[0]["stage"] for call in lib.ui.emit_deck_analysis.call_args_list]
     assert stages == ["discovery", "compile"]
     assert lib.analyze_deck_record(DeckRecord("x", "No cards"))["status"] == "error"
@@ -262,6 +266,36 @@ def test_prepare_playbook_builds_and_caches_without_publishing(monkeypatch, tmp_
     assert again.identity == playbook.identity and stages[-1] == "cache"
     with pytest.raises(ValueError):
         coach.prepare_playbook({"deck_cards": []}, backend=backend)
+
+
+def test_saved_deck_strategy_survives_restart_without_the_analysis_cache(monkeypatch, tmp_path, caplog):
+    import hashlib
+    import logging
+
+    from tests.deck_fakes import deck_case
+
+    from arenamcp.coach import CoachEngine
+    from arenamcp.deck_strategy import deck_identity
+
+    state, catalog, response = deck_case()
+    monkeypatch.setattr("arenamcp.logging_config.LOG_DIR", tmp_path)
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, epoch: catalog[gid])
+    backend = Mock()
+    backend.complete.side_effect = ["notes about the deck", json.dumps(response)]
+    coach = CoachEngine(backend=backend)
+    playbook = coach.prepare_playbook(state)
+    coach.save_deck_strategy(playbook)
+    coach._playbook_cache_path(playbook.identity).unlink()
+
+    restarted = CoachEngine(backend=Mock())
+    with caplog.at_level(logging.INFO):
+        assert restarted.analyze_deck(state)
+    stored = coach._saved_strategy_path(playbook.identity).read_bytes()
+    assert hashlib.sha256(stored).hexdigest() in caplog.text
+    assert restarted._deck_playbook.data == playbook.data
+    restarted._backend.complete.assert_not_called()
+    changed = {**state, "deck_cards": state["deck_cards"] + [state["deck_cards"][0]]}
+    assert restarted._cached_playbook(deck_identity(changed), changed) is None
 
 
 def test_pregame_prepares_only_selected_deck_and_skips_cached_version(library, monkeypatch):

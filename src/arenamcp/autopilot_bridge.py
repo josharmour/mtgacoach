@@ -3259,8 +3259,11 @@ class _BridgeSubmitMixin:
 
         # Bottom the worst N cards; keep the rest in hand. Response shape mirrors
         # MTGA's LondonWorkflow: [Hand/Top keep group, Library/Bottom group].
-        worst_first = self._rank_cards_for_bottoming(instance_ids, game_state)
-        bottom_ids = worst_first[:bottom_count]
+        from arenamcp.mulligan_policy import laelia_bottom_choice
+
+        bottom_ids = laelia_bottom_choice(game_state, instance_ids, bottom_count)
+        if not bottom_ids:
+            bottom_ids = self._rank_cards_for_bottoming(instance_ids, game_state)[:bottom_count]
         keep_ids = [iid for iid in instance_ids if iid not in bottom_ids]
         groups = [
             {"ids": keep_ids, "zone": "Hand", "sub_zone": "Top"},

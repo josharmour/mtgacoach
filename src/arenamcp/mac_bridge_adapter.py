@@ -49,7 +49,12 @@ SURVEY = "GameEndSurvey"
 # the emote path verified in live IL2CPP metadata 2026-10-06 (see _cmd_send_emote).
 # "Phrase_Basic_GoodGame" is what opponents' Good Game emotes put on the wire
 # (Player.log onChat, 5 seen by 2026-10-20) and the starter wheel's GoodGame entry.
-EMOTE_IDS = {"oops": "Phrase_Basic_Oops", "good_game": "Phrase_Basic_GoodGame"}
+EMOTE_IDS = {
+    "oops": "Phrase_Basic_Oops",
+    "good_game": "Phrase_Basic_GoodGame",
+    "hello": "Phrase_Basic_Hello",
+    "thanks": "Phrase_Basic_Thanks",
+}
 # Request fields never needed for the protocol and bulky or recursive to dump.
 SNAPSHOT_SKIP = ["OriginalMessage", "ParentRequest", "_outboundMessage", "OnSubmit", "OnRequestSubmit"]
 SNAPSHOT_DEPTH = 7
