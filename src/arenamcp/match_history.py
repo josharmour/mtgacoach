@@ -59,8 +59,9 @@ class MatchRecord:
     # Whether the autopilot played this game (None = unknown, pre-P1 record;
     # the per-deck results view only counts records where this is True).
     autopilot: bool | None = None
-    # Account that played this match (clientId from the most recent login in
-    # Player.log at record time). Empty when it could not be resolved.
+    # Account that played this match (bound to the match id when its room
+    # event arrived; falls back to the most recent login in Player.log).
+    # Empty when it could not be resolved.
     local_account_id: str = ""
 
 
@@ -249,13 +250,17 @@ def record_from_game_end(
         autopilot=autopilot,
     )
 
-    # Stamp the account that was logged in when this match ended, so history
-    # stays attributable across account switches (Player.log is re-scanned for
-    # the most recent login on every call).
+    # Stamp the account that PLAYED this match. Its identity is bound to the
+    # match id when the room event arrives (server._handle_match_created ->
+    # log_utils.bind_match_account), so a record written later — delayed
+    # flush, replay, or after another account logged in — attributes to the
+    # account that actually played. Fall back to the most recent login in
+    # Player.log only when no binding exists (e.g. a record for a match whose
+    # room event predates this process).
     try:
-        from arenamcp.log_utils import get_local_player_id
+        from arenamcp.log_utils import account_bound_to_match, get_local_player_id
 
-        record.local_account_id = get_local_player_id() or ""
+        record.local_account_id = account_bound_to_match(match_id) or get_local_player_id() or ""
     except Exception as e:  # pragma: no cover - defensive, never block recording
         logger.debug(f"Could not resolve local account for match record: {e}")
 

@@ -45,6 +45,34 @@ def _resolve_player_log_path() -> str:
 
 PLAYER_LOG_PATH = _resolve_player_log_path()
 
+# Account identity bound to each match at the moment its room event arrives,
+# so a record written later attributes to the account that played the match
+# rather than whoever happens to be logged in when the record is finally
+# written (delayed flush, replay, or a switch before recording). Bounded:
+# matches are recorded shortly after they end, so keeping the most recent
+# bindings covers delayed flushes and replays without growing forever.
+_MATCH_ACCOUNT_BINDINGS: dict[str, str] = {}
+_MATCH_ACCOUNT_BINDING_LIMIT = 64
+
+
+def bind_match_account(match_id: str, account_id: str) -> None:
+    """Remember which account was logged in when this match started."""
+    if not match_id or not account_id:
+        return
+    if (
+        len(_MATCH_ACCOUNT_BINDINGS) >= _MATCH_ACCOUNT_BINDING_LIMIT
+        and match_id not in _MATCH_ACCOUNT_BINDINGS
+    ):
+        _MATCH_ACCOUNT_BINDINGS.pop(next(iter(_MATCH_ACCOUNT_BINDINGS)))
+    _MATCH_ACCOUNT_BINDINGS[str(match_id)] = str(account_id)
+
+
+def account_bound_to_match(match_id: str) -> str | None:
+    """Return the account bound to this match when it started, if any."""
+    if not match_id:
+        return None
+    return _MATCH_ACCOUNT_BINDINGS.get(str(match_id))
+
 
 def get_local_player_id():
     """Scans Player.log for the AuthenticateResponse to find the local user ID.

@@ -759,8 +759,7 @@ def select_opponent_name(
     and would otherwise name the LOCAL player as the opponent.
     """
     known_local = any(
-        isinstance(p, dict) and local_user_id and p.get("userId") == local_user_id
-        for p in participants
+        isinstance(p, dict) and local_user_id and p.get("userId") == local_user_id for p in participants
     )
     for participant in participants:
         if not isinstance(participant, dict):
@@ -811,7 +810,7 @@ def _handle_match_created(payload: dict) -> None:
         if isinstance(player, dict):
             participants.append(player)
 
-    from arenamcp.log_utils import get_local_player_id
+    from arenamcp.log_utils import bind_match_account, get_local_player_id
 
     local_user_id = get_local_player_id()
 
@@ -854,6 +853,13 @@ def _handle_match_created(payload: dict) -> None:
         or game_room_config.get("matchId")
         or payload.get("matchId")
     )
+    # Bind the account that was logged in when this match started, so a
+    # record written later (delayed flush, replay, or after a switch)
+    # attributes to the account that actually played, not whoever is logged
+    # in at record time.
+    if match_id and local_user_id:
+        bind_match_account(str(match_id), str(local_user_id))
+
     if match_id and game_state.match_id != match_id:
         connection_deck = game_state.connection_deck_for_match(match_id)
         if game_state.match_id:
