@@ -27,7 +27,7 @@ import pytest
 from tests import race_boards_20261019 as rb
 from tests.strategic_states import actions_decision, cast, modal_decision
 
-from arenamcp import action_planner
+from arenamcp import action_planner, board_assessment
 from arenamcp.action_planner import ActionPlanner, board_math_agreement
 from arenamcp.line_search import compare_modes
 from arenamcp.mode_claims import mode_kill_check, other_modes_named, read_menu
@@ -371,7 +371,10 @@ def test_other_decisions_are_untouched():
 # --- #144: the hedge and the line's mode ------------------------------------------------------
 
 
-def test_the_t12_line_casts_mode_2_on_the_flock():
+def test_the_t12_line_casts_mode_2_on_the_flock(unlimited_search_deadline):
+    # A line truncated by the 350 ms cap under load must not survive in the
+    # assessment cache and defeat the pin (owner-approved 2026-11-11).
+    board_assessment._CACHE.clear()
     state = _t12(on_stack=False)
     assert (
         ActionPlanner._searched_line_mode(state, "Iroh's Demonstration")
@@ -387,7 +390,8 @@ def _cast_menu() -> object:
     )
 
 
-def test_the_live_low_answer_naming_mode_1_is_not_the_lines_play(caplog):
+def test_the_live_low_answer_naming_mode_1_is_not_the_lines_play(caplog, unlimited_search_deadline):
+    board_assessment._CACHE.clear()
     state = _t12(on_stack=False)
     with caplog.at_level(logging.INFO, logger="arenamcp.action_planner"):
         assert board_math_agreement(_cast_menu(), state, ["idx:0"], LIVE_CAST_ANSWER) == ""
@@ -411,7 +415,8 @@ def test_the_live_low_answer_naming_mode_1_is_not_the_lines_play(caplog):
         "Cast Iroh's on Ravenhill Flock; mode 1 hits each creature they control.",
     ],
 )
-def test_a_low_answer_naming_the_other_mode_waits_for_high(said, caplog):
+def test_a_low_answer_naming_the_other_mode_waits_for_high(said, caplog, unlimited_search_deadline):
+    board_assessment._CACHE.clear()
     with caplog.at_level(logging.INFO, logger="arenamcp.action_planner"):
         assert board_math_agreement(_cast_menu(), _t12(on_stack=False), ["idx:0"], said) == ""
     # Rejected for the mode: each one names the line's target.

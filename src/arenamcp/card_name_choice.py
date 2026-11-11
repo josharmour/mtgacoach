@@ -14,6 +14,15 @@ def is_card_name_list(list_type: Any, static_list: Any) -> bool:
     return enum_short(list_type) in {"Static", "StaticSubset"} and enum_short(static_list) == "CardNames"
 
 
+def is_card_name_request(poll: dict[str, Any]) -> bool:
+    """Recognize the name namespace before any generic selection fallback."""
+    payload = poll.get("request_payload") or {}
+    return is_card_name_list(
+        poll.get("select_n_list_type") or payload.get("listType"),
+        poll.get("select_n_static_list") or payload.get("staticList"),
+    )
+
+
 def _database():
     try:
         from arenamcp.card_db import get_card_database

@@ -150,8 +150,12 @@ def _playbook_discovery_prompt(backend):
 
 
 def _playbook_call_options(backend, discovery):
-    model = str(getattr(backend, "model", "")).lower()
-    hosted = model == "current" or any(name in model for name in ("deepseek", "dsv4"))
+    from arenamcp.model_call_settings import HOSTED_FAMILIES, family_for_backend
+
+    # Hosted settings follow the model actually served (the response's "model"
+    # field), not the alias requested; before the first response the alias is
+    # the best available guess.
+    hosted = family_for_backend(backend) in HOSTED_FAMILIES
     settings = (
         _HOSTED_PLAYBOOK_SETTINGS
         if hosted

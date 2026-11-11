@@ -56,7 +56,10 @@ def _pledge_event(email="pat@example.com", status="active_patron"):
             "type": "member",
             "id": "member-1",
             "attributes": {"patron_status": status},
-            "relationships": {"user": {"data": {"type": "user", "id": "12345"}}},
+            "relationships": {
+                "user": {"data": {"type": "user", "id": "12345"}},
+                "campaign": {"data": {"type": "campaign", "id": "1310866"}},
+            },
         },
         "included": [
             {
@@ -148,16 +151,34 @@ def test_alias_conflict_retries_with_suffix(env):
     assert fake.minted[0]["alias"].startswith("patreon-pat@example.com-")
 
 
+def _identity(status="active_patron", campaign="1310866"):
+    return {
+        "data": {
+            "type": "user",
+            "id": "12345",
+            "attributes": {"email": "pat@example.com", "full_name": "Pat", "is_email_verified": True},
+            "relationships": {"memberships": {"data": [{"type": "member", "id": "m1"}]}},
+        },
+        "included": [
+            {
+                "type": "member",
+                "id": "m1",
+                "attributes": {"patron_status": status},
+                "relationships": {"campaign": {"data": {"type": "campaign", "id": campaign}}},
+            }
+        ],
+    }
+
+
 def test_membership_gate(env):
     patreon = env[0]
-    active = {"included": [{"type": "member", "attributes": {"patron_status": "active_patron"}}]}
-    former = {"included": [{"type": "member", "attributes": {"patron_status": "former_patron"}}]}
-    empty = {"included": []}
-
-    assert patreon._membership_allows_key(active)[0] is True
-    assert patreon._membership_allows_key(former)[0] is False
-    # Ambiguous (no member objects) fails open so key recovery keeps working.
-    assert patreon._membership_allows_key(empty)[0] is True
+    assert patreon._membership_allows_key(_identity())[0] is True
+    assert patreon._membership_allows_key(_identity(status="former_patron"))[0] is False
+    assert patreon._membership_allows_key(_identity(campaign="another-creator"))[0] is False
+    assert patreon._membership_allows_key({"included": []})[0] is False
+    identity = _identity()
+    identity["data"]["relationships"] = {}
+    assert patreon._membership_allows_key(identity)[0] is False
 
 
 @pytest.mark.parametrize(
@@ -276,3 +297,154 @@ def test_gateway_failure_is_retryable_without_local_state_change(env, monkeypatc
     assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 500
     rows = db.list_subscribers()
     assert (rows[0]["status"] == "active") if operation == "revoke" else not rows
+
+
+def test_webhook_wrong_campaign_is_rejected(env):
+    _, _, fake, client = env
+    body = _pledge_event()
+    body["data"]["relationships"]["campaign"]["data"]["id"] = "unrelated"
+    raw, headers = _signed(body)
+    headers["X-Patreon-Event"] = "members:create"
+    assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 400
+    assert not fake.minted
+
+
+def test_failed_gateway_delete_is_retryable(env, monkeypatch):
+    patreon, db, _, client = env
+    raw, headers = _signed(_pledge_event())
+    headers["X-Patreon-Event"] = "members:create"
+    client.post("/patreon/webhook", content=raw, headers=headers)
+
+    async def fail(*args):
+        return False
+
+    monkeypatch.setattr(patreon, "delete_litellm_key", fail)
+    raw, headers = _signed(_pledge_event(status="former_patron"))
+    headers["X-Patreon-Event"] = "members:update"
+    assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 503
+    assert db.list_subscribers()[0]["status"] == "active"
+
+
+def test_oauth_requires_matching_browser_state(env):
+    _, _, fake, client = env
+    for query in ("code=test", "code=test&state=attacker"):
+        response = client.get("/patreon/callback?" + query)
+        assert response.status_code == 403
+        assert response.headers["cache-control"] == "no-store"
+    assert not fake.minted
+
+
+def test_oauth_login_sets_secure_state(env, monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    patreon, _, _, client = env
+    monkeypatch.setattr(patreon, "PATREON_CLIENT_ID", "client-id")
+    response = client.get("/patreon/login", follow_redirects=False)
+    assert response.status_code == 307
+    query = parse_qs(urlsplit(response.headers["location"]).query)
+    assert len(query["state"][0]) >= 32
+    assert "Secure" in response.headers["set-cookie"]
+    assert "HttpOnly" in response.headers["set-cookie"]
+    assert "SameSite=lax" in response.headers["set-cookie"]
+
+
+@pytest.mark.parametrize("scenario", ["active", "missing", "other", "unverified", "api_failure"])
+def test_oauth_membership_end_to_end(env, monkeypatch, scenario):
+    import httpx
+
+    patreon, _, fake, client = env
+    identity = _identity()
+    if scenario == "missing":
+        identity["included"] = []
+    if scenario == "other":
+        identity = _identity(campaign="another-creator")
+    if scenario == "unverified":
+        identity["data"]["attributes"]["is_email_verified"] = False
+
+    async def post(url, **kwargs):
+        if "oauth2/token" in url:
+            return httpx.Response(200, json={"access_token": "test"}, request=httpx.Request("POST", url))
+        return await fake.post(url, **kwargs)
+
+    async def get(url, **kwargs):
+        return httpx.Response(
+            503 if scenario == "api_failure" else 200, json=identity, request=httpx.Request("GET", url)
+        )
+
+    class API:
+        pass
+
+    api = API()
+    api.post, api.get = post, get
+    monkeypatch.setattr(patreon, "_http", lambda: api)
+    response = client.get(
+        "/patreon/callback?code=test&state=matching", headers={"Cookie": "__Host-patreon-state=matching"}
+    )
+    assert response.status_code == (
+        200
+        if scenario == "active"
+        else 500
+        if scenario == "api_failure"
+        else 400
+        if scenario == "unverified"
+        else 403
+    )
+    assert len(fake.minted) == (1 if scenario == "active" else 0)
+    assert response.headers["cache-control"] == "no-store"
+    assert "Max-Age=0" in response.headers["set-cookie"]
+
+
+def test_oauth_unicode_state_is_rejected(env):
+    client = env[3]
+    response = client.get(
+        "/patreon/callback?code=test&state=%C3%A9", headers={"Cookie": "__Host-patreon-state=matching"}
+    )
+    assert response.status_code == 403
+    assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize("status", ["active_patron", "former_patron"])
+def test_webhook_cannot_take_over_another_patron_email(env, status):
+    _, db, fake, client = env
+    raw, headers = _signed(_pledge_event())
+    headers["X-Patreon-Event"] = "members:create"
+    assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 200
+    body = _pledge_event(status=status)
+    body["data"]["relationships"]["user"]["data"]["id"] = "another-person"
+    body["data"]["attributes"]["email"] = "pat@example.com"
+    raw, headers = _signed(body)
+    headers["X-Patreon-Event"] = "members:update"
+    assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 409
+    assert len(fake.minted) == 1 and not fake.deleted
+    assert db.list_subscribers()[0]["status"] == "active"
+
+
+def test_webhook_cannot_revoke_unbound_manual_key(env):
+    patreon, db, fake, client = env
+    patreon._record_key("pat@example.com", "Pat", "sk-manual", "Owner-authorized manual key")
+    raw, headers = _signed(_pledge_event(status="former_patron"))
+    headers["X-Patreon-Event"] = "members:update"
+    assert client.post("/patreon/webhook", content=raw, headers=headers).status_code == 409
+    assert not fake.deleted and not fake.minted
+    assert db.list_subscribers()[0]["status"] == "active"
+
+
+@pytest.mark.parametrize("live_keys, expected", [([], True), (["existing-hash"], False), (None, False)])
+def test_delete_404_only_succeeds_when_live_list_confirms_absence(env, monkeypatch, live_keys, expected):
+    import asyncio
+
+    import httpx
+
+    patreon = env[0]
+
+    class API:
+        async def post(self, url, **kwargs):
+            return httpx.Response(404, json={"detail": "Key not found"})
+
+        async def get(self, url, **kwargs):
+            assert url.endswith("/key/list")
+            assert kwargs["params"]["key_hash"] == hashlib.sha256(b"sk-test").hexdigest()
+            return httpx.Response(200, json={"keys": live_keys})
+
+    monkeypatch.setattr(patreon, "_http", lambda: API())
+    assert asyncio.run(patreon.delete_litellm_key("sk-test")) is expected

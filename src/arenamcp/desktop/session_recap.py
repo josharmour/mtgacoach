@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QDialog, QDialogButtonBox, QMessageBox, QTextEdit, QVBoxLayout
 
 from arenamcp.match_history import MatchHistory
 from arenamcp.session_recap import SessionRecaps
@@ -47,9 +47,9 @@ class SessionRecapController(QObject):
     def offer_previous(self):
         if getattr(self.window, "_closed", False):
             return
-        recap = self.store.pending()
+        recap = self.store.pending(self.reviews())
         if recap:
-            self.offer(recap, "Your last session recap is available")
+            self.offer(self.store.refresh(recap, self.records()), "Your last session recap is available")
 
     def offer(self, recap, title, *, close_after=False):
         box = QMessageBox(self.window)
@@ -78,16 +78,56 @@ class SessionRecapController(QObject):
     def review(self, recap):
         if getattr(self.window, "_closed", False):
             return
-        box = QMessageBox(self.window)
-        box.setTextFormat(Qt.TextFormat.PlainText)
-        box.setWindowTitle("Overall session feedback")
-        box.setText(recap["text"])
-        done = box.addButton("Done", QMessageBox.ButtonRole.AcceptRole)
-        box.buttonClicked.connect(
-            lambda button: self.store.acknowledge(recap["id"]) if button is done else None
-        )
+        box = QDialog(self.window)
+        box.setWindowTitle("Your session review")
+        box.resize(720, 600)
+        layout = QVBoxLayout(box)
+        text = QTextEdit(box)
+        text.setReadOnly(True)
+        text.setPlainText(recap["text"])
+        text.setAccessibleName("Session review")
+        layout.addWidget(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok, box)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Done")
+
+        def done():
+            self.store.acknowledge(recap["id"])
+            box.accept()
+
+        for action in recap.get("actions", ["history"]):
+            label = {
+                "history": "Review games",
+                "support": "Prepare support note",
+                "deck": "Compare deck options",
+            }.get(action)
+            if label:
+                button = buttons.addButton(label, QDialogButtonBox.ButtonRole.ActionRole)
+                button.clicked.connect(
+                    lambda checked=False, action=action: self.take_action(action, recap, box)
+                )
+
+        buttons.accepted.connect(done)
+        layout.addWidget(buttons)
         self.dialog = box
         box.open()
+
+    def take_action(self, action, recap, box):
+        """User-selected navigation/drafting only. Never send or modify a deck here."""
+        if action == "support":
+            from arenamcp.support import contact_josh
+
+            contact_josh(box, summary="Session evidence (not a verified bug diagnosis):\n\n" + recap["text"])
+        elif action == "history":
+            show = getattr(self.window, "_show_performance_view", None)
+            if callable(show):
+                show()
+                box.reject()  # Navigation is not acknowledgement; review remains available.
+        elif action == "deck":
+            show = getattr(self.window, "_show_decks_view", None)
+            if callable(show):
+                show()
+                self.window.decks_tab.open_builder()
+                box.reject()
 
     def closing(self) -> bool:
         """False keeps the window open for the offer; another close always works."""

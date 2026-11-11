@@ -221,3 +221,135 @@ def test_title_lookup_uses_printing_name_id_and_excludes_tokens(tmp_path):
         assert not db.is_card_title_id(7)
     finally:
         db.close()
+
+
+def test_disruptor_flute_reads_nested_public_command_zone(monkeypatch):
+    """2026-11-08: no UnfilteredIds; commander 244/100624 needs TitleId 1104911."""
+    monkeypatch.setattr(card_name_choice, "card_title_id", lambda grp: 1104911 if grp == 100624 else 0)
+    monkeypatch.setattr(card_name_choice, "is_card_title_id", lambda title: title == 1104911)
+    monkeypatch.setattr(
+        card_name_choice,
+        "card_title_name",
+        lambda title: "Raph & Mikey, Troublemakers" if title == 1104911 else "",
+    )
+    state = GameState()
+    state._published_snapshot = {
+        "local_seat_id": 1,
+        "zones": {
+            "command": [{"instance_id": 244, "grp_id": 100624, "owner_seat_id": 2}],
+            "my_hand": [CARDS[160]],
+        },
+    }
+    monkeypatch.setattr(decisions, "_live_game_state", lambda: state)
+    req = request()
+    req["UnfilteredIds"] = listing()
+    game = FakeGame(req, {"Type": enum("SelectN", 9)}, gsid=99, msg=150)
+    adapter = adapter_for(game)
+    decision = build_pending_decision(adapter.handle({"action": "get_pending_actions"}))
+    assert decision.option_ids() == {"sel:1104911"}
+    assert decision.options[0].label == "Raph & Mikey, Troublemakers"
+    bridge = GREBridge.__new__(GREBridge)
+    bridge._cost_selection_via_adapter = False
+    bridge._send_safe = adapter.handle
+    assert submit_option(bridge, decision, ["sel:1104911"])
+    assert submitted_uint_values(game.submits()[0]) == [1104911]
+
+
+def test_unknown_card_names_never_fall_through_to_generic_ids():
+    bridge_poll = poll()
+    bridge_poll.update(select_n_ids=[219], select_n_unfiltered_ids=[])
+    bridge_poll.pop("request_payload", None)
+    assert build_pending_decision(bridge_poll) is None
+
+
+@pytest.mark.parametrize("action", ["auto_respond", "cancel_action"])
+def test_adapter_never_auto_responds_to_a_card_name_request(action):
+    game = FakeGame(request(), {"Type": enum("SelectN", 9), "CanCancel": False})
+    response = adapter_for(game).handle({"action": action})
+    assert not response["ok"]
+    assert "explicit TitleId" in response["error"]
+    assert not game.submits()
+
+
+def test_card_name_submission_carries_request_identity():
+    from unittest.mock import Mock
+
+    decision = build_pending_decision(poll(), resolve_card=lambda iid: CARDS.get(iid, {}))
+    bridge = Mock()
+    assert submit_option(bridge, decision, ["sel:21415"])
+    bridge.submit_selection.assert_called_once_with(
+        [21415], id_type="card_name", expected_request_id=(107, 150)
+    )
+
+
+def test_legacy_name_route_uses_title_ids_and_refuses_arbitrary(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from tests.fakes import make_engine
+
+    from arenamcp.action_planner import ActionType, GameAction
+
+    bridge = MagicMock()
+    bridge.connected = True
+    bridge.get_pending_actions.return_value = poll()
+    decision = build_pending_decision(poll(), resolve_card=lambda iid: CARDS.get(iid, {}))
+    monkeypatch.setattr(decisions, "build_pending_decision", lambda *a, **kw: decision)
+    engine = make_engine(bridge)
+    action = GameAction(action_type=ActionType.SELECT_N, select_card_names=["Channel"])
+    assert engine._try_gre_bridge_select_n(action, {}).success
+    bridge.submit_selection.assert_called_once_with(
+        [21415], id_type="card_name", expected_request_id=(107, 150)
+    )
+    bridge.submit_selection.reset_mock()
+    for names in ([], ["Unknown card"]):
+        action.select_card_names = names
+        assert engine._try_gre_bridge_select_n(action, {}) is None
+    assert engine._try_interactive_safe_default({}, "decision_required") is False
+    bridge.submit_selection.assert_not_called()
+    bridge.auto_respond.assert_not_called()
+
+
+def test_missing_card_names_pause_typed_path_instead_of_legacy(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from tests.fakes import make_engine
+
+    bridge = MagicMock()
+    bridge.connected = True
+    bridge_poll = poll()
+    bridge_poll["select_n_unfiltered_ids"] = []
+    bridge_poll.pop("request_payload", None)
+    bridge.get_pending_actions.return_value = bridge_poll
+    engine = make_engine(bridge)
+    engine._pause_for_manual = MagicMock()
+    assert engine._try_typed_decision_path({}, "decision_required") is True
+    engine._pause_for_manual.assert_called_once()
+    bridge.submit_selection.assert_not_called()
+    bridge.auto_respond.assert_not_called()
+
+
+def test_watchdog_escape_never_auto_responds_to_card_names():
+    from unittest.mock import MagicMock
+
+    from tests.fakes import make_engine
+
+    bridge = MagicMock()
+    bridge.connected = True
+    bridge.get_pending_actions.return_value = poll()
+    engine = make_engine(bridge)
+    assert not engine._try_auto_respond_escape({"_bridge_request_type": "SelectN"}, "stuck")
+    bridge.auto_respond.assert_not_called()
+
+
+def test_adapter_refuses_name_for_changed_request():
+    game = FakeGame(request(), {"Type": enum("SelectN", 9)}, gsid=107, msg=150)
+    adapter = adapter_for(game)
+    decision = build_pending_decision(
+        adapter.handle({"action": "get_pending_actions"}), resolve_card=lambda iid: CARDS.get(iid, {})
+    )
+    game.msg = 151
+    bridge = GREBridge.__new__(GREBridge)
+    bridge._cost_selection_via_adapter = False
+    bridge._send_safe = adapter.handle
+    assert not submit_option(bridge, decision, ["sel:21415"])
+    assert not game.submits()

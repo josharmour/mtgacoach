@@ -86,9 +86,10 @@ def test_performance_tab_renders_rows_and_summary(seeded_file, qapp):
     results = [tab._table.item(r, 0).text() for r in range(3)]
     scores = [tab._table.item(r, 1).text() for r in range(3)]
     assert results == ["W", "L", "W"]
-    assert scores == ["—", "7/10", "—"]
+    assert scores == ["—", "Legacy note", "—"]
     assert "2W / 1L" in tab._summary.text()
-    assert "avg coach score 7.0/10" in tab._summary.text()
+    assert "score" not in tab._summary.text()
+    assert "/10" not in tab._summary.text()
 
 
 def test_performance_tab_reloads_disk_on_refresh(seeded_file, qapp, tmp_path, monkeypatch):
@@ -113,19 +114,20 @@ def test_performance_tab_shows_score_reason_on_selection(seeded_file, qapp):
     tab.refresh()
     # Select the L / 7/10 row (row index 1, newest-first).
     tab._table.selectRow(1)
-    assert "score 7/10" in tab._detail.text()
+    assert "Legacy model note (unverified" in tab._detail.text()
+    assert "/10" not in tab._detail.text()
     assert "over-extended" in tab._detail.text()
     # Hover tooltip on the row also carries the reason.
     tooltip = tab._table.item(1, 1).toolTip()
-    assert "/10" in tooltip
-    assert "over-extended" in tooltip
+    assert "/10" not in tooltip
+    assert "legacy model note (unverified)" in tooltip
 
 
 def test_performance_tab_non_rated_row_messages(seeded_file, qapp):
     tab = PerformanceTab()
     tab.refresh()
     tab._table.selectRow(0)  # W row with no rating
-    assert "no score" in tab._detail.text()
+    assert "No saved model note" in tab._detail.text()
 
 
 def test_performance_tab_empty_history_is_graceful(qapp, tmp_path, monkeypatch):
@@ -313,7 +315,7 @@ def test_mac_history_uses_accessible_buttons_and_retains_selection(seeded_file, 
         record = next(r for r in tab._row_records if r.coach_rating is not None)
         button = cards.buttons[record.match_id]
         button.click()
-        assert "score" in tab._detail.text()
+        assert "Legacy model note (unverified" in tab._detail.text()
         assert record.coach_score_reason in tab._detail.text()
         interface = QAccessible.queryAccessibleInterface(button)
         assert interface.role() == QAccessible.Role.CheckBox  # a checkable QPushButton

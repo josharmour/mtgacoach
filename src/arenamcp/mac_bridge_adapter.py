@@ -3554,9 +3554,20 @@ class MacBridgeAdapter:
         ):
             raise AdapterError("Sideboarding requires an explicit deck submission; finish it in Arena")
 
+    @staticmethod
+    def _require_automatic_response_safe(snapshot: Snapshot) -> None:
+        from arenamcp.card_name_choice import is_card_name_list
+
+        if snapshot.request_class == "SelectNRequest" and is_card_name_list(
+            enum_name(field(snapshot.request, "ListType")),
+            enum_name(field(snapshot.request, "StaticList")),
+        ):
+            raise AdapterError("Card-name selection requires an explicit TitleId, not AutoRespond")
+
     def _cmd_auto_respond(self, command: dict, timeout: float | None) -> dict:
         snapshot = self._require(timeout)
         self._require_gameplay_request(snapshot)
+        self._require_automatic_response_safe(snapshot)
         self._submit(snapshot, lambda ops, request: ops.call(request, "AutoRespond"), timeout)
         return {"ok": True, "submitted_type": "AutoRespond", "request_class": snapshot.request_class}
 
@@ -3564,6 +3575,8 @@ class MacBridgeAdapter:
         snapshot = self._require(timeout)
         self._require_gameplay_request(snapshot)
         cancel = bool(snapshot.getters.get("CanCancel"))
+        if not cancel:
+            self._require_automatic_response_safe(snapshot)
         self._submit(
             snapshot, lambda ops, request: ops.call(request, "Cancel" if cancel else "AutoRespond"), timeout
         )

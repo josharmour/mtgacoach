@@ -494,8 +494,7 @@ class _PostMatchMixin(LossStreakMixin):
 
         # Always record W/L + metadata at game end (even when there's no
         # advice history to analyze) so the Performance tab reflects the
-        # last few matches. A numeric advice-quality score is computed
-        # automatically and backfilled in a background thread.
+        # last few matches. Written session reviews use saved action evidence.
         try:
             self._write_performance_record(mid, match_result, final_state, replay_path)
         except Exception as e:
@@ -525,13 +524,7 @@ class _PostMatchMixin(LossStreakMixin):
         }
         self._staged_analyses[mid] = staged
 
-        # Automatic advice-quality score: independent of the larger opt-in
-        # prose analysis (auto_post_match_analysis defaults to OFF). One small
-        # LLM call per match, in a background thread so the loop isn't blocked.
-        try:
-            self._start_auto_advice_score(mid, match_result, staged_history)
-        except Exception as e:
-            logger.debug(f"auto advice score start failed: {e}")
+        # Session feedback uses recorded decisions, not uncalibrated advice scores.
 
         # Cap at last 3; evict oldest with log
         while len(self._staged_analyses) > 3:
@@ -892,11 +885,7 @@ class _PostMatchMixin(LossStreakMixin):
             self._post_match_analysis_text = display_analysis
             self._post_match_result = match_result
 
-            # Best-effort 1-10 coach rating for the performance history tab.
-            try:
-                self._record_performance_rating(match_id, match_result, analysis)
-            except Exception as e:
-                logger.debug(f"performance rating failed: {e}")
+            # Do not overwrite legacy advice ratings with player-performance grades.
             emit_feedback_request = getattr(self.ui, "emit_post_match_feedback_request", None)
             if callable(emit_feedback_request):
                 emit_feedback_request(display_analysis, match_result)

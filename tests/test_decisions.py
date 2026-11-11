@@ -86,7 +86,12 @@ def test_live_bridge_cast_payability_is_enforced():
             "has_pending": True,
             "request_type": "ActionsAvailable",
             "actions": [
-                {"actionType": "Cast", "grpId": 94899, "hasAutoTap": False, "manaCost": [{"color": ["ManaColor_Black"], "count": 2}]},
+                {
+                    "actionType": "Cast",
+                    "grpId": 94899,
+                    "hasAutoTap": False,
+                    "manaCost": [{"color": ["ManaColor_Black"], "count": 2}],
+                },
                 {"actionType": "Cast", "grpId": 91644, "hasAutoTap": True},
                 {"actionType": "Pass"},
             ],
@@ -114,7 +119,12 @@ def test_actions_available_excludes_mana_abilities_and_passes_priority():
         "can_pass": True,
         "actions": [
             # Unpayable: Arena sends the cost with no AutoTap solution.
-            {"actionType": "ActionType_Cast", "grpId": 94899, "hasAutoTap": False, "manaCost": [{"color": ["ManaColor_Black"], "count": 2}]},
+            {
+                "actionType": "ActionType_Cast",
+                "grpId": 94899,
+                "hasAutoTap": False,
+                "manaCost": [{"color": ["ManaColor_Black"], "count": 2}],
+            },
             {"actionType": "ActionType_Activate_Mana", "grpId": 75553, "instanceId": 444},
             {"actionType": "ActionType_Activate_Mana", "grpId": 75553, "instanceId": 456},
             {"actionType": "ActionType_FloatMana"},
@@ -283,3 +293,37 @@ def test_zero_cost_spell_is_offered_not_withheld_as_unpayable():
     assert mox.label == "Cast Chrome Mox" and mox.payable is None
     assert decision.find("idx:0").payable is False
     assert filter_play_options(decision, {}).option_ids() == {"idx:1", "pass"}
+
+
+def test_activate_options_carry_selected_ability_metadata():
+    """Activated-ability options keep the selected ability's own cost and rules
+    text (plus payment info) so prompts and safety see the offered ability, not
+    a flattening of the whole card."""
+    action = {
+        "actionType": "ActionType_Activate",
+        "grpId": 98577,
+        "instanceId": 548,
+        "abilityGrpId": 194115,
+        "manaCost": [{"color": '[ "Generic" ]', "count": 4}],
+        "autoTapActions": [{"instanceId": 566, "manaId": 0}],
+    }
+    d = build_pending_decision(
+        {"has_pending": True, "request_type": "ActionsAvailable", "can_pass": True, "actions": [action]},
+        resolve_name=lambda grp: "Firdoch Core",
+    )
+    meta = d.options[0].meta
+    assert meta["instanceId"] == 548 and meta["abilityGrpId"] == 194115
+    assert meta["manaCost"] == action["manaCost"]
+    assert meta["autoTapActions"] == [{"instanceId": 566, "manaId": 0}]
+    assert isinstance(meta["ability_text"], str) and ": " in meta["ability_text"]
+    # Abilities that resolve to nothing simply omit the key.
+    bare = build_pending_decision(
+        {
+            "has_pending": True,
+            "request_type": "ActionsAvailable",
+            "can_pass": True,
+            "actions": [{**action, "abilityGrpId": 0}],
+        },
+        resolve_name=lambda grp: "Firdoch Core",
+    )
+    assert "ability_text" not in bare.options[0].meta

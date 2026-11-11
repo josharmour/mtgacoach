@@ -47,7 +47,8 @@ MULLIGAN_POLICY = (
     "Each mulligan costs a card, so compare this hand with a random hand ONE CARD SMALLER, "
     "and lower the bar as the hand shrinks. "
     "Keeping 7: demand a functional hand: 3-4 lands with spells your lands can cast early keep; "
-    "2 lands keep on the draw with cheap plays; 5 lands with castable spells is usually a keep, "
+    "2 lands keep on the draw only when they can develop (a mana maker, a land finder, or two cheap "
+    "permanents); 5 lands with castable spells is usually a keep, "
     "especially on the draw; mulligan 0-1 or 6-7 lands. "
     "Keeping 6: keep any 2-4 lander with a play castable by turn 3. "
     "Keeping 5: keep unless unplayable (0 lands, all lands, or 1 land with no cheap plays). "
@@ -77,6 +78,10 @@ class HandCard:
     role: float = 0.0
     needs_carrier: bool = False
     makes_carrier: bool = False
+    # Q1 2026-11-08/09 (matches b55e160b, a4ca1d46): grows this hand's mana —
+    # taps for mana without eating another hand card, or puts a land onto the
+    # battlefield. Reactive burn does not qualify.
+    makes_mana_or_finds_land: bool = False
 
 
 # A spell that can kill or stop a creature: damage it can aim at one (or at
@@ -159,6 +164,28 @@ def _clean(text: str) -> str:
 
 # "If this land has a luck counter on it, instead add one mana of any color."
 _COUNTER_MANA = re.compile(r"\bif [^.]*\bhas an? (\w+) counter on it, instead add [^.]*\.")
+
+# Q1 2026-11-08/09 (matches b55e160b, a4ca1d46): a two-land keep needs a way to
+# develop its mana, not just cheap reactive spells — those keeps won 38% vs 60%
+# for comparable three-landers. A spell develops when it taps for mana itself
+# without consuming another hand card (Chrome Mox exiles one), or puts a land
+# onto the battlefield (ramp and land-fetch spells).
+_TAPS_FOR_MANA = re.compile(r"\{o?t\}:\s*add\b|:\s*add\b", re.IGNORECASE)
+_EATS_A_HAND_CARD = re.compile(r"exile [^.]*card from your hand")
+_FINDS_A_LAND = re.compile(
+    r"search your library[^.]*\bland\b|\bland\b[^.]*onto the battlefield", re.IGNORECASE
+)
+
+
+def _develops_mana(text: str) -> bool:
+    return bool(
+        (_TAPS_FOR_MANA.search(text) and not _EATS_A_HAND_CARD.search(text)) or _FINDS_A_LAND.search(text)
+    )
+
+
+def _is_permanent(card: HandCard) -> bool:
+    """Stays on the battlefield: not an instant or sorcery."""
+    return not re.search(r"\binstant\b|\bsorcery\b", card.type_line.lower())
 
 
 def _without_unmet_counter_mana(card: dict, text: str) -> tuple[str, bool]:
@@ -263,6 +290,7 @@ def hand_card(card: dict) -> HandCard:
         role=0.0 if is_land else _role_value(text.lower(), types, instant_speed),
         needs_carrier=needs_carrier,
         makes_carrier=resolves_to_creature(card),
+        makes_mana_or_finds_land=False if is_land else _develops_mana(text),
     )
 
 
@@ -444,7 +472,7 @@ def mulligans_from_state(state: dict) -> int | None:
 
 
 def free_mulligans_from_state(state: dict) -> int:
-    """Free mulligans granted this game (e.g. Brawl's first free mulligan)."""
+    """Use explicit game evidence; a format name does not grant free mulligans."""
     value = state.get("_free_mulligans")
     if value is None:
         ctx = state.get("decision_context") or {}
@@ -460,9 +488,7 @@ def free_mulligans_from_state(state: dict) -> int:
     if isinstance(value, bool):
         return 0
     try:
-        if value is None:
-            return int("brawl" in str(state.get("format_name") or "").lower())
-        return max(0, int(value))
+        return max(0, int(value)) if value is not None else 0
     except (TypeError, ValueError):
         return 0
 
@@ -578,7 +604,16 @@ def mulligan_verdict(found: MulliganSituation) -> tuple[str, str] | None:
         if 3 <= lands <= 4 and early and len(covered) >= 2:
             return "keep", f"{lands} lands with early plays ({_names(early)}) on 7, {where}"
         if lands == 2 and found.on_play is False and cheap:
-            return "keep", f"2 lands on the draw with cheap plays ({_names(cheap)})"
+            # Q1 2026-11-08/09 (matches b55e160b, a4ca1d46): reactive burn alone
+            # stalls on two lands (logged keeps won 38% vs 60% for comparable
+            # three-landers). Keep only hands that can develop: a spell that
+            # makes mana or finds a land, or two cheap castable permanents.
+            castable = [card for card in kept if not card.is_land and castable_with(card, kept_lands)]
+            if (
+                any(card.makes_mana_or_finds_land for card in castable)
+                or sum(card.mana_value <= 2 and _is_permanent(card) for card in castable) >= 2
+            ):
+                return "keep", f"2 lands on the draw with cheap plays ({_names(cheap)})"
         if keep_size is None:
             return None
         next_bottom = max(0, (found.mulligans or 0) + 1 - max(0, found.free_mulligans))

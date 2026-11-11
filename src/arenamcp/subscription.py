@@ -458,6 +458,10 @@ def request_trial_key(email: str, code: str, timeout: int = 10) -> dict:
             status_map = {
                 "email_verification_required": ("We need to verify your email first — request a fresh code."),
                 "invalid_code": ("That code isn't right or has expired. Request a new one and try again."),
+                "trial_recovery_required": (
+                    "Use the email address originally verified for this trial, or enter your saved license key. "
+                    "If this older trial has no verified email, contact support@mtgacoach.com."
+                ),
             }
             if detail in status_map:
                 return {"status": detail, "message": status_map[detail]}

@@ -104,14 +104,14 @@ class MainWindow(QMainWindow):
         # Start coach process automatically — unless the window was already
         # closed (a start after shutdown would orphan a coach process).
         self._closed = False
-        QTimer.singleShot(100, self._start_session)
         self._session_recap = None
         try:
             from .session_recap import SessionRecapController
 
             self._session_recap = SessionRecapController(self)
         except Exception:
-            logger.warning("Session recap initialization failed", exc_info=True)
+            logger.warning("Could not initialize session recap", exc_info=True)
+        QTimer.singleShot(100, self._start_session)
 
         # ANR Watchdog
         if WatchdogPingBridge is not None:

@@ -2,6 +2,7 @@
 
 import json
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -56,6 +57,31 @@ def test_exact_pending_animation_is_not_another_body(count):
     assert state["stack"][0]["grp_id"] == 15429
     assert "already pending" in unsafe_play_reason(state, land, "Activate", action)
     assert filter_play_options(decision(action), state).option_ids() == {"pass"}
+
+
+_MUTAVAULT_SELECTED = (
+    "{o1}: this becomes a 2/2 creature with all creature types until end of turn. It's still a land."
+)
+
+
+def test_pending_repeat_guard_survives_selected_ability_metadata():
+    """The #348 repeat guard holds when the offered ability is identified by
+    its selected-ability text (Arena dialect) instead of oracle wording."""
+    state, land, action, _ = position(1)
+    d = decision(action)
+    selected = replace(
+        d,
+        options=tuple(
+            replace(o, meta={**o.meta, "ability_text": _MUTAVAULT_SELECTED})
+            if o.option_id.startswith("idx:")
+            else o
+            for o in d.options
+        ),
+    )
+    assert "already pending" in unsafe_play_reason(
+        state, land, "Activate", {**action, "ability_text": _MUTAVAULT_SELECTED}
+    )
+    assert filter_play_options(selected, state).option_ids() == {"pass"}
 
 
 def test_first_activation_for_pending_finale_remains_available():

@@ -3875,6 +3875,16 @@ class GamePlanManager:
     # producing a first plan. Seed the same validated schema without hidden
     # reasoning, then let normal opponent-turn refreshes think more deeply.
     _INITIAL_HOSTED_PLAN_TIMEOUT_S = 20.0
+    # Some current engines still emit reasoning despite thinking=False. A
+    # 512-token cap then left no final JSON (2026-11-08 Mac streak). Keep the
+    # wall-clock bound, but leave room for reasoning plus the compact answer.
+    _COMPACT_PLAN_MAX_TOKENS = 2048
+    # Background plans are replaceable. Do not spend 18 of their 20 seconds
+    # waiting behind another class, then launch a doomed 1.6-second repair.
+    _PLAN_LANE_WAIT_S = 0.25
+    _LANE_DEFERRED = "call deferred (background lane busy)"
+    _DEFERRED_RETRY_S = 2.0
+    _JSON_RETRY_MIN_RUN_S = 5.0
     # A reform younger than this yields to a decision call; an older one finishes.
     _YIELD_GRACE_S = 4.0
     # With no plan at all, a reform outlives its turn up to this long before it
@@ -4503,7 +4513,12 @@ class GamePlanManager:
             if not _round((game_state.get("turn") or {}).get("turn_number")):
                 return False
             now = time.monotonic()
-            if self._last_attempt_at is not None and now - self._last_attempt_at < self._REFRESH_INTERVAL_S:
+            cooldown = (
+                self._DEFERRED_RETRY_S
+                if self._plan_outcome == self._LANE_DEFERRED
+                else self._REFRESH_INTERVAL_S
+            )
+            if self._last_attempt_at is not None and now - self._last_attempt_at < cooldown:
                 return False
             sig = self._signature(game_state)
             our_turn = self._our_turn(game_state)
@@ -4797,6 +4812,15 @@ class GamePlanManager:
                 # Superseded/reset workers returned above and cannot postpone
                 # the replacement's work.
                 self._last_attempt_at = time.monotonic()
+                if self._reform_failure == self._LANE_DEFERRED:
+                    # Admission never sent a model request. Retry briefly after
+                    # the lane frees, without consuming this turn's threat slot
+                    # or clearing a stalled-plan reason. Generation/cancellation
+                    # checks above keep abandoned workers from rearming new work.
+                    self._plan_outcome = self._LANE_DEFERRED
+                    if self._threat_turn == turn_num:
+                        self._threat_turn = 0
+                    return self._plan
             if (
                 plan is not None
                 and self._observed_turn > plan_turn
@@ -5274,7 +5298,7 @@ class GamePlanManager:
             self._reform_failure = "call failed"
             return None
 
-        plan = self._usable_plan(response, turn_num, cancel=cancel, effort=effort)
+        plan = self._usable_plan(response, turn_num, cancel=cancel, effort=effort, defer_if_busy=True)
         json_retried = False
         if plan is None and self._reform_failure == "no usable plan from the model":
             json_retried = True
@@ -5393,7 +5417,13 @@ class GamePlanManager:
     )
 
     def _usable_plan(
-        self, response: Any, turn_num: int, *, cancel: threading.Event | None, effort: str
+        self,
+        response: Any,
+        turn_num: int,
+        *,
+        cancel: threading.Event | None,
+        effort: str,
+        defer_if_busy: bool = False,
     ) -> GamePlan | None:
         """The parsed plan in ``response``, or None with ``_reform_failure`` saying why (never raises)."""
         if cancel is not None and cancel.is_set():
@@ -5404,7 +5434,14 @@ class GamePlanManager:
             # Skipped while the model server is down, or cancelled/dropped by
             # the background lane: nothing failed, the prior plan stays.
             logger.info("game-plan call not made (keeping prior plan): %s", str(response)[:160])
-            self._reform_failure = "call not made (model server unavailable)"
+            if "request cancelled (dropped)" in str(response):
+                # Only the initial admission can rearm a short retry. A repair
+                # dropped after an actual model answer still used this attempt.
+                self._reform_failure = (
+                    self._LANE_DEFERRED if defer_if_busy else "repair deferred (background lane busy)"
+                )
+            else:
+                self._reform_failure = "call not made (model server unavailable)"
             return None
         if is_backend_error_text(response):
             # The proxy returns an error sentinel instead of raising; on
@@ -5447,8 +5484,8 @@ class GamePlanManager:
         """One cheap retry within this reform's budget, unless cancelled or the server is down."""
         if (cancel is not None and cancel.is_set()) or not background_llm_allowed(self._backend):
             return None
-        if deadline is not None and time.monotonic() >= deadline:
-            logger.info("game-plan: JSON retry skipped; reform time budget exhausted (turn %d)", turn_num)
+        if deadline is not None and deadline - time.monotonic() < self._JSON_RETRY_MIN_RUN_S:
+            logger.info("game-plan: JSON retry skipped; insufficient reform time budget (turn %d)", turn_num)
             self._reform_failure = "reform time budget exhausted"
             return None
         logger.info(
@@ -5494,6 +5531,7 @@ class GamePlanManager:
             priority=BACKGROUND_PRIORITY,
             cancel_event=cancel,
             response_format={"type": "json_object"} if system_prompt == LIVE_PLAN_PROMPT else None,
+            lane_wait_s=self._PLAN_LANE_WAIT_S,
         )
         remaining = self._timeout if deadline is None else min(self._timeout, deadline - time.monotonic())
         if remaining <= 0:
@@ -5501,7 +5539,7 @@ class GamePlanManager:
         return self._backend.complete(
             system_prompt,
             user_message,
-            512 if system_prompt == LIVE_PLAN_PROMPT else self._PLAN_MAX_TOKENS,
+            self._COMPACT_PLAN_MAX_TOKENS if system_prompt == LIVE_PLAN_PROMPT else self._PLAN_MAX_TOKENS,
             temperature=0.0,
             request_timeout_s=remaining,
             background=True,

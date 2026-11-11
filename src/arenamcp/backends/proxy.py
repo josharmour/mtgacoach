@@ -22,6 +22,7 @@ from arenamcp.backends.health import (
     get_circuit,
 )
 from arenamcp.client_metadata import get_client_headers
+from arenamcp.model_call_settings import effort_for_backend, served_name_for_backend
 
 logger = logging.getLogger(__name__)
 
@@ -636,29 +637,17 @@ def _normalize_reasoning_effort(model: str, effort):
 
 
 def _alias_effort(model: str, call_class: str, reasoning_effort):
-    """The effort to send for the moving alias, DeepSeek names and outside test models."""
-    from arenamcp.gateway_models import is_test_model
+    """Effort decided from the alias string alone.
 
-    name = str(model or "").lower()
-    test_model = is_test_model(name)
-    if not (name == "current" or test_model or any(part in name for part in ("deepseek", "dsv4"))):
-        return reasoning_effort
-    if call_class.startswith("decision.") or call_class in {
-        "background.commentary",
-        "background.deck_playbook",
-        "probe",
-    }:
-        return "none"
-    if call_class == "background.game_plan":
-        if test_model:
-            # 2026-11-09 23:24 (match eedf1ae3): Gemma 4 26B at "low" spent 4,613
-            # thinking tokens a plan, 17 s at the median and 43 s at worst; five
-            # of ten plan calls were cancelled and no plan existed until turn 5.
-            # The served model spends about 320 tokens and 7 s on the same call.
-            return "none"
-        if reasoning_effort in {"high", "max"}:
-            return "low"
-    return reasoning_effort
+    Kept as the pre-response fallback of the per-model settings table: until
+    the gateway's first response names the served model, the alias is the best
+    available guess. Production decisions go through
+    :func:`arenamcp.model_call_settings.effort_for_backend`, which follows the
+    served model (the response's ``model`` field, logged as ``served_model``).
+    """
+    from arenamcp.model_call_settings import alias_effort
+
+    return alias_effort(model, call_class, reasoning_effort)
 
 
 def _effective_effort(params: dict | None):
@@ -965,6 +954,11 @@ class _CallContext:
     lane_wait_ms: float = 0.0
     stream_started: bool = False
     served_model: str | None = None
+    # The alias this request was actually sent under, captured when the params
+    # are built. Provenance (last_served_alias) is stamped from this, not from
+    # the mutable self.model at response time: an operator switch while a
+    # request is in flight must not relabel the response that predates it.
+    request_alias: str = ""
     response_id: str | None = None
     content_chars: int = 0
     reasoning_chars: int = 0
@@ -1194,8 +1188,12 @@ class ProxyBackend:
         self._is_online = False
         self._client = None
         self._client_lock = threading.Lock()
-        # What the server said it actually ran (R4: gateway aliases lie).
+        # What the server said it actually ran (R4: gateway aliases lie),
+        # and the alias that request was made under - the served name is
+        # only meaningful for call settings while that alias is still the
+        # configured one (an explicit model switch makes it stale).
         self.last_served_model: str | None = None
+        self.last_served_alias: str | None = None
         self._served_model_warned = False
         self._stream_usage_supported = True
         self.last_request_metrics: dict | None = None
@@ -1414,13 +1412,14 @@ class ProxyBackend:
 
             bounded_thinking = (
                 selective_thinking is True
-                and selective_enabled(self.model)
+                and selective_enabled(served_name_for_backend(self))
                 and call.call_class == "decision.typed"
             )
-            # Outside test models get the settings the served model gets today
-            # (decisions without thinking), so a head-to-head run compares models
-            # and not thinking budgets.
-            reasoning_effort = _alias_effort(self.model, call.call_class, reasoning_effort)
+            # Thinking settings follow the model actually served (the response's
+            # "model" field, logged as served_model), not the alias requested:
+            # decisions without thinking, plan calls capped at low, playbook/
+            # announcer/probe without thinking. See arenamcp.model_call_settings.
+            reasoning_effort = effort_for_backend(self, call.call_class, reasoning_effort)
             if bounded_thinking:
                 thinking_enabled = True
                 reasoning_effort = 1
@@ -1434,6 +1433,9 @@ class ProxyBackend:
                 reasoning_effort=_normalize_reasoning_effort(self.model, reasoning_effort),
             )
             call.priority = self._resolve_priority(priority, is_background)
+            # Provenance binds to the alias actually in the request params,
+            # captured here before any await/thread can observe a switch.
+            call.request_alias = str(params.get("model") or "")
             if bounded_thinking:
                 params["extra_body"]["thinking_token_budget"] = 256
             if call.priority is not None:
@@ -1851,7 +1853,7 @@ class ProxyBackend:
         BackendHealth.instance().record_success(detail=f"inference probe OK ({ms:.0f}ms)")
         return True, f"{self.model} inference OK, {ms:.0f}ms"
 
-    def _note_served_model(self, served: str | None) -> None:
+    def _note_served_model(self, served, alias: str | None = None) -> None:
         """Record the model the server actually ran (gateway aliases lie).
 
         The 2026-07-05 misroute (alias 'nemotron-3-super' → an ollama 12B)
@@ -1861,6 +1863,12 @@ class ProxyBackend:
             return
         previous = self.last_served_model
         self.last_served_model = served
+        # Provenance for the call-settings table: this response answered a
+        # request made under ``alias`` — the alias captured in the request
+        # params, not the (mutable) configuration at response time. An
+        # operator switch while a request is in flight must not relabel the
+        # response that predates it.
+        self.last_served_alias = alias if alias else str(self.model or "")
         if served != previous:
             # Discoverability: one INFO line on first use and on every
             # routing change, so "what model am I talking to?" is always
@@ -2106,11 +2114,17 @@ class ProxyBackend:
                 if handle is not None and first_token_at is not None and not handle.token_seen:
                     handle.token_seen = True
 
-            self._note_served_model(served_model)
+            self._note_served_model(served_model, alias=call.request_alias if call is not None else None)
             content = "".join(chunks)
             if "</think>" in content:
                 content = content.split("</think>")[-1].strip()
-            if not content and reasoning_chunks:
+            if call is not None and call.call_class == "background.game_plan" and finish_reason == "length":
+                # A truncated JSON prefix can look like a usable partial plan,
+                # and reasoning salvage can turn an unfinished thought into one.
+                # Let the manager keep its old plan and make its bounded repair.
+                logger.warning("[PROXY] Truncated game-plan answer; retaining prior plan")
+                content = ""
+            elif not content and reasoning_chunks:
                 content = _salvage_reasoning_answer("".join(reasoning_chunks))
                 if content:
                     logger.warning(
@@ -2175,14 +2189,21 @@ class ProxyBackend:
             or _field(getattr(message, "model_extra", None), "reasoning")
             or getattr(message, "reasoning", None)
         )
-        if not content and reasoning:
+        if (
+            call is not None
+            and call.call_class == "background.game_plan"
+            and getattr(response.choices[0], "finish_reason", None) == "length"
+        ):
+            logger.warning("[PROXY] Truncated game-plan answer; retaining prior plan")
+            content = ""
+        elif not content and reasoning:
             content = _salvage_reasoning_answer(reasoning)
             if content:
                 logger.warning("[PROXY] Empty content — using salvaged answer (%s chars)", len(content))
             else:
                 logger.warning("[PROXY] Empty content with no clean final answer — using caller fallback")
         served_model = getattr(response, "model", None)
-        self._note_served_model(served_model)
+        self._note_served_model(served_model, alias=call.request_alias if call is not None else None)
         self._record_request_metrics(
             params,
             request_started=request_started,

@@ -87,7 +87,12 @@ def test_a_busy_or_degraded_lane_keeps_the_prior_plan_without_a_retry(caplog, se
     with caplog.at_level(logging.INFO, logger="arenamcp.game_plan"):
         assert manager.maybe_reform(_state(turn=4), force=True) is prior
     assert len(backend.requests) == 2, "a call that was never made must not be retried"
-    assert manager.plan_status(_state(turn=4))["last_outcome"] == ("call not made (model server unavailable)")
+    expected = (
+        "call deferred (background lane busy)"
+        if "request cancelled (dropped)" in sentinel
+        else "call not made (model server unavailable)"
+    )
+    assert manager.plan_status(_state(turn=4))["last_outcome"] == expected
     assert any(
         "game-plan call not made (keeping prior plan)" in record.getMessage() for record in caplog.records
     )

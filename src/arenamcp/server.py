@@ -2158,6 +2158,23 @@ def _get_bridge_overlay(
             ),
         }
     )
+    # This is the visible board's id, not the pending GRE request's id.
+    # Keep the two separate: playback may trail the request through animations.
+    # A missing/malformed battlefield must never certify a fresh board.
+    if (
+        bridge_game_state_id > 0
+        and all(
+            isinstance(bridge_zones.get(name), dict)
+            and isinstance(bridge_zones[name].get("cards"), list)
+            and type(bridge_zones[name].get("total_count")) is int
+            and bridge_zones[name]["total_count"] == len(bridge_zones[name]["cards"])
+            and all(isinstance(card, dict) for card in bridge_zones[name]["cards"])
+            for name in ("battlefield", "local_hand", "stack")
+        )
+        and bridge_turn_raw
+        and bridge_players
+    ):
+        overlay["_bridge_visible_game_state_id"] = bridge_game_state_id
     if bridge_state.get("game_state_id") is not None:
         overlay["_bridge_game_state_id"] = _coerce_int(bridge_state.get("game_state_id"), 0) or 0
     pending_interaction = bridge_state.get("pending_interaction")

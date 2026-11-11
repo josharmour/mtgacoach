@@ -90,6 +90,27 @@ def test_tapped_core_cannot_be_sold_as_a_free_attacker_by_either_planner():
     ]
 
 
+def test_selected_ability_dialect_keeps_the_tapped_and_payment_guards():
+    """Selected-ability metadata quotes Arena's dialect; guards must still fire.
+
+    The menu's ability text says "this becomes a 4/4 ...", not oracle's
+    "this artifact becomes a 4/4 ...". Both are the same temporary animation.
+    """
+    state, core, action = board()
+    meta = decision(action).options[0].meta
+    # The selected ability's own cost and rules text ride along on the option.
+    assert meta["ability_text"].startswith("{o4}:")
+    assert "becomes a 4/4" in meta["ability_text"]
+    assert (
+        pointless_self_animation(state, core, meta)
+        == "temporary animation leaves this source tapped, with no visible attack, block, or other payoff"
+    )
+    paying = {**meta, "autoTapActions": [{"instanceId": 548, "manaId": 0}]}
+    assert "tapped" in pointless_self_animation(state, core, paying)
+    # A non-animation selected ability stays a model decision, not a withheld one.
+    assert pointless_self_animation(state, core, {**meta, "ability_text": "{T}: Add one mana of any color."}) == ""
+
+
 def test_payment_that_taps_core_also_prevents_attacking():
     state, core, action = board(tapped=False)
     action["autoTapActions"] = [{"instanceId": 548, "manaId": 0}]

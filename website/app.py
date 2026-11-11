@@ -145,6 +145,12 @@ import match_bundles
 match_bundles.init_db()
 app.include_router(match_bundles.router)
 
+# Shared card-facts store and lookup (compiled once, served to every customer).
+import card_facts
+
+card_facts.init_db()
+app.include_router(card_facts.router)
+
 # Compatibility exports for tests and direct module consumers
 config = state.config
 router = state.router

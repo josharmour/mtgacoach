@@ -1450,6 +1450,36 @@ def _walker_kills(
     return kept
 
 
+def losing_attack_prompt(state: dict, context: dict) -> str:
+    """Surface conservative counter-blocks before the model chooses attackers.
+
+    Judge the offered group, not isolated attackers: a sacrifice can buy
+    damage for teammates. These are advice, never a change to the legal menu;
+    the final recipient-aware guard still evaluates the actual declaration.
+    """
+    if str(context.get("type") or "").lower() != "declare_attackers":
+        return ""
+    identities = [int(i) for i in context.get("legal_attacker_ids") or [] if str(i).isdigit()]
+    if not identities:
+        identities = [
+            int(entry["attackerInstanceId"])
+            for entry in context.get("raw_attackers") or []
+            if str(entry.get("attackerInstanceId", "")).isdigit()
+        ]
+    if not identities:
+        return ""
+    losing = losing_attackers(state, identities)
+    if not losing:
+        return ""
+    return "\nCOMPUTED COUNTER-BLOCKS (attacks at the opponent):\n" + "\n".join(
+        [
+            "The defending player chooses blockers. Do not assume they accept your preferred trade.",
+            *(f"- Attacker [{iid}]: {reason}" for iid, reason in losing.items()),
+            "Reassess for a different attacker group or planeswalker recipient; these are not legality restrictions.",
+        ]
+    )
+
+
 def losing_attackers(
     state: dict,
     attacker_ids: list[int],

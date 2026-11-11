@@ -568,33 +568,99 @@ def test_missing_email_or_code_requires_verification(env):
     assert len(fake.minted) == 0
 
 
-def test_existing_active_trial_still_returns_key_without_code(env):
+def test_existing_active_trial_rejects_machine_only_lookup(env):
     _, _, _, fake, client = env
-    first = _post_trial(client).json()
-
+    _post_trial(client)
     again = client.post("/api/trial", json={"machine_id": MACHINE_ID})
-
-    assert again.status_code == 200
-    data = again.json()
-    assert data["status"] == "existing" and data["key"] == first["key"]
+    assert again.status_code == 422
+    assert again.json() == {"detail": "trial_recovery_required"}
+    assert "key" not in again.json()
     assert len(fake.minted) == 1
 
 
-def test_existing_trial_backfills_verified_email(env):
+def test_existing_trial_accepts_matching_bearer_only(env):
+    _, _, _, fake, client = env
+    first = _post_trial(client).json()
+    for bearer in ("wrong", "", "Basic " + first["key"]):
+        rejected = client.post(
+            "/api/trial", json={"machine_id": MACHINE_ID}, headers={"Authorization": "Bearer " + bearer}
+        )
+        assert rejected.status_code == 422
+    again = client.post(
+        "/api/trial", json={"machine_id": MACHINE_ID}, headers={"Authorization": "Bearer " + first["key"]}
+    )
+    assert again.status_code == 200
+    assert again.json()["key"] == first["key"]
+    assert len(fake.minted) == 1
+
+
+def test_existing_trial_does_not_backfill_email(env):
     _, proxy_db, _, _, client = env
     now = datetime.now(timezone.utc)
-    proxy_db.create_trial(
-        OTHER_MACHINE_ID,
-        "sk-legacy",
-        _iso(now - timedelta(days=1)),
-        _iso(now + timedelta(days=6)),
-    )
-
+    proxy_db.create_trial(OTHER_MACHINE_ID, "sk-legacy", _iso(now), _iso(now + timedelta(days=6)))
     r = client.post("/api/trial", json={"machine_id": OTHER_MACHINE_ID, "email": EMAIL.upper()})
-
-    assert r.status_code == 200 and r.json()["status"] == "existing"
+    assert r.status_code == 422
     row = proxy_db.get_trial(OTHER_MACHINE_ID)
-    assert row["email"] == EMAIL.lower() and row["email_verified"] == 1
+    assert not row["email"] and not row["email_verified"]
+    # Even proof of the bearer must not mark an unverified email verified.
+    r = client.post(
+        "/api/trial",
+        json={"machine_id": OTHER_MACHINE_ID, "email": EMAIL.upper()},
+        headers={"Authorization": "Bearer sk-legacy"},
+    )
+    assert r.status_code == 200
+    assert not proxy_db.get_trial(OTHER_MACHINE_ID)["email_verified"]
+
+
+def test_existing_trial_rejects_code_for_different_email(env):
+    _, _, _, fake, client = env
+    _post_trial(client)
+    result = _post_trial(client, email="attacker@example.com")
+    assert result.status_code == 422
+    assert result.json() == {"detail": "trial_recovery_required"}
+    assert len(fake.minted) == 1
+
+
+def test_recovery_code_is_single_use(env):
+    _, _, _, _, client = env
+    _post_trial(client)
+    assert _request_code(client).status_code == 200
+    body = {"machine_id": MACHINE_ID, "email": EMAIL.lower(), "code": SENT_CODES[-1]}
+    first = client.post("/api/trial", json=body)
+    assert first.status_code == 200
+    replay = client.post("/api/trial", json=body)
+    assert replay.status_code == 422
+    assert replay.json() == {"detail": "invalid_code"}
+
+
+def test_historical_verified_email_cannot_recover_key(env):
+    _, proxy_db, _, _, client = env
+    now = datetime.now(timezone.utc)
+    proxy_db.create_trial(MACHINE_ID, "sk-legacy", _iso(now), _iso(now + timedelta(days=6)))
+    proxy_db.set_trial_email(MACHINE_ID, EMAIL.lower())
+    assert proxy_db.get_trial(MACHINE_ID)["email_verified"] == 1
+    result = _post_trial(client)
+    assert result.status_code == 422
+    assert result.json() == {"detail": "trial_recovery_required"}
+
+
+def test_code_consumption_is_atomic_across_workers(env):
+    from concurrent.futures import ThreadPoolExecutor
+
+    _, proxy_db, _, _, client = env
+    assert _request_code(client).status_code == 200
+    code_hash = proxy_db.get_trial_email_code(MACHINE_ID)["code_hash"]
+    now = datetime.now(timezone.utc)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(
+            pool.map(
+                lambda _: proxy_db.verify_and_consume_trial_email_code(
+                    MACHINE_ID, EMAIL.lower(), code_hash, now, 5
+                ),
+                range(8),
+            )
+        )
+    assert sum(results) == 1
 
 
 def test_smtp_unset_returns_503(env, monkeypatch):
@@ -704,3 +770,53 @@ def test_sweep_expired_trial_emails_notifies_only_expired_trials_with_email(env,
     assert proxy_db.get_trial(_machine(1))["expired_email_sent_at"]
     assert not proxy_db.get_trial(_machine(2)).get("expired_email_sent_at")
     assert not proxy_db.get_trial(_machine(3)).get("expired_email_sent_at")
+
+
+def test_migration_does_not_trust_historical_email(env):
+    _, proxy_db, _, _, _ = env
+    now = datetime.now(timezone.utc)
+    proxy_db.create_trial(MACHINE_ID, "sk-legacy", _iso(now), _iso(now + timedelta(days=6)), email=EMAIL)
+    with proxy_db.get_db() as conn:
+        conn.execute("ALTER TABLE trials DROP COLUMN recovery_email_verified")
+    proxy_db.init_db()
+    row = proxy_db.get_trial(MACHINE_ID)
+    assert row["email_verified"] == 1
+    assert row["recovery_email_verified"] == 0
+    proxy_db.init_db()  # Migration is repeatable and does not promote old data.
+    assert proxy_db.get_trial(MACHINE_ID)["recovery_email_verified"] == 0
+
+
+def test_concurrent_wrong_code_guesses_lock_out_correct_code(env):
+    from concurrent.futures import ThreadPoolExecutor
+
+    _, proxy_db, _, _, client = env
+    assert _request_code(client).status_code == 200
+    correct_hash = proxy_db.get_trial_email_code(MACHINE_ID)["code_hash"]
+    now = datetime.now(timezone.utc)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(
+            pool.map(
+                lambda _: proxy_db.verify_and_consume_trial_email_code(
+                    MACHINE_ID, EMAIL.lower(), "wrong-hash", now, 5
+                ),
+                range(8),
+            )
+        )
+    assert not any(results)
+    assert proxy_db.get_trial_email_code(MACHINE_ID)["attempts"] == 8
+    assert not proxy_db.verify_and_consume_trial_email_code(MACHINE_ID, EMAIL.lower(), correct_hash, now, 5)
+
+
+def test_trial_key_responses_disable_caching(env):
+    _, _, _, _, client = env
+    created = _post_trial(client)
+    recovered = _post_trial(client)
+    bearer = client.post(
+        "/api/trial",
+        json={"machine_id": MACHINE_ID},
+        headers={"Authorization": "Bearer " + created.json()["key"]},
+    )
+    for response in (created, recovered, bearer):
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["pragma"] == "no-cache"

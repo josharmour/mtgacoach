@@ -381,6 +381,8 @@ def test_a_current_bridge_state_still_overlays(monkeypatch):
     assert overlay["turn"]["turn_number"] == 7 and overlay["turn"]["active_player"] == 1
     # The Mac id is compared, not published: autopilot window checks read _bridge_game_state_id.
     assert "_bridge_game_state_id" not in overlay
+    # Partial zone metadata cannot certify the complete visible board.
+    assert "_bridge_visible_game_state_id" not in overlay
 
 
 @pytest.mark.parametrize(
@@ -454,3 +456,29 @@ def test_partial_public_battlefield_does_not_replace_log_board(
         assert "players" not in overlay
     else:
         assert len(response["zones"]["battlefield"]) == cards_count
+
+
+@pytest.mark.parametrize("id_in_turn", [False, True])
+@pytest.mark.parametrize("bad_zone", [None, "battlefield", "local_hand", "stack"])
+def test_visible_board_id_requires_complete_current_visible_zones(monkeypatch, id_in_turn, bad_zone):
+    state = {
+        "turn": {"turn_number": 24, "phase": "Combat", "active_player": 1},
+        "players": [{"seat_id": 1, "life_total": 7}, {"seat_id": 2, "life_total": 17}],
+        "zones": {name: {"total_count": 0, "cards": []} for name in ("battlefield", "local_hand", "stack")},
+    }
+    (state["turn"] if id_in_turn else state)["game_state_id"] = 438
+    if bad_zone:
+        state["zones"][bad_zone]["total_count"] = 1
+    monkeypatch.setattr(gre_bridge_module, "get_bridge", lambda: _DummyBridge(state))
+    overlay = server_module._get_bridge_overlay({}, [], {}, 1, 2, log_game_state_id=431)
+    assert overlay.get("_bridge_visible_game_state_id") == (None if bad_zone else 438)
+
+
+def test_windows_board_response_contains_its_own_state_id():
+    from pathlib import Path
+
+    source = (Path(__file__).parents[1] / "bepinex-plugin/MtgaCoachBridge/Plugin.GameState.cs").read_text()
+    handler = source.split("private void HandleGetGameState", 1)[1].split(
+        "private static JObject SerializeZones", 1
+    )[0]
+    assert '["game_state_id"] = gs.Id' in handler

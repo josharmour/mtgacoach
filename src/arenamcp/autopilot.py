@@ -118,6 +118,7 @@ class AutopilotEngine(
         bug_report_fn: Callable[[str, dict], None] | None = None,
         ui_turn_plan_fn: Callable[[dict[str, Any] | None], None] | None = None,
         ui_game_plan_fn: Callable[[dict[str, Any] | None], None] | None = None,
+        decision_progress_fn: Callable[[], None] | None = None,
     ):
         """Initialize the autopilot engine."""
         self._planner = planner
@@ -125,6 +126,7 @@ class AutopilotEngine(
         self._config = config or AutopilotConfig()
         self._speak_fn = speak_fn
         self._ui_advice_fn = ui_advice_fn
+        self._decision_progress_fn = decision_progress_fn
         self._bug_report_fn = bug_report_fn
         self._stuck_report_fn: Callable[[str, dict], None] | None = None
         # Set by standalone: (kind, key, detail, game_state) -> None. Reports
@@ -925,6 +927,20 @@ class AutopilotEngine(
         if cap is not None:
             caps[(turn, kind, instance_id, ability_id, name)] = cap
         self._self_cancelled_target_caps = caps
+        # Payment failure is recoverable after a real resource increase and
+        # a new Arena payment solution. Other cancellations remain withheld.
+        budgets = {
+            key: value
+            for key, value in getattr(self, "_self_cancelled_payment_budgets", {}).items()
+            if key[0] == turn
+        }
+        if kind == "ActionType_Activate" and why.startswith("PayCosts cancelled"):
+            from arenamcp.play_safety import exact_mana_total
+
+            total = exact_mana_total(game_state)
+            if total is not None:
+                budgets[(turn, kind, instance_id, ability_id, name)] = total
+        self._self_cancelled_payment_budgets = budgets
         logger.warning(
             "Self-cancel guard: %s %r was cancelled by the autopilot (%s); withholding it for the rest of turn %d",
             "cast" if kind in ("ActionType_Cast", "ActionType_CastOmen") else "activation",
@@ -1169,6 +1185,25 @@ class AutopilotEngine(
                 continue
             if (instance_id and entry_iid == instance_id) or (name and entry_name == name):
                 key = (entry_turn, entry_kind, entry_iid, entry_ability, entry_name)
+                budget = getattr(self, "_self_cancelled_payment_budgets", {}).get(key)
+                if budget is not None and kind == "ActionType_Activate":
+                    from arenamcp.mana import has_autotap_solution
+                    from arenamcp.play_safety import exact_mana_total
+
+                    total = exact_mana_total(game_state)
+                    payable = any(
+                        action.get("actionType") == kind
+                        and action.get("instanceId") == entry_iid
+                        and action.get("abilityGrpId") == entry_ability
+                        and has_autotap_solution(action)
+                        for action in game_state.get("_bridge_actions") or []
+                        if isinstance(action, dict)
+                    )
+                    if payable and total is not None and total > budget:
+                        self._self_cancelled_plays.discard(key)
+                        self._self_cancelled_payment_budgets.pop(key, None)
+                        logger.info("Self-cancel guard: new mana and payment solution reopen %s", name)
+                        return False
                 before = getattr(self, "_self_cancelled_target_caps", {}).get(key)
                 if before is not None and kind == "ActionType_Cast":
                     from arenamcp.removal_windows import plains_cap_targets
@@ -1953,6 +1988,15 @@ class AutopilotEngine(
         bcls = str((game_state or {}).get("_bridge_request_class") or "")
         if not (breq or bcls):
             return False
+        if "SelectN" in breq + bcls:
+            from arenamcp.card_name_choice import is_card_name_request
+
+            try:
+                pending = self._gre_bridge.get_pending_actions() or {}
+            except Exception:
+                return False
+            if is_card_name_request(pending):
+                return False  # Naming a card is strategic, never an arbitrary escape.
         if any(
             kind in breq + bcls
             for kind in (
@@ -3306,6 +3350,7 @@ class AutopilotEngine(
                 self._last_cast_submitted = None
                 self._self_cancelled_plays = set()
                 self._self_cancelled_target_caps = {}
+                self._self_cancelled_payment_budgets = {}
                 self._last_typed_play = None
                 self._runaway_tripped_turn = None
                 self._request_tracker.reset()
@@ -5387,21 +5432,43 @@ class AutopilotEngine(
         """
         if poll.get("request_type") in {"Search", "SearchRequest", "SelectN", "SelectNRequest"}:
             return game_state
+        # Windows 6f45efd6: a summarized event left the log at 199 while
+        # request 204 offered only Pass. Waiting for board details that never
+        # arrive wastes 31 seconds before the watchdog sends the same answer.
+        # Inspect the RAW menu: filtering casts/mana on a stale board must not
+        # turn a real choice into an apparent forced pass. Normal request and
+        # game-boundary revalidation still runs immediately before submission.
+        actions = poll.get("actions")
+        if (
+            poll.get("ok") is not False
+            and poll.get("has_pending") is True
+            and poll.get("request_type")
+            in {"ActionsAvailable", "ActionsAvailableReq", "ActionsAvailableRequest"}
+            and poll.get("can_pass") is True
+            and not poll.get("can_cancel")
+            and isinstance(actions, list)
+            and len(actions) == 1
+            and isinstance(actions[0], dict)
+            and actions[0].get("actionType") in {"Pass", "ActionType_Pass"}
+        ):
+            return game_state
         want = int(poll.get("game_state_id") or 0)
         have = int(game_state.get("_log_game_state_id", 0) or 0)
         if not want or not have or have >= want:
             return game_state
-        if int(game_state.get("_log_summarized_at_gsid", -1) or -1) == have:
-            # Ledger #174 (2026-10-19 15:54, after an MTGA crash + reconnect, and 2b77f14d
-            # T10): Arena summarized the messages after gameStateId `have` in Player.log, so
-            # their details never arrive; waiting yielded until Arena's clock ran out. The
-            # snapshot already carries the bridge overlay: use it.
-            logger.info(
-                "typed-decision: Player.log summarized the messages after gameStateId %s; "
-                "using the bridge state (%s)",
-                have,
-                want,
+
+        def visible_board_is_current(state: dict[str, Any]) -> bool:
+            # A summarized log may never catch up. Only a complete visible
+            # board from the bridge can replace it; the request id alone says
+            # nothing about the cards playback is currently showing.
+            return (
+                int(state.get("_bridge_visible_game_state_id") or 0) >= want
+                and not state.get("_bridge_state_stale")
+                and not state.get("_bridge_state_incomplete")
+                and state.get("_bridge_connected") is True
             )
+
+        if visible_board_is_current(game_state):
             return game_state
         deadline = time.monotonic() + self._LOG_CATCH_UP_TIMEOUT_S
         while time.monotonic() < deadline:
@@ -5416,8 +5483,8 @@ class AutopilotEngine(
                     logger.debug("poll_log during log catch-up failed: %s", error)
             fresh = self._get_game_state()
             have = int(fresh.get("_log_game_state_id", 0) or 0)
-            if have >= want:
-                logger.info("typed-decision: waited for the log to reach gameStateId %s", want)
+            if have >= want or visible_board_is_current(fresh):
+                logger.info("typed-decision: board caught up to gameStateId %s", want)
                 return fresh
         logger.info("typed-decision: log still behind the bridge (gameStateId %s < %s); yielding", have, want)
         return None
@@ -5585,6 +5652,11 @@ class AutopilotEngine(
         decision = build_pending_decision(
             poll, resolve_instance=_resolve_instance, mana_source_ids=mana_source_ids
         )
+        from arenamcp.card_name_choice import is_card_name_request
+
+        if decision is None and is_card_name_request(poll):
+            self._pause_for_manual("Card-name choices are unavailable — choose a name in Arena", game_state)
+            return True
         if poll.get("payment_selection") and self._should_decline_optional_cost(game_state):
             return None
         if poll.get("payment_selection") and decision is None:
@@ -5823,6 +5895,15 @@ class AutopilotEngine(
         labels = [(decision.find(oid).label if decision.find(oid) else oid) for oid in option_ids]
         bridge = self._progress_bridge(game_state, poll=fresh_poll)
         if submit_option(bridge, decision, option_ids):
+            # A nested post-cast decision can finish without returning to the
+            # outer coaching loop. Count actual submitted decisions as progress,
+            # not polling/model tokens, so a genuinely stuck call still warns.
+            progress = getattr(self, "_decision_progress_fn", None)
+            if progress is not None:
+                try:
+                    progress()
+                except Exception as error:
+                    logger.debug("Decision progress callback failed: %s", error)
             # A previous transient "unidentified Search" manual hold must not
             # disable the retry/verification backstop for this later submission.
             # The request tracker still requires Arena to advance and caps retries.
@@ -5925,7 +6006,11 @@ class AutopilotEngine(
                 # bridge reported the old decision cleared and never surfaced
                 # it — poll for it here instead of going silent for 45 s.
                 self._surface_post_cast_priority(decision, option_ids, fresh_poll, game_state, trigger, depth)
-            self._state = AutopilotState.IDLE
+            # A chained target/payment request can require manual intervention.
+            # Do not erase its PAUSED state after the outer cast succeeded: the
+            # dwell reporter must not call the still-pending request resolved.
+            if self._state != AutopilotState.PAUSED:
+                self._state = AutopilotState.IDLE
             return True
         if self._abort_event.is_set():
             return True

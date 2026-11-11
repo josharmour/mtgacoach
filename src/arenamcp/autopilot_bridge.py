@@ -334,6 +334,18 @@ class _BridgeSubmitMixin:
                     game_state,
                 )
             if action.action_type == ActionType.CLICK_BUTTON and request_type:
+                if request_type in (
+                    "Order",
+                    "OrderReq",
+                    "OrderRequest",
+                    "OrderTriggers",
+                    "OrderTriggersReq",
+                    "OrderTriggersRequest",
+                ) and (action.card_name or "").lower().strip() in ("done", "confirm", "submit"):
+                    # Sylvan Library's put-back ordering is an OrderRequest,
+                    # not priority. Keep its offered order through SubmitOrder.
+                    # Return even on failure: never fall through to submit_pass.
+                    return self._try_gre_bridge_order(action, game_state)
                 if "SelectReplacement" in request_type:
                     # Order Replacement's "Done" keeps Arena's first/default
                     # replacement; submit_pass is refused on this request
@@ -2349,6 +2361,31 @@ class _BridgeSubmitMixin:
         if not desired_names and action.card_name:
             desired_names = [action.card_name.lower().strip()]
 
+        from arenamcp.card_name_choice import is_card_name_request
+
+        if is_card_name_request(pending):
+            from arenamcp.decisions import build_pending_decision, submit_option
+
+            decision = build_pending_decision(pending)
+            if decision is None or not desired_names:
+                return None
+            chosen = []
+            for name in desired_names:
+                matches = [
+                    option.option_id
+                    for option in decision.options
+                    if option.label.casefold() == name.casefold()
+                ]
+                if len(matches) != 1:
+                    return None
+                chosen.extend(matches)
+            if not decision.selection_is_valid(chosen):
+                return None
+            if submit_option(bridge, decision, chosen):
+                return ClickResult(True, 0, 0, "select_n", "GRE bridge")
+            self._gre_bridge_failed_methods.add("select_n")
+            return None
+
         decision_context = game_state.get("decision_context") or {}
         offered_colors = [option.get("id") for option in pending.get("select_n_color_options") or []]
         from arenamcp.basic_land_choice import basic_land_ids, basic_land_ids_for_names
@@ -2728,6 +2765,11 @@ class _BridgeSubmitMixin:
 
         if is_sideboarding(pending):
             return False  # A deck needs explicit review/submission, never a gameplay default.
+
+        from arenamcp.card_name_choice import is_card_name_request
+
+        if is_card_name_request(pending):
+            return False  # A card name needs an explicit choice, never arbitrary/AutoRespond.
 
         dec_type = self._decision_type(game_state)
         btype = str(game_state.get("_bridge_request_type") or pending.get("request_type") or "")

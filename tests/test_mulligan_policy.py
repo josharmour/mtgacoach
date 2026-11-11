@@ -94,6 +94,7 @@ CARDS = {
     901: ("Hill Giant", "Creature — Giant", "{3}{R}", "", "common"),
     902: ("Shock", "Instant", "{R}", "Shock deals 2 damage to any target.", "common"),
     903: ("Colossus", "Creature — Giant", "{6}{R}{R}", "", "common"),
+    904: ("Llanowar Elves", "Creature — Elf Druid", "{G}", "{oT}: Add {oG}.", "common"),
 }
 
 G1_SEVEN = [ISLAND, MOUNTAIN, MOUNTAIN, ISLAND, 106416, 106273, MOUNTAIN]
@@ -194,8 +195,11 @@ def test_seven_card_extremes_mulligan(lands):
     assert verdict(hand_with(lands, spells), mulligans=0)[0] == "mulligan"
 
 
-def test_two_lander_on_the_draw_with_a_cheap_play_keeps():
-    assert verdict(hand_with(2, [902, 901, 901, 903, 903]), mulligans=0, on_play=False)[0] == "keep"
+def test_two_lander_on_the_draw_needs_development_to_autokeep():
+    # Q1 2026-11-08/09 (matches b55e160b, a4ca1d46): reactive burn alone no longer
+    # auto-keeps a two-lander on the draw; a mana maker still does.
+    assert verdict(hand_with(2, [902, 901, 901, 903, 903]), mulligans=0, on_play=False) is None
+    assert verdict([FOREST, MOUNTAIN, 904, 902, 901, 903, 903], mulligans=0, on_play=False)[0] == "keep"
 
 
 def test_two_lander_on_the_play_goes_to_the_model():
@@ -440,6 +444,185 @@ def test_laelia_keeps_exile_payoff_with_six_mountains(mulligans):
     decision = bottom_decision(game, 4)
     picked = planner.plan_decision_options(decision, game)
     assert len(picked) == 4 and f"grp:{ids[-1]}" not in picked
-    assert mp.situation(game).free_mulligans == 1
+    assert mp.situation(game).free_mulligans == 0
     game["commander_grp_ids"] = [123]
     assert not mp.situation(game).exile_enabler
+
+
+@pytest.mark.parametrize("visible_count", [0, 1, 6])
+def test_mulligan_waits_for_complete_hand_without_model_or_count_change(visible_count):
+    backend = Backend('{"option_ids": ["mull:mull"], "reasoning": "guess from deck"}')
+    planner = ActionPlanner(backend, timeout=5, land_drop_first=False)
+    game = state([MOUNTAIN] * 7, 0)
+    game["hand"] = game["hand"][:visible_count]
+    decision = PendingDecision(
+        request_id=(3, 12),
+        request_type="Mulligan",
+        options=(DecisionOption("mull:keep", "Keep"), DecisionOption("mull:mull", "Mulligan")),
+    )
+    assert planner.plan_decision_options(decision, game) == []
+    assert not backend.prompts
+    assert getattr(planner, "_mulligan_track", None) is None
+    # The request is still actionable as soon as the same hand is hydrated.
+    hydrated = state(G1_SIX, 0)
+    assert planner.plan_decision_options(decision, hydrated) == ["mull:keep"]
+    assert not backend.prompts
+
+
+# --- Q1 2026-11-08/09: two-land keeps on the draw need development ------------------------
+# Two logged keeps under the old "2 lands on the draw with cheap plays" rule won
+# 38%, vs 60% for comparable three-landers. Sources (evidence dir
+# /home/joshu/fable-nov-evidence/arenamcp): standalone.log 2026-11-08 21:25 and
+# 2026-11-09 21:18; match packets packet_20261108_213005_b55e160b*.json and
+# packet_20261109_212045_a4ca1d46*.json; bug report bug_20261109_212434.json.
+# Card text below is verbatim from those packets; Gemstone Caverns and Chrome
+# Mox come from the repo fixtures (attack_tax_210_finale_public.json,
+# nov6_damage_windows.json) because the packets reference them by name only.
+
+GEMSTONE_CAVERNS = (
+    "Gemstone Caverns",
+    "Legendary Land",
+    "",
+    "If this card is in your opening hand and you're not the starting player, you may begin the game "
+    "with Gemstone Caverns on the battlefield with a luck counter on it. If you do, exile a card from "
+    "your hand.\n{oT}: Add {oC}. If Gemstone Caverns has a luck counter on it, instead add one mana of any color.",
+    "rare",
+)
+WOODED_FOOTHSILLS = (
+    "Wooded Foothills",
+    "Land",
+    "",
+    "{oT}, Pay 1 life, Sacrifice this land: Search your library for a Mountain or Forest card, put it "
+    "onto the battlefield, then shuffle.",
+    "rare",
+)
+FLAME_SLASH = ("Flame Slash", "Sorcery", "{R}", "Flame Slash deals 4 damage to target creature.", "common")
+SPARKS_ABLAZE = (
+    "Sparks Ablaze",
+    "Instant",
+    "{R}",
+    "Sparks Ablaze deals 2 damage to target creature or planeswalker. If that creature or planeswalker "
+    "would die this turn, exile it instead.",
+    "uncommon",
+)
+EXPLORATION = (
+    "Exploration",
+    "Enchantment",
+    "{G}",
+    "You may play an additional land on each of your turns.",
+    "rare",
+)
+CHROME_MOX = (
+    "Chrome Mox",
+    "Artifact",
+    "",
+    "<i>Imprint</i> — When this artifact enters, you may exile a nonartifact, nonland card from your hand.\n"
+    "{oT}: Add one mana of any of the exiled card's colors.",
+    "rare",
+)
+GUT_TRUE_SOUL_ZEALOT = (
+    "Gut True Soul Zealot",
+    "Legendary Creature — Goblin Shaman",
+    "{2}{R}",
+    "Whenever you attack, you may sacrifice another creature or an artifact. If you do, create a 4/1 "
+    "black Skeleton creature token with menace that's tapped and attacking.",
+    "rare",
+)
+JARSYL_DARK_AGE_SCION = (
+    "Jarsyl Dark Age Scion",
+    "Legendary Creature — Human Wizard",
+    "{1}{R}{G}",
+    "Starting intensity 1\nAt the beginning of combat on your turn, you may cast a spell with mana value "
+    "equal to Jarsyl Dark Age Scion's intensity from your graveyard without paying its mana cost.",
+    "rare",
+)
+BLOOD_MOON = ("Blood Moon", "Enchantment", "{2}{R}", "Nonbasic lands are Mountains.", "rare")
+FABLE_OF_THE_MIRROR_BREAKER = (
+    "Fable of the Mirror-Breaker",
+    "Enchantment — Saga",
+    "{2}{R}",
+    "(As this Saga enters and after each of your chapters, resolve its chapter.)\n"
+    "I — Create two 1/1 red Goblin creature tokens.\nII, III — Create a Treasure token.",
+    "rare",
+)
+
+# match a4ca1d46 (2026-11-09 21:20:45), on the draw: Gemstone Caverns, Wooded
+# Foothills, Flame Slash, Sparks Ablaze, Exploration, Gut True Soul Zealot,
+# Jarsyl Dark Age Scion.
+FURY_GAME_HAND = [
+    GEMSTONE_CAVERNS,
+    WOODED_FOOTHSILLS,
+    FLAME_SLASH,
+    SPARKS_ABLAZE,
+    EXPLORATION,
+    GUT_TRUE_SOUL_ZEALOT,
+    JARSYL_DARK_AGE_SCION,
+]
+# match b55e160b (2026-11-08 21:25), on the draw: Mountain, Gemstone Caverns,
+# Flame Slash, Chrome Mox, Sparks Ablaze plus two non-cheap cards. The guard
+# message names the cheap trio; Blood Moon is named in the packet's turn-1
+# explanation and Fable of the Mirror-Breaker is from the same deck — both are
+# mana value 3+, so the verdict below is the same for any such filler.
+MOX_GAME_HAND = [
+    ("Mountain", "Basic Land — Mountain", "", "({T}: Add {R}.)", "common"),
+    GEMSTONE_CAVERNS,
+    FLAME_SLASH,
+    CHROME_MOX,
+    SPARKS_ABLAZE,
+    BLOOD_MOON,
+    FABLE_OF_THE_MIRROR_BREAKER,
+]
+
+
+def logged_card(index, spec):
+    name, type_line, cost, text, rarity = spec
+    return {
+        "instance_id": 400 + index,
+        "grp_id": 0,
+        "name": name,
+        "type_line": type_line,
+        "mana_cost": cost,
+        "oracle_text": text,
+        "rarity": rarity,
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+    }
+
+
+def logged_state(specs, on_play=False):
+    """Same shape as state(): seat 2 local, mulligan decision pending."""
+    players = [{"seat_id": 2, "is_local": True, "life_total": 20}, {"seat_id": 1, "life_total": 20}]
+    players[0]["mulligan_count"] = 0
+    return {
+        "match_id": "b55e160b" if specs is MOX_GAME_HAND else "a4ca1d46",
+        "local_seat_id": 2,
+        "pending_decision": "Mulligan",
+        "decision_context": {"type": "mulligan"},
+        "players": players,
+        "turn": {"turn_number": 0, "active_player": 2 if on_play else 1},
+        "hand": [logged_card(index, spec) for index, spec in enumerate(specs)],
+        "battlefield": [],
+    }
+
+
+@pytest.mark.parametrize("specs", [FURY_GAME_HAND, MOX_GAME_HAND], ids=["a4ca1d46", "b55e160b"])
+def test_logged_two_lander_burn_keeps_on_the_draw_go_to_the_model(specs):
+    # Both were auto-kept by the old rule ("2 lands on the draw with cheap plays
+    # (Flame Slash, ...)") and lost far more often than comparable three-landers.
+    # Neither hand can develop its mana: Flame Slash / Sparks Ablaze are reactive,
+    # Exploration needs green these lands cannot make (a4ca1d46), and Chrome Mox
+    # eats a hand card (b55e160b). Q1 leaves these to the model.
+    assert mp.mulligan_verdict(mp.situation(logged_state(specs))) is None
+
+
+def test_logged_shape_with_a_mana_maker_still_autokeeps():
+    # Same two-land-on-the-draw shape as a4ca1d46/b55e160b, but Llanowar Elves
+    # taps for mana off the Forest: development, so the keep stands.
+    choice, reason = verdict([FOREST, MOUNTAIN, 904, 902, 901, 903, 903], mulligans=0, on_play=False)
+    assert choice == "keep"
+
+
+def test_logged_shape_with_two_cheap_permanents_still_autokeeps():
+    # Development clause two: two castable permanents of mana value 2 or less.
+    choice, reason = verdict([FOREST, FOREST, 900, 900, 902, 901, 903], mulligans=0, on_play=False)
+    assert choice == "keep"

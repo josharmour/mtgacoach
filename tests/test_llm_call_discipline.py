@@ -686,19 +686,61 @@ class GatedPlanBackend(BreakerBackend):
 
 @pytest.fixture
 def plan_threads(monkeypatch):
+    """Record only threads constructed through game_plan's own threading
+    reference.
+
+    The spy must not touch the process-global ``threading`` module: unrelated
+    daemons (for example proxy.py's ``llm-stream-close`` cleanup thread left
+    over from an earlier test) are neither recorded nor joined here, so a
+    lingering cleanup thread can never be mistaken for a plan thread."""
     started: list[threading.Thread] = []
-    real_thread = threading.Thread
+    real_threading = threading
 
-    def make(*args, **kwargs):
-        thread = real_thread(*args, **kwargs)
-        started.append(thread)
-        return thread
+    class _GamePlanThreading:
+        """Delegates every attribute to the real module except ``Thread``."""
 
-    monkeypatch.setattr("arenamcp.game_plan.threading.Thread", make)
+        def Thread(self, *args, **kwargs):
+            thread = real_threading.Thread(*args, **kwargs)
+            started.append(thread)
+            return thread
+
+        def __getattr__(self, name):
+            return getattr(real_threading, name)
+
+    monkeypatch.setattr(game_plan_module, "threading", _GamePlanThreading())
     yield started
     for thread in started:
         thread.join(timeout=3)
         assert not thread.is_alive()
+
+
+def test_plan_thread_spy_ignores_unrelated_cleanup_threads(plan_threads):
+    """Regression: a daemon cleanup thread created outside game_plan (such as
+    proxy.py's llm-stream-close) must not be recorded by the plan-thread spy,
+    joined by its teardown, or disturbed by plan-thread bookkeeping."""
+    cleanup_running = threading.Event()
+    cleanup_done = threading.Event()
+
+    def unrelated_cleanup():
+        cleanup_running.set()
+        assert cleanup_done.wait(3)
+
+    cleanup = threading.Thread(target=unrelated_cleanup, name="llm-stream-close", daemon=True)
+    cleanup.start()
+    try:
+        assert cleanup_running.wait(3)
+        backend = BreakerBackend([_plan_json()])
+        mgr = GamePlanManager(backend)
+        assert mgr.request_reform(_game(3))
+        assert [thread.name for thread in plan_threads] == ["game-plan-reform"]
+        plan_threads[-1].join(timeout=3)
+        assert mgr.current is not None
+        # The unrelated cleanup thread is untouched by plan-thread bookkeeping.
+        assert cleanup.is_alive()
+    finally:
+        cleanup_done.set()
+        cleanup.join(timeout=3)
+    assert not cleanup.is_alive()
 
 
 def test_plan_calls_are_labelled_background_and_cancellable(plan_threads):

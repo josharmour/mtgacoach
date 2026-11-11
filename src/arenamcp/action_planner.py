@@ -3735,6 +3735,16 @@ class ActionPlanner(_ActionLegalityMixin):
             if choice is not None:
                 parts.append("Computed recipient-aware attack: " + choice.explanation)
 
+        # Show the guard's concrete counter-block before asking the model to
+        # choose. Match 22bea7bf (2026-11-08): Boo was proposed as a trade into
+        # Vaultborn Tyrant, ignoring the opponent's surviving Colossus block.
+        if str(dec_ctx.get("type") or "").lower() == "declare_attackers":
+            from arenamcp.combat_strategy import losing_attack_prompt
+
+            warning = losing_attack_prompt(game_state, dec_ctx)
+            if warning:
+                parts.append(warning)
+
         parts.append("\nRespond with ONLY a JSON action plan matching the schema.")
 
         return with_deck_reference("\n".join(parts), game_state)
@@ -5115,6 +5125,13 @@ class ActionPlanner(_ActionLegalityMixin):
                         self._last_decision_trace["validated_ids"] = chosen
                     self._remember_chosen_x(decision, chosen)
                 return chosen
+            # An explicit empty answer is legal for an "up to" target request.
+            # Do this before filtering invalid IDs: a bogus nonempty answer must
+            # still use the guarded fallback, not become an accidental decline.
+            if decision.request_type == "SelectTargets" and chosen == [] and decision.selection_is_valid([]):
+                self._last_decision_trace["validated_ids"] = []
+                self._last_decision_trace["target_validation"] = "no_targets"
+                return []
             chosen = [c for c in chosen if c in valid]
             if decision.request_type == "ActionsAvailable" and len(chosen) == 1:
                 from arenamcp.decisions import reasoning_choice_conflict
@@ -6955,6 +6972,18 @@ class ActionPlanner(_ActionLegalityMixin):
         clear six-card keeps. See arenamcp.mulligan_policy.
         """
         from arenamcp import mulligan_policy
+
+        # Windows f4741c8e: the live mulligan request arrived before the hand.
+        # Asking the model on an empty snapshot made it redraw unseen cards
+        # based only on the cached deck plan. London always presents seven;
+        # yield until the hand update retriggers this same request.
+        hand = game_state.get("hand") or []
+        if len(hand) != 7 or any(not isinstance(card, dict) for card in hand):
+            logger.info("Mulligan: waiting for the complete seven-card hand")
+            self._last_decision_option_ids = []
+            self._last_decision_reasoning = "Waiting for the complete opening hand."
+            self._last_decision_trace = {"policy": "mulligan_wait_for_hand", "validated_ids": []}
+            return []
 
         taken = self._mulligans_taken(game_state)
         state = {**game_state, "_mulligans_taken": taken} if taken is not None else game_state
@@ -9366,6 +9395,12 @@ class ActionPlanner(_ActionLegalityMixin):
                 lines.insert(1, selection_note)
         if decision.request_type == "SelectTargets":
             lines.insert(1, f"YOU ARE SEAT {local_seat}; control determines YOURS/opponent, not ownership.")
+            lines.append(
+                "TARGET AVAILABILITY: Arena's listed target IDs are legal candidates even when their "
+                "names or zones are missing from the snapshot. Do not infer that a graveyard is empty "
+                "or that no legal target exists from an incomplete zone list. Choose only listed IDs; "
+                "option_ids: [] is allowed only when this request permits zero remaining targets."
+            )
             lines.insert(
                 2,
                 "SOURCE EFFECT: "

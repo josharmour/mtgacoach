@@ -1,12 +1,6 @@
-"""Match History page: recent matches with W/L and a best-effort score.
+"""Match History: game results and clearly labelled legacy model notes.
 
-Reads the persisted MatchHistory (~/.arenamcp/match_history/history.json),
-written by the coach at game end. Each row shows W/L plus a coach rating
-(1-10) that is backfilled after post-match analysis; rows with no analysis
-degrade to W/L-only (score shows a dash).
-
-At sidebar width the page shows two-line rows; from ``WIDE_LAYOUT_PX`` up it
-switches to the full seven-column table. Both views hold the same rows.
+Historical mixed ratings remain in storage but are never presented as performance.
 """
 
 from __future__ import annotations
@@ -32,7 +26,7 @@ from arenamcp.match_history import MatchHistory
 
 from . import theme
 
-_COLUMNS = ["Result", "Score", "Opponent", "Format", "Colors", "Turns", "When"]
+_COLUMNS = ["Result", "Notes", "Opponent", "Format", "Colors", "Turns", "When"]
 _MAX_ROWS = 20
 WIDE_LAYOUT_PX = 520
 _USE_TABLES = sys.platform != "darwin"  # QTBUG-149612: Cocoa selected-cell cache ownership
@@ -52,7 +46,7 @@ def _result_tone(result: str) -> str:
 
 
 class PerformanceTab(QWidget):
-    """Shows the last few completed matches and how each one scored."""
+    """Shows the last few completed matches and their recorded results."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -125,10 +119,10 @@ class PerformanceTab(QWidget):
             self._views.setCurrentWidget(self._table)
             lay.addWidget(self._views, 1)
 
-        why = QLabel("WHY THIS SCORE")
+        why = QLabel("RECORDED GAME")
         why.setProperty("role", "caption")
         lay.addWidget(why)
-        self._detail = QLabel("Select a match to see why its score was given.")
+        self._detail = QLabel("Select a game to review its recorded result.")
         self._detail.setWordWrap(True)
         self._detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._detail.setProperty("card", True)
@@ -158,10 +152,10 @@ class PerformanceTab(QWidget):
         return rows[0].row() if rows else None
 
     def _on_selection_changed(self, table: QTableWidget) -> None:
-        """Show the selected row's score explanation in the detail label."""
+        """Show the recorded result and quarantine any legacy model note."""
         rows = table.selectionModel().selectedRows()
         if not rows:
-            self._detail.setText("Click a row to see why its score was given.")
+            self._detail.setText("Select a game to review its recorded result.")
             return
         self._show_record(rows[0].row())
 
@@ -172,14 +166,12 @@ class PerformanceTab(QWidget):
         rec = self._row_records[row]
         result = (rec.result or "").upper()
         opponent = rec.opponent_name or "opponent"
-        rating = getattr(rec, "coach_rating", None)
         reason = (getattr(rec, "coach_score_reason", "") or "").strip()
-        if rating is None:
-            self._detail.setText(f"{result} vs {opponent} — no score (post-match analysis not run)")
-            return
-        text = f"{result} vs {opponent} — score {int(rating)}/10"
+        text = f"{result} vs {opponent}"
         if reason:
-            text += f"\n{reason}"
+            text += "\nLegacy model note (unverified; not a performance assessment):\n" + reason
+        else:
+            text += "\nNo saved model note. This does not indicate missing gameplay or poor play."
         self._detail.setText(text)
 
     def showEvent(self, event) -> None:  # noqa: N802 (Qt override)
@@ -230,7 +222,7 @@ class PerformanceTab(QWidget):
             if row is not None:
                 self._show_record(row)
             else:
-                self._detail.setText("Select a match to see why its score was given.")
+                self._detail.setText("Select a game to review its recorded result.")
             self._update_summary(records)
             return
 
@@ -238,7 +230,6 @@ class PerformanceTab(QWidget):
             table.setRowCount(0)
         self._row_records = []
         wins = losses = 0
-        rated: list[int] = []
         muted = theme.qcolor("muted")
 
         for rec in records:
@@ -259,9 +250,7 @@ class PerformanceTab(QWidget):
 
             rating = getattr(rec, "coach_rating", None)
             reason = (getattr(rec, "coach_score_reason", "") or "").strip()
-            score_text = f"{int(rating)}/10" if rating is not None else "—"
-            if rating is not None:
-                rated.append(int(rating))
+            score_text = "Legacy note" if reason else "—"
             when = _fmt_ts(rec.timestamp)
             colors = "".join(rec.opponent_colors_seen)
             turns = rec.turns or 0
@@ -291,12 +280,8 @@ class PerformanceTab(QWidget):
             line_two = " · ".join(x for x in (colors, f"{turns} turns", when) if x)
             self._compact.setItem(row, 1, QTableWidgetItem(f"{line_one}\n{line_two}"))
 
-            # Hover anywhere on the row shows the score + why.
-            tip = (
-                f"{rtext} · score {int(rating)}/10" + (f"\n{reason}" if reason else "")
-                if rating is not None
-                else f"{rtext} · no score (post-match analysis not run)"
-            )
+            # Legacy model opinions are not grades or verified findings.
+            tip = f"{rtext} · legacy model note (unverified)" if reason else f"{rtext} · recorded result"
             for table in (self._table, self._compact):
                 for cc in range(table.columnCount()):
                     it = table.item(row, cc)
@@ -317,14 +302,10 @@ class PerformanceTab(QWidget):
     def _update_summary(self, records) -> None:
         wins = sum((r.result or "").lower() == "win" for r in records)
         losses = sum((r.result or "").lower() == "loss" for r in records)
-        rated = [r.coach_rating for r in records if r.coach_rating is not None]
         total = wins + losses
         win_rate = (wins / total * 100) if total else 0.0
-        avg = round(sum(rated) / len(rated), 1) if rated else None
 
         summary = f"{len(records)} shown · {wins}W / {losses}L ({win_rate:.0f}% win rate)"
-        if avg is not None:
-            summary += f" · avg coach score {avg}/10"
         if self._ladder:
             summary = (
                 f"Ranked {self._ladder} · {summary}"

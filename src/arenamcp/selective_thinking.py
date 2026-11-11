@@ -12,10 +12,21 @@ POLICY = "deepseek-effort1-cap256-v1"
 
 
 def enabled(model):
+    """Whether the selective-thinking experiment may run for this model.
+
+    Follows the model family, not the alias string: the proxy passes either
+    the served model name or, before the first response, the configured alias.
+    """
+    from arenamcp.model_call_settings import (
+        SELECTIVE_FAMILIES,
+        family_from_alias,
+        family_from_served,
+    )
+
     return (
         os.environ.get("ARENAMCP_SELECTIVE_THINKING", "").lower() in {"1", "true"}
         and isinstance(model, str)
-        and (model.lower() == "current" or any(s in model.lower() for s in ("deepseek", "dsv4")))
+        and (family_from_served(model) or family_from_alias(model)) in SELECTIVE_FAMILIES
     )
 
 

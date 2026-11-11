@@ -276,7 +276,9 @@ class _StandaloneHotkeysMixin:
             # five decision.typed calls still went to "current".
             self._model_name = model
             autopilot_backend = getattr(self, "_autopilot_backend", None)
-            if autopilot_backend is not None and autopilot_backend is not getattr(self._coach, "_backend", None):
+            if autopilot_backend is not None and autopilot_backend is not getattr(
+                self._coach, "_backend", None
+            ):
                 if hasattr(autopilot_backend, "close"):
                     autopilot_backend.close()
                 autopilot_backend.model = model

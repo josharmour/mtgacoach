@@ -140,12 +140,49 @@ def test_typed_path_handles_actions_available(answer, submitted):
     assert bridge.submitted == [submitted]
 
 
+def _complete_mulligan_state():
+    state = target_state()
+    state.update(
+        turn={"turn_number": 0, "phase": "Mulligan"},
+        pending_decision="Mulligan",
+        _bridge_request_type="Mulligan",
+        _mulligans_taken=0,
+        hand=[
+            {
+                "instance_id": index + 100,
+                "name": "Forest" if index < 3 else "Grizzly Bears",
+                "type_line": "Basic Land — Forest" if index < 3 else "Creature — Bear",
+                "mana_cost": "" if index < 3 else "{1}{G}",
+            }
+            for index in range(7)
+        ],
+    )
+    return state
+
+
 def test_typed_path_handles_mulligan():
     bridge = TypedBridge({"has_pending": True, "request_type": "Mulligan"})
     planner = planner_with('{"option_ids": ["mull:keep"], "reasoning": "fine hand"}')
-    eng = make_engine(bridge, planner)
-    handled = eng._try_typed_decision_path(target_state(), "decision_required")
+    state = _complete_mulligan_state()
+    eng = make_engine(bridge, planner, game_state=state)
+    handled = eng._try_typed_decision_path(state, "decision_required")
     assert handled is True
+    assert bridge.submitted == [("mulligan", True)]
+
+
+@pytest.mark.parametrize("visible_count", [0, 1, 6])
+def test_typed_mulligan_waits_without_submitting_then_uses_hydrated_hand(visible_count):
+    bridge = TypedBridge({"has_pending": True, "request_type": "Mulligan"})
+    planner = planner_with('{"option_ids": ["mull:mull"], "reasoning": "unseen guess"}')
+    state = _complete_mulligan_state()
+    complete_hand = state["hand"]
+    state["hand"] = complete_hand[:visible_count]
+    eng = make_engine(bridge, planner, game_state=state)
+    assert eng._try_typed_decision_path(state, "decision_required") is True
+    assert bridge.submitted == []
+    assert planner.get_last_decision_trace()["policy"] == "mulligan_wait_for_hand"
+    state["hand"] = complete_hand
+    assert eng._try_typed_decision_path(state, "decision_required") is True
     assert bridge.submitted == [("mulligan", True)]
 
 
