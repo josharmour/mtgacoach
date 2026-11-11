@@ -77,6 +77,45 @@ def test_invalid_or_uncovered_review_evidence_does_not_offer(tmp_path):
     assert store.capture(rows, ["not-a-dict"]) is None
 
 
+def test_malformed_report_evidence_fails_closed(tmp_path):
+    """Verifier reproduction (2026-11-11): matches=123 crashed startup; 'abc' posed as three matches."""
+    store = SessionRecaps(tmp_path / "recaps.json")
+    store.begin([])
+    rows = losses("a", "b", "c")
+    malformed = [
+        {"matches": 123},
+        {"matches": "abc"},
+        {"matches": [1, 2, 3]},
+        {"matches": ["a", "", "c"]},
+        {"matches": ["a", "b", None]},
+        {"matches": ["a", "b", "c", "d"]},
+    ]
+    for bad in malformed:
+        assert store.capture(rows, [bad]) is None
+    # Malformed entries are skipped; a well-formed report beside them still qualifies.
+    recap = store.capture(rows, malformed + [report()])
+    assert recap is not None
+    # The pending-verification path fails closed on the same malformed evidence.
+    assert store.pending(malformed) is None
+    assert store.pending(malformed + [report()])["id"] == recap["id"]
+
+
+def test_controller_construction_survives_malformed_report_evidence(qapp, monkeypatch, tmp_path):
+    """A malformed completed report must not raise while the controller starts up."""
+    rows = losses("a", "b", "c")
+    malformed = [{"matches": 123}, {"matches": "abc"}]
+    # The first launch seeds the active session; the second replays capture
+    # against it, which is where malformed evidence used to raise TypeError.
+    for _ in range(2):
+        controller, window = make_controller(monkeypatch, tmp_path, rows, malformed)
+        try:
+            assert controller.dialog is None
+            assert controller.closing() is True
+        finally:
+            window.close()
+            window.deleteLater()
+
+
 def test_bo3_game_rows_are_not_matches(tmp_path):
     """Three game-history rows of one BO3 match never infer a streak on their own."""
     store = SessionRecaps(tmp_path / "recaps.json")
@@ -269,6 +308,99 @@ def test_dismiss_button_keeps_streak_silent_across_restart_but_new_streak_offers
         finally:
             window2.close()
             window2.deleteLater()
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_acknowledgement_outlives_review_store_retention_boundary(qapp, monkeypatch, tmp_path):
+    """Verifier reproduction (2026-11-11): eleven real-button dismissals must all stick.
+
+    The loss-streak store retains about twenty completed jobs; trimming the
+    acknowledgement list to ten let the first dismissed streak reoffer and
+    reopen a dialog after reconstruction.
+    """
+    rows: list = []
+    reports: list = []
+    for index in range(11):
+        triplet = (f"s{index}a", f"s{index}b", f"s{index}c")
+        rows.extend(losses(*triplet))
+        reports.append(report(triplet))
+        controller, window = make_controller(monkeypatch, tmp_path, rows, reports)
+        try:
+            assert controller.closing() is False
+            box = controller.dialog
+            assert box is not None
+            dismiss = next(b for b in box.buttons() if b.text() == "Don't show this recap again")
+            dismiss.click()
+        finally:
+            window.close()
+            window.deleteLater()
+    stored = json.loads((tmp_path / ".arenamcp" / "session_recaps.json").read_text())
+    assert len(stored["acknowledged"]) == 11
+    # Relaunch: every dismissed streak stays silent, none reoffers a dialog.
+    controller, window = make_controller(monkeypatch, tmp_path, rows, reports)
+    try:
+        controller.offer_previous()
+        assert controller.dialog is None
+        assert controller.closing() is True
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_desktop_second_close_allowed_and_done_button_acknowledges(qapp, monkeypatch, tmp_path):
+    """Displaying or closing the offer never acknowledges; only the Done button does."""
+    from PySide6.QtWidgets import QDialogButtonBox
+
+    rows = losses("a", "b", "c")
+    reports = [report()]
+    controller, window = make_controller(monkeypatch, tmp_path / "done", rows, reports)
+    try:
+        assert controller.closing() is False
+        recap = controller.store.pending(reports)
+        assert recap is not None
+        controller.dialog.reject()  # Closing the offer is not acknowledgement.
+        assert controller.closing() is True  # A fast second close always works.
+        assert controller.store.pending(reports) == recap
+        controller.review(recap)
+        done = next(b for b in controller.dialog.findChild(QDialogButtonBox).buttons() if b.text() == "Done")
+        done.click()
+        assert controller.store.pending(reports) is None
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_review_actions_navigate_or_prepare_draft_without_acknowledging(qapp, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    rows = losses("a", "b", "c")
+    reports = [report()]
+    controller, window = make_controller(monkeypatch, tmp_path / "nav", rows, reports)
+    try:
+        calls = []
+        window._show_performance_view = lambda: calls.append("history")
+        window._show_decks_view = lambda: calls.append("decks")
+        window.decks_tab = SimpleNamespace(open_builder=lambda: calls.append("builder"))
+        monkeypatch.setattr("arenamcp.support.contact_josh", lambda parent, summary: calls.append(summary))
+        recap = {
+            "id": "review:a,b,c",
+            "text": "Recorded rejection; cause unknown.",
+            "actions": ["history", "deck", "support"],
+        }
+        controller.store.data["pending"] = [recap]
+        controller.review(recap)
+        assert calls == []
+        controller.take_action("support", recap, controller.dialog)
+        assert "not a verified bug diagnosis" in calls[0]
+        controller.take_action("deck", recap, controller.dialog)
+        assert calls[-2:] == ["decks", "builder"]
+        controller.review(recap)
+        controller.take_action("history", recap, controller.dialog)
+        assert calls[-1] == "history"
+        # Navigation and drafting never consume the offer; it stays available.
+        assert controller.store.pending(reports) == recap
     finally:
         window.close()
         window.deleteLater()

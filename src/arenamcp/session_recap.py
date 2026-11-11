@@ -23,6 +23,22 @@ def _covers(match_id: str, game_ids: set[str]) -> bool:
     return match_id in game_ids or any(g.startswith(match_id + "-g") for g in game_ids)
 
 
+def _validated_matches(value: Any) -> list[str] | None:
+    """Three distinct nonempty string match ids from a completed report, else None.
+
+    Report evidence is trusted only when well-formed. Anything else fails
+    closed: it must neither crash startup nor let stray characters (a string
+    like "abc" splitting into three letters) pose as three matches.
+    """
+    if not isinstance(value, list) or len(value) != 3:
+        return None
+    if any(not isinstance(m, str) or not m for m in value):
+        return None
+    if len(set(value)) != 3:
+        return None
+    return list(value)
+
+
 def _qualifying(reviews: list[dict] | None, known_ids: set[str]) -> list[dict]:
     """Completed three-loss reviews whose matches are all present in recorded history.
 
@@ -34,8 +50,8 @@ def _qualifying(reviews: list[dict] | None, known_ids: set[str]) -> list[dict]:
     for review in reviews or []:
         if not isinstance(review, dict):
             continue
-        matches = [str(m) for m in (review.get("matches") or [])]
-        if len(matches) != 3 or len(set(matches)) != 3:
+        matches = _validated_matches(review.get("matches"))
+        if matches is None:
             continue
         if all(_covers(m, known_ids) for m in matches):
             found.append(
@@ -62,10 +78,10 @@ def _verifiable(identity: Any, reviews: list[dict] | None) -> bool:
     if not isinstance(identity, str) or not identity.startswith("review:"):
         return False
     matches = identity[len("review:") :].split(",")
-    if len(matches) != 3:
+    if len(matches) != 3 or any(not m for m in matches):
         return False
     for review in reviews or []:
-        if isinstance(review, dict) and [str(m) for m in (review.get("matches") or [])] == matches:
+        if isinstance(review, dict) and _validated_matches(review.get("matches")) == matches:
             return True
     return False
 
@@ -185,5 +201,9 @@ class SessionRecaps:
 
     def acknowledge(self, identity: str) -> None:
         self.data["pending"] = [p for p in self.data.get("pending", []) if p.get("id") != identity]
-        self.data["acknowledged"] = (self.data.get("acknowledged", []) + [identity])[-10:]
+        # An acknowledgement must outlive every identity that can reappear: the
+        # loss-streak store keeps only its most recent completed jobs (~20), so
+        # this bound sits far above any reappearance window. Trimming to ten
+        # let the oldest dismissed streak reoffer after eleven dismissals.
+        self.data["acknowledged"] = (self.data.get("acknowledged", []) + [identity])[-256:]
         self._save()
