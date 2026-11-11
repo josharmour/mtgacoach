@@ -55,8 +55,39 @@ def test_recorded_plan_cannot_spend_the_same_loyalty_activation_twice():
     validate_plan(plan, assess(STATE), STATE)
     block = plan.as_planner_block()
     assert any("second loyalty activation" in issue for issue in plan.issues)
-    assert "old Boo" not in block and "fresh Boo" not in block and "4 drawn" not in block
+    # Q2 (fable-november-upgrades.md §Q2 Done-when): only the offending same-turn
+    # double-activation clause is removed; the model's independent attack-to-win
+    # strategy survives into the planner block instead of being wiped with the
+    # whole path (the pre-Q2 whole-path-wipe expectation here is retired).
+    assert "old Boo attacks; repeat loop each upkeep to lethal" in plan.path
+    assert "+1/-2 for 4 dmg+4 cards" not in plan.path
+    assert "old Boo" in block and "fresh Boo" not in block and "4 drawn" not in block
     assert "one available loyalty ability" in block
+
+
+def test_same_turn_pair_strip_removes_only_the_offending_path_clause():
+    """Q2 adjacent regression on the same recorded Armour vs zambat plan: the
+    doubled-activation clause leaves the path while the strategy tail stays,
+    and the replacement boilerplate never enters the path itself."""
+
+    def build() -> GamePlan:
+        return GamePlan(
+            path="T7 upkeep Boo, +1/-2 for 4 dmg+4 cards, old Boo attacks; repeat loop each upkeep to lethal",
+            turn_plan=[
+                {
+                    "turn": "T",
+                    "hold": "Upkeep: fresh Boo -> Minsc & Boo +1 (to 5) then -2 sacrificing buffed fresh Boo: 4 damage + 4 cards",
+                    "attack": "Boo (original 4/4)",
+                },
+                {"turn": "T+1", "hold": "Cast the best body from the 4 drawn cards."},
+            ],
+        )
+
+    plan = build()
+    validate_plan(plan, assess(STATE), STATE)
+    assert plan.path == "T7 upkeep Boo, old Boo attacks; repeat loop each upkeep to lethal"
+    assert "Reassess the other on a later turn" not in plan.path
+    assert any("removed a second loyalty activation" in issue for issue in plan.issues)
 
 
 def test_legal_attack_and_postcombat_sacrifice_survive_validation():
