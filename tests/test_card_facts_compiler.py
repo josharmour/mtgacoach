@@ -12,7 +12,10 @@ The model backend is a fake that records every call; no network access.
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import sqlite3
+from pathlib import Path
 
 from arenamcp.card_facts import (
     PrintedCard,
@@ -29,8 +32,10 @@ from arenamcp.card_facts.compiler import (
     compile_cards,
     compile_one,
     extract_json_object,
+    split_name_list,
 )
 from arenamcp.game_plan import BACKGROUND_PRIORITY
+from arenamcp.mtgadb import MTGADatabase
 from test_card_facts_schema import PRINTED_CARDS, fury_record
 
 # Verified in F1 (fable-november-reports/F1.md) and reproduced independently
@@ -209,8 +214,61 @@ def test_non_json_answer_counts_as_failure(tmp_path):
 
     assert result.status == "failed"
     assert result.attempts == 2
-    assert result.record is None
+    # Dotty rejection point 1 at 5beb064: even with no parsable answer the
+    # compiler must still produce the hash-named confidence=failed record.
+    assert result.record is not None
+    assert result.record.confidence == "failed"
+    assert result.record.rules_hash == FURY_VERIFIED_HASH
     assert result.problems == ["answer contained no JSON object"]
+    assert "answer contained no JSON object" in result.record.notes
+
+
+def test_two_non_json_answers_still_write_hash_named_failed_record(tmp_path):
+    # Real logged case: Dotty's verification of 5beb064 (VERIFICATION-LOG.md
+    # 2026-11-11 15:43 UTC, /tmp/dotty-F2-repro.py) — two non-JSON replies gave
+    # failed1/attempts2 but wrote no JSON file at all. The run must leave the
+    # hash-named confidence=failed record with the problems on disk.
+    backend = FakeBackend(["I cannot help with that.", "Still no JSON here."])
+    summary = compile_cards(["Fury"], tmp_path, backend=backend, scryfall=FakeScryfall())
+
+    assert summary["failed"] == 1
+    written = tmp_path / f"{FURY_VERIFIED_HASH}.json"
+    assert written.exists()
+    record = from_json(written.read_text(encoding="utf-8"))
+    assert record.confidence == "failed"
+    assert record.name == "Fury"
+    assert record.rules_hash == FURY_VERIFIED_HASH
+    assert "answer contained no JSON object" in record.notes
+
+
+# ── Name-list splitting keeps commas inside card names ──────────────────────
+
+
+def test_split_name_list_keeps_comma_inside_card_name():
+    # Real logged case: Dotty's verification of 5beb064 (VERIFICATION-LOG.md
+    # 2026-11-11 15:43 UTC) — CLI --names 'Minsc & Boo, Timeless Heroes'
+    # became two identifiers.
+    known = {"Minsc & Boo, Timeless Heroes", "Fury"}
+    assert split_name_list("Minsc & Boo, Timeless Heroes,Fury", known.__contains__) == [
+        "Minsc & Boo, Timeless Heroes",
+        "Fury",
+    ]
+
+
+def test_split_name_list_still_splits_plain_lists():
+    known = {"Fury", "Chrome Mox"}
+    assert split_name_list("Fury,Chrome Mox", known.__contains__) == ["Fury", "Chrome Mox"]
+
+
+def test_split_name_list_emits_unresolvable_leftover():
+    # An unresolvable fragment must reach the run summary as unresolved, not
+    # disappear into a glued-together name or swallow a real one.
+    known = {"Fury"}
+    assert split_name_list("Not A Real Card,Fury", known.__contains__) == [
+        "Not A Real Card",
+        "Fury",
+    ]
+    assert split_name_list("Fury,Oops Typo", known.__contains__) == ["Fury", "Oops Typo"]
 
 
 def test_griselbrand_body_error_surfaces_in_problems():
@@ -383,3 +441,85 @@ def test_compile_result_defaults_are_safe():
     assert result.status == "compiled"
     assert result.problems == []
     assert result.record is None
+
+
+# ── Local MTGA database route (real MTGADatabase, not a fake) ────────────────
+
+
+def _write_mtga_fixture_db(path: Path) -> None:
+    """Minimal CardDatabase schema holding one card: Fury, grp_id 9707."""
+    con = sqlite3.connect(path)
+    con.execute(
+        "CREATE TABLE Cards ("
+        "GrpId INTEGER PRIMARY KEY, TitleId INTEGER, Types TEXT, Power TEXT,"
+        " Toughness TEXT, Colors TEXT, IsToken INTEGER, ExpansionCode TEXT,"
+        " AbilityIds TEXT, Order_Title TEXT)"
+    )
+    con.execute("CREATE TABLE Localizations_enUS (LocId INTEGER PRIMARY KEY, Loc TEXT, Formatted INTEGER)")
+    con.execute("INSERT INTO Cards VALUES (9707, 1, 'Creature', '3', '3', 'R', 0, 'MH2', '500:600', 'Fury')")
+    con.execute("INSERT INTO Localizations_enUS VALUES (1, 'Fury', 1)")
+    con.execute("INSERT INTO Localizations_enUS VALUES (600, 'Double strike', 1)")
+    con.commit()
+    con.close()
+
+
+def test_local_mtga_database_resolves_arena_id_to_name(tmp_path):
+    # Dotty rejection point 3 at 5beb064: only injected fakes exercised the
+    # advertised local Arena-ID route; this drives the real MTGADatabase class
+    # over a fixture CardDatabase sqlite file.
+    db_path = tmp_path / "CardDatabase.sqlite"
+    _write_mtga_fixture_db(db_path)
+    mtgadb = MTGADatabase(db_path=db_path)
+    assert mtgadb.available
+
+    resolver = CardResolver(FakeScryfall(), mtgadb=mtgadb)
+    printed = resolver.resolve(9707)
+
+    assert printed is not None
+    assert printed.name == "Fury"
+
+
+def test_cli_initialises_local_mtgadb_and_preserves_comma_names(monkeypatch, tmp_path):
+    # Dotty rejection points 2+3 at 5beb064: the CLI must pass a full
+    # comma-containing name through as one identifier and must initialise and
+    # hand over the local MTGADatabase instead of leaving compile_cards'
+    # default None in place.
+    cli_path = Path(__file__).resolve().parents[1] / "tools" / "compile_card_facts.py"
+    spec = importlib.util.spec_from_file_location("compile_card_facts_under_test", cli_path)
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    class StubScryfall:
+        def get_card_by_name(self, name):
+            return {"name": name} if name == "Minsc & Boo, Timeless Heroes" else None
+
+    captured = {}
+
+    def fake_compile_cards(identifiers, out_dir, *, backend=None, scryfall=None, mtgadb=None):
+        captured["identifiers"] = list(identifiers)
+        captured["scryfall"] = scryfall
+        captured["mtgadb"] = mtgadb
+        return {
+            "compiled": 1,
+            "failed": 0,
+            "skipped": 0,
+            "unresolved": 0,
+            "seconds_per_card": None,
+            "reasoning_tokens_per_card": None,
+            "cards": [],
+        }
+
+    monkeypatch.setattr(cli, "ScryfallCache", StubScryfall)
+    monkeypatch.setattr(cli, "compile_cards", fake_compile_cards)
+
+    rc = cli.main(["--names", "Minsc & Boo, Timeless Heroes", "--out", str(tmp_path)])
+
+    assert rc == 0
+    assert captured["identifiers"] == ["Minsc & Boo, Timeless Heroes"]
+    assert isinstance(captured["scryfall"], StubScryfall)
+    # The real MTGADatabase class is constructed and handed to compile_cards.
+    # Auto-detection finds no Arena install in the test environment, so the
+    # resolver falls back to Scryfall's arena index — exactly the advertised
+    # degradation path.
+    assert isinstance(captured["mtgadb"], MTGADatabase)

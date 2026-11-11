@@ -27,6 +27,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -123,7 +124,10 @@ class CardResolver:
         if db is not None:
             available = True
             try:
-                available = bool(db.available())
+                # ``available`` is a property on the real MTGADatabase and a
+                # method on test doubles; accept both.
+                attr = db.available
+                available = bool(attr() if callable(attr) else attr)
             except Exception:
                 available = True
             if available:
@@ -147,6 +151,42 @@ class CardResolver:
         if isinstance(identifier, int) or (isinstance(identifier, str) and identifier.isdigit()):
             return self.by_arena_id(int(identifier))
         return self.by_name(str(identifier))
+
+
+def split_name_list(raw: str, resolves: Callable[[str], bool]) -> list[str]:
+    """Split a comma-separated name list without breaking names containing commas.
+
+    Card names legitimately contain commas ("Minsc & Boo, Timeless Heroes"),
+    so a blind ``split(",")`` corrupts them (Dotty rejection point 2 at
+    5beb064). Greedy rejoin instead: accumulate fragments and emit the
+    accumulated name as soon as it resolves; a fragment that does not resolve
+    on its own is glued onto the previous one. The final accumulation is
+    always emitted, so an unresolvable leftover surfaces as ``unresolved``
+    in the run summary rather than disappearing. Known limitation: when both
+    a fragment and a longer name containing it resolve, the shorter wins.
+    """
+    names: list[str] = []
+    current = ""
+    parts = [piece.strip() for piece in raw.split(",")]
+    for part in parts:
+        if not part:
+            continue
+        if not current:
+            current = part
+        elif resolves(current):
+            names.append(current)
+            current = part
+        elif resolves(part):
+            # ``current`` is not a card name but this fragment is: emit them
+            # separately instead of gluing, so an unresolvable leftover stays
+            # visible in the run summary instead of swallowing a real name.
+            names.append(current)
+            current = part
+        else:
+            current = f"{current}, {part}"
+    if current:
+        names.append(current)
+    return names
 
 
 # ── Prompt ───────────────────────────────────────────────────────────────────
@@ -309,6 +349,36 @@ def _stamp(record_data: dict[str, Any], printed: PrintedCard) -> CardFacts:
     return card_facts_from_dict(record_data)
 
 
+def _failed_record(printed: PrintedCard, problems: list[str]) -> CardFacts:
+    """Minimal hash-named record for a card whose answers were unusable.
+
+    Spec Do 3 (Dotty rejection point 1 at 5beb064): when neither answer
+    yields a parsable record, the run must still write the record named by
+    ``rules_hash`` with confidence ``failed`` and the problems, so the
+    failure is visible on disk instead of only in the run summary. The
+    printed fields are filled from Scryfall; everything the model never
+    stated stays empty/unknown. ``validate`` is deliberately not applied —
+    an empty record cannot pass it, which is exactly why it is ``failed``.
+    """
+    data: dict[str, Any] = {
+        "name": printed.name,
+        "type_line": printed.type_line,
+        "mana_cost": printed.mana_cost,
+        "body": {
+            "power": printed.power,
+            "toughness": printed.toughness,
+            "loyalty": printed.loyalty,
+            "keywords": [],
+        },
+        "modes": [],
+        "effects": [],
+        "mana": [],
+        "confidence": _STATUS_FAILED,
+        "notes": "; ".join(problems)[:800],
+    }
+    return _stamp(data, printed)
+
+
 def _reasoning_tokens(backend: Any) -> int | None:
     """Reasoning tokens the backend reports for its last call (None if unknown)."""
     metrics = getattr(backend, "last_request_metrics", None)
@@ -424,7 +494,13 @@ def compile_one(
         result.status = _STATUS_FAILED
         result.record = record
     else:
+        # Neither answer produced a usable record (no JSON object, or the
+        # answers could not be built into a record at all). Still write the
+        # hash-named record, marked failed with the problems, so the failure
+        # is visible on disk instead of only in the run summary (spec Do 3;
+        # Dotty rejection point 1 at 5beb064).
         result.status = _STATUS_FAILED
+        result.record = _failed_record(printed, problems)
 
     result.seconds = time.perf_counter() - started
     return result
