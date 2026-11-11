@@ -55,6 +55,15 @@ _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
 
+# Nesting bound for every record we store or serve.  Card-facts records are
+# flat (the F1 schema nests a handful of levels); anything deeper is abuse
+# or corruption, and validating it recursively would trade a clean
+# per-record rejection for a RecursionError that takes the whole request
+# down (Dotty round-3 verification: a 1000-deep array in one record aborted
+# the admin batch with a 500).  _check_strict_json enforces this bound
+# itself, so validation never depends on the ambient stack depth.
+MAX_JSON_DEPTH = 64
+
 
 def _check_strict_json(value: Any) -> None:
     """Raise ValueError unless value is strict finite JSON.
@@ -63,23 +72,33 @@ def _check_strict_json(value: Any) -> None:
     serialization, so a non-finite number, an out-of-range integer or a
     string that cannot be encoded as UTF-8 (e.g. a lone surrogate escape
     like ``\\ud800``) can never reach a stored row or a customer response.
+    Structures nested deeper than MAX_JSON_DEPTH are rejected too, and the
+    walk is iterative so validation itself can never raise RecursionError
+    on deeply nested input (a recursive walk turned a rejectable record
+    into a 500 that aborted the whole batch).
     """
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("non-finite number (NaN/Infinity)")
-    elif isinstance(value, int) and not _INT64_MIN <= value <= _INT64_MAX:
-        raise ValueError("integer outside the signed 64-bit range")
-    elif isinstance(value, str):
-        _check_encodable_utf8(value)
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise ValueError("object key is not a string")
-            _check_encodable_utf8(key)
-            _check_strict_json(item)
-    elif isinstance(value, list):
-        for item in value:
-            _check_strict_json(item)
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, float):
+            if not math.isfinite(node):
+                raise ValueError("non-finite number (NaN/Infinity)")
+        elif isinstance(node, int) and not _INT64_MIN <= node <= _INT64_MAX:
+            raise ValueError("integer outside the signed 64-bit range")
+        elif isinstance(node, str):
+            _check_encodable_utf8(node)
+        elif isinstance(node, dict):
+            if depth >= MAX_JSON_DEPTH:
+                raise ValueError(f"JSON nests deeper than {MAX_JSON_DEPTH} levels")
+            for key, item in node.items():
+                if not isinstance(key, str):
+                    raise ValueError("object key is not a string")
+                _check_encodable_utf8(key)
+                stack.append((item, depth + 1))
+        elif isinstance(node, list):
+            if depth >= MAX_JSON_DEPTH:
+                raise ValueError(f"JSON nests deeper than {MAX_JSON_DEPTH} levels")
+            stack.extend((item, depth + 1) for item in node)
 
 
 def _check_encodable_utf8(text: str) -> None:
@@ -189,11 +208,12 @@ def get_ok_records(rules_hashes: list[str]) -> dict[str, Any]:
                 try:
                     parsed = json.loads(row["payload"])
                     _check_strict_json(parsed)
-                except ValueError:
+                except (ValueError, RecursionError):
                     # A stored payload should always parse into strict finite
-                    # JSON; if one somehow does not (e.g. a row written before
-                    # intake enforced this), serve it as missing rather than
-                    # poisoning the response.
+                    # JSON of bounded depth; if one somehow does not (e.g. a
+                    # row written before intake enforced this, or one nested
+                    # so deeply that json.loads itself exhausts the stack),
+                    # serve it as missing rather than poisoning the response.
                     logger.warning("card_facts payload for %s is not strict finite JSON", row["rules_hash"])
                 else:
                     found[row["rules_hash"]] = parsed
@@ -298,6 +318,11 @@ async def _read_json_object(request: Request, cap: int) -> dict[str, Any]:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
         raise HTTPException(400, f"Body is not valid JSON: {type(exc).__name__}")
+    except RecursionError:
+        # Valid JSON can still nest deeper than the interpreter can parse
+        # (Dotty round-3 verification: a ~20 kB lookup body with a 10000-deep
+        # array crashed parsing with a 500).  Answer 400 instead.
+        raise HTTPException(400, "Body nests too deeply to parse")
     if not isinstance(payload, dict):
         raise HTTPException(400, "Body must be a JSON object")
     return payload
@@ -355,15 +380,14 @@ def _validate_admin_record(
     if not isinstance(rules_hash, str) or not _HASH_RE.fullmatch(rules_hash):
         return None, _record_error(index, "missing or malformed rules_hash")
     try:
-        # allow_nan=False makes the serializer itself reject NaN/Infinity
-        # (however they arrived: literals like NaN in the raw body or numbers
-        # like 1e400 that parse to inf); the walk also rejects integers
-        # outside SQLite's 64-bit range and strings that are not valid
-        # Unicode (lone surrogate escapes) before they can hit a column or
-        # a customer response.
-        payload = json.dumps(record, allow_nan=False)
+        # Validate BEFORE serializing: the bounded walk rejects NaN/Infinity,
+        # out-of-range integers, non-UTF-8-encodable strings and structures
+        # nested deeper than MAX_JSON_DEPTH, so json.dumps below only ever
+        # sees a shallow, strictly finite structure (serializing first let a
+        # deeply nested record raise RecursionError and abort the batch).
         _check_strict_json(record)
-    except (TypeError, ValueError) as exc:
+        payload = json.dumps(record, allow_nan=False)
+    except (TypeError, ValueError, RecursionError) as exc:
         return None, _record_error(index, f"record is not strict finite JSON: {exc}")
     if len(payload.encode("utf-8")) > MAX_RECORD_BYTES:
         return None, _record_error(index, f"record exceeds {MAX_RECORD_BYTES} bytes")

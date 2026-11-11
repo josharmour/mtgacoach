@@ -351,6 +351,71 @@ def test_lookup_serves_legacy_lone_surrogate_row_as_missing_instead_of_500(env):
     assert body["missing"] == [h_bad]
 
 
+def test_admin_upsert_rejects_deeply_nested_record_without_aborting_batch(env):
+    """bug: Dotty verification of a2a04bf — a valid admin batch containing
+    one record with a 1000-deep nested array (~2.3 kB, far under the record
+    cap) returned 500 and aborted the whole batch: the recursive strict-JSON
+    walk raised RecursionError.  Deep records are now rejected per-record
+    with a bounded-depth reason and their neighbours still store."""
+    _, proxy_db, _, _, _, client, _tmp = env
+    nested: dict = {"v": None}
+    for _ in range(1000):
+        nested = {"v": [nested]}
+    deep = {"rules_hash": _hash(41), "v": nested}
+    good = _record(_hash(42))
+    result = _store(client, deep, good)
+    assert result["stored"] == 1
+    assert [r["index"] for r in result["rejected"]] == [0]
+    assert "nests deeper than" in result["rejected"][0]["reason"]
+    with proxy_db.get_db() as conn:
+        stored = {r["rules_hash"] for r in conn.execute("SELECT rules_hash FROM card_facts")}
+    assert stored == {_hash(42)}
+    body = _lookup(client, [_hash(41), _hash(42)]).json()
+    assert set(body["found"]) == {_hash(42)}
+    assert body["missing"] == [_hash(41)]
+
+
+def test_lookup_serves_legacy_deeply_nested_row_as_missing_instead_of_500(env):
+    """bug: Dotty verification of a2a04bf — a ~2 kB legacy row whose payload
+    nests 1000 deep made customer lookup return 500.  Like the non-finite
+    and surrogate legacy rows, it is now served as missing."""
+    _, proxy_db, _, _, _, client, _tmp = env
+    h_bad, h_good = _hash(51), _hash(52)
+    payload = json.dumps({"v": None}, separators=(",", ":"))
+    for _ in range(1000):
+        payload = json.dumps({"v": json.loads(payload)}, separators=(",", ":"))
+    assert len(payload) < 10000
+    with proxy_db.get_db() as conn:
+        conn.execute(
+            "INSERT INTO card_facts (rules_hash, name, schema_version, payload, updated_at, status)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (h_bad, "Deep Legacy Row", 1, payload, time.time(), "ok"),
+        )
+    _store(client, _record(h_good))
+    resp = _lookup(client, [h_bad, h_good])
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert set(body["found"]) == {h_good}
+    assert body["missing"] == [h_bad]
+
+
+def test_lookup_rejects_body_that_nests_too_deeply_to_parse(env):
+    """bug: Dotty verification of a2a04bf — a ~20 kB lookup body whose
+    unused field nests 10000 deep crashed json.loads with RecursionError
+    and returned 500.  Parsing now answers 400 instead."""
+    _, _proxy_db, _, _, _, client, _tmp = env
+    raw = '{"hashes":["' + _hash(61) + '"],"unused":'
+    raw += "[" * 10000 + "]" * 10000 + "}"
+    assert len(raw) < 30000
+    resp = client.post(
+        "/v1/card-facts/lookup",
+        content=raw.encode(),
+        headers={"Authorization": f"Bearer {CUSTOMER_KEY}"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "too deeply" in resp.json()["detail"]
+
+
 def test_normal_unicode_round_trips_through_store_and_lookup(env):
     """Guard for the surrogate rejection: ordinary non-ASCII text (accents,
     emoji beyond the BMP, CJK) must keep storing and looking up unchanged,
