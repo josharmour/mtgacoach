@@ -29,7 +29,10 @@ def isolated_admission(monkeypatch):
         (True, False, "current", "decision.typed", False),
         (True, True, "current", "background.game_plan", False),
         (True, True, "current", "decision.fast", False),
-        (True, True, "glm-5.3-flash", "decision.typed", False),
+        # Fable Nov Q5: the gate follows the model family, not the alias
+        # string - a direct GLM model name is GLM and opts in exactly like
+        # the ``current`` alias serving glm-5.3-flash.
+        (True, True, "glm-5.3-flash", "decision.typed", True),
     ],
 )
 def test_actual_transport_requires_opt_in_typed_deepseek_leg(

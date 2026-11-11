@@ -9715,7 +9715,9 @@ class ActionPlanner(_ActionLegalityMixin):
         from arenamcp.selective_thinking import enabled as selective_enabled
         from arenamcp.selective_thinking import selection_reason
 
-        selective_requested = selective_enabled(getattr(self._backend, "model", None))
+        selective_requested = selective_enabled(
+            getattr(self._backend, "last_served_model", None) or getattr(self._backend, "model", None)
+        )
         selective_reason = selection_reason(decision, game_state, critical) if selective_requested else ""
         if self.separate_strategy_planning:
             critical = ""

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 from arenamcp import llm_trace
 from arenamcp.backend_health import BACKEND_ERROR_PREFIX, BackendHealth
+from arenamcp.model_call_settings import effort_for_backend
 from arenamcp.backends.health import (
     CIRCUIT_FAILURE_STATUS_CODES,
     CircuitBreaker,
@@ -636,29 +637,17 @@ def _normalize_reasoning_effort(model: str, effort):
 
 
 def _alias_effort(model: str, call_class: str, reasoning_effort):
-    """The effort to send for the moving alias, DeepSeek names and outside test models."""
-    from arenamcp.gateway_models import is_test_model
+    """Effort decided from the alias string alone.
 
-    name = str(model or "").lower()
-    test_model = is_test_model(name)
-    if not (name == "current" or test_model or any(part in name for part in ("deepseek", "dsv4"))):
-        return reasoning_effort
-    if call_class.startswith("decision.") or call_class in {
-        "background.commentary",
-        "background.deck_playbook",
-        "probe",
-    }:
-        return "none"
-    if call_class == "background.game_plan":
-        if test_model:
-            # 2026-11-09 23:24 (match eedf1ae3): Gemma 4 26B at "low" spent 4,613
-            # thinking tokens a plan, 17 s at the median and 43 s at worst; five
-            # of ten plan calls were cancelled and no plan existed until turn 5.
-            # The served model spends about 320 tokens and 7 s on the same call.
-            return "none"
-        if reasoning_effort in {"high", "max"}:
-            return "low"
-    return reasoning_effort
+    Kept as the pre-response fallback of the per-model settings table: until
+    the gateway's first response names the served model, the alias is the best
+    available guess. Production decisions go through
+    :func:`arenamcp.model_call_settings.effort_for_backend`, which follows the
+    served model (the response's ``model`` field, logged as ``served_model``).
+    """
+    from arenamcp.model_call_settings import alias_effort
+
+    return alias_effort(model, call_class, reasoning_effort)
 
 
 def _effective_effort(params: dict | None):
@@ -1414,13 +1403,14 @@ class ProxyBackend:
 
             bounded_thinking = (
                 selective_thinking is True
-                and selective_enabled(self.model)
+                and selective_enabled(getattr(self, "last_served_model", None) or self.model)
                 and call.call_class == "decision.typed"
             )
-            # Outside test models get the settings the served model gets today
-            # (decisions without thinking), so a head-to-head run compares models
-            # and not thinking budgets.
-            reasoning_effort = _alias_effort(self.model, call.call_class, reasoning_effort)
+            # Thinking settings follow the model actually served (the response's
+            # "model" field, logged as served_model), not the alias requested:
+            # decisions without thinking, plan calls capped at low, playbook/
+            # announcer/probe without thinking. See arenamcp.model_call_settings.
+            reasoning_effort = effort_for_backend(self, call.call_class, reasoning_effort)
             if bounded_thinking:
                 thinking_enabled = True
                 reasoning_effort = 1
