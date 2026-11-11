@@ -172,6 +172,14 @@ class TypedBridge:
         self.submitted.append(("pass",))
         return True
 
+    def cancel_action(self):
+        self.submitted.append(("cancel",))
+        return True
+
+    def auto_respond(self):
+        self.submitted.append(("auto_respond",))
+        return True
+
 
 class ScriptedBackend:
     """LLM backend that answers every call with ``response``; keeps the prompts."""

@@ -5077,25 +5077,21 @@ class ActionPlanner(_ActionLegalityMixin):
         ):
             logger.info("Search has unidentified cards; declining a blind tutor choice")
             return [DECLINE_DECISION]
-        if (
-            decision.request_type == "SelectN"
-            and decision.min_select >= 1
-            and len(decision.options) >= 10
-            and all(
-                option.meta.get("identity_known") is False and not option.meta.get("choice")
-                for option in decision.options
-            )
-        ):
-            # eedf1ae3 2026-11-09 23:26:45: after Etali's Favor resolved, Arena
-            # asked for one of 85 unnamed objects ("Option 927"…) — hidden
-            # library cards the log never names. The model read it as "pick one
-            # offered card … continue" and chose blind. A pile this large with
-            # nothing identified is a hidden-zone choice, not a strategic one;
-            # decline it instead of spending a model call on invisible options.
-            # Small unnamed selections (a loot's discard, a scry) stay with the
-            # existing wait-out handling.
-            logger.info("SelectN has no identified options; declining a blind choice")
-            return [DECLINE_DECISION]
+        if decision.request_type == "SelectN":
+            from arenamcp.decisions import select_n_needs_arena_default
+
+            if select_n_needs_arena_default(decision):
+                # eedf1ae3 2026-11-09 23:26:45 (packet decision index 14):
+                # after Etali's Favor's discover 3 resolved, Arena asked for at
+                # least one of 85 unnamed objects ("Option 927"…) — hidden
+                # library cards no log line ever names. The model read it as
+                # "pick one offered card … continue" and chose blind
+                # (bug_20261110_070459; the request recurred 07:03/07:04).
+                # Every legal answer here contains objects nobody can identify,
+                # so there is no informed choice to make: decline without a
+                # model call and let the typed path take Arena's own default.
+                logger.info("SelectN has no identified options; declining a blind choice")
+                return [DECLINE_DECISION]
         single = self._single_option_answer(decision)
         if single is not None:
             return single

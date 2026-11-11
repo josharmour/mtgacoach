@@ -5611,7 +5611,11 @@ class AutopilotEngine(
             self._state = AutopilotState.IDLE
             return True
 
-        from arenamcp.decisions import build_pending_decision, submit_option
+        from arenamcp.decisions import (
+            build_pending_decision,
+            select_n_needs_arena_default,
+            submit_option,
+        )
         from arenamcp.request_tracker import decision_fingerprint
 
         # Plan on a board at least as new as the request we would answer.
@@ -5861,6 +5865,30 @@ class AutopilotEngine(
                     trigger,
                     action_type="decision",
                     summary=f"declined {decision.request_type} (no safe choice)",
+                )
+                self._state = AutopilotState.IDLE
+                return True
+            if (
+                select_n_needs_arena_default(decision)
+                and self._progress_bridge(game_state, poll=fresh_poll).auto_respond()
+            ):
+                # A selection whose every legal answer includes objects nobody
+                # can identify (eedf1ae3 2026-11-09 23:26:45: 85 hidden-library
+                # "Option NNN" choices after Etali's Favor's discover 3). The
+                # request cannot be cancelled, so declining outright would
+                # stall; Arena's own default is a legal, completed answer —
+                # the same fallback the stuck-window escape trusts.
+                self._log_execution_path(
+                    ExecutionPath.GRE_AWARE,
+                    f"typed-decision {decision.request_type}: Arena's default (no identified options)",
+                )
+                self._record_autopilot_decision(
+                    game_state,
+                    trigger,
+                    action_type="decision",
+                    summary=(
+                        f"answered {decision.request_type} with Arena's default (no identified options)"
+                    ),
                 )
                 self._state = AutopilotState.IDLE
                 return True

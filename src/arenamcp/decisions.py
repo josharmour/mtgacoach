@@ -2679,6 +2679,54 @@ def expand_target_selection(decision: PendingDecision, chosen_ids: list[str]) ->
     return [instance_id for slot_ids in assigned for instance_id in slot_ids]
 
 
+def select_n_identity_split(
+    decision: PendingDecision,
+) -> tuple[list[DecisionOption], list[DecisionOption]]:
+    """Split a SelectN's options into (identified, unidentified).
+
+    An option is unidentified when the log and the live game state name
+    nothing for it (``identity_known`` False, no structural ``choice``
+    metadata): a hidden-library object such as the 85 "Option NNN" choices
+    Arena offered right after Etali's Favor's discover 3 resolved
+    (eedf1ae3 2026-11-09 23:26:45, packet decision index 14). Nobody —
+    code or model — can judge an option it cannot see.
+    """
+    if decision.request_type != "SelectN":
+        return list(decision.options), []
+    identified: list[DecisionOption] = []
+    unidentified: list[DecisionOption] = []
+    for option in decision.options:
+        if option.meta.get("identity_known") is False and not option.meta.get("choice"):
+            unidentified.append(option)
+        else:
+            identified.append(option)
+    return identified, unidentified
+
+
+def select_n_needs_arena_default(decision: PendingDecision) -> bool:
+    """True when a SelectN cannot be answered from identified options alone.
+
+    Scoped to hidden-library selections: every unnamed option sits in a
+    hidden zone (the live game state recorded ``zone == "Library"`` for it),
+    so no legal answer can be an informed choice. The planner declines these
+    without a model call and the typed path completes the request with Arena's
+    own default (bug_20261110_070459: after Etali's Favor's discover 3
+    resolved, the model answered "pick one offered card" blind over 85 hidden
+    library objects and the same request recurred 07:03/07:04).
+
+    Unnamed options anywhere else keep the established semantics: battlefield
+    payments are decided by weight, trigger-order choices and loot discards
+    reach the model, and a hand card whose name trailed is waited out first.
+    """
+    identified, unidentified = select_n_identity_split(decision)
+    if not unidentified or decision.max_select == 0:
+        return False
+    if len(identified) >= max(decision.min_select, 1):
+        return False
+    zones = {option.meta.get("zone") for option in unidentified}
+    return zones == {"Library"}
+
+
 def search_safe_default(decision: PendingDecision) -> list[str] | None:
     """A legal Search answer for when nothing better arrives in time (decision watchdog).
 
