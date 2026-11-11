@@ -368,41 +368,54 @@ class CardFactsClient:
             status, text = self._opener(url, body, headers)
         except Exception as error:  # defensive: openers are pluggable
             status, text = 0, f"{type(error).__name__}: {error}"
-        found: dict[str, Any] | None = None
-        if status == 200:
-            try:
-                payload = json.loads(text)
-                candidate = payload.get("found")
-                if isinstance(candidate, dict):
-                    found = candidate
-            except Exception as error:
-                logger.debug("card facts lookup response unreadable: %s", error)
-                found = None
-        if found is None:
-            self._on_failure(status, text)
-            return
-        missing_retry_at = self._clock() + MISSING_RETRY_S
-        stored: list[str] = []
-        for digest in hashes:
-            record = found.get(digest)
-            if isinstance(record, dict):
-                self._store(digest, record)
-                stored.append(digest)
-            else:
-                # Missing (or an unexpected shape): ask again later. The
-                # attempt just happened, so its deadline replaces any older
-                # schedule instead of merging with it.
+        try:
+            found: dict[str, Any] | None = None
+            if status == 200:
+                try:
+                    payload = json.loads(text)
+                    candidate = payload.get("found")
+                    if isinstance(candidate, dict):
+                        found = candidate
+                except Exception as error:
+                    logger.debug("card facts lookup response unreadable: %s", error)
+                    found = None
+            if found is None:
+                self._on_failure(status, text)
+                return
+            missing_retry_at = self._clock() + MISSING_RETRY_S
+            stored: list[str] = []
+            for digest in hashes:
+                record = found.get(digest)
+                if isinstance(record, dict):
+                    self._store(digest, record)
+                    stored.append(digest)
+                else:
+                    # Missing (or an unexpected shape): ask again later. The
+                    # attempt just happened, so its deadline replaces any older
+                    # schedule instead of merging with it.
+                    with self._wake:
+                        self._want_fetch[digest] = missing_retry_at
+                        self._wake.notify()
+            if stored:
                 with self._wake:
-                    self._want_fetch[digest] = missing_retry_at
-                    self._wake.notify()
-        if stored:
+                    if self._failing:
+                        self._failing = False
+                        logger.info(
+                            "card facts lookup recovered (%d record(s) cached)",
+                            len(stored),
+                        )
+        finally:
+            # The batch has settled one way or another (success stored above,
+            # failure requeued by _on_failure, missing rescheduled outright).
+            # Leaving hashes here would make queue_hashes and _cached believe
+            # a request is still on the wire, so a record that later aged past
+            # REFRESH_AFTER_S could never have its background refresh queued
+            # and the client would stop calling the server after its first
+            # success (review round 2 cold-success-then-aged-refresh repro).
+            # Deadlines were set outright by the handlers above, so clearing
+            # here preserves them.
             with self._wake:
-                if self._failing:
-                    self._failing = False
-                    logger.info(
-                        "card facts lookup recovered (%d record(s) cached)",
-                        len(stored),
-                    )
+                self._in_flight.clear()
 
     def _on_failure(self, status: int, text: str) -> None:
         """Log the first failure at INFO, repeats at DEBUG; retry later."""

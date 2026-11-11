@@ -44,6 +44,7 @@ from unittest.mock import Mock
 from arenamcp.card_facts.client import (
     FAILURE_RETRY_S,
     MISSING_RETRY_S,
+    REFRESH_AFTER_S,
     CardFactsClient,
     hash_for_card,
 )
@@ -515,6 +516,38 @@ def test_warm_prefetch_respects_cache_freshness(tmp_path):
     flat = [digest for batch in calls for digest in batch]
     assert flat.count(FURY_HASH) == 1
     assert flat.count(MOX_HASH) == 1
+
+
+def test_settled_success_clears_in_flight_so_aged_record_refreshes(tmp_path):
+    """Regression (review round 2, cold-success-then-aged-refresh repro): a
+    settled HTTP 200 used to leave the batch's hashes in ``_in_flight``
+    forever, so once the record aged past REFRESH_AFTER_S neither
+    ``queue_hashes`` nor ``_cached`` would queue its background refresh and
+    the client stopped calling the server after its first success. Every
+    settled outcome must clear the in-flight batch while failure and missing
+    deadlines survive (the concurrent-backoff regression above covers those)."""
+    calls: list[list[str]] = []
+
+    def opener(url, body, headers):
+        calls.append(json.loads(body)["hashes"])
+        return 200, json.dumps({"found": _records(FURY_CARD)})
+
+    clock = _Clock()
+    client = _client(opener, tmp_path, clock)
+
+    # Cold cache: the first lookup succeeds and serves the record.
+    assert client.facts_for([FURY_CARD]) == {}
+    _eventually(lambda: client.facts_for([FURY_CARD]).get(FURY_HASH) is not None)
+    time.sleep(0.05)
+    assert calls == [[FURY_HASH]]
+    with client._wake:
+        assert client._in_flight == []  # settled success cleared the batch
+
+    # Thirty-one days later the record is stale. Nothing re-seeds the cache;
+    # the refresh must still be queued and sent.
+    clock.now += REFRESH_AFTER_S + 1.0
+    assert client.facts_for([FURY_CARD])[FURY_HASH]["name"] == "Fury"
+    _eventually(lambda: calls == [[FURY_HASH], [FURY_HASH]])
 
 
 def test_default_resolver_recovers_when_local_db_becomes_ready_late(monkeypatch):
