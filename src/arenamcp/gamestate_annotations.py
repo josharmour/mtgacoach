@@ -294,9 +294,7 @@ class _GameStateAnnotationsMixin:
                                 try:
                                     prefetch_grp_ids([obj.grp_id])
                                 except Exception as error:
-                                    logger.debug(
-                                        "card facts prefetch failed: %s", error
-                                    )
+                                    logger.debug("card facts prefetch failed: %s", error)
                             card_name = self._resolve_card_name(obj.grp_id)
                             # Keep the instance and its zone at reveal time: a
                             # stand-in revealed into a hand has the hand as its
