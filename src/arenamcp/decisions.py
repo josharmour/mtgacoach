@@ -91,6 +91,10 @@ class PendingDecision:
     # transient ability object (Peacekeeper: CardId226, sourceId9005).
     source_instance_id: int = 0
     source_oracle_text: str = ""
+    # Arena's declared semantics for a SelectN (GRE SelectionContext /
+    # OptionContext); None when the request declares none.
+    selection_context: str | None = None
+    option_context: str | None = None
 
     def option_ids(self) -> set[str]:
         return {o.option_id for o in self.options}
@@ -1270,11 +1274,7 @@ def _build_select_n(
     selection_context = poll.get("select_n_context") or payload.get("context")
     option_context = poll.get("select_n_option_context") or payload.get("optionContext")
     stacking_prompt = ""
-    if (
-        not is_search
-        and selection_context == "SelectionContext_TriggeredAbility"
-        and option_context == "OptionContext_Stacking"
-    ):
+    if not is_search and _is_trigger_stacking_selection(selection_context, option_context):
         stacking_prompt = (
             "Choose triggered abilities to put on the stack, following the selection limits. "
             "These are already-triggered abilities, not new spells or optional card plays. "
@@ -1291,6 +1291,27 @@ def _build_select_n(
         min_weight=min_weight,
         max_weight=max_weight,
         prompt_text=stacking_prompt,
+        selection_context=selection_context or None,
+        option_context=option_context or None,
+    )
+
+
+def _is_trigger_stacking_selection(selection_context: str | None, option_context: str | None) -> bool:
+    """A SelectN over already-triggered abilities awaiting stack order.
+
+    Arena declares this shape itself (scry_transition_341: the follow-up
+    selection of revealed card 231 arrives as SelectionContext_TriggeredAbility
+    with OptionContext_Stacking). Such menus have their own established
+    policy — a dedicated prompt that already tells the model how to treat an
+    unresolved option id — so they are governed by it, not by the
+    blind-menu default. A TriggeredAbility selection that declares no option
+    context at all counts too: its established behaviour is the legacy path,
+    and the default must never take over a menu Arena labelled as triggered
+    abilities.
+    """
+    return selection_context == "SelectionContext_TriggeredAbility" and option_context in (
+        None,
+        "OptionContext_Stacking",
     )
 
 
@@ -2679,52 +2700,84 @@ def expand_target_selection(decision: PendingDecision, chosen_ids: list[str]) ->
     return [instance_id for slot_ids in assigned for instance_id in slot_ids]
 
 
-def select_n_identity_split(
+def select_n_blind_split(
     decision: PendingDecision,
 ) -> tuple[list[DecisionOption], list[DecisionOption]]:
-    """Split a SelectN's options into (identified, unidentified).
+    """Split a SelectN's options into (decidable, blind).
 
-    An option is unidentified when the log and the live game state name
-    nothing for it (``identity_known`` False, no structural ``choice``
-    metadata): a hidden-library object such as the 85 "Option NNN" choices
-    Arena offered right after Etali's Favor's discover 3 resolved
-    (eedf1ae3 2026-11-09 23:26:45, packet decision index 14). Nobody —
-    code or model — can judge an option it cannot see.
+    An option is blind when nothing names it and nothing else about it
+    decides the choice: ``identity_known`` False, no structural ``choice``
+    metadata and no ``weight``. Those are objects neither the log nor the
+    live game state identifies — such as the 85 "Option NNN" choices Arena
+    offered right after Etali's Favor's discover 3 resolved (eedf1ae3
+    2026-11-09 23:26:45, packet decision index 14; the capture records no
+    zone for them, so the policy must not need one). Nobody — code or
+    model — can judge an option it cannot see.
+
+    Everything else stays decidable without a name: a battlefield payment
+    option carries a weight the planner ranks by, and a structural choice
+    (``choice`` metadata) is decided by its own policy.
     """
     if decision.request_type != "SelectN":
         return list(decision.options), []
-    identified: list[DecisionOption] = []
-    unidentified: list[DecisionOption] = []
+    decidable: list[DecisionOption] = []
+    blind: list[DecisionOption] = []
     for option in decision.options:
-        if option.meta.get("identity_known") is False and not option.meta.get("choice"):
-            unidentified.append(option)
+        meta = option.meta
+        if meta.get("identity_known") is False and not meta.get("choice") and "weight" not in meta:
+            blind.append(option)
         else:
-            identified.append(option)
-    return identified, unidentified
+            decidable.append(option)
+    return decidable, blind
 
 
 def select_n_needs_arena_default(decision: PendingDecision) -> bool:
-    """True when a SelectN cannot be answered from identified options alone.
+    """True when a SelectN cannot be answered from decidable options alone.
 
-    Scoped to hidden-library selections: every unnamed option sits in a
-    hidden zone (the live game state recorded ``zone == "Library"`` for it),
-    so no legal answer can be an informed choice. The planner declines these
-    without a model call and the typed path completes the request with Arena's
-    own default (bug_20261110_070459: after Etali's Favor's discover 3
-    resolved, the model answered "pick one offered card" blind over 85 hidden
-    library objects and the same request recurred 07:03/07:04).
+    Every legal answer then includes at least one object nobody can identify,
+    so there is no informed choice to make: the planner declines without a
+    model call and the typed path completes the request with Arena's own
+    default (bug_20261110_070459: after Etali's Favor's discover 3 resolved,
+    the model answered "pick one offered card" blind over 85 unidentified
+    objects and the same request recurred 07:03/07:04). The capture records
+    no zone for those options, so belonging to a hidden zone is not required
+    here — being unidentifiable is.
 
-    Unnamed options anywhere else keep the established semantics: battlefield
-    payments are decided by weight, trigger-order choices and loot discards
-    reach the model, and a hand card whose name trailed is waited out first.
+    Two carve-outs keep the established semantics:
+    - A menu whose decidable options alone satisfy the minimum is answered
+      from those only (the model never sees an unnamed option).
+    - A menu Arena itself gives a structural meaning to — trigger stacking
+      (_is_trigger_stacking_selection) — keeps its own established policy,
+      whose prompt already governs unresolved option ids.
+    - A constrained menu (Arena offers more than it accepts) with nothing
+      decidable at all behaves exactly as before this change: its options are
+      grounded by the prompt's game state and the per-option policies
+      (weights, the hand-card identity wait), so it keeps reaching the model.
     """
-    identified, unidentified = select_n_identity_split(decision)
-    if not unidentified or decision.max_select == 0:
+    if _is_trigger_stacking_selection(decision.selection_context, decision.option_context):
         return False
-    if len(identified) >= max(decision.min_select, 1):
+    decidable, blind = select_n_blind_split(decision)
+    if not blind or decision.max_select == 0:
         return False
-    zones = {option.meta.get("zone") for option in unidentified}
-    return zones == {"Library"}
+    if len(decidable) >= max(decision.min_select, 1):
+        return False
+    return len(decidable) > 0 or decision.max_select >= len(decision.options)
+
+
+def select_n_without_blind_options(decision: PendingDecision) -> PendingDecision | None:
+    """A copy of a SelectN with its blind options removed, or None if none.
+
+    Used whenever a menu mixes identified and unidentified options but the
+    identified ones alone can satisfy the request: the model then chooses
+    among options it can actually see, and an unnamed option never reaches
+    it. Callers must have ruled out ``select_n_needs_arena_default`` first,
+    and must skip an empty result (a menu with nothing decidable keeps its
+    established handling).
+    """
+    decidable, blind = select_n_blind_split(decision)
+    if not blind:
+        return None
+    return replace(decision, options=tuple(decidable))
 
 
 def search_safe_default(decision: PendingDecision) -> list[str] | None:

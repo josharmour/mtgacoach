@@ -5078,20 +5078,37 @@ class ActionPlanner(_ActionLegalityMixin):
             logger.info("Search has unidentified cards; declining a blind tutor choice")
             return [DECLINE_DECISION]
         if decision.request_type == "SelectN":
-            from arenamcp.decisions import select_n_needs_arena_default
+            from arenamcp.decisions import (
+                select_n_needs_arena_default,
+                select_n_without_blind_options,
+            )
 
             if select_n_needs_arena_default(decision):
                 # eedf1ae3 2026-11-09 23:26:45 (packet decision index 14):
                 # after Etali's Favor's discover 3 resolved, Arena asked for at
-                # least one of 85 unnamed objects ("Option 927"…) — hidden
-                # library cards no log line ever names. The model read it as
-                # "pick one offered card … continue" and chose blind
-                # (bug_20261110_070459; the request recurred 07:03/07:04).
-                # Every legal answer here contains objects nobody can identify,
-                # so there is no informed choice to make: decline without a
-                # model call and let the typed path take Arena's own default.
-                logger.info("SelectN has no identified options; declining a blind choice")
+                # least one of 85 unidentified objects ("Option 927"…) that no
+                # log line and no live game state names (the capture records no
+                # zone for them). The model read it as "pick one offered card
+                # … continue" and chose blind (bug_20261110_070459; the request
+                # recurred 07:03/07:04). Every legal answer here contains an
+                # object nobody can identify, so there is no informed choice
+                # to make: decline without a model call and let the typed path
+                # take Arena's own default.
+                logger.info("SelectN has no decidable options; declining a blind choice")
                 return [DECLINE_DECISION]
+            filtered = select_n_without_blind_options(decision)
+            if filtered is not None and filtered.options:
+                # A partly identified menu (a loot's discard whose drawn card's
+                # name trailed, or a mixed offer): the model decides among the
+                # options it can actually see. An unnamed option never reaches
+                # it — the model previously picked "Option 8" over a named
+                # alternative it could have judged.
+                logger.info(
+                    "SelectN: %d of %d options unidentified; deciding among the identified ones",
+                    len(decision.options) - len(filtered.options),
+                    len(decision.options),
+                )
+                decision = filtered
         single = self._single_option_answer(decision)
         if single is not None:
             return single

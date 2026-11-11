@@ -5873,11 +5873,12 @@ class AutopilotEngine(
                 and self._progress_bridge(game_state, poll=fresh_poll).auto_respond()
             ):
                 # A selection whose every legal answer includes objects nobody
-                # can identify (eedf1ae3 2026-11-09 23:26:45: 85 hidden-library
-                # "Option NNN" choices after Etali's Favor's discover 3). The
-                # request cannot be cancelled, so declining outright would
-                # stall; Arena's own default is a legal, completed answer —
-                # the same fallback the stuck-window escape trusts.
+                # can identify (eedf1ae3 2026-11-09 23:26:45: 85 unidentified
+                # "Option NNN" choices after Etali's Favor's discover 3; the
+                # capture records no zone for them). The request cannot be
+                # cancelled, so declining outright would stall; Arena's own
+                # default is a legal, completed answer — the same fallback the
+                # stuck-window escape trusts.
                 self._log_execution_path(
                     ExecutionPath.GRE_AWARE,
                     f"typed-decision {decision.request_type}: Arena's default (no identified options)",

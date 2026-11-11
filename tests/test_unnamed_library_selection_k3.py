@@ -13,11 +13,11 @@ What the evidence holds: the packet's pending_decision (option ids, min/max,
 can_cancel), the coach log around it, and the bug report. The bridge payload
 itself (the GreToClientEvent SelectNreq) was summarized away by Player.log
 (standalone.log 2026-11-09 23:26:45.235 and 2026-11-10 07:03:56.311: "its
-details are missing from the log"), so what Arena was asking and which zone
-the options live in are not recorded anywhere. The zone label asserted below
-is therefore the derivation from the live game state at decision time, with
-that state reconstructed for the test; only the ids, bounds and seat come from
-the capture.
+details are missing from the log"), so what Arena was asking — and which zone
+the options live in — is not recorded anywhere. The tests below therefore run
+against the capture exactly as it is: ids, bounds and seat from the packet,
+and NO live game state, so no option carries a zone label. The policy under
+test keys on identifiability, never on a zone.
 
 Pinned behaviour: an unidentified option never reaches the model; a menu that
 cannot be answered from identified options alone is declined without a model
@@ -55,31 +55,29 @@ def _captured_poll(**overrides):
     return poll
 
 
-def _hidden_library_objects(seat=CAPTURED_LOCAL_SEAT):
-    """A reconstructed live state for the captured ids.
+@pytest.fixture()
+def no_live_state(monkeypatch):
+    """The capture as it stands: no live game state to name or place anything.
 
-    The capture does not say where these objects live (see module docstring);
-    this reconstruction places them in a private zone owned by the local seat
-    so the zone labelling and identity resolution have something to read.
+    Mirrors a replay of the packet — every option stays unidentified and
+    carries no zone label, exactly as the round-2 review reproduced it.
     """
-    objects = {
-        iid: SimpleNamespace(
-            grp_id=0,
-            visibility="Visibility_Private",
-            owner_seat_id=seat,
-            zone_id=7,
-        )
-        for iid in ETALI_FAVOR_OPTION_IDS
-    }
-    state = SimpleNamespace(
-        local_seat_id=seat,
-        zones={7: SimpleNamespace(zone_type=SimpleNamespace(value="ZoneType_Library"))},
+    from arenamcp import decisions
+
+    monkeypatch.setattr(decisions, "_live_object", lambda instance_id: None)
+    monkeypatch.setattr(
+        decisions,
+        "_live_game_state",
+        lambda: SimpleNamespace(zones={}, local_seat_id=CAPTURED_LOCAL_SEAT),
     )
-    return objects, state
 
 
-def test_captured_selection_builds_with_the_captured_shape():
-    decision = build_pending_decision(_captured_poll(), resolve_instance=lambda _: "")
+def _captured_decision(**poll_overrides):
+    return build_pending_decision(_captured_poll(**poll_overrides), resolve_instance=lambda _: "")
+
+
+def test_captured_selection_builds_with_the_captured_shape(no_live_state):
+    decision = _captured_decision()
 
     assert decision is not None
     assert decision.request_type == "SelectN"
@@ -89,24 +87,43 @@ def test_captured_selection_builds_with_the_captured_shape():
     assert (decision.min_select, decision.max_select) == (1, 85)
     assert decision.can_cancel is False
     assert all(option.meta["identity_known"] is False for option in decision.options)
+    # The capture establishes no zone for these objects (see module docstring);
+    # nothing here may invent one.
+    assert all("zone" not in option.meta for option in decision.options)
 
 
-def test_unnamed_options_record_the_zone_the_live_state_gives_them(monkeypatch):
+def test_unnamed_options_record_the_zone_when_live_state_supplies_one(monkeypatch):
+    # Observability only: when the live game state CAN place an object, its
+    # zone is recorded for logs and manual hand-offs. The decline/default
+    # policy below never requires this label to be present.
     from arenamcp import decisions
 
-    objects, state = _hidden_library_objects()
+    objects = {
+        iid: SimpleNamespace(
+            grp_id=0,
+            visibility="Visibility_Private",
+            owner_seat_id=CAPTURED_LOCAL_SEAT,
+            zone_id=7,
+        )
+        for iid in ETALI_FAVOR_OPTION_IDS
+    }
+    state = SimpleNamespace(
+        local_seat_id=CAPTURED_LOCAL_SEAT,
+        zones={7: SimpleNamespace(zone_type=SimpleNamespace(value="ZoneType_Library"))},
+    )
     monkeypatch.setattr(decisions, "_live_object", objects.get)
     monkeypatch.setattr(decisions, "_live_game_state", lambda: state)
 
-    decision = build_pending_decision(_captured_poll(), resolve_instance=lambda _: "")
+    decision = _captured_decision()
 
     assert all(option.meta.get("zone") == "Library" for option in decision.options)
 
 
 @pytest.mark.parametrize("count,min_select", [(3, 1), (9, 1), (85, 0), (85, 1)])
-def test_fully_unnamed_hidden_library_selections_never_reach_the_model(count, min_select):
+def test_fully_unidentified_selections_of_any_size_never_reach_the_model(no_live_state, count, min_select):
     # Same shape as the capture (ids three apart, "Option NNN" labels), scaled
-    # down to 3 and 9 to pin that no size threshold gates the decline.
+    # down to 3 and 9 to pin that no size threshold gates the decline — and
+    # with no zone label anywhere, as in the actual packet.
     decision = PendingDecision(
         (336, 402),
         "SelectN",
@@ -114,7 +131,7 @@ def test_fully_unnamed_hidden_library_selections_never_reach_the_model(count, mi
             DecisionOption(
                 f"sel:{927 + 3 * index}",
                 f"Option {927 + 3 * index}",
-                meta={"grpId": 0, "identity_known": False, "zone": "Library"},
+                meta={"grpId": 0, "identity_known": False},
             )
             for index in range(count)
         ),
@@ -123,47 +140,20 @@ def test_fully_unnamed_hidden_library_selections_never_reach_the_model(count, mi
     )
 
     planner = ActionPlanner(Mock())
-    llm = Mock(side_effect=AssertionError("unnamed options must not reach the model"))
+    llm = Mock(side_effect=AssertionError("unidentified options must not reach the model"))
     planner._llm_decision_options = llm
 
     assert planner._plan_decision_options(decision, {"players": [], "battlefield": []}) == [DECLINE_DECISION]
     llm.assert_not_called()
 
 
-def test_unnamed_options_outside_a_hidden_zone_still_reach_the_model():
-    # Crew-style payment: the log may not carry the creatures' names, but they
-    # stand on a public battlefield — the model decides by weight, exactly as
-    # before (tests/test_weighted_decisions.py pins this end to end).
-    decision = PendingDecision(
-        (336, 402),
-        "SelectN",
-        (
-            DecisionOption("sel:763", "Option 763", meta={"grpId": 0, "identity_known": False, "weight": 3}),
-            DecisionOption("sel:771", "Option 771", meta={"grpId": 0, "identity_known": False, "weight": 1}),
-            DecisionOption("sel:875", "Option 875", meta={"grpId": 0, "identity_known": False, "weight": 4}),
-        ),
-        min_select=0,
-        max_select=3,
-    )
-    planner = ActionPlanner(Mock())
-    llm = Mock(return_value=["sel:875"])
-    planner._llm_decision_options = llm
-
-    assert planner._plan_decision_options(decision, {"players": [], "battlefield": []}) == ["sel:875"]
-    llm.assert_called_once()
-
-
-def test_captured_selection_is_completed_by_arena_default_end_to_end(monkeypatch):
-    """The full typed path: no model call, no manual stall — Arena's default."""
+def test_captured_selection_is_completed_by_arena_default_end_to_end(no_live_state):
+    """The full typed path on the captured poll: no model call, no manual
+    stall — Arena's default completes the noncancellable request."""
     from tests.fakes import TypedBridge, make_engine, target_state
 
-    from arenamcp import decisions
-
-    objects, state = _hidden_library_objects()
-    monkeypatch.setattr(decisions, "_live_object", objects.get)
-    monkeypatch.setattr(decisions, "_live_game_state", lambda: state)
     planner = ActionPlanner(Mock())
-    llm = Mock(side_effect=AssertionError("no model call for unnamed options"))
+    llm = Mock(side_effect=AssertionError("no model call for unidentified options"))
     planner._llm_decision_options = llm
     bridge = TypedBridge(_captured_poll())
     engine = make_engine(bridge, planner, game_state=target_state())
@@ -178,16 +168,13 @@ def test_captured_selection_is_completed_by_arena_default_end_to_end(monkeypatch
     llm.assert_not_called()
 
 
-def test_cancellable_unnamed_selection_is_cancelled_rather_than_defaulted(monkeypatch):
+def test_cancellable_unidentified_selection_is_cancelled_rather_than_defaulted(
+    no_live_state,
+):
     from tests.fakes import TypedBridge, make_engine, target_state
 
-    from arenamcp import decisions
-
-    objects, state = _hidden_library_objects()
-    monkeypatch.setattr(decisions, "_live_object", objects.get)
-    monkeypatch.setattr(decisions, "_live_game_state", lambda: state)
     planner = ActionPlanner(Mock())
-    planner._llm_decision_options = Mock(side_effect=AssertionError("no model call for unnamed options"))
+    planner._llm_decision_options = Mock(side_effect=AssertionError("no model call for unidentified options"))
     bridge = TypedBridge(_captured_poll(can_cancel=True))
     engine = make_engine(bridge, planner, game_state=target_state())
     pauses = []
@@ -201,10 +188,11 @@ def test_cancellable_unnamed_selection_is_cancelled_rather_than_defaulted(monkey
     assert pauses == []
 
 
-def test_partly_identified_menu_passes_through_intact_to_the_model():
-    # A partly identified menu (a loot's discard where one name trailed) is
-    # intentionally passed through whole: the model sees every option, named
-    # or not, exactly as before this change.
+def test_mixed_menu_offers_the_model_only_the_identified_options():
+    # A partly identified menu (a loot's discard where one name trailed): the
+    # model chooses among the cards it can actually see. An unidentified
+    # option never reaches it — previously the model picked "Option 8" over a
+    # named alternative it could have judged.
     decision = PendingDecision(
         (336, 402),
         "SelectN",
@@ -223,20 +211,20 @@ def test_partly_identified_menu_passes_through_intact_to_the_model():
     assert planner._plan_decision_options(decision, {"players": [], "battlefield": []}) == ["sel:5"]
     llm.assert_called_once()
     offered = llm.call_args[0][0]
-    assert [option.option_id for option in offered.options] == ["sel:5", "sel:8", "sel:11"]
+    assert [option.option_id for option in offered.options] == ["sel:5"]
+    assert all(option.meta.get("identity_known") is not False for option in offered.options)
 
 
-def test_mixed_menu_that_still_requires_a_hidden_library_card_declines():
-    # Two cards must be picked but only one is identified and the rest are
-    # hidden library objects: every legal answer includes a card nobody can
-    # see, so the model is not consulted.
+def test_mixed_menu_that_still_requires_an_unidentified_card_declines():
+    # Two cards must be picked but only one is identified: every legal answer
+    # includes an object nobody can see, so the model is not consulted.
     decision = PendingDecision(
         (336, 402),
         "SelectN",
         (
             DecisionOption("sel:5", "Bear Cub", meta={"identity_known": True}),
-            DecisionOption("sel:8", "Option 8", meta={"identity_known": False, "zone": "Library"}),
-            DecisionOption("sel:11", "Option 11", meta={"identity_known": False, "zone": "Library"}),
+            DecisionOption("sel:8", "Option 8", meta={"identity_known": False}),
+            DecisionOption("sel:11", "Option 11", meta={"identity_known": False}),
         ),
         min_select=2,
         max_select=2,
@@ -249,10 +237,103 @@ def test_mixed_menu_that_still_requires_a_hidden_library_card_declines():
     llm.assert_not_called()
 
 
-def test_loot_discard_still_waits_for_the_name_then_decides_from_the_full_menu(monkeypatch):
+def test_weighted_unnamed_options_still_reach_the_model():
+    # Crew-style payment: the log may not carry the creatures' names, but each
+    # option carries a weight the planner ranks by — decidable without a name,
+    # exactly as before (tests/test_weighted_decisions.py pins this end to end).
+    decision = PendingDecision(
+        (336, 402),
+        "SelectN",
+        (
+            DecisionOption("sel:763", "Option 763", meta={"grpId": 0, "identity_known": False, "weight": 3}),
+            DecisionOption("sel:771", "Option 771", meta={"grpId": 0, "identity_known": False, "weight": 1}),
+            DecisionOption("sel:875", "Option 875", meta={"grpId": 0, "identity_known": False, "weight": 4}),
+        ),
+        min_select=0,
+        max_select=3,
+    )
+    planner = ActionPlanner(Mock())
+    llm = Mock(return_value=["sel:875"])
+    planner._llm_decision_options = llm
+
+    assert planner._plan_decision_options(decision, {"players": [], "battlefield": []}) == ["sel:875"]
+    llm.assert_called_once()
+    offered = llm.call_args[0][0]
+    assert [option.option_id for option in offered.options] == ["sel:763", "sel:771", "sel:875"]
+
+
+def test_constrained_menu_with_nothing_decidable_keeps_its_established_path():
+    # Arena offers more than it accepts (2 offered, 1 taken) and nothing names
+    # any option: the prompt's game state grounds these (a sacrifice among
+    # visible permanents), so the established behaviour is unchanged — the
+    # model is consulted, exactly as tests/test_typed_decision_path.py::
+    # test_planner_respects_max_select pins.
+    decision = PendingDecision(
+        (336, 402),
+        "SelectN",
+        (
+            DecisionOption("sel:10", "Option 10", meta={"grpId": 0, "identity_known": False}),
+            DecisionOption("sel:11", "Option 11", meta={"grpId": 0, "identity_known": False}),
+        ),
+        min_select=1,
+        max_select=1,
+    )
+    planner = ActionPlanner(Mock())
+    llm = Mock(return_value=["sel:10"])
+    planner._llm_decision_options = llm
+
+    assert planner._plan_decision_options(decision, {"players": [], "battlefield": []}) == ["sel:10"]
+    llm.assert_called_once()
+    offered = llm.call_args[0][0]
+    assert [option.option_id for option in offered.options] == ["sel:10", "sel:11"]
+
+
+def test_trigger_stacking_selection_keeps_its_established_policy():
+    # Real logged case #341 (tests/fixtures/scry_transition_341.json, poll
+    # index 3): after a failed trigger selection expired, Arena re-offered the
+    # same revealed card as a SelectN over already-triggered abilities
+    # (SelectionContext_TriggeredAbility / OptionContext_Stacking). Its option
+    # ids are unresolved, but this menu has its own established policy — the
+    # dedicated stacking prompt — so it is not declined (the scry-transition
+    # regression tests pin this end to end).
+    import json
+    from pathlib import Path
+
+    raw = json.loads((Path(__file__).parent / "fixtures/scry_transition_341.json").read_text())
+    select = raw[3]["message"]["selectNReq"]
+    decision = build_pending_decision(
+        {
+            "has_pending": True,
+            "request_type": "SelectN",
+            "select_n_ids": select["ids"],
+            "select_n_min": select["minSel"],
+            "select_n_max": select["maxSel"],
+            "select_n_context": select["context"],
+            "select_n_option_context": select["optionContext"],
+        },
+        resolve_instance=lambda _: "",
+    )
+    assert decision is not None
+    assert decision.selection_context == "SelectionContext_TriggeredAbility"
+    assert decision.option_context == "OptionContext_Stacking"
+    assert all(option.meta.get("identity_known") is False for option in decision.options)
+
+    planner = ActionPlanner(Mock())
+    llm = Mock(return_value=["sel:337", "sel:338"])
+    planner._llm_decision_options = llm
+
+    assert planner._plan_decision_options(decision, {"players": [], "battlefield": []}) == [
+        "sel:337",
+        "sel:338",
+    ]
+    llm.assert_called_once()
+
+
+def test_loot_discard_waits_for_the_name_then_decides_among_named_cards_only(monkeypatch):
     """The hand-card identity wait (match 07c043d8's loot) is untouched: wait
-    for the log to name the card just drawn, then decide — the menu passes
-    through to the model intact, exactly as before this change."""
+    for the log to name the card just drawn, then decide — but among the named
+    cards only, so the model never sees an "Option N" (the 2026-10-08 game-1
+    incident had it discard Sphinx's Approach unseen)."""
 
     class _DisconnectedBridge:
         connected = False
@@ -300,4 +381,5 @@ def test_loot_discard_still_waits_for_the_name_then_decides_from_the_full_menu(m
     assert planner._plan_decision_options(decision, state) == ["sel:119"]
     llm.assert_called_once()
     offered = llm.call_args[0][0]
-    assert [option.option_id for option in offered.options] == ["sel:119", "sel:232", "sel:256"]
+    # The still-unnamed third card is withheld from the model, not offered.
+    assert [option.option_id for option in offered.options] == ["sel:119", "sel:232"]
