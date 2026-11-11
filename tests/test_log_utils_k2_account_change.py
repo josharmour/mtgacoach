@@ -474,3 +474,152 @@ def test_unrelated_current_login_is_never_bound_without_room_evidence(monkeypatc
     server._handle_match_created(_room_event("old-match", OLD_ACCOUNT_ID, "ActualOpponent"))
 
     assert log_utils.account_bound_to_match("old-match") is None
+
+
+# --- round 3: Bo3 game records (<match>-g2) must resolve the match's binding ----
+
+
+def _bo3_game_id(match_id: str, game_number: int) -> str:
+    """The exact id standalone_postmatch records game n under."""
+    from arenamcp.match_bundle import game_bundle_id
+
+    return game_bundle_id(match_id, game_number)
+
+
+def test_bo3_game2_and_game3_records_keep_the_match_account_after_switch(monkeypatch, tmp_path):
+    """Audit case: A's Bo3 continues after the user switches to B.
+
+    Match A starts under account A; the user switches to account B and starts
+    match B; only then are A's game 2 and game 3 recorded — under their
+    game_bundle_id ids ("<match>-g2"/"<match>-g3", exactly as
+    standalone_postmatch._take_game_end_signal passes them) with snapshots
+    that name the bare match. Both must stamp A, not the current login B.
+    """
+    log_path = tmp_path / "Player.log"
+    log_path.write_text(
+        LOGIN_BLOCK_TEMPLATE.format(
+            ts="[11/9/2026 8:02:11 PM]",
+            client_id=OLD_ACCOUNT_ID,
+            screen_name="OldAccount",
+        ),
+        encoding="utf-8",
+    )
+    _start_server_flow(monkeypatch, str(log_path))
+
+    server._handle_match_created(_room_event("match-A", OLD_ACCOUNT_ID, "ActualOpponent"))
+    _switch_login(log_path, "[11/9/2026 11:15:07 PM]", NEW_ACCOUNT_ID, "NewAccount")
+    server._handle_match_created(_room_event("match-B", NEW_ACCOUNT_ID, "SecondOpponent"))
+
+    snapshot = {"match_id": "match-A", "opponent_name": "ActualOpponent"}
+    rec_g2 = record_from_game_end(_bo3_game_id("match-A", 2), "win", dict(snapshot))
+    rec_g3 = record_from_game_end(_bo3_game_id("match-A", 3), "loss", dict(snapshot))
+
+    assert rec_g2.local_account_id == OLD_ACCOUNT_ID
+    assert rec_g3.local_account_id == OLD_ACCOUNT_ID
+    # The game-specific history id is preserved on the record.
+    assert rec_g2.match_id == _bo3_game_id("match-A", 2)
+    assert rec_g3.match_id == _bo3_game_id("match-A", 3)
+
+
+def test_bare_game1_record_with_matching_snapshot_resolves_the_binding(monkeypatch, tmp_path):
+    """Game 1 keeps the bare match id; a snapshot naming that same match
+    resolves the binding directly (exact correspondence)."""
+    log_path = tmp_path / "Player.log"
+    log_path.write_text(
+        LOGIN_BLOCK_TEMPLATE.format(
+            ts="[11/9/2026 8:02:11 PM]",
+            client_id=OLD_ACCOUNT_ID,
+            screen_name="OldAccount",
+        ),
+        encoding="utf-8",
+    )
+    _start_server_flow(monkeypatch, str(log_path))
+
+    server._handle_match_created(_room_event("match-A", OLD_ACCOUNT_ID, "ActualOpponent"))
+    _switch_login(log_path, "[11/9/2026 11:15:07 PM]", NEW_ACCOUNT_ID, "NewAccount")
+
+    rec = record_from_game_end("match-A", "win", {"match_id": "match-A", "opponent_name": "ActualOpponent"})
+    assert rec.local_account_id == OLD_ACCOUNT_ID
+
+
+def test_snapshot_declared_account_outranks_login_when_no_binding_exists(monkeypatch, tmp_path):
+    """Explicit captured account precedence survives for game records: with
+    no binding at all (restart/eviction), a -g2 snapshot that explicitly
+    declares its local_account_id outranks the freshest login."""
+    log_path = tmp_path / "Player.log"
+    log_path.write_text(
+        LOGIN_BLOCK_TEMPLATE.format(
+            ts="[11/10/2026 9:00:00 AM]",
+            client_id=NEW_ACCOUNT_ID,
+            screen_name="NewAccount",
+        ),
+        encoding="utf-8",
+    )
+    _start_server_flow(monkeypatch, str(log_path))
+
+    rec = record_from_game_end(
+        _bo3_game_id("match-A", 2),
+        "win",
+        {"match_id": "match-A", "local_account_id": OLD_ACCOUNT_ID},
+    )
+    assert rec.local_account_id == OLD_ACCOUNT_ID
+
+
+def test_mismatched_snapshot_match_id_does_not_adopt_unrelated_binding(monkeypatch, tmp_path):
+    """Fail closed: a -g2 record whose snapshot names a DIFFERENT match must
+    not adopt that match's binding — it falls back to the snapshot's own
+    declared account, or to the freshest login when there is none."""
+    log_path = tmp_path / "Player.log"
+    log_path.write_text(
+        LOGIN_BLOCK_TEMPLATE.format(
+            ts="[11/9/2026 8:02:11 PM]",
+            client_id=OLD_ACCOUNT_ID,
+            screen_name="OldAccount",
+        ),
+        encoding="utf-8",
+    )
+    _start_server_flow(monkeypatch, str(log_path))
+
+    # match-A is bound to OLD; match-Z is bound to NEW (its own room event).
+    server._handle_match_created(_room_event("match-A", OLD_ACCOUNT_ID, "ActualOpponent"))
+    _switch_login(log_path, "[11/9/2026 11:15:07 PM]", NEW_ACCOUNT_ID, "NewAccount")
+    server._handle_match_created(_room_event("match-Z", NEW_ACCOUNT_ID, "ZOpponent"))
+    # A third account logs in afterwards; it played no part in either match.
+    _switch_login(log_path, "[11/10/2026 9:00:00 AM]", "THIRDACCOUNTID0000000000000", "Third")
+
+    # Snapshot names match-Z (bound to NEW) but the record is A's game 2:
+    # Z's binding is unrelated and must not be adopted.
+    rec_declared = record_from_game_end(
+        _bo3_game_id("match-A", 2),
+        "win",
+        {"match_id": "match-Z", "local_account_id": OLD_ACCOUNT_ID},
+    )
+    assert rec_declared.local_account_id == OLD_ACCOUNT_ID
+
+    rec_login = record_from_game_end(_bo3_game_id("match-A", 2), "win", {"match_id": "match-Z"})
+    assert rec_login.local_account_id == "THIRDACCOUNTID0000000000000"
+
+
+def test_arbitrary_suffix_is_not_stripped_to_find_a_binding(monkeypatch, tmp_path):
+    """Only the exact id or the legitimate -g<n> game form resolves through
+    the snapshot's match identity; an arbitrary suffix ("-final", "-g2x")
+    must not be stripped to reach the binding."""
+    log_path = tmp_path / "Player.log"
+    log_path.write_text(
+        LOGIN_BLOCK_TEMPLATE.format(
+            ts="[11/9/2026 8:02:11 PM]",
+            client_id=OLD_ACCOUNT_ID,
+            screen_name="OldAccount",
+        ),
+        encoding="utf-8",
+    )
+    _start_server_flow(monkeypatch, str(log_path))
+
+    server._handle_match_created(_room_event("match-A", OLD_ACCOUNT_ID, "ActualOpponent"))
+    _switch_login(log_path, "[11/9/2026 11:15:07 PM]", NEW_ACCOUNT_ID, "NewAccount")
+
+    for odd_record_id in ("match-A-final", "match-A-g2x", "match-A-g"):
+        rec = record_from_game_end(
+            odd_record_id, "win", {"match_id": "match-A", "opponent_name": "ActualOpponent"}
+        )
+        assert rec.local_account_id == NEW_ACCOUNT_ID, odd_record_id

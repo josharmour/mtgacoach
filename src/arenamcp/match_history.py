@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -224,6 +225,30 @@ def parse_replay_cosmetics(replay_path: str) -> dict[str, Any] | None:
     return None
 
 
+_GAME_RECORD_ID_RE = re.compile(r"^(?P<base>.+)-g(?P<number>[2-9]\d*)$")
+
+
+def _binding_key_for_game_record(record_id: str, snapshot_match_id: str) -> str | None:
+    """The binding key a game record may resolve its account under, or None.
+
+    standalone_postmatch records each Bo3 game under ``game_bundle_id(match,
+    game)``: game 1 keeps the bare match id, games 2+ get ``"<match>-g<n>"``
+    (arenamcp.match_bundle.game_bundle_id). The account binding is stored
+    under the bare room match id, so a game record resolves its binding
+    through the snapshot's explicit match identity — but only when the
+    record id corresponds exactly to it or is the legitimate ``-g<n>`` game
+    form of it. Any other id (an arbitrary suffix, a different match) is
+    unrelated: return None and let the caller fail closed rather than adopt
+    a binding that belongs to another match.
+    """
+    if record_id == snapshot_match_id:
+        return record_id
+    match = _GAME_RECORD_ID_RE.match(record_id)
+    if match and match.group("base") == snapshot_match_id:
+        return snapshot_match_id
+    return None
+
+
 def record_from_game_end(
     match_id: str,
     result: str,
@@ -259,13 +284,27 @@ def record_from_game_end(
     # login in Player.log, which is used only when neither binding nor
     # snapshot carries an account (e.g. a record for a match whose room event
     # predates this process).
+    #
+    # Bo3 games 2+ are recorded under their game_bundle_id ("<match>-g2"),
+    # while the binding lives under the bare room match id. When the record
+    # id itself has no binding, the snapshot's explicit match identity may
+    # point at the binding's key — but only when the record id corresponds
+    # exactly to it or is the legitimate "-g<n>" game form of it (the only
+    # forms game_bundle_id produces). Anything else is a different match:
+    # fail closed rather than adopt an unrelated binding.
     try:
         from arenamcp.log_utils import account_bound_to_match, get_local_player_id
 
-        declared = (game_state_snapshot or {}).get("local_account_id")
-        record.local_account_id = str(
-            account_bound_to_match(match_id) or declared or get_local_player_id() or ""
-        )
+        snapshot = game_state_snapshot or {}
+        declared = snapshot.get("local_account_id")
+        bound = account_bound_to_match(match_id)
+        if not bound:
+            snapshot_match_id = snapshot.get("match_id")
+            if snapshot_match_id:
+                binding_key = _binding_key_for_game_record(str(match_id), str(snapshot_match_id))
+                if binding_key:
+                    bound = account_bound_to_match(binding_key)
+        record.local_account_id = str(bound or declared or get_local_player_id() or "")
     except Exception as e:  # pragma: no cover - defensive, never block recording
         logger.debug(f"Could not resolve local account for match record: {e}")
 
