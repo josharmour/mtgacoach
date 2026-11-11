@@ -130,6 +130,45 @@ def test_bo3_game_rows_are_not_matches(tmp_path):
     assert recap is not None
 
 
+def test_bo3_game_rows_reach_the_recap_after_relaunch_baseline(tmp_path):
+    """Coordinator integration repro (2026-11-11): history holding only the six
+    BO3 game rows a-g1..c-g2 for completed review matches a,b,c qualified via
+    _covers but capture selected games by exact match id, so after a relaunch's
+    store.begin baselined every row the recap rendered zero games and looked up
+    no packets. All six rows must reach written_review and the packet/action
+    lookup, without adopting an unrelated match that merely shares a prefix.
+    """
+    path = tmp_path / "recaps.json"
+    packets_dir = path.parent / "match_packets"
+    packets_dir.mkdir()
+    rows = [record(m) for m in ("a-g1", "a-g2", "b-g1", "b-g2", "c-g1", "c-g2", "ab-g1")]
+    for row in rows:
+        (packets_dir / f"packet_x_{row.match_id}.json").write_text(
+            json.dumps({"match_id": row.match_id, "decisions": [{"outcome": "EXECUTED"}]}),
+            encoding="utf-8",
+        )
+    reviews = [report(("a", "b", "c"))]
+    first = SessionRecaps(path)
+    first.begin([])
+    assert first.capture(rows, reviews) is not None
+    # Relaunch: begin() baselines every history row and stamps a new session;
+    # the qualifying review must still render its six game rows (the unrelated
+    # "ab-g1" match shares a prefix with "a" but is not part of the streak).
+    relaunched = SessionRecaps(path)
+    relaunched.begin(rows, reviews)
+    recap = relaunched.capture(rows, reviews)
+    assert recap is not None
+    assert "across 6 recorded games" in recap["text"]
+    assert "saved autoplay decision/action entries for 6 of 6 games" in recap["text"]
+    assert recap["actions"] == ["history", "deck"]
+    # Dismissal and correction behavior are unchanged on this identity.
+    pending = relaunched.pending(reviews)
+    assert pending is not None and pending["id"] == recap["id"]
+    relaunched.acknowledge(recap["id"])
+    assert relaunched.capture(rows, reviews) is None
+    assert relaunched.pending([report(("d", "e", "f"))]) is None
+
+
 def test_repeated_start_close_and_restart_deduplicate(tmp_path):
     path = tmp_path / "recaps.json"
     store = SessionRecaps(path)

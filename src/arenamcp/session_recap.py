@@ -23,6 +23,17 @@ def _covers(match_id: str, game_ids: set[str]) -> bool:
     return match_id in game_ids or any(g.startswith(match_id + "-g") for g in game_ids)
 
 
+def _streak_record(record_id: str, matches: set[str]) -> bool:
+    """An exact match id or one of its BO3 game rows ("<match>-gN").
+
+    Same identity semantics as _covers, so a review whose matches are covered
+    only by game-history rows still renders those rows. The "-g" delimiter
+    keeps a bare prefix from adopting unrelated matches ("a" must not claim
+    "ab-g1").
+    """
+    return record_id in matches or any(record_id.startswith(m + "-g") for m in matches)
+
+
 def _validated_matches(value: Any) -> list[str] | None:
     """Three distinct nonempty string match ids from a completed report, else None.
 
@@ -137,7 +148,7 @@ class SessionRecaps:
             for r in records
             if r.match_id
             and (
-                r.match_id in streak_ids
+                _streak_record(r.match_id, streak_ids)
                 or (r.match_id not in baseline and r.timestamp >= active.get("started", ""))
             )
         ]
