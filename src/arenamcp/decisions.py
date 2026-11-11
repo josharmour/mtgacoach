@@ -2598,6 +2598,8 @@ def decision_to_dict(decision: PendingDecision) -> dict[str, Any]:
             for s in decision.slots
         ],
         **({"prompt_text": decision.prompt_text} if decision.prompt_text else {}),
+        **({"selection_context": decision.selection_context} if decision.selection_context else {}),
+        **({"option_context": decision.option_context} if decision.option_context else {}),
     }
 
 
@@ -2632,6 +2634,8 @@ def decision_from_dict(data: dict[str, Any]) -> PendingDecision:
             for s in (data.get("slots") or [])
         ),
         prompt_text=str(data.get("prompt_text") or ""),
+        selection_context=data.get("selection_context"),
+        option_context=data.get("option_context"),
     )
 
 
