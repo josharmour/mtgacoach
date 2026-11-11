@@ -229,3 +229,35 @@ def test_invitation_needs_deck_identity_on_latest_game():
         rec.deck_identity = ""
         rec.autopilot = None
     assert invitation(legacy, {"constructedClass": "Gold"}, now=NOW) is None
+
+
+def test_invitation_does_not_pool_identity_less_records_sharing_a_display_name():
+    """Reviewer repro (Dotty 2026-11-11, offscreen history): autopilot=True
+    records with EMPTY deck identities and the same display name as the latest
+    game must not produce a 20-loss prompt — a shared display name is not a
+    deck identity, so identity-less records never pool by name."""
+    name_only = records(0, 20)
+    for rec in name_only:
+        rec.deck_identity = ""  # identity tracking wrote nothing
+        rec.autopilot = True  # the autopilot definitely played them
+    assert invitation(name_only, {"constructedClass": "Gold"}, now=NOW) is None
+
+
+def test_invitation_ignores_name_only_history_even_when_the_latest_game_has_an_identity():
+    """Same repro with the latest game identified: name-only records carrying
+    the SAME display name still never enter the pool, so a 20-loss streak of
+    unidentified games cannot fire the invitation for an identified deck."""
+    pool = records(0, 20)
+    for rec in pool:
+        rec.deck_identity = ""
+        rec.autopilot = True
+    latest = MatchRecord(
+        match_id="latest",
+        timestamp=NOW.isoformat(),
+        result="loss",
+        format_name="Ladder",
+        deck_identity="deck-hash-Ladder",
+        deck_name="Test Deck",
+        autopilot=True,
+    )
+    assert invitation(pool + [latest], {"constructedClass": "Gold"}, now=NOW) is None

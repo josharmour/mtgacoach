@@ -15,6 +15,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from arenamcp.desktop.performance_tab import PerformanceTab, autopilot_deck_results
+from arenamcp.ladder import RANK_HISTORY_LIMIT
 from arenamcp.match_history import MatchHistory, record_from_game_end
 from arenamcp.standalone_postmatch import _PostMatchMixin
 
@@ -375,14 +376,22 @@ def test_rank_strip_picks_up_new_result_without_changing_geometry(seeded_file, q
 # ---- per-deck autopilot results (P1) --------------------------------------
 
 
-def _deck_record(match_id, result, *, autopilot=True, identity="hash-mono-blue", name="Mono Blue Tempo"):
+def _deck_record(
+    match_id,
+    result,
+    *,
+    autopilot=True,
+    identity="hash-mono-blue",
+    name="Mono Blue Tempo",
+    format_name="Ladder",
+):
     from arenamcp.match_history import MatchRecord
 
     return MatchRecord(
         match_id=match_id,
         timestamp="2026-11-10T12:00:00+00:00",
         result=result,
-        format_name="Ladder",
+        format_name=format_name,
         deck_identity=identity,
         deck_name=name,
         autopilot=autopilot,
@@ -442,6 +451,48 @@ def test_performance_tab_shows_per_deck_section_only_with_autopilot_history(seed
     assert "AUTOPILOT RESULTS BY DECK" in tab._decks_caption.text()
     # 7 wins (i % 3 == 0 -> i in 0..18 step 3), 13 losses, 20 decided games.
     assert "Mono Blue Tempo · 20 games · 7W–13L · 35% win rate" in tab._decks.text()
+
+
+def test_performance_tab_deck_section_follows_the_selected_ladder_filter(seeded_file, qapp):
+    """Reviewer repro (Dotty 2026-11-11, offscreen history): with the
+    Constructed (Ladder) filter selected, the per-deck section also showed a
+    Draft Deck the table above it never displayed. The section must apply the
+    same ladder filter to its full-history input — while keeping the 20-game
+    sample floor reachable (the table's RANK_HISTORY_LIMIT row cap must not
+    clip the section's sample)."""
+    import arenamcp.match_history as mh
+
+    history = mh.MatchHistory()
+    for i in range(20):
+        history.add_record(_deck_record(f"d{i}", "win" if i % 3 == 0 else "loss"))
+    # An autopilot game in a queue the Constructed table never shows.
+    history.add_record(
+        _deck_record("draft1", "win", identity="hash-draft", name="Draft Deck", format_name="Draft Deck")
+    )
+
+    tab = PerformanceTab()
+    tab.set_ladder("Constructed")
+    tab.refresh()
+
+    # Table: only Ladder rows (row cap RANK_HISTORY_LIMIT applies).
+    assert tab._table.rowCount() == min(20, RANK_HISTORY_LIMIT)
+    formats = {
+        tab._table.item(r, col).text()
+        for r in range(tab._table.rowCount())
+        for col in range(tab._table.columnCount())
+    }
+    assert "Draft Deck" not in formats
+    # Section: same filter, full history — the draft deck is gone, and the
+    # win rate still shows because the sample floor is met from full history
+    # (more than RANK_HISTORY_LIMIT rows feed the section).
+    assert tab._decks.isVisibleTo(tab)
+    assert "Mono Blue Tempo · 20 games · 7W–13L · 35% win rate" in tab._decks.text()
+    assert "Draft Deck" not in tab._decks.text()
+
+    # With no ladder filter selected, both queues appear again.
+    tab.set_ladder(None)
+    tab.refresh()
+    assert "Draft Deck" in tab._decks.text()
 
 
 def test_write_performance_record_stamps_autopilot_and_deck_identity(tmp_path, monkeypatch):

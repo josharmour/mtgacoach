@@ -97,9 +97,7 @@ def autopilot_deck_results(records) -> list[dict]:
             target["losses"] += legacy_entry["losses"]
             target["games"] = target["wins"] + target["losses"]
             target["win_rate"] = (
-                (target["wins"] / target["games"])
-                if target["games"] >= MIN_GAMES_FOR_WIN_RATE
-                else None
+                (target["wins"] / target["games"]) if target["games"] >= MIN_GAMES_FOR_WIN_RATE else None
             )
             entries.remove(legacy_entry)
 
@@ -295,16 +293,17 @@ class PerformanceTab(QWidget):
             # results written by the coach subprocess are always visible.
             history = MatchHistory()
             all_records = list(reversed(history.get_recent(history.total_games)))
+            # The per-deck section follows the same ladder filter as the table
+            # above it, but draws from the FULL filtered history (no row
+            # limit) so the 20-game sample floor stays reachable.
             if self._ladder:
-                records = [
-                    rec
-                    for rec in all_records
-                    if ranked_ladder(rec.format_name) == self._ladder
-                ][:RANK_HISTORY_LIMIT]
+                deck_records = [rec for rec in all_records if ranked_ladder(rec.format_name) == self._ladder]
+                records = deck_records[:RANK_HISTORY_LIMIT]
             else:
+                deck_records = all_records
                 records = all_records[:_MAX_ROWS]
         except Exception:
-            all_records = []
+            deck_records = []
             records = []
 
         # Preserve the selected row's explanation across the 3s auto-refresh so
@@ -320,7 +319,7 @@ class PerformanceTab(QWidget):
             else:
                 self._detail.setText("Select a game to review its recorded result.")
             self._update_summary(records)
-            self._update_deck_results(all_records)
+            self._update_deck_results(deck_records)
             return
 
         for table in (self._table, self._compact):
@@ -395,11 +394,12 @@ class PerformanceTab(QWidget):
                     break
 
         self._update_summary(records)
-        self._update_deck_results(all_records)
+        self._update_deck_results(deck_records)
 
     def _update_deck_results(self, records) -> None:
-        """Per-deck autopilot results, drawn from the full history (not the
-        row-display limit) so the 20-game sample floor is reachable."""
+        """Per-deck autopilot results, drawn from the ladder-filtered full
+        history (not the row-display limit) so the 20-game sample floor is
+        reachable and the section never mixes queues."""
         entries = autopilot_deck_results(records)
         self._decks.setText("\n".join(_format_deck_result(entry) for entry in entries))
         has_entries = bool(entries)

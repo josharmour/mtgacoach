@@ -43,9 +43,11 @@ def invitation(records: list[MatchRecord], snapshot: dict, *, now: datetime | No
     """Evaluate one queue, excluding draws, old results, and per-game Bo3 records.
 
     The evidence is per-deck: only games the autopilot played with the SAME
-    deck as the latest game count towards the sample (matched by deck
-    identity, falling back to the deck name). Advisor-mode games and other
-    decks measure the player, not this deck, so they never enter the pool.
+    deck as the latest game count towards the sample, matched by deck
+    identity. A display name alone is not an identity (two different decks
+    can share one), so a record without an identity never enters the pool.
+    Advisor-mode games and other decks measure the player, not this deck, so
+    they never enter the pool either.
     Mythic has opponent-dependent rating gains, not a fixed climb threshold.
     Thresholds follow https://magic.wizards.com/en/mtgarena/getting-started
     (checked November 2026). These are expected pip progress, not a guarantee.
@@ -64,7 +66,9 @@ def invitation(records: list[MatchRecord], snapshot: dict, *, now: datetime | No
     if ranked_ladder(event) != "Constructed" or any(x in normalized for x in ("traditional", "trad", "bo3")):
         return None
     # Without a deck identity on the latest game there is no per-deck sample.
-    deck_key = getattr(latest, "deck_identity", "") or getattr(latest, "deck_name", "")
+    # A shared display name is not an identity, so there is no name fallback:
+    # identity-less records must never pool into a named-deck invitation.
+    deck_key = getattr(latest, "deck_identity", "")
     if not deck_key:
         return None
     now = now or datetime.now(timezone.utc)
@@ -73,10 +77,11 @@ def invitation(records: list[MatchRecord], snapshot: dict, *, now: datetime | No
     for rec in reversed(records):
         if rec.format_name != event or rec.result not in ("win", "loss") or not rec.match_id:
             continue
-        # Same deck as the game just ended, and the autopilot played it.
+        # Same deck as the game just ended (by identity, never by name), and
+        # the autopilot played it.
         if getattr(rec, "autopilot", None) is not True:
             continue
-        if (getattr(rec, "deck_identity", "") or getattr(rec, "deck_name", "")) != deck_key:
+        if getattr(rec, "deck_identity", "") != deck_key:
             continue
         if rec.match_id in seen:
             continue
