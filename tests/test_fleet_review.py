@@ -38,21 +38,32 @@ def _bundle(
     deck_strategy="",
     command_zone=(),
     opponent_seat_id=1,
+    local_seat_id: int | None = 0,
+    last_game_result: str | None = None,
     decisions=(),
 ):
+    players = [
+        {"seat_id": 0, "life_total": lives[0]},
+        {"seat_id": 1, "life_total": lives[1]},
+    ]
+    final_state = {
+        "format_name": format_name,
+        "opponent_seat_id": opponent_seat_id,
+        "turn_info": {"turn_number": turn},
+        "players": players,
+        "zones": {"command": list(command_zone)},
+    }
+    if last_game_result is not None:
+        final_state["last_game_result"] = last_game_result
+    # Real bundles always carry local_seat_id (verified across all 100
+    # evidence bundles); pass None to simulate a bundle where only one
+    # seat is known.
+    if local_seat_id is not None:
+        final_state["local_seat_id"] = local_seat_id
     return {
         "match_id": match_id,
         "created_utc": "2026-11-10T00:00:00Z",
-        "final_state": {
-            "format_name": format_name,
-            "opponent_seat_id": opponent_seat_id,
-            "turn_info": {"turn_number": turn},
-            "players": [
-                {"seat_id": 0, "life_total": lives[0]},
-                {"seat_id": 1, "life_total": lives[1]},
-            ],
-            "zones": {"command": list(command_zone)},
-        },
+        "final_state": final_state,
         "coach_log": {"lines": list(coach_lines)},
         "packet": {"deck_strategy": deck_strategy, "decisions": list(decisions)},
     }
@@ -507,11 +518,57 @@ def test_m1_aggregates_present_per_deck():
     json_deck = fr.json_report(agg)["by_deck"]["Ladder | unknown"]
     assert json_deck["prompt_median_chars"] == 21002
     assert json_deck["prompt_p90_chars"] == 21002
+    # Reviewer finding: the JSON view must not drop populated plans_formed /
+    # path_corrected (real lines: PLAN_FORMED_LINE and PATH_CORRECTED_LINE
+    # above, from matches 06d2f9bf / c41c9c6a).
+    assert json_deck["plans_formed"] == 1
+    assert json_deck["path_corrected"] == 1
     # KEEP line states "2 lands" -> one keep recorded with the result.
     assert deck["keeps"] == [(2, None)]
     # The pass-only decision counts as an answer and a pass answer.
     assert deck["answers"] == 1
     assert deck["pass_answers"] == 1
+
+
+def test_two_game_match_counts_one_win_like_m1():
+    """Regression for the reviewer's two-game repro (/tmp/dotty-W1-resume-
+    repro.py construction): one match spread over two game bundles (game 1
+    lost, game 2 won) must aggregate to ONE match with ONE win — the same
+    match-level counting as tools/upgrade_metrics.py (M1 folds games by
+    match_id and the last game carries the match result) — not two
+    matches with games=2/wins=1 spread across rows."""
+    game1 = _bundle("dotty-two-game", format_name="Ladder", turn=12, lives=(0, 12), last_game_result="loss")
+    game2 = _bundle("dotty-two-game", format_name="Ladder", turn=18, lives=(15, -3), last_game_result="win")
+    agg = fr.aggregate([fr.review_bundle(game1), fr.review_bundle(game2)])
+    assert agg["bundles"] == 2
+    assert agg["matches"] == 1
+    deck = agg["by_deck"]["Ladder | unknown"]
+    assert deck["matches"] == 1
+    assert deck["games"] == 2
+    assert deck["wins"] == 1
+    # The rendered coverage row shows both counts so the fold is visible.
+    text = fr.render_report(agg)
+    assert "1 matches (2 games)" in text
+    # And the JSON carries the same match-level numbers.
+    json_deck = fr.json_report(agg)["by_deck"]["Ladder | unknown"]
+    assert json_deck["matches"] == 1
+    assert json_deck["games"] == 2
+    assert json_deck["wins"] == 1
+
+
+def test_early_end_requires_both_seats_in_final_state():
+    """Reviewer finding: with only one seat recorded in final_state there
+    is no way to establish that BOTH players were near starting life, so
+    the game must not qualify as an early-end suspect. Every real bundle
+    in the corpus records both seats (local_seat_id + opponent_seat_id,
+    each with a life total); this pins the boundary for a bundle where
+    local_seat_id is missing."""
+    one_seat = _bundle("boundary-one-seat", format_name="Ladder", turn=3, lives=(20, 18), local_seat_id=None)
+    assert fr.review_bundle(one_seat)["early_end"] is False
+    # The same game with both seats recorded (the real-corpus shape,
+    # cf. real suspect 17ce59ea) still qualifies.
+    both_seats = _bundle("17ce59ea", format_name="Ladder", turn=3, lives=(20, 18))
+    assert fr.review_bundle(both_seats)["early_end"] is True
 
 
 def test_render_report_shows_every_ranked_row_with_examples_or_none():

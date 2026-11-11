@@ -6,7 +6,9 @@ overridable with --dir) and produces the W1 rankings:
 
   1. coverage: matches per (format, local archetype) with win rates and the
      M1 metric aggregates (decision answers, line search, inference per call
-     class, plans, mulligan keeps, decision prompt size)
+     class, plans, mulligan keeps, decision prompt size). Games fold per
+     match_id like M1: the LAST game of a match carries the match result,
+     so wins are counted once per match, never per game.
   2. cards most often left unevaluated (the line-search unmodelled counter,
      aggregated per archetype and overall)
   3. decision types with the most watchdog defaults and fallbacks:
@@ -20,7 +22,10 @@ overridable with --dir) and produces the W1 rankings:
      commander and reports "unknown"
   6. early-end suspects: games that ended by turn EARLY_TURN_MAX with both
      players near starting life and no executed concede, no ERROR-level
-     coach-log line and no "timed out" line (those explain an early end)
+     coach-log line and no "timed out" line (those explain an early end).
+     Both seats must be recorded in final_state (local_seat_id and
+     opponent_seat_id, each with a life total); with only one seat known
+     the game cannot qualify.
 
 The per-bundle metric definitions are the same as tools/upgrade_metrics.py
 (M1). They are reimplemented here rather than imported so this tool runs on
@@ -427,7 +432,26 @@ def review_bundle(bundle):
 
     m1 = summarize_m1(bundle)
 
-    lives = [p.get("life_total") for p in final_state.get("players") or []]
+    players = final_state.get("players") or []
+    lives = [p.get("life_total") for p in players]
+    local_seat = final_state.get("local_seat_id")
+    opp_seat = final_state.get("opponent_seat_id")
+    lives_by_seat = {}
+    for player in players:
+        seat = player.get("seat_id")
+        if seat is not None:
+            lives_by_seat[seat] = player.get("life_total")
+    # Both seats must be recorded before life totals can be judged: with
+    # only one seat known there is no way to establish that BOTH players
+    # were near starting life at the end.
+    both_seats_recorded = (
+        local_seat is not None
+        and opp_seat is not None
+        and local_seat in lives_by_seat
+        and opp_seat in lives_by_seat
+    )
+    seat_lives = [lives_by_seat[local_seat], lives_by_seat[opp_seat]] if both_seats_recorded else []
+
     turn_number = (final_state.get("turn_info") or {}).get("turn_number")
     format_name = final_state.get("format_name")
 
@@ -453,9 +477,9 @@ def review_bundle(bundle):
 
     starting_life = starting_life_for(format_name)
     near_starting = (
-        bool(lives)
-        and all(isinstance(l, int) for l in lives)
-        and min(lives) >= starting_life - NEAR_STARTING_LIFE_MARGIN
+        both_seats_recorded
+        and all(isinstance(l, int) for l in seat_lives)
+        and min(seat_lives) >= starting_life - NEAR_STARTING_LIFE_MARGIN
     )
     early_end = bool(
         isinstance(turn_number, int)
@@ -494,16 +518,23 @@ def review_bundle(bundle):
 # Aggregation
 # ---------------------------------------------------------------------------
 
+_MATCH_METRIC_KEYS = (
+    "answers",
+    "pass_answers",
+    "code_answers",
+    "single_option_menus",
+    "decisions_with_line_search",
+    "decisions_with_unmodelled",
+    "chosen_unmodelled",
+    "plans_formed",
+    "path_corrected",
+)
+
 _NEW_DECK_BUCKET = {
+    "matches": 0,
     "games": 0,
     "wins": 0,
-    "answers": 0,
-    "pass_answers": 0,
-    "code_answers": 0,
-    "single_option_menus": 0,
-    "decisions_with_line_search": 0,
-    "decisions_with_unmodelled": 0,
-    "chosen_unmodelled": 0,
+    **dict.fromkeys(_MATCH_METRIC_KEYS, 0),
 }
 
 
@@ -514,17 +545,60 @@ def _new_deck_bucket():
     bucket["call_classes"] = collections.defaultdict(
         lambda: {"calls": 0, "input": 0, "cached": 0, "think": 0, "sec": 0.0}
     )
-    bucket["plans_formed"] = 0
-    bucket["path_corrected"] = 0
     bucket["big_prompts"] = []
     bucket["keeps"] = []
     return bucket
 
 
+def _new_match_fold():
+    fold: dict = {"games": 0}
+    for key in _MATCH_METRIC_KEYS:
+        fold[key] = 0
+    fold["unmodelled_cards"] = collections.Counter()
+    fold["unmodelled_examples"] = collections.defaultdict(list)
+    fold["call_classes"] = collections.defaultdict(
+        lambda: {"calls": 0, "input": 0, "cached": 0, "think": 0, "sec": 0.0}
+    )
+    fold["big_prompts"] = []
+    fold["keeps"] = []
+    fold["_latest"] = None
+    return fold
+
+
+def _merge_review_into_match(fold, rv):
+    """Merge one game bundle's review into its match fold."""
+    m1 = rv["m1"]
+    fold["games"] += 1
+    for key in _MATCH_METRIC_KEYS:
+        fold[key] += m1[key]
+    fold["unmodelled_cards"].update(m1["unmodelled_cards"])
+    for card in m1["unmodelled_cards"]:
+        ex = fold["unmodelled_examples"][card]
+        if rv["match_id"] and rv["match_id"] not in ex and len(ex) < 3:
+            ex.append(rv["match_id"])
+    fold["big_prompts"].extend(m1["big_prompts"])
+    fold["keeps"].extend(m1["keeps"])
+    for cls, bucket in m1["call_classes"].items():
+        acc = fold["call_classes"][cls]
+        for field in ("calls", "input", "cached", "think"):
+            acc[field] += bucket[field]
+        acc["sec"] += bucket["sec"]
+    fold["_latest"] = rv
+
+
 def aggregate(reviews):
-    """Fold per-bundle reviews into the W1 ranked tables."""
+    """Fold per-bundle reviews into the W1 ranked tables.
+
+    A match can span several game bundles (one per game). Like M1
+    (upgrade_metrics.py), games are folded per ``match_id`` and the LAST
+    game's review carries the match-level result: wins are counted once
+    per MATCH, never per game. Event-level tallies (flags, watchdog
+    hand-offs, fallbacks, early-end suspects) stay per game bundle.
+    """
+    matches = {}  # match_id -> fold (insertion order; last game wins)
     agg = {
-        "bundles": 0,
+        "bundles": len(reviews),
+        "matches": 0,
         "days": set(),
         "by_deck": collections.defaultdict(_new_deck_bucket),
         "flags": collections.Counter(),
@@ -533,46 +607,16 @@ def aggregate(reviews):
         "watchdog_examples": collections.defaultdict(list),
         "fallbacks_by_decision_type": collections.Counter(),
         "fallback_examples": collections.defaultdict(list),
-        "opponent_commanders": collections.defaultdict(lambda: {"games": 0, "wins": 0}),
+        "opponent_commanders": collections.defaultdict(lambda: {"matches": 0, "wins": 0}),
         "early_ends": [],
         "flag_examples": collections.defaultdict(list),
     }
 
     for rv in reviews:
-        agg["bundles"] += 1
+        _merge_review_into_match(matches.setdefault(rv["match_id"], _new_match_fold()), rv)
+
         if rv["day"]:
             agg["days"].add(rv["day"])
-
-        deck_key = "%s | %s" % (rv["format_name"] or UNKNOWN, rv["archetype"])
-        deck = agg["by_deck"][deck_key]
-        deck["games"] += 1
-        if rv["result"] == "win":
-            deck["wins"] += 1
-        m1 = rv["m1"]
-        for key in (
-            "answers",
-            "pass_answers",
-            "code_answers",
-            "single_option_menus",
-            "decisions_with_line_search",
-            "decisions_with_unmodelled",
-            "chosen_unmodelled",
-            "plans_formed",
-            "path_corrected",
-        ):
-            deck[key] += m1[key]
-        deck["unmodelled_cards"].update(m1["unmodelled_cards"])
-        for card in m1["unmodelled_cards"]:
-            ex = deck["unmodelled_examples"][card]
-            if rv["match_id"] and rv["match_id"] not in ex and len(ex) < 3:
-                ex.append(rv["match_id"])
-        deck["big_prompts"].extend(m1["big_prompts"])
-        deck["keeps"].extend(m1["keeps"])
-        for cls, bucket in m1["call_classes"].items():
-            acc = deck["call_classes"][cls]
-            for field in ("calls", "input", "cached", "think"):
-                acc[field] += bucket[field]
-            acc["sec"] += bucket["sec"]
 
         for category in rv["flags"]:
             agg["flags"][category] += rv["flags"][category]
@@ -592,12 +636,6 @@ def aggregate(reviews):
             if rv["match_id"] and rv["match_id"] not in ex and len(ex) < 3:
                 ex.append(rv["match_id"])
 
-        for cmd in rv["opponent_commanders"]:
-            bucket = agg["opponent_commanders"][cmd]
-            bucket["games"] += 1
-            if rv["result"] == "win":
-                bucket["wins"] += 1
-
         if rv["early_end"]:
             agg["early_ends"].append(
                 {
@@ -609,6 +647,40 @@ def aggregate(reviews):
                 }
             )
 
+    # Match-level roll-up: one row contribution per match, keyed by the
+    # deck of the last game (whose review also carries the match result).
+    for fold in matches.values():
+        latest = fold["_latest"]
+        deck_key = "%s | %s" % (latest["format_name"] or UNKNOWN, latest["archetype"])
+        deck = agg["by_deck"][deck_key]
+        deck["matches"] += 1
+        deck["games"] += fold["games"]
+        if latest["result"] == "win":
+            deck["wins"] += 1
+        for key in _MATCH_METRIC_KEYS:
+            deck[key] += fold[key]
+        deck["unmodelled_cards"].update(fold["unmodelled_cards"])
+        for card in fold["unmodelled_cards"]:
+            ex = deck["unmodelled_examples"][card]
+            for example in fold["unmodelled_examples"].get(card, ()):
+                if example not in ex and len(ex) < 3:
+                    ex.append(example)
+        deck["big_prompts"].extend(fold["big_prompts"])
+        deck["keeps"].extend(fold["keeps"])
+        for cls, bucket in fold["call_classes"].items():
+            acc = deck["call_classes"][cls]
+            for field in ("calls", "input", "cached", "think"):
+                acc[field] += bucket[field]
+            acc["sec"] += bucket["sec"]
+
+        # Opposing-commander win rates are match-level too.
+        for cmd in latest["opponent_commanders"]:
+            cbucket = agg["opponent_commanders"][cmd]
+            cbucket["matches"] += 1
+            if latest["result"] == "win":
+                cbucket["wins"] += 1
+
+    agg["matches"] = len(matches)
     agg["days"] = sorted(agg["days"])
     return agg
 
@@ -665,19 +737,23 @@ def render_report(agg):
     """Human-readable W1 mining report."""
     out = []
     w = out.append
-    w("W1 fleet review — %d bundles, days: %s" % (agg["bundles"], ", ".join(agg["days"]) or UNKNOWN))
+    w(
+        "W1 fleet review — %d bundles / %d matches, days: %s"
+        % (agg["bundles"], agg["matches"], ", ".join(agg["days"]) or UNKNOWN)
+    )
     if agg.get("skipped_non_bundle_files"):
         w("(skipped %d non-bundle file(s), e.g. live_context.json)" % agg["skipped_non_bundle_files"])
     w("")
     w("== Coverage and M1 numbers by (format | archetype)")
     for deck_key in sorted(agg["by_deck"]):
         d = agg["by_deck"][deck_key]
-        wr = (100.0 * d["wins"] / d["games"]) if d["games"] else 0.0
+        wr = (100.0 * d["wins"] / d["matches"]) if d["matches"] else 0.0
         w(
-            "  %s: %d games, %d wins (%.0f%%), answers=%d pass=%d code=%d "
+            "  %s: %d matches (%d games), %d wins (%.0f%%), answers=%d pass=%d code=%d "
             "line_search=%d unmodelled=%d chosen_unmodelled=%d"
             % (
                 deck_key,
+                d["matches"],
                 d["games"],
                 d["wins"],
                 wr,
@@ -751,10 +827,10 @@ def render_report(agg):
         "== Win rate by opposing commander (legendary Creature/Planeswalker "
         "in the opponent's end-of-game command zone; sparse by nature)"
     )
-    rows = sorted(agg["opponent_commanders"].items(), key=lambda kv: (-kv[1]["games"], kv[0]))
+    rows = sorted(agg["opponent_commanders"].items(), key=lambda kv: (-kv[1]["matches"], kv[0]))
     for cmd, b in rows:
-        wr = (100.0 * b["wins"] / b["games"]) if b["games"] else 0.0
-        w("  %-36s n=%2d wins=%2d (%.0f%%)" % (cmd[:36], b["games"], b["wins"], wr))
+        wr = (100.0 * b["wins"] / b["matches"]) if b["matches"] else 0.0
+        w("  %-36s n=%2d wins=%2d (%.0f%%)" % (cmd[:36], b["matches"], b["wins"], wr))
     w("")
     w(
         "== Early-end suspects (turn<=%d, both players within %d of starting "
@@ -791,6 +867,7 @@ def json_report(agg):
         by_deck[key] = entry
     return {
         "bundles": agg["bundles"],
+        "matches": agg["matches"],
         "days": agg["days"],
         "by_deck": by_deck,
         "flags": dict(agg["flags"]),
