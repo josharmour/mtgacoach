@@ -2753,10 +2753,12 @@ def select_n_needs_arena_default(decision: PendingDecision) -> bool:
     - A menu Arena itself gives a structural meaning to — trigger stacking
       (_is_trigger_stacking_selection) — keeps its own established policy,
       whose prompt already governs unresolved option ids.
-    - A constrained menu (Arena offers more than it accepts) with nothing
-      decidable at all behaves exactly as before this change: its options are
-      grounded by the prompt's game state and the per-option policies
-      (weights, the hand-card identity wait), so it keeps reaching the model.
+
+    Menu size is deliberately irrelevant here: a choose-one among three
+    unidentified options is exactly as unanswerable as the captured 85-option
+    menu, and the hand-card identity wait (autopilot._wait_for_search_identities)
+    already runs upstream of planning for the one unnamed population a later
+    log line can still name.
     """
     if _is_trigger_stacking_selection(decision.selection_context, decision.option_context):
         return False
@@ -2765,7 +2767,7 @@ def select_n_needs_arena_default(decision: PendingDecision) -> bool:
         return False
     if len(decidable) >= max(decision.min_select, 1):
         return False
-    return len(decidable) > 0 or decision.max_select >= len(decision.options)
+    return True
 
 
 def select_n_without_blind_options(decision: PendingDecision) -> PendingDecision | None:

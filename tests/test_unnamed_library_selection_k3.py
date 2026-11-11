@@ -262,30 +262,29 @@ def test_weighted_unnamed_options_still_reach_the_model():
     assert [option.option_id for option in offered.options] == ["sel:763", "sel:771", "sel:875"]
 
 
-def test_constrained_menu_with_nothing_decidable_keeps_its_established_path():
-    # Arena offers more than it accepts (2 offered, 1 taken) and nothing names
-    # any option: the prompt's game state grounds these (a sacrifice among
-    # visible permanents), so the established behaviour is unchanged — the
-    # model is consulted, exactly as tests/test_typed_decision_path.py::
-    # test_planner_respects_max_select pins.
-    decision = PendingDecision(
-        (336, 402),
-        "SelectN",
-        (
-            DecisionOption("sel:10", "Option 10", meta={"grpId": 0, "identity_known": False}),
-            DecisionOption("sel:11", "Option 11", meta={"grpId": 0, "identity_known": False}),
-        ),
-        min_select=1,
-        max_select=1,
-    )
+def test_constrained_blind_menus_decline_like_the_captured_one(no_live_state):
+    # Same captured menu (packet eedf1ae3 decision index 14), other shapes
+    # Arena also offers: fewer choices than offered, or a take-most bound.
+    # Menu size changes nothing — an option nobody can identify is equally
+    # unjudgeable whether it is one of 3 or one of 85 — so every all-blind
+    # shape declines without a model call and completes with Arena's default,
+    # exactly like the captured 85/85 menu.
     planner = ActionPlanner(Mock())
-    llm = Mock(return_value=["sel:10"])
+    llm = Mock(side_effect=AssertionError("a blind menu must not reach the model"))
     planner._llm_decision_options = llm
 
-    assert planner._plan_decision_options(decision, {"players": [], "battlefield": []}) == ["sel:10"]
-    llm.assert_called_once()
-    offered = llm.call_args[0][0]
-    assert [option.option_id for option in offered.options] == ["sel:10", "sel:11"]
+    for count, maximum in ((3, 1), (9, 1), (85, 1), (85, 84)):
+        decision = _captured_decision(
+            select_n_ids=ETALI_FAVOR_OPTION_IDS[:count],
+            select_n_min=1,
+            select_n_max=maximum,
+        )
+        assert decision is not None, (count, maximum)
+        assert planner._plan_decision_options(decision, {"players": [], "battlefield": []}) == [
+            DECLINE_DECISION
+        ], (count, maximum)
+
+    llm.assert_not_called()
 
 
 def test_trigger_stacking_selection_keeps_its_established_policy():
