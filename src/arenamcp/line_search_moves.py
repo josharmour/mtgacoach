@@ -68,10 +68,10 @@ from types import SimpleNamespace
 from typing import Any, Protocol
 
 from arenamcp.ability_synthesizer import (
-    CreateToken,
     UnknownEffect,
+    cast_time_entries,
     record_cast_text,
-    record_mode_text,
+    render_effect_sentence,
 )
 from arenamcp.attack_potential import annotated, attack_round
 from arenamcp.board_assessment import (
@@ -1980,14 +1980,29 @@ def _record_key(card: dict) -> tuple[str, str, str, str]:
     )
 
 
-@functools.lru_cache(maxsize=2048)
+_KNOWN_RECORDS: dict[tuple[str, str, str, str], Any] = {}
+
+
+def reset_record_cache() -> None:
+    """Forget remembered records (tests). A miss is never remembered, so an S3
+    background fetch that delivers a record later is picked up on its own."""
+    _KNOWN_RECORDS.clear()
+
+
 def _known_record(name: str, oracle_text: str, type_line: str, mana_cost: str) -> Any:
     """The card's card-facts record when it exists and every effect is a known type.
 
     Records fill gaps only: the text parser goes first. A miss (no record yet,
     an unreadable record, any ``unknown`` effect) returns None and the card
-    stays exactly as the text parser left it.
+    stays exactly as the text parser left it — and is NOT remembered, so a
+    record the S3 client fetches in the background is noticed on the next call
+    (the client answers from memory or disk and dedupes its fetches, so the
+    repeated misses are cheap by design).
     """
+    key = (name, oracle_text, type_line, mana_cost)
+    record = _KNOWN_RECORDS.get(key)
+    if record is not None:
+        return record
     card = {"name": name, "oracle_text": oracle_text, "type_line": type_line, "mana_cost": mana_cost}
     digest = hash_for_card(card)
     if not digest:
@@ -2001,6 +2016,7 @@ def _known_record(name: str, oracle_text: str, type_line: str, mana_cost: str) -
         return None
     if any(isinstance(entry.effect, UnknownEffect) for entry in record.effects):
         return None
+    _KNOWN_RECORDS[key] = record
     return record
 
 
@@ -2020,27 +2036,61 @@ def reset_record_use_log() -> None:
     _RECORD_USE_LOGGED.clear()
 
 
-_RECORD_OVERRIDES = frozenset(
-    {"its X cost", "its tokens", "its triggered ability", "its modes", "a combat trick", "its effect"}
-)
+def _record_line_valued(name: str, line: str) -> bool:
+    """Whether one rendered record sentence is something the search values.
+
+    The same predicate ``Moves._variants`` applies to a record line it adopts
+    as a mode (``classify`` kinds, readable token specs, face damage), so the
+    ``unmodelled_effect`` gate and the variants cannot disagree.
+    """
+    pseudo = {"name": name, "oracle_text": line, "type_line": ""}
+    return bool(
+        classify(name, line)[0] != "other"
+        or token_specs(_cast_text(pseudo))
+        or named_token_specs(_cast_text(pseudo), name)
+        or any(face_damage(pseudo))
+    )
+
+
+def _record_represents(record: Any, name: str) -> bool:
+    """Whether the record's cast-time effects are ALL represented in the search.
+
+    Every cast-time/own-enters effect must render into a sentence the search
+    values. Anything else — an effect type with no cast-time representation
+    (mana, draw, exile), a condition the search cannot evaluate — keeps the
+    card unmodelled: the flag is only cleared when the variants really gain
+    what the record states (conservative; A1 review round 2).
+    """
+    entries = cast_time_entries(record)
+    if not entries:
+        return False
+    for entry in entries:
+        if entry.conditions:
+            return False  # a condition we cannot evaluate: stay unmodelled
+        sentence = render_effect_sentence(entry.effect)
+        if not sentence or not _record_line_valued(name, sentence):
+            return False
+    return True
 
 
 def unmodelled_effect(card: dict | None, result: Any = None) -> str:
     """``_unmodelled_effect_reasons``, with a card-facts record filling the gap (A1).
 
-    When the text parser left a gap and the card's card-facts record exists
-    with every effect a known type, the search can read what casting does
-    (``Moves._variants`` renders the record through the same parsers), so the
-    gap stops counting as unmodelled. Token gaps need a readable token spec;
-    damage-to-players gaps depend on the line's variants, not the card.
+    The one gap a record fills is a creature whose own enters trigger the text
+    parser cannot value: when its record exists, has no ``unknown`` effect and
+    every cast-time effect renders into something the search values
+    (``_record_represents``), ``Moves._variants`` merges those effects into the
+    hard cast and the gap stops counting as unmodelled. Every other gap keeps
+    today's reason: no record shape yet represents modes, pumps, auras, X
+    costs or unreadable tokens, and pretending otherwise would clear the flag
+    without the variants gaining anything.
     """
     reason = _unmodelled_effect_reasons(card, result)
-    if reason in _RECORD_OVERRIDES and isinstance(card, dict):
+    if reason == "its triggered ability" and isinstance(card, dict) and _is_creature(card):
+        name = str(card.get("name") or "")
         record = _known_record(*_record_key(card))
-        if record is not None and (
-            reason != "its tokens" or any(isinstance(entry.effect, CreateToken) for entry in record.effects)
-        ):
-            _log_record_use(str(card.get("name") or ""))
+        if record is not None and _record_represents(record, name):
+            _log_record_use(name)
             return ""
     return reason
 
@@ -2732,6 +2782,11 @@ class Moves:
                     match = _LIFEGAIN.search(rec_text)
                 if not alt and not each:
                     alt, each = face_damage(rec_etb)
+                if not base_specs:
+                    # Creature tokens the record states and the text parser missed: read
+                    # with the same token parser, only into a slot the card's own text
+                    # left empty.
+                    base_specs = list(token_specs(_cast_text(rec_etb)) or ())
             bounce = etb_reach is not None and reach[0] == "bounce"
         elif spell.role == "creature":
             # A noncreature that makes creature tokens (card_role calls it a creature): the rest
@@ -2773,13 +2828,14 @@ class Moves:
         ):
             # Nothing its text does is valued (a pump, an aura, a fog, a planeswalker): never cast
             # in a line, where a placeholder value would put it ahead of holding it — unless a
-            # card-facts record supplies valued effects (#A1): its rendered lines that classify to
-            # a valued kind stand in as the modes.
+            # card-facts record supplies valued effects (#A1): its rendered lines that the search
+            # values (``_record_line_valued``, the same predicate as the unmodelled gate) stand in
+            # as the modes.
             record = _known_record(*_record_key(card))
             rescued = tuple(
                 line
                 for line in (record_cast_text(record).splitlines() if record is not None else ())
-                if classify(spell.name, line)[0] != "other"
+                if _record_line_valued(spell.name, line)
             )
             if rescued:
                 oracle_modes = rescued  # read by the mode loop below like the card's own bullets
@@ -2837,66 +2893,12 @@ class Moves:
         sneak = self._sneak_variant(hs, body)
         if sneak is not None:
             variants.append(sneak)
-        # An evoke mode read from the card's card-facts record (#A1): its effects rendered
-        # through the same parsers as any cast. Priced at the mode's mana cost when the record
-        # has one; an exile/discard cost needs another card in hand to pay it (that card's own
-        # value is not debited — an approximation noted in the report).
-        erecord = _known_record(*_record_key(card))
-        emode = (
-            next((m for m in erecord.modes if m.name.lower() == "evoke"), None)
-            if erecord is not None
-            else None
-        )
-        etext = record_mode_text(erecord, "evoke") if erecord is not None else ""
-        if emode is not None and etext:
-            ecost_text = emode.cost_text or ""
-            if emode.cost.mana:
-                einfo = hand_info({**card, "mana_cost": emode.cost.mana})
-            elif re.search(r"\bdiscard\b|\bexile\b", ecost_text, re.IGNORECASE):
-                ecolour = re.search(r"\ba (\w+) card\b", ecost_text)
-                eletter = {
-                    "white": "W",
-                    "blue": "U",
-                    "black": "B",
-                    "red": "R",
-                    "green": "G",
-                }.get(ecolour.group(1).lower() if ecolour else "", "")
-                # Payable only when another hand card can pay the exile/discard: read the
-                # model's full hand (``self.spells`` is still half-built while variants are
-                # made), and test colour membership per pip group (pips are frozensets).
-                payable = any(
-                    _int(other.card.get("instance_id") or 0) != hs.iid
-                    and (
-                        not eletter
-                        or any(eletter in p for p in (other.pips or ()))
-                        or eletter in str(other.card.get("mana_cost") or "")
-                    )
-                    for other in self.model.spells
-                )
-                if not payable:
-                    einfo = None
-                else:
-                    einfo = hand_info({**card, "mana_cost": ""})
-            else:
-                einfo = None  # an unpaid cost shape we don't recognise: don't invent it
-            if einfo is not None:
-                epseudo = {"name": spell.name, "oracle_text": etext, "type_line": ""}
-                ekind, egain, ereach_, ebounce_ = classify(spell.name, etext)
-                ealt, eeach = face_damage(epseudo)
-                especs = tuple(token_specs(_cast_text(epseudo)) or ())
-                if egain or ereach_ is not None or ealt or eeach or especs:
-                    evar = make(
-                        None,
-                        mode_label(ekind, egain, etext, spell.name),
-                        egain,
-                        ereach_,
-                        ebounce_,
-                        loss=extra_life,
-                        face=eeach,
-                        specs=especs,
-                    )
-                    evar = dataclasses.replace(evar, mana_value=einfo.mana_value, pips=einfo.pips)
-                    variants += [evar, *aimed(evar, ealt)]
+        # An alternate-cast mode from a card-facts record (evoke and friends) is deliberately
+        # NOT invented here (#A1 review round 2): the search's cast application has no way to
+        # respect a mode whose permanent does not stay on the battlefield (``Mode.
+        # stays_on_battlefield``) or whose cost consumes another hand card, so a rendered
+        # variant would keep a real body and keep the paid card — optimistic fiction. Such
+        # modes stay unmodelled until the search can apply their lifecycle.
         return tuple(variants), plain
 
     def _sneak_variant(self, hs: HandSpell, body: dict | None) -> Variant | None:

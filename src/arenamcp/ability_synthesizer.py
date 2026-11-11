@@ -617,7 +617,7 @@ class AbilitySynthesizer:
 _CAST_TIME_TRIGGERS = ("CAST", "ENTERS_THE_BATTLEFIELD")
 
 
-def _render_effect_sentence(effect: Effect) -> str:
+def render_effect_sentence(effect: Effect) -> str:
     """One known-type effect as the pseudo oracle sentence the search's parsers read.
 
     Effects with no cast-time representation in the search (mana abilities,
@@ -661,8 +661,22 @@ def _render_effect_sentence(effect: Effect) -> str:
     return ""
 
 
+def cast_time_entries(record: Any) -> tuple[Any, ...]:
+    """The record's effect entries that act on casting or on the card's own entering.
+
+    An entry qualifies with an empty trigger (part of casting, or static) or a
+    ``CAST``/``ENTERS_THE_BATTLEFIELD`` tag in its trigger. Conditioned entries
+    are included; callers decide whether they can honour the condition.
+    """
+    return tuple(
+        entry
+        for entry in getattr(record, "effects", ())
+        if not entry.trigger or any(tag in entry.trigger.upper() for tag in _CAST_TIME_TRIGGERS)
+    )
+
+
 def _entries_text(entries: Any) -> str:
-    sentences = [s for s in (_render_effect_sentence(entry.effect) for entry in entries) if s]
+    sentences = [s for s in (render_effect_sentence(entry.effect) for entry in entries) if s]
     return "\n".join(sentences)
 
 
@@ -671,21 +685,9 @@ def record_cast_text(record: Any) -> str:
 
     Read by the planner when its text parser left the card unmodelled: the
     sentences reuse the exact phrasings the existing parsers already read.
+    An effect under a condition the search cannot evaluate is left out rather
+    than rendered unconditionally (conservative: a record never invents a
+    bigger effect than its conditions allow).
     """
-    entries = [
-        entry
-        for entry in getattr(record, "effects", ())
-        if not entry.trigger or any(tag in entry.trigger.upper() for tag in _CAST_TIME_TRIGGERS)
-    ]
-    return _entries_text(entries)
-
-
-def record_mode_text(record: Any, mode_name: str) -> str:
-    """One named mode's effects ('evoke', ...) as pseudo oracle text ('' when absent).
-
-    Mode association follows the compiler's trigger tags: an effect of the
-    evoke mode carries ``..._OR_EVOKE`` (or ``EVOKE``) in its trigger.
-    """
-    tag = mode_name.upper()
-    entries = [entry for entry in getattr(record, "effects", ()) if tag in entry.trigger.upper()]
+    entries = [entry for entry in cast_time_entries(record) if not entry.conditions]
     return _entries_text(entries)
