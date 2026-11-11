@@ -134,11 +134,7 @@ class _DeckAnalysisMixin:
             from arenamcp.card_facts.client import prefetch_grp_ids
 
             prefetch_grp_ids(
-                list(dict.fromkeys(
-                    gid
-                    for gid in (snapshot.get("deck_cards") or [])
-                    if isinstance(gid, int)
-                ))
+                list(dict.fromkeys(gid for gid in (snapshot.get("deck_cards") or []) if isinstance(gid, int)))
                 + list(commander_ids(state))
             )
         except Exception as error:

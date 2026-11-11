@@ -65,9 +65,7 @@ class _DeckLibraryMixin:
 
             grp_ids: list[int] = []
             for record in library.values():
-                grp_ids.extend(
-                    gid for gid, _count in (getattr(record, "main", None) or [])
-                )
+                grp_ids.extend(gid for gid, _count in (getattr(record, "main", None) or []))
                 grp_ids.extend(getattr(record, "command_zone", None) or [])
             prefetch_grp_ids(grp_ids)
         except Exception as error:

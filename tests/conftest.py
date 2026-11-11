@@ -448,9 +448,7 @@ def _card_facts_hooks_are_inert(monkeypatch):
     not observe (or trigger) that worker, so the hook is neutralised here;
     tests that exercise the hook or the client override it themselves.
     """
-    monkeypatch.setattr(
-        "arenamcp.card_facts.client.prefetch_grp_ids", lambda grp_ids: None
-    )
+    monkeypatch.setattr("arenamcp.card_facts.client.prefetch_grp_ids", lambda grp_ids: None)
 
 
 @pytest.fixture(scope="session")
