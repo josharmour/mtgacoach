@@ -112,13 +112,6 @@ class MainWindow(QMainWindow):
         except Exception:
             logger.warning("Could not initialize session recap", exc_info=True)
         QTimer.singleShot(100, self._start_session)
-        self._session_recap = None
-        try:
-            from .session_recap import SessionRecapController
-
-            self._session_recap = SessionRecapController(self)
-        except Exception:
-            logger.warning("Session recap initialization failed", exc_info=True)
 
         # ANR Watchdog
         if WatchdogPingBridge is not None:
