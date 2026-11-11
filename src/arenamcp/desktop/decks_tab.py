@@ -14,10 +14,12 @@ from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -190,18 +192,31 @@ class DecksTab(QWidget):
         self.builder_btn.clicked.connect(self.open_builder)
         lay.addWidget(self.builder_btn)
 
-        self._table = QTableWidget(0, len(_COLUMNS))
-        self._table.setHorizontalHeaderLabels(_COLUMNS)
-        self._table.verticalHeader().setVisible(False)
-        self._table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._table.setSelectionBehavior(QTableWidget.SelectRows)
-        self._table.setSelectionMode(QTableWidget.SingleSelection)
-        self._table.setShowGrid(False)
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        for column in (1, 2, 4):
-            self._table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
-        self._table.itemSelectionChanged.connect(self._on_selection_changed)
-        lay.addWidget(self._table, 1)
+        self._deck_buttons: dict[str, QPushButton] = {}
+        self._selected_id = None
+        self._table = None
+        if QApplication.platformName() == "cocoa":
+            # Native buttons avoid Cocoa's synthesized accessible table cells.
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            body = QWidget()
+            self._deck_rows = QVBoxLayout(body)
+            self._deck_rows.setAlignment(Qt.AlignTop)
+            scroll.setWidget(body)
+            lay.addWidget(scroll, 1)
+        else:
+            self._table = QTableWidget(0, len(_COLUMNS))
+            self._table.setHorizontalHeaderLabels(_COLUMNS)
+            self._table.verticalHeader().setVisible(False)
+            self._table.setEditTriggers(QTableWidget.NoEditTriggers)
+            self._table.setSelectionBehavior(QTableWidget.SelectRows)
+            self._table.setSelectionMode(QTableWidget.SingleSelection)
+            self._table.setShowGrid(False)
+            self._table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+            for column in (1, 2, 4):
+                self._table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
+            self._table.itemSelectionChanged.connect(self._on_selection_changed)
+            lay.addWidget(self._table, 1)
 
         actions = QHBoxLayout()
         self.edit_btn = QPushButton("Edit / build deck")
@@ -214,11 +229,13 @@ class DecksTab(QWidget):
         self.duplicate_btn.clicked.connect(self._duplicate_deck)
         self.strategy_btn = QPushButton("Deck strategy")
         self.strategy_btn.setToolTip(
-            "Build (or show) this deck's playbook: how it wins, its engines, its decision rules"
+            "Analyze and save a playbook for future matches with this exact list and commander"
         )
         self.strategy_btn.clicked.connect(lambda: self._analyze_selected(refresh=False))
         self.rebuild_btn = QPushButton("Rebuild")
-        self.rebuild_btn.setToolTip("Throw away the cached strategy and analyse the deck again")
+        self.rebuild_btn.setToolTip(
+            "Analyze again and replace the saved strategy after the new analysis succeeds"
+        )
         self.rebuild_btn.clicked.connect(lambda: self._analyze_selected(refresh=True))
         self.all_btn = QPushButton("Build all missing")
         self.all_btn.setToolTip("Build a strategy for every deck that has none, one at a time")
@@ -326,6 +343,8 @@ class DecksTab(QWidget):
         NewDeckDialog(self._session, self._decks, parent=self.window()).show()
 
     def selected_deck_id(self) -> str | None:
+        if self._table is None:
+            return self._selected_id
         rows = self._table.selectionModel().selectedRows() if self._table.selectionModel() else []
         if not rows:
             return None
@@ -335,12 +354,23 @@ class DecksTab(QWidget):
     def set_decks(self, decks: list[dict[str, Any]], note: str = "") -> None:
         selected = self.selected_deck_id()
         self._decks = [dict(d) for d in decks if isinstance(d, dict)]
+        self._reports.clear()
         for deck in self._decks:
             self._names[deck["deck_id"]] = deck.get("name", "")
             report = (deck.get("strategy") or {}).get("report")
             if report:
                 self._reports[deck["deck_id"]] = report
-        self._table.setRowCount(len(self._decks))
+        if self._table is None:
+            ids = {deck["deck_id"] for deck in self._decks}
+            if selected not in ids:
+                self._selected_id = None
+            for key in self._deck_buttons.keys() - ids:
+                button = self._deck_buttons.pop(key)
+                self._deck_rows.removeWidget(button)
+                button.hide()
+                button.deleteLater()
+        else:
+            self._table.setRowCount(len(self._decks))
         for row, deck in enumerate(self._decks):
             self._set_row(row, deck)
         complete = sum(1 for d in self._decks if d.get("complete"))
@@ -358,7 +388,7 @@ class DecksTab(QWidget):
                 for d in self._decks
             )
         )
-        if selected is not None:
+        if self._table is not None and selected is not None:
             for row, deck in enumerate(self._decks):
                 if deck["deck_id"] == selected:
                     self._table.selectRow(row)
@@ -374,6 +404,22 @@ class DecksTab(QWidget):
             label,
             _fmt_when(deck.get("last_played", "")),
         ]
+        if self._table is None:
+            key = deck["deck_id"]
+            button = self._deck_buttons.get(key)
+            if button is None:
+                button = QPushButton()
+                button.setCheckable(True)
+                button.clicked.connect(lambda checked=False, deck_id=key: self._select_deck(deck_id))
+                self._deck_buttons[key] = button
+            if self._deck_rows.indexOf(button) != row:
+                self._deck_rows.removeWidget(button)
+                self._deck_rows.insertWidget(row, button)
+            text = f"{cells[0]} · {cells[1]} · {cells[2]} cards\n{label} · {cells[4]}"
+            button.setText(text.replace("&", "&&"))
+            button.setAccessibleName(text)
+            button.setChecked(key == self._selected_id)
+            return
         for column, text in enumerate(cells):
             item = QTableWidgetItem(text)
             item.setFlags(item.flags() & ~Qt.ItemIsEditable)
@@ -382,6 +428,12 @@ class DecksTab(QWidget):
             if column == 0:
                 item.setToolTip(f"{deck.get('source', '')} · {deck.get('deck_id', '')}")
             self._table.setItem(row, column, item)
+
+    def _select_deck(self, deck_id: str) -> None:
+        self._selected_id = deck_id
+        for key, button in self._deck_buttons.items():
+            button.setChecked(key == deck_id)
+        self._on_selection_changed()
 
     def _deck_at(self, deck_id: str) -> tuple[int, dict[str, Any]] | None:
         for row, deck in enumerate(self._decks):

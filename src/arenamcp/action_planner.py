@@ -4439,7 +4439,11 @@ class ActionPlanner(_ActionLegalityMixin):
                 selected_ids=chosen,
                 reasoning=self._last_decision_reasoning,
             )
+        from arenamcp.laelia_strategy import correct_pass
+
         consistency = consistent_action(decision, game_state, chosen, self._last_decision_reasoning)
+        if consistency is None:
+            consistency = correct_pass(decision, game_state, chosen, self._last_decision_reasoning)
         if consistency:
             original_ids = list(chosen)
             original_reasoning = self._last_decision_reasoning
@@ -4969,7 +4973,10 @@ class ActionPlanner(_ActionLegalityMixin):
                 return picked
         if decision.request_type == "Mulligan" and {"mull:keep", "mull:mull"} <= decision.option_ids():
             return self._plan_mulligan(decision, game_state)
-        if decision.request_type == "Group" and "LondonMulligan" in str(decision.source_label or ""):
+        if decision.request_type == "Group" and (
+            "LondonMulligan" in str(decision.source_label or "")
+            or any(o.meta.get("london_mulligan") for o in decision.options)
+        ):
             bottom = self._plan_mulligan_bottom(decision, game_state)
             if bottom:
                 return bottom
@@ -7024,8 +7031,19 @@ class ActionPlanner(_ActionLegalityMixin):
 
         ids = [int(option.meta.get("instance_id") or 0) for option in decision.options]
         count = int(decision.min_select or 0)
+        if count != decision.max_select:
+            return []
+        offered_names = {o.meta.get("instance_id"): o.meta.get("card_name") for o in decision.options}
+        protected = mulligan_policy.laelia_bottom_choice(game_state, ids, count, offered_names)
+        if protected:
+            chosen_ids = [f"grp:{iid}" for iid in protected]
+            self._last_decision_option_ids = chosen_ids
+            self._last_decision_reasoning = "Bottom spare Mountains to keep the exile enabler for Laelia."
+            self._last_decision_trace = {"policy": "mulligan_bottom", "validated_ids": chosen_ids}
+            logger.info("Laelia mulligan bottom: %s (%s)", self._last_decision_reasoning, chosen_ids)
+            return chosen_ids
         suggested = mulligan_policy.bottom_choice(game_state, ids, count)
-        if not suggested or count != decision.max_select:
+        if not suggested:
             return []
         suggested_ids = [f"grp:{identity}" for identity in suggested]
         chosen: list[str] = []
@@ -9442,6 +9460,10 @@ class ActionPlanner(_ActionLegalityMixin):
             ]
             if ability_facts:
                 lines.append("OFFERED TRIGGER FACTS: " + json.dumps(ability_facts, ensure_ascii=False))
+        from arenamcp.laelia_strategy import priority_note
+
+        if note := priority_note(decision, game_state):
+            lines.append(note)
         commander_ids = {
             card.get("instance_id")
             for card in game_state.get("command", []) or []
@@ -9465,7 +9487,9 @@ class ActionPlanner(_ActionLegalityMixin):
             if o.payable is False:
                 note = "  [cannot auto-pay — do not pick]"
             elif o.payable is True:
-                note = "  [Arena confirms payable now]"
+                note = (
+                    "  [Arena confirms payable now] (overrides estimates from visible lands or commander tax)"
+                )
             if line_source is not None and o.payable is not False:
                 tag = self._line_tag(line_source, o, tag_state, unmodelled)
                 if tag:
@@ -9640,7 +9664,10 @@ class ActionPlanner(_ActionLegalityMixin):
             # The hand facts (count, resulting size, play/draw, per-card
             # castability) come from the GAME STATE mulligan section below.
             lines.append(MULLIGAN_POLICY)
-        elif decision.request_type == "Group" and "LondonMulligan" in str(decision.source_label or ""):
+        elif decision.request_type == "Group" and (
+            "LondonMulligan" in str(decision.source_label or "")
+            or any(o.meta.get("london_mulligan") for o in decision.options)
+        ):
             from arenamcp import mulligan_policy
 
             ids = [int(o.meta.get("instance_id") or 0) for o in decision.options]

@@ -3,7 +3,7 @@
 import os
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import QHBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from arenamcp.android_link import MIRROR_PATH, game_device
 from arenamcp.ladder import LADDERS, RANK_HISTORY_LIMIT, RankLog, rank_text, ranked_ladder
@@ -18,8 +18,15 @@ class RankStrip(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        self.account_label = QLabel("Arena account · Not detected yet")
+        self.account_label.setObjectName("arenaAccountLabel")
+        self.account_label.setTextFormat(Qt.PlainText)
+        self.account_label.setAlignment(Qt.AlignCenter)
+        root.addWidget(self.account_label)
+        layout = QHBoxLayout()
+        root.addLayout(layout)
         self._reader = RankLog()
         self.buttons = {}
         self.recent = {ladder: [] for ladder in LADDERS}
@@ -48,6 +55,14 @@ class RankStrip(QWidget):
         self._render()
 
     def _render(self):
+        name = " ".join(self._reader.account_name.split())
+        text = f"Arena account · {name}" if name else "Arena account · Not detected yet"
+        self.account_label.setText(
+            self.account_label.fontMetrics().elidedText(text, Qt.ElideRight, max(1, self.width()))
+        )
+        self.account_label.setToolTip(
+            text + "\nDetected from the active Arena log. Recent matches are stored on this device."
+        )
         for ladder, button in self.buttons.items():
             rank = rank_text(self._reader.snapshot, ladder)
             recent = self.recent[ladder]

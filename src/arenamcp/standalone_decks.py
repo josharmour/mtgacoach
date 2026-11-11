@@ -271,6 +271,7 @@ class _DeckLibraryMixin:
             playbook = coach.prepare_playbook(
                 record.game_state(), backend=self._deck_library_backend(), refresh=refresh, progress=progress
             )
+            coach.save_deck_strategy(playbook)
             payload = {
                 "deck_id": record.deck_id,
                 "name": record.name,

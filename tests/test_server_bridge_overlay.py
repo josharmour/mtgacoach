@@ -381,6 +381,8 @@ def test_a_current_bridge_state_still_overlays(monkeypatch):
     assert overlay["turn"]["turn_number"] == 7 and overlay["turn"]["active_player"] == 1
     # The Mac id is compared, not published: autopilot window checks read _bridge_game_state_id.
     assert "_bridge_game_state_id" not in overlay
+    # Partial zone metadata cannot certify the complete visible board.
+    assert "_bridge_visible_game_state_id" not in overlay
 
 
 @pytest.mark.parametrize(

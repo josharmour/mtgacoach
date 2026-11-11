@@ -477,7 +477,8 @@ def deterministic(observation, config):
             subject = "You're" if actor == "You" else actor + " is"
             text = f"{subject} at {p['to']} life."
         elif event.kind == "combat" and type(p.get("count")) is int:
-            text = f"{actor} {'attack' if actor == 'You' else 'attacks'} with {p['count']} creatures."
+            noun = "creature" if p["count"] == 1 else "creatures"
+            text = f"{actor} {'attack' if actor == 'You' else 'attacks'} with {p['count']} {noun}."
         elif event.kind == "turn_start" and type(p.get("turn_number")) is int:
             text = f"Turn {p['turn_number']} begins."
         elif event.kind == "game_end":
@@ -505,7 +506,9 @@ def deterministic(observation, config):
         if event.kind == "action_observed":
             text = f"{actor} cast {name}."
         elif event.kind == "combat":
-            text = f"{actor} attacked with {event.payload['count']} creatures."
+            count = event.payload["count"]
+            noun = "creature" if count == 1 else "creatures"
+            text = f"{actor} attacked with {count} {noun}."
     if event.kind == "life_change":
         before, after = event.payload.get("from"), event.payload.get("to")
         if type(before) is int and type(after) is int:

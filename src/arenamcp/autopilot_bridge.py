@@ -2361,6 +2361,31 @@ class _BridgeSubmitMixin:
         if not desired_names and action.card_name:
             desired_names = [action.card_name.lower().strip()]
 
+        from arenamcp.card_name_choice import is_card_name_request
+
+        if is_card_name_request(pending):
+            from arenamcp.decisions import build_pending_decision, submit_option
+
+            decision = build_pending_decision(pending)
+            if decision is None or not desired_names:
+                return None
+            chosen = []
+            for name in desired_names:
+                matches = [
+                    option.option_id
+                    for option in decision.options
+                    if option.label.casefold() == name.casefold()
+                ]
+                if len(matches) != 1:
+                    return None
+                chosen.extend(matches)
+            if not decision.selection_is_valid(chosen):
+                return None
+            if submit_option(bridge, decision, chosen):
+                return ClickResult(True, 0, 0, "select_n", "GRE bridge")
+            self._gre_bridge_failed_methods.add("select_n")
+            return None
+
         decision_context = game_state.get("decision_context") or {}
         offered_colors = [option.get("id") for option in pending.get("select_n_color_options") or []]
         from arenamcp.basic_land_choice import basic_land_ids, basic_land_ids_for_names
@@ -2740,6 +2765,11 @@ class _BridgeSubmitMixin:
 
         if is_sideboarding(pending):
             return False  # A deck needs explicit review/submission, never a gameplay default.
+
+        from arenamcp.card_name_choice import is_card_name_request
+
+        if is_card_name_request(pending):
+            return False  # A card name needs an explicit choice, never arbitrary/AutoRespond.
 
         dec_type = self._decision_type(game_state)
         btype = str(game_state.get("_bridge_request_type") or pending.get("request_type") or "")
@@ -3271,8 +3301,11 @@ class _BridgeSubmitMixin:
 
         # Bottom the worst N cards; keep the rest in hand. Response shape mirrors
         # MTGA's LondonWorkflow: [Hand/Top keep group, Library/Bottom group].
-        worst_first = self._rank_cards_for_bottoming(instance_ids, game_state)
-        bottom_ids = worst_first[:bottom_count]
+        from arenamcp.mulligan_policy import laelia_bottom_choice
+
+        bottom_ids = laelia_bottom_choice(game_state, instance_ids, bottom_count)
+        if not bottom_ids:
+            bottom_ids = self._rank_cards_for_bottoming(instance_ids, game_state)[:bottom_count]
         keep_ids = [iid for iid in instance_ids if iid not in bottom_ids]
         groups = [
             {"ids": keep_ids, "zone": "Hand", "sub_zone": "Top"},

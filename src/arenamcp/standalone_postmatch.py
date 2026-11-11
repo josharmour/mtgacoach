@@ -14,6 +14,7 @@ from pathlib import Path
 
 from arenamcp.game_plan import accepted_call_kwargs
 from arenamcp.logging_config import LOG_DIR, LOG_FILE
+from arenamcp.standalone_loss_streak import LossStreakMixin
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,7 @@ def _background_priority() -> int:
     return BACKGROUND_PRIORITY
 
 
-class _PostMatchMixin:
+class _PostMatchMixin(LossStreakMixin):
     # -- match bundles (arenamcp.match_bundle) ------------------------------------
 
     def _begin_match_bundle(self, match_id: str | None, game_number: int = 1) -> None:
@@ -500,6 +501,15 @@ class _PostMatchMixin:
             logger.debug(f"performance record write failed: {e}")
 
         staged_history = list(self._advice_history if advice_history is None else advice_history)
+        try:
+            self._capture_loss_evidence(
+                mid,
+                final_state,
+                staged_history,
+                self._missed_decisions if missed_decisions is None else missed_decisions,
+            )
+        except Exception:
+            logger.exception("Could not capture loss-streak evidence")
         if not staged_history:
             logger.info(f"Skipping post-match staging ({reason}): no advice history")
             return False

@@ -891,6 +891,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             commander_ids,
             playbook_response_format,
         )
+        from arenamcp.laelia_strategy import analysis_note, validate_generated_plan
         from arenamcp.match_context import prepare_match_context
 
         if wanted is None:
@@ -912,6 +913,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             + "\nAnalyze exactly these card IDs: "
             + json.dumps(sorted(catalog))
         )
+        if deck_note := analysis_note(identity):
+            user_message += "\n" + deck_note
         deadline = time.monotonic() + self._PLAYBOOK_MODEL_WAIT_S
         lane = STRATEGIC_LANE.acquire("deck_playbook", self._PLAYBOOK_LANE_WAIT_S, abort=lambda: not wanted())
         if lane is None:
@@ -985,6 +988,7 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 response = complete(DECK_ANALYSIS_PROMPT, user_message)
                 try:
                     playbook = DeckPlaybook.parse(response, catalog, commanders, identity)
+                    validate_generated_plan(playbook)
                     break
                 except (ValueError, TypeError, KeyError) as error:
                     logger.info("Deck playbook validation failed (attempt %d): %s", attempt + 1, error)
@@ -1038,6 +1042,8 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
             if mgr is not None:
                 mgr.seed(strategy)
         elapsed = (time.perf_counter() - start) * 1000
+        if getattr(playbook, "saved_strategy_sha256", ""):
+            source = f"saved strategy {playbook.identity} (SHA-256 {playbook.saved_strategy_sha256})"
         if source == "model":
             logger.info(
                 "Deck playbook complete: %.0fms, %d cards, %d mechanisms",
@@ -1080,10 +1086,49 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         return logging_config.LOG_DIR / "cache" / "playbooks" / f"{identity}.json"
 
+    @staticmethod
+    def _saved_strategy_path(identity: str):
+        from arenamcp import logging_config
+
+        if not re.fullmatch(r"[0-9a-f]{16,128}", identity or ""):
+            return None
+        return logging_config.LOG_DIR / "deck_strategies" / f"{identity}.json"
+
+    def save_deck_strategy(self, playbook) -> None:
+        """Keep the Decks window's validated strategy until the player replaces it."""
+        path = self._saved_strategy_path(playbook.identity)
+        if path is None:
+            raise ValueError("Cannot save a strategy without an exact deck identity")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            temporary.write_text(json.dumps(playbook.export()), encoding="utf-8")
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @classmethod
+    def read_saved_strategy(cls, identity: str, game_state: dict):
+        saved_path = cls._saved_strategy_path(identity)
+        if saved_path is not None and saved_path.is_file():
+            from arenamcp.deck_strategy import DeckPlaybook
+
+            try:
+                raw = saved_path.read_bytes()
+                playbook = DeckPlaybook.restore(json.loads(raw), game_state)
+                playbook.saved_strategy_sha256 = hashlib.sha256(raw).hexdigest()
+                return playbook
+            except (ValueError, KeyError, TypeError, OSError) as error:
+                logger.warning("Could not load saved deck strategy %s: %s", identity, error)
+        return None
+
     def _cached_playbook(self, identity: str, game_state: dict):
         """A playbook built earlier for this exact deck (memory, then disk), else None."""
         if not identity:
             return None
+        saved_playbook = self.read_saved_strategy(identity, game_state)
+        if saved_playbook is not None:
+            return saved_playbook
         with self._deck_analysis_lock:
             cached = self._playbook_cache.get(identity)
         if cached is not None:
@@ -1103,6 +1148,9 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
                 raise ValueError("older than 30 days")
             # Revalidates version, deck/commander identity, catalog and evidence.
             playbook = DeckPlaybook.restore(saved["playbook"], game_state)
+            from arenamcp.laelia_strategy import validate_generated_plan
+
+            validate_generated_plan(playbook)
         except Exception as error:
             logger.info("Ignoring cached deck playbook %s: %s", path.name, error)
             return None
@@ -3492,6 +3540,14 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
         if bridge_req or bridge_request_class:
             return bridge_actions or []
         if game_state.get("_bridge_connected") and "_bridge_actions" in game_state:
+            # A connected bridge can have no snapshot yet. In a logged GRE
+            # priority window, use that request's actions until the bridge
+            # supplies a menu. An explicit empty bridge menu still wins.
+            if (
+                bridge_actions is None
+                and (game_state.get("decision_context") or {}).get("type") == "actions_available"
+            ):
+                return game_state.get("legal_actions_raw") or []
             return bridge_actions or []
         return bridge_actions or game_state.get("legal_actions_raw") or []
 

@@ -232,10 +232,17 @@ class _StartupMixin:
         ):
             logger.info("Engine reload strategy discarded: match changed or handoff expired")
             return
-        from arenamcp.deck_strategy import DeckPlaybook
+        from arenamcp.coach import CoachEngine
+        from arenamcp.deck_strategy import DeckPlaybook, deck_identity
+        from arenamcp.laelia_strategy import validate_generated_plan
 
+        saved = CoachEngine.read_saved_strategy(deck_identity(state), state)
+        checkpoint = data.get("deck_playbook") or {}
+        strategy_changed = saved is not None and saved.export()["data"] != checkpoint.get("data")
         try:
-            playbook = DeckPlaybook.restore(data.get("deck_playbook") or {}, state)
+            playbook = saved or DeckPlaybook.restore(checkpoint, state)
+            if saved is None:
+                validate_generated_plan(playbook)
         except (ValueError, KeyError, TypeError):
             # Old unstructured summaries omitted commander policies and can
             # contain unsupported combos. Rebuild rather than grandfathering
@@ -249,7 +256,13 @@ class _StartupMixin:
         self._coach._deck_analysis_identity = playbook.identity
         self._deck_analyzed = True
         manager = self._coach._ensure_game_plan_mgr()
-        if manager and data.get("game_plan"):
+        if saved is not None:
+            logger.info(
+                "Reloaded saved strategy %s (SHA-256 %s)", saved.identity, saved.saved_strategy_sha256
+            )
+        if manager and strategy_changed:
+            manager.seed(playbook.render())
+        elif manager and data.get("game_plan"):
             manager.restore_after_reload(data["game_plan"], state)
-        logger.info("Restored deck playbook and current plan for engine reload in match %s", match_id)
+        logger.info("Restored deck playbook for engine reload in match %s", match_id)
         self.ui.log("Resumed current match strategy; no new deck-analysis warmup needed.")

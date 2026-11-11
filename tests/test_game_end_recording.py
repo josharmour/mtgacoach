@@ -598,3 +598,12 @@ def test_an_untaken_game_end_stays_with_its_game():
     assert (record["match_id"], record["game_number"], record["result"]) == ("b", 1, None)
     assert gs.take_game_end() is None  # taken exactly once
     assert gs.game_over_signalled()  # B is over until the next game starts
+
+
+def test_loss_review_uses_match_scope_separately_from_game_result(arena):
+    match_id = "loss-review-match-scope"
+    arena.play(match_id, 1, 14)
+    arena.complete_match(
+        match_id, "opponent", [result_row(OUR_TEAM), result_row(THEIR_TEAM, "MatchScope_Match")]
+    )
+    assert arena.gs._loss_review_final_result == (match_id, "loss")

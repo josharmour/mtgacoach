@@ -927,6 +927,20 @@ class AutopilotEngine(
         if cap is not None:
             caps[(turn, kind, instance_id, ability_id, name)] = cap
         self._self_cancelled_target_caps = caps
+        # Payment failure is recoverable after a real resource increase and
+        # a new Arena payment solution. Other cancellations remain withheld.
+        budgets = {
+            key: value
+            for key, value in getattr(self, "_self_cancelled_payment_budgets", {}).items()
+            if key[0] == turn
+        }
+        if kind == "ActionType_Activate" and why.startswith("PayCosts cancelled"):
+            from arenamcp.play_safety import exact_mana_total
+
+            total = exact_mana_total(game_state)
+            if total is not None:
+                budgets[(turn, kind, instance_id, ability_id, name)] = total
+        self._self_cancelled_payment_budgets = budgets
         logger.warning(
             "Self-cancel guard: %s %r was cancelled by the autopilot (%s); withholding it for the rest of turn %d",
             "cast" if kind in ("ActionType_Cast", "ActionType_CastOmen") else "activation",
@@ -1171,6 +1185,25 @@ class AutopilotEngine(
                 continue
             if (instance_id and entry_iid == instance_id) or (name and entry_name == name):
                 key = (entry_turn, entry_kind, entry_iid, entry_ability, entry_name)
+                budget = getattr(self, "_self_cancelled_payment_budgets", {}).get(key)
+                if budget is not None and kind == "ActionType_Activate":
+                    from arenamcp.mana import has_autotap_solution
+                    from arenamcp.play_safety import exact_mana_total
+
+                    total = exact_mana_total(game_state)
+                    payable = any(
+                        action.get("actionType") == kind
+                        and action.get("instanceId") == entry_iid
+                        and action.get("abilityGrpId") == entry_ability
+                        and has_autotap_solution(action)
+                        for action in game_state.get("_bridge_actions") or []
+                        if isinstance(action, dict)
+                    )
+                    if payable and total is not None and total > budget:
+                        self._self_cancelled_plays.discard(key)
+                        self._self_cancelled_payment_budgets.pop(key, None)
+                        logger.info("Self-cancel guard: new mana and payment solution reopen %s", name)
+                        return False
                 before = getattr(self, "_self_cancelled_target_caps", {}).get(key)
                 if before is not None and kind == "ActionType_Cast":
                     from arenamcp.removal_windows import plains_cap_targets
@@ -1955,6 +1988,15 @@ class AutopilotEngine(
         bcls = str((game_state or {}).get("_bridge_request_class") or "")
         if not (breq or bcls):
             return False
+        if "SelectN" in breq + bcls:
+            from arenamcp.card_name_choice import is_card_name_request
+
+            try:
+                pending = self._gre_bridge.get_pending_actions() or {}
+            except Exception:
+                return False
+            if is_card_name_request(pending):
+                return False  # Naming a card is strategic, never an arbitrary escape.
         if any(
             kind in breq + bcls
             for kind in (
@@ -3308,6 +3350,7 @@ class AutopilotEngine(
                 self._last_cast_submitted = None
                 self._self_cancelled_plays = set()
                 self._self_cancelled_target_caps = {}
+                self._self_cancelled_payment_budgets = {}
                 self._last_typed_play = None
                 self._runaway_tripped_turn = None
                 self._request_tracker.reset()
@@ -5609,6 +5652,11 @@ class AutopilotEngine(
         decision = build_pending_decision(
             poll, resolve_instance=_resolve_instance, mana_source_ids=mana_source_ids
         )
+        from arenamcp.card_name_choice import is_card_name_request
+
+        if decision is None and is_card_name_request(poll):
+            self._pause_for_manual("Card-name choices are unavailable — choose a name in Arena", game_state)
+            return True
         if poll.get("payment_selection") and self._should_decline_optional_cost(game_state):
             return None
         if poll.get("payment_selection") and decision is None:

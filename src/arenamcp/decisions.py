@@ -936,6 +936,7 @@ def _build_actions_available(
         if (not name or is_unknown_card_name(name)) and resolve_instance is not None:
             name = resolve_instance(int(action.get("instanceId") or 0)) or name
         payable: bool | None = None
+        ability_text = ""
         if atype == "ActionType_Pass":
             saw_pass = True
             options.append(DecisionOption("pass", "Pass"))
@@ -1004,6 +1005,11 @@ def _build_actions_available(
                         payable = False
                 except Exception:
                     logger.debug("activation affordability lookup failed", exc_info=True)
+            # Keep the selected ability's untruncated rules separate from its
+            # display label. Flattened card text can combine mana and non-mana
+            # abilities, hiding the activation's tap/sacrifice reservation.
+            ability_cost, ability_rules = _default_ability_description(int(action.get("abilityGrpId") or 0))
+            ability_text = f"{ability_cost}: {ability_rules}" if ability_cost else ability_rules
             source_id = int(action.get("instanceId") or 0)
             zone = ""
             if source_id and resolve_zone is not None:
@@ -1032,6 +1038,7 @@ def _build_actions_available(
                     "manaCost": action.get("manaCost"),
                     "autoTapActions": action.get("autoTapActions") or [],
                     "hasAutoTap": has_autotap_solution(action),
+                    **({"ability_text": ability_text} if ability_text else {}),
                     **({"targets": action["targets"]} if action.get("targets") else {}),
                     # The alternative cost Arena offers this cast through (Sneak: ledger #156).
                     **(
@@ -1163,7 +1170,10 @@ def _build_select_n(
         name_decision = _build_card_name_choice(
             poll, request_id, can_cancel, source_label, resolve_instance, resolve_card
         )
-        if name_decision is not None:
+        from arenamcp.card_name_choice import is_card_name_request
+
+        if name_decision is not None or is_card_name_request(poll):
+            # Missing name identities must never become generic instance IDs.
             return name_decision
         color_decision = _build_color_choice(poll, request_id, can_cancel, source_label, resolve_instance)
         if color_decision is not None:
@@ -1635,8 +1645,10 @@ def _build_card_name_choice(
         live = _live_game_state()
         snapshot = live.get_published_snapshot() if hasattr(live, "get_published_snapshot") else {}
         local = snapshot.get("local_seat_id", getattr(live, "local_seat_id", None))
+        zones = snapshot.get("zones") or snapshot
         for zone in ("battlefield", "graveyard", "exile", "command", "revealed_cards"):
-            for card in snapshot.get(zone) or []:
+            cards = snapshot.get(zone) if zone == "revealed_cards" else zones.get(zone)
+            for card in cards or []:
                 if not isinstance(card, dict) or card.get("is_face_down") or card.get("is_facedown"):
                     continue
                 owner = card.get("owner_seat_id", card.get("controller_seat_id"))
@@ -2041,7 +2053,7 @@ def _build_group(
             DecisionOption(
                 option_id=f"grp:{iid}",
                 label=(f"Bottom {name}" if name else f"Bottom card #{iid}"),
-                meta={"instance_id": iid},
+                meta={"instance_id": iid, "london_mulligan": True, "card_name": name},
             )
         )
     return PendingDecision(
@@ -2805,7 +2817,9 @@ def submit_option(
             return False
         ids = [int(o.split(":", 1)[1]) for o in chosen if o.startswith("sel:")]
         if all(decision.find(o).meta.get("choice") == "card_name" for o in chosen):
-            return bool(bridge.submit_selection(ids, id_type="card_name"))
+            return bool(
+                bridge.submit_selection(ids, id_type="card_name", expected_request_id=decision.request_id)
+            )
         return bool(bridge.submit_selection(ids))
     if first.startswith("sfg:"):
         # SelectFromGroups (bug #203): one Group per request group, carrying
