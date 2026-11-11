@@ -85,15 +85,29 @@ def get_local_player_id():
 
         with open(PLAYER_LOG_PATH, encoding="utf-8", errors="ignore") as f:
             content = f.read()
-            match = pattern.search(content)
+
+        # Player.log accumulates across sessions and account switches, so the
+        # FIRST authenticateResponse in the file can belong to an account that
+        # logged out long ago. The local player is whoever logged in most
+        # recently: prefer the clientId that follows the last
+        # "[Accounts - Login] Logged in successfully" marker, and fall back to
+        # the last authenticateResponse anywhere in the file.
+        login_marker = "[Accounts - Login] Logged in successfully"
+        marker_idx = content.rfind(login_marker)
+        if marker_idx != -1:
+            match = pattern.search(content, marker_idx)
             if match:
                 client_id = match.group(1)
-                logger.info(f"Found Local Player ID via Regex: {client_id}")
+                logger.info(f"Found Local Player ID via Regex (most recent login): {client_id}")
                 return client_id
 
-            # Fallback for alternative formatting
-            # sometimes it appears as "clientId": "X", "screenName": "Y" inside authenticateResponse
-            # Assuming uniqueness of clientId in that block
+        last_match = None
+        for match in pattern.finditer(content):
+            last_match = match
+        if last_match:
+            client_id = last_match.group(1)
+            logger.info(f"Found Local Player ID via Regex (last authenticateResponse): {client_id}")
+            return client_id
 
     except Exception as e:
         logger.error(f"Error scanning for local player ID: {e}")

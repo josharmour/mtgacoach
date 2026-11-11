@@ -745,6 +745,37 @@ def _queue_selection_for_event(event_id: str) -> dict[str, Any] | None:
     return selection if selection.get("deck_name") else None
 
 
+def select_opponent_name(
+    participants: list[Any],
+    seat_id: int | None,
+    local_user_id: str | None,
+) -> str | None:
+    """Pick the opponent's display name from a match room's participants.
+
+    Exclusion order mirrors how the local seat is resolved: by systemSeatId
+    when the event carries one, otherwise by userId. The userId comparison
+    only applies when the resolved local id actually appears in this room —
+    a stale id (e.g. scanned from an earlier account's login) matches nobody
+    and would otherwise name the LOCAL player as the opponent.
+    """
+    known_local = any(
+        isinstance(p, dict) and local_user_id and p.get("userId") == local_user_id
+        for p in participants
+    )
+    for participant in participants:
+        if not isinstance(participant, dict):
+            continue
+        p_seat = participant.get("systemSeatId")
+        p_user = participant.get("userId")
+        p_name = participant.get("playerName") or participant.get("screenName") or participant.get("userName")
+        if p_name and (
+            (seat_id is not None and p_seat != seat_id)
+            or (seat_id is None and known_local and p_user != local_user_id)
+        ):
+            return str(p_name)
+    return None
+
+
 def _handle_match_created(payload: dict) -> None:
     """Handle MatchCreated / MatchGameRoomStateChangedEvent.
 
@@ -877,17 +908,9 @@ def _handle_match_created(payload: dict) -> None:
             _match_event_ids[str(match_id)] = str(event_id)
 
     # ── Opponent name tracking ──
-    for participant in participants:
-        if not isinstance(participant, dict):
-            continue
-        p_seat = participant.get("systemSeatId")
-        p_user = participant.get("userId")
-        p_name = participant.get("playerName") or participant.get("screenName") or participant.get("userName")
-        if p_name and (
-            (seat_id is not None and p_seat != seat_id) or (local_user_id and p_user != local_user_id)
-        ):
-            game_state.opponent_name = str(p_name)
-            break
+    opponent_name = select_opponent_name(participants, seat_id, local_user_id)
+    if opponent_name:
+        game_state.opponent_name = opponent_name
 
     game_state.record_player_names(match_id or game_state.match_id, participants)
 
