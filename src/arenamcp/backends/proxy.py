@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 
 from arenamcp import llm_trace
 from arenamcp.backend_health import BACKEND_ERROR_PREFIX, BackendHealth
-from arenamcp.model_call_settings import effort_for_backend
 from arenamcp.backends.health import (
     CIRCUIT_FAILURE_STATUS_CODES,
     CircuitBreaker,
@@ -23,6 +22,7 @@ from arenamcp.backends.health import (
     get_circuit,
 )
 from arenamcp.client_metadata import get_client_headers
+from arenamcp.model_call_settings import effort_for_backend
 
 logger = logging.getLogger(__name__)
 
@@ -1183,8 +1183,12 @@ class ProxyBackend:
         self._is_online = False
         self._client = None
         self._client_lock = threading.Lock()
-        # What the server said it actually ran (R4: gateway aliases lie).
+        # What the server said it actually ran (R4: gateway aliases lie),
+        # and the alias that request was made under - the served name is
+        # only meaningful for call settings while that alias is still the
+        # configured one (an explicit model switch makes it stale).
         self.last_served_model: str | None = None
+        self.last_served_alias: str | None = None
         self._served_model_warned = False
         self._stream_usage_supported = True
         self.last_request_metrics: dict | None = None
@@ -1851,6 +1855,9 @@ class ProxyBackend:
             return
         previous = self.last_served_model
         self.last_served_model = served
+        # Provenance for the call-settings table: this response answered a
+        # request made under the currently configured alias.
+        self.last_served_alias = str(self.model or "")
         if served != previous:
             # Discoverability: one INFO line on first use and on every
             # routing change, so "what model am I talking to?" is always

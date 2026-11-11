@@ -34,11 +34,18 @@ from arenamcp.model_call_settings import (
 
 
 class _Backend:
-    """Minimal stand-in for ProxyBackend: only the attributes the settings read."""
+    """Minimal stand-in for ProxyBackend: only the attributes the settings read.
 
-    def __init__(self, model="current", served=None):
+    ``served`` simulates a response the gateway already sent for this same
+    alias: the double records it as provenance, like ProxyBackend
+    ._note_served_model does. Pass ``noted=`` to simulate a response that
+    arrived under a different (older) alias.
+    """
+
+    def __init__(self, model="current", served=None, noted=None):
         self.model = model
         self.last_served_model = served
+        self.last_served_alias = model if (served and noted is None) else noted
 
 
 def _efforts(backend):
@@ -52,9 +59,13 @@ def _efforts(backend):
     }
 
 
-GLM_BEFORE = {"decision.typed": "none", "background.game_plan": "low",
-              "background.deck_playbook": "none", "background.commentary": "none",
-              "probe": "none"}
+GLM_BEFORE = {
+    "decision.typed": "none",
+    "background.game_plan": "low",
+    "background.deck_playbook": "none",
+    "background.commentary": "none",
+    "probe": "none",
+}
 
 
 def test_glm_behind_current_alias_is_sent_exactly_today_settings():
@@ -206,3 +217,121 @@ def test_family_classification_and_session_cache():
     assert family_for_backend(backend) == "glm"  # alias guess before any response
     backend.last_served_model = None
     assert family_for_backend(backend) == "glm"  # cached: no reclassification
+
+
+def test_family_cache_rebinds_when_the_alias_switches():
+    """An explicit model switch rebinds the cached family immediately.
+
+    standalone.set_backend and the coach's backend switch mutate the live
+    ProxyBackend instance; the previously served name was noted under the old
+    alias and must not classify the new one in either direction.
+    """
+    backend = _Backend("current", "glm-5.3-flash")
+    assert family_for_backend(backend) == "glm"
+    backend.model = "or-gemma-4-26b"
+    assert family_for_backend(backend) == "openrouter-test"  # stale served name not trusted
+    backend.model = "current"
+    assert family_for_backend(backend) == "glm"
+
+
+def test_switch_to_test_model_rebinds_settings_before_the_next_transport_call():
+    """current → or-gemma-4-26b: the first call after the switch is sent as a test model.
+
+    Real sequence (standalone.set_backend mutates the live backend): GLM is
+    served under ``current``, then the user switches the same instance to an
+    OpenRouter test model. The stale served name must not keep plan calls at
+    ``low`` - a fresh or-gemma backend sends reasoning disabled (match
+    eedf1ae3: test models never think), so this one must too.
+    """
+    from tests.proxy_fakes import make_backend, ok_stream
+
+    backend = make_backend(
+        [ok_stream("ok", model="glm-5.3-flash"), ok_stream("ok", model="or-gemma-4-26b")],
+        model="current",
+    )
+    backend.complete("s", "u", background=True, call_class="background.game_plan", reasoning_effort="high")
+    assert backend._client.calls[0]["extra_body"]["chat_template_kwargs"] == {
+        "thinking": True,
+        "reasoning_effort": "low",
+    }
+
+    backend.model = "or-gemma-4-26b"
+    backend.complete("s", "u", background=True, call_class="background.game_plan", reasoning_effort="high")
+    assert backend._client.calls[1]["extra_body"]["reasoning"] == {"enabled": False}
+
+
+def test_switch_back_to_current_restores_glm_settings_on_the_first_call():
+    """or-gemma-4-26b → current: the first call after the switch is sent as GLM again."""
+    from tests.proxy_fakes import make_backend, ok_stream
+
+    backend = make_backend(
+        [ok_stream("ok", model="or-gemma-4-26b"), ok_stream("ok", model="glm-5.3-flash")],
+        model="or-gemma-4-26b",
+    )
+    backend.complete("s", "u", background=True, call_class="background.game_plan", reasoning_effort="high")
+    assert backend._client.calls[0]["extra_body"]["reasoning"] == {"enabled": False}
+
+    backend.model = "current"
+    backend.complete("s", "u", background=True, call_class="background.game_plan", reasoning_effort="high")
+    assert backend._client.calls[1]["extra_body"]["chat_template_kwargs"] == {
+        "thinking": True,
+        "reasoning_effort": "low",
+    }
+
+
+def test_unknown_family_override_reaches_the_wire(monkeypatch):
+    """Overrides reach unknown served families; without one, high survives.
+
+    The conservative unknown row leaves the request as asked, but a wildcard
+    override must still pin it (head-to-head runs need to force an unknown
+    model's row); both sides are asserted on the actual transport payload.
+    """
+    from tests.proxy_fakes import make_backend
+
+    def noted_backend():
+        backend = make_backend(model="current")
+        backend.last_served_model = "gemma4-local"
+        backend.last_served_alias = "current"
+        return backend
+
+    monkeypatch.setenv("ARENAMCP_THINKING_ROWS", json.dumps({"*": {"plan": "none"}}))
+    pinned = noted_backend()
+    pinned.complete("s", "u", background=True, call_class="background.game_plan", reasoning_effort="high")
+    assert pinned._client.calls[0]["extra_body"]["chat_template_kwargs"] == {
+        "thinking": False,
+        "reasoning_effort": "none",
+    }
+
+    monkeypatch.delenv("ARENAMCP_THINKING_ROWS")
+    untouched = noted_backend()
+    untouched.complete("s", "u", background=True, call_class="background.game_plan", reasoning_effort="high")
+    assert untouched._client.calls[0]["extra_body"]["chat_template_kwargs"] == {
+        "thinking": True,
+        "reasoning_effort": "high",
+    }
+
+
+def test_malformed_override_values_are_rejected_safely(monkeypatch):
+    """A non-string policy (JSON list/object) is dropped with a warning, not a TypeError.
+
+    Reported 2026-11-11: ARENAMCP_THINKING_ROWS='{"glm":{"plan":[]}}' crashed
+    _overrides with TypeError: unhashable type: 'list'.
+    """
+    from tests.proxy_fakes import make_backend
+
+    monkeypatch.setenv("ARENAMCP_THINKING_ROWS", json.dumps({"glm": {"plan": []}}))
+    assert effective_row("glm") == dict(GLM_ROW)
+
+    monkeypatch.setenv(
+        "ARENAMCP_THINKING_ROWS",
+        json.dumps({"glm": {"plan": {"depth": 2}}, "*": ["none"]}),
+    )
+    assert effective_row("glm") == dict(GLM_ROW)
+
+    # The transport still works end to end with junk in the environment.
+    backend = make_backend(model="current")
+    backend.complete("s", "u", background=True, call_class="background.game_plan", reasoning_effort="high")
+    assert backend._client.calls[0]["extra_body"]["chat_template_kwargs"] == {
+        "thinking": True,
+        "reasoning_effort": "low",
+    }

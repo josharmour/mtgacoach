@@ -59,6 +59,13 @@ MODEL_ROWS = {
     "openrouter-test": OPENROUTER_TEST_ROW,
 }
 
+# Unknown models (no matching family): the conservative row leaves the
+# caller's request untouched - forcing thinking off could silently degrade an
+# uncalibrated model, forcing it on repeats the DeepSeek-week hangs. The row
+# exists so ARENAMCP_THINKING_ROWS can pin an unknown model for experiments;
+# overrides reach it like any other row.
+UNKNOWN_FAMILY_ROW: dict = {}
+
 # Families that get the hosted playbook settings (no thinking, bounded brief).
 HOSTED_FAMILIES = frozenset({"glm", "deepseek", "openrouter-test"})
 
@@ -132,12 +139,18 @@ def _overrides() -> dict:
                     continue
                 clean = {}
                 for group, policy in row.items():
-                    if group in GROUPS and policy in VALID_POLICIES:
+                    # JSON values can be any type; a list or dict policy is
+                    # malformed, not an error (TypeError on `in` otherwise).
+                    if (
+                        isinstance(group, str)
+                        and group in GROUPS
+                        and isinstance(policy, str)
+                        and policy in VALID_POLICIES
+                    ):
                         clean[group] = policy
                     else:
                         logger.warning(
-                            "[SETTINGS] ARENAMCP_THINKING_ROWS entry %r/%r ignored "
-                            "(unknown group or policy)",
+                            "[SETTINGS] ARENAMCP_THINKING_ROWS entry %r/%r ignored (unknown group or policy)",
                             family,
                             group,
                         )
@@ -151,9 +164,9 @@ def effective_row(family: str) -> dict:
     """Base row for a family merged with ARENAMCP_THINKING_ROWS overrides.
 
     A family-specific override wins over a "*" override; an unknown family has
-    no base row, so only overrides apply.
+    no base row (:data:`UNKNOWN_FAMILY_ROW`), so only overrides apply.
     """
-    merged = dict(MODEL_ROWS.get(family) or {})
+    merged = dict(MODEL_ROWS.get(family, UNKNOWN_FAMILY_ROW))
     overrides = _overrides()
     merged.update(overrides.get("*", {}))
     merged.update(overrides.get(family, {}))
@@ -172,16 +185,41 @@ def apply_policy(row: dict, group: str, reasoning_effort):
 
 def alias_effort(model, call_class: str, reasoning_effort):
     """Effort decided from the alias string alone (the pre-response fallback)."""
-    return apply_policy(effective_row(family_from_alias(model)), group_for_call_class(call_class), reasoning_effort)
+    return apply_policy(
+        effective_row(family_from_alias(model)), group_for_call_class(call_class), reasoning_effort
+    )
+
+
+def _served_under_current_alias(backend) -> str | None:
+    """The served model name when it was noted for the alias currently configured.
+
+    A gateway response names the model that request's alias ran. When the
+    caller switches ``backend.model`` afterwards (standalone ``set_backend``
+    and the coach's backend switch both mutate the live instance), the
+    previously noted name describes the old routing and must not classify the
+    new one - so it is trusted only when its provenance matches.
+    """
+    served = getattr(backend, "last_served_model", None)
+    if not isinstance(served, str) or not served:
+        return None
+    noted_alias = getattr(backend, "last_served_alias", None)
+    if not isinstance(noted_alias, str) or not noted_alias:
+        return None  # no provenance recorded: cannot prove it matches
+    alias = getattr(backend, "model", "")
+    if not isinstance(alias, str):
+        alias = ""
+    return served if noted_alias == alias else None
 
 
 def _resolve_family(backend) -> tuple[str, str]:
-    """(family, name-used) for a backend; served model wins over the alias."""
-    served = getattr(backend, "last_served_model", None)
+    """(family, name-used) for a backend; served model wins over the alias.
+
+    The served name counts only when it was noted for the alias currently
+    configured (see :func:`_served_under_current_alias`); otherwise the alias
+    is the best available guess until the next response arrives.
+    """
+    served = _served_under_current_alias(backend)
     alias = getattr(backend, "model", "")
-    # Test doubles auto-create attributes on access; only real strings classify.
-    if not isinstance(served, str) or not served:
-        served = None
     if not isinstance(alias, str):
         alias = ""
     if served:
@@ -197,16 +235,20 @@ def _resolve_family(backend) -> tuple[str, str]:
 def family_for_backend(backend) -> str:
     """Family of the model this backend talks to, cached per session.
 
-    Recomputed only when ``last_served_model`` changes, so each session pays
-    one classification until the gateway switches models underneath it.
+    Recomputed when the configured alias or the provenance-checked served name
+    changes, so each session pays one classification until either moves - an
+    explicit model switch rebinds immediately, without waiting for a response.
     """
-    served = getattr(backend, "last_served_model", None)
+    served = _served_under_current_alias(backend)
+    alias = getattr(backend, "model", "")
+    if not isinstance(alias, str):
+        alias = ""
     cache = getattr(backend, "_call_settings_family", None)
-    if isinstance(cache, tuple) and len(cache) == 2 and cache[0] == served:
-        return cache[1]
+    if isinstance(cache, tuple) and len(cache) == 3 and cache[:2] == (alias, served):
+        return cache[2]
     family, _ = _resolve_family(backend)
     try:
-        backend._call_settings_family = (served, family)
+        backend._call_settings_family = (alias, served, family)
     except Exception:  # pragma: no cover - exotic backend objects
         pass
     return family
@@ -226,5 +268,8 @@ def effort_for_backend(backend, call_class: str, reasoning_effort):
                 "[SETTINGS] no call-settings row for model '%s'; leaving thinking settings as requested",
                 name,
             )
-        return reasoning_effort
+        # Conservative unknown policy (UNKNOWN_FAMILY_ROW): leave the request
+        # as asked - but overrides still reach it so an experiment can pin an
+        # unknown model's row.
+        return apply_policy(effective_row(""), group_for_call_class(call_class), reasoning_effort)
     return apply_policy(effective_row(family), group_for_call_class(call_class), reasoning_effort)
