@@ -276,6 +276,13 @@ class _GameStateAnnotationsMixin:
                     "AnnotationType_InstanceRevealedToOpponent",
                     "AnnotationType_RevealedCardCreated",
                 ):
+                    # Fable Nov S3: warm the card-facts cache for newly
+                    # revealed opponent cards; queued, never blocking.
+                    try:
+                        from arenamcp.card_facts.client import prefetch_grp_ids
+                    except Exception as error:
+                        prefetch_grp_ids = None
+                        logger.debug("card facts prefetch unavailable: %s", error)
                     for obj_id in affected_ids:
                         obj = self.game_objects.get(obj_id)
                         if obj and obj.grp_id:
@@ -283,6 +290,13 @@ class _GameStateAnnotationsMixin:
                             if owner not in self.revealed_cards:
                                 self.revealed_cards[owner] = set()
                             self.revealed_cards[owner].add(obj.grp_id)
+                            if prefetch_grp_ids is not None:
+                                try:
+                                    prefetch_grp_ids([obj.grp_id])
+                                except Exception as error:
+                                    logger.debug(
+                                        "card facts prefetch failed: %s", error
+                                    )
                             card_name = self._resolve_card_name(obj.grp_id)
                             # Keep the instance and its zone at reveal time: a
                             # stand-in revealed into a hand has the hand as its

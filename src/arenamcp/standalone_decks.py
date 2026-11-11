@@ -58,6 +58,20 @@ class _DeckLibraryMixin:
             notes.append("bridge offline: showing decks seen in Player.log")
         log_decks = load_log_decks()
         library = merge_libraries(bridge_decks, log_decks)
+        # Fable Nov S3: warm the card-facts cache for every known deck in the
+        # background, so lookups are already warm before a match starts.
+        try:
+            from arenamcp.card_facts.client import prefetch_grp_ids
+
+            grp_ids: list[int] = []
+            for record in library.values():
+                grp_ids.extend(
+                    gid for gid, _count in (getattr(record, "main", None) or [])
+                )
+                grp_ids.extend(getattr(record, "command_zone", None) or [])
+            prefetch_grp_ids(grp_ids)
+        except Exception as error:
+            logger.debug("card facts prefetch skipped: %s", error)
         self._deck_library = library
         return library, "; ".join(notes)
 
