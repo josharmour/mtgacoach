@@ -506,6 +506,7 @@ CALL_CLASSES: dict[str, str] = {
     "draft.build": "draft/sealed deck build",
     "background.commentary": "optional AOA generation/audit, non-waiting and preemptible",
     "background.game_plan": "GamePlanManager reform",
+    "background.card_facts": "card-facts compiler (offline record compilation)",
     "background.deck_playbook": "deck playbook discovery + compile",
     "background.win_plan": "automatic win-in-N worker",
     "background.set_primer": "set primer generation",
