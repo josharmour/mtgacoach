@@ -1,14 +1,73 @@
-"""Local, durable desktop-session recap offers (never uploads diagnostics)."""
+"""Local, durable desktop-session recap offers (never uploads diagnostics).
+
+Offers are gated on the authoritative loss-streak store: a recap is only
+captured when a completed, non-superseded three-loss review exists (three
+finalized eligible autoplay/autoqueue match losses on the same deck in one
+session). Ordinary sessions — wins, draws, one/two losses, missing or invalid
+review evidence — close normally and queue nothing while an analysis is still
+pending; a completed analysis may be offered on a subsequent launch.
+"""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+def _covers(match_id: str, game_ids: set[str]) -> bool:
+    """A BO3 game-history row ("<match>-g2") maps to its match; it is not a match itself."""
+    return match_id in game_ids or any(g.startswith(match_id + "-g") for g in game_ids)
+
+
+def _qualifying(reviews: list[dict] | None, known_ids: set[str]) -> list[dict]:
+    """Completed three-loss reviews whose matches are all present in recorded history.
+
+    The loss-streak store is the sole authority for eligibility; this only
+    consumes its completed reports and never infers a streak from BO3 game
+    rows, unknown results or unrelated/manual games.
+    """
+    found = []
+    for review in reviews or []:
+        if not isinstance(review, dict):
+            continue
+        matches = [str(m) for m in (review.get("matches") or [])]
+        if len(matches) != 3 or len(set(matches)) != 3:
+            continue
+        if all(_covers(m, known_ids) for m in matches):
+            found.append(
+                {
+                    "matches": matches,
+                    "recommendation": str(review.get("recommendation", "")),
+                    "analysis": str(review.get("analysis", "")),
+                }
+            )
+    return found
+
+
+def _identity(qualifying: dict) -> str:
+    """Stable per-streak identity: dismissal survives text changes and restarts."""
+    return "review:" + ",".join(qualifying["matches"])
+
+
+def _verifiable(identity: Any, reviews: list[dict] | None) -> bool:
+    """True only when the identity's streak is still a completed review.
+
+    Legacy pre-gating ids and recaps whose review was since corrected or
+    superseded fail this check and must not pop up.
+    """
+    if not isinstance(identity, str) or not identity.startswith("review:"):
+        return False
+    matches = identity[len("review:") :].split(",")
+    if len(matches) != 3:
+        return False
+    for review in reviews or []:
+        if isinstance(review, dict) and [str(m) for m in (review.get("matches") or [])] == matches:
+            return True
+    return False
 
 
 class SessionRecaps:
@@ -47,50 +106,44 @@ class SessionRecaps:
         active = self.data.get("active")
         if not isinstance(active, dict):
             return None
+        known = {r.match_id for r in records if r.match_id}
+        # Oldest qualifying streak first, so every unseen review is eventually offered.
+        for qualifying in _qualifying(reviews, known):
+            identity = _identity(qualifying)
+            if identity not in self.data.get("acknowledged", []):
+                break
+        else:
+            return None
         baseline = set(active.get("baseline", []))
+        streak_ids = set(qualifying["matches"])
         games = [
             r
             for r in records
-            if r.match_id and r.match_id not in baseline and r.timestamp >= active.get("started", "")
-        ]
-        if not games:
-            return None
-        # Fingerprint the reviewed contents, so additional games can produce a new offer.
-        identity = active["id"] + ":" + ",".join(r.match_id + ":" + r.result for r in games)
-        game_ids = {r.match_id for r in games}
-        relevant = [
-            review
-            for review in (reviews or [])
-            if any(
-                game_id == mid or game_id.startswith(mid + "-g")
-                for mid in review.get("matches", [])
-                for game_id in game_ids
+            if r.match_id
+            and (
+                r.match_id in streak_ids
+                or (r.match_id not in baseline and r.timestamp >= active.get("started", ""))
             )
         ]
-        if relevant:
-            identity += ":" + hashlib.sha256(json.dumps(relevant, sort_keys=True).encode()).hexdigest()[:16]
-        if identity in self.data.get("acknowledged", []):
-            return None
         from arenamcp.session_review import read_packets, review_actions, written_review
 
         games.sort(key=lambda r: r.timestamp)
-        packets = read_packets(game_ids, self.packets_dir)
+        packets = read_packets({r.match_id for r in games}, self.packets_dir)
         text = written_review(games, packets)
-        for review in relevant[-3:]:
-            text += (
-                "\n\nThree-loss review (saved model interpretation, not verified findings):\n"
-                + str(review.get("recommendation", ""))[:2000]
-            )
-            if review.get("analysis"):
-                text += "\n" + str(review["analysis"])[:12000]
-            text += "\nNothing has been sent to support. Review any report before sharing it."
+        text += (
+            "\n\nThree-loss review (saved model interpretation, not verified findings):\n"
+            + qualifying["recommendation"][:2000]
+        )
+        if qualifying["analysis"]:
+            text += "\n" + qualifying["analysis"][:12000]
+        text += "\nNothing has been sent to support. Review any report before sharing it."
         recap = {
             "id": identity,
             "session_id": active["id"],
             "text": text,
             "actions": review_actions(games, packets),
         }
-        pending = [p for p in self.data.get("pending", []) if p.get("session_id") != active["id"]]
+        pending = [p for p in self.data.get("pending", []) if p.get("id") != identity]
         self.data["pending"] = (pending + [recap])[-5:]
         self._save()
         return recap
@@ -123,8 +176,11 @@ class SessionRecaps:
             self._save()
         return recap
 
-    def pending(self) -> dict | None:
+    def pending(self, reviews: list[dict] | None = None) -> dict | None:
+        """Latest pending offer; with reviews, only verifiable qualifying evidence survives."""
         pending = self.data.get("pending", [])
+        if reviews is not None:
+            pending = [p for p in pending if _verifiable(p.get("id"), reviews)]
         return pending[-1] if pending else None
 
     def acknowledge(self, identity: str) -> None:

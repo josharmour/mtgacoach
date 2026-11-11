@@ -47,7 +47,7 @@ class SessionRecapController(QObject):
     def offer_previous(self):
         if getattr(self.window, "_closed", False):
             return
-        recap = self.store.pending()
+        recap = self.store.pending(self.reviews())
         if recap:
             self.offer(self.store.refresh(recap, self.records()), "Your last session recap is available")
 
