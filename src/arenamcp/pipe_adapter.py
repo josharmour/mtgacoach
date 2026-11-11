@@ -70,7 +70,6 @@ def health_tag_of(text: str) -> str:
     return ""
 
 
-
 def _spoken_model_name(model) -> str:
     """A model id as a short spoken sentence ("or-gemma-4-26b" -> "Model: OpenRouter gemma 4 26b")."""
     name = str(model or "default").strip()

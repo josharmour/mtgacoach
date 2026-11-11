@@ -178,7 +178,9 @@ _FINDS_A_LAND = re.compile(
 
 
 def _develops_mana(text: str) -> bool:
-    return bool((_TAPS_FOR_MANA.search(text) and not _EATS_A_HAND_CARD.search(text)) or _FINDS_A_LAND.search(text))
+    return bool(
+        (_TAPS_FOR_MANA.search(text) and not _EATS_A_HAND_CARD.search(text)) or _FINDS_A_LAND.search(text)
+    )
 
 
 def _is_permanent(card: HandCard) -> bool:
@@ -564,9 +566,10 @@ def mulligan_verdict(found: MulliganSituation) -> tuple[str, str] | None:
             # three-landers). Keep only hands that can develop: a spell that
             # makes mana or finds a land, or two cheap castable permanents.
             castable = [card for card in kept if not card.is_land and castable_with(card, kept_lands)]
-            if any(card.makes_mana_or_finds_land for card in castable) or sum(
-                card.mana_value <= 2 and _is_permanent(card) for card in castable
-            ) >= 2:
+            if (
+                any(card.makes_mana_or_finds_land for card in castable)
+                or sum(card.mana_value <= 2 and _is_permanent(card) for card in castable) >= 2
+            ):
                 return "keep", f"2 lands on the draw with cheap plays ({_names(cheap)})"
         if keep_size is None:
             return None

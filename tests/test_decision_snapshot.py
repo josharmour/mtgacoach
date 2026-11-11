@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import copy
 import json
-from unittest import mock
 
 import pytest
+from tests.strategic_states import BUG_135027, actions_decision, cast
 
 from arenamcp.action_planner import _legal_payable, _opponent_tapped_out
 from arenamcp.board_assessment import assess
@@ -23,7 +23,6 @@ from arenamcp.decision_snapshot import (
     game_state_from_snapshot,
 )
 from arenamcp.match_packets import MatchPacket
-from tests.strategic_states import BUG_135027, actions_decision, cast
 
 MENU = [
     ("idx:0", "Cycle Undulating Witness", cast(240, 106272), True),
@@ -163,7 +162,13 @@ def test_server_shaped_zones_are_realiased() -> None:
         "players": [{"seat_id": 1, "life_total": 20}],
         "battlefield": [island],
         "hand": [],
-        "zones": {"library_count": 40, "opponent_hand_count": 7, "battlefield": [island], "my_hand": [], "hand": []},
+        "zones": {
+            "library_count": 40,
+            "opponent_hand_count": 7,
+            "battlefield": [island],
+            "my_hand": [],
+            "hand": [],
+        },
         "local_seat_id": 1,
         "opponent_seat_id": 2,
     }

@@ -70,9 +70,7 @@ _STATE_KEYS: tuple[str, ...] = (
 
 # zones aliases these top-level card lists; storing them twice would double
 # every snapshot. They are rebuilt by game_state_from_snapshot().
-_ZONE_ALIAS_KEYS = frozenset(
-    {"battlefield", "my_hand", "hand", "graveyard", "stack", "exile", "command"}
-)
+_ZONE_ALIAS_KEYS = frozenset({"battlefield", "my_hand", "hand", "graveyard", "stack", "exile", "command"})
 
 # Raw published snapshots spell the turn block ``turn_info``; the planner-facing
 # state spells it ``turn``. Normalize to ``turn``.

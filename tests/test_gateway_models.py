@@ -62,12 +62,17 @@ def test_missing_key_does_not_send_request(monkeypatch):
 
 def test_developer_test_models_lists_only_the_test_prefix(monkeypatch):
     calls = install(monkeypatch, ["or-qwen3.8-27b", "current", "glm-5.3-flash", "or-gemma-4-26b", "orca"])
-    expected = [("Test model or-gemma-4-26b", "or-gemma-4-26b"), ("Test model or-qwen3.8-27b", "or-qwen3.8-27b")]
+    expected = [
+        ("Test model or-gemma-4-26b", "or-gemma-4-26b"),
+        ("Test model or-qwen3.8-27b", "or-qwen3.8-27b"),
+    ]
     assert gm.developer_test_models("https://api.mtgacoach.com/v1", "test", {}) == expected
     assert gm.developer_test_models("https://api.mtgacoach.com/v1", "test", {}) == expected
     assert len(calls) == 1
     # A customer's selection is unaffected by test models being listed.
-    assert gm.current_models("https://api.mtgacoach.com/v1", "test", {}) == [("Current hosted model", "current")]
+    assert gm.current_models("https://api.mtgacoach.com/v1", "test", {}) == [
+        ("Current hosted model", "current")
+    ]
 
 
 def test_developer_test_models_fail_closed(monkeypatch):
@@ -79,4 +84,8 @@ def test_developer_test_models_fail_closed(monkeypatch):
 
 def test_test_model_name_check():
     assert gm.is_test_model("or-glm-5.3-flash") and gm.is_test_model("OR-gemma-4-26b")
-    assert not gm.is_test_model("current") and not gm.is_test_model("glm-5.3-flash") and not gm.is_test_model(None)
+    assert (
+        not gm.is_test_model("current")
+        and not gm.is_test_model("glm-5.3-flash")
+        and not gm.is_test_model(None)
+    )

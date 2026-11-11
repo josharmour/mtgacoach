@@ -99,13 +99,9 @@ def _check_stats(record_body, card: PrintedCard) -> list[str]:
             continue
         claimed = getattr(record_body, attr)
         if claimed is None:
-            problems.append(
-                f"{attr}: printed '{printed}' but record states none"
-            )
+            problems.append(f"{attr}: printed '{printed}' but record states none")
         elif normalise(str(claimed)) != normalise(str(printed)):
-            problems.append(
-                f"{attr}: printed '{printed}' but record states '{claimed}'"
-            )
+            problems.append(f"{attr}: printed '{printed}' but record states '{claimed}'")
     return problems
 
 
@@ -115,19 +111,11 @@ def _check_modes(record: CardFacts, card: PrintedCard) -> list[str]:
         mode_name = normalise(mode.name)
         if not mode_name:
             continue
-        if (
-            mode_name == "cast"
-            and mode.cost.mana
-            and normalise(mode.cost.mana) != normalise(card.mana_cost)
-        ):
+        if mode_name == "cast" and mode.cost.mana and normalise(mode.cost.mana) != normalise(card.mana_cost):
             problems.append(
-                f"mode '{mode.name}': cast cost {mode.cost.mana}"
-                f" but printed mana cost is {card.mana_cost}"
+                f"mode '{mode.name}': cast cost {mode.cost.mana} but printed mana cost is {card.mana_cost}"
             )
-        if (
-            any(word in mode_name for word in _LEAVES_BATTLEFIELD_MODES)
-            and mode.stays_on_battlefield
-        ):
+        if any(word in mode_name for word in _LEAVES_BATTLEFIELD_MODES) and mode.stays_on_battlefield:
             problems.append(
                 f"mode '{mode.name}': marked as staying on the battlefield,"
                 " but that mechanic removes the permanent"
@@ -147,15 +135,10 @@ def _validate(record: CardFacts, card: PrintedCard) -> list[str]:
     problems: list[str] = []
 
     if normalise(record.name) != normalise(card.name):
-        problems.append(
-            f"name: printed '{card.name}' but record states '{record.name}'"
-        )
+        problems.append(f"name: printed '{card.name}' but record states '{record.name}'")
 
     if normalise(record.mana_cost) != normalise(card.mana_cost):
-        problems.append(
-            f"mana_cost: printed '{card.mana_cost}' but record states"
-            f" '{record.mana_cost}'"
-        )
+        problems.append(f"mana_cost: printed '{card.mana_cost}' but record states '{record.mana_cost}'")
 
     problems.extend(_check_stats(record.body, card))
 
@@ -167,8 +150,7 @@ def _validate(record: CardFacts, card: PrintedCard) -> list[str]:
     for phrase in sorted(claimed - stated):
         if phrase not in printed_text.casefold():
             problems.append(
-                f"keyword '{phrase}' claimed by the record but not stated"
-                " by the type line or rules text"
+                f"keyword '{phrase}' claimed by the record but not stated by the type line or rules text"
             )
 
     problems.extend(_check_modes(record, card))
@@ -177,9 +159,7 @@ def _validate(record: CardFacts, card: PrintedCard) -> list[str]:
         effect = entry.effect
         effect_type = getattr(effect, "effect_type", "")
         if effect_type == "Unknown" and not getattr(effect, "text", ""):
-            problems.append(
-                f"effects[{index}]: unknown effect carries no original sentence"
-            )
+            problems.append(f"effects[{index}]: unknown effect carries no original sentence")
 
     return problems
 

@@ -86,7 +86,12 @@ def test_live_bridge_cast_payability_is_enforced():
             "has_pending": True,
             "request_type": "ActionsAvailable",
             "actions": [
-                {"actionType": "Cast", "grpId": 94899, "hasAutoTap": False, "manaCost": [{"color": ["ManaColor_Black"], "count": 2}]},
+                {
+                    "actionType": "Cast",
+                    "grpId": 94899,
+                    "hasAutoTap": False,
+                    "manaCost": [{"color": ["ManaColor_Black"], "count": 2}],
+                },
                 {"actionType": "Cast", "grpId": 91644, "hasAutoTap": True},
                 {"actionType": "Pass"},
             ],
@@ -114,7 +119,12 @@ def test_actions_available_excludes_mana_abilities_and_passes_priority():
         "can_pass": True,
         "actions": [
             # Unpayable: Arena sends the cost with no AutoTap solution.
-            {"actionType": "ActionType_Cast", "grpId": 94899, "hasAutoTap": False, "manaCost": [{"color": ["ManaColor_Black"], "count": 2}]},
+            {
+                "actionType": "ActionType_Cast",
+                "grpId": 94899,
+                "hasAutoTap": False,
+                "manaCost": [{"color": ["ManaColor_Black"], "count": 2}],
+            },
             {"actionType": "ActionType_Activate_Mana", "grpId": 75553, "instanceId": 444},
             {"actionType": "ActionType_Activate_Mana", "grpId": 75553, "instanceId": 456},
             {"actionType": "ActionType_FloatMana"},

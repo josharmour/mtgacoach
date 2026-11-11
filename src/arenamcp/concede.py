@@ -651,7 +651,9 @@ def _scan_outs(
             card = dict(
                 card,
                 mana_cost=" // ".join(
-                    tax + part.strip() for part in str(card.get("mana_cost") or "").split("//") if part.strip()
+                    tax + part.strip()
+                    for part in str(card.get("mana_cost") or "").split("//")
+                    if part.strip()
                 ),
             )
         how, _ = _castable_faces(

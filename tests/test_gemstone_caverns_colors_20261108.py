@@ -20,7 +20,10 @@ HALFLING = {"name": "Delighted Halfling", "type_line": "Creature — Halfling Ci
 def test_caverns_without_a_luck_counter_is_colourless():
     assert land_colors(CAVERNS) == frozenset()
     assert land_colors({**CAVERNS, "counters": {}}) == frozenset()
-    assert land_colors({**CAVERNS, "color_production": ["White", "Blue", "Black", "Red", "Green"]}) == frozenset()
+    assert (
+        land_colors({**CAVERNS, "color_production": ["White", "Blue", "Black", "Red", "Green"]})
+        == frozenset()
+    )
 
 
 def test_caverns_with_its_luck_counter_makes_any_colour():
@@ -31,7 +34,9 @@ def test_caverns_with_its_luck_counter_makes_any_colour():
 def test_b55e160b_halfling_is_not_castable_off_mountain_and_caverns():
     lands = [hand_card(MOUNTAIN), hand_card(CAVERNS)]
     assert not castable_with(hand_card(HALFLING), lands)
-    assert castable_with(hand_card(HALFLING), [hand_card(MOUNTAIN), hand_card({**CAVERNS, "counters": {"Luck": 1}})])
+    assert castable_with(
+        hand_card(HALFLING), [hand_card(MOUNTAIN), hand_card({**CAVERNS, "counters": {"Luck": 1}})]
+    )
 
 
 def test_unconditional_any_colour_lands_are_unchanged():

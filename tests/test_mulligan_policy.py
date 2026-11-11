@@ -480,7 +480,13 @@ SPARKS_ABLAZE = (
     "would die this turn, exile it instead.",
     "uncommon",
 )
-EXPLORATION = ("Exploration", "Enchantment", "{G}", "You may play an additional land on each of your turns.", "rare")
+EXPLORATION = (
+    "Exploration",
+    "Enchantment",
+    "{G}",
+    "You may play an additional land on each of your turns.",
+    "rare",
+)
 CHROME_MOX = (
     "Chrome Mox",
     "Artifact",

@@ -31,7 +31,6 @@ from arenamcp.card_facts import (
     validate,
 )
 
-
 # ── Hand-built records from printed card text ────────────────────────────────
 
 
@@ -54,8 +53,7 @@ def fury_record() -> CardFacts:
                 trigger="ENTERS_THE_BATTLEFIELD_OR_EVOKE",
                 effect=Damage(
                     amount=4,
-                    target="divided among any number of target creatures"
-                    " and/or planeswalkers",
+                    target="divided among any number of target creatures and/or planeswalkers",
                 ),
             ),
         ),
@@ -86,8 +84,7 @@ def minsc_boo_record() -> CardFacts:
             EffectEntry(
                 trigger="",
                 effect=UnknownEffect(
-                    text="+1: Put three +1/+1 counters on up to one target"
-                    " creature with trample or haste"
+                    text="+1: Put three +1/+1 counters on up to one target creature with trample or haste"
                 ),
             ),
             EffectEntry(
@@ -122,15 +119,12 @@ def chrome_mox_record() -> CardFacts:
             EffectEntry(
                 trigger="ENTERS_THE_BATTLEFIELD",
                 effect=UnknownEffect(
-                    text="Imprint — you may exile a nonartifact, nonland card"
-                    " from your hand"
+                    text="Imprint — you may exile a nonartifact, nonland card from your hand"
                 ),
             ),
             EffectEntry(
                 trigger="ACTIVATED",
-                effect=UnknownEffect(
-                    text="Add one mana of any of the exiled card's colors"
-                ),
+                effect=UnknownEffect(text="Add one mana of any of the exiled card's colors"),
             ),
         ),
         mana=(ManaProduction(mana="any of the exiled card's colors"),),
@@ -145,9 +139,7 @@ def gemstone_caverns_record() -> CardFacts:
         name="Gemstone Caverns",
         mana_cost="",
         type_line="Legendary Land",
-        modes=(
-            Mode(name="activate", cost=Cost(tap=True), stays_on_battlefield=True),
-        ),
+        modes=(Mode(name="activate", cost=Cost(tap=True), stays_on_battlefield=True),),
         effects=(
             EffectEntry(
                 trigger="ACTIVATED",
@@ -222,7 +214,8 @@ PRINTED_CARDS = {
 
 
 @pytest.mark.parametrize(
-    "builder", [fury_record, minsc_boo_record, chrome_mox_record, gemstone_caverns_record],
+    "builder",
+    [fury_record, minsc_boo_record, chrome_mox_record, gemstone_caverns_record],
     ids=["fury", "minsc-boo", "chrome-mox", "gemstone-caverns"],
 )
 def test_hand_built_records_validate_clean_against_printed_card(builder):
@@ -234,7 +227,8 @@ def test_hand_built_records_validate_clean_against_printed_card(builder):
 
 
 @pytest.mark.parametrize(
-    "builder", [fury_record, minsc_boo_record, chrome_mox_record, gemstone_caverns_record],
+    "builder",
+    [fury_record, minsc_boo_record, chrome_mox_record, gemstone_caverns_record],
     ids=["fury", "minsc-boo", "chrome-mox", "gemstone-caverns"],
 )
 def test_json_round_trip_preserves_the_record(builder):
@@ -264,9 +258,19 @@ def test_unknown_fields_are_preserved_on_load():
 def test_every_synthesizer_effect_type_is_representable():
     """The registry must cover each effect class the ability synthesizer defines."""
     expected_tags = {
-        "CreateToken", "GainLife", "Draw", "Damage", "Destroy", "Exile",
-        "Counter", "Pump", "AddMana", "PutCounters", "ReturnFromGraveyard",
-        "Bounce", "Unknown",
+        "CreateToken",
+        "GainLife",
+        "Draw",
+        "Damage",
+        "Destroy",
+        "Exile",
+        "Counter",
+        "Pump",
+        "AddMana",
+        "PutCounters",
+        "ReturnFromGraveyard",
+        "Bounce",
+        "Unknown",
     }
     assert set(EFFECT_TYPES) == expected_tags
 
@@ -288,12 +292,14 @@ def test_rules_hash_is_stable_across_case_and_whitespace():
 
 def test_rules_hash_matches_the_documented_recipe_independently():
     """Recompute the documented recipe by hand and compare."""
-    payload = "\n".join([
-        "fury".casefold(),
-        "{3}{r}{r}".casefold(),
-        "creature — elemental incarnation".casefold(),
-        "double strike".casefold(),
-    ])
+    payload = "\n".join(
+        [
+            "fury".casefold(),
+            "{3}{r}{r}".casefold(),
+            "creature — elemental incarnation".casefold(),
+            "double strike".casefold(),
+        ]
+    )
     expected = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     assert rules_hash("Fury", "{3}{R}{R}", "Creature — Elemental Incarnation", "Double strike") == expected
 
