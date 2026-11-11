@@ -810,7 +810,10 @@ def _handle_match_created(payload: dict) -> None:
         if isinstance(player, dict):
             participants.append(player)
 
-    from arenamcp.log_utils import bind_match_account, get_local_player_id
+    from arenamcp.log_utils import (
+        bind_match_account_from_room,
+        get_local_player_id,
+    )
 
     local_user_id = get_local_player_id()
 
@@ -853,12 +856,22 @@ def _handle_match_created(payload: dict) -> None:
         or game_room_config.get("matchId")
         or payload.get("matchId")
     )
-    # Bind the account that was logged in when this match started, so a
-    # record written later (delayed flush, replay, or after a switch)
-    # attributes to the account that actually played, not whoever is logged
-    # in at record time.
-    if match_id and local_user_id:
-        bind_match_account(str(match_id), str(local_user_id))
+    # Bind the account that played this match so a record written later
+    # (delayed flush, replay, or after a switch) attributes to the account
+    # that actually played. Evidence strength: the room's own local-seat
+    # declaration beats an established binding beats the current login —
+    # and an unrelated current login (a player not in this room) is never
+    # bound. See log_utils.bind_match_account_from_room.
+    declared_local_seat = (
+        event_payload.get("systemSeatId")
+        or event_payload.get("systemSeatNumber")
+        or event_payload.get("localPlayerSeatId")
+        or payload.get("systemSeatId")
+        or payload.get("systemSeatNumber")
+        or payload.get("localPlayerSeatId")
+    )
+    if match_id:
+        bind_match_account_from_room(str(match_id), declared_local_seat, participants, local_user_id)
 
     if match_id and game_state.match_id != match_id:
         connection_deck = game_state.connection_deck_for_match(match_id)

@@ -19,11 +19,16 @@ account second) and assert that matches after the second login are attributed
 to the second account, with the opponent named correctly.
 
 Account identity is bound to the match when its room event arrives
-(server._handle_match_created -> log_utils.bind_match_account) and used when
-the record is finally written, so a delayed/pre-reset/replayed record for an
-earlier match keeps the account that actually played it. The integration
-tests below drive the real login -> room -> record flow with no recorder
-mocks.
+(server._handle_match_created -> log_utils.bind_match_account_from_room) and
+used when the record is finally written, so a delayed/pre-reset/replayed
+record for an earlier match keeps the account that actually played it. The
+integration tests below drive the real login -> room -> record flow with no
+recorder mocks.
+
+Round 2 (Dotty review): the binding must survive late completed-room events
+and replays of old room events. Evidence strength is the room's own
+local-seat declaration > an established binding > the current login when the
+room corroborates it; an unrelated current login is never bound.
 """
 
 from __future__ import annotations
@@ -176,30 +181,49 @@ def test_match_record_stamps_logged_in_account(monkeypatch, tmp_path):
 # --- binding: identity travels with the match, not with the log tail ------------
 
 
-def _room_event(match_id: str, local_user: str, opponent_name: str) -> dict:
-    """Real room-event shape (cf. tests/test_snapshot_opponent_facts.py)."""
-    return {
-        "matchGameRoomStateChangedEvent": {
-            "gameRoomInfo": {
-                "gameRoomConfig": {
-                    "matchId": match_id,
-                    "reservedPlayers": [
-                        {
-                            "systemSeatId": 1,
-                            "userId": local_user,
-                            "playerName": "LocalPlayer",
-                        },
-                        {
-                            "systemSeatId": 2,
-                            "userId": "OPPONENTUSERID000000000000",
-                            "playerName": opponent_name,
-                        },
-                    ],
+def _room_event(
+    match_id: str,
+    local_user: str,
+    opponent_name: str,
+    *,
+    declared_local_seat: int | None = None,
+    state_type: str = "MatchGameRoomStateType_Playing",
+) -> dict:
+    """Real room-event shape (cf. tests/test_snapshot_opponent_facts.py).
+
+    declared_local_seat mirrors events that pin the local seat at the top
+    level of matchGameRoomStateChangedEvent (Dotty round-2 repro); real
+    MatchGameRoomStateChangedEvent payloads frequently omit it
+    (tests/fixtures/player_log_idle_after_match_20261019.log).
+    """
+    info: dict = {
+        "gameRoomConfig": {
+            "matchId": match_id,
+            "reservedPlayers": [
+                {
+                    "systemSeatId": 1,
+                    "userId": local_user,
+                    "playerName": "LocalPlayer",
                 },
-                "stateType": "MatchGameRoomStateType_Playing",
-            }
-        }
+                {
+                    "systemSeatId": 2,
+                    "userId": "OPPONENTUSERID000000000000",
+                    "playerName": opponent_name,
+                },
+            ],
+        },
+        "stateType": state_type,
     }
+    if state_type == "MatchGameRoomStateType_MatchCompleted":
+        # Real completed-room shape (same fixture, requestId 47).
+        info["finalMatchResult"] = {
+            "matchId": match_id,
+            "matchCompletedReason": "MatchCompletedReasonType_Success",
+        }
+    event: dict = {"matchGameRoomStateChangedEvent": {"gameRoomInfo": info}}
+    if declared_local_seat is not None:
+        event["matchGameRoomStateChangedEvent"]["systemSeatId"] = declared_local_seat
+    return event
 
 
 def _start_server_flow(monkeypatch, log_path: str) -> GameState:
@@ -299,3 +323,154 @@ def test_replayed_record_keeps_its_own_account_across_further_switches(monkeypat
     # to the freshest login (third account).
     fallback = record_from_game_end("match-never-seen", "loss", {})
     assert fallback.local_account_id == "THIRDACCOUNTID0000000000000"
+
+
+# --- round 2: late completed-room events and replays must not rebind -----------
+
+
+def _switch_login(log_path, ts: str, client_id: str, screen_name: str) -> None:
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(LOGIN_BLOCK_TEMPLATE.format(ts=ts, client_id=client_id, screen_name=screen_name))
+
+
+def test_late_completed_room_event_does_not_rebind_to_current_login(monkeypatch, tmp_path):
+    """Dotty round-2 case: A starts under A; the user switches to B and starts
+    B; then a late COMPLETED-room event for A arrives carrying A's own
+    explicit local seat while B is logged in. The event's own evidence agrees
+    with the established binding, so A stays bound to A and A's record stamps
+    A — never the unrelated current login.
+
+    Real completed-room shape: tests/fixtures/player_log_idle_after_match_20261019.log
+    (requestId 47, MatchGameRoomStateType_MatchCompleted).
+    """
+    log_path = tmp_path / "Player.log"
+    log_path.write_text(
+        LOGIN_BLOCK_TEMPLATE.format(
+            ts="[11/9/2026 8:02:11 PM]",
+            client_id=OLD_ACCOUNT_ID,
+            screen_name="OldAccount",
+        ),
+        encoding="utf-8",
+    )
+    _start_server_flow(monkeypatch, str(log_path))
+
+    # Match A starts while the OLD account is logged in; the event pins the
+    # local seat explicitly.
+    server._handle_match_created(
+        _room_event("match-A", OLD_ACCOUNT_ID, "ActualOpponent", declared_local_seat=1)
+    )
+    assert log_utils.account_bound_to_match("match-A") == OLD_ACCOUNT_ID
+
+    # Switch to B; match B starts.
+    _switch_login(log_path, "[11/9/2026 11:15:07 PM]", NEW_ACCOUNT_ID, "NewAccount")
+    server._handle_match_created(_room_event("match-B", NEW_ACCOUNT_ID, "SecondOpponent"))
+
+    # Late completed-room event for A: explicitly carries local seat 1 =
+    # participant OLD, while the freshest login is NEW.
+    server._handle_match_created(
+        _room_event(
+            "match-A",
+            OLD_ACCOUNT_ID,
+            "ActualOpponent",
+            declared_local_seat=1,
+            state_type="MatchGameRoomStateType_MatchCompleted",
+        )
+    )
+
+    assert log_utils.account_bound_to_match("match-A") == OLD_ACCOUNT_ID
+    rec_a = record_from_game_end(
+        "match-A",
+        "win",
+        {"opponent_name": "ActualOpponent", "local_account_id": OLD_ACCOUNT_ID},
+    )
+    assert rec_a.local_account_id == OLD_ACCOUNT_ID
+
+    # Even with the binding gone (restart/eviction), a snapshot that
+    # explicitly declares its account outranks the freshest login.
+    log_utils._MATCH_ACCOUNT_BINDINGS.clear()
+    rec_again = record_from_game_end("match-A", "win", {"local_account_id": OLD_ACCOUNT_ID})
+    assert rec_again.local_account_id == OLD_ACCOUNT_ID
+
+
+def test_late_completed_room_without_identity_preserves_binding(monkeypatch, tmp_path):
+    """A completed-room replay carrying no seat and no user evidence at all
+    must not overwrite an established binding with whoever logged in later."""
+    log_path = tmp_path / "Player.log"
+    log_path.write_text(
+        LOGIN_BLOCK_TEMPLATE.format(
+            ts="[11/9/2026 8:02:11 PM]",
+            client_id=OLD_ACCOUNT_ID,
+            screen_name="OldAccount",
+        ),
+        encoding="utf-8",
+    )
+    _start_server_flow(monkeypatch, str(log_path))
+
+    server._handle_match_created(_room_event("match-A", OLD_ACCOUNT_ID, "ActualOpponent"))
+    assert log_utils.account_bound_to_match("match-A") == OLD_ACCOUNT_ID
+
+    _switch_login(log_path, "[11/9/2026 11:15:07 PM]", NEW_ACCOUNT_ID, "NewAccount")
+    server._handle_match_created(_room_event("match-B", NEW_ACCOUNT_ID, "SecondOpponent"))
+
+    # Bare completed-room event for A: no reservedPlayers, no declared seat —
+    # nothing in it identifies a player, so the binding must simply survive.
+    server._handle_match_created(
+        {
+            "matchGameRoomStateChangedEvent": {
+                "gameRoomInfo": {
+                    "gameRoomConfig": {"matchId": "match-A"},
+                    "stateType": "MatchGameRoomStateType_MatchCompleted",
+                }
+            }
+        }
+    )
+
+    assert log_utils.account_bound_to_match("match-A") == OLD_ACCOUNT_ID
+    rec_a = record_from_game_end("match-A", "win", {"opponent_name": "ActualOpponent"})
+    assert rec_a.local_account_id == OLD_ACCOUNT_ID
+
+
+def test_replayed_room_binds_the_seat_declared_account_not_current_login(monkeypatch, tmp_path):
+    """Dotty round-2 case: a fresh replay of a historical room event whose
+    explicit local seat names an account that is NOT logged in binds the
+    seat's account — never the unrelated current login."""
+    log_path = tmp_path / "Player.log"
+    log_path.write_text(
+        LOGIN_BLOCK_TEMPLATE.format(
+            ts="[11/10/2026 9:00:00 AM]",
+            client_id=NEW_ACCOUNT_ID,
+            screen_name="NewAccount",
+        ),
+        encoding="utf-8",
+    )
+    _start_server_flow(monkeypatch, str(log_path))
+
+    server._handle_match_created(
+        _room_event("historical-A", OLD_ACCOUNT_ID, "ActualOpponent", declared_local_seat=1)
+    )
+
+    assert log_utils.account_bound_to_match("historical-A") == OLD_ACCOUNT_ID
+    rec = record_from_game_end("historical-A", "win", {"opponent_name": "ActualOpponent"})
+    assert rec.local_account_id == OLD_ACCOUNT_ID
+
+
+def test_unrelated_current_login_is_never_bound_without_room_evidence(monkeypatch, tmp_path):
+    """A room whose player list does not include the current login carries no
+    evidence for it: nothing is bound rather than binding an unrelated
+    account (the record then falls back to the freshest login, as before)."""
+    log_path = tmp_path / "Player.log"
+    log_path.write_text(
+        LOGIN_BLOCK_TEMPLATE.format(
+            ts="[11/10/2026 9:00:00 AM]",
+            client_id=NEW_ACCOUNT_ID,
+            screen_name="NewAccount",
+        ),
+        encoding="utf-8",
+    )
+    _start_server_flow(monkeypatch, str(log_path))
+
+    # No declared seat; the room's players are OLD + opponent; NEW is logged
+    # in but played no part in this room.
+    server._handle_match_created(_room_event("old-match", OLD_ACCOUNT_ID, "ActualOpponent"))
+
+    assert log_utils.account_bound_to_match("old-match") is None

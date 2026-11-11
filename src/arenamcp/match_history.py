@@ -252,15 +252,20 @@ def record_from_game_end(
 
     # Stamp the account that PLAYED this match. Its identity is bound to the
     # match id when the room event arrives (server._handle_match_created ->
-    # log_utils.bind_match_account), so a record written later — delayed
-    # flush, replay, or after another account logged in — attributes to the
-    # account that actually played. Fall back to the most recent login in
-    # Player.log only when no binding exists (e.g. a record for a match whose
-    # room event predates this process).
+    # log_utils.bind_match_account_from_room), so a record written later —
+    # delayed flush, replay, or after another account logged in — attributes
+    # to the account that actually played. A snapshot that explicitly declares
+    # its own local_account_id (captured with the match) outranks the freshest
+    # login in Player.log, which is used only when neither binding nor
+    # snapshot carries an account (e.g. a record for a match whose room event
+    # predates this process).
     try:
         from arenamcp.log_utils import account_bound_to_match, get_local_player_id
 
-        record.local_account_id = account_bound_to_match(match_id) or get_local_player_id() or ""
+        declared = (game_state_snapshot or {}).get("local_account_id")
+        record.local_account_id = str(
+            account_bound_to_match(match_id) or declared or get_local_player_id() or ""
+        )
     except Exception as e:  # pragma: no cover - defensive, never block recording
         logger.debug(f"Could not resolve local account for match record: {e}")
 

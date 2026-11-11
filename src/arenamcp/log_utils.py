@@ -74,6 +74,60 @@ def account_bound_to_match(match_id: str) -> str | None:
     return _MATCH_ACCOUNT_BINDINGS.get(str(match_id))
 
 
+def bind_match_account_from_room(
+    match_id: str,
+    declared_local_seat: int | str | None,
+    participants: list | None,
+    current_login: str | None,
+) -> None:
+    """Bind the account that played this match using the room's own evidence.
+
+    Evidence strength, strongest first:
+
+    1. The seat the room event itself declares as local, resolved against the
+       reserved players' user ids — direct per-match proof of who sat down.
+    2. An already-established binding. A late completed-room event or a
+       replayed room event must never overwrite it with whoever happens to be
+       logged in at that later moment.
+    3. The current login, but only when the room corroborates it: either the
+       room lists no user ids at all, or the logged-in account is one of the
+       match's players. An unrelated login is never bound.
+
+    Real-shape note (tests/fixtures/player_log_idle_after_match_20261019.log):
+    MatchGameRoomStateChangedEvent payloads frequently carry no top-level
+    systemSeatId, so rule 1 only fires when the event actually declares one;
+    live matches then bind via rule 3 because the logged-in account is among
+    the reserved players.
+    """
+    if not match_id:
+        return
+    key = str(match_id)
+
+    # 1. The room's own declaration of the local seat.
+    if declared_local_seat is not None:
+        for participant in participants or []:
+            if not isinstance(participant, dict):
+                continue
+            if (
+                participant.get("systemSeatId") is not None
+                and str(participant["systemSeatId"]) == str(declared_local_seat)
+                and participant.get("userId")
+            ):
+                bind_match_account(key, str(participant["userId"]))
+                return
+
+    # 2. An established binding is authoritative; preserve it.
+    if _MATCH_ACCOUNT_BINDINGS.get(key):
+        return
+
+    # 3. Current login only when the room corroborates it.
+    room_user_ids = {
+        str(p["userId"]) for p in (participants or []) if isinstance(p, dict) and p.get("userId")
+    }
+    if current_login and (not room_user_ids or str(current_login) in room_user_ids):
+        bind_match_account(key, str(current_login))
+
+
 def get_local_player_id():
     """Scans Player.log for the AuthenticateResponse to find the local user ID.
 
