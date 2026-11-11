@@ -22,7 +22,7 @@ from arenamcp.backends.health import (
     get_circuit,
 )
 from arenamcp.client_metadata import get_client_headers
-from arenamcp.model_call_settings import effort_for_backend
+from arenamcp.model_call_settings import effort_for_backend, served_name_for_backend
 
 logger = logging.getLogger(__name__)
 
@@ -954,6 +954,11 @@ class _CallContext:
     lane_wait_ms: float = 0.0
     stream_started: bool = False
     served_model: str | None = None
+    # The alias this request was actually sent under, captured when the params
+    # are built. Provenance (last_served_alias) is stamped from this, not from
+    # the mutable self.model at response time: an operator switch while a
+    # request is in flight must not relabel the response that predates it.
+    request_alias: str = ""
     response_id: str | None = None
     content_chars: int = 0
     reasoning_chars: int = 0
@@ -1407,7 +1412,7 @@ class ProxyBackend:
 
             bounded_thinking = (
                 selective_thinking is True
-                and selective_enabled(getattr(self, "last_served_model", None) or self.model)
+                and selective_enabled(served_name_for_backend(self))
                 and call.call_class == "decision.typed"
             )
             # Thinking settings follow the model actually served (the response's
@@ -1428,6 +1433,9 @@ class ProxyBackend:
                 reasoning_effort=_normalize_reasoning_effort(self.model, reasoning_effort),
             )
             call.priority = self._resolve_priority(priority, is_background)
+            # Provenance binds to the alias actually in the request params,
+            # captured here before any await/thread can observe a switch.
+            call.request_alias = str(params.get("model") or "")
             if bounded_thinking:
                 params["extra_body"]["thinking_token_budget"] = 256
             if call.priority is not None:
@@ -1845,7 +1853,7 @@ class ProxyBackend:
         BackendHealth.instance().record_success(detail=f"inference probe OK ({ms:.0f}ms)")
         return True, f"{self.model} inference OK, {ms:.0f}ms"
 
-    def _note_served_model(self, served: str | None) -> None:
+    def _note_served_model(self, served, alias: str | None = None) -> None:
         """Record the model the server actually ran (gateway aliases lie).
 
         The 2026-07-05 misroute (alias 'nemotron-3-super' → an ollama 12B)
@@ -1856,8 +1864,11 @@ class ProxyBackend:
         previous = self.last_served_model
         self.last_served_model = served
         # Provenance for the call-settings table: this response answered a
-        # request made under the currently configured alias.
-        self.last_served_alias = str(self.model or "")
+        # request made under ``alias`` — the alias captured in the request
+        # params, not the (mutable) configuration at response time. An
+        # operator switch while a request is in flight must not relabel the
+        # response that predates it.
+        self.last_served_alias = alias if alias else str(self.model or "")
         if served != previous:
             # Discoverability: one INFO line on first use and on every
             # routing change, so "what model am I talking to?" is always
@@ -2103,7 +2114,7 @@ class ProxyBackend:
                 if handle is not None and first_token_at is not None and not handle.token_seen:
                     handle.token_seen = True
 
-            self._note_served_model(served_model)
+            self._note_served_model(served_model, alias=call.request_alias if call is not None else None)
             content = "".join(chunks)
             if "</think>" in content:
                 content = content.split("</think>")[-1].strip()
@@ -2192,7 +2203,7 @@ class ProxyBackend:
             else:
                 logger.warning("[PROXY] Empty content with no clean final answer — using caller fallback")
         served_model = getattr(response, "model", None)
-        self._note_served_model(served_model)
+        self._note_served_model(served_model, alias=call.request_alias if call is not None else None)
         self._record_request_metrics(
             params,
             request_started=request_started,

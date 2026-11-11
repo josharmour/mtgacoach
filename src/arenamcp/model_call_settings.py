@@ -232,6 +232,23 @@ def _resolve_family(backend) -> tuple[str, str]:
     return family_from_alias(alias), str(alias or "")
 
 
+def served_name_for_backend(backend) -> str:
+    """Model name for family gates: the provenance-checked served name, else the alias.
+
+    Gates that only need a name to classify (selective thinking) must not read
+    ``last_served_model`` raw: after an explicit switch the stale name was
+    noted under the old alias and describes the model that is no longer
+    configured. :func:`_served_under_current_alias` enforces that provenance;
+    before any response (or on mismatch) the configured alias is the best
+    available guess, exactly as for effort.
+    """
+    served = _served_under_current_alias(backend)
+    if served:
+        return served
+    alias = getattr(backend, "model", "")
+    return alias if isinstance(alias, str) else ""
+
+
 def family_for_backend(backend) -> str:
     """Family of the model this backend talks to, cached per session.
 

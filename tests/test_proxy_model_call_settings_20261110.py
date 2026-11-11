@@ -21,6 +21,7 @@ Real cases behind these tests (evidence synced 2026-11-10,
 """
 
 import json
+import time
 
 from arenamcp.backends.proxy import _alias_effort
 from arenamcp.model_call_settings import (
@@ -335,3 +336,205 @@ def test_malformed_override_values_are_rejected_safely(monkeypatch):
         "thinking": True,
         "reasoning_effort": "low",
     }
+
+
+# ── Provenance binds to the requesting alias, not the config at response time ──
+#
+# Dotty review 2026-11-11 (on 28486fe): _note_served_model stamped
+# last_served_alias from the mutable self.model when the RESPONSE arrived.
+# standalone.set_backend switches the live instance's model while a request
+# can still be in flight, so a response that predates the switch was labelled
+# with the new alias and the next call mixed rows across models.
+
+
+def _switch_mid_stream(backend, new_model):
+    """A stream behavior that flips the configured alias before answering."""
+    from tests.proxy_fakes import ok_stream
+
+    def behavior():
+        backend.model = new_model
+        return ok_stream("ok", model="glm-5.3-flash")
+
+    return behavior
+
+
+def test_in_flight_switch_streamed_response_records_the_requesting_alias():
+    """current → or-gemma mid-flight: the glm response stays provance 'current'.
+
+    Real sequence (standalone.set_backend mutates the live instance): a plan
+    request goes out under ``current``, the operator switches the same
+    instance to an OpenRouter test model, and only then the glm response
+    arrives. The response answered a request made under ``current``, so its
+    provenance must say ``current`` - and the first call under the new alias
+    must be sent exactly like a fresh or-gemma backend (match eedf1ae3: test
+    models never think), not with GLM's capped plan effort.
+    """
+    from tests.proxy_fakes import make_backend, ok_stream
+
+    backend = make_backend(model="current")
+    backend._client.behaviors = [
+        _switch_mid_stream(backend, "or-gemma-4-26b"),
+        ok_stream("ok", model="or-gemma-4-26b"),
+    ]
+    backend.complete("s", "u", background=True, call_class="background.game_plan", reasoning_effort="high")
+    assert backend.last_served_alias == "current"
+    assert backend.last_served_model == "glm-5.3-flash"
+
+    backend.complete("s", "u", background=True, call_class="background.game_plan", reasoning_effort="high")
+    assert backend._client.calls[1]["extra_body"]["reasoning"] == {"enabled": False}
+
+
+def test_in_flight_switch_reverse_direction_records_the_requesting_alias():
+    """or-gemma → current mid-flight: the or-gemma response keeps its own alias."""
+    from tests.proxy_fakes import make_backend, ok_stream
+
+    backend = make_backend(model="or-gemma-4-26b")
+
+    def behavior():
+        backend.model = "current"
+        return ok_stream("ok", model="or-gemma-4-26b")
+
+    backend._client.behaviors = [behavior, ok_stream("ok", model="glm-5.3-flash")]
+    backend.complete("s", "u", background=True, call_class="background.game_plan", reasoning_effort="high")
+    assert backend.last_served_alias == "or-gemma-4-26b"
+    assert backend.last_served_model == "or-gemma-4-26b"
+
+    # The first call after switching back is sent as GLM again.
+    backend.complete("s", "u", background=True, call_class="background.game_plan", reasoning_effort="high")
+    assert backend._client.calls[1]["extra_body"]["chat_template_kwargs"] == {
+        "thinking": True,
+        "reasoning_effort": "low",
+    }
+
+
+def test_in_flight_switch_non_streamed_response_records_the_requesting_alias():
+    """Same binding on the non-streaming fallback path (stream attempt failed)."""
+    from types import SimpleNamespace as NS
+
+    from tests.proxy_fakes import make_backend
+
+    backend = make_backend(model="current")
+
+    def switch_then_answer():
+        backend.model = "or-gemma-4-26b"
+        return NS(
+            model="glm-5.3-flash",
+            usage=None,
+            choices=[NS(message=NS(content="ok", reasoning_content=None), finish_reason="stop")],
+        )
+
+    # A plain ValueError is non-retryable with no status: the proxy falls back
+    # to one non-streamed create() instead of retrying the stream.
+    backend._client.behaviors = [ValueError("no stream here"), switch_then_answer]
+    backend.complete("s", "u", background=True, call_class="background.game_plan", reasoning_effort="high")
+    assert len(backend._client.calls) == 2  # stream attempt + non-streamed retry
+    assert backend.last_served_alias == "current"
+    assert backend.last_served_model == "glm-5.3-flash"
+
+    backend.complete("s", "u", background=True, call_class="background.game_plan", reasoning_effort="high")
+    assert backend._client.calls[2]["extra_body"]["reasoning"] == {"enabled": False}
+
+
+def test_out_of_order_replies_each_stamp_their_own_request_alias():
+    """Two in-flight requests under different aliases stamp provenance per reply.
+
+      request A under ``current`` ── still in flight ──────────► glm reply
+      switch to or-gemma; request B ──► or-gemma reply arrives FIRST
+
+    Each reply records the alias its own request was made under; whichever
+    lands last wins, and a stale pairing that no longer matches the configured
+    alias degrades safely to the alias guess - never to the other model's row.
+    """
+    import threading
+
+    from tests.proxy_fakes import make_backend, ok_stream
+
+    backend = make_backend(model="current")
+    release_first = threading.Event()
+
+    def slow_current_answer():
+        release_first.wait(5)
+        return ok_stream("ok", model="glm-5.3-flash")
+
+    backend._client.behaviors = [slow_current_answer, ok_stream("ok", model="or-gemma-4-26b")]
+
+    errors: list[str] = []
+
+    def first_call():
+        try:
+            backend.complete("s", "u", call_class="probe", reasoning_effort=None)
+        except Exception as exc:  # pragma: no cover - surfaced below
+            errors.append(repr(exc))
+
+    thread = threading.Thread(target=first_call)
+    thread.start()
+    for _ in range(500):
+        if len(backend._client.calls) >= 1:
+            break
+        time.sleep(0.01)
+    assert len(backend._client.calls) == 1  # A's request is on the wire
+
+    # B goes out under the new alias and its reply arrives first.
+    backend.model = "or-gemma-4-26b"
+    backend.complete("s", "u", background=True, call_class="background.game_plan", reasoning_effort="high")
+    assert backend.last_served_alias == "or-gemma-4-26b"
+    assert backend.last_served_model == "or-gemma-4-26b"
+
+    release_first.set()
+    thread.join(10)
+    assert not errors and not thread.is_alive()
+    # A's late reply stamped its own requesting alias...
+    assert backend.last_served_alias == "current"
+    assert backend.last_served_model == "glm-5.3-flash"
+    # ...which no longer matches the configured alias, so the next call falls
+    # back to the alias guess - exactly what a fresh or-gemma backend sends.
+    backend.complete("s", "u", background=True, call_class="background.game_plan", reasoning_effort="high")
+    assert backend._client.calls[2]["extra_body"]["reasoning"] == {"enabled": False}
+
+
+# ── The selective-thinking gate reads provenance too ────────────────────────
+
+
+def test_selective_gate_after_switch_to_test_model_drops_bounded_thinking(monkeypatch):
+    """current/GLM → or-gemma switch: no bounded thinking leaks onto the test model.
+
+    Dotty review 2026-11-11: with ARENAMCP_SELECTIVE_THINKING=1 the gate read
+    last_served_model raw, so after switching to an OpenRouter test model it
+    still classified GLM and sent reasoning effort low plus a 256-token budget
+    on top of the test-model row - while a fresh or-gemma decision sends
+    thinking disabled (match eedf1ae3).
+    """
+    monkeypatch.setenv("ARENAMCP_SELECTIVE_THINKING", "1")
+    from tests.proxy_fakes import make_backend, ok_stream
+
+    backend = make_backend(
+        [ok_stream("ok", model="glm-5.3-flash"), ok_stream("ok", model="or-gemma-4-26b")],
+        model="current",
+    )
+    backend.complete("s", "u", call_class="decision.typed", reasoning_effort="high", selective_thinking=True)
+    assert backend._client.calls[0]["extra_body"]["thinking_token_budget"] == 256
+
+    backend.model = "or-gemma-4-26b"
+    backend.complete("s", "u", call_class="decision.typed", reasoning_effort="high", selective_thinking=True)
+    body = backend._client.calls[1]["extra_body"]
+    assert body.get("thinking_token_budget") is None
+    assert body["reasoning"] == {"enabled": False}
+
+
+def test_selective_gate_after_switch_back_to_current_restores_bounded_thinking(monkeypatch):
+    """or-gemma → current switch: bounded GLM thinking is not suppressed."""
+    monkeypatch.setenv("ARENAMCP_SELECTIVE_THINKING", "1")
+    from tests.proxy_fakes import make_backend, ok_stream
+
+    backend = make_backend(
+        [ok_stream("ok", model="or-gemma-4-26b"), ok_stream("ok", model="glm-5.3-flash")],
+        model="or-gemma-4-26b",
+    )
+    backend.complete("s", "u", call_class="decision.typed", reasoning_effort="high", selective_thinking=True)
+    assert backend._client.calls[0]["extra_body"].get("thinking_token_budget") is None
+
+    backend.model = "current"
+    backend.complete("s", "u", call_class="decision.typed", reasoning_effort="high", selective_thinking=True)
+    body = backend._client.calls[1]["extra_body"]
+    assert body["chat_template_kwargs"] == {"thinking": True, "reasoning_effort": 1}
+    assert body["thinking_token_budget"] == 256
