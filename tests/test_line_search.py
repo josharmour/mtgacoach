@@ -1632,6 +1632,17 @@ _FURY_UNKNOWN_RECORD = {  # the compiler could not model the ETB sentence: rule 
 }
 
 
+@pytest.fixture(autouse=True)
+def _isolated_record_state():
+    """A1: record cache and use-log state never leak between tests in either
+    direction (a test must not inherit another test's remembered records)."""
+    from arenamcp import line_search_moves as lsm
+
+    lsm.reset_record_cache()
+    lsm.reset_record_use_log()
+    yield
+
+
 def _with_records(monkeypatch, records) -> dict:
     """Serve ``records`` ((card dict, record dict) pairs) from a mutable fake client.
 
@@ -1868,3 +1879,46 @@ def test_record_use_log_resets_between_matches(caplog):
             assert sum("card facts record used for Fury" in rec.message for rec in caplog.records) == 2
     finally:
         lsm.reset_record_use_log()
+
+
+def test_known_record_refreshes_when_store_serves_new_payload(monkeypatch):
+    """Review round 3: a known record the store later replaces with one holding an
+    unknown effect flips the card back to unmodelled on the very next call — no
+    manual cache reset (the optimistic parse must not outlive its payload)."""
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.card_facts.client import hash_for_card
+
+    store = _with_records(monkeypatch, [(_FURY_CARD, _FURY_RECORD)])
+    assert lsm.unmodelled_effect(dict(_FURY_CARD)) == ""
+
+    store[hash_for_card(_FURY_CARD)] = _FURY_UNKNOWN_RECORD  # a compiler refresh lands
+    assert lsm.unmodelled_effect(dict(_FURY_CARD)) == "its triggered ability"
+
+    store[hash_for_card(_FURY_CARD)] = _FURY_RECORD  # ...and back to known again
+    assert lsm.unmodelled_effect(dict(_FURY_CARD)) == ""
+
+
+def test_unknown_record_refreshes_into_known_without_reset(monkeypatch):
+    """Review round 3: the reverse refresh — an unknown-effect record replaced by a
+    known one is picked up on the next call without anyone resetting the cache."""
+    from arenamcp import line_search_moves as lsm
+    from arenamcp.card_facts.client import hash_for_card
+
+    store = _with_records(monkeypatch, [(_FURY_CARD, _FURY_UNKNOWN_RECORD)])
+    assert lsm.unmodelled_effect(dict(_FURY_CARD)) == "its triggered ability"
+
+    store[hash_for_card(_FURY_CARD)] = _FURY_RECORD  # the compiler models the effect
+    assert lsm.unmodelled_effect(dict(_FURY_CARD)) == ""
+
+
+def test_match_boundary_resets_the_record_use_log():
+    """Review round 3: the per-match reset has a production caller — the coach's
+    match-boundary block resets it alongside the other coaching state."""
+    import inspect
+
+    from arenamcp import standalone
+
+    source = inspect.getsource(standalone)
+    marker = source.index("Match boundary detected")
+    window = source[marker : marker + 4000]
+    assert "reset_record_use_log()" in window

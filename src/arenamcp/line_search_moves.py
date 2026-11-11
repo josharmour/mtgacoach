@@ -59,6 +59,8 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import hashlib
+import json
 import logging
 import re
 import time
@@ -1980,13 +1982,26 @@ def _record_key(card: dict) -> tuple[str, str, str, str]:
     )
 
 
-_KNOWN_RECORDS: dict[tuple[str, str, str, str], Any] = {}
+_KNOWN_RECORDS: dict[tuple[str, str, str, str], tuple[str, Any]] = {}
 
 
 def reset_record_cache() -> None:
-    """Forget remembered records (tests). A miss is never remembered, so an S3
-    background fetch that delivers a record later is picked up on its own."""
+    """Forget remembered records (tests).
+
+    Normal code never needs this: a record is remembered only under the digest
+    of the payload it was parsed from, so a store that later serves different
+    data for the same card (the compiler refreshing a record, or an S3
+    background fetch landing) is re-read and re-parsed on the next call.
+    """
     _KNOWN_RECORDS.clear()
+
+
+def _payload_digest(data: Any) -> str:
+    """A stable fingerprint of a record's raw payload (cache validity)."""
+    try:
+        return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
 
 
 def _known_record(name: str, oracle_text: str, type_line: str, mana_cost: str) -> Any:
@@ -1998,11 +2013,14 @@ def _known_record(name: str, oracle_text: str, type_line: str, mana_cost: str) -
     record the S3 client fetches in the background is noticed on the next call
     (the client answers from memory or disk and dedupes its fetches, so the
     repeated misses are cheap by design).
+
+    A hit is remembered under the digest of the payload it was parsed from.
+    The store is still consulted on every call (a memory-dict lookup), so a
+    payload that changes — e.g. a known record refreshed into one holding an
+    ``unknown`` effect — is re-parsed and the card falls back to its text-parser
+    behaviour without anyone resetting anything.
     """
     key = (name, oracle_text, type_line, mana_cost)
-    record = _KNOWN_RECORDS.get(key)
-    if record is not None:
-        return record
     card = {"name": name, "oracle_text": oracle_text, "type_line": type_line, "mana_cost": mana_cost}
     digest = hash_for_card(card)
     if not digest:
@@ -2010,13 +2028,19 @@ def _known_record(name: str, oracle_text: str, type_line: str, mana_cost: str) -
     data = facts_for([card]).get(digest)
     if data is None:
         return None
+    payload = _payload_digest(data)
+    if not payload:
+        return None
+    cached = _KNOWN_RECORDS.get(key)
+    if cached is not None and cached[0] == payload:
+        return cached[1]
     try:
         record = card_facts_from_dict(data)
     except Exception:
         return None
     if any(isinstance(entry.effect, UnknownEffect) for entry in record.effects):
         return None
-    _KNOWN_RECORDS[key] = record
+    _KNOWN_RECORDS[key] = (payload, record)
     return record
 
 
