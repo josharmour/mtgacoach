@@ -605,3 +605,87 @@ class AbilitySynthesizer:
             path.write_text(json.dumps(data), encoding="utf-8")
         except Exception:
             pass
+
+
+# ── Card-facts rendering (A1) ────────────────────────────────────────────────
+# The planner reads a card-facts record when its own text parser left a card
+# unmodelled: the record's known-type effects are rendered back into the pseudo
+# oracle text the existing parsers already read, so no second vocabulary of
+# values is introduced. The record is duck-typed here (``.modes``/``.effects``)
+# because :mod:`arenamcp.card_facts.schema` imports this module.
+
+_CAST_TIME_TRIGGERS = ("CAST", "ENTERS_THE_BATTLEFIELD")
+
+
+def _render_effect_sentence(effect: Effect) -> str:
+    """One known-type effect as the pseudo oracle sentence the search's parsers read.
+
+    Effects with no cast-time representation in the search (mana abilities,
+    pumps, counters, exile, counterspells) render as '' and contribute
+    nothing: a record never invents a value the text parser wouldn't have.
+    """
+    if isinstance(effect, GainLife):
+        return f"You gain {effect.amount} life."
+    if isinstance(effect, Draw):
+        return f"Draw {effect.count} card{'' if effect.count == 1 else 's'}."
+    if isinstance(effect, Damage):
+        target = (effect.target or "").lower()
+        if "planeswalker" in target and "creature" in target:
+            return f"~ deals {effect.amount} damage to target creature or planeswalker."
+        if "planeswalker" in target:
+            return f"~ deals {effect.amount} damage to target planeswalker."
+        if "creature" in target:
+            return f"~ deals {effect.amount} damage to target creature."
+        return f"~ deals {effect.amount} damage to any target."
+    if isinstance(effect, Destroy):
+        target = (effect.target or "").lower()
+        return f"Destroy target {target}." if target else ""
+    if isinstance(effect, Bounce):
+        target = (effect.target or "").lower()
+        return f"Return target {target} to its owner's hand." if target else ""
+    if isinstance(effect, CreateToken):
+        spec = effect.spec
+        # ``token_specs`` reads tapped/attacking/copied tokens as unreadable; keep them out.
+        if spec.tapped or spec.attacking or spec.copy_of_self:
+            return ""
+        count = spec.count or 1
+        bits = [f"Create {count}"]
+        if spec.power is not None and spec.toughness is not None:
+            bits.append(f"{spec.power}/{spec.toughness}")
+        bits.extend(keyword.lower() for keyword in spec.keywords)
+        if spec.name:
+            bits.append(spec.name)
+        bits.append(" ".join(t.lower() for t in spec.types) or "creature")
+        bits.append("token" if count == 1 else "tokens")
+        return " ".join(bits) + "."
+    return ""
+
+
+def _entries_text(entries: Any) -> str:
+    sentences = [s for s in (_render_effect_sentence(entry.effect) for entry in entries) if s]
+    return "\n".join(sentences)
+
+
+def record_cast_text(record: Any) -> str:
+    """The record's cast-time and own-enters effects as pseudo oracle text ('' when none).
+
+    Read by the planner when its text parser left the card unmodelled: the
+    sentences reuse the exact phrasings the existing parsers already read.
+    """
+    entries = [
+        entry
+        for entry in getattr(record, "effects", ())
+        if not entry.trigger or any(tag in entry.trigger.upper() for tag in _CAST_TIME_TRIGGERS)
+    ]
+    return _entries_text(entries)
+
+
+def record_mode_text(record: Any, mode_name: str) -> str:
+    """One named mode's effects ('evoke', ...) as pseudo oracle text ('' when absent).
+
+    Mode association follows the compiler's trigger tags: an effect of the
+    evoke mode carries ``..._OR_EVOKE`` (or ``EVOKE``) in its trigger.
+    """
+    tag = mode_name.upper()
+    entries = [entry for entry in getattr(record, "effects", ()) if tag in entry.trigger.upper()]
+    return _entries_text(entries)
