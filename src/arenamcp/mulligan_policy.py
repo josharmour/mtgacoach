@@ -657,12 +657,33 @@ def _turn_note(card: HandCard, lands: list[HandCard]) -> str:
     return f"needs {card.mana_value - len(lands)} more land(s)"
 
 
+def _cached_playbook_present(state: dict) -> bool:
+    """True when a strategic playbook is already cached for this deck.
+
+    The playbook supersedes the static deck profile, so the profile's keep
+    guide is only seeded before the first playbook arrives (playbook wins).
+    """
+    try:
+        from arenamcp.coach import CoachEngine
+        from arenamcp.deck_strategy import deck_identity
+
+        path = CoachEngine._playbook_cache_path(deck_identity(state))
+        return bool(path and path.exists())
+    except Exception:  # the guide is advisory
+        return False
+
+
 def _deck_keep_guide(state: dict) -> list[str]:
     """The deck profile's keep criteria, when the deck list can be profiled.
+
+    Suppressed once a cached playbook exists for the deck: the playbook's own
+    guidance wins and the static profile must not contradict it.
 
     Deferred import: deck_profile imports this module's helpers, so the
     dependency is resolved at call time to keep module load acyclic.
     """
+    if _cached_playbook_present(state):
+        return []
     try:
         from arenamcp.deck_profile import profile_for_state
 

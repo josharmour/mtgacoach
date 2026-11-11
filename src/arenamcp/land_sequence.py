@@ -88,18 +88,35 @@ class LandLine:
     reason: str
 
 
-def _wanted_kinds(hand, commanders):
+def _wanted_kinds(hand, commanders, priority=()):
     """Basic land types ranked by what the hand and command zone actually need.
 
-    A type whose colour appears in those mana costs is tried first, so the
-    deck profile's colour priority drives which variant a choice land becomes.
+    A type whose colour appears in those mana costs is tried first; when the
+    deck profile supplies a colour priority it leads the ranking, so a choice
+    land becomes the variant the deck's plan wants next.
     """
     costs = [c.get("mana_cost") or "" for c in hand] + [c.cost for c in commanders]
     need = {
         kind: sum(_normalize_mana_symbols(cost).count("{" + symbol + "}") for cost in costs)
         for kind, symbol in _TYPES.items()
     }
-    return tuple(sorted(_TYPES, key=lambda kind: (-need[kind], kind)))
+    lead = {symbol: index for index, symbol in enumerate(priority)}
+    return tuple(
+        sorted(_TYPES, key=lambda kind: (lead.get(_TYPES[kind], len(lead)), -need[kind], kind))
+    )
+
+
+def _profile_colour_priority(state):
+    """Colour priority from the deck profile, when one can be computed."""
+    try:
+        from arenamcp.deck_profile import profile_for_state
+
+        profile = profile_for_state(state)
+    except Exception:  # the ordering hint is advisory
+        return ()
+    if profile is None:
+        return ()
+    return profile.criteria.colour_priority
 
 
 def commander_land_line(decision, state):
@@ -148,9 +165,10 @@ def commander_land_line(decision, state):
                 return None
     lines = []
     # Rank the basic land types by what the hand and command zone actually
-    # need: a type whose colour appears in those costs is tried first, so the
-    # profile's colour priority drives which variant a choice land becomes.
-    wanted_kinds = _wanted_kinds(hand, commanders)
+    # need, led by the deck profile's colour priority when one is available:
+    # a type whose colour the profile wants next is tried first, so the
+    # profile drives which variant a choice land becomes.
+    wanted_kinds = _wanted_kinds(hand, commanders, _profile_colour_priority(state))
     for oid, land in offered:
         for first, tapped, pay, kind in _variants(land, lands, life=life, kinds=wanted_kinds):
             field = [*lands, first]

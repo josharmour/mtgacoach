@@ -32,6 +32,7 @@ from arenamcp.mulligan_policy import (
     _mana_value,
     _pips,
 )
+from arenamcp.rules_engine import _normalize_mana_symbols
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,14 @@ _RESTRICTED_TEXT = re.compile(
     re.I,
 )
 _PRODUCED_PIP = re.compile(r"\{([WUBRG](?:/[WUBRG])?)\}")
+# An 'add' keyword introduces a mana-production clause; everything after it in
+# the sentence is output, everything before it (activation costs) is input.
+_ADD_KEYWORD = re.compile(r"\badds?\b", re.I)
+_ANY_COLOUR_TEXT = re.compile(r"\bany\b[^.;]{0,60}?\bcolou?rs?\b", re.I)
+_SOURCE_CONDITION_TEXT = re.compile(
+    r"(activate only if[^.;]*|spend this mana only[^.;]*)",
+    re.I,
+)
 _BASIC_LAND_COLOURS = (
     ("forest", "G"),
     ("plains", "W"),
@@ -83,6 +92,11 @@ class ManaSources:
     colours: frozenset[str]
     enters_tapped: int
     restricted: int
+    # Sources able to make any colour ('one mana of any color').
+    flexible: int = 0
+    # Sources whose production carries a stated requirement.
+    conditional: int = 0
+    conditions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -160,8 +174,12 @@ def _effect_tags(record: dict | None) -> frozenset[str]:
     return frozenset(tags)
 
 
-def _mana_productions(record: dict | None) -> list[str]:
-    """Mana strings a card-facts record says the card can produce."""
+def _mana_productions(record: dict | None) -> list[dict]:
+    """Mana productions a card-facts record claims.
+
+    Each entry is ``{"mana": <str>, "condition": <str>}``; the condition, when
+    the record states one, is a requirement on using that production.
+    """
     if not record:
         return []
     produced = []
@@ -169,7 +187,13 @@ def _mana_productions(record: dict | None) -> list[str]:
         if isinstance(entry, dict):
             mana = entry.get("mana")
             if isinstance(mana, str) and mana:
-                produced.append(mana)
+                condition = entry.get("condition")
+                produced.append(
+                    {
+                        "mana": mana,
+                        "condition": condition if isinstance(condition, str) else "",
+                    }
+                )
     return produced
 
 
@@ -195,21 +219,58 @@ def classify_role(type_line: str, mana_cost: str, text: str, tags: frozenset[str
     return "other"
 
 
-def _produced_colours(type_line: str, text: str, productions: list[str]) -> set[str]:
-    """Colours this card can produce: basic types, tap abilities, fact entries."""
+def _production_segments(text: str) -> list[str]:
+    """Substrings that follow an 'add' keyword, one per producing clause.
+
+    Only text after 'add' counts as production: pips in an activation cost
+    (``{R}, {T}: Add {G}``) are inputs, not outputs.
+    """
+    segments: list[str] = []
+    for line in (text or "").splitlines():
+        for match in _ADD_KEYWORD.finditer(line):
+            tail = line[match.end() :].split(".")[0]
+            if tail:
+                segments.append(tail)
+    return segments
+
+
+def _pip_colours(token: str) -> set[str]:
+    return {part for part in token.split("/") if part in COLORS}
+
+
+def _produced(type_line: str, text: str, productions: list[dict]) -> tuple[set[str], bool]:
+    """``(colours, any_colour)`` this card can produce.
+
+    Colours come from basic land types, pips in 'add'-clause outputs and
+    card-facts productions. Prose like 'one mana of any color' is flexible
+    production: it contributes every colour and raises the any-colour flag;
+    it is never resolved by scanning letters out of the sentence.
+    """
     colours: set[str] = set()
     tl = (type_line or "").lower()
     for needle, symbol in _BASIC_LAND_COLOURS:
         if needle in tl:
             colours.add(symbol)
-    for match in _PRODUCED_PIP.finditer(text or ""):
-        colours.update(part for part in match.group(1).split("/") if part in COLORS)
-    for mana in productions:
+    flexible = False
+    segments = _production_segments(text)
+    for segment in segments:
+        for match in _PRODUCED_PIP.finditer(segment):
+            colours |= _pip_colours(match.group(1))
+        if _ANY_COLOUR_TEXT.search(segment):
+            flexible = True
+    if not segments and _ANY_COLOUR_TEXT.search(text or ""):
+        # Fact-only records may state any-colour production without an
+        # 'add' clause surviving in the visible text.
+        flexible = True
+    for production in productions:
+        mana = production.get("mana", "")
         for match in _PRODUCED_PIP.finditer(mana):
-            colours.update(part for part in match.group(1).split("/") if part in COLORS)
-        for part in re.findall(r"[WUBRG]", mana.upper()):
-            colours.add(part)
-    return colours
+            colours |= _pip_colours(match.group(1))
+        if _ANY_COLOUR_TEXT.search(mana):
+            flexible = True
+    if flexible:
+        colours |= set(COLORS)
+    return colours, flexible
 
 
 def _member_name(endpoint: object, by_hash: dict[str, str], by_name: dict[str, str]) -> str:
@@ -281,6 +342,8 @@ def build_profile(
         type_line = (_card_field(record, "type_line") if record else "") or _card_field(card, "type_line")
         mana_cost = (_card_field(record, "mana_cost") if record else "") or _card_field(card, "mana_cost")
         text = (_card_field(record, "oracle_text") if record else "") or _card_field(card, "oracle_text")
+        # Arena dialect ({oT}, {o4oG}) → Scryfall form so pip parsing sees it.
+        text = _normalize_mana_symbols(text)
         tags = _effect_tags(record)
         productions = _mana_productions(record)
         count = _copy_count(card)
@@ -321,31 +384,57 @@ def build_profile(
                     needs[turn][colour] += row["count"]
     colour_needs = tuple((turn, frozenset(needs[turn])) for turn in range(1, 6))
 
-    # Mana sources: lands plus nonland cards that produce mana.
+    # Mana sources: lands plus nonland cards that produce mana. Production is
+    # read from 'add' clauses and fact records only — never from pips anywhere
+    # in the text (activation-cost pips are inputs, not outputs).
     source_colours: set[str] = set()
     entered_tapped = 0
     restricted = 0
     producers = 0
+    flexible_sources = 0
+    conditional_sources = 0
+    conditions: list[str] = []
     producer_re = re.compile(r"\{T\}: Add|add one mana of any colou?r|add \{", re.I)
     for row in rows:
         text = row["text"]
-        colours = _produced_colours(row["type_line"], text, row["productions"])
-        if row["role"] == "land":
-            source_colours |= colours
-            if _TAPPED_TEXT.search(text):
-                entered_tapped += row["count"]
-            if _RESTRICTED_TEXT.search(text):
-                restricted += row["count"]
-        elif producer_re.search(text):
+        colours, any_colour = _produced(row["type_line"], text, row["productions"])
+        row_conditions = [
+            production["condition"] for production in row["productions"] if production["condition"]
+        ]
+        for match in _SOURCE_CONDITION_TEXT.finditer(text):
+            row_conditions.append(match.group(1).strip())
+        is_producer = (
+            row["role"] == "land"
+            or bool(colours)
+            or any_colour
+            or bool(row["productions"])
+            or "addmana" in row["tags"]
+            or bool(producer_re.search(text))
+        )
+        if not is_producer:
+            continue
+        if row["role"] != "land":
             producers += row["count"]
-            source_colours |= colours
-            if _RESTRICTED_TEXT.search(text):
-                restricted += row["count"]
+        source_colours |= colours
+        if any_colour:
+            flexible_sources += row["count"]
+        if row_conditions:
+            conditional_sources += row["count"]
+            for condition in row_conditions:
+                if not any(condition.lower() in seen.lower() for seen in conditions):
+                    conditions.append(condition)
+        if _TAPPED_TEXT.search(text):
+            entered_tapped += row["count"]
+        if _RESTRICTED_TEXT.search(text):
+            restricted += row["count"]
     sources = ManaSources(
         total=land_count + producers,
         colours=frozenset(source_colours),
         enters_tapped=entered_tapped,
         restricted=restricted,
+        flexible=flexible_sources,
+        conditional=conditional_sources,
+        conditions=tuple(conditions),
     )
 
     # Role census over copies (not unique cards).
@@ -418,6 +507,8 @@ def build_profile(
             f"Mana sources: {sources.total}"
             + (f" ({sources.enters_tapped} enter tapped)" if sources.enters_tapped else "")
             + (f" ({sources.restricted} with a drawback)" if sources.restricted else "")
+            + (f" ({sources.flexible} can make any colour)" if sources.flexible else "")
+            + (f" (source requirements: {'; '.join(sources.conditions[:3])})" if sources.conditions else "")
             + "."
             + (f" Roles: {role_bits}." if role_bits else "")
         ),
