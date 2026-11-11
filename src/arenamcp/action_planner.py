@@ -5077,6 +5077,25 @@ class ActionPlanner(_ActionLegalityMixin):
         ):
             logger.info("Search has unidentified cards; declining a blind tutor choice")
             return [DECLINE_DECISION]
+        if (
+            decision.request_type == "SelectN"
+            and decision.min_select >= 1
+            and len(decision.options) >= 10
+            and all(
+                option.meta.get("identity_known") is False and not option.meta.get("choice")
+                for option in decision.options
+            )
+        ):
+            # eedf1ae3 2026-11-09 23:26:45: after Etali's Favor resolved, Arena
+            # asked for one of 85 unnamed objects ("Option 927"…) — hidden
+            # library cards the log never names. The model read it as "pick one
+            # offered card … continue" and chose blind. A pile this large with
+            # nothing identified is a hidden-zone choice, not a strategic one;
+            # decline it instead of spending a model call on invisible options.
+            # Small unnamed selections (a loot's discard, a scry) stay with the
+            # existing wait-out handling.
+            logger.info("SelectN has no identified options; declining a blind choice")
+            return [DECLINE_DECISION]
         single = self._single_option_answer(decision)
         if single is not None:
             return single

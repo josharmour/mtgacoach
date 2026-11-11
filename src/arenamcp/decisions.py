@@ -1223,11 +1223,23 @@ def _build_select_n(
         name = str(card_info.get("name") or "") or (resolve_name(grp_id) if grp_id else "")
         if not name and resolve_instance is not None:
             name = resolve_instance(oid)
-        metadata = {"grpId": grp_id}
+        metadata: dict[str, Any] = {"grpId": grp_id}
         # A SelectN choice is usually one of our own hand cards (a loot's
         # discard); the log can trail the bridge by the card just drawn, so an
         # unnamed "Option N" is a transient the typed path waits out.
         metadata["identity_known"] = bool(name) and not is_unknown_card_name(name)
+        if not metadata["identity_known"]:
+            # An unnamed option still has a home. Recording the zone keeps a
+            # hidden-library selection (eedf1ae3 2026-11-09 23:26:45: 85
+            # "Option NNN" choices offered right after Etali's Favor resolved)
+            # legible in logs and manual hand-offs instead of bare instance
+            # IDs the reader cannot place.
+            try:
+                zone = _default_instance_zone(oid)
+            except Exception:
+                zone = ""
+            if zone:
+                metadata["zone"] = zone
         if card_info:
             metadata["card"] = {
                 key: card_info[key]
