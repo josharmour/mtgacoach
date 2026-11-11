@@ -1,0 +1,89 @@
+[11/10/26 19:17:55] INFO     Initializing unified card            card_db.py:653
+                             database...                                        
+                    INFO     Found MTGA database:                  mtgadb.py:152
+                             /home/joshu/.var/app/com.valvesoftwar              
+                             e.Steam/.local/share/Steam/steamapps/              
+                             common/MTGA/MTGA_Data/Downloads/Raw/R              
+                             aw_CardDatabase_a3ac443e817cb6dee6c7d              
+                             4309925e8d3.mtga (timestamp:                       
+                             1782971121.9524918)                                
+                    INFO     MTGA database connected               mtgadb.py:240
+                    INFO     Unified card database ready with 3   card_db.py:687
+                             sources: ['MTGJSONAdapter',                        
+                             'MTGADatabaseAdapter',                             
+                             'ScryfallAdapter']                                 
+                    INFO     Loaded indexes: 0 arena_ids, 35488   mtgjson.py:288
+                             names                                              
+[11/10/26 19:17:59] INFO     Indexed 19808 Arena IDs and 38845   scryfall.py:182
+                             card names                                         
+W1 fleet review — 100 bundles, days: 2026-11-10
+(skipped 1 non-bundle file(s), e.g. live_context.json)
+
+== Coverage and M1 numbers by (format | archetype)
+  Brawl Ladder | Mono-red Laelia cascade/discover aggro-tempo: 63 games, 23 wins (37%), answers=1237 pass=127 code=397 line_search=619 unmodelled=185 chosen_unmodelled=175
+      inference: 1637 calls (decision.typed:901, background.game_plan:521, decision.plan:211, decision.mulligan:4), 148933 thinking tokens, 4851.8s
+      decision prompt: median 22117 chars, p90 24533 chars; plans formed=527 path corrected=0
+  Ladder | Mono-red prowess-burn aggro (Standard-style, no commander): 36 games, 23 wins (64%), answers=775 pass=77 code=219 line_search=414 unmodelled=0 chosen_unmodelled=0
+      inference: 963 calls (decision.typed:578, background.game_plan:212, decision.plan:153, decision.mulligan:16, background.deck_playbook:4), 73337 thinking tokens, 2479.2s
+      decision prompt: median 21066 chars, p90 21972 chars; plans formed=218 path corrected=1
+      mulligan-guard keeps (wins/games by lands kept): 2-land:6/10, 3-land:8/13
+  unknown | Mono-red prowess-burn aggro (Standard-style, no commander): 1 games, 1 wins (100%), answers=3 pass=0 code=1 line_search=2 unmodelled=0 chosen_unmodelled=0
+      inference: 3 calls (decision.typed:2, background.game_plan:1), 19 thinking tokens, 7.0s
+      decision prompt: no 'typed-decision: big prompt' lines; plans formed=1 path corrected=0
+      mulligan-guard keeps (wins/games by lands kept): 3-land:1/1
+
+== Cards most often left unevaluated (overall top 15)
+    87  Laelia, the Blade Reforged               e.g. 034f2385-6e42-4b6d-b2c7-c6132cd85c57, 05c4910b-7d64-4bbd-bd4a-87377843ac06, 072dc24e-7981-4b31-999b-7edf1eb7cae5
+    45  Throes of Chaos                          e.g. 17ce59ea-7e61-4893-ac2f-7d63567a59aa, 2e2ba18b-3036-405e-8699-500273153cbd, 2f50a31d-eb84-4a10-b5d6-72c597d65e38
+    28  Etali's Favor                            e.g. 0e5bb04f-2a32-409c-b475-99ab8e3d87e1, 17ce59ea-7e61-4893-ac2f-7d63567a59aa, 2e2ba18b-3036-405e-8699-500273153cbd
+    16  Daring Discovery                         e.g. 05c4910b-7d64-4bbd-bd4a-87377843ac06, 2e2ba18b-3036-405e-8699-500273153cbd, 3100bc43-29f5-4123-b491-639f51915e31
+    12  Geological Appraiser                     e.g. 3104df99-7e63-453a-a5b8-9dc58bfb474b, 31618195-c622-4ea1-9b52-7e4dd9ba9dc7, 3588a776-056c-4e8b-abde-3c7a38b2ab93
+     7  Meteoric Mace                            e.g. 05c4910b-7d64-4bbd-bd4a-87377843ac06, 23ab462c-7ee7-49dc-b5a5-39c972ddf1e7, 3588a776-056c-4e8b-abde-3c7a38b2ab93
+     4  Trumpeting Carnosaur                     e.g. 3efa66d0-a875-4fa1-997d-8edf346c4bcb, 97c63ce7-875a-423d-bcdc-5949a5eb38b4, 9ea2e06a-fc6f-4b9c-9f59-e9522bbf3ee9
+     2  Volcanic Torrent                         e.g. 4f3ffba0-f0ea-49e2-9c3c-8cfffd87d608, dde4467f-030c-4754-b3f0-81b7e8fd0f98
+
+== Per-archetype top unevaluated cards
+  Brawl Ladder | Mono-red Laelia cascade/discover aggro-tempo: Laelia, the Blade Reforged(87), Throes of Chaos(45), Etali's Favor(28), Daring Discovery(16), Geological Appraiser(12)
+  Ladder | Mono-red prowess-burn aggro (Standard-style, no commander): (none)
+  unknown | Mono-red prowess-burn aggro (Standard-style, no commander): (none)
+
+== Code-layer flags (count / matches affected / example match IDs)
+  mulligan_guard                    147 across 87 matches e.g. 00651f77-a4b5-41b7-bfe6-089c5cbcf090, 034f2385-6e42-4b6d-b2c7-c6132cd85c57, 05c4910b-7d64-4bbd-bd4a-87377843ac06
+  gameplan_validation_rejected      122 across 51 matches e.g. 00651f77-a4b5-41b7-bfe6-089c5cbcf090, 034f2385-6e42-4b6d-b2c7-c6132cd85c57, 072dc24e-7981-4b31-999b-7edf1eb7cae5
+  watchdog_hop_limit                 65 across 41 matches e.g. 00651f77-a4b5-41b7-bfe6-089c5cbcf090, 06d2f9bf-9737-4143-bc8c-5c4e5da92510, 06fbd224-13f7-4aab-8d2a-013b727f17de
+  backend_error_sentinel             49 across 45 matches e.g. 0209fc7f-ae34-4b7a-8fe0-66c4f70a1e88, 06d2f9bf-9737-4143-bc8c-5c4e5da92510, 06fbd224-13f7-4aab-8d2a-013b727f17de
+  model_pick_set_aside                7 across 7 matches e.g. 0e07798d-d9ee-4564-8583-6e25e8796a7e, 2b21d15a-e856-415b-81bf-bda3be415bf0, 2e2ba18b-3036-405e-8699-500273153cbd
+  controller_target_fallback          7 across 4 matches e.g. 5080c635-37f0-43a6-8205-3fbddcfd7e3b, 57fdda84-e208-47eb-8560-90ef033a363c, a8d0677e-c081-45ca-983c-c63f5e3271d0
+  kicker_affordability_guard          2 across 2 matches e.g. 37fe30c4-0e83-4c4f-a0bd-ad0ffb985604, c41c9c6a-f9d6-4cc1-ad8a-1a09b15b97ca
+
+== Watchdog hop-limit hand-offs by decision type (count / example match IDs)
+  ActionsAvailable               35 e.g. 00651f77-a4b5-41b7-bfe6-089c5cbcf090, 06d2f9bf-9737-4143-bc8c-5c4e5da92510, 06fbd224-13f7-4aab-8d2a-013b727f17de
+  SelectTargets                  19 e.g. 06fbd224-13f7-4aab-8d2a-013b727f17de, 0705fd4a-422a-42ef-a59f-12cad3514fce, 17ba8008-5faf-45f7-a0f0-bfcb9a97fba6
+  CastingTimeOptions              8 e.g. 2b21d15a-e856-415b-81bf-bda3be415bf0, 31fcee45-1c81-4947-b833-6cfb034e6cb8, 37fe30c4-0e83-4c4f-a0bd-ad0ffb985604
+  SelectN                         3 e.g. 7b4154d2-9e0b-4d3e-a36d-cb196bab908e, 92b6f821-9751-4e1f-a1ae-a7b5de3a7dc5, 97c63ce7-875a-423d-bcdc-5949a5eb38b4
+
+== Packet-recorded fallbacks by decision type (request_type / fallback mechanism; count / example match IDs)
+  ActionsAvailable       board_math        7 e.g. 0e07798d-d9ee-4564-8583-6e25e8796a7e, 2b21d15a-e856-415b-81bf-bda3be415bf0, 2e2ba18b-3036-405e-8699-500273153cbd
+
+== Win rate by opposing commander (legendary Creature/Planeswalker in the opponent's end-of-game command zone; sparse by nature)
+  unknown                              n=87 wins=39 (45%)
+  Jodah, the Unifier                   n= 2 wins= 2 (100%)
+  Ashaya, Soul of the Wild             n= 1 wins= 1 (100%)
+  Eddie Brock                          n= 1 wins= 1 (100%)
+  Etali, Primal Conqueror              n= 1 wins= 0 (0%)
+  Fynn, the Fangbearer                 n= 1 wins= 1 (100%)
+  Helga, Skittish Seer                 n= 1 wins= 1 (100%)
+  Merry, Esquire of Rohan              n= 1 wins= 0 (0%)
+  Minsc & Boo, Timeless Heroes         n= 1 wins= 1 (100%)
+  Narset, Enlightened Master           n= 1 wins= 0 (0%)
+  Nicol Bolas, Dragon-God              n= 1 wins= 0 (0%)
+  Sanar, Unfinished Genius             n= 1 wins= 0 (0%)
+  Ygra, Eater of All                   n= 1 wins= 1 (100%)
+
+== Early-end suspects (turn<=8, both players within 10 of starting life, no executed concede / ERROR-level line / timed-out line)
+  17ce59ea-7e61-4893-ac2f-7d63567a59aa [Brawl Ladder] turn=8 lives=[25, 22] (start=25)
+  38730a22-980e-4693-820a-379ee1058db4 [Ladder] turn=3 lives=[20, 20] (start=20)
+  4c0235a3-b3b6-492a-98e3-0c8c29f9ed5d [Brawl Ladder] turn=8 lives=[20, 25] (start=25)
+  a14b46c0-5bdf-45c0-a46e-04bd292a83ea [Brawl Ladder] turn=8 lives=[19, 27] (start=25)
+  cb2e47a4-2843-4141-937d-cc6d2c159cb1 [Brawl Ladder] turn=8 lives=[22, 22] (start=25)
+  cffca40c-e512-4582-8600-ec8f68b3eaf2 [Ladder] turn=3 lives=[20, 18] (start=20)
