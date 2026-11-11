@@ -1,6 +1,7 @@
 """Semantic loop protection measures submissions rather than log traffic."""
 
 from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -101,6 +102,20 @@ def test_native_request_class_alias_uses_semantic_guard(request_class):
 
 
 def test_typed_path_pauses_and_captures_before_a_fourth_model_call(monkeypatch):
+    # Identified menu (owner-approved fixture correction, 2026-11-11): the
+    # cached-answer/pause behaviour under test needs a menu the typed path
+    # will plan; an all-blind one now declines before any model call.
+    from arenamcp import decisions
+
+    objects = {
+        101: SimpleNamespace(grp_id=111001, visibility="Visibility_Public", owner_seat_id=1),
+        102: SimpleNamespace(grp_id=111002, visibility="Visibility_Public", owner_seat_id=1),
+    }
+    cards = {111001: {"name": "Llanowar Elves"}, 111002: {"name": "Grizzly Bears"}}
+    monkeypatch.setattr(decisions, "_live_object", objects.get)
+    monkeypatch.setattr(decisions, "_live_game_state", lambda: SimpleNamespace(local_seat_id=1))
+    monkeypatch.setattr(decisions, "_default_card_resolver", cards.get)
+
     bridge = TypedBridge(_poll())
     planner = planner_with('{"option_ids":["sel:101"]}')
     engine = make_engine(bridge, planner)

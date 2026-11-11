@@ -257,7 +257,11 @@ def test_planner_respects_max_select():
             "select_n_ids": [10, 11, 12],
             "select_n_min": 1,
             "select_n_max": 2,
-        }
+        },
+        # Identified menu (owner-approved fixture correction, 2026-11-11): the
+        # max-select truncation under test needs a menu the typed path will
+        # actually plan; an all-blind one now declines before any model call.
+        resolve_instance=lambda iid: f"Card{iid}",
     )
     chosen = planner.plan_decision_options(d, {"turn": {}})
     assert chosen == ["sel:10", "sel:11"]
