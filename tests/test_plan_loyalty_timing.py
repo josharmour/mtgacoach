@@ -194,7 +194,7 @@ def test_logged_turn12_path_keeps_strategy_and_drops_only_the_repeat():
     assert "path: rewrote same-turn loyalty sequence." in plan.issues
 
 
-def test_logged_turn12_win_condition_entry_keeps_its_strategy():
+def test_logged_turn12_win_condition_entry_with_joined_payload_is_kept_whole():
     plan = GamePlan(
         win_conditions=[
             "Hamster engine: [+1] grows Boo pre-combat, then [-2] sacrifices it for 4 damage and 4 cards",
@@ -202,9 +202,15 @@ def test_logged_turn12_win_condition_entry_keeps_its_strategy():
         ]
     )
     validate_plan(plan, assess(STATE), STATE)
-    assert plan.win_conditions[0] == "Hamster engine: [+1] grows Boo pre-combat"
+    # "and 4 cards" is ability payload, "and attack..." would be strategy; the
+    # two cannot be told apart, so the entry stays exactly as written and the
+    # problem is recorded instead of half of it being cut away.
+    assert (
+        plan.win_conditions[0]
+        == "Hamster engine: [+1] grows Boo pre-combat, then [-2] sacrifices it for 4 damage and 4 cards"
+    )
     assert plan.win_conditions[1] == "drawn removal clears flyers, resume race"
-    assert "win_conditions: removed same-turn loyalty sequence." in plan.issues
+    assert "win_conditions: kept same-turn loyalty sequence; could not isolate the clause." in plan.issues
 
 
 def test_path_without_clause_boundary_is_kept_and_reported_not_wiped():

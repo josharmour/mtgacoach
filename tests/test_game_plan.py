@@ -6,7 +6,8 @@ import threading
 import pytest
 
 from arenamcp.backend_health import BACKEND_ERROR_PREFIX
-from arenamcp.game_plan import GamePlan, GamePlanManager
+from arenamcp.board_assessment import assess
+from arenamcp.game_plan import GamePlan, GamePlanManager, validate_plan
 
 
 class FakeBackend:
@@ -682,3 +683,86 @@ def test_hosted_lethal_flip_still_requests_a_full_strategic_review(monkeypatch):
     manager.maybe_reform(_state(turn=3))
     assert [call[0] for call in backend.requests] == [LIVE_PLAN_PROMPT, GAME_PLAN_PROMPT]
     assert backend.requests[-1][2]["reasoning_effort"] == "high"
+
+
+# Board from the same logged match as the Q2 evidence: standalone.log line
+# 2131426 (2026-11-07 06:47:36, turn 12, Armour vs zambat, Minsc & Boo on the
+# battlefield with Boo), where 93 of 750 plans lost their path to the
+# validator's boilerplate replacement.
+_WALKER = {
+    "name": "Minsc & Boo, Timeless Heroes",
+    "instance_id": 658,
+    "controller_seat_id": 1,
+    "type_line": "Legendary Planeswalker — Minsc",
+    "counters": {"Loyalty": 4},
+    "oracle_text": "[+1]: Put three +1/+1 counters on up to one target creature with trample or haste.\n"
+    "[-2]: Sacrifice a creature. When you do, this deals X damage to any target, "
+    "where X is that creature's power. If the sacrificed creature was a Hamster, draw X cards.",
+}
+_BOO = {
+    "name": "Boo",
+    "instance_id": 664,
+    "controller_seat_id": 1,
+    "type_line": "Legendary Creature — Hamster",
+    "power": 4,
+    "toughness": 4,
+    "oracle_text": "Trample, haste",
+    "turn_entered_battlefield": 5,
+}
+_STATE = {
+    "turn": {"turn_number": 6, "active_player": 2, "phase": "Main1"},
+    "local_seat_id": 1,
+    "players": [{"seat_id": 1, "is_local": True, "life_total": 22}, {"seat_id": 2, "life_total": 20}],
+    "battlefield": [_WALKER, _BOO],
+}
+
+
+def test_validation_keeps_the_path_strategy_and_drops_only_the_repeated_activation():
+    """standalone.log line 2131426 (2026-11-07 06:47:36, turn 12): the validator
+    logged 'path: corrected same-turn loyalty sequence.' and replaced the whole
+    path with 'Choose one available loyalty ability this turn. ...'. A path that
+    states real strategy plus a same-turn double activation must keep the
+    strategy and lose only the repeated activation."""
+    plan = GamePlan(
+        path=(
+            "T13: cast Minsc & Boo, Timeless Heroes; attack: Gut, True Soul Zealot, Elvish Mystic, "
+            "Boo (all-in per board facts); hold: [+1] Minsc on Boo pre-combat (4/4 trample haste), "
+            "then [-2] sacrifice Boo for 4 damage + 4 cards"
+        )
+    )
+    validate_plan(plan, assess(_STATE), _STATE)
+    assert "cast Minsc & Boo" in plan.path
+    assert "attack: Gut, True Soul Zealot" in plan.path
+    assert "[+1] Minsc on Boo pre-combat" in plan.path
+    assert "[-2]" not in plan.path
+    assert "one available loyalty ability" not in plan.path
+    assert "path: rewrote same-turn loyalty sequence." in plan.issues
+
+
+def test_validation_keeps_a_path_whose_repeated_activation_carries_trailing_strategy():
+    """Reproduction of the rejected rewrite (verifier note on t_4d85581c,
+    2026-11-10): 'This turn, use +1 to grow Boo, then -2 to sacrifice Boo and
+    attack with the remaining creatures for lethal.' came back as 'This turn,
+    use +1 to grow Boo, .' — the attack-to-win clause was eaten. The clause
+    after '-2' runs past 'and', so ability payload and independent strategy
+    cannot be told apart; the validator must keep the original text and record
+    the problem instead of cutting."""
+    path = (
+        "This turn, use +1 to grow Boo, then -2 to sacrifice Boo and attack with "
+        "the remaining creatures for lethal."
+    )
+    plan = GamePlan(
+        path=path,
+        win_conditions=[
+            "Hamster engine: [+1] grows Boo pre-combat, then [-2] sacrifices it for 4 damage and 4 cards"
+        ],
+    )
+    validate_plan(plan, assess(_STATE), _STATE)
+    assert plan.path == path
+    assert "attack with the remaining creatures for lethal" in plan.path
+    assert "path: kept same-turn loyalty sequence; could not isolate the clause." in plan.issues
+    # The same shared rule protects win_conditions entries joined the same way.
+    assert plan.win_conditions == [
+        "Hamster engine: [+1] grows Boo pre-combat, then [-2] sacrifices it for 4 damage and 4 cards"
+    ]
+    assert "win_conditions: kept same-turn loyalty sequence; could not isolate the clause." in plan.issues
