@@ -766,3 +766,50 @@ def test_validation_keeps_a_path_whose_repeated_activation_carries_trailing_stra
         "Hamster engine: [+1] grows Boo pre-combat, then [-2] sacrifices it for 4 damage and 4 cards"
     ]
     assert "win_conditions: kept same-turn loyalty sequence; could not isolate the clause." in plan.issues
+
+
+def test_validation_keeps_then_joined_attack_strategy_in_path_and_win_conditions():
+    """Reproduction of the second rejection (verifier note on t_48c70a72,
+    2026-11-11): with 'then' joining the payload to the strategy,
+    'This turn, use +1 to grow Boo, then -2 to sacrifice Boo then attack with
+    the remaining creatures for lethal.' still came back as 'This turn, use
+    +1 to grow Boo, .' in BOTH path and win_conditions — the attack-to-win
+    clause was eaten. The same shape occurs in a real logged plan:
+    standalone.log line 2215487 (2026-11-08 20:01:38, turn 12) carries the win
+    condition '+1 pump entry-Boo on T15, -2 sacrifice it on T17 for 4 damage
+    + 4 draws, then burn closes'. Because the text after the second cost runs
+    into 'then' with no clause boundary in between, ability payload and
+    independent strategy cannot be told apart; the validator must keep the
+    original text and record the problem."""
+    sentence = (
+        "This turn, use +1 to grow Boo, then -2 to sacrifice Boo then attack "
+        "with the remaining creatures for lethal."
+    )
+    plan = GamePlan(path=sentence, win_conditions=[sentence])
+    validate_plan(plan, assess(_STATE), _STATE)
+    assert plan.path == sentence
+    assert "attack with the remaining creatures for lethal" in plan.path
+    assert "path: kept same-turn loyalty sequence; could not isolate the clause." in plan.issues
+    assert plan.win_conditions == [sentence]
+    assert "win_conditions: kept same-turn loyalty sequence; could not isolate the clause." in plan.issues
+
+
+def test_validation_still_strips_when_punctuation_ends_the_clause_before_then():
+    """Variant of the second-rejection reproduction (verifier note on
+    t_48c70a72, 2026-11-11; same logged family as standalone.log line 2131426,
+    2026-11-07 06:47:36): the verifier's sentence with the clause boundary made
+    explicit by a comma — '...then -2 to sacrifice Boo, then attack with the
+    remaining creatures for lethal.' There a safe cut point exists before
+    'then', so only the repeated activation is removed and the attack-to-win
+    strategy survives."""
+    plan = GamePlan(
+        path=(
+            "This turn, use +1 to grow Boo, then -2 to sacrifice Boo, then "
+            "attack with the remaining creatures for lethal."
+        )
+    )
+    validate_plan(plan, assess(_STATE), _STATE)
+    assert plan.path == (
+        "This turn, use +1 to grow Boo, then attack with the remaining creatures for lethal."
+    )
+    assert "path: rewrote same-turn loyalty sequence." in plan.issues

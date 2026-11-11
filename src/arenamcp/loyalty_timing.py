@@ -99,7 +99,7 @@ _CLAUSE_END = re.compile(r"[.;,\n]")
 _CLAUSE_START = re.compile(r"(?:\b(?:then|and)\b|[;:,])\s*$")
 
 
-_COORD = re.compile(r"\b(?:and|or)\b", re.I)
+_COORD = re.compile(r"\b(?:and|or|then)\b", re.I)
 
 
 def strip_conflicting_activation(text, walkers, *, turn_step=False):
@@ -108,9 +108,10 @@ def strip_conflicting_activation(text, walkers, *, turn_step=False):
     Returns ``(new_text, changed)``. The first activation and all surrounding
     strategy survive. Two situations come back unchanged so nothing is eaten:
     the second activation has no connector or punctuation to cut at, or its
-    clause continues past a coordinating conjunction ("...sacrifice it and
-    attack for lethal"), where ability payload and independent strategy cannot
-    be told apart — the caller keeps the original text and records the problem.
+    clause runs past a coordinating conjunction or "then" ("...sacrifice it and
+    attack for lethal", "...sacrifice Boo then attack for lethal"), where
+    ability payload and independent strategy cannot be told apart — the caller
+    keeps the original text and records the problem.
     """
     source = _single_named_source(text, walkers)
     if source is None:
@@ -136,9 +137,10 @@ def strip_conflicting_activation(text, walkers, *, turn_step=False):
         if end <= start:
             return prose, False
         if _COORD.search(result[second.end() : end]):
-            # The clause runs on past a coordinating conjunction: what follows
-            # may be independent strategy ("...and attack for lethal") or more
-            # ability payload ("...4 damage and 4 cards"). No safe cut point.
+            # The clause runs on past a coordinating conjunction or "then":
+            # what follows may be independent strategy ("...and attack for
+            # lethal", "...then attack for lethal") or more ability payload
+            # ("...4 damage and 4 cards"). No safe cut point.
             return prose, False
         result = (result[:start] + result[end:]).strip()
         result = re.sub(r"\s{2,}", " ", result)

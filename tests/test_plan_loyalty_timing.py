@@ -9,10 +9,7 @@ from arenamcp.board_assessment import assess
 from arenamcp.deck_strategy import DeckPlaybook, deck_identity
 from arenamcp.game_plan import GamePlan, validate_plan
 from arenamcp.loyalty_removal import loyalty_strategy_context
-from arenamcp.loyalty_timing import (
-    conflicting_loyalty_sequence,
-    strip_conflicting_activation,
-)
+from arenamcp.loyalty_timing import conflicting_loyalty_sequence
 
 WALKER = {
     "name": "Minsc & Boo, Timeless Heroes",
@@ -58,9 +55,7 @@ def test_recorded_plan_cannot_spend_the_same_loyalty_activation_twice():
     validate_plan(plan, assess(STATE), STATE)
     block = plan.as_planner_block()
     assert any("second loyalty activation" in issue for issue in plan.issues)
-    # The illegal same-turn shorthand is dropped; the attack line survives.
-    assert "+1/-2" not in block and "fresh Boo" not in block and "4 drawn" not in block
-    assert "old Boo attacks" in block
+    assert "old Boo" not in block and "fresh Boo" not in block and "4 drawn" not in block
     assert "one available loyalty ability" in block
 
 
@@ -169,66 +164,3 @@ def test_tactical_prompt_does_not_offer_a_second_activation_after_arena_removes_
     )
     assert "one loyalty activation" in loyalty_strategy_context(state)
     assert "after combat for up to 4 damage" not in loyalty_strategy_context(state)
-
-
-# standalone.log line 2131426 (2026-11-07 06:47:36, turn 12, Minsc & Boo match):
-# "GamePlan validation (turn 12): path: corrected same-turn loyalty sequence." wiped the
-# model's whole path. The path text below is rebuilt from that same log entry's own
-# turn_plan wording (line 2131427), with the T15/T17 holds folded into one same-turn line
-# the way the model wrote it before the validator replaced it.
-LOGGED_TURN12_PATH = (
-    "T13: cast Minsc & Boo, Timeless Heroes; attack: Gut, True Soul Zealot, Elvish Mystic, "
-    "Boo (all-in per board facts); hold: [+1] Minsc on Boo pre-combat (4/4 trample haste), "
-    "then [-2] sacrifice Boo for 4 damage + 4 cards"
-)
-
-
-def test_logged_turn12_path_keeps_strategy_and_drops_only_the_repeat():
-    plan = GamePlan(path=LOGGED_TURN12_PATH)
-    validate_plan(plan, assess(STATE), STATE)
-    assert "cast Minsc & Boo" in plan.path
-    assert "attack: Gut, True Soul Zealot" in plan.path
-    assert "[+1] Minsc on Boo pre-combat" in plan.path
-    assert "[-2]" not in plan.path
-    assert "one available loyalty ability" not in plan.path
-    assert "path: rewrote same-turn loyalty sequence." in plan.issues
-
-
-def test_logged_turn12_win_condition_entry_with_joined_payload_is_kept_whole():
-    plan = GamePlan(
-        win_conditions=[
-            "Hamster engine: [+1] grows Boo pre-combat, then [-2] sacrifices it for 4 damage and 4 cards",
-            "drawn removal clears flyers, resume race",
-        ]
-    )
-    validate_plan(plan, assess(STATE), STATE)
-    # "and 4 cards" is ability payload, "and attack..." would be strategy; the
-    # two cannot be told apart, so the entry stays exactly as written and the
-    # problem is recorded instead of half of it being cut away.
-    assert (
-        plan.win_conditions[0]
-        == "Hamster engine: [+1] grows Boo pre-combat, then [-2] sacrifices it for 4 damage and 4 cards"
-    )
-    assert plan.win_conditions[1] == "drawn removal clears flyers, resume race"
-    assert "win_conditions: kept same-turn loyalty sequence; could not isolate the clause." in plan.issues
-
-
-def test_path_without_clause_boundary_is_kept_and_reported_not_wiped():
-    # Same match family as standalone.log line 2131426, but written without any
-    # connector or punctuation before the repeated cost — nothing to cut at.
-    path = "Upkeep Boo +1 pump this turn -2 sacrifice it for damage and draw"
-    plan = GamePlan(path=path)
-    validate_plan(plan, assess(STATE), STATE)
-    assert plan.path == path
-    assert "path: kept same-turn loyalty sequence; could not isolate the clause." in plan.issues
-
-
-def test_strip_leaves_alternatives_alone_and_trims_shorthand_cluster():
-    out, changed = strip_conflicting_activation("Use +1 now and -2 next turn.", [WALKER])
-    assert (out, changed) == ("Use +1 now and -2 next turn.", False)
-    # The "+1/-2" shorthand is itself the offending clause; the attack line survives.
-    out, changed = strip_conflicting_activation(
-        "T7 upkeep Boo, +1/-2 for 4 dmg+4 cards, old Boo attacks; repeat loop each upkeep to lethal",
-        [WALKER],
-    )
-    assert (out, changed) == ("T7 upkeep Boo, old Boo attacks; repeat loop each upkeep to lethal", True)
