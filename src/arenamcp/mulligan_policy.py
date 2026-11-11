@@ -15,6 +15,7 @@ five are kept unless unplayable, and four are always kept.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -656,6 +657,24 @@ def _turn_note(card: HandCard, lands: list[HandCard]) -> str:
     return f"needs {card.mana_value - len(lands)} more land(s)"
 
 
+def _deck_keep_guide(state: dict) -> list[str]:
+    """The deck profile's keep criteria, when the deck list can be profiled.
+
+    Deferred import: deck_profile imports this module's helpers, so the
+    dependency is resolved at call time to keep module load acyclic.
+    """
+    try:
+        from arenamcp.deck_profile import profile_for_state
+
+        profile = profile_for_state(state)
+    except Exception as error:  # the guide is advisory
+        logging.getLogger(__name__).debug("deck keep guide unavailable: %s", error)
+        return []
+    if profile is None:
+        return []
+    return profile.keep_criteria_lines()
+
+
 def describe(state: dict, mulligans: int | None = None) -> list[str]:
     """Prompt lines: hand size consequences, play/draw, and per-card castability."""
     found = situation(state, mulligans)
@@ -698,6 +717,7 @@ def describe(state: dict, mulligans: int | None = None) -> list[str]:
         f"{len(found.cards) - len(lands)} spells; land-ish total {len(lands) + 0.5 * len(cyclers):g} "
         "(each landcycling card counts as half a land)."
     )
+    lines.extend(_deck_keep_guide(state))
     early, _, _ = _plays(found.cards)
     dependent = [c for c in found.cards if c.needs_carrier]
     if dependent and not any(c.makes_carrier for c in early):

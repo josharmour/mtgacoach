@@ -61,11 +61,12 @@ def _pays(cost, sources):
     )
 
 
-def _variants(land, board, *, life):
+def _variants(land, board, *, life, kinds=None):
     rules = _rules(land)
     choice = "choose a basic land type" in rules.lower() and "is the chosen type" in rules.lower()
     payment = re.search(r"you may pay (\d+) life\. If you don't, it enters tapped", rules, re.I)
-    for kind in _TYPES if choice else ("",):
+    order = kinds if kinds is not None else tuple(_TYPES)
+    for kind in order if choice else ("",):
         card = dict(land, subtypes=[kind]) if kind else land
         if payment:
             yield card, True, 0, kind
@@ -85,6 +86,20 @@ class LandLine:
     fixing: int
     target_id: int
     reason: str
+
+
+def _wanted_kinds(hand, commanders):
+    """Basic land types ranked by what the hand and command zone actually need.
+
+    A type whose colour appears in those mana costs is tried first, so the
+    deck profile's colour priority drives which variant a choice land becomes.
+    """
+    costs = [c.get("mana_cost") or "" for c in hand] + [c.cost for c in commanders]
+    need = {
+        kind: sum(_normalize_mana_symbols(cost).count("{" + symbol + "}") for cost in costs)
+        for kind, symbol in _TYPES.items()
+    }
+    return tuple(sorted(_TYPES, key=lambda kind: (-need[kind], kind)))
 
 
 def commander_land_line(decision, state):
@@ -132,8 +147,12 @@ def commander_land_line(decision, state):
             ):
                 return None
     lines = []
+    # Rank the basic land types by what the hand and command zone actually
+    # need: a type whose colour appears in those costs is tried first, so the
+    # profile's colour priority drives which variant a choice land becomes.
+    wanted_kinds = _wanted_kinds(hand, commanders)
     for oid, land in offered:
-        for first, tapped, pay, kind in _variants(land, lands, life=life):
+        for first, tapped, pay, kind in _variants(land, lands, life=life, kinds=wanted_kinds):
             field = [*lands, first]
             sources = [_produces(c, field) for c in untapped + ([] if tapped else [first])]
             sources += [set("WUBRG")] * triggers
@@ -166,7 +185,9 @@ def commander_land_line(decision, state):
                     for _, follow in offered:
                         if follow is land:
                             continue
-                        for second, tapped2, pay2, kind2 in _variants(follow, field, life=life - pay):
+                        for second, tapped2, pay2, kind2 in _variants(
+                            follow, field, life=life - pay, kinds=wanted_kinds
+                        ):
                             after = [*field, second]
                             next_sources = [
                                 _produces(c, after) for c in field + ([] if tapped2 else [second])

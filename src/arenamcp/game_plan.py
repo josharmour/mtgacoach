@@ -3944,6 +3944,17 @@ class GamePlanManager:
                     return str(playbook.render(omit_oracle_for=quoted)).strip() or None
             except Exception as error:  # the seed string stands in
                 logger.debug("playbook source failed: %s", error)
+        if self._seed:  # a cached playbook beats the freshly computed profile
+            return self._seed
+        profile_seed = ""
+        try:
+            from arenamcp.deck_profile import profile_seed_for_state
+
+            profile_seed = profile_seed_for_state(game_state)
+        except Exception as error:  # the static seed stands in
+            logger.debug("deck profile seed failed: %s", error)
+        if profile_seed:
+            return profile_seed
         return self._seed
 
     def yield_for_decision(self) -> bool:
