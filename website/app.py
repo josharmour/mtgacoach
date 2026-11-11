@@ -147,6 +147,7 @@ app.include_router(match_bundles.router)
 
 # Shared card-facts store and lookup (compiled once, served to every customer).
 import card_facts
+
 card_facts.init_db()
 app.include_router(card_facts.router)
 

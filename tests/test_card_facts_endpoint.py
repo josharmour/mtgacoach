@@ -20,6 +20,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
+import tests.website_app as website_app_helper
 from fastapi.testclient import TestClient
 from tests.website_app import load_website_app
 
@@ -60,6 +61,14 @@ class FakeKeyInfo:
 
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
+    # S1's file list is website/card_facts.py plus this test file, so the
+    # shared helper's module list is extended here (for teardown-safe
+    # isolation of card_facts) instead of by editing tests/website_app.py.
+    monkeypatch.setattr(
+        website_app_helper,
+        "WEBSITE_MODULES",
+        website_app_helper.WEBSITE_MODULES + ("card_facts",),
+    )
     proxy_app, proxy_db, patreon = load_website_app(tmp_path, monkeypatch, "proxy_app_card_facts_test")
     cf = sys.modules["card_facts"]
     fake = FakeKeyInfo()
@@ -212,6 +221,85 @@ def test_admin_upsert_rejects_malformed_records_individually(env):
     with proxy_db.get_db() as conn:
         stored = {r["rules_hash"] for r in conn.execute("SELECT rules_hash FROM card_facts")}
     assert stored == {_hash(1), _hash(5)}
+
+
+def test_admin_upsert_rejects_nonfinite_numbers_and_lookup_stays_clean(env):
+    """bug: Dotty verification of c8d23ed — raw records carrying NaN,
+    Infinity, -Infinity or 1e400 were stored verbatim and the next customer
+    lookup failed on them.  Intake now rejects each such record and lookup
+    keeps serving the valid ones."""
+    _, proxy_db, _, _, _, client, _tmp = env
+    good = _record(_hash(1))
+    raw = (
+        '{"records":['
+        + json.dumps(good)
+        + ',{"rules_hash":"'
+        + _hash(2)
+        + '","v":NaN}'
+        + ',{"rules_hash":"'
+        + _hash(3)
+        + '","v":Infinity}'
+        + ',{"rules_hash":"'
+        + _hash(4)
+        + '","v":-Infinity}'
+        + ',{"rules_hash":"'
+        + _hash(5)
+        + '","v":1e400}'
+        + "]}"
+    )
+    resp = client.post("/v1/card-facts/admin/upsert", content=raw.encode(), headers=ADMIN)
+    assert resp.status_code == 200, resp.text
+    result = resp.json()
+    assert result["stored"] == 1
+    assert [r["index"] for r in result["rejected"]] == [1, 2, 3, 4]
+    assert all("strict finite JSON" in r["reason"] for r in result["rejected"])
+    with proxy_db.get_db() as conn:
+        stored = {r["rules_hash"] for r in conn.execute("SELECT rules_hash FROM card_facts")}
+    assert stored == {_hash(1)}
+    body = _lookup(client, [_hash(i) for i in range(1, 6)]).json()
+    assert set(body["found"]) == {_hash(1)}
+    assert body["missing"] == [_hash(i) for i in range(2, 6)]
+
+
+def test_admin_upsert_rejects_out_of_range_schema_version_without_aborting_batch(env):
+    """bug: Dotty verification of c8d23ed — schema_version=2**80 was bound
+    straight into a SQLite INTEGER column and raised, failing the whole
+    batch with a 500.  The record is now rejected at intake and the rest of
+    the batch stores."""
+    _, proxy_db, _, _, _, client, _tmp = env
+    h_big = _hash(9)
+    result = _store(
+        client,
+        _record(_hash(7)),
+        {"rules_hash": h_big, "name": "Big Version", "schema_version": 2**80},
+        _record(_hash(8), name="After Big"),
+    )
+    assert result["stored"] == 2
+    assert [r["index"] for r in result["rejected"]] == [1]
+    assert "signed 64-bit" in result["rejected"][0]["reason"]
+    with proxy_db.get_db() as conn:
+        stored = {r["rules_hash"] for r in conn.execute("SELECT rules_hash FROM card_facts")}
+    assert stored == {_hash(7), _hash(8)}
+
+
+def test_lookup_serves_legacy_nonfinite_row_as_missing_instead_of_500(env):
+    """bug: Dotty verification of c8d23ed — a row whose payload carries a
+    bare NaN literal (written before strict intake existed) made customer
+    lookup return 500.  Serialization now serves such a row as missing."""
+    _, proxy_db, _, _, _, client, _tmp = env
+    h_bad, h_good = _hash(11), _hash(12)
+    with proxy_db.get_db() as conn:
+        conn.execute(
+            "INSERT INTO card_facts (rules_hash, name, schema_version, payload, updated_at, status)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (h_bad, "Poisoned Row", 1, '{"v":NaN}', time.time(), "ok"),
+        )
+    _store(client, _record(h_good))
+    resp = _lookup(client, [h_bad, h_good])
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert set(body["found"]) == {h_good}
+    assert body["missing"] == [h_bad]
 
 
 def test_admin_upsert_batch_limit(env):

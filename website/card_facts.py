@@ -35,9 +35,8 @@ import time
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from state import _get_db, _require_admin
-
 from match_bundles import authorize_upload, owner_of
+from state import _get_db, _require_admin
 
 logger = logging.getLogger("website.card_facts")
 
@@ -48,6 +47,36 @@ DEFAULT_STATUS = "ok"
 
 # sha256 hexdigest of the card text as supplied (F1 hashing recipe).
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+
+# Strict-JSON bounds.  A stored float must be finite (Python's serializer
+# would otherwise emit bare NaN/Infinity literals, which RFC 8259 clients
+# and strict parsers reject) and every integer must fit SQLite's signed
+# 64-bit columns, or binding it raises and takes the batch with it.
+_INT64_MIN = -(2**63)
+_INT64_MAX = 2**63 - 1
+
+
+def _check_strict_json(value: Any) -> None:
+    """Raise ValueError unless value is strict finite JSON.
+
+    Applied to every record at intake and again to every payload at
+    serialization, so a non-finite or out-of-range number can never reach
+    a stored row or a customer response.
+    """
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("non-finite number (NaN/Infinity)")
+    elif isinstance(value, int) and not _INT64_MIN <= value <= _INT64_MAX:
+        raise ValueError("integer outside the signed 64-bit range")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError("object key is not a string")
+            _check_strict_json(item)
+    elif isinstance(value, list):
+        for item in value:
+            _check_strict_json(item)
+
 
 MAX_HASHES_PER_LOOKUP = 300
 MAX_RECORD_BYTES = 64 * 1024  # per-record cap for admin upserts
@@ -140,11 +169,16 @@ def get_ok_records(rules_hashes: list[str]) -> dict[str, Any]:
             ).fetchall()
             for row in rows:
                 try:
-                    found[row["rules_hash"]] = json.loads(row["payload"])
+                    parsed = json.loads(row["payload"])
+                    _check_strict_json(parsed)
                 except ValueError:
-                    # A stored payload should always parse; if one somehow
-                    # does not, serve it as missing rather than 500-ing.
-                    logger.warning("card_facts payload for %s is not valid JSON", row["rules_hash"])
+                    # A stored payload should always parse into strict finite
+                    # JSON; if one somehow does not (e.g. a row written before
+                    # intake enforced this), serve it as missing rather than
+                    # poisoning the response.
+                    logger.warning("card_facts payload for %s is not strict finite JSON", row["rules_hash"])
+                else:
+                    found[row["rules_hash"]] = parsed
     return found
 
 
@@ -293,7 +327,9 @@ def _record_error(index: int, reason: str) -> dict[str, str]:
     return {"index": index, "reason": reason}
 
 
-def _validate_admin_record(index: int, record: Any) -> tuple[Optional[dict[str, Any]], Optional[dict[str, str]]]:
+def _validate_admin_record(
+    index: int, record: Any
+) -> tuple[Optional[dict[str, Any]], Optional[dict[str, str]]]:
     """Return (prepared row, rejection).  Exactly one side is non-None."""
     if not isinstance(record, dict):
         return None, _record_error(index, "record must be a JSON object")
@@ -301,9 +337,14 @@ def _validate_admin_record(index: int, record: Any) -> tuple[Optional[dict[str, 
     if not isinstance(rules_hash, str) or not _HASH_RE.fullmatch(rules_hash):
         return None, _record_error(index, "missing or malformed rules_hash")
     try:
-        payload = json.dumps(record)
+        # allow_nan=False makes the serializer itself reject NaN/Infinity
+        # (however they arrived: literals like NaN in the raw body or numbers
+        # like 1e400 that parse to inf); the walk also rejects integers
+        # outside SQLite's 64-bit range before they can hit a column.
+        payload = json.dumps(record, allow_nan=False)
+        _check_strict_json(record)
     except (TypeError, ValueError) as exc:
-        return None, _record_error(index, f"record is not serializable JSON: {type(exc).__name__}")
+        return None, _record_error(index, f"record is not strict finite JSON: {exc}")
     if len(payload.encode("utf-8")) > MAX_RECORD_BYTES:
         return None, _record_error(index, f"record exceeds {MAX_RECORD_BYTES} bytes")
     status = record.get("status", DEFAULT_STATUS)
