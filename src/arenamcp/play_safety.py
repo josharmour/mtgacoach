@@ -557,8 +557,12 @@ def pointless_self_animation(state: dict, card: dict, metadata: dict) -> str:
     crew = re.fullmatch(r"crew\s+\d+(?:\s*\([^\n]*\))?\.?", ability) is not None
     effect = ability.split(":", 1)[-1].strip()
     name = re.escape(str(card.get("name") or "").lower())
+    # Selected-ability metadata quotes Arena's rules dialect, where the animated
+    # permanent is the bare pronoun ("this becomes a 4/4 creature"); oracle text
+    # names the kind ("this artifact becomes ..."). Both describe the same
+    # temporary animation, so recognize either subject.
     match = re.fullmatch(
-        rf"(?:this (?:artifact|land|permanent)|cardname|{name}) becomes (?:a|an) "
+        rf"(?:this(?: (?:artifact|land|permanent))?|cardname|{name}) becomes (?:a|an) "
         r"(\d+)/(\d+) (?:[\w-]+ )*creature(?: with all creature types)? until end of turn\.?"
         r"(?:\s+it['’]s still (?:a|an) (?:land|artifact)\.?)?",
         effect,
