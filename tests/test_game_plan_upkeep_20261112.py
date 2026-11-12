@@ -22,14 +22,24 @@ replanning happens only on a real change. Real logged cases:
   the switch_if case — one reform, from the kept plan's own prompt.
 * win route: bundle 00651f77 kept "win with Etali's Favor" for six turns after
   the Favor had been exiled. E5 replans ("win route lost") once every route
-  card is unusable: exile is inaccessible, the graveyard still recurs.
+  card is unusable: exile is inaccessible, and the graveyard keeps the route
+  only when recursion is actually usable (the card's own rules text recurs it,
+  or the plan names the recursion line) — not for any graveyard card.
 """
 
 from __future__ import annotations
 
 import json
 
-from arenamcp.game_plan import GamePlan, GamePlanManager, switch_if_triggered, win_route_lost
+from arenamcp.game_plan import (
+    GamePlan,
+    GamePlanManager,
+    _route_cards_from_state,
+    compute_upkeep,
+    switch_if_triggered,
+    win_route_lost,
+)
+from arenamcp.plan_ledger import PlanLedger
 
 
 class FakeBackend:
@@ -196,7 +206,9 @@ def test_a_met_switch_if_clause_replans_the_kept_plan(monkeypatch):
     from the kept plan's own prompt."""
     be = FakeBackend([])
     mgr = GamePlanManager(be)
-    mgr._plan = GamePlan(win_conditions=["aggro beatdown"], path="race for lethal ~T6", switch_if=[SWITCH_CLAUSE])
+    mgr._plan = GamePlan(
+        win_conditions=["aggro beatdown"], path="race for lethal ~T6", switch_if=[SWITCH_CLAUSE]
+    )
     mgr._last_sig = (3,)
     mgr._last_reform_turn = 3
     key = _key()
@@ -248,7 +260,22 @@ def test_win_route_lost_exile_is_inaccessible_graveyard_still_recurs():
     assert win_route_lost(plan, zones)  # nowhere we can reach it
     grave = dict(zones)
     grave["graveyard"] = [{"instance_id": 5, "name": "Etali's Favor"}]
-    assert not win_route_lost(plan, grave)  # usable recursion keeps the route
+    assert win_route_lost(plan, grave)  # in the graveyard with NO usable recursion: lost
+    retrace = dict(zones)
+    retrace["graveyard"] = [
+        {
+            "instance_id": 5,
+            "name": "Etali's Favor",
+            "oracle_text": "Retrace — You may cast this card from your graveyard by discarding a land card.",
+        }
+    ]
+    assert not win_route_lost(plan, retrace)  # usable recursion keeps the route
+    plan_named = GamePlan(
+        win_conditions=["win with Etali's Favor"],
+        path="cast it and swing",
+        active_mechanisms=["return Etali's Favor from the graveyard with backup"],
+    )
+    assert not win_route_lost(plan_named, grave)  # plan-stated recursion line keeps it
     hand = dict(zones)
     hand["hand"] = [{"instance_id": 5, "name": "Etali's Favor"}]
     assert not win_route_lost(plan, hand)
@@ -306,3 +333,103 @@ def test_updates_and_route_cards_persist_across_a_reload(monkeypatch):
     assert reborn.current.role == "defender"
     assert reborn.current.updates == mgr.current.updates
     assert reborn.current.route_cards == mgr.current.route_cards
+    assert reborn.current.route_state == mgr.current.route_state
+    assert reborn.current.engines == mgr.current.engines
+    assert reborn.current.next_steps == mgr.current.next_steps
+
+
+REAL_PLAYBOOK_WIN = (
+    "Convert counters into damage via trample from Etali's Favor (87300) or "
+    "Meteoric Mace (91109), clearing blockers with Daring Discovery (87291)"
+)
+
+
+def test_real_extraction_from_the_live_playbook_sentence():
+    """packet_20261110_001105: the real playbook sentence names Etali's Favor
+    mid-sentence. Extraction must find it from live board visibility alone —
+    no manually seeded route_cards — or the route tracking is blind exactly
+    when it mattered (the Favor was on the battlefield and the tracker saw
+    nothing)."""
+    plan = GamePlan(win_conditions=[REAL_PLAYBOOK_WIN], path="stack counters, swing")
+    state = _state(turn=9)
+    state["battlefield"].append(
+        {"instance_id": 30, "name": "Etali's Favor", "type_line": "Enchantment", "controller_seat_id": 1}
+    )
+    routes = _route_cards_from_state(plan, state)
+    assert "etali's favor" in routes
+    # A second named piece sitting in hand is extracted too.
+    state["hand"] = [{"instance_id": 31, "name": "Meteoric Mace", "type_line": "Instant"}]
+    routes = _route_cards_from_state(plan, state)
+    assert "etali's favor" in routes
+    assert "meteoric mace" in routes
+
+
+def test_structured_upkeep_tracks_route_engines_and_next_steps(monkeypatch):
+    """The structured upkeep state (E5a): observe() recomputes where each route
+    piece sits, which committed engines are in play or lost, and the upcoming
+    steps — with zero model calls — and flips honestly when the engine dies."""
+    be, mgr = _formed_manager(monkeypatch)
+    mgr.current.route_cards = ["synthesizer"]
+    mgr.current.turn_plan = [{"turn": 4, "cast": ["World Breaker"], "attack": [], "hold": ""}]
+    mgr.observe(_state(turn=4))
+    assert be.calls == 1  # upkeep is code-owned: no model call
+    route_state = mgr.current.route_state
+    assert route_state["status"] == "live"
+    assert route_state["pieces"]["synthesizer"] == "battlefield"
+    # Route card plus the planned cast are both committed engines.
+    assert sorted(mgr.current.engines["in_play"]) == ["synthesizer", "world breaker"]
+    assert any("T4" in step for step in mgr.current.next_steps)
+    # Engine destroyed: the snapshot flips without any model call.
+    mgr.observe(_state(turn=5, synth_on_board=False))
+    assert be.calls == 1
+    assert mgr.current.route_state["status"] == "lost"
+    assert mgr.current.route_state["pieces"]["synthesizer"] == "graveyard"
+    assert mgr.current.engines["in_play"] == ["world breaker"]
+    assert mgr.current.engines["lost"] == ["synthesizer (graveyard)"]
+
+
+def test_missing_assessment_never_becomes_a_literal_none_role(monkeypatch):
+    """A failed board assessment used to surface as role 'none' and overwrite a
+    valid aggressor role. The guard keeps the valid role and logs nothing."""
+    be, mgr = _formed_manager(monkeypatch)
+    mgr.current.role = "aggressor"  # the plan holds a valid assessed role
+    monkeypatch.setattr(
+        mgr, "_strategic_key", lambda s, sig=None: ((None, False, False, False), (), (), frozenset())
+    )
+    mgr.observe(_state(turn=4))
+    assert be.calls == 1
+    assert mgr.current.role == "aggressor"
+    assert not any("none" in update for update in mgr.current.updates)
+
+
+def test_ledger_carries_the_upkeep_snapshot():
+    """The per-turn ledger shows what the plan still had to work with when the
+    turn began: live route + piece zones, lost engines, upcoming steps."""
+    plan = GamePlan(win_conditions=["aggro beatdown"], path="race for lethal ~T6")
+    plan.route_cards = ["synthesizer"]
+    plan.turn_plan = [{"turn": 4, "cast": ["World Breaker"], "attack": [], "hold": ""}]
+    snapshot = compute_upkeep(plan, _state(turn=4))
+    plan.route_state = snapshot["route_state"]
+    plan.engines = snapshot["engines"]
+    plan.next_steps = snapshot["next_steps"]
+
+    be = FakeBackend([])
+    mgr = GamePlanManager(be)
+    mgr._plan = plan
+    note = mgr._upkeep_ledger_note()
+    assert "route live" in note
+    assert "synthesizer battlefield" in note
+    assert "T4" in note
+
+    ledger = PlanLedger()
+    ledger.turn_started(
+        4,
+        ours=True,
+        snapshot={"life": 20},
+        role="aggressor",
+        upkeep=note,
+        decisions_for_turn=lambda turn: [],
+    )
+    rendered = ledger.entries[-1].line()
+    assert "upkeep:" in rendered
+    assert "route live" in rendered
