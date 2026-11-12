@@ -17,7 +17,7 @@ being cast (evidence /home/joshu/fable-nov-evidence/autoplay-false-premise-
 These concerns surface such claims BEFORE the pick is final so the second
 look can re-evaluate the choice itself instead of rewriting rationale text.
 
-Conservatism contract (review rounds 2–3):
+Conservatism contract (review rounds 2–4):
 
 - A concern is raised only when impossibility is POSITIVELY established:
   the cast card has no own entry/cast ability AND every visible battlefield
@@ -33,16 +33,25 @@ Conservatism contract (review rounds 2–3):
     scoped grants ("Enchanted creature ... has haste"), and triggers keyed
     to non-matching types ("Whenever a land you control enters ...") are
     recognised as NOT support but do not create concerns either.
-- Only ability-mediated effects are candidates for refutation: a counter,
-  token, card or damage appearing as a result of the cast/entry. Ordinary
-  consequences of a creature resolving — joining the battle as a blocker
-  or attacker, raising the creature count, static stat changes — need no
-  ability at all and are NEVER refuted (review round 3: generic immediacy
-  is not proof of a trigger; a resolving creature provides those by
-  itself). The claim must additionally be attributed to the cast/entry
-  itself (explicit immediacy marker, or the card as subject of the effect
-  verb); effects attributed to other permanents or to scheduled timing are
-  left alone.
+- Only counter placement is a candidate for refutation (review round 4:
+  bounded semantic restriction). A counter appearing as a result of the
+  cast/entry requires an ability that fires on an event — static continuous
+  effects never place counters on their own, so an unsupported counter claim
+  about an ability-less cast is positively impossible. Everything else is
+  left UNKNOWN rather than refuted:
+  * stat modifications ("+1/+1") are real static benefits needing no trigger
+    (Master of Etherium's own static ability makes "immediately gives our
+    artifact creature tokens +1/+1" TRUE);
+  * mentioning tokens/cards/damage does not assert creating them ("token"
+    as recipient of a buff is not token creation), and unrepresented
+    effects stay unknown;
+  * ordinary consequences of a creature resolving — joining the battle as
+    a blocker or attacker, raising the creature count — need no ability at
+    all and are NEVER refuted.
+  The claim must additionally be attributed to the cast/entry itself
+  (explicit immediacy marker, or the card as subject of the effect verb);
+  effects attributed to other permanents or to scheduled timing are left
+  alone.
 - Any battlefield object whose oracle text is missing/unreadable makes the
   board scan return ``None`` (unknown) and NO concern is raised: an unseen
   ability could support the claim.
@@ -58,21 +67,19 @@ _HTML_TAG = re.compile(r"<[^>]+>")
 _APOSTROPHE = str.maketrans({"’": "'", "‘": "'"})
 _REMINDER_TEXT = re.compile(r"\([^)]*\)")
 
-# An ability-mediated effect attributed to casting/entering now. BOTH parts
-# must hold (review round 3: generic immediacy is not proof of a trigger,
-# and ordinary consequences of a creature resolving — becoming a blocker,
-# raising the creature count, static stat changes — need no ability and are
-# never refuted):
-#   _ABILITY_EFFECT — an effect verb landing on a counter/token/card/damage,
-#     outcomes only an ability can produce;
+# A counter appearing as a result of casting/entering now. This is the ONLY
+# refutable effect class (review round 4: bounded semantic restriction —
+# static continuous effects never place counters without an event, so an
+# unsupported counter claim about an ability-less cast is positively
+# impossible). Stat buffs ("+1/+1") are real static benefits needing no
+# trigger, and mentioning tokens/cards/damage does not assert creating them
+# ("gives our artifact creature tokens +1/+1" is Master of Etherium's static
+# ability being TRUE) — those stay unknown, never refuted:
+#   _COUNTER_EFFECT — a counter-placement verb landing on a counter;
 #   _CAST_ATTRIBUTION — the effect tied to the cast/entry itself, via an
 #     explicit immediacy marker (the card-as-subject variant is compiled
 #     per call in _entry_effect_claims because it needs the escaped name).
-_ABILITY_EFFECT = re.compile(
-    r"\b(?:adds?|puts?|places?|gives?|creates?|makes?|draws?|deals?"
-    r"|destroys?|exiles?|returns?)\b[^.;]{0,40}?\b(?:counters?|tokens?"
-    r"|cards?|damage)\b"
-)
+_COUNTER_EFFECT = re.compile(r"\b(?:adds?|puts?|places?|gives?)\b[^.;]{0,40}?\bcounters?\b")
 _CAST_ATTRIBUTION = re.compile(
     r"\b(?:immediately|right away|at once|as it enters|upon entering"
     r"|on entry|first)\b"
@@ -173,7 +180,7 @@ def _entry_effect_claims(name: str, reasoning: str) -> list[str]:
         )
         if not linked:
             continue
-        effect = _ABILITY_EFFECT.search(low)
+        effect = _COUNTER_EFFECT.search(low)
         if not effect:
             continue
         # Generic immediacy alone is not an ability-mediated claim: the

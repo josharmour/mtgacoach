@@ -143,17 +143,16 @@ def test_ordinary_resolving_consequences_are_not_entry_effect_claims():
 @pytest.mark.parametrize(
     "reasoning",
     [
-        "Casting Optimistic Scavenger immediately creates a Treasure token.",
-        "Casting Optimistic Scavenger first draws us a card.",
-        "Casting Optimistic Scavenger immediately deals 2 damage to their best creature.",
+        "Casting Optimistic Scavenger immediately puts a +1/+1 counter on their best creature.",
+        "Casting Optimistic Scavenger first places a stun counter on their biggest attacker.",
+        "Casting Optimistic Scavenger immediately adds a counter to Veteran Survivor.",
     ],
 )
-def test_narrowed_detector_still_flags_ability_mediated_impossible_claims(
-    reasoning,
-):
-    """Guard against over-narrowing: an ability-mediated effect (token, card,
-    damage) attributed to the cast itself is still refuted when nothing
-    supports it."""
+def test_counter_placement_claims_are_still_refuted(reasoning):
+    """Guard against over-narrowing: a counter-placement claim attributed to
+    the cast itself is still refuted when nothing supports it. Counters are
+    the one effect class static continuous effects cannot produce without an
+    event, so the impossibility is positively established."""
     case = CASES["optimistic_scavenger_t16"]
     concerns = cast_premise_concerns(
         _decision("optimistic_scavenger_t16"),
@@ -163,6 +162,82 @@ def test_narrowed_detector_still_flags_ability_mediated_impossible_claims(
     )
     assert len(concerns) == 1
     assert "no enters-the-battlefield or when-you-cast ability" in concerns[0]
+
+
+def test_static_buff_via_token_mention_is_not_refuted():
+    """Review round 4 blocker: Master of Etherium's own static ability makes
+    'immediately gives our artifact creature tokens +1/+1' TRUE with no
+    trigger. Mentioning tokens (as buff recipients) does not assert token
+    creation, and stat buffs need no entry/when-cast ability."""
+    case = copy.deepcopy(CASES["optimistic_scavenger_t16"])
+    for card in case["state"]["hand"]:
+        if card.get("instance_id") == _cast_instance_id("optimistic_scavenger_t16"):
+            card["name"] = "Master of Etherium"
+            card["type_line"] = "Artifact Creature — Construct"
+            card["oracle_text"] = "Other artifact creatures you control get +1/+1."
+    reasoning = "Casting Master of Etherium immediately gives our artifact creature tokens +1/+1."
+    concerns = cast_premise_concerns(
+        _decision("optimistic_scavenger_t16"),
+        case["state"],
+        case["chosen_option_ids"],
+        reasoning,
+    )
+    entry_effects = [c for c in concerns if "does not produce that effect by itself" in c]
+    assert entry_effects == [], (reasoning, entry_effects)
+
+
+def test_servo_token_on_board_does_not_make_buff_a_creation_claim():
+    """Same probe with an explicit Servo token on the battlefield: the token
+    noun in the reasoning refers to the existing token, so the claim stays a
+    static buff and is never refuted."""
+    case = copy.deepcopy(CASES["optimistic_scavenger_t16"])
+    for card in case["state"]["hand"]:
+        if card.get("instance_id") == _cast_instance_id("optimistic_scavenger_t16"):
+            card["name"] = "Master of Etherium"
+            card["type_line"] = "Artifact Creature — Construct"
+            card["oracle_text"] = "Other artifact creatures you control get +1/+1."
+    case["state"]["battlefield"].append(
+        {
+            "zoneId": "Battlefield",
+            "instance_id": 900008,
+            "name": "Servo",
+            "type_line": "Artifact Creature — Servo",
+            "oracle_text": "",
+        }
+    )
+    reasoning = "Casting Master of Etherium immediately gives our artifact creature tokens +1/+1."
+    concerns = cast_premise_concerns(
+        _decision("optimistic_scavenger_t16"),
+        case["state"],
+        case["chosen_option_ids"],
+        reasoning,
+    )
+    entry_effects = [c for c in concerns if "does not produce that effect by itself" in c]
+    assert entry_effects == [], (reasoning, entry_effects)
+
+
+@pytest.mark.parametrize(
+    "reasoning",
+    [
+        "Casting Optimistic Scavenger immediately creates a Treasure token.",
+        "Casting Optimistic Scavenger first draws us a card.",
+        "Casting Optimistic Scavenger immediately deals 2 damage to their best creature.",
+        "Casting Optimistic Scavenger immediately gives our other creatures +1/+1.",
+    ],
+)
+def test_unrepresented_effect_claims_stay_unknown_not_refuted(reasoning):
+    """Review round 4 conservatism: token/card/damage creation and stat-buff
+    claims are left UNKNOWN (a static or unrepresented effect could support
+    them) — the detector never refutes what it cannot positively disprove."""
+    case = CASES["optimistic_scavenger_t16"]
+    concerns = cast_premise_concerns(
+        _decision("optimistic_scavenger_t16"),
+        case["state"],
+        case["chosen_option_ids"],
+        reasoning,
+    )
+    entry_effects = [c for c in concerns if "does not produce that effect by itself" in c]
+    assert entry_effects == [], (reasoning, entry_effects)
 
 
 def test_future_timed_trigger_claim_is_out_of_scope():
