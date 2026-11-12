@@ -66,7 +66,9 @@ def _single_named_source(text, walkers):
 def _offending_pair(prose, source, *, turn_step=False):
     """Return the (first, second) cost matches of a same-turn pair, or None."""
     # Remove stat adjustments before looking for costs, preserving mixed-sign loyalty shorthand.
-    prose = re.sub(r"([+-])\d+/\1\d+\b", "stats", prose)
+    # The placeholder is the same length as what it replaces: the match offsets
+    # returned below are applied to the unmasked text by strip_conflicting_activation.
+    prose = re.sub(r"([+-])\d+/\1\d+\b", lambda m: "~" * len(m.group(0)), prose)
     costs = list(re.finditer(r"(?<![\w+])(?:\[([+-]?\d+)\]|([+-]\d+))(?!\w)", prose))
     for first, second in pairwise(costs):
         between = prose[first.end() : second.start()]

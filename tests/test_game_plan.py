@@ -813,3 +813,52 @@ def test_validation_still_strips_when_punctuation_ends_the_clause_before_then():
         "This turn, use +1 to grow Boo, then attack with the remaining creatures for lethal."
     )
     assert "path: rewrote same-turn loyalty sequence." in plan.issues
+
+
+def test_validation_keeps_multi_digit_stats_before_the_costs_in_path_and_win_conditions():
+    """Reproduction of the fourth rejection (verifier note on t_48c70a72,
+    2026-11-12): _offending_pair masked stat expressions with the literal
+    'stats' (shorter than what it replaced), then strip_conflicting_activation
+    applied the masked offsets to the original prose. The verifier's offline
+    repro 'This turn grant +10/+10 and +10/+10 to attackers, +1/-2 for damage;
+    attack for lethal.' came back as '...to attacke; attack for lethal.' — two
+    masked stats before the costs shifted every offset by four characters and
+    truncated 'attackers,'. Real plans carry the same shape: standalone.log
+    line 900485 (2026-10-26 15:17:56, turn 8) paths multi-digit stat payloads
+    ('+10 haste', '(+18/+18 trample haste)') next to cost-like tokens. With
+    same-length masking the offsets land exactly: only the '+1/-2 for damage'
+    clause is removed and the attack strategy survives in path and
+    win_conditions."""
+    sentence = "This turn grant +10/+10 and +10/+10 to attackers, +1/-2 for damage; attack for lethal."
+    plan = GamePlan(path=sentence, win_conditions=[sentence])
+    validate_plan(plan, assess(_STATE), _STATE)
+    assert plan.path == ("This turn grant +10/+10 and +10/+10 to attackers, attack for lethal.")
+    assert "attack for lethal" in plan.path
+    assert "path: rewrote same-turn loyalty sequence." in plan.issues
+    assert plan.win_conditions == ["This turn grant +10/+10 and +10/+10 to attackers, attack for lethal."]
+    assert "win_conditions: removed same-turn loyalty sequence." in plan.issues
+
+
+def test_validation_keeps_multi_digit_stats_between_the_costs_in_path_and_win_conditions():
+    """Companion to the fourth-rejection reproduction (verifier note on
+    t_48c70a72, 2026-11-12): multi-digit stats BETWEEN the two costs drift the
+    second cost's offsets the same way, so the clause-start window and the cut
+    land inside neighbouring words. The shape follows the logged Minsc & Boo
+    pump-sacrifice family (standalone.log line 2125705, 2026-11-07 06:22:01,
+    turn 6: '+1/-2 for 4 dmg+4 cards, old Boo attacks') combined with the
+    multi-digit stat payloads of line 900485. With same-length masking the cut
+    lands on the comma before 'then': the grown-attacker payload and the
+    swing-for-lethal strategy both survive in path and win_conditions."""
+    sentence = (
+        "This turn, +1 to grow Boo into a +10/+10 attacker, then "
+        "-2 to sacrifice Boo for damage; swing everything for lethal."
+    )
+    plan = GamePlan(path=sentence, win_conditions=[sentence])
+    validate_plan(plan, assess(_STATE), _STATE)
+    assert plan.path == ("This turn, +1 to grow Boo into a +10/+10 attacker, swing everything for lethal.")
+    assert "swing everything for lethal" in plan.path
+    assert "path: rewrote same-turn loyalty sequence." in plan.issues
+    assert plan.win_conditions == [
+        "This turn, +1 to grow Boo into a +10/+10 attacker, swing everything for lethal."
+    ]
+    assert "win_conditions: removed same-turn loyalty sequence." in plan.issues
