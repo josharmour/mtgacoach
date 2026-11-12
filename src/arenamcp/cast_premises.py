@@ -17,7 +17,7 @@ being cast (evidence /home/joshu/fable-nov-evidence/autoplay-false-premise-
 These concerns surface such claims BEFORE the pick is final so the second
 look can re-evaluate the choice itself instead of rewriting rationale text.
 
-Conservatism contract (review round 2):
+Conservatism contract (review rounds 2–3):
 
 - A concern is raised only when impossibility is POSITIVELY established:
   the cast card has no own entry/cast ability AND every visible battlefield
@@ -33,6 +33,16 @@ Conservatism contract (review round 2):
     scoped grants ("Enchanted creature ... has haste"), and triggers keyed
     to non-matching types ("Whenever a land you control enters ...") are
     recognised as NOT support but do not create concerns either.
+- Only ability-mediated effects are candidates for refutation: a counter,
+  token, card or damage appearing as a result of the cast/entry. Ordinary
+  consequences of a creature resolving — joining the battle as a blocker
+  or attacker, raising the creature count, static stat changes — need no
+  ability at all and are NEVER refuted (review round 3: generic immediacy
+  is not proof of a trigger; a resolving creature provides those by
+  itself). The claim must additionally be attributed to the cast/entry
+  itself (explicit immediacy marker, or the card as subject of the effect
+  verb); effects attributed to other permanents or to scheduled timing are
+  left alone.
 - Any battlefield object whose oracle text is missing/unreadable makes the
   board scan return ``None`` (unknown) and NO concern is raised: an unseen
   ability could support the claim.
@@ -48,14 +58,24 @@ _HTML_TAG = re.compile(r"<[^>]+>")
 _APOSTROPHE = str.maketrans({"’": "'", "‘": "'"})
 _REMINDER_TEXT = re.compile(r"\([^)]*\)")
 
-# An asserted effect tied to casting/entering now. Either an explicit
-# immediacy marker, or an effect verb landing on a concrete game object.
-_IMMEDIATE_EFFECT = re.compile(
-    r"\b(?:immediately|right away|at once|as it enters|upon entering|on entry"
-    r"|first (?:adds?|puts?|places?|gives?))\b"
-    r"|\b(?:adds?|puts?|places?|gives?|creates?|makes?|draws?|deals?"
+# An ability-mediated effect attributed to casting/entering now. BOTH parts
+# must hold (review round 3: generic immediacy is not proof of a trigger,
+# and ordinary consequences of a creature resolving — becoming a blocker,
+# raising the creature count, static stat changes — need no ability and are
+# never refuted):
+#   _ABILITY_EFFECT — an effect verb landing on a counter/token/card/damage,
+#     outcomes only an ability can produce;
+#   _CAST_ATTRIBUTION — the effect tied to the cast/entry itself, via an
+#     explicit immediacy marker (the card-as-subject variant is compiled
+#     per call in _entry_effect_claims because it needs the escaped name).
+_ABILITY_EFFECT = re.compile(
+    r"\b(?:adds?|puts?|places?|gives?|creates?|makes?|draws?|deals?"
     r"|destroys?|exiles?|returns?)\b[^.;]{0,40}?\b(?:counters?|tokens?"
     r"|cards?|damage)\b"
+)
+_CAST_ATTRIBUTION = re.compile(
+    r"\b(?:immediately|right away|at once|as it enters|upon entering"
+    r"|on entry|first)\b"
 )
 
 # Explicit future/conditional timing is not an immediate-on-cast claim:
@@ -153,8 +173,19 @@ def _entry_effect_claims(name: str, reasoning: str) -> list[str]:
         )
         if not linked:
             continue
-        effect = _IMMEDIATE_EFFECT.search(low)
+        effect = _ABILITY_EFFECT.search(low)
         if not effect:
+            continue
+        # Generic immediacy alone is not an ability-mediated claim: the
+        # effect must be attributed to the cast/entry itself, either by an
+        # explicit immediacy marker or by the card acting as the subject of
+        # the effect verb ("<Name> first adds ...").
+        attributed = _CAST_ATTRIBUTION.search(low) or re.search(
+            rf"\b{esc}\b[^.;]{{0,24}}?\b(?:adds?|puts?|places?|gives?"
+            rf"|creates?|makes?|draws?|deals?|destroys?|exiles?|returns?)\b",
+            low,
+        )
+        if not attributed:
             continue
         if _FUTURE_TIMING.search(low):
             continue

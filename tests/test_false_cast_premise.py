@@ -118,6 +118,53 @@ def test_other_unsick_creature_attacking_is_not_flagged():
     )
 
 
+def test_ordinary_resolving_consequences_are_not_entry_effect_claims():
+    """Review round 3: ordinary consequences of a creature resolving —
+    becoming a blocker, raising the creature count, static board impact —
+    need no ability, so generic immediacy must never refute them."""
+    case = CASES["optimistic_scavenger_t16"]
+    for reasoning in (
+        "Casting Optimistic Scavenger immediately gives us another blocker.",
+        "Casting Optimistic Scavenger immediately adds one to our creature count.",
+        "Casting Optimistic Scavenger immediately makes our board much harder to attack into.",
+    ):
+        concerns = cast_premise_concerns(
+            _decision("optimistic_scavenger_t16"),
+            case["state"],
+            case["chosen_option_ids"],
+            reasoning,
+        )
+        # Only the entry-effect class is under test here; the pre-existing
+        # summoning-sickness validator (premise 1) is unchanged by this fix.
+        entry_effects = [c for c in concerns if "does not produce that effect by itself" in c]
+        assert entry_effects == [], (reasoning, entry_effects)
+
+
+@pytest.mark.parametrize(
+    "reasoning",
+    [
+        "Casting Optimistic Scavenger immediately creates a Treasure token.",
+        "Casting Optimistic Scavenger first draws us a card.",
+        "Casting Optimistic Scavenger immediately deals 2 damage to their best creature.",
+    ],
+)
+def test_narrowed_detector_still_flags_ability_mediated_impossible_claims(
+    reasoning,
+):
+    """Guard against over-narrowing: an ability-mediated effect (token, card,
+    damage) attributed to the cast itself is still refuted when nothing
+    supports it."""
+    case = CASES["optimistic_scavenger_t16"]
+    concerns = cast_premise_concerns(
+        _decision("optimistic_scavenger_t16"),
+        case["state"],
+        case["chosen_option_ids"],
+        reasoning,
+    )
+    assert len(concerns) == 1
+    assert "no enters-the-battlefield or when-you-cast ability" in concerns[0]
+
+
 def test_future_timed_trigger_claim_is_out_of_scope():
     """Conservative scope: scheduled triggers are not immediate-entry claims."""
     case = CASES["optimistic_scavenger_t16"]
