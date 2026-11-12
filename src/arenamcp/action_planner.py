@@ -5038,7 +5038,10 @@ class ActionPlanner(_ActionLegalityMixin):
         from arenamcp.land_sequence import choose_land_sequence
 
         land_pick, self._pending_land_sequence = choose_land_sequence(
-            decision, game_state, getattr(self, "_pending_land_sequence", None)
+            decision,
+            game_state,
+            getattr(self, "_pending_land_sequence", None),
+            playbook_fn=self._deck_playbook,
         )
         if land_pick:
             chosen, reason = land_pick
@@ -9792,7 +9795,9 @@ class ActionPlanner(_ActionLegalityMixin):
                 "cost, cheap instant-speed removal beats burn that only hits players, and a card that does "
                 "everything another does (and more) is never the one to bottom."
             )
-            lines.extend(mulligan_policy.describe(game_state, decision.min_select)[1:])
+            lines.extend(
+                mulligan_policy.describe(game_state, decision.min_select, playbook_fn=self._deck_playbook)[1:]
+            )
             if suggested:
                 lines.append(
                     "Land/curve suggestion: bottom " + mulligan_policy.card_names(game_state, suggested) + "."

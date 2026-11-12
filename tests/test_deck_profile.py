@@ -34,7 +34,7 @@ from arenamcp.deck_profile import (
 from arenamcp.deck_strategy import deck_identity
 from arenamcp.game_plan import GamePlanManager
 from arenamcp.land_sequence import _profile_colour_priority, _variants, _wanted_kinds
-from arenamcp.mulligan_policy import _deck_keep_guide
+from arenamcp.mulligan_policy import _cached_playbook_present, _deck_keep_guide
 from arenamcp.rules_engine import _normalize_mana_symbols
 
 _FIXTURES = json.loads((Path(__file__).parent / "fixtures" / "g1_complete_deck_lists.json").read_text())
@@ -675,6 +675,89 @@ def test_deck_keep_guide_yields_to_cached_playbook_bug_20261109_212434(monkeypat
     # Without one, the profile guide appears.
     (cache_dir / f"{identity}.json").unlink()
     assert _deck_keep_guide(state)
+
+
+def test_saved_playbook_wins_after_cache_file_cleared_bug_20261111_233000(monkeypatch, tmp_path):
+    """A valid saved playbook keeps precedence without the disposable cache file.
+
+    Coordinator audit repro (bug_20261111_233000): a real prepare_playbook
+    durably saves the playbook; deleting the disposable on-disk cache leaves
+    CoachEngine serving the saved playbook from memory, but the keep guide's
+    presence check looked only at the cache file and seeded static profile
+    guidance over the saved strategy.
+    """
+    from unittest.mock import Mock
+
+    from tests.deck_fakes import deck_case
+
+    state, catalog, response = deck_case()
+    mapping = {card["grp_id"]: card for card in LISTS["minsc"]}
+    mapping.update(catalog)  # the profile must also resolve the fixture deck
+    monkeypatch.setattr(deck_profile, "_resolve", _fake_resolve(mapping))
+    _stub_facts(monkeypatch)
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, epoch: catalog[gid])
+
+    coach = CoachEngine(backend=Mock())
+    monkeypatch.setattr(
+        coach, "_playbook_cache_path", staticmethod(lambda identity: tmp_path / f"{identity}.json")
+    )
+
+    # Before any playbook exists, the static profile guide is seeded.
+    assert _deck_keep_guide(state), "expected a profile-derived keep guide"
+
+    backend = Mock()
+    backend.complete.side_effect = ["notes about the deck", json.dumps(response)]
+    playbook = coach.prepare_playbook(state, backend=backend)
+    assert list(tmp_path.glob("*.json")), "expected the durable save"
+
+    # Delete the disposable on-disk cache; the coach still serves the saved playbook.
+    for saved in tmp_path.glob("*.json"):
+        saved.unlink()
+    assert coach._cached_playbook(playbook.identity, state) is not None
+
+    # Saved-playbook precedence holds: no static profile keep guide.
+    assert _cached_playbook_present(state, coach=coach) is True
+    assert _deck_keep_guide(state, coach=coach) == []
+
+
+def test_invalid_saved_playbook_falls_back_to_profile_guide_bug_20261111_233000(monkeypatch, tmp_path):
+    """An unreadable saved playbook must not mask the static profile guide.
+
+    The inverse guard for bug_20261111_233000: when the durable save cannot
+    be served (corrupt file, schema drift) and the coach holds no valid
+    copy, the keep guide falls back to the static profile instead of
+    suppressing guidance entirely.
+    """
+    from unittest.mock import Mock
+
+    from tests.deck_fakes import deck_case
+
+    state, catalog, response = deck_case()
+    mapping = {card["grp_id"]: card for card in LISTS["minsc"]}
+    mapping.update(catalog)
+    monkeypatch.setattr(deck_profile, "_resolve", _fake_resolve(mapping))
+    _stub_facts(monkeypatch)
+    monkeypatch.setattr("arenamcp.match_context._local_card", lambda gid, epoch: catalog[gid])
+
+    coach = CoachEngine(backend=Mock())
+    monkeypatch.setattr(
+        coach, "_playbook_cache_path", staticmethod(lambda identity: tmp_path / f"{identity}.json")
+    )
+    backend = Mock()
+    backend.complete.side_effect = ["notes about the deck", json.dumps(response)]
+    playbook = coach.prepare_playbook(state, backend=backend)
+    assert list(tmp_path.glob("*.json"))
+
+    # Corrupt the durable save and drop the in-memory copy: the coach can no
+    # longer serve the playbook, so the static profile guidance returns.
+    (tmp_path / f"{playbook.identity}.json").write_text("{not json")
+    fresh = CoachEngine(backend=Mock())
+    monkeypatch.setattr(
+        fresh, "_playbook_cache_path", staticmethod(lambda identity: tmp_path / f"{identity}.json")
+    )
+    assert fresh._cached_playbook(playbook.identity, state) is None
+    assert _cached_playbook_present(state, coach=fresh) is False
+    assert _deck_keep_guide(state, coach=fresh), "static profile guidance should return"
 
 
 def test_game_plan_seed_prefers_playbook_then_profile_bug_20261109_212434(monkeypatch):

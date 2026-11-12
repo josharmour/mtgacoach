@@ -1892,7 +1892,10 @@ class CoachEngine(_AdvicePostprocessMixin, _CoachAnalysisMixin):
 
         if not game_state.get("hand"):
             return ["Waiting for hand..."]
-        return [*describe(game_state), "Decide: KEEP or MULLIGAN for the hand size you would keep."]
+        return [
+            *describe(game_state, coach=self),
+            "Decide: KEEP or MULLIGAN for the hand size you would keep.",
+        ]
 
     def _format_mana_info(
         self, your_cards: list[dict], turn_num: int

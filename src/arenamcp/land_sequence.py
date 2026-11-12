@@ -104,17 +104,17 @@ def _wanted_kinds(hand, commanders, priority=()):
     return tuple(sorted(_TYPES, key=lambda kind: (lead.get(_TYPES[kind], len(lead)), -need[kind], kind)))
 
 
-def _profile_colour_priority(state):
+def _profile_colour_priority(state, playbook_fn=None):
     """Colour priority from the deck profile, when one can be computed.
 
-    Suppressed while a cached playbook exists for the deck: the playbook's
+    Suppressed while a playbook is available for the deck: the playbook's
     own guidance wins over the static profile (plan rule Do4), so the
     choice-land ordering falls back to hand/commander need alone.
     """
     try:
         from arenamcp.mulligan_policy import _cached_playbook_present
 
-        if _cached_playbook_present(state):
+        if _cached_playbook_present(state, playbook_fn=playbook_fn):
             return ()
     except Exception:  # the ordering hint is advisory
         pass
@@ -129,7 +129,7 @@ def _profile_colour_priority(state):
     return profile.criteria.colour_priority
 
 
-def commander_land_line(decision, state):
+def commander_land_line(decision, state, playbook_fn=None):
     if decision.request_type != "ActionsAvailable" or state.get("stack"):
         return None
     local = get_local_seat_id(state)
@@ -178,7 +178,7 @@ def commander_land_line(decision, state):
     # need, led by the deck profile's colour priority when one is available:
     # a type whose colour the profile wants next is tried first, so the
     # profile drives which variant a choice land becomes.
-    wanted_kinds = _wanted_kinds(hand, commanders, _profile_colour_priority(state))
+    wanted_kinds = _wanted_kinds(hand, commanders, _profile_colour_priority(state, playbook_fn=playbook_fn))
     for oid, land in offered:
         for first, tapped, pay, kind in _variants(land, lands, life=life, kinds=wanted_kinds):
             field = [*lands, first]
@@ -322,7 +322,7 @@ def landfall_color(decision, state):
     )
 
 
-def choose_land_sequence(decision, state, pending):
+def choose_land_sequence(decision, state, pending, playbook_fn=None):
     """Carry a verified land line through its short entry/landfall request chain."""
     from arenamcp.basic_land_choice import is_basic_land_choice
     from arenamcp.color_choice import is_color_choice
@@ -367,7 +367,7 @@ def choose_land_sequence(decision, state, pending):
             )
             if cast:
                 return (cast.option_id, f"{cast.label} with the mana from the planned land drop."), None
-    line = commander_land_line(decision, state)
+    line = commander_land_line(decision, state, playbook_fn=playbook_fn)
     if line:
         return (line.option_id, line.reason), (key, decision.request_id[0], line) if all(key) else None
     return None, None

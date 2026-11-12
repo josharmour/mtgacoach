@@ -657,32 +657,44 @@ def _turn_note(card: HandCard, lands: list[HandCard]) -> str:
     return f"needs {card.mana_value - len(lands)} more land(s)"
 
 
-def _cached_playbook_present(state: dict) -> bool:
-    """True when a strategic playbook is already cached for this deck.
+def _cached_playbook_present(state: dict, coach=None, playbook_fn=None) -> bool:
+    """True when a strategic playbook is already available for this deck.
 
     The playbook supersedes the static deck profile, so the profile's keep
     guide is only seeded before the first playbook arrives (playbook wins).
+
+    Availability mirrors what the coach actually serves, not just the
+    disposable on-disk cache file: a playbook the coach still holds in
+    memory (or a live playbook source provides) stays valid after the cache
+    file is cleared, and an unreadable cache file must not mask the profile.
+    Without a coach or playbook source, fall back to the on-disk cache path.
     """
     try:
-        from arenamcp.coach import CoachEngine
+        if playbook_fn is not None:
+            return playbook_fn() is not None
         from arenamcp.deck_strategy import deck_identity
 
-        path = CoachEngine._playbook_cache_path(deck_identity(state))
+        identity = deck_identity(state)
+        if coach is not None and callable(getattr(coach, "_cached_playbook", None)):
+            return coach._cached_playbook(identity, state) is not None
+        from arenamcp.coach import CoachEngine
+
+        path = CoachEngine._playbook_cache_path(identity)
         return bool(path and path.exists())
     except Exception:  # the guide is advisory
         return False
 
 
-def _deck_keep_guide(state: dict) -> list[str]:
+def _deck_keep_guide(state: dict, coach=None, playbook_fn=None) -> list[str]:
     """The deck profile's keep criteria, when the deck list can be profiled.
 
-    Suppressed once a cached playbook exists for the deck: the playbook's own
+    Suppressed once a playbook is available for the deck: the playbook's own
     guidance wins and the static profile must not contradict it.
 
     Deferred import: deck_profile imports this module's helpers, so the
     dependency is resolved at call time to keep module load acyclic.
     """
-    if _cached_playbook_present(state):
+    if _cached_playbook_present(state, coach=coach, playbook_fn=playbook_fn):
         return []
     try:
         from arenamcp.deck_profile import profile_for_state
@@ -696,8 +708,17 @@ def _deck_keep_guide(state: dict) -> list[str]:
     return profile.keep_criteria_lines()
 
 
-def describe(state: dict, mulligans: int | None = None) -> list[str]:
-    """Prompt lines: hand size consequences, play/draw, and per-card castability."""
+def describe(
+    state: dict,
+    mulligans: int | None = None,
+    coach=None,
+    playbook_fn=None,
+) -> list[str]:
+    """Prompt lines: hand size consequences, play/draw, and per-card castability.
+
+    ``coach``/``playbook_fn`` let the caller declare where a saved playbook
+    lives, so the static profile keep guide yields to it (playbook wins).
+    """
     found = situation(state, mulligans)
     if not found.cards:
         return ["Waiting for hand..."]
@@ -738,7 +759,7 @@ def describe(state: dict, mulligans: int | None = None) -> list[str]:
         f"{len(found.cards) - len(lands)} spells; land-ish total {len(lands) + 0.5 * len(cyclers):g} "
         "(each landcycling card counts as half a land)."
     )
-    lines.extend(_deck_keep_guide(state))
+    lines.extend(_deck_keep_guide(state, coach=coach, playbook_fn=playbook_fn))
     early, _, _ = _plays(found.cards)
     dependent = [c for c in found.cards if c.needs_carrier]
     if dependent and not any(c.makes_carrier for c in early):
