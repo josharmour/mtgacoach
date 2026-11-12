@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -344,3 +345,49 @@ def test_venv_python_locates_windows_layout(tmp_path):
     (env_dir / "Scripts").mkdir(parents=True)
     (env_dir / "Scripts" / "python.exe").write_text("x", encoding="utf-8")
     assert venv_python(env_dir) == env_dir / "Scripts" / "python.exe"
+
+
+def test_promoted_entrypoints_work_at_space_containing_paths(tmp_path):
+    """Real execution: relocated pip3 works when the env path has spaces.
+
+    The default macOS layout (``~/Library/Application Support/…``) contains
+    spaces, and there pip emits console scripts as ``/bin/sh`` exec-wrappers
+    whose second line still names the staging interpreter. Repointing must
+    rewrite those wrappers too — previously only direct ``#!`` shebangs were
+    rewritten, so the promoted ``pip3`` exited 127 referencing the deleted
+    staging python.
+    """
+    staging = tmp_path / "sta ging"
+    promoted = tmp_path / "pro mot ed"
+    subprocess.run(
+        [sys.executable, "-m", "venv", str(staging)],
+        check=True,
+        capture_output=True,
+        timeout=300,
+    )
+
+    # Guard the premise: at a space-containing path pip really does generate
+    # shell-wrapper entrypoints (if pip ever changes this, this test should
+    # be revisited rather than silently passing on the wrong shape).
+    bin_dir = venv_python(staging).parent
+    wrappers = [
+        p
+        for p in bin_dir.iterdir()
+        if p.is_file()
+        and p.read_text(encoding="utf-8", errors="replace").startswith("#!/bin/sh")
+        and str(staging) in p.read_text(encoding="utf-8", errors="replace")
+    ]
+    assert wrappers, "expected /bin/sh wrapper entrypoints at a space-containing path"
+
+    dep_env._repoint_entrypoint_shebangs(staging, promoted)
+    staging.rename(promoted)
+
+    pip3 = venv_python(promoted).parent / "pip3"
+    proc = subprocess.run(
+        [str(pip3), "--version"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    assert str(promoted) in proc.stdout  # running from the promoted location

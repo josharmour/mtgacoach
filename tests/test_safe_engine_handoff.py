@@ -123,12 +123,45 @@ def test_a_late_cancellation_during_completion_discards_the_checkpoint(coach, re
     assert coach._running
 
 
+def test_cancellation_landing_inside_save_match_state_commits_the_taken_decision(
+    coach, resume_path, monkeypatch
+):
+    """The reviewer's race: cancel fires mid-checkpoint, after the decision.
+
+    With acknowledged cancel/commit ordering the completion — whose decision
+    was taken under the reload decision lock before the cancellation landed —
+    finishes definitively (checkpoint + reload_ready + exit request) instead
+    of half-cancelling into a stranded handoff. The desktop retains the
+    pending restart until this definitive disposition.
+    """
+    import arenamcp.gamestate_persistence as gamestate_persistence
+
+    def cancel_mid_checkpoint(state):
+        # The desktop's cancellation lands while the checkpoint is written —
+        # after ``_complete_engine_reload`` took its decision at the boundary.
+        coach._engine_reload_cancelled = True
+        return Mock()
+
+    monkeypatch.setattr(gamestate_persistence, "save_match_state", cancel_mid_checkpoint)
+    coach.prepare_engine_reload()
+    coach.gate["between"] = ""
+    assert coach._engine_reload_checkpoint_due(coach._mcp.state)
+
+    coach._complete_engine_reload()
+
+    data = json.loads(resume_path.read_text(encoding="utf-8"))
+    assert "saved_at" in data and "auto_queue" in data  # checkpoint committed
+    coach.ui._emit.assert_any_call({"type": "reload_ready"})
+    assert coach._restart_requested  # exit requested: handoff is not stranded
+    assert not coach._running
+
+
 # --------------------------------------------------------------------------
 # Desktop side: the deferral timeout cancels the engine request
 # --------------------------------------------------------------------------
 
 
-def test_session_timeout_cancels_the_engine_request_and_keeps_the_current_engine(qapp, monkeypatch):
+def test_session_timeout_asks_the_engine_to_cancel_and_waits_for_its_confirmation(qapp, monkeypatch):
     from tests.test_engine_reload import FakeProcess
 
     from arenamcp.desktop.coach_session import CoachSession
@@ -144,15 +177,91 @@ def test_session_timeout_cancels_the_engine_request_and_keeps_the_current_engine
         assert session._process.stops == [{"command": "prepare_engine_reload"}]
         assert session.last_startup_status["phase"] == "reloading"
 
-        # The deferral timer fires with the engine still running: the pending
-        # reload is cancelled visibly and nothing terminates the child.
+        # The deferral timer fires with the engine still running: the engine
+        # is asked to disarm, but the pending restart is RETAINED until a
+        # definitive disposition so a cancellation racing the engine's own
+        # commit can never strand the handoff.
         session._safe_reload_deferred(session._reload_generation)
 
         assert ("cancel_engine_reload",) in sent  # the engine is told to disarm
-        assert session._pending_restart is None
-        assert session.last_startup_status["phase"] == "ready"
+        assert session._pending_restart is not None  # retained, not dropped
+        assert session._reload_disposition_pending
         assert session.is_running
         assert len(session._process.starts) == 1  # no second engine was spawned
+
+        # The engine acknowledges the cancellation: the current engine keeps
+        # running and the UI is released back to ready.
+        session._handle_process_event({"type": "engine_reload_cancelled"})
+
+        assert session._pending_restart is None
+        assert not session._reload_disposition_pending
+        assert session.last_startup_status["phase"] == "ready"
+        assert session.is_running
+        assert len(session._process.starts) == 1
+    finally:
+        session.shutdown()
+
+
+def test_a_stray_cancellation_ack_never_drops_a_committed_handoff(qapp, monkeypatch):
+    from tests.test_engine_reload import FakeProcess
+
+    from arenamcp.desktop.coach_session import CoachSession
+
+    monkeypatch.setattr("arenamcp.desktop.coach_session.CoachProcess", FakeProcess)
+    monkeypatch.setattr("arenamcp.desktop.coach_session.TtsManager", lambda *_: Mock(is_running=True))
+    session = CoachSession()
+    try:
+        monkeypatch.setattr(session, "send_command", lambda command, *args: None)
+        session.start(autopilot=True)
+        session.restart()
+
+        # The engine commits at the boundary (reload_ready)…
+        session._handle_process_event({"type": "reload_ready"})
+        assert session._pending_restart is not None
+
+        # …and only afterwards does a cancellation acknowledgement arrive.
+        # Without an awaited cancellation disposition it must be ignored: the
+        # committed handoff proceeds when the process exits.
+        session._handle_process_event({"type": "engine_reload_cancelled"})
+        assert session._pending_restart is not None
+
+        session._process.finish()
+        qapp.processEvents()
+        assert len(session._process.starts) == 2  # the restart happened
+    finally:
+        session.shutdown()
+
+
+def test_unconfirmed_cancellation_is_abandoned_visibly_after_the_grace_window(qapp, monkeypatch):
+    from tests.test_engine_reload import FakeProcess
+
+    from arenamcp.desktop.coach_session import CoachSession
+
+    monkeypatch.setattr("arenamcp.desktop.coach_session.CoachProcess", FakeProcess)
+    monkeypatch.setattr("arenamcp.desktop.coach_session.TtsManager", lambda *_: Mock(is_running=True))
+    session = CoachSession()
+    try:
+        monkeypatch.setattr(session, "send_command", lambda command, *args: None)
+        session.start(autopilot=True)
+        session.restart()
+        generation = session._reload_generation
+        session._safe_reload_deferred(generation)
+        assert session._pending_restart is not None
+
+        # The engine never confirms either disposition: the second-window
+        # fallback abandons the reload visibly instead of leaving the UI in a
+        # permanent "reloading" limbo.
+        session._reload_disposition_expired(generation)
+
+        assert session._pending_restart is None
+        assert not session._reload_disposition_pending
+        assert session.last_startup_status["phase"] == "ready"
+        assert session.is_running
+        assert len(session._process.starts) == 1
+
+        # A late ack after abandonment changes nothing.
+        session._handle_process_event({"type": "engine_reload_cancelled"})
+        assert session._pending_restart is None
     finally:
         session.shutdown()
 

@@ -284,6 +284,7 @@ class CoachSession(QObject):
             if value is not None:
                 options[key] = value
         self._pending_restart = options
+        self._reload_disposition_pending = False
         self._speech.stop()
         self._set_startup_status(
             {
@@ -329,16 +330,55 @@ class CoachSession(QObject):
             return
         # Tell the engine to disarm: a late checkpoint/exit after the UI gave
         # up must never stop an engine the user believes is running.
+        #
+        # The pending restart is deliberately RETAINED here. Clearing it now
+        # raced the engine's own completion: a cancellation arriving while
+        # ``_complete_engine_reload`` was already committing left the UI
+        # believing "cancelled" while the engine exited anyway, stranding the
+        # handoff. The pending restart is released only on a definitive
+        # disposition — the engine's ``engine_reload_cancelled``
+        # acknowledgement, or its committed exit (reload_ready + process
+        # exit) which proceeds with the restart.
         try:
             self.send_command("cancel_engine_reload")
         except Exception:  # pragma: no cover - best-effort signalling
             logger.warning("Could not send cancel_engine_reload to the engine")
+        self._reload_disposition_pending = True
         reason = (
-            "Engine did not reach its safe checkpoint in time; Reload Engine "
-            "was cancelled and the current engine keeps running. Try again "
-            "between matches."
+            "Engine did not reach its safe checkpoint in time; asking it to "
+            "cancel — waiting for the engine's confirmation…"
         )
         logger.warning("Safe reload deferred: %s", reason)
+        self.logEmitted.emit(reason, "error")
+        try:
+            grace_s = float(os.environ.get("MTGACOACH_SAFE_RELOAD_TIMEOUT_S", "120"))
+        except ValueError:
+            grace_s = 120.0
+        grace_s = max(grace_s, 5.0)
+        QTimer.singleShot(
+            int(grace_s * 1000),
+            lambda: self._reload_disposition_expired(generation),
+        )
+
+    def _reload_disposition_expired(self, generation: int) -> None:
+        """Last-resort release when the engine never confirms a disposition."""
+        if generation != self._reload_generation or self._shutting_down:
+            return
+        if not getattr(self, "_reload_disposition_pending", False):
+            return
+        if self._pending_restart is None or not self.is_running:
+            self._reload_disposition_pending = False
+            return
+        # The engine never acknowledged either disposition (cancel or commit)
+        # within a second full window. Abandon the reload visibly rather than
+        # leaving the UI in a permanent "reloading" limbo; the current engine
+        # keeps running either way.
+        self._reload_disposition_pending = False
+        reason = (
+            "Engine did not confirm the reload cancellation in time; Reload "
+            "Engine was abandoned and the current engine keeps running."
+        )
+        logger.warning("Safe reload abandoned: %s", reason)
         self._pending_restart = None
         self._pending_snapshot_target = None
         self._reload_generation += 1
@@ -350,6 +390,8 @@ class CoachSession(QObject):
         if options is None or self._shutting_down or self.is_running:
             return
         self._pending_restart = None
+        # The committed handoff is being consumed; nothing is awaited anymore.
+        self._reload_disposition_pending = False
         target = self._pending_snapshot_target
         self._pending_snapshot_target = None
         previous_identity = _selection_identity()
@@ -830,6 +872,26 @@ class CoachSession(QObject):
             # Its advice/readiness is obsolete once a reload is requested.
             return
 
+        if ev_type == "engine_reload_cancelled":
+            # Definitive disposition from the engine: it disarmed the reload
+            # (acknowledged cancel/commit ordering guarantees it was not
+            # already committing), so the current engine keeps running and
+            # the retained pending restart is released. Only honoured while a
+            # cancellation disposition is actually awaited — a stray or late
+            # acknowledgement must never drop a committed handoff.
+            if not getattr(self, "_reload_disposition_pending", False):
+                return
+            self._reload_disposition_pending = False
+            if self._pending_restart is not None and not self._shutting_down:
+                reason = "Engine reload cancelled — the current engine keeps running."
+                logger.warning("%s", reason)
+                self._pending_restart = None
+                self._pending_snapshot_target = None
+                self._reload_generation += 1
+                self.logEmitted.emit(reason, "status")
+                self._set_startup_status({"phase": "ready", "message": reason, "ready": True})
+            return
+
         if ev_type == "startup_status":
             status = event.get("data", event)
             if isinstance(status, dict):
@@ -983,6 +1045,10 @@ class CoachSession(QObject):
 
     def _handle_exited(self, code: int) -> None:
         logger.info(f"Coach process exited with code {code}")
+        # A process exit is a definitive disposition for any awaited reload
+        # cancellation; the pending restart (if retained) drives what happens
+        # next below.
+        self._reload_disposition_pending = False
         rollback = self._pending_rollback
         if rollback is not None and not self._shutting_down:
             # A READY-watchdog rollback: previous identity back on before the
@@ -1030,6 +1096,7 @@ class CoachSession(QObject):
         """Cleanly terminate subprocess and TTS manager."""
         self._shutting_down = True
         self._pending_restart = None
+        self._reload_disposition_pending = False
         self._reload_generation += 1
         self._speech.close()
         if self._tts is not None:

@@ -191,8 +191,17 @@ def _repoint_entrypoint_shebangs(staging: Path, env_dir: Path) -> None:
     The venv is staged in a temporary directory and atomically renamed into
     place; console scripts baked during staging keep the staging path in
     their shebang, which stops existing after promotion. Rewrite each such
-    script's interpreter line to the final location so relocated entrypoints
-    (``pip3`` and friends) stay runnable.
+    script's interpreter reference to the final location so relocated
+    entrypoints (``pip3`` and friends) stay runnable.
+
+    Two entrypoint shapes exist. When the interpreter path has no spaces the
+    script starts with a direct ``#!…/bin/python`` shebang. When it does
+    (macOS ``Library/Application Support``), pip instead emits a ``/bin/sh``
+    wrapper — ``'''exec' "<staging>/bin/python" "$0" "$@"`` — whose second
+    line still names the doomed staging interpreter. Rewriting every
+    occurrence of the staging interpreter path covers both shapes; anything
+    that never pointed at staging (``activate.fish`` and friends) is left
+    untouched.
     """
     staging_python_path = venv_python(staging)
     staging_python = str(staging_python_path)
@@ -200,7 +209,6 @@ def _repoint_entrypoint_shebangs(staging: Path, env_dir: Path) -> None:
     # place afterwards), so derive its interpreter path from the staging
     # layout instead of probing it.
     promoted_python = env_dir / staging_python_path.parent.name / staging_python_path.name
-    target = f"#!{promoted_python}"
     bin_dir = venv_python(staging).parent
     for script in sorted(bin_dir.iterdir()):
         if not script.is_file() or script.name.endswith(".exe"):
@@ -209,12 +217,9 @@ def _repoint_entrypoint_shebangs(staging: Path, env_dir: Path) -> None:
             text = script.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue  # binaries and odd encodings are left untouched
-        if not text.startswith("#!"):
-            continue
-        first_line, _, rest = text.partition("\n")
-        if first_line != f"#!{staging_python}":
-            continue  # only scripts pointing at the doomed staging path
-        script.write_text(target + "\n" + rest, encoding="utf-8")
+        if not text.startswith("#!") or staging_python not in text:
+            continue  # only scripts referencing the doomed staging path
+        script.write_text(text.replace(staging_python, str(promoted_python)), encoding="utf-8")
 
 
 def _install_dependencies(staging_python: Path, snapshot_root: Path, work_dir: Path) -> str:

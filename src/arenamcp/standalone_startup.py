@@ -7,14 +7,31 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 ENGINE_RESUME_PATH = Path.home() / ".arenamcp" / "engine_resume.json"
 
+# Serialises the reload decision (arm / cancel / begin-completion) so a
+# cancellation arriving from the pipe-command thread can never interleave
+# with the completion path's own decision point.
+_ENGINE_RELOAD_DECISION_INIT = threading.Lock()
+
 
 class _StartupMixin:
+    def _engine_reload_decision_lock(self) -> threading.RLock:
+        """Lazily create the per-instance reload decision lock."""
+        lock = getattr(self, "_engine_reload_decision_lock_instance", None)
+        if lock is None:
+            with _ENGINE_RELOAD_DECISION_INIT:
+                lock = getattr(self, "_engine_reload_decision_lock_instance", None)
+                if lock is None:
+                    lock = threading.RLock()
+                    self._engine_reload_decision_lock_instance = lock
+        return lock
+
     def _publish_arena_connection_status(self) -> None:
         """Explain bridge acquisition without ever restarting a running game."""
         if sys.platform != "darwin":
@@ -109,26 +126,47 @@ class _StartupMixin:
         """
         if getattr(self, "_engine_reload_armed", False):
             return
-        self._engine_reload_armed = True
-        self._engine_reload_cancelled = False
-        # Holds auto-queue/auto-reload navigation while a swap is pending.
-        self._engine_reload_preparing = True
+        with self._engine_reload_decision_lock():
+            self._engine_reload_armed = True
+            self._engine_reload_cancelled = False
+            # Holds auto-queue/auto-reload navigation while a swap is pending.
+            self._engine_reload_preparing = True
         self._startup_status(
             "resuming_match",
             "Engine reload armed — it will apply at the next safe break between matches…",
         )
 
     def cancel_engine_reload(self) -> None:
-        """Disarm a pending engine reload; the current engine keeps running."""
-        if not getattr(self, "_engine_reload_armed", False):
-            return
-        self._engine_reload_armed = False
-        self._engine_reload_cancelled = True
-        self._engine_reload_preparing = False
-        self._last_engine_reload_wait = None
+        """Disarm a pending engine reload; the current engine keeps running.
+
+        Acknowledged cancel/commit ordering: once
+        ``_complete_engine_reload`` has taken the decision at a safe boundary,
+        a cancellation is acknowledged as too late instead of flipping the
+        outcome — the desktop retains the pending restart until the commit's
+        definitive ``reload_ready`` disposition, so the handoff can never be
+        stranded between "cancelled" and "exiting".
+        """
+        with self._engine_reload_decision_lock():
+            if getattr(self, "_engine_reload_completing", False):
+                self._startup_status(
+                    "resuming_match",
+                    "Engine reload already committing at the safe boundary — waiting for the new engine…",
+                )
+                return
+            if not getattr(self, "_engine_reload_armed", False):
+                return
+            self._engine_reload_armed = False
+            self._engine_reload_cancelled = True
+            self._engine_reload_preparing = False
+            self._last_engine_reload_wait = None
         self._startup_status(
             "ready", "Engine reload cancelled — the current engine keeps running.", ready=True
         )
+        # Distinct, unfiltered disposition event: the desktop releases its
+        # retained pending restart only on this definitive acknowledgement.
+        emit = getattr(self.ui, "_emit", None)
+        if callable(emit):
+            emit({"type": "engine_reload_cancelled"})
 
     def _engine_reload_checkpoint_due(self, state: dict) -> bool:
         """True when an armed reload may checkpoint and exit right now."""
@@ -158,11 +196,29 @@ class _StartupMixin:
 
     def _complete_engine_reload(self) -> None:
         """Checkpoint observations and strategy at a safe boundary, then exit."""
-        # Late-response safety: the desktop may have cancelled while we were
-        # waiting; honour it even at the last moment and keep this engine up.
-        if getattr(self, "_engine_reload_cancelled", False):
-            self.cancel_engine_reload()
-            return
+        with self._engine_reload_decision_lock():
+            # Late-response safety: the desktop may have cancelled while we
+            # were waiting; honour it even at the last moment and keep this
+            # engine up.
+            if getattr(self, "_engine_reload_cancelled", False):
+                self.cancel_engine_reload()
+                return
+            # Take the decision: from here until the commit below, a
+            # cancellation is acknowledged as too late (see
+            # ``cancel_engine_reload``) rather than racing the commit — the
+            # desktop retains the pending restart until this definitive
+            # ``reload_ready`` disposition.
+            self._engine_reload_completing = True
+        try:
+            self._finish_engine_reload()
+        finally:
+            with self._engine_reload_decision_lock():
+                self._engine_reload_completing = False
+                self._engine_reload_armed = False
+                self._engine_reload_preparing = False
+
+    def _finish_engine_reload(self) -> None:
+        """Write the checkpoint, announce readiness and request the restart."""
         # Stop a running countdown without declining the game; the record of
         # what was recommended, declined or conceded rides along below.
         abort_concede = getattr(self, "abort_concede", None)
