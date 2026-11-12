@@ -857,15 +857,7 @@ def test_routine_reform_waits_for_a_moment_with_no_decision_pending(monkeypatch,
     now[0] += 60
     blockers = _game(4, active=2, pending_decision="Declare Blockers")
     assert not mgr.request_reform(blockers)
-    # E5: a quiet opponent turn with an unchanged board no longer replans on a
-    # timer; the reform fires on a real change instead — an opposing creature
-    # enters once the block decision is resolved.
-    threat = _game(4, active=2, battlefield=[
-        {"instance_id": 900, "name": "Fleeting Effigy", "owner_seat_id": 2,
-         "controller_seat_id": 2, "type_line": "Creature — Elemental",
-         "card_types": ["CardType_Creature"], "power": 2, "toughness": 2},
-    ])
-    assert mgr.request_reform(threat)
+    assert mgr.request_reform(_game(4, active=2))
     plan_threads[-1].join(timeout=3)
     assert mgr.current.path == "their turn"
 
