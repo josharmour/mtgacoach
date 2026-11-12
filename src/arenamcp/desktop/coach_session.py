@@ -136,6 +136,10 @@ class CoachSession(QObject):
         self._last_concede: dict[str, Any] = {}
         self._start_options = {"autopilot": False, "dry_run": False, "afk": False}
         self._pending_restart: dict[str, bool] | None = None
+        # Generation counter guarding deferred-reload watchdog timers: bumped
+        # whenever a pending reload is finished, cancelled or torn down so a
+        # late timer can never act on a superseded reload.
+        self._reload_generation = 0
         # Snapshot handoff target for the NEXT engine start: (root, commit).
         # Consumed by _finish_restart; set only when a reload plan decided to
         # adopt a published snapshot at a safe checkpoint.
@@ -221,6 +225,7 @@ class CoachSession(QObject):
     def stop(self) -> None:
         """Stop the background coaching subprocess."""
         self._pending_restart = None
+        self._reload_generation += 1
         self._adoption_generation += 1
         if not self.is_running:
             return
@@ -290,8 +295,49 @@ class CoachSession(QObject):
         self.logEmitted.emit("Reloading coaching engine; the model server stays running.", "status")
         if self.is_running:
             self._process.stop_async(command="prepare_engine_reload")
+            self._arm_safe_reload_deferral()
         else:
             self._finish_restart()
+
+    def _arm_safe_reload_deferral(self) -> None:
+        """Defer — never force-terminate — an engine that has not exited yet.
+
+        ``prepare_engine_reload`` asks the engine to finish its active
+        decision, checkpoint and exit on its own. If it does not exit within
+        the window (for example because the active decision boundary is still
+        unsafe), the pending reload is cancelled visibly and the current
+        engine simply keeps running. Nothing here terminates or kills the
+        child.
+        """
+        try:
+            timeout_s = float(os.environ.get("MTGACOACH_SAFE_RELOAD_TIMEOUT_S", "120"))
+        except ValueError:
+            timeout_s = 120.0
+        timeout_s = max(timeout_s, 5.0)
+        self._reload_generation += 1
+        generation = self._reload_generation
+
+        def _deferred() -> None:
+            self._safe_reload_deferred(generation)
+
+        QTimer.singleShot(int(timeout_s * 1000), _deferred)
+
+    def _safe_reload_deferred(self, generation: int) -> None:
+        if generation != self._reload_generation or self._shutting_down:
+            return
+        if self._pending_restart is None or not self.is_running:
+            return
+        reason = (
+            "Engine did not reach its safe checkpoint in time; Reload Engine "
+            "was cancelled and the current engine keeps running. Try again "
+            "between matches."
+        )
+        logger.warning("Safe reload deferred: %s", reason)
+        self._pending_restart = None
+        self._pending_snapshot_target = None
+        self._reload_generation += 1
+        self.logEmitted.emit(reason, "error")
+        self._set_startup_status({"phase": "ready", "message": reason, "ready": True})
 
     def _finish_restart(self) -> None:
         options = self._pending_restart
@@ -392,7 +438,11 @@ class CoachSession(QObject):
         Called only from the request_engine_reload boundary — after the engine
         signalled it is between matches — never mid-decision.
         """
-        from .runtime_snapshots import plan_engine_reload, read_pointer_once
+        from .runtime_snapshots import (
+            UI_PROTOCOL_VERSION,
+            plan_engine_reload,
+            read_pointer_once,
+        )
 
         current = os.environ.get("MTGACOACH_SNAPSHOT_SHA", "").strip() or None
         try:
@@ -400,7 +450,10 @@ class CoachSession(QObject):
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("Snapshot lookup failed; reloading the current root: %s", exc)
             pointer = None
-        return plan_engine_reload(current, pointer)
+        # Judge compatibility against the RUNNING UI's declared protocol, not
+        # the candidate pointer's self-declared UI version: an old UI may
+        # adopt a newer engine only through the declared tested protocol pair.
+        return plan_engine_reload(current, pointer, running_ui_protocol=UI_PROTOCOL_VERSION)
 
     def send_command(self, command: str, *args: Any) -> None:
         """Send a JSON command to the coach subprocess."""
@@ -975,6 +1028,7 @@ class CoachSession(QObject):
         """Cleanly terminate subprocess and TTS manager."""
         self._shutting_down = True
         self._pending_restart = None
+        self._reload_generation += 1
         self._speech.close()
         if self._tts is not None:
             self._tts.shutdown()

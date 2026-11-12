@@ -66,6 +66,17 @@ class CoachProcess(QObject):
                 if python_exe is None:
                     python_exe = sys.executable
                     python_source = "sys.executable"
+                # Bind the engine to the dependency environment matching THIS
+                # snapshot's dependency identity (which includes the
+                # interpreter): a changed-dependency snapshot must run on its
+                # own freshly built env, never on the old UI interpreter.
+                from .dep_env import ensure_dep_env, venv_python
+
+                dep_env_dir = ensure_dep_env(app_root, python_executable=python_exe)
+                bound = venv_python(dep_env_dir)
+                if bound.exists():
+                    python_exe = str(bound)
+                    python_source = f"dep_env:{dep_env_dir.name}"
                 args, packaged_runtime = _coach_launch_args(python_exe, app_root)
 
             if autopilot:
@@ -151,8 +162,12 @@ class CoachProcess(QObject):
     def stop_async(self, *, command: str | None = None) -> None:
         """Stop without blocking Qt, keeping the child tracked until it exits.
 
-        A reload command gets time to checkpoint and exit before the normal
-        terminate/kill fallback, including compatibility with older engines.
+        Without a command this is the terminate/kill fallback. With a command
+        it only *asks* the engine to reach its safe checkpoint and exit on its
+        own — never terminate or kill: an engine still inside an unsafe
+        decision boundary must be allowed to finish. CoachSession arms a
+        deferral watchdog that cancels the reload visibly if the child does
+        not exit in time; the current engine simply keeps running.
         start() remains a no-op while the old child is still alive.
         """
         process = self._process
@@ -175,8 +190,9 @@ class CoachProcess(QObject):
             QTimer.singleShot(2000, _hard_kill)
 
         if command:
+            # Defer, never force-terminate: the engine owns the timing of its
+            # safe checkpoint. See the class docstring above.
             self.send_command(command)
-            QTimer.singleShot(5000, _terminate)
         else:
             _terminate()
 

@@ -51,7 +51,9 @@ STAGING_PREFIX = ".staging-"
 ENTRY_POINT_FILES = ("pyproject.toml", "src/arenamcp/__init__.py")
 
 #: Dependency specification files bound into the snapshot fingerprint.
-DEPENDENCY_SPEC_FILES = ("requirements.txt", "requirements-dev.txt", "pyproject.toml")
+#: ``uv.lock`` is included so a locked resolution change forces a new
+#: dependency environment even when ``requirements.txt`` is untouched.
+DEPENDENCY_SPEC_FILES = ("requirements.txt", "requirements-dev.txt", "pyproject.toml", "uv.lock")
 
 EXCLUDED_DIRECTORY_NAMES = frozenset(
     {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "node_modules"}
@@ -128,6 +130,10 @@ def _is_secret_path(rel: PurePosixPath) -> bool:
     if name in SECRET_BASENAMES:
         return True
     if name.endswith(SECRET_SUFFIXES):
+        return True
+    # Any dotenv-style file (.env, .env.test, .env.production, ...) may carry
+    # credentials; never copy one into a snapshot or its manifest.
+    if name.startswith(".env"):
         return True
     return name.startswith(("credentials", "aws_credentials", "secrets"))
 
@@ -362,7 +368,7 @@ def stage_snapshot(
             "files": {},
         }
         for rel in _iter_snapshot_files(staging):
-            manifest["files"][rel] = _sha256_file(staging / rel)
+            manifest["files"][rel] = _entry_hash(staging / rel)
         manifest["content_hash"] = _content_digest(manifest["files"])
         (staging / MANIFEST_NAME).write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -583,8 +589,21 @@ def protocols_compatible(ui_protocol: object, engine_protocol: object) -> bool:
     return ui_pair[0] == engine_pair[0] and engine_pair[1] >= ui_pair[1]
 
 
-def plan_engine_reload(current_commit: str | None, pointer: dict | None) -> EngineReloadPlan:
-    """Decide what a Reload Engine action must do given the published pointer."""
+def plan_engine_reload(
+    current_commit: str | None,
+    pointer: dict | None,
+    *,
+    running_ui_protocol: object = None,
+) -> EngineReloadPlan:
+    """Decide what a Reload Engine action must do given the published pointer.
+
+    ``running_ui_protocol`` is the protocol version the *currently running*
+    UI process declares (this code's own ``UI_PROTOCOL_VERSION``). It — not
+    the candidate pointer's self-declared UI version — is what compatibility
+    is judged against: an old UI may adopt a newer engine only through the
+    declared tested protocol pair; anything else visibly requires a full
+    Restart Coach.
+    """
     if not isinstance(pointer, dict) or not pointer.get("commit"):
         return EngineReloadPlan(
             "reload_unmanaged",
@@ -594,26 +613,47 @@ def plan_engine_reload(current_commit: str | None, pointer: dict | None) -> Engi
     target_root_value = pointer.get("path")
     target_root_str = str(target_root_value) if target_root_value else None
 
+    ui_protocol_value = pointer.get("ui_protocol")
+    engine_protocol_value = pointer.get("engine_protocol")
+    effective_ui = (
+        running_ui_protocol if running_ui_protocol is not None else ui_protocol_value
+    )
+    compatible = protocols_compatible(effective_ui, engine_protocol_value)
+
     if current_commit and current_commit == pointer["commit"]:
+        if not compatible:
+            return EngineReloadPlan(
+                "require_full_restart",
+                (
+                    "The published engine snapshot "
+                    f"{pointer['commit'][:7]} declares engine protocol "
+                    f"{engine_protocol_value!r}, which is not compatible with "
+                    f"the running UI protocol {effective_ui!r}. A full Restart "
+                    "Coach is required."
+                ),
+                target_root=target_root_str,
+                target_commit=pointer["commit"],
+                ui_protocol=ui_protocol_value,
+                engine_protocol=engine_protocol_value,
+            )
         return EngineReloadPlan(
             "reload_current",
             f"The published engine snapshot {pointer['commit'][:7]} is already current.",
             target_root=target_root_str,
             target_commit=pointer["commit"],
-            ui_protocol=pointer.get("ui_protocol"),
-            engine_protocol=pointer.get("engine_protocol"),
+            ui_protocol=ui_protocol_value,
+            engine_protocol=engine_protocol_value,
         )
 
-    ui_protocol_value = pointer.get("ui_protocol")
-    engine_protocol_value = pointer.get("engine_protocol")
-    if not protocols_compatible(ui_protocol_value, engine_protocol_value):
+    if not compatible:
         return EngineReloadPlan(
             "require_full_restart",
             (
                 "Published engine snapshot "
-                f"{pointer['commit'][:7]} declares protocol "
-                f"UI={ui_protocol_value!r} engine={engine_protocol_value!r}, which is not "
-                "compatible with this UI. A full Restart Coach is required."
+                f"{pointer['commit'][:7]} declares engine protocol "
+                f"{engine_protocol_value!r}, which is not compatible with the "
+                f"running UI protocol {effective_ui!r}. A full Restart Coach "
+                "is required."
             ),
             target_root=target_root_str,
             target_commit=pointer["commit"],

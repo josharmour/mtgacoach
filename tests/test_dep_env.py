@@ -9,6 +9,7 @@ real filesystem state.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 from pathlib import Path
@@ -21,6 +22,7 @@ from arenamcp.desktop.dep_env import (
     dep_env_root,
     ensure_dep_env,
     env_dir_for,
+    env_identity,
     read_env_marker,
     venv_python,
 )
@@ -55,6 +57,11 @@ class FakeRuns:
     def __call__(self, argv, **kwargs):
         with self.lock:
             self.calls.append(list(argv))
+        # Simulate `uv export -o <file>`: materialize the pinned reqs file.
+        if "-o" in argv:
+            out = Path(argv[argv.index("-o") + 1])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text("pinned-from-lock==1\n", encoding="utf-8")
 
         def step_result(rc: int, err: bytes):
             # Mirror subprocess.run(..., check=True): nonzero exits raise.
@@ -92,13 +99,15 @@ def test_ensure_dep_env_creates_versioned_env_with_binding_marker(snapshot_root,
     runtime_root = tmp_path / "runtime"
     env_dir = ensure_dep_env(snapshot_root, runtime_root=runtime_root)
 
-    fingerprint = dependency_fingerprint(snapshot_root)
-    assert env_dir == env_dir_for(fingerprint, runtime_root)
+    identity = env_identity(snapshot_root)
+    assert env_dir == env_dir_for(identity, runtime_root)
     assert env_dir.parent == dep_env_root(runtime_root)
     marker = read_env_marker(env_dir)
     assert marker is not None
-    assert marker["fingerprint"] == fingerprint
-    assert marker["python"] == dep_env.sys.executable
+    assert marker["identity"] == identity
+    assert marker["fingerprint"] == dependency_fingerprint(snapshot_root)
+    assert marker["python"] == dep_env.resolve_interpreter()
+    assert marker["install_mode"] == "requirements.txt"
     assert venv_python(env_dir).exists()
     # All build steps ran against a private staging tree, never the final name.
     venv_targets = [Path(c[-1]) for c in fake_runs.calls if "venv" in c]
@@ -120,13 +129,19 @@ def test_ensure_dep_env_rebuilds_when_python_or_fingerprint_changes(snapshot_roo
     runtime_root = tmp_path / "runtime"
     first = ensure_dep_env(snapshot_root, runtime_root=runtime_root)
 
-    # A different interpreter must not silently reuse the old env: the same
-    # identity directory is retired and rebuilt with the new interpreter.
+    # A different interpreter gets its OWN identity directory: the old env is
+    # neither reused nor deleted.
     calls_before = len(fake_runs.calls)
     rebuilt = ensure_dep_env(snapshot_root, runtime_root=runtime_root, python_executable="/other/python3")
-    assert rebuilt == first
+    assert rebuilt != first
+    assert rebuilt == env_dir_for(
+        env_identity(snapshot_root, python_executable="/other/python3"), runtime_root
+    )
     assert len(fake_runs.calls) > calls_before  # a real rebuild happened
-    assert read_env_marker(rebuilt)["python"] == "/other/python3"
+    assert read_env_marker(rebuilt)["python"] == str(Path("/other/python3").resolve())
+    # The previous environment survived intact for rollback.
+    assert read_env_marker(first)["python"] == dep_env.resolve_interpreter()
+    assert venv_python(first).exists()
 
     # A changed dependency spec yields a different fingerprint/env identity.
     (snapshot_root / "requirements.txt").write_text("PySide6==6.8.0\n", encoding="utf-8")
@@ -137,8 +152,8 @@ def test_ensure_dep_env_rebuilds_when_python_or_fingerprint_changes(snapshot_roo
 
 def test_ensure_dep_env_never_mutates_the_existing_environment(snapshot_root, fake_runs, tmp_path):
     runtime_root = tmp_path / "runtime"
-    fingerprint = dependency_fingerprint(snapshot_root)
-    env_dir = env_dir_for(fingerprint, runtime_root)
+    identity = env_identity(snapshot_root)
+    env_dir = env_dir_for(identity, runtime_root)
     env_dir.mkdir(parents=True)
     sentinel_parent = env_dir / "site-packages"
     sentinel_parent.mkdir()
@@ -147,12 +162,17 @@ def test_ensure_dep_env_never_mutates_the_existing_environment(snapshot_root, fa
 
     ensure_dep_env(snapshot_root, runtime_root=runtime_root)
 
-    # The old tree was replaced wholesale (retired), not edited in place: the
-    # new env carries the fresh marker and no trace of the old content.
+    # The old tree was replaced wholesale (moved aside), not edited in place:
+    # the new env carries the fresh marker and no trace of the old content.
     assert not sentinel.exists()
-    assert read_env_marker(env_dir)["fingerprint"] == fingerprint
-    # Every build step targeted a private staging dir under the dep-env root.
+    assert read_env_marker(env_dir)["identity"] == identity
+    # ...but the old environment was RETAINED under a .superseded-* sibling —
+    # never deleted — so an active or old env always survives for rollback.
     dep_root = dep_env_root(runtime_root)
+    superseded = [p for p in dep_root.iterdir() if p.name.startswith(".superseded-")]
+    assert len(superseded) == 1
+    assert (superseded[0] / "site-packages" / "old_pkg").read_text(encoding="utf-8") == "old"
+    # Every build step targeted a private staging dir under the dep-env root.
     for call in fake_runs.calls:
         targets = [Path(a) for a in call if ".dep-staging-" in a]
         if targets:
@@ -214,10 +234,9 @@ def test_concurrent_ensure_dep_env_yields_one_valid_environment(snapshot_root, f
         thread.join()
 
     assert not errors
-    fingerprint = dependency_fingerprint(snapshot_root)
-    expected = env_dir_for(fingerprint, runtime_root)
+    expected = env_dir_for(env_identity(snapshot_root), runtime_root)
     assert results and all(r == expected for r in results)
-    assert read_env_marker(expected)["fingerprint"] == fingerprint
+    assert read_env_marker(expected)["fingerprint"] == dependency_fingerprint(snapshot_root)
     assert venv_python(expected).exists()
     leftovers = [p for p in dep_env_root(runtime_root).iterdir() if p.name.startswith(".dep-staging-")]
     assert not leftovers
@@ -273,6 +292,41 @@ def test_child_env_scrubs_smuggled_paths_and_keeps_user_state(snapshot_root, fak
         "_MTGACOACH_EXTRA_Z": "",
     }
 
+    runtime_root = tmp_path / "runtime"
+
+    env = dep_env.child_env_for(snapshot_root, base, runtime_root=runtime_root)
+
+    # Smuggled module paths are scrubbed so the child cannot import from a
+    # mutable checkout or a foreign interpreter installation.
+    for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"):
+        assert key not in env
+    # User state is preserved exactly as inherited.
+    assert env["HOME"] == "/users/josh"
+    assert env["_UNDERSCORE_KEEP_ME"] == ""
+    # The child is bound to the snapshot's dependency environment.
+    identity = env_identity(snapshot_root)
+    expected_env_dir = env_dir_for(identity, runtime_root)
+    assert env["VIRTUAL_ENV"] == str(expected_env_dir)
+    assert env["PATH"].split(os.pathsep)[0] == str(venv_python(expected_env_dir).parent)
+
+
+def test_uv_lock_drives_pinned_install_mode(snapshot_root, fake_runs, tmp_path):
+    (snapshot_root / "uv.lock").write_text("lock content\n", encoding="utf-8")
+    runtime_root = tmp_path / "runtime"
+
+    env_dir = ensure_dep_env(snapshot_root, runtime_root=runtime_root)
+
+    marker = read_env_marker(env_dir)
+    assert marker is not None
+    assert marker["install_mode"] == "uv.lock"
+    # The lock was exported frozen from the snapshot tree...
+    export_calls = [c for c in fake_runs.calls if "export" in c and "--frozen" in c]
+    assert export_calls
+    # ...and pip installed THAT pinned file, not the loose requirements.txt.
+    pip_calls = [c for c in fake_runs.calls if "install" in c and "--no-input" in c]
+    assert pip_calls
+    assert any("-r" in c for c in pip_calls)
+
 
 def test_import_probe_failure_blocks_promotion_of_a_broken_environment(snapshot_root, tmp_path, monkeypatch):
     failing = FakeRuns(fail_step="probe")
@@ -280,8 +334,7 @@ def test_import_probe_failure_blocks_promotion_of_a_broken_environment(snapshot_
     with pytest.raises(SnapshotError):
         ensure_dep_env(snapshot_root, runtime_root=tmp_path / "r")
     # Nothing was promoted under the final identity.
-    fingerprint = dependency_fingerprint(snapshot_root)
-    assert not env_dir_for(fingerprint, tmp_path / "r").exists()
+    assert not env_dir_for(env_identity(snapshot_root), tmp_path / "r").exists()
 
 
 def test_venv_python_locates_windows_layout(tmp_path):
