@@ -8,6 +8,7 @@ planner/proxy mechanism -- not live-service latency measurements.
 """
 
 import json
+import threading
 import time
 from types import SimpleNamespace as NS
 
@@ -49,10 +50,18 @@ def board():
 class StreamClient:
     """Effort-aware fake client whose ``high`` leg streams until its budget cuts it."""
 
-    def __init__(self, low_text=DECLARATION, both_stream=False):
+    # Bounded waits that keep the fakes from hanging if a leg is never
+    # scheduled; they are safety margins, never part of the happy path.
+    HIGH_FIRST_CHUNK_WAIT_S = 2.0
+    HIGH_GATE_WAIT_S = 5.0
+
+    def __init__(self, low_text=DECLARATION, both_stream=False, gated_high=False):
         self.low_text = low_text
         self.both_stream = both_stream
+        self.gated_high = gated_high
         self.efforts = []
+        self.high_first_chunk = threading.Event()
+        self.high_gate = threading.Event()
         self.chat = NS(completions=NS(create=self._create))
 
     def with_options(self, **options):
@@ -60,9 +69,21 @@ class StreamClient:
 
     def _create(self, **params):
         effort = params["extra_body"]["chat_template_kwargs"].get("reasoning_effort")
+        if self.gated_high and effort == "high":
+            # Hold the request until released, so a fast low answer can win
+            # before the high leg ever issues one (the CI run's legitimate
+            # shape) without depending on scheduler timing.
+            if not self.high_gate.wait(self.HIGH_GATE_WAIT_S):
+                return iter([])
         self.efforts.append(effort)
         if self.both_stream or effort == "high":
             return self._streaming()
+        # #43177283352: low must not outrun the high leg's first streamed
+        # token, or the hedge cancels high before its request and the
+        # both-efforts assertion measures the scheduler instead of the hedge.
+        # Await proof that high emitted its first stream chunk, bounded so a
+        # wedged high leg can still not stall the answer.
+        self.high_first_chunk.wait(self.HIGH_FIRST_CHUNK_WAIT_S)
         return iter([chunk(self.low_text, finish="stop")])
 
     def _streaming(self):
@@ -70,6 +91,8 @@ class StreamClient:
 
         def generate():
             yield chunk("thinking", reasoning="weighing the attack")
+            # The consumer came back for more: the first chunk was emitted.
+            self.high_first_chunk.set()
             for _ in range(400):
                 time.sleep(0.02)
                 yield chunk(" more")
@@ -110,3 +133,27 @@ def test_a_streaming_high_leg_cannot_outlive_a_ready_low_answer():
     assert elapsed < PROMPT_BUILD_ALLOWANCE_S
     assert result.fallback_reason == ""
     assert [action.action_type for action in result.actions] == [ActionType.DECLARE_ATTACKERS]
+
+
+def test_an_instant_low_answer_may_win_before_high_even_requests():
+    """A high leg held before its request is cancelled unawaited; low still plans.
+
+    Run 43177283352 caught the legitimate half of the hedge: when low answers
+    immediately the scheduler may cancel high before its first request
+    (metrics ``attempts: 0``), so ``efforts`` legitimately holds only ``low``.
+    The gate makes that ordering deterministic instead of scheduler-dependent,
+    and releasing the stranded leg afterwards proves cancellation still
+    reclaims it without stalling or resurrecting the plan.
+    """
+    be = backend(gated_high=True)
+    result, elapsed = plan(be, 6.0)
+    assert be._client.efforts == ["low"]
+    assert elapsed < PROMPT_BUILD_ALLOWANCE_S
+    assert result.fallback_reason == ""
+    assert [action.action_type for action in result.actions] == [ActionType.DECLARE_ATTACKERS]
+    # The cancelled leg must drain promptly once released, never stall.
+    be._client.high_gate.set()
+    drained = time.monotonic() + 2.0
+    while len(be._client.efforts) < 2 and time.monotonic() < drained:
+        time.sleep(0.01)
+    assert len(be._client.efforts) == 2
