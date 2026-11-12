@@ -1714,6 +1714,9 @@ class ActionPlanner(_ActionLegalityMixin):
         self._check_attack_line(
             plan, game_state, decision_context or game_state.get("decision_context") or {}
         )
+        self._check_attack_premises(
+            plan, game_state, decision_context or game_state.get("decision_context") or {}
+        )
         self._ensure_mandatory_attacks(
             plan, game_state, decision_context or game_state.get("decision_context") or {}
         )
@@ -2515,6 +2518,70 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         plan.voice_advice = f"Attacking with {who}: by the board math, holding back ends worse."
         return True
+
+    def _check_attack_premises(self, plan: ActionPlan, state: dict, context: dict) -> None:
+        """Append the board facts an attack's "tapped enemy limits crackback" premise ignores.
+
+        2026-11-12 (Gar vs Minsc T8, recorded via the GRE bridge): the plan
+        attacked our hasty 4/4 Boo at their 3-loyalty Minsc saying "their big
+        Boo is tapped so crackback is limited" while their untapped Curator
+        3/3 and Halfling 2/3 could double block (killing the 4/4 and leaving
+        the walker standing even through trample) and their Boo untaps
+        normally next turn. The typed-decision hook
+        (:meth:`_correct_tapped_crackback_claim`) never sees that shape: the
+        recorded request arrives with empty typed options and
+        ``build_pending_decision`` returns None for every attack alias, so
+        the correction rides this plan guard, which runs on every plan.
+
+        Narration-only: the pick stands, the DECLARE_ATTACKERS action's
+        reasoning — what ``_record_combat_decision`` records first — gains
+        the board facts. Also asks what changed when the attack spends a
+        creature committed as a blocker earlier this turn. See
+        :mod:`arenamcp.attack_premises` for the bounded arithmetic.
+        """
+        if str(context.get("type") or "").lower() != "declare_attackers":
+            return
+        declared = next((a for a in plan.actions if a.action_type == ActionType.DECLARE_ATTACKERS), None)
+        if declared is None or not declared.attacker_names:
+            return
+        original = _model_reasoning(plan, declared)
+        if not original:
+            return
+        from arenamcp.attack_premises import held_blocker_reconciliation, tapped_crackback_correction
+        from arenamcp.combat_identity import resolve_combatants
+
+        identities = list(declared.attacker_instance_ids)
+        if len(identities) != len(declared.attacker_names):
+            eligible = [int(i) for i in context.get("legal_attacker_ids") or [] if str(i).isdigit()] or [
+                int(entry.get("attackerInstanceId") or 0) for entry in context.get("raw_attackers") or []
+            ]
+            try:
+                identities = resolve_combatants(declared.attacker_names, state, eligible, local_side=True)
+            except (KeyError, TypeError, ValueError):
+                identities = []
+        cards = {card.get("instance_id"): card for card in state.get("battlefield") or []}
+        attackers = [cards[i] for i in identities if i in cards] or None
+        shared = declared.target_names[0] if len(declared.target_names) == 1 else ""
+        target = next(
+            (
+                declared.attacker_targets.get(name) or shared
+                for name in declared.attacker_names
+                if declared.attacker_targets.get(name) or shared
+            ),
+            "",
+        )
+        correction = tapped_crackback_correction(state, original, attackers=attackers, target=target)
+        reconciliation = held_blocker_reconciliation(self._memory().this_turn(state), declared.attacker_names)
+        additions = " ".join(part for part in (correction, reconciliation) if part)
+        if not additions:
+            return
+        if additions.strip() in str(declared.reasoning or ""):
+            return  # already corrected (e.g. by the typed-decision hook) — never duplicate
+        declared.reasoning = f"{str(declared.reasoning or '').rstrip()} {additions}".strip()
+        logger.warning(
+            "attack reasoning rested on a tapped-enemy premise; board facts appended (%s)",
+            "; ".join(filter(None, (correction[:60], reconciliation[:60]))),
+        )
 
     def _check_attack_line(self, plan: ActionPlan, state: dict, context: dict) -> None:
         """Hold declared attackers the searched lines keep home when attacking dies sooner (ledger #152).
@@ -7801,9 +7868,7 @@ class ActionPlanner(_ActionLegalityMixin):
         attacker_names = [str(label).split(" [id:")[0].strip() for label in chosen or []]
         reconciliation = ""
         if attacker_names:
-            reconciliation = held_blocker_reconciliation(
-                self._memory().this_turn(game_state), attacker_names
-            )
+            reconciliation = held_blocker_reconciliation(self._memory().this_turn(game_state), attacker_names)
         additions = " ".join(part for part in (correction, reconciliation) if part)
         if not additions:
             return
