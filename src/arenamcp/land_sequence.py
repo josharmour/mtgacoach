@@ -101,13 +101,23 @@ def _wanted_kinds(hand, commanders, priority=()):
         for kind, symbol in _TYPES.items()
     }
     lead = {symbol: index for index, symbol in enumerate(priority)}
-    return tuple(
-        sorted(_TYPES, key=lambda kind: (lead.get(_TYPES[kind], len(lead)), -need[kind], kind))
-    )
+    return tuple(sorted(_TYPES, key=lambda kind: (lead.get(_TYPES[kind], len(lead)), -need[kind], kind)))
 
 
 def _profile_colour_priority(state):
-    """Colour priority from the deck profile, when one can be computed."""
+    """Colour priority from the deck profile, when one can be computed.
+
+    Suppressed while a cached playbook exists for the deck: the playbook's
+    own guidance wins over the static profile (plan rule Do4), so the
+    choice-land ordering falls back to hand/commander need alone.
+    """
+    try:
+        from arenamcp.mulligan_policy import _cached_playbook_present
+
+        if _cached_playbook_present(state):
+            return ()
+    except Exception:  # the ordering hint is advisory
+        pass
     try:
         from arenamcp.deck_profile import profile_for_state
 

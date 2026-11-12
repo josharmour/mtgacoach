@@ -165,6 +165,37 @@ def test_production_conditions_retained_bug_20261109_212434():
     assert profile.sources.conditional >= 5
 
 
+def test_spend_as_any_colour_is_not_production_bug_20261109_212434():
+    """Spending mana as any colour does not make a card a producer.
+
+    Reviewer probe (bug_20261109_212434): Agatha's Soul Cauldron (real card,
+    Scryfall oracle text, {2} Legendary Artifact) says 'You may spend mana as
+    though it were mana of any color to activate abilities of creatures you
+    control.' It produces no mana, so it must not be counted as a flexible
+    WUBRG source in the profile.
+    """
+    cauldron = {
+        "name": "Agatha's Soul Cauldron",
+        "type_line": "Legendary Artifact",
+        "mana_cost": "{2}",
+        "oracle_text": (
+            "You may spend mana as though it were mana of any color to activate "
+            "abilities of creatures you control.\n"
+            "Creatures you control with +1/+1 counters on them have all activated "
+            "abilities of all creature cards exiled with Agatha's Soul Cauldron.\n"
+            "{T}: Exile target card from a graveyard. When a creature card is exiled "
+            "this way, put a +1/+1 counter on target creature you control."
+        ),
+        "count": 1,
+    }
+    assert _produced_of(cauldron) == (set(), False)
+
+    profile = build_profile([cauldron])
+    assert profile.sources.total == 0
+    assert profile.sources.flexible == 0
+    assert not profile.sources.colours
+
+
 # --- bug_20261109_231712 (mono-red 99, complete list) -------------------------
 
 
@@ -279,6 +310,43 @@ def test_profile_priority_leads_wanted_kinds_bug_20261109_212434(monkeypatch):
     # not the hand, drives the change.
     without_priority = _wanted_kinds(hand, commanders)
     assert without_priority[0] == "Mountain"
+
+
+def test_profile_priority_yields_to_cached_playbook_bug_20261109_212434(monkeypatch, tmp_path):
+    """Consumer regression: a cached playbook suppresses the profile priority.
+
+    The reviewer's probe (bug_20261109_212434): with a temporary cached
+    playbook the mulligan keep guide is suppressed, yet the choice-land
+    ordering still followed the profile's ('G', 'R') priority. Plan rule Do4
+    makes the playbook win everywhere, so with a cached playbook the profile
+    contributes no priority at all and the hand/commander need decides.
+    """
+    mapping = {card["grp_id"]: card for card in LISTS["minsc"]}
+    monkeypatch.setattr(deck_profile, "_resolve", _fake_resolve(mapping))
+    _stub_facts(monkeypatch)
+
+    state = {"deck_cards": _expanded_deck_cards("minsc")}
+    identity = deck_identity(state)
+    cache_dir = tmp_path / "playbooks"
+    cache_dir.mkdir()
+    monkeypatch.setattr(CoachEngine, "_playbook_cache_path", lambda ident: cache_dir / f"{identity}.json")
+
+    # No cached playbook: the profile priority is available.
+    assert _profile_colour_priority(state) == ("G", "R")
+
+    # Cached playbook: the profile priority is withheld entirely.
+    (cache_dir / f"{identity}.json").write_text(json.dumps({"plays": ["hold up interaction"]}))
+    assert _profile_colour_priority(state) == ()
+
+    # And the choice-land ranking falls back to hand/commander need.
+    hand = [
+        {"mana_cost": "{2}{R}"},  # Bonecrusher Giant // Stomp
+        {"mana_cost": "{3}{R}{R}"},  # Fury
+        {"mana_cost": "{2}{G}{G}"},  # Questing Beast
+    ]
+    commanders = [types.SimpleNamespace(cost="{2}{R}{G}")]
+    kinds = _wanted_kinds(hand, commanders, _profile_colour_priority(state))
+    assert kinds[0] == "Mountain" and kinds[1] == "Forest"
 
 
 # --- card-facts overrides ------------------------------------------------------
@@ -396,11 +464,46 @@ def test_deck_keep_guide_quoted_in_mulligan_bug_20261109_212434(monkeypatch):
     guide = _deck_keep_guide(state)
     assert guide, "expected a profile-derived keep guide"
     assert guide[0] == (
-        "DECK PROFILE KEEP GUIDE: this deck wants ~4 lands by turn 3 and has "
-        "cheap plays at MV<=1; colour priority G, R."
+        "DECK PROFILE KEEP GUIDE: this deck puts ~4 lands in play by turn 3 "
+        "(~4 expected drawn) and has cheap plays at MV<=1; colour priority G, R."
     )
     # No deck list -> no guide line, quietly.
     assert _deck_keep_guide({}) == []
+
+
+def test_deck_keep_guide_separates_draw_expectation_from_goal_bug_20261109_231712(monkeypatch):
+    """Expected lands drawn are availability, not the achievable keep goal.
+
+    The real logged 92-land mono-red Commander list (bug_20261109_231712)
+    draws ~9 lands by turn 3 but can only put ~3 in play (one drop per turn
+    plus cheap ramp). The keep guide must quote the achievable number as the
+    goal and label the draw expectation separately, never ask for 9.
+    """
+    mapping = {card["grp_id"]: card for card in LISTS["mono99"]}
+    monkeypatch.setattr(deck_profile, "_resolve", _fake_resolve(mapping))
+    _stub_facts(monkeypatch)
+
+    state = {"deck_cards": _expanded_deck_cards("mono99")}
+    profile = profile_for_state(state)
+    assert profile is not None
+    drawn = dict(profile.criteria.lands_by_turn)[3]
+    in_play = dict(profile.criteria.lands_in_play_by_turn)[3]
+    assert drawn == 9
+    assert in_play == 3
+
+    guide = _deck_keep_guide(state)
+    assert guide, "expected a profile-derived keep guide"
+    assert "puts ~3 lands in play by turn 3" in guide[0]
+    assert "(~9 expected drawn)" in guide[0]
+    assert "wants ~9 lands" not in guide[0]
+
+    # The sixty-card list keeps its own achievable goal (3 lands, 3 drawn).
+    mapping = {card["grp_id"]: card for card in LISTS["sixty"]}
+    monkeypatch.setattr(deck_profile, "_resolve", _fake_resolve(mapping))
+    sixty = profile_for_state({"deck_cards": _expanded_deck_cards("sixty")})
+    assert sixty is not None
+    assert dict(sixty.criteria.lands_in_play_by_turn)[3] == 3
+    assert dict(sixty.criteria.lands_by_turn)[3] == 3
 
 
 def test_deck_keep_guide_yields_to_cached_playbook_bug_20261109_212434(monkeypatch, tmp_path):

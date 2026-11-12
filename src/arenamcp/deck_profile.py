@@ -71,6 +71,14 @@ _PRODUCED_PIP = re.compile(r"\{([WUBRG](?:/[WUBRG])?)\}")
 # the sentence is output, everything before it (activation costs) is input.
 _ADD_KEYWORD = re.compile(r"\badds?\b", re.I)
 _ANY_COLOUR_TEXT = re.compile(r"\bany\b[^.;]{0,60}?\bcolou?rs?\b", re.I)
+# Production phrased without an 'add' clause ('gain/produce one mana of any
+# color'). Spending modifications ('spend mana as though it were mana of any
+# color') deliberately do not match: they change how existing mana is spent,
+# they do not produce any.
+_ANY_COLOUR_PRODUCTION = re.compile(
+    r"\b(?:adds?|gains?|produces?)\b[^.;]{0,60}?\bany\b[^.;]{0,60}?\bcolou?rs?\b",
+    re.I,
+)
 _SOURCE_CONDITION_TEXT = re.compile(
     r"(activate only if[^.;]*|spend this mana only[^.;]*)",
     re.I,
@@ -115,6 +123,7 @@ class KeepCriteria:
     land_count: int
     card_count: int
     lands_by_turn: tuple[tuple[int, int], ...]
+    lands_in_play_by_turn: tuple[tuple[int, int], ...]
     early_play_ceiling: int
     colour_priority: tuple[str, ...]
 
@@ -136,11 +145,19 @@ class DeckProfile:
     seed_text: str = field(default="", compare=False)
 
     def keep_criteria_lines(self) -> list[str]:
-        """Prompt lines stating what this deck's hands need (mulligan aid)."""
-        wants = dict(self.criteria.lands_by_turn)
+        """Prompt lines stating what this deck's hands need (mulligan aid).
+
+        Two distinct numbers, never conflated: how many lands the deck is
+        expected to draw by a turn (availability) and how many it can
+        realistically put in play by then (the achievable keep goal — one
+        land drop per turn plus cheap ramp).
+        """
+        drawn = dict(self.criteria.lands_by_turn)
+        in_play = dict(self.criteria.lands_in_play_by_turn)
         priority = ", ".join(self.criteria.colour_priority) or "no committed colours"
         return [
-            f"DECK PROFILE KEEP GUIDE: this deck wants ~{wants.get(3, self.criteria.land_count)} lands by turn 3 and has cheap "
+            f"DECK PROFILE KEEP GUIDE: this deck puts ~{in_play.get(3, self.criteria.land_count)} lands in play by turn 3 "
+            f"(~{drawn.get(3, self.criteria.land_count)} expected drawn) and has cheap "
             f"plays at MV<={self.criteria.early_play_ceiling}; colour priority {priority}."
         ]
 
@@ -258,10 +275,14 @@ def _produced(type_line: str, text: str, productions: list[dict]) -> tuple[set[s
             colours |= _pip_colours(match.group(1))
         if _ANY_COLOUR_TEXT.search(segment):
             flexible = True
-    if not segments and _ANY_COLOUR_TEXT.search(text or ""):
+    if not segments:
         # Fact-only records may state any-colour production without an
-        # 'add' clause surviving in the visible text.
-        flexible = True
+        # 'add' clause surviving in the visible text ('gain/produce one
+        # mana of any color'). Spending modifications ('spend mana as
+        # though it were mana of any color') are not production and must
+        # not flag flexibility.
+        if _ANY_COLOUR_PRODUCTION.search(text or ""):
+            flexible = True
     for production in productions:
         mana = production.get("mana", "")
         for match in _PRODUCED_PIP.finditer(mana):
@@ -467,6 +488,23 @@ def build_profile(
     # Keep criteria: opening-hand arithmetic from the deck's own numbers.
     ratio = (land_count / card_count) if card_count else 0.0
     lands_by_turn = tuple((turn, min(land_count, round((7 + turn) * ratio))) for turn in range(1, 6))
+    # Achievable on-board lands: one land drop per turn plus cheap ramp
+    # spells (MV<=2) actually castable by then. Expected draws are
+    # availability, not a keep goal — a 92-land Commander deck draws ~9
+    # lands by turn 3 but can only put ~3 in play.
+    cheap_ramp = sum(
+        row["count"] for row in spell_rows if row["role"] == "ramp" and _mana_value(row["mana_cost"]) <= 2
+    )
+    lands_in_play_by_turn = tuple(
+        (
+            turn,
+            min(
+                drawn,
+                turn + min(cheap_ramp, max(turn - 1, 0)),
+            ),
+        )
+        for turn, drawn in lands_by_turn
+    )
     spell_copies = sum(row["count"] for row in spell_rows)
     threshold = max(3, spell_copies // 5)
     max_mv = max((_mana_value(row["mana_cost"]) for row in spell_rows), default=0)
@@ -486,12 +524,13 @@ def build_profile(
         land_count=land_count,
         card_count=card_count,
         lands_by_turn=lands_by_turn,
+        lands_in_play_by_turn=lands_in_play_by_turn,
         early_play_ceiling=ceiling,
         colour_priority=priority,
     )
 
     # Seed text: the profile as prompt lines.
-    wants3 = dict(lands_by_turn).get(3, land_count)
+    inplay3 = dict(lands_in_play_by_turn).get(3, land_count)
     pct = round(100 * land_count / card_count) if card_count else 0
     curve_bits = ", ".join(f"T{mv} x{n}" for mv, n in curve)
     role_bits = ", ".join(f"{role} {n}" for role, n in roles)
@@ -501,7 +540,7 @@ def build_profile(
         + (f" Curve (spells): {curve_bits}." if curve_bits else ""),
         (
             f"Colour priority {' then '.join(priority) if priority else 'undeclared'}; "
-            f"by turn 3 the deck wants ~{wants3} lands and casts cheap plays at MV<={ceiling}."
+            f"by turn 3 the deck puts ~{inplay3} lands in play and casts cheap plays at MV<={ceiling}."
         ),
         (
             f"Mana sources: {sources.total}"
