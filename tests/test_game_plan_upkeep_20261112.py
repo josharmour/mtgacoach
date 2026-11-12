@@ -433,3 +433,123 @@ def test_ledger_carries_the_upkeep_snapshot():
     rendered = ledger.entries[-1].line()
     assert "upkeep:" in rendered
     assert "route live" in rendered
+
+
+def test_negated_or_nonreturning_recursion_does_not_keep_a_graveyard_route():
+    """f39b158 gap 1: recursion evidence must be currently usable and
+    card-specific. A plan line that NEGATES recursion ("Recursion is
+    unavailable"), a recursion mention about a DIFFERENT card, and exiling-only
+    mechanics (scavenge, haunt — the card never comes back) all leave the
+    graveyard-only route lost; a real self-return mechanic keeps it."""
+    zones = {
+        "players": [{"is_local": True, "seat_id": 1, "life_total": 20}],
+        "turn": {"turn_number": 9, "active_player": 1, "phase": "Main1"},
+        "battlefield": [],
+        "hand": [],
+        "graveyard": [{"instance_id": 5, "name": "Etali's Favor"}],
+        "exile": [],
+        "command": [],
+    }
+    plan = GamePlan(win_conditions=["win with Etali's Favor"], path="cast it and swing")
+    plan.route_cards = ["etali's favor"]
+
+    def _routed(**parts):
+        variant = GamePlan(win_conditions=["win with Etali's Favor"], path="cast it and swing", **parts)
+        variant.route_cards = ["etali's favor"]
+        return variant
+
+    negated = _routed(active_mechanisms=["Recursion is unavailable"])
+    assert win_route_lost(negated, zones)  # a negated line is not evidence
+
+    unrelated = _routed(develop_next="recur the World Breaker later")
+    assert win_route_lost(unrelated, zones)  # recursion about ANOTHER card is not evidence
+
+    scavenge = dict(zones)
+    scavenge["graveyard"] = [
+        {
+            "instance_id": 5,
+            "name": "Etali's Favor",
+            "oracle_text": (
+                "Scavenge {2}{G} ({2}{G}, Exile this card from your graveyard: "
+                "Put a number of +1/+1 counters equal to its power on target creature.)"
+            ),
+        }
+    ]
+    assert win_route_lost(plan, scavenge)  # scavenge exiles the card; it never returns
+
+    haunt = dict(zones)
+    haunt["graveyard"] = [
+        {
+            "instance_id": 5,
+            "name": "Etali's Favor",
+            "oracle_text": "Haunt (When this creature dies, exile it haunting target creature.)",
+        }
+    ]
+    assert win_route_lost(plan, haunt)  # haunt exiles too
+
+    undying = dict(zones)
+    undying["graveyard"] = [
+        {
+            "instance_id": 5,
+            "name": "Etali's Favor",
+            "oracle_text": (
+                "Undying (When this creature dies, return it to the battlefield "
+                "under its owner's control with a +1/+1 counter on it.)"
+            ),
+        }
+    ]
+    assert not win_route_lost(plan, undying)  # a real self-return keeps the route
+
+
+def test_ledger_captures_fresh_upkeep_not_the_previous_turns_snapshot(monkeypatch):
+    """f39b158 gap 2: the turn-5 ledger entry must describe the board as it
+    stands NOW (engine destroyed between observations), not the stale turn-4
+    snapshot captured before the upkeep refresh."""
+    be, mgr = _formed_manager(monkeypatch)
+    mgr.current.route_cards = ["synthesizer"]
+    mgr.observe(_state(turn=4))  # engine alive at this turn start
+    mgr.observe(_state(turn=5, synth_on_board=False))  # destroyed since
+    entry = mgr._ledger.entries[-1]
+    assert entry.turn == 5
+    assert "route lost" in entry.upkeep
+    assert "synthesizer (graveyard)" in entry.upkeep
+
+
+def test_next_steps_are_annotated_when_their_card_is_not_playable(monkeypatch):
+    """f39b158 gap 3: an upcoming step naming a card that is not in a playable
+    zone is marked completed/unavailable through the real observe() path —
+    never presented as an unconditional instruction."""
+    be, mgr = _formed_manager(monkeypatch)
+    mgr.current.turn_plan = [
+        {"turn": 4, "cast": ["World Breaker"]},
+        {"turn": 5, "cast": ["Synthesizer"]},
+    ]
+    synth = {"instance_id": 10, "name": "Synthesizer", "type_line": "Artifact", "controller_seat_id": 1}
+    wb = {"instance_id": 20, "name": "World Breaker", "type_line": "Creature"}
+
+    def _variant(battlefield=(synth,), **zones):
+        state = _state(turn=4)
+        state["battlefield"] = list(battlefield)
+        state.update(zones)
+        mgr.observe(state)
+        return mgr.current.next_steps
+
+    # Already on the battlefield: marked done, not ordered again.
+    steps = _variant(battlefield=(synth, {"instance_id": 11, "name": "World Breaker"}))
+    assert any("world breaker already in play" in s for s in steps)
+
+    # In hand: playable now, no annotation.
+    steps = _variant(hand=[wb])
+    assert any(s.startswith("T4:") and "(" not in s.split(": ", 1)[1] for s in steps)
+
+    # Exiled: unavailable.
+    steps = _variant(exile=[wb])
+    assert any("world breaker unavailable (exile)" in s for s in steps)
+
+    # Nowhere visible: honestly marked, not invented around.
+    steps = _variant()
+    assert any("world breaker not in a playable zone" in s for s in steps)
+
+    # Graveyard without usable recursion: unavailable.
+    steps = _variant(graveyard=[wb])
+    assert any("world breaker unavailable (graveyard)" in s for s in steps)

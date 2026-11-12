@@ -835,13 +835,18 @@ def win_route_lost(plan: GamePlan, state: dict) -> bool:
         zone = _piece_zone(route, state)
         if zone in ("battlefield", "hand", "command"):
             return False
-        if zone == "graveyard" and _graveyard_recursion_usable(plan, _zone_card(route, state, "graveyard")):
+        if zone == "graveyard" and _graveyard_recursion_usable(
+            plan, _zone_card(route, state, "graveyard"), name=route
+        ):
             return False
     return True
 
 
 # Mechanics that bring a specific card back out of our graveyard (generic
-# rules-text anchors, not card names).
+# rules-text anchors, not card names). Deliberately excludes mechanics that
+# only LOOK like recursion but exile the card as part of their effect —
+# scavenge and haunt move the card to exile and never return it, so they are
+# not evidence the route can come back.
 _GRAVEYARD_RECURSION_KEYWORDS = (
     "retrace",
     "flashback",
@@ -849,32 +854,61 @@ _GRAVEYARD_RECURSION_KEYWORDS = (
     "eternalize",
     "escape",
     "jump-start",
-    "haunt",
     "undying",
     "persist",
-    "scavenge",
+)
+
+# A plan line that NEGATES recursion ("Recursion is unavailable", "no way to
+# recur it") must not be read as promising it.
+_PLAN_RECURSION_NEGATED = re.compile(
+    r"\b(?:no|not|never|cannot|can't|can\u2019t|without|unavailable|unusable|impossible)\b"
+    r"[^.;]{0,30}\b(?:recur|recursion|retrace|return)\b"
+    r"|\b(?:recur|recursion|retrace|return)\b[^.;]{0,30}\b"
+    r"(?:unavailable|unusable|impossible|gone|lost)\b"
 )
 
 
-def _graveyard_recursion_usable(plan: GamePlan, card: dict | None) -> bool:
+def _plan_promises_this_recursion(plan: GamePlan, name: str) -> bool:
+    """Card-specific plan evidence that ``name`` comes back from the graveyard.
+
+    Some clause of the plan must BOTH name the route card AND promise its
+    return — a recursion word in an unrelated clause, or a negated one
+    ("Recursion is unavailable"), is not evidence this card can come back.
+    """
+    if not name:
+        return False
+    wanted = name.strip().lower().replace("\u2019", "'")
+    for part in [*plan.win_conditions, plan.path, plan.develop_next, *plan.active_mechanisms]:
+        clause = str(part or "").lower().replace("\u2019", "'")
+        if wanted not in clause:
+            continue
+        if not re.search(r"\b(?:recur|recursion|retrace)\b|\breturn\b[^.;]{0,50}\bgraveyard\b", clause):
+            continue
+        if _PLAN_RECURSION_NEGATED.search(clause):
+            continue
+        return True
+    return False
+
+
+def _graveyard_recursion_usable(plan: GamePlan, card: dict | None, name: str = "") -> bool:
     """True when a route card sitting in our graveyard can realistically come back.
 
-    Either the card's own rules text carries a recursion mechanic, or the plan
-    itself states a recursion line ("recur the ... from the graveyard").
+    Currently usable, card-specific evidence only: the card's own rules text
+    carries a self-return mechanic (retrace, flashback, embalm, ...), or the
+    plan itself names THIS card in a recursion line. Negated lines
+    ("Recursion is unavailable"), unrelated recursion mentions, and
+    exiling-only effects (scavenge, haunt) do not keep the route alive.
     """
     text = ""
     if isinstance(card, dict):
         text = str(card.get("oracle_text") or card.get("rules_text") or "").lower()
+        if not name:
+            name = str(card.get("name") or "")
     if any(keyword in text for keyword in _GRAVEYARD_RECURSION_KEYWORDS):
         return True
     if re.search(r"returns?\b.{0,60}\bfrom\b.{0,30}\bgraveyard\b.{0,40}\bto\b", text):
         return True
-    plan_text = "; ".join(
-        str(part)
-        for part in [*plan.win_conditions, plan.path, plan.develop_next, *plan.active_mechanisms]
-        if part
-    ).lower()
-    return bool(re.search(r"\b(?:recur|recursion|retrace)\b|\breturn\b[^.;]{0,50}\bgraveyard\b", plan_text))
+    return _plan_promises_this_recursion(plan, name)
 
 
 def _route_cards_from_state(plan: GamePlan, state: dict) -> list[str]:
@@ -943,7 +977,7 @@ def compute_upkeep(plan: GamePlan, state: dict) -> dict[str, Any]:
     for step in plan.turn_plan:
         step_turn = int(step.get("turn") or 0)
         if step_turn and step_turn >= max(turn, 1):
-            next_steps.append(f"T{step_turn}: {step_text(step)}")
+            next_steps.append(f"T{step_turn}: {_annotated_next_step(plan, step, state)}")
         if len(next_steps) >= 3:
             break
     return {
@@ -951,6 +985,40 @@ def compute_upkeep(plan: GamePlan, state: dict) -> dict[str, Any]:
         "engines": {"in_play": engines_in_play, "lost": engines_lost},
         "next_steps": next_steps,
     }
+
+
+def _annotated_next_step(plan: GamePlan, step: dict, state: dict) -> str:
+    """Step text plus an honest availability note for the cards it names.
+
+    A step whose card is not actually playable right now is not presented as
+    an unconditional instruction: a piece already on the battlefield is marked
+    done, an unreachable one (exile / graveyard without usable recursion /
+    nowhere visible) is marked unavailable. Nothing is invented — the plan's
+    own step text is kept, only its current status is disclosed.
+    """
+    base = step_text(step)
+    names = [str(cast).strip().lower() for cast in (step.get("cast") or []) if str(cast).strip()]
+    if not names:
+        return base
+    notes: list[str] = []
+    for name in names:
+        zone = _piece_zone(name, state)
+        if zone in ("hand", "command"):
+            continue
+        if zone == "battlefield":
+            notes.append(f"{name} already in play")
+        elif zone == "graveyard":
+            if _graveyard_recursion_usable(plan, _zone_card(name, state, "graveyard"), name=name):
+                notes.append(f"{name} in graveyard (needs recursion)")
+            else:
+                notes.append(f"{name} unavailable (graveyard)")
+        elif zone == "exile":
+            notes.append(f"{name} unavailable (exile)")
+        else:
+            notes.append(f"{name} not in a playable zone")
+    if not notes:
+        return base
+    return f"{base} ({'; '.join(notes)})"
 
 
 def _plan_engine_names(plan: GamePlan) -> list[str]:
@@ -4748,6 +4816,14 @@ class GamePlanManager:
             if match_id:
                 self._match_id = match_id
             if turn > self._observed_turn:
+                # Refresh the structured upkeep snapshot BEFORE the ledger
+                # captures it: a new turn's entry must describe the board as it
+                # stands now (e.g. an engine destroyed since the last
+                # observation), not the stale snapshot from the previous turn.
+                try:
+                    self._refresh_upkeep_state_locked(game_state)
+                except Exception as error:  # pragma: no cover - defensive
+                    logger.debug("plan upkeep refresh before ledger skipped: %s", error)
                 self._ledger_turn_started(game_state, turn)
             self._observed_turn = max(turn, self._observed_turn)
             try:
