@@ -1,0 +1,1864 @@
+{
+  "state": {
+    "match_id": "e0aabf29-8af3-4f47-9ffc-b980f11eed5e",
+    "game_number": 1,
+    "event_id": "Brawl_Ladder",
+    "format_name": "Brawl Ladder",
+    "turn": {
+      "turn_number": 8,
+      "active_player": 2,
+      "priority_player": 2,
+      "phase": "Combat",
+      "step": "DeclareAttack",
+      "pending_combat_steps": [],
+      "stage": "Play"
+    },
+    "players": [
+      {
+        "seat_id": 1,
+        "life_total": 21,
+        "life_gained_this_turn": 0,
+        "life_gained_this_game": 2,
+        "counters": {},
+        "lands_played": 0,
+        "mana_pool": {},
+        "has_enduring_story": null,
+        "team_id": 1,
+        "status": "InGame",
+        "controller_seat_id": 1,
+        "is_local": false,
+        "mulligan_count": 0,
+        "timeout_count": 1,
+        "commander_ids": [
+          760
+        ],
+        "designations": [
+          "Commander"
+        ]
+      },
+      {
+        "seat_id": 2,
+        "life_total": 14,
+        "life_gained_this_turn": 0,
+        "life_gained_this_game": 2,
+        "counters": {},
+        "lands_played": 1,
+        "mana_pool": {},
+        "has_enduring_story": null,
+        "team_id": 2,
+        "status": "InGame",
+        "controller_seat_id": 2,
+        "is_local": true,
+        "mulligan_count": 0,
+        "timeout_count": 1,
+        "commander_ids": [
+          973
+        ],
+        "designations": [
+          "Commander"
+        ]
+      }
+    ],
+    "battlefield": [
+      {
+        "instance_id": 449,
+        "grp_id": 83949,
+        "name": "Copperline Gorge",
+        "oracle_text": "This land enters tapped unless you control two or fewer other lands.\n{oT}: Add {oR} or {oG}.",
+        "type_line": "Land",
+        "mana_cost": "",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          76572,
+          1131
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [
+          "Red",
+          "Green"
+        ],
+        "damage": 0,
+        "base_grp_id": 83949
+      },
+      {
+        "instance_id": 450,
+        "grp_id": 97054,
+        "name": "Hardened Bonds",
+        "oracle_text": "Whenever a +1/+1 counter is put on a creature you control, seek a creature card. That card perpetually gets +1/+1. This ability triggers only once each turn.",
+        "type_line": "Enchantment",
+        "mana_cost": "{G}",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": 1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Enchantment"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          192465
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Green"
+        ],
+        "base_grp_id": 97054
+      },
+      {
+        "instance_id": 453,
+        "grp_id": 75553,
+        "name": "Forest",
+        "oracle_text": "({T}: Add {G}.)",
+        "type_line": "Basic Land \u2014 Forest",
+        "mana_cost": "",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 2,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [
+          "Forest"
+        ],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          1005
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [
+          "Green"
+        ],
+        "damage": 0,
+        "base_grp_id": 75553
+      },
+      {
+        "instance_id": 460,
+        "grp_id": 96832,
+        "name": "Stomping Ground",
+        "oracle_text": "As this land enters, you may pay 2 life. If you don't, it enters tapped.\n{oT}: Add {oR}.\n{oT}: Add {oG}.",
+        "type_line": "Land \u2014 Mountain Forest",
+        "mana_cost": "",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 3,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [
+          "Mountain",
+          "Forest"
+        ],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          1005,
+          1004,
+          90846
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [
+          "Red",
+          "Green"
+        ],
+        "damage": 0,
+        "base_grp_id": 96832
+      },
+      {
+        "instance_id": 664,
+        "grp_id": 75553,
+        "name": "Forest",
+        "oracle_text": "({T}: Add {G}.)",
+        "type_line": "Basic Land \u2014 Forest",
+        "mana_cost": "",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 4,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [
+          "Forest"
+        ],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          1005
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [
+          "Green"
+        ],
+        "damage": 0,
+        "base_grp_id": 75553
+      },
+      {
+        "instance_id": 759,
+        "grp_id": 97100,
+        "name": "Ancient Tomb",
+        "oracle_text": "{oT}: Add {oCoC}. This land deals 2 damage to you.",
+        "type_line": "Land",
+        "mana_cost": "",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": 5,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          97928
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [
+          "Colorless"
+        ],
+        "damage": 0,
+        "base_grp_id": 97100
+      },
+      {
+        "instance_id": 760,
+        "grp_id": 81841,
+        "name": "Minsc & Boo, Timeless Heroes",
+        "oracle_text": "When Minsc & Boo enters and at the beginning of your upkeep, you may create Boo, a legendary 1/1 red Hamster creature token with trample and haste.\n[+1]: Put three +1/+1 counters on up to one target creature with trample or haste.\n[-2]: Sacrifice a creature. When you do, Minsc & Boo deals X damage to any target, where X is that creature's power. If the sacrificed creature was a Hamster, draw X cards.\nMinsc & Boo, Timeless Heroes can be your commander.",
+        "type_line": "Legendary Planeswalker \u2014 Minsc",
+        "mana_cost": "{2}{R}{G}",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": 5,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Planeswalker"
+        ],
+        "subtypes": [
+          "Minsc"
+        ],
+        "object_kind": "CARD",
+        "counters": {
+          "Loyalty": 3
+        },
+        "ability_grp_ids": [
+          151485,
+          151486,
+          151487,
+          22315,
+          114
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "loyalty": 3,
+        "damage": 0,
+        "colors": [
+          "Red",
+          "Green"
+        ],
+        "base_grp_id": 81841
+      },
+      {
+        "instance_id": 765,
+        "grp_id": 81876,
+        "name": "Boo",
+        "oracle_text": "Trample\nHaste",
+        "type_line": "Token Legendary Creature \u2014 Hamster",
+        "mana_cost": "",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": 7,
+        "toughness": 7,
+        "is_tapped": true,
+        "turn_entered_battlefield": 5,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Hamster"
+        ],
+        "object_kind": "TOKEN",
+        "counters": {
+          "P1P1": 6
+        },
+        "parent_instance_id": 764,
+        "keywords": [
+          "trample",
+          "haste"
+        ],
+        "ability_grp_ids": [
+          14,
+          9
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Red"
+        ],
+        "base_grp_id": 81876,
+        "token_creator": "Minsc & Boo, Timeless Heroes",
+        "token_creator_id": 760
+      },
+      {
+        "instance_id": 776,
+        "grp_id": 96832,
+        "name": "Stomping Ground",
+        "oracle_text": "As this land enters, you may pay 2 life. If you don't, it enters tapped.\n{oT}: Add {oR}.\n{oT}: Add {oG}.",
+        "type_line": "Land \u2014 Mountain Forest",
+        "mana_cost": "",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": 6,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [
+          "Mountain",
+          "Forest"
+        ],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          1005,
+          1004,
+          90846
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [
+          "Red",
+          "Green"
+        ],
+        "damage": 0,
+        "base_grp_id": 96832
+      },
+      {
+        "instance_id": 881,
+        "grp_id": 75336,
+        "name": "Snow-Covered Forest",
+        "oracle_text": "({T}: Add {G}.)",
+        "type_line": "Basic Snow Land \u2014 Forest",
+        "mana_cost": "",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 7,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [
+          "Forest"
+        ],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          1005
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [
+          "Green"
+        ],
+        "damage": 0,
+        "base_grp_id": 75336
+      },
+      {
+        "instance_id": 966,
+        "grp_id": 91717,
+        "name": "Keen-Eyed Curator",
+        "oracle_text": "As long as there are four or more card types among cards exiled with this creature, it gets +4/+4 and has trample.\n{o1}: Exile target card from a graveyard.",
+        "type_line": "Creature \u2014 Raccoon Scout",
+        "mana_cost": "{G}{G}",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": 3,
+        "toughness": 3,
+        "is_tapped": false,
+        "turn_entered_battlefield": 7,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Raccoon",
+          "Scout"
+        ],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          174077,
+          4106
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Green"
+        ],
+        "summoning_sickness": true,
+        "base_grp_id": 91717
+      },
+      {
+        "instance_id": 969,
+        "grp_id": 84850,
+        "name": "Delighted Halfling",
+        "oracle_text": "{oT}: Add {oC}.\n{oT}: Add one mana of any color. Spend this mana only to cast a legendary spell, and that spell can't be countered.",
+        "type_line": "Creature \u2014 Halfling Citizen",
+        "mana_cost": "{G}",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": 2,
+        "toughness": 3,
+        "is_tapped": false,
+        "turn_entered_battlefield": 7,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Halfling",
+          "Citizen"
+        ],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          1152,
+          167014
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Green"
+        ],
+        "summoning_sickness": true,
+        "base_grp_id": 84850
+      },
+      {
+        "instance_id": 972,
+        "grp_id": 75555,
+        "name": "Mountain",
+        "oracle_text": "({T}: Add {R}.)",
+        "type_line": "Basic Land \u2014 Mountain",
+        "mana_cost": "",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": true,
+        "turn_entered_battlefield": 8,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [
+          "Mountain"
+        ],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          1004
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [
+          "Red"
+        ],
+        "damage": 0,
+        "base_grp_id": 75555
+      },
+      {
+        "instance_id": 973,
+        "grp_id": 81841,
+        "name": "Minsc & Boo, Timeless Heroes",
+        "oracle_text": "When Minsc & Boo enters and at the beginning of your upkeep, you may create Boo, a legendary 1/1 red Hamster creature token with trample and haste.\n[+1]: Put three +1/+1 counters on up to one target creature with trample or haste.\n[-2]: Sacrifice a creature. When you do, Minsc & Boo deals X damage to any target, where X is that creature's power. If the sacrificed creature was a Hamster, draw X cards.\nMinsc & Boo, Timeless Heroes can be your commander.",
+        "type_line": "Legendary Planeswalker \u2014 Minsc",
+        "mana_cost": "{2}{R}{G}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": 8,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Planeswalker"
+        ],
+        "subtypes": [
+          "Minsc"
+        ],
+        "object_kind": "CARD",
+        "counters": {
+          "Loyalty": 4
+        },
+        "ability_grp_ids": [
+          151485,
+          151486,
+          151487,
+          22315,
+          114
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "loyalty": 4,
+        "damage": 0,
+        "colors": [
+          "Red",
+          "Green"
+        ],
+        "base_grp_id": 81841
+      },
+      {
+        "instance_id": 978,
+        "grp_id": 81876,
+        "name": "Boo",
+        "oracle_text": "Trample\nHaste",
+        "type_line": "Token Legendary Creature \u2014 Hamster",
+        "mana_cost": "",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": 4,
+        "toughness": 4,
+        "is_tapped": false,
+        "turn_entered_battlefield": 8,
+        "is_attacking": true,
+        "is_blocking": false,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Hamster"
+        ],
+        "object_kind": "TOKEN",
+        "counters": {
+          "P1P1": 3
+        },
+        "parent_instance_id": 977,
+        "keywords": [
+          "trample",
+          "haste"
+        ],
+        "ability_grp_ids": [
+          14,
+          9
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "attack_target_id": 760,
+        "colors": [
+          "Red"
+        ],
+        "base_grp_id": 81876,
+        "token_creator": "Minsc & Boo, Timeless Heroes",
+        "token_creator_id": 973
+      }
+    ],
+    "hand": [
+      {
+        "instance_id": 354,
+        "grp_id": 84938,
+        "name": "The One Ring",
+        "oracle_text": "Indestructible\nWhen The One Ring enters, if you cast it, you gain protection from everything until your next turn.\nAt the beginning of your upkeep, you lose 1 life for each burden counter on The One Ring.\n{oT}: Put a burden counter on The One Ring, then draw a card for each burden counter on The One Ring.",
+        "type_line": "Legendary Artifact",
+        "mana_cost": "{4}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Artifact"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "counters": {},
+        "keywords": [
+          "indestructible"
+        ],
+        "ability_grp_ids": [
+          104,
+          167141,
+          167142,
+          167143
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "base_grp_id": 84938
+      },
+      {
+        "instance_id": 355,
+        "grp_id": 77054,
+        "name": "Arid Mesa",
+        "oracle_text": "{oT}, Pay 1 life, Sacrifice this land: Search your library for a Mountain or Plains card, put it onto the battlefield, then shuffle.",
+        "type_line": "Land",
+        "mana_cost": "",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          99182
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "base_grp_id": 77054
+      },
+      {
+        "instance_id": 649,
+        "grp_id": 90661,
+        "name": "Prismatic Vista",
+        "oracle_text": "{oT}, Pay 1 life, Sacrifice this land: Search your library for a basic land card, put it onto the battlefield, then shuffle.",
+        "type_line": "Land",
+        "mana_cost": "",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          137646
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "base_grp_id": 90661
+      },
+      {
+        "instance_id": 657,
+        "grp_id": 79570,
+        "name": "Fable of the Mirror-Breaker",
+        "oracle_text": "Create a 2/2 red Goblin Shaman creature token with \"Whenever this token attacks, create a Treasure token.\"\nYou may discard up to two cards. If you do, draw that many cards.\nExile this Saga, then return it to the battlefield transformed under your control.",
+        "type_line": "Enchantment \u2014 Saga",
+        "mana_cost": "{2}{R}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Enchantment"
+        ],
+        "subtypes": [
+          "Saga"
+        ],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          147952,
+          147953,
+          147760
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Red"
+        ],
+        "base_grp_id": 79570,
+        "related_faces": [
+          {
+            "grp_id": 79571,
+            "name": "Reflection of Kiki-Jiki",
+            "type_line": "Enchantment Creature \u2014 Goblin Shaman",
+            "mana_cost": "",
+            "oracle_text": "{o1}, {oT}: Create a token that's a copy of another target nonlegendary creature you control, except it has haste. Sacrifice it at the beginning of the next end step."
+          }
+        ]
+      },
+      {
+        "instance_id": 971,
+        "grp_id": 87078,
+        "name": "Blood Moon",
+        "oracle_text": "Nonbasic lands are Mountains.",
+        "type_line": "Enchantment",
+        "mana_cost": "{2}{R}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Enchantment"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          1782
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Red"
+        ],
+        "base_grp_id": 87078
+      }
+    ],
+    "graveyard": [
+      {
+        "instance_id": 659,
+        "grp_id": 56597,
+        "name": "Pyrokinesis",
+        "oracle_text": "You may exile a red card from your hand rather than pay this spell's mana cost.\nPyrokinesis deals 4 damage divided as you choose among any number of target creatures.",
+        "type_line": "Instant",
+        "mana_cost": "{4}{R}{R}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Instant"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          93588,
+          93589
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Red"
+        ],
+        "base_grp_id": 56597
+      },
+      {
+        "instance_id": 660,
+        "grp_id": 96862,
+        "name": "Magus of the Moon",
+        "oracle_text": "Nonbasic lands are Mountains.",
+        "type_line": "Creature \u2014 Human Wizard",
+        "mana_cost": "{2}{R}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": 2,
+        "toughness": 2,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Human",
+          "Wizard"
+        ],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          1782
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Red"
+        ],
+        "base_grp_id": 96862
+      },
+      {
+        "instance_id": 661,
+        "grp_id": 98466,
+        "name": "Hexing Squelcher",
+        "oracle_text": "This spell can't be countered.\nWard\u2014Pay 2 life.\nSpells you control can't be countered.\nOther creatures you control have \"Ward\u2014Pay 2 life.\"",
+        "type_line": "Creature \u2014 Goblin Sorcerer",
+        "mana_cost": "{1}{R}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": 2,
+        "toughness": 2,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Goblin",
+          "Sorcerer"
+        ],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          138085,
+          1577,
+          169741,
+          193978
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Red"
+        ],
+        "base_grp_id": 98466
+      },
+      {
+        "instance_id": 663,
+        "grp_id": 91011,
+        "name": "Malevolent Rumble",
+        "oracle_text": "Reveal the top four cards of your library. You may put a permanent card from among them into your hand. Put the rest into your graveyard. Create a 0/1 colorless Eldrazi Spawn creature token with \"Sacrifice this token: Add {oC}.\"",
+        "type_line": "Sorcery",
+        "mana_cost": "{1}{G}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Sorcery"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          172377
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Green"
+        ],
+        "base_grp_id": 91011
+      },
+      {
+        "instance_id": 757,
+        "grp_id": 61999,
+        "name": "Sylvan Scrying",
+        "oracle_text": "Search your library for a land card, reveal it, put it into your hand, then shuffle.",
+        "type_line": "Sorcery",
+        "mana_cost": "{1}{G}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Sorcery"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          4985
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Green"
+        ],
+        "base_grp_id": 61999
+      },
+      {
+        "instance_id": 773,
+        "grp_id": 91888,
+        "name": "Birds of Paradise",
+        "oracle_text": "Flying\n{oT}: Add one mana of any color.",
+        "type_line": "Creature \u2014 Bird",
+        "mana_cost": "{G}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": 0,
+        "toughness": 1,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Bird"
+        ],
+        "object_kind": "CARD",
+        "counters": {},
+        "keywords": [
+          "flying"
+        ],
+        "ability_grp_ids": [
+          8,
+          1055
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Green"
+        ],
+        "base_grp_id": 91888
+      },
+      {
+        "instance_id": 779,
+        "grp_id": 107779,
+        "name": "Sparks Ablaze",
+        "oracle_text": "Sparks Ablaze deals 2 damage to target creature or planeswalker. If that creature or planeswalker would die this turn, exile it instead.\nThe next planeswalker spell you cast costs {o1} less to cast.",
+        "type_line": "Instant",
+        "mana_cost": "{R}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Instant"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          102533,
+          209941
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Red"
+        ],
+        "base_grp_id": 107779
+      },
+      {
+        "instance_id": 871,
+        "grp_id": 98571,
+        "name": "Vibrance",
+        "oracle_text": "When this creature enters, if {oRoR} was spent to cast it, this creature deals 3 damage to any target.\nWhen this creature enters, if {oGoG} was spent to cast it, search your library for a land card, reveal it, put it into your hand, then shuffle. You gain 2 life.\nEvoke {o(R/G)o(R/G)}",
+        "type_line": "Creature \u2014 Elemental Incarnation",
+        "mana_cost": "{3}{R/G}{R/G}",
+        "owner_seat_id": 2,
+        "controller_seat_id": 2,
+        "power": 4,
+        "toughness": 4,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Elemental",
+          "Incarnation"
+        ],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          194102,
+          194103,
+          194104
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Red",
+          "Green"
+        ],
+        "base_grp_id": 98571
+      },
+      {
+        "instance_id": 459,
+        "grp_id": 77062,
+        "name": "Scalding Tarn",
+        "oracle_text": "{oT}, Pay 1 life, Sacrifice this land: Search your library for an Island or Mountain card, put it onto the battlefield, then shuffle.",
+        "type_line": "Land",
+        "mana_cost": "",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          99236
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "base_grp_id": 77062
+      },
+      {
+        "instance_id": 648,
+        "grp_id": 98571,
+        "name": "Vibrance",
+        "oracle_text": "When this creature enters, if {oRoR} was spent to cast it, this creature deals 3 damage to any target.\nWhen this creature enters, if {oGoG} was spent to cast it, search your library for a land card, reveal it, put it into your hand, then shuffle. You gain 2 life.\nEvoke {o(R/G)o(R/G)}",
+        "type_line": "Creature \u2014 Elemental Incarnation",
+        "mana_cost": "{3}{R/G}{R/G}",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": 4,
+        "toughness": 4,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Elemental",
+          "Incarnation"
+        ],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          194102,
+          194103,
+          194104
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Red",
+          "Green"
+        ],
+        "base_grp_id": 98571
+      },
+      {
+        "instance_id": 774,
+        "grp_id": 91167,
+        "name": "Fury",
+        "oracle_text": "Double strike\nWhen this creature enters, it deals 4 damage divided as you choose among any number of target creatures and/or planeswalkers.\nEvoke\u2014Exile a red card from your hand.",
+        "type_line": "Creature \u2014 Elemental Incarnation",
+        "mana_cost": "{3}{R}{R}",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": 3,
+        "toughness": 3,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Creature"
+        ],
+        "subtypes": [
+          "Elemental",
+          "Incarnation"
+        ],
+        "object_kind": "CARD",
+        "counters": {},
+        "keywords": [
+          "double strike"
+        ],
+        "ability_grp_ids": [
+          3,
+          141585,
+          141586
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Red"
+        ],
+        "base_grp_id": 91167
+      },
+      {
+        "instance_id": 880,
+        "grp_id": 77063,
+        "name": "Verdant Catacombs",
+        "oracle_text": "{oT}, Pay 1 life, Sacrifice this land: Search your library for a Swamp or Forest card, put it onto the battlefield, then shuffle.",
+        "type_line": "Land",
+        "mana_cost": "",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Land"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          99277
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "base_grp_id": 77063
+      }
+    ],
+    "stack": [],
+    "exile": [
+      {
+        "instance_id": 770,
+        "grp_id": 88380,
+        "name": "Fiery Confluence",
+        "oracle_text": "Choose three. You may choose the same mode more than once. \n\u2022<indent=4%><indent=4%>Fiery Confluence deals 1 damage to each creature. </indent></indent>\n\u2022<indent=4%><indent=4%>Fiery Confluence deals 2 damage to each opponent. </indent></indent>\n\u2022<indent=4%><indent=4%>Destroy target artifact.</indent></indent>",
+        "type_line": "Sorcery",
+        "mana_cost": "{2}{R}{R}",
+        "owner_seat_id": 1,
+        "controller_seat_id": 1,
+        "power": null,
+        "toughness": null,
+        "is_tapped": false,
+        "turn_entered_battlefield": -1,
+        "is_attacking": false,
+        "is_blocking": false,
+        "card_types": [
+          "Sorcery"
+        ],
+        "subtypes": [],
+        "object_kind": "CARD",
+        "counters": {},
+        "ability_grp_ids": [
+          167297
+        ],
+        "damaged_this_turn": false,
+        "class_level": 0,
+        "color_production": [],
+        "damage": 0,
+        "colors": [
+          "Red"
+        ],
+        "base_grp_id": 88380
+      }
+    ],
+    "command": [],
+    "local_seat_id": 2,
+    "opponent_seat_id": 1,
+    "controlled_turn": {
+      "opponent_controlled_by_you": false,
+      "you_controlled_by_opponent": false,
+      "deciding_for_opponent": false
+    },
+    "decision_seat_id": 2,
+    "decision_context": null,
+    "legal_actions": [],
+    "legal_actions_raw": [],
+    "pending_selection_objects": [],
+    "_bridge_request_type": null,
+    "_bridge_request_class": null,
+    "_bridge_actions": null,
+    "_bridge_can_pass": false,
+    "_bridge_can_cancel": false,
+    "_bridge_allow_undo": false,
+    "_bridge_game_state_id": 0,
+    "hand_complete": true,
+    "hand_count": 5,
+    "deck_cards": [
+      87078,
+      75553,
+      75553,
+      75553,
+      75553,
+      75553,
+      75553,
+      75555,
+      75555,
+      75555,
+      96269,
+      39581,
+      93940,
+      91888,
+      91087,
+      61999,
+      82302,
+      79417,
+      87101,
+      96862,
+      96832,
+      66491,
+      102798,
+      102832,
+      56597,
+      97139,
+      19831,
+      73402,
+      58433,
+      93905,
+      58397,
+      91125,
+      56493,
+      83949,
+      83438,
+      97115,
+      12547,
+      99534,
+      77054,
+      95844,
+      77058,
+      77063,
+      54163,
+      55477,
+      70262,
+      70316,
+      70318,
+      90727,
+      71558,
+      90661,
+      72131,
+      73476,
+      91167,
+      85539,
+      77028,
+      77064,
+      78549,
+      79570,
+      79706,
+      79716,
+      81103,
+      84187,
+      84850,
+      84938,
+      85101,
+      88380,
+      93958,
+      102807,
+      89181,
+      100457,
+      90503,
+      90822,
+      90824,
+      90972,
+      90973,
+      91002,
+      91011,
+      91021,
+      91025,
+      91060,
+      91066,
+      91079,
+      91717,
+      92370,
+      100171,
+      94216,
+      95354,
+      96172,
+      99698,
+      96381,
+      96766,
+      97063,
+      97444,
+      97998,
+      98466,
+      98571,
+      97909,
+      106339,
+      107779
+    ],
+    "damage_taken": {
+      "1": 2,
+      "2": 11
+    },
+    "designations": {
+      "1": [
+        ""
+      ],
+      "2": [
+        ""
+      ]
+    },
+    "dungeon_status": {},
+    "commander_grp_ids": [
+      81841
+    ],
+    "commander_casts": {
+      "81841": 1
+    },
+    "zones": {
+      "opponent_hand_count": 3,
+      "library_count": 82,
+      "library_count_source": "bridge_total_card_count",
+      "local_graveyard": [
+        {
+          "instance_id": 659,
+          "grp_id": 56597,
+          "name": "Pyrokinesis",
+          "oracle_text": "You may exile a red card from your hand rather than pay this spell's mana cost.\nPyrokinesis deals 4 damage divided as you choose among any number of target creatures.",
+          "type_line": "Instant",
+          "mana_cost": "{4}{R}{R}",
+          "owner_seat_id": 2,
+          "controller_seat_id": 2,
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "is_attacking": false,
+          "is_blocking": false,
+          "card_types": [
+            "Instant"
+          ],
+          "subtypes": [],
+          "object_kind": "CARD",
+          "counters": {},
+          "ability_grp_ids": [
+            93588,
+            93589
+          ],
+          "damaged_this_turn": false,
+          "class_level": 0,
+          "color_production": [],
+          "damage": 0,
+          "colors": [
+            "Red"
+          ],
+          "base_grp_id": 56597
+        },
+        {
+          "instance_id": 660,
+          "grp_id": 96862,
+          "name": "Magus of the Moon",
+          "oracle_text": "Nonbasic lands are Mountains.",
+          "type_line": "Creature \u2014 Human Wizard",
+          "mana_cost": "{2}{R}",
+          "owner_seat_id": 2,
+          "controller_seat_id": 2,
+          "power": 2,
+          "toughness": 2,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "is_attacking": false,
+          "is_blocking": false,
+          "card_types": [
+            "Creature"
+          ],
+          "subtypes": [
+            "Human",
+            "Wizard"
+          ],
+          "object_kind": "CARD",
+          "counters": {},
+          "ability_grp_ids": [
+            1782
+          ],
+          "damaged_this_turn": false,
+          "class_level": 0,
+          "color_production": [],
+          "damage": 0,
+          "colors": [
+            "Red"
+          ],
+          "base_grp_id": 96862
+        },
+        {
+          "instance_id": 661,
+          "grp_id": 98466,
+          "name": "Hexing Squelcher",
+          "oracle_text": "This spell can't be countered.\nWard\u2014Pay 2 life.\nSpells you control can't be countered.\nOther creatures you control have \"Ward\u2014Pay 2 life.\"",
+          "type_line": "Creature \u2014 Goblin Sorcerer",
+          "mana_cost": "{1}{R}",
+          "owner_seat_id": 2,
+          "controller_seat_id": 2,
+          "power": 2,
+          "toughness": 2,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "is_attacking": false,
+          "is_blocking": false,
+          "card_types": [
+            "Creature"
+          ],
+          "subtypes": [
+            "Goblin",
+            "Sorcerer"
+          ],
+          "object_kind": "CARD",
+          "counters": {},
+          "ability_grp_ids": [
+            138085,
+            1577,
+            169741,
+            193978
+          ],
+          "damaged_this_turn": false,
+          "class_level": 0,
+          "color_production": [],
+          "damage": 0,
+          "colors": [
+            "Red"
+          ],
+          "base_grp_id": 98466
+        },
+        {
+          "instance_id": 663,
+          "grp_id": 91011,
+          "name": "Malevolent Rumble",
+          "oracle_text": "Reveal the top four cards of your library. You may put a permanent card from among them into your hand. Put the rest into your graveyard. Create a 0/1 colorless Eldrazi Spawn creature token with \"Sacrifice this token: Add {oC}.\"",
+          "type_line": "Sorcery",
+          "mana_cost": "{1}{G}",
+          "owner_seat_id": 2,
+          "controller_seat_id": 2,
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "is_attacking": false,
+          "is_blocking": false,
+          "card_types": [
+            "Sorcery"
+          ],
+          "subtypes": [],
+          "object_kind": "CARD",
+          "counters": {},
+          "ability_grp_ids": [
+            172377
+          ],
+          "damaged_this_turn": false,
+          "class_level": 0,
+          "color_production": [],
+          "damage": 0,
+          "colors": [
+            "Green"
+          ],
+          "base_grp_id": 91011
+        },
+        {
+          "instance_id": 757,
+          "grp_id": 61999,
+          "name": "Sylvan Scrying",
+          "oracle_text": "Search your library for a land card, reveal it, put it into your hand, then shuffle.",
+          "type_line": "Sorcery",
+          "mana_cost": "{1}{G}",
+          "owner_seat_id": 2,
+          "controller_seat_id": 2,
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "is_attacking": false,
+          "is_blocking": false,
+          "card_types": [
+            "Sorcery"
+          ],
+          "subtypes": [],
+          "object_kind": "CARD",
+          "counters": {},
+          "ability_grp_ids": [
+            4985
+          ],
+          "damaged_this_turn": false,
+          "class_level": 0,
+          "color_production": [],
+          "damage": 0,
+          "colors": [
+            "Green"
+          ],
+          "base_grp_id": 61999
+        },
+        {
+          "instance_id": 773,
+          "grp_id": 91888,
+          "name": "Birds of Paradise",
+          "oracle_text": "Flying\n{oT}: Add one mana of any color.",
+          "type_line": "Creature \u2014 Bird",
+          "mana_cost": "{G}",
+          "owner_seat_id": 2,
+          "controller_seat_id": 2,
+          "power": 0,
+          "toughness": 1,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "is_attacking": false,
+          "is_blocking": false,
+          "card_types": [
+            "Creature"
+          ],
+          "subtypes": [
+            "Bird"
+          ],
+          "object_kind": "CARD",
+          "counters": {},
+          "keywords": [
+            "flying"
+          ],
+          "ability_grp_ids": [
+            8,
+            1055
+          ],
+          "damaged_this_turn": false,
+          "class_level": 0,
+          "color_production": [],
+          "damage": 0,
+          "colors": [
+            "Green"
+          ],
+          "base_grp_id": 91888
+        },
+        {
+          "instance_id": 779,
+          "grp_id": 107779,
+          "name": "Sparks Ablaze",
+          "oracle_text": "Sparks Ablaze deals 2 damage to target creature or planeswalker. If that creature or planeswalker would die this turn, exile it instead.\nThe next planeswalker spell you cast costs {o1} less to cast.",
+          "type_line": "Instant",
+          "mana_cost": "{R}",
+          "owner_seat_id": 2,
+          "controller_seat_id": 2,
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "is_attacking": false,
+          "is_blocking": false,
+          "card_types": [
+            "Instant"
+          ],
+          "subtypes": [],
+          "object_kind": "CARD",
+          "counters": {},
+          "ability_grp_ids": [
+            102533,
+            209941
+          ],
+          "damaged_this_turn": false,
+          "class_level": 0,
+          "color_production": [],
+          "damage": 0,
+          "colors": [
+            "Red"
+          ],
+          "base_grp_id": 107779
+        },
+        {
+          "instance_id": 871,
+          "grp_id": 98571,
+          "name": "Vibrance",
+          "oracle_text": "When this creature enters, if {oRoR} was spent to cast it, this creature deals 3 damage to any target.\nWhen this creature enters, if {oGoG} was spent to cast it, search your library for a land card, reveal it, put it into your hand, then shuffle. You gain 2 life.\nEvoke {o(R/G)o(R/G)}",
+          "type_line": "Creature \u2014 Elemental Incarnation",
+          "mana_cost": "{3}{R/G}{R/G}",
+          "owner_seat_id": 2,
+          "controller_seat_id": 2,
+          "power": 4,
+          "toughness": 4,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "is_attacking": false,
+          "is_blocking": false,
+          "card_types": [
+            "Creature"
+          ],
+          "subtypes": [
+            "Elemental",
+            "Incarnation"
+          ],
+          "object_kind": "CARD",
+          "counters": {},
+          "ability_grp_ids": [
+            194102,
+            194103,
+            194104
+          ],
+          "damaged_this_turn": false,
+          "class_level": 0,
+          "color_production": [],
+          "damage": 0,
+          "colors": [
+            "Red",
+            "Green"
+          ],
+          "base_grp_id": 98571
+        }
+      ],
+      "opponent_graveyard": [
+        {
+          "instance_id": 459,
+          "grp_id": 77062,
+          "name": "Scalding Tarn",
+          "oracle_text": "{oT}, Pay 1 life, Sacrifice this land: Search your library for an Island or Mountain card, put it onto the battlefield, then shuffle.",
+          "type_line": "Land",
+          "mana_cost": "",
+          "owner_seat_id": 1,
+          "controller_seat_id": 1,
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "is_attacking": false,
+          "is_blocking": false,
+          "card_types": [
+            "Land"
+          ],
+          "subtypes": [],
+          "object_kind": "CARD",
+          "counters": {},
+          "ability_grp_ids": [
+            99236
+          ],
+          "damaged_this_turn": false,
+          "class_level": 0,
+          "color_production": [],
+          "damage": 0,
+          "base_grp_id": 77062
+        },
+        {
+          "instance_id": 648,
+          "grp_id": 98571,
+          "name": "Vibrance",
+          "oracle_text": "When this creature enters, if {oRoR} was spent to cast it, this creature deals 3 damage to any target.\nWhen this creature enters, if {oGoG} was spent to cast it, search your library for a land card, reveal it, put it into your hand, then shuffle. You gain 2 life.\nEvoke {o(R/G)o(R/G)}",
+          "type_line": "Creature \u2014 Elemental Incarnation",
+          "mana_cost": "{3}{R/G}{R/G}",
+          "owner_seat_id": 1,
+          "controller_seat_id": 1,
+          "power": 4,
+          "toughness": 4,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "is_attacking": false,
+          "is_blocking": false,
+          "card_types": [
+            "Creature"
+          ],
+          "subtypes": [
+            "Elemental",
+            "Incarnation"
+          ],
+          "object_kind": "CARD",
+          "counters": {},
+          "ability_grp_ids": [
+            194102,
+            194103,
+            194104
+          ],
+          "damaged_this_turn": false,
+          "class_level": 0,
+          "color_production": [],
+          "damage": 0,
+          "colors": [
+            "Red",
+            "Green"
+          ],
+          "base_grp_id": 98571
+        },
+        {
+          "instance_id": 774,
+          "grp_id": 91167,
+          "name": "Fury",
+          "oracle_text": "Double strike\nWhen this creature enters, it deals 4 damage divided as you choose among any number of target creatures and/or planeswalkers.\nEvoke\u2014Exile a red card from your hand.",
+          "type_line": "Creature \u2014 Elemental Incarnation",
+          "mana_cost": "{3}{R}{R}",
+          "owner_seat_id": 1,
+          "controller_seat_id": 1,
+          "power": 3,
+          "toughness": 3,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "is_attacking": false,
+          "is_blocking": false,
+          "card_types": [
+            "Creature"
+          ],
+          "subtypes": [
+            "Elemental",
+            "Incarnation"
+          ],
+          "object_kind": "CARD",
+          "counters": {},
+          "keywords": [
+            "double strike"
+          ],
+          "ability_grp_ids": [
+            3,
+            141585,
+            141586
+          ],
+          "damaged_this_turn": false,
+          "class_level": 0,
+          "color_production": [],
+          "damage": 0,
+          "colors": [
+            "Red"
+          ],
+          "base_grp_id": 91167
+        },
+        {
+          "instance_id": 880,
+          "grp_id": 77063,
+          "name": "Verdant Catacombs",
+          "oracle_text": "{oT}, Pay 1 life, Sacrifice this land: Search your library for a Swamp or Forest card, put it onto the battlefield, then shuffle.",
+          "type_line": "Land",
+          "mana_cost": "",
+          "owner_seat_id": 1,
+          "controller_seat_id": 1,
+          "power": null,
+          "toughness": null,
+          "is_tapped": false,
+          "turn_entered_battlefield": -1,
+          "is_attacking": false,
+          "is_blocking": false,
+          "card_types": [
+            "Land"
+          ],
+          "subtypes": [],
+          "object_kind": "CARD",
+          "counters": {},
+          "ability_grp_ids": [
+            99277
+          ],
+          "damaged_this_turn": false,
+          "class_level": 0,
+          "color_production": [],
+          "damage": 0,
+          "base_grp_id": 77063
+        }
+      ],
+      "opponent_library_count": 84
+    },
+    "_zone_aliases": [
+      "battlefield",
+      "command",
+      "exile",
+      "graveyard",
+      "hand",
+      "my_hand",
+      "stack"
+    ]
+  },
+  "reasoning": "Kill their Minsc engine; their big Boo is tapped so crackback is limited.",
+  "strategy": "Trade our hasty 4/4 Boo into their planeswalker while their 7/7 trampler is tapped.",
+  "chosen_options": [
+    "Boo [id:978] -> Minsc & Boo, Timeless Heroes [760]"
+  ]
+}

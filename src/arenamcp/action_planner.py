@@ -5127,6 +5127,7 @@ class ActionPlanner(_ActionLegalityMixin):
         try:
             chosen = self._llm_decision_options(decision, game_state)
             self._correct_false_lethal_claim(game_state, decision)
+            self._correct_tapped_crackback_claim(game_state, decision, chosen)
             from arenamcp.basic_land_choice import is_basic_land_choice
 
             if is_basic_land_choice(decision) and not decision.selection_is_valid(chosen):
@@ -7775,6 +7776,47 @@ class ActionPlanner(_ActionLegalityMixin):
             for sentence in re.split(r"(?<=[.!?])\s+", str(text or ""))
             if cls._LETHAL_NOW.search(sentence) and not cls._LETHAL_LATER.search(sentence)
         ]
+
+    def _correct_tapped_crackback_claim(
+        self, game_state: dict[str, Any], decision: Any, chosen: list[str]
+    ) -> None:
+        """Append the board facts an attack's "tapped enemy limits crackback" premise ignores.
+
+        2026-11-12 (Gar vs Minsc T8): the plan attacked our hasty 4/4 Boo at
+        their 3-loyalty Minsc saying "their big Boo is tapped so crackback is
+        limited" while their untapped Curator 3/3 and Halfling 2/3 could
+        double block and their Boo untaps normally next turn. Narration-only:
+        the pick stands, the reasoning gains the facts, the trace records the
+        premise. Also asks for a rationale when the attack spends a creature
+        a guard held back earlier this turn.
+        """
+        if getattr(decision, "request_type", "") != "DeclareAttackers":
+            return
+        reasoning = self._last_decision_reasoning
+        if not reasoning:
+            return
+        from arenamcp.attack_premises import held_blocker_reconciliation, tapped_crackback_correction
+
+        correction = tapped_crackback_correction(game_state, reasoning)
+        attacker_names = [str(label).split(" [id:")[0].strip() for label in chosen or []]
+        reconciliation = ""
+        if attacker_names:
+            reconciliation = held_blocker_reconciliation(
+                self._memory().this_turn(game_state), attacker_names
+            )
+        additions = " ".join(part for part in (correction, reconciliation) if part)
+        if not additions:
+            return
+        self._last_decision_reasoning = f"{str(reasoning).rstrip()} {additions}".strip()
+        if isinstance(self._last_decision_trace, dict):
+            self._last_decision_trace["tapped_crackback_claim"] = {
+                "correction": correction,
+                "reconciliation": reconciliation,
+            }
+        logger.warning(
+            "attack reasoning rested on a tapped-enemy premise; board facts appended (%s)",
+            "; ".join(filter(None, (correction[:60], reconciliation[:60]))),
+        )
 
     def _correct_false_lethal_claim(self, game_state: dict[str, Any], decision: Any = None) -> None:
         """Strip a "lethal this turn" claim the deterministic board facts contradict.
