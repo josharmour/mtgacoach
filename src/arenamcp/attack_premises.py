@@ -47,9 +47,12 @@ Limits (deliberately bounded):
 - Who-can-block claims are DERIVED FROM THE LEGAL SET: when no untapped
   creature can legally block (e.g. ground creatures facing a flyer, or a
   menacing attacker with fewer than two legal blockers), the text says so
-  instead of asserting they "can still block"; when legality was not
-  evaluated (multi-attacker plans or missing stats) only neutral availability
-  ("are still untapped this combat") is stated.
+  instead of asserting they "can still block"; a MIXED pool names only its
+  legal members as able to block (review finding on d7fc70f); when legality
+  was not evaluated (multi-attacker plans or missing stats) only neutral
+  availability ("are still untapped this combat") is stated.
+- Unblocked damage is production resolution, not raw power: double strike
+  doubles the damage that gets through (review finding on d7fc70f).
 - Whole-assignment restrictions are enforced on top of per-blocker legality:
   menace requires TWO blockers, so singleton assignments are never scored
   against a menacing attacker (review finding on 167cdf0). Restrictions the
@@ -259,6 +262,25 @@ _UNMODELLED_MULTI_BLOCK = re.compile(
     re.IGNORECASE,
 )
 
+
+def _legal_blocker_bodies(attacker_body: dict, blockers: list[dict]) -> list[dict] | None:
+    """The candidate blockers that can legally block ``attacker_body``.
+
+    Solver-built bodies (:func:`board_assessment._body`,
+    :func:`combat_solver._can_block`). Returns ``None`` when ANY candidate's
+    power/toughness is unknown - legality was then not evaluated for the pool
+    and callers must stay neutral rather than claim who can block (review
+    finding on d7fc70f)."""
+    legal = []
+    for card in blockers:
+        body = _body(card, _PROBE_TURN, {})
+        if body is None:
+            return None
+        if _can_block(attacker_body, body):
+            legal.append(body)
+    return legal
+
+
 _MAX_COUNTER_BLOCK_ASSIGNMENTS = 512
 
 
@@ -381,13 +403,13 @@ def _best_block_verdict(
     power = attacker_body["power"]
     toughness = attacker_body["toughness"]
     desc = f"the {power}/{toughness} attacker"
-    legal = []
-    for card in blockers:
-        body = _body(card, _PROBE_TURN, {})
-        if body is None:
-            return BlockVerdict()  # missing stats: decline definitive arithmetic
-        if _can_block(attacker_body, body):
-            legal.append(body)
+    legal = _legal_blocker_bodies(attacker_body, blockers)
+    if legal is None:
+        return BlockVerdict()  # missing stats: decline definitive arithmetic
+    # Production unblocked resolution (double strike doubles the through
+    # damage, combat-hit bonuses apply): never narrate raw power as the
+    # unblocked damage (review finding on d7fc70f).
+    unblocked_through = int(_resolve_attacker_damage(attacker_body, []).damage_through or 0)
     if not legal:
         reason = (
             "only a creature with flying or reach can block a flyer"
@@ -397,24 +419,28 @@ def _best_block_verdict(
         clause = f"none of their untapped creatures can legally block {desc}"
         if reason:
             clause += f" ({reason})"
-        clause += f"; all {power} damage goes to {victim} this combat."
+        clause += f"; all {unblocked_through} damage goes to {victim} this combat."
         outcome = (
             f"nothing among their untapped creatures can legally block "
-            f"{attacker_body['name']}; all {power} damage goes to {victim}"
+            f"{attacker_body['name']}; all {unblocked_through} damage goes to {victim}"
         )
-        return BlockVerdict(clause=clause, outcome=outcome, unharmed=False, through=power, no_legal=True)
+        return BlockVerdict(
+            clause=clause, outcome=outcome, unharmed=False, through=unblocked_through, no_legal=True
+        )
     if has_combat_keyword(attacker, "menace") and len(legal) < 2:
         # Whole-assignment restriction: a menacing attacker cannot be legally
         # blocked by a single creature (review finding on 167cdf0).
         clause = (
             f"only two or more creatures can block the menacing "
-            f"{power}/{toughness} attacker; all {power} damage goes to {victim} this combat."
+            f"{power}/{toughness} attacker; all {unblocked_through} damage goes to {victim} this combat."
         )
         outcome = (
             f"their single legal blocker cannot stop {attacker_body['name']}; "
-            f"all {power} damage goes to {victim}"
+            f"all {unblocked_through} damage goes to {victim}"
         )
-        return BlockVerdict(clause=clause, outcome=outcome, unharmed=False, through=power, no_legal=True)
+        return BlockVerdict(
+            clause=clause, outcome=outcome, unharmed=False, through=unblocked_through, no_legal=True
+        )
     if _UNMODELLED_MULTI_BLOCK.search(str(attacker.get("oracle_text") or "")):
         return BlockVerdict()  # unmodellable whole-assignment restriction: safe unknown
     pw_loyalty = None
@@ -437,12 +463,8 @@ def _best_block_verdict(
         body for body in legal if plan.assignments.get(body["instance_id"]) == attacker_body["instance_id"]
     ]
     if not assigned:
-        clause = (
-            f"their best block leaves the attack unblocked; all {power} damage goes to {victim} this combat."
-        )
-        outcome = (
-            f"their best block leaves {attacker_body['name']} unblocked; all {power} damage goes to {victim}"
-        )
+        clause = f"their best block leaves the attack unblocked; all {through} damage goes to {victim} this combat."
+        outcome = f"their best block leaves {attacker_body['name']} unblocked; all {through} damage goes to {victim}"
         return BlockVerdict(clause=clause, outcome=outcome, unharmed=False, through=through)
     used_names = ", ".join(str(body["name"]) for body in assigned)
     kill_part = (
@@ -590,10 +612,23 @@ def tapped_crackback_correction(
             # the computed no-legal-block verdict that follows it.
             clause = f"Their untapped {_describe(untapped)} are still untapped this combat - {verdict.clause}"
         else:
-            clause = (
-                f"Their untapped {_describe(untapped)} can still block this attack now, alone or together"
-            )
-            clause += f" - {verdict.clause}" if verdict.clause else "."
+            legal = None
+            if solo:
+                solo_body = _body(solo, _PROBE_TURN, {})
+                if solo_body is not None:
+                    legal = _legal_blocker_bodies(solo_body, untapped)
+            if legal:
+                # Name ONLY the legal members of the pool (review finding on
+                # d7fc70f): a mixed pool never credits its illegal members.
+                clause = (
+                    f"Their untapped {_describe(legal)} can still block this attack now, alone or together"
+                )
+                clause += f" - {verdict.clause}" if verdict.clause else "."
+            else:
+                # Legality was not evaluated (multi-attacker plan or missing
+                # stats): neutral availability only - never claim they can
+                # block (review finding on d7fc70f).
+                clause = f"Their untapped {_describe(untapped)} are still untapped this combat."
         clauses.append(clause)
     if tapped:
         clauses.append(

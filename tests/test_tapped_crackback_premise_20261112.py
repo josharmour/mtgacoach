@@ -144,11 +144,16 @@ def test_no_enemy_creature_tapped_still_flags_current_blockers(state):
     assert UNTAP_PHRASE not in correction.text
 
 
-def test_multi_attacker_declarations_get_the_qualitative_clause_only(state):
-    ours_boos = _ours(state, "Boo")
+def test_multi_attacker_declarations_get_neutral_availability_only(state):
+    # The recorded board has a single creature, so add a synthetic second
+    # attacker to exercise the multi-attacker path.
+    ours_boos = _ours(state, "Boo") + [dict(_ours(state, "Boo")[0], instance_id=979)]
     correction = tapped_crackback_correction(state, REASONING, attackers=ours_boos, target=TARGET)
-    # Two attackers: no single-attacker arithmetic — the qualitative facts only.
-    assert BLOCK_PHRASE in correction.text
+    # Two attackers: legality was not evaluated, so the availability claim
+    # stays neutral - it never asserts who can block (review finding on
+    # d7fc70f).
+    assert BLOCK_PHRASE not in correction.text
+    assert "are still untapped this combat" in correction.text
     assert UNTAP_PHRASE in correction.text
     assert "would kill the" not in correction.text
 
@@ -752,3 +757,112 @@ def test_plan_guard_reversal_of_this_turns_blocker_commitment_carries_the_valida
     assert COMMITTED_REASONING in action.reasoning
     # The reversal states its validated consequence on this board.
     assert f"reverses that commitment - on this board, {VALIDATED_OUTCOME}." in action.reasoning
+
+
+# --------------------------------------------------------------------------- #
+# Mixed legality + production unblocked damage (review findings on d7fc70f)
+# --------------------------------------------------------------------------- #
+
+
+def _synth_state(*cards):
+    return {
+        "local_seat_id": 2,
+        "players": [
+            {"seat_id": 2, "is_local": True},
+            {"seat_id": 1, "life_total": 20},
+        ],
+        "battlefield": list(cards),
+    }
+
+
+_FLYING_BOO = {
+    "instance_id": 978,
+    "name": "Boo",
+    "power": 4,
+    "toughness": 4,
+    "type_line": "Creature — Hamster",
+    "controller_seat_id": 2,
+    "keywords": ["flying"],
+}
+_DOUBLE_STRIKE_FLYING_BOO = {**_FLYING_BOO, "keywords": ["flying", "double strike"]}
+_REACH_CURATOR = {
+    "instance_id": 202,
+    "name": "Keen-Eyed Curator",
+    "power": 3,
+    "toughness": 3,
+    "type_line": "Creature — Bird Scout",
+    "controller_seat_id": 1,
+    "keywords": ["reach"],
+}
+_GROUND_HALFLING = {
+    "instance_id": 201,
+    "name": "Delighted Halfling",
+    "power": 2,
+    "toughness": 3,
+    "type_line": "Creature — Halfling Citizen",
+    "controller_seat_id": 1,
+}
+_WALKER_6 = {
+    "instance_id": 760,
+    "name": TARGET,
+    "type_line": "Planeswalker — Human Warrior",
+    "loyalty": 6,
+    "controller_seat_id": 1,
+}
+
+
+def test_mixed_legality_pool_names_only_the_legal_blockers():
+    """Flyer vs reach Curator + ground Halfling: only the Curator is named.
+
+    Review finding on d7fc70f: a mixed pool credited BOTH members as able to
+    block alone/together although only the reach creature is legal.
+    """
+    state = _synth_state(_REACH_CURATOR, _GROUND_HALFLING, _WALKER_6)
+    correction = tapped_crackback_correction(state, REASONING, attackers=[dict(_FLYING_BOO)], target=TARGET)
+    assert f"Their untapped Keen-Eyed Curator 3/3 {BLOCK_PHRASE}" in correction.text
+    # The illegal member is never credited with a block claim.
+    assert "Delighted Halfling" not in correction.text
+
+
+def test_missing_blocker_stats_keep_the_availability_claim_neutral():
+    """Unknown blocker stats: neutral availability, no who-can-block claim."""
+    mystery = {
+        "instance_id": 203,
+        "name": "Mystery Bear",
+        "type_line": "Creature — Bear",
+        "controller_seat_id": 1,
+    }
+    state = _synth_state(mystery)
+    correction = tapped_crackback_correction(state, REASONING, attackers=[dict(_FLYING_BOO)], target="")
+    assert BLOCK_PHRASE not in correction.text
+    assert "Mystery Bear" in correction.text
+    assert "are still untapped this combat" in correction.text
+
+
+def test_double_strike_unblocked_damage_uses_production_resolution():
+    """Unblocked damage comes from the production resolver, not raw power.
+
+    Review finding on d7fc70f: a 4/4 flying double strike versus ground
+    blockers was narrated as 4 damage; production resolution gives 8.
+    """
+    clause = best_block_clause(dict(_DOUBLE_STRIKE_FLYING_BOO), [_GROUND_HALFLING], TARGET)
+    assert clause == (
+        f"none of their untapped creatures can legally block the 4/4 attacker "
+        f"(only a creature with flying or reach can block a flyer); "
+        f"all 8 damage goes to {TARGET} this combat."
+    )
+
+
+def test_double_strike_flyer_keeps_the_valid_kill_claim():
+    """The reviewer's exact scenario: kill claim survives on correct math.
+
+    4/4 flying double strike versus a ground blocker and a 6-loyalty walker:
+    production resolution puts all 8 through, so the kill claim is consistent
+    (append) instead of being stripped by the hardcoded-power arithmetic.
+    """
+    state = _synth_state(_GROUND_HALFLING, _WALKER_6)
+    correction = tapped_crackback_correction(
+        state, REASONING, attackers=[dict(_DOUBLE_STRIKE_FLYING_BOO)], target=TARGET
+    )
+    assert correction.mode == "append"
+    assert f"all 8 damage goes to {TARGET} this combat." in correction.text
