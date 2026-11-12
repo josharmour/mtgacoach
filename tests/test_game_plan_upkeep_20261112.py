@@ -501,6 +501,65 @@ def test_negated_or_nonreturning_recursion_does_not_keep_a_graveyard_route():
     assert not win_route_lost(plan, undying)  # a real self-return keeps the route
 
 
+def test_recursion_evidence_must_be_positive_and_share_the_route_cards_clause():
+    """0f92eb0 review gap: card-specific POSITIVE recursion evidence must live
+    in the SAME actual clause that names the route card.
+
+    'Etali's Favor is lost. Recur World Breaker instead.' — the recursion word
+    belongs to the NEXT sentence and to ANOTHER card, so it must not revive
+    the graveyard-only Favor route. 'Etali's Favor recursion is not
+    available.' — the recursion mention is negated ("is not available"), so
+    the route stays lost rather than being read as promised. A clause that
+    names the card AND positively promises its return still keeps the route.
+    """
+    zones = {
+        "players": [{"is_local": True, "seat_id": 1, "life_total": 20}],
+        "turn": {"turn_number": 9, "active_player": 1, "phase": "Main1"},
+        "battlefield": [],
+        "hand": [],
+        "graveyard": [{"instance_id": 5, "name": "Etali's Favor"}],
+        "exile": [],
+        "command": [],
+    }
+
+    def _routed(wins=None, **parts):
+        variant = GamePlan(
+            win_conditions=wins or ["win with Etali's Favor"], path="cast it and swing", **parts
+        )
+        variant.route_cards = ["etali's favor"]
+        return variant
+
+    displaced = _routed(develop_next="Etali's Favor is lost. Recur World Breaker instead.")
+    assert win_route_lost(displaced, zones)  # next-sentence recursion about ANOTHER card
+
+    negated_available = _routed(active_mechanisms=["Etali's Favor recursion is not available."])
+    assert win_route_lost(negated_available, zones)  # "is not available" is a negation
+
+    no_longer = _routed(active_mechanisms=["Etali's Favor recursion is no longer possible."])
+    assert win_route_lost(no_longer, zones)  # "no longer possible" is a negation too
+
+    same_clause = _routed(active_mechanisms=["Recur Etali's Favor from the graveyard next turn."])
+    assert not win_route_lost(same_clause, zones)  # positive same-clause promise survives
+
+    shared_sentence = _routed(
+        wins=["Set up the yard. Recur Etali's Favor with its retrace cost, then swing."]
+    )
+    assert not win_route_lost(shared_sentence, zones)  # name + recursion in ONE sentence of a part
+
+
+def test_observe_records_a_negated_recursion_route_as_lost_without_a_model_call(monkeypatch):
+    """Real observation path for the same gap: when the plan itself says the
+    route card's recursion is not available, observe() must record the route
+    as lost (not live) on the code-owned upkeep refresh — zero model calls."""
+    be, mgr = _formed_manager(monkeypatch)
+    mgr.current.route_cards = ["synthesizer"]
+    mgr.current.active_mechanisms = ["Synthesizer recursion is not available."]
+    mgr.observe(_state(turn=5, synth_on_board=False))
+    assert be.calls == 1  # upkeep stays code-owned
+    assert mgr.current.route_state["status"] == "lost"
+    assert mgr.current.route_state["pieces"]["synthesizer"] == "graveyard"
+
+
 def test_ledger_captures_fresh_upkeep_not_the_previous_turns_snapshot(monkeypatch):
     """f39b158 gap 2: the turn-5 ledger entry must describe the board as it
     stands NOW (engine destroyed between observations), not the stale turn-4
