@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -97,6 +98,23 @@ def fake_runs(monkeypatch):
     runs = FakeRuns()
     monkeypatch.setattr(dep_env.subprocess, "run", runs)
     return runs
+
+
+def _fake_uv_which(fake_uv: str):
+    """Return a ``shutil.which`` stand-in that resolves only ``uv``.
+
+    The dependency environment is hermetic: the locked-install path must be
+    driven by an explicitly supplied ``uv`` resolver, never by whatever
+    happens to sit on the ambient CI runner's PATH. Any other lookup is
+    delegated to the real ``shutil.which`` so unrelated behavior is intact.
+    """
+
+    def _which(name, *args, **kwargs):
+        if name == "uv":
+            return fake_uv
+        return shutil.which(name, *args, **kwargs)
+
+    return _which
 
 
 def test_ensure_dep_env_creates_versioned_env_with_binding_marker(snapshot_root, fake_runs, tmp_path):
@@ -314,8 +332,14 @@ def test_child_env_scrubs_smuggled_paths_and_keeps_user_state(snapshot_root, fak
     assert env["PATH"].split(os.pathsep)[0] == str(venv_python(expected_env_dir).parent)
 
 
-def test_uv_lock_drives_pinned_install_mode(snapshot_root, fake_runs, tmp_path):
+def test_uv_lock_drives_pinned_install_mode(snapshot_root, fake_runs, tmp_path, monkeypatch):
     (snapshot_root / "uv.lock").write_text("lock content\n", encoding="utf-8")
+    # A decoy loose requirements.txt must never be consumed when a lock ships.
+    (snapshot_root / "requirements.txt").write_text("loose-decoy==9\n", encoding="utf-8")
+    # Supply the uv resolver explicitly: the test is hermetic and does not
+    # depend on a real uv binary being present on the runner's PATH.
+    fake_uv = "/fake/bin/uv"
+    monkeypatch.setattr(dep_env.shutil, "which", _fake_uv_which(fake_uv))
     runtime_root = tmp_path / "runtime"
 
     env_dir = ensure_dep_env(snapshot_root, runtime_root=runtime_root)
@@ -323,13 +347,48 @@ def test_uv_lock_drives_pinned_install_mode(snapshot_root, fake_runs, tmp_path):
     marker = read_env_marker(env_dir)
     assert marker is not None
     assert marker["install_mode"] == "uv.lock"
-    # The lock was exported frozen from the snapshot tree...
+    # The lock was exported frozen by exactly the supplied uv resolver...
     export_calls = [c for c in fake_runs.calls if "export" in c and "--frozen" in c]
-    assert export_calls
-    # ...and pip installed THAT pinned file, not the loose requirements.txt.
+    assert len(export_calls) == 1
+    export_argv = export_calls[0]
+    assert export_argv[0] == fake_uv
+    for flag in ("--no-dev", "--no-hashes", "--no-emit-project"):
+        assert flag in export_argv
+    exported = Path(export_argv[export_argv.index("-o") + 1])
+    # ...and pip installed THAT pinned file — exactly the exported locked
+    # path — never the loose requirements.txt.
     pip_calls = [c for c in fake_runs.calls if "install" in c and "--no-input" in c]
-    assert pip_calls
-    assert any("-r" in c for c in pip_calls)
+    assert len(pip_calls) == 1
+    pip_argv = pip_calls[0]
+    consumed = Path(pip_argv[pip_argv.index("-r") + 1])
+    assert consumed == exported
+    assert consumed != snapshot_root / "requirements.txt"
+
+
+def test_missing_uv_refuses_locked_snapshot_without_installing(
+    snapshot_root, fake_runs, tmp_path, monkeypatch
+):
+    """A locked snapshot with no uv binary fails closed before any install."""
+    (snapshot_root / "uv.lock").write_text("lock content\n", encoding="utf-8")
+    monkeypatch.setattr(dep_env.shutil, "which", lambda name, *a, **k: None)
+    with pytest.raises(SnapshotError, match="uv is not installed"):
+        ensure_dep_env(snapshot_root, runtime_root=tmp_path / "r")
+    # The refusal happened before any dependency install: no pip ran, and
+    # nothing was promoted under the final identity.
+    assert not any("install" in c for c in fake_runs.calls)
+    assert not env_dir_for(env_identity(snapshot_root), tmp_path / "r").exists()
+
+
+def test_failed_uv_export_refuses_locked_snapshot_without_installing(snapshot_root, tmp_path, monkeypatch):
+    """A failed frozen export fails closed instead of degrading to loose reqs."""
+    (snapshot_root / "uv.lock").write_text("lock content\n", encoding="utf-8")
+    runs = FakeRuns(fail_step="export")
+    monkeypatch.setattr(dep_env.subprocess, "run", runs)
+    monkeypatch.setattr(dep_env.shutil, "which", _fake_uv_which("/fake/bin/uv"))
+    with pytest.raises(SnapshotError, match="uv.lock export failed"):
+        ensure_dep_env(snapshot_root, runtime_root=tmp_path / "r")
+    # No pip install ever ran against a half-exported lock.
+    assert not any("install" in c for c in runs.calls)
 
 
 def test_import_probe_failure_blocks_promotion_of_a_broken_environment(snapshot_root, tmp_path, monkeypatch):
