@@ -142,6 +142,12 @@ class CoachSession(QObject):
         # Consumed by _finish_restart; set only when a reload plan decided to
         # adopt a published snapshot at a safe checkpoint.
         self._pending_snapshot_target: tuple[str, str, str] | None = None
+        # Set when the running engine announces its committed handoff
+        # (``reload_ready``) while a restart is pending. A later process exit
+        # is only treated as a committed adoption when this was seen;
+        # otherwise the exit recovers the CURRENT engine version instead of
+        # adopting a snapshot the dying engine never announced.
+        self._reload_commit_seen = False
         self._adoption_generation = 0
         self._pending_rollback: tuple[tuple[str | None, str | None, str | None], dict[str, bool]] | None = (
             None
@@ -285,6 +291,7 @@ class CoachSession(QObject):
                 options[key] = value
         self._pending_restart = options
         self._reload_disposition_pending = False
+        self._reload_commit_seen = False
         self._speech.stop()
         self._set_startup_status(
             {
@@ -361,7 +368,16 @@ class CoachSession(QObject):
         )
 
     def _reload_disposition_expired(self, generation: int) -> None:
-        """Last-resort release when the engine never confirms a disposition."""
+        """Honest timeout: recovery responsibility is RETAINED, not dropped.
+
+        The engine never acknowledged either disposition (cancel or commit)
+        within a second full window. The pending restart and the awaited
+        disposition stay armed so the session keeps responsibility for the
+        outcome: a late ``engine_reload_cancelled`` acknowledgement releases
+        the UI with the current engine still running, and a late committed
+        exit (``reload_ready`` + process exit) proceeds with the restart.
+        Only a definitive disposition — or shutdown/stop — ends the wait.
+        """
         if generation != self._reload_generation or self._shutting_down:
             return
         if not getattr(self, "_reload_disposition_pending", False):
@@ -369,21 +385,16 @@ class CoachSession(QObject):
         if self._pending_restart is None or not self.is_running:
             self._reload_disposition_pending = False
             return
-        # The engine never acknowledged either disposition (cancel or commit)
-        # within a second full window. Abandon the reload visibly rather than
-        # leaving the UI in a permanent "reloading" limbo; the current engine
-        # keeps running either way.
-        self._reload_disposition_pending = False
         reason = (
-            "Engine did not confirm the reload cancellation in time; Reload "
-            "Engine was abandoned and the current engine keeps running."
+            "Engine has not confirmed the reload cancellation; recovery stays "
+            "armed — if the engine exits late the coach restarts automatically, "
+            "and if it confirms cancellation it keeps running."
         )
-        logger.warning("Safe reload abandoned: %s", reason)
-        self._pending_restart = None
-        self._pending_snapshot_target = None
-        self._reload_generation += 1
+        logger.warning("Safe reload unconfirmed after the grace window: %s", reason)
         self.logEmitted.emit(reason, "error")
-        self._set_startup_status({"phase": "ready", "message": reason, "ready": True})
+        # Deliberately NOT "ready": claiming the current engine keeps running
+        # here would be a promise the engine has not confirmed.
+        self._set_startup_status({"phase": "reloading", "message": reason, "ready": False})
 
     def _finish_restart(self) -> None:
         options = self._pending_restart
@@ -872,6 +883,15 @@ class CoachSession(QObject):
             # Its advice/readiness is obsolete once a reload is requested.
             return
 
+        if ev_type == "reload_ready":
+            # The engine committed its handoff at the safe boundary. Record
+            # it so the subsequent process exit is treated as a committed
+            # adoption; an exit WITHOUT this announcement recovers the
+            # current engine version instead (see _handle_exited).
+            if self._pending_restart is not None and not self._shutting_down:
+                self._reload_commit_seen = True
+            return
+
         if ev_type == "engine_reload_cancelled":
             # Definitive disposition from the engine: it disarmed the reload
             # (acknowledged cancel/commit ordering guarantees it was not
@@ -1078,6 +1098,14 @@ class CoachSession(QObject):
                 )
             )
         if self._pending_restart is not None and not self._shutting_down:
+            if not getattr(self, "_reload_commit_seen", False):
+                # The engine exited without ever announcing the committed
+                # handoff (no reload_ready): this is not an adoption. Drop
+                # the snapshot target so the recovery restart brings the
+                # CURRENT engine version back up instead of adopting a
+                # snapshot the dying engine never confirmed.
+                self._pending_snapshot_target = None
+            self._reload_commit_seen = False
             # Defer until QProcess.finished has returned and cleaned up the
             # old child; never allow two engines to control Arena at once.
             QTimer.singleShot(0, self._finish_restart)
@@ -1097,6 +1125,7 @@ class CoachSession(QObject):
         self._shutting_down = True
         self._pending_restart = None
         self._reload_disposition_pending = False
+        self._reload_commit_seen = False
         self._reload_generation += 1
         self._speech.close()
         if self._tts is not None:
