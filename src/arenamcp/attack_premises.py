@@ -32,14 +32,26 @@ what changed and why it still stands on the board facts.
 Limits (deliberately bounded):
 - The best-block evaluation reuses the production combat engine -
   :func:`arenamcp.board_assessment._body` builds each body and
-  :func:`arenamcp.combat_solver.optimal_blocks` searches their best block
-  with our single attacker, with :func:`arenamcp.combat_solver._can_block`
-  deciding blocking legality. Flying/reach legality, deathtouch,
-  indestructible and trample therefore come from the same solver the line
-  search uses; this module performs no arithmetic of its own.
+  :func:`arenamcp.combat_solver._can_block` decides blocking legality.
+  Against a life total the search is :func:`combat_solver.optimal_blocks`;
+  against a PLANESWALKER victim every legal block assignment is resolved by
+  :func:`combat_solver._resolve_attacker_damage` and the least damage through
+  wins - a life-optimal search happily leaves a walker unblocked, so it can
+  never validate or refute a walker kill claim (review finding on 2317892).
+  Flying/reach legality, deathtouch, indestructible and trample therefore all
+  come from the same solver the line search uses; this module performs no
+  arithmetic of its own.
 - Missing power/toughness on the attacker or ANY candidate blocker means
-  no definitive verdict: the clause degrades to who-can-block facts and
-  never claims a guaranteed outcome.
+  no definitive verdict: the clause degrades to availability facts and never
+  claims a guaranteed outcome.
+- Who-can-block claims are DERIVED FROM THE LEGAL SET: when no untapped
+  creature can legally block (e.g. ground creatures facing a flyer), the text
+  says so instead of asserting they "can still block"; when legality was not
+  evaluated (multi-attacker plans or missing stats) only neutral availability
+  ("are still untapped this combat") is stated.
+- Enumeration of counter-block assignments is capped; past the cap an honest
+  unknown replaces any "their best block" claim (a found saving block still
+  proves one exists - a subset minimum bounds the true best from above).
 - Defender life for the block search comes from the snapshot via the
   engine's convention (:func:`arenamcp.board_assessment._life`, 20 when
   unknown).
@@ -68,7 +80,7 @@ from typing import Any
 
 from arenamcp.board_assessment import _body, _life
 from arenamcp.combat_keywords import has_combat_keyword
-from arenamcp.combat_solver import _can_block, optimal_blocks
+from arenamcp.combat_solver import _can_block, _resolve_attacker_damage, optimal_blocks
 from arenamcp.combat_strategy import loyalty
 
 # Bodies for evaluation are built far past any summoning-sickness window:
@@ -114,6 +126,8 @@ _KILL_SWAP = {
 # corrected on a previous pass - never append or replace twice.
 _CORRECTED_MARKERS = (
     "can still block this attack now",
+    "cannot legally block this attack now",
+    "are still untapped this combat",
     "Tapped now is not tapped next combat",
     "reverses this turn's hold-back",
     "reverses that commitment",
@@ -215,21 +229,128 @@ def _swap_kill_match(match: re.Match) -> str:
     return replacement.capitalize() if phrase[:1].isupper() else replacement
 
 
-def _best_block_verdict(attacker: dict, blockers: list[dict], victim: str, life: int):
+@dataclass(frozen=True)
+class BlockVerdict:
+    """What their best block does to one attacker and its victim.
+
+    ``clause``/``outcome`` are empty when nothing definitive can be stated;
+    ``no_legal`` marks a board where no untapped creature can legally block;
+    ``unharmed``/``through`` carry the validated damage verdict."""
+
+    clause: str = ""
+    outcome: str = ""
+    unharmed: bool | None = None
+    through: int | None = None
+    no_legal: bool = False
+
+
+_MAX_COUNTER_BLOCK_ASSIGNMENTS = 512
+
+
+def _counter_block_search(attacker_body: dict, legal: list[dict]):
+    """The least damage ``attacker_body`` forces through any legal block.
+
+    Every candidate assignment - each singleton and combination of legal
+    blockers - is resolved by the production engine,
+    :func:`combat_solver._resolve_attacker_damage`, so trample spill order,
+    deathtouch and double strike are exactly what the line search plays with;
+    no arithmetic lives here. Returns ``(least_through, names, attacker_died,
+    complete)``; ``complete`` is False when the enumeration hit the assignment
+    cap - the minimum found then bounds the true best from above only, so a
+    found saving block still proves one exists but no "their best block"
+    superlative may be claimed.
+    """
+    from itertools import combinations
+
+    least_through: int | None = None
+    least_names = ""
+    least_attacker_died = False
+    evaluated = 0
+    complete = True
+    for size in range(1, len(legal) + 1):
+        for combo in combinations(legal, size):
+            evaluated += 1
+            if evaluated > _MAX_COUNTER_BLOCK_ASSIGNMENTS:
+                complete = False
+                break
+            out = _resolve_attacker_damage(attacker_body, list(combo))
+            through = int(out.damage_through or 0)
+            if least_through is None or through < least_through:
+                least_through = through
+                least_names = ", ".join(str(body["name"]) for body in combo)
+                least_attacker_died = bool(out.attacker_died)
+        if not complete:
+            break
+    return least_through, least_names, least_attacker_died, complete
+
+
+def _planeswalker_block_verdict(
+    attacker_body: dict, legal: list[dict], victim: str, pw_loyalty: int
+) -> BlockVerdict:
+    """A kill-claim-appropriate verdict against a planeswalker victim.
+
+    The life-optimal search answers what a defender concedes to protect life -
+    it will happily leave a planeswalker unblocked, so it can neither validate
+    nor refute a walker kill claim (review finding on 2317892). What a kill
+    claim needs is whether any legal block holds the attacker's damage below
+    the walker's loyalty: every legal assignment is resolved by the production
+    engine and the least damage through wins."""
+    power = attacker_body["power"]
+    desc = f"the {power}/{attacker_body['toughness']} attacker"
+    through, names, attacker_died, complete = _counter_block_search(attacker_body, legal)
+    if through is None:
+        return BlockVerdict()
+    fate = f"kills {desc}" if attacker_died else f"{desc} survives"
+    if through == 0:
+        qualifier = "their best block" if complete else "blocking"
+        clause = f"{qualifier} ({names}) {fate} and {victim} takes no damage this combat."
+        outcome = f"{qualifier} ({names}) leaves {victim} unharmed"
+        return BlockVerdict(clause=clause, outcome=outcome, unharmed=True, through=0)
+    if through < pw_loyalty:
+        # A saving block exists: the subset minimum bounds the true best from above.
+        qualifier = "their best block" if complete else "blocking"
+        clause = (
+            f"{qualifier} ({names}) {fate} and only {through} damage gets through "
+            f"to {victim}, below its {pw_loyalty} loyalty."
+        )
+        outcome = (
+            f"{qualifier} ({names}) holds the damage to {through}, below {victim}'s {pw_loyalty} loyalty"
+        )
+        return BlockVerdict(clause=clause, outcome=outcome, unharmed=False, through=through)
+    if not complete:
+        return BlockVerdict()  # cannot prove "best": honest unknown
+    clause = (
+        f"even their best legal block ({names}) lets {through} damage through to "
+        f"{victim}, removing its {pw_loyalty} loyalty."
+    )
+    outcome = f"even their best legal block lets {through} damage through to {victim}"
+    return BlockVerdict(clause=clause, outcome=outcome, unharmed=False, through=through)
+
+
+def _best_block_verdict(
+    attacker: dict,
+    blockers: list[dict],
+    victim: str,
+    life: int,
+    target_card: dict | None = None,
+) -> BlockVerdict:
     """Evaluate their best block with the production combat solver.
 
-    Returns ``(clause, short_outcome, target_unharmed, damage_through)``;
-    ``("", "", None, None)`` when nothing definitive can be stated (no
-    blockers, missing power/toughness on the attacker or any candidate, or a
-    search that found no plan). Blocking legality (flying/reach/menace),
-    deathtouch, indestructible and trample all come from
-    :func:`combat_solver.optimal_blocks` / :func:`combat_solver._can_block`
-    - no arithmetic here."""
+    Returns a :class:`BlockVerdict`; an empty clause when nothing definitive
+    can be stated (no blockers, missing power/toughness on the attacker or any
+    candidate, or a search that found no plan). Blocking legality
+    (flying/reach/menace), deathtouch, indestructible and trample all come
+    from :func:`combat_solver.optimal_blocks` /
+    :func:`combat_solver._resolve_attacker_damage` /
+    :func:`combat_solver._can_block` - no arithmetic here. When
+    ``target_card`` is a planeswalker with known loyalty the verdict switches
+    to the target-appropriate counter-block evaluation; the life-optimal
+    search cannot speak to walker survival."""
     if not blockers:
-        return "", "", None, None
+        return BlockVerdict()
     attacker_body = _body(attacker, _PROBE_TURN, {})
     if attacker_body is None:
-        return "", "", None, None
+        return BlockVerdict()
     power = attacker_body["power"]
     toughness = attacker_body["toughness"]
     desc = f"the {power}/{toughness} attacker"
@@ -237,7 +358,7 @@ def _best_block_verdict(attacker: dict, blockers: list[dict], victim: str, life:
     for card in blockers:
         body = _body(card, _PROBE_TURN, {})
         if body is None:
-            return "", "", None, None  # missing stats: decline definitive arithmetic
+            return BlockVerdict()  # missing stats: decline definitive arithmetic
         if _can_block(attacker_body, body):
             legal.append(body)
     if not legal:
@@ -254,7 +375,7 @@ def _best_block_verdict(attacker: dict, blockers: list[dict], victim: str, life:
             f"nothing among their untapped creatures can legally block "
             f"{attacker_body['name']}; all {power} damage goes to {victim}"
         )
-        return clause, outcome, False, power
+        return BlockVerdict(clause=clause, outcome=outcome, unharmed=False, through=power, no_legal=True)
     if has_combat_keyword(attacker, "menace") and len(legal) == 1:
         clause = (
             f"only two or more creatures can block the menacing {desc}; "
@@ -264,10 +385,15 @@ def _best_block_verdict(attacker: dict, blockers: list[dict], victim: str, life:
             f"their single legal blocker cannot stop {attacker_body['name']}; "
             f"all {power} damage goes to {victim}"
         )
-        return clause, outcome, False, power
+        return BlockVerdict(clause=clause, outcome=outcome, unharmed=False, through=power, no_legal=True)
+    pw_loyalty = None
+    if target_card is not None and "Planeswalker" in str(target_card.get("type_line") or ""):
+        pw_loyalty = loyalty(target_card)
+    if pw_loyalty is not None:
+        return _planeswalker_block_verdict(attacker_body, legal, victim, int(pw_loyalty))
     plan = optimal_blocks([attacker_body], legal, max(1, int(life)), caller="attack_premises")
     if plan is None:
-        return "", "", None, None  # no searched plan: decline definitive arithmetic
+        return BlockVerdict()  # no searched plan: decline definitive arithmetic
     through = int(plan.damage_through or 0)
     dead_attacker = attacker_body["instance_id"] in (plan.attackers_killed_ids or frozenset())
     assigned = [
@@ -280,7 +406,7 @@ def _best_block_verdict(attacker: dict, blockers: list[dict], victim: str, life:
         outcome = (
             f"their best block leaves {attacker_body['name']} unblocked; all {power} damage goes to {victim}"
         )
-        return clause, outcome, False, through
+        return BlockVerdict(clause=clause, outcome=outcome, unharmed=False, through=through)
     used_names = ", ".join(str(body["name"]) for body in assigned)
     kill_part = (
         f"their best block ({used_names}) kills {desc}"
@@ -297,23 +423,63 @@ def _best_block_verdict(attacker: dict, blockers: list[dict], victim: str, life:
         f"{'their best block kills' if dead_attacker else 'their best block cannot kill'} "
         f"{attacker_body['name']} and {damage_part}"
     )
-    return clause, outcome, through == 0, through
+    return BlockVerdict(clause=clause, outcome=outcome, unharmed=through == 0, through=through)
 
 
-def best_block_clause(attacker: dict, blockers: list[dict], target: str = "", life: int = 20) -> str:
+def best_block_clause(
+    attacker: dict,
+    blockers: list[dict],
+    target: str = "",
+    life: int = 20,
+    target_card: dict | None = None,
+) -> str:
     """What their best block does to one attacker and the thing it attacks.
 
     Solver-backed single-attacker evaluation with their untapped creatures as
-
     the defender's pool. Returns "" when nothing definitive can be said."""
-    clause, _, _, _ = _best_block_verdict(attacker, blockers, target or "the attack's target", life)
-    return clause
+    return _best_block_verdict(
+        attacker, blockers, target or "the attack's target", life, target_card=target_card
+    ).clause
 
 
-def best_block_outcome(attacker: dict, blockers: list[dict], target: str = "", life: int = 20) -> str:
+def best_block_outcome(
+    attacker: dict,
+    blockers: list[dict],
+    target: str = "",
+    life: int = 20,
+    target_card: dict | None = None,
+) -> str:
     """The same verdict as one short clause for commitment reconciliation."""
-    _, outcome, _, _ = _best_block_verdict(attacker, blockers, target or "the attack's target", life)
-    return outcome
+    return _best_block_verdict(
+        attacker, blockers, target or "the attack's target", life, target_card=target_card
+    ).outcome
+
+
+def target_permanent(state: dict, target: str):
+    """Their permanent named by ``target``, when its name matches (public)."""
+    return _target_card(state, target)
+
+
+def validated_attack_outcome(state: dict, attackers: list[dict] | None, target: str = "") -> str:
+    """The solver-validated best-block verdict for this attack, as one clause.
+
+    Empty when the attack is not a single fully-statted attacker or nothing
+    definitive can be stated. Planner hooks pass it to
+    :func:`held_blocker_reconciliation` so a commitment reversal states its
+    consequence on this board instead of asserting a bare reversal."""
+    solo = attackers[0] if attackers and len(attackers) == 1 else None
+    if solo is None:
+        return ""
+    untapped = [card for card in _their_creatures(state) if not card.get("is_tapped")]
+    if not untapped:
+        return ""
+    return _best_block_verdict(
+        solo,
+        untapped,
+        target or "the attack's target",
+        defender_life(state),
+        target_card=_target_card(state, target),
+    ).outcome
 
 
 def _target_card(state: dict, target: str):
@@ -370,18 +536,19 @@ def tapped_crackback_correction(
     tapped = [card for card in theirs if card.get("is_tapped")]
     untapped = [card for card in theirs if not card.get("is_tapped")]
     solo = attackers[0] if attackers and len(attackers) == 1 else None
-    verdict_clause = ""
-    unharmed: bool | None = None
-    through: int | None = None
+    verdict = BlockVerdict()
     clauses: list[str] = []
     if untapped:
-        verdict_clause, _, unharmed, through = (
-            _best_block_verdict(solo, untapped, target or "the attack's target", defender_life(state))
-            if solo
-            else ("", "", None, None)
-        )
+        if solo:
+            verdict = _best_block_verdict(
+                solo,
+                untapped,
+                target or "the attack's target",
+                defender_life(state),
+                target_card=_target_card(state, target),
+            )
         clause = f"Their untapped {_describe(untapped)} can still block this attack now, alone or together"
-        clause += f" - {verdict_clause}" if verdict_clause else "."
+        clause += f" - {verdict.clause}" if verdict.clause else "."
         clauses.append(clause)
     if tapped:
         clauses.append(
@@ -393,14 +560,14 @@ def tapped_crackback_correction(
         return CrackbackCorrection()
     kill_claimed = bool(_KILL_CLAIM.search(premise_sentence))
     contradicted = False
-    if kill_claimed and unharmed:
+    if kill_claimed and verdict.unharmed:
         contradicted = True
-    elif kill_claimed and through is not None:
+    elif kill_claimed and verdict.through is not None:
         # Below known planeswalker loyalty also contradicts a kill claim even
         # when some damage gets through.
         target_card = _target_card(state, target)
         target_loyalty = loyalty(target_card) if target_card is not None else None
-        if target_loyalty is not None and through < target_loyalty:
+        if target_loyalty is not None and verdict.through < target_loyalty:
             contradicted = True
     if contradicted:
         head_sentence = premise_sentence.split(";")[0].strip().rstrip(".")

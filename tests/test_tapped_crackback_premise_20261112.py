@@ -24,12 +24,14 @@ from types import SimpleNamespace
 import pytest
 
 from arenamcp import decision_memory
+from arenamcp.action_planner import ActionPlan, ActionPlanner, ActionType, GameAction
 from arenamcp.attack_premises import (
     apply_tapped_crackback,
     best_block_clause,
     defender_life,
     held_blocker_reconciliation,
     tapped_crackback_correction,
+    validated_attack_outcome,
 )
 from arenamcp.board_assessment import _body
 from arenamcp.combat_solver import optimal_blocks
@@ -388,3 +390,215 @@ def test_other_holds_do_not_leak_into_this_attack(state):
         reasoning="",
     )
     assert held_blocker_reconciliation(memory_obj.this_turn(state), ["Boo"]) == ""
+
+
+# --------------------------------------------------------------------------- #
+# Outcome-grounded reconciliation (review finding on 2317892: hooks omitted
+# the outcome arg, so a reversal was stated without its validated reason)
+# --------------------------------------------------------------------------- #
+
+VALIDATED_OUTCOME = (
+    "their best block (Keen-Eyed Curator, Delighted Halfling) leaves Minsc & Boo, Timeless Heroes unharmed"
+)
+
+
+def test_guard_hold_reconciliation_states_the_validated_outcome(state):
+    memory_obj = decision_memory.DecisionMemory()
+    memory_obj.record(
+        state,
+        SimpleNamespace(request_type="DeclareAttackers", source_label="guard", options=[]),
+        GUARD_HOLD_LABELS,
+        reasoning="",
+    )
+    note = held_blocker_reconciliation(memory_obj.this_turn(state), ["Boo"], outcome=VALIDATED_OUTCOME)
+    assert note == (
+        f"Attacking with Boo reverses this turn's hold-back - on this board, {VALIDATED_OUTCOME}."
+    )
+
+
+def test_committed_blocker_reconciliation_states_the_validated_outcome(state):
+    memory_obj = decision_memory.DecisionMemory()
+    memory_obj.record(
+        state,
+        SimpleNamespace(request_type="ChooseAbility", source_label="model", options=[]),
+        ["Boo"],
+        reasoning=COMMITTED_REASONING,
+    )
+    note = held_blocker_reconciliation(memory_obj.this_turn(state), ["Boo"], outcome=VALIDATED_OUTCOME)
+    assert note.startswith("Earlier this turn you committed Boo as a blocker")
+    assert f"reverses that commitment - on this board, {VALIDATED_OUTCOME}." in note
+
+
+def test_validated_attack_outcome_matches_the_recorded_board(state):
+    boo = _ours(state, "Boo")[0]
+    # The hook-facing helper derives the same verdict from the state alone.
+    assert validated_attack_outcome(state, [boo], TARGET) == VALIDATED_OUTCOME
+    # Non-single or unresolved attacks state nothing definitive.
+    second = dict(boo, instance_id=boo["instance_id"] + 1)
+    assert validated_attack_outcome(state, [boo, second], TARGET) == ""
+    assert validated_attack_outcome(state, None, TARGET) == ""
+
+
+# --------------------------------------------------------------------------- #
+# REAL PATH: typed-decision hook and plan-guard chain entry (restored from
+# c351f01 — review finding on 2317892: these regressions were deleted)
+# --------------------------------------------------------------------------- #
+
+
+def _planner(memory: decision_memory.DecisionMemory | None = None) -> ActionPlanner:
+    planner = ActionPlanner.__new__(ActionPlanner)
+    planner._last_decision_reasoning = REASONING
+    planner._last_decision_trace = {}
+    planner._decision_memory = memory if memory is not None else decision_memory.DecisionMemory()
+    return planner
+
+
+def _declare_attackers_decision() -> SimpleNamespace:
+    return SimpleNamespace(request_type="DeclareAttackers", target_name=TARGET)
+
+
+def _recorded_plan() -> tuple[ActionPlan, GameAction]:
+    """The recorded turn-8 plan shape: one DECLARE_ATTACKERS action via the GRE bridge."""
+    action = GameAction(
+        action_type=ActionType.DECLARE_ATTACKERS,
+        attacker_names=["Boo"],
+        attacker_instance_ids=[978],
+        attacker_targets={"Boo": TARGET},
+        target_names=[TARGET],
+        reasoning=REASONING,
+        model_choice=True,
+    )
+    return ActionPlan(actions=[action], overall_strategy=STRATEGY), action
+
+
+def test_recorded_t8_declaration_gains_board_facts_and_keeps_intent(state):
+    planner = _planner()
+
+    planner._correct_tapped_crackback_claim(state, _declare_attackers_decision(), CHOSEN)
+
+    reasoning = planner._last_decision_reasoning
+    # The unsupported kill certainty is REPLACED by the attack intent plus the
+    # solver-validated verdict (reviewer: replace, never append a contradiction).
+    assert reasoning.startswith("Attack their Minsc engine;")
+    assert "Kill their Minsc engine" not in reasoning
+    # The verdict clause: their best block kills the attacker, walker unharmed.
+    assert "kills the 4/4 attacker" in reasoning
+    assert f"{TARGET} takes no damage this combat" in reasoning
+    assert BLOCK_PHRASE in reasoning
+    assert UNTAP_PHRASE in reasoning
+    trace = planner.get_last_decision_trace()
+    assert trace["tapped_crackback_claim"]["correction"]
+    assert trace["tapped_crackback_claim"]["reconciliation"] == ""
+
+
+def test_non_declare_attackers_requests_are_untouched(state):
+    planner = _planner()
+
+    planner._correct_tapped_crackback_claim(state, SimpleNamespace(request_type="ActionsAvailable"), ["pass"])
+
+    assert planner._last_decision_reasoning == REASONING
+    assert "tapped_crackback_claim" not in planner.get_last_decision_trace()
+
+
+def test_reasoning_without_the_premise_is_left_alone(state):
+    reasoning = "Attack with Boo; it trades into the curator profitably."
+    planner = _planner()
+    planner._last_decision_reasoning = reasoning
+
+    planner._correct_tapped_crackback_claim(state, _declare_attackers_decision(), CHOSEN)
+
+    assert planner._last_decision_reasoning == reasoning
+
+
+def test_recorded_gre_bridge_declaration_gains_board_facts_via_plan_guard(state):
+    """Regression for the recorded path: empty typed options, GRE bridge, plan guard.
+
+    The recorded turn-8 request reached the planner as a plan whose single
+    DECLARE_ATTACKERS action carries the model's reasoning — never as a typed
+    decision (``build_pending_decision`` returns None for every attack alias
+    on that shape). The guard must correct THAT action's reasoning, which is
+    what ``_record_combat_decision`` records first.
+    """
+    plan, action = _recorded_plan()
+    context = {"type": "declare_attackers", "legal_attacker_ids": [978]}
+    planner = _planner()
+
+    planner._check_attack_premises(plan, state, context)
+
+    # Narration-only: one action, same pick, same target binding.
+    assert len(plan.actions) == 1
+    assert action.attacker_names == ["Boo"]
+    assert action.attacker_instance_ids == [978]
+    assert action.attacker_targets == {"Boo": TARGET}
+    # The unsupported kill certainty is replaced by intent + validated verdict;
+    # both independent facts land on the action's reasoning.
+    assert action.reasoning.startswith("Attack their Minsc engine;")
+    assert "Kill their Minsc engine" not in action.reasoning
+    assert BLOCK_PHRASE in action.reasoning
+    assert UNTAP_PHRASE in action.reasoning
+    assert f"{TARGET} takes no damage this combat" in action.reasoning
+
+
+def test_plan_guard_resolves_attackers_from_legal_ids_when_instance_ids_missing(state):
+    """The bridge binds instance ids late; resolution must not depend on them."""
+    plan, action = _recorded_plan()
+    action.attacker_instance_ids = []
+    context = {"type": "declare_attackers", "legal_attacker_ids": [978]}
+    planner = _planner()
+
+    planner._check_attack_premises(plan, state, context)
+
+    # Legal-id resolution still finds Boo, so the full validated verdict lands.
+    assert BLOCK_PHRASE in action.reasoning
+    assert UNTAP_PHRASE in action.reasoning
+    assert f"{TARGET} takes no damage this combat" in action.reasoning
+
+
+def test_plan_guard_leaves_plans_without_the_premise_alone(state):
+    plan, action = _recorded_plan()
+    action.reasoning = "Attack with Boo; it trades into the curator profitably."
+    context = {"type": "declare_attackers", "legal_attacker_ids": [978]}
+    planner = _planner()
+
+    planner._check_attack_premises(plan, state, context)
+
+    assert action.reasoning == "Attack with Boo; it trades into the curator profitably."
+
+
+def test_plan_guard_ignores_non_declare_attackers_contexts_and_empty_declarations(state):
+    plan, action = _recorded_plan()
+    planner = _planner()
+
+    planner._check_attack_premises(plan, state, {"type": "blockers"})
+    assert action.reasoning == REASONING
+
+    empty = GameAction(action_type=ActionType.DECLARE_ATTACKERS)
+    empty_plan = ActionPlan(actions=[empty], overall_strategy=STRATEGY)
+    planner._check_attack_premises(empty_plan, state, {"type": "declare_attackers"})
+    assert empty.reasoning == ""
+
+
+def test_plan_guard_reversal_of_this_turns_blocker_commitment_carries_the_validated_outcome(state):
+    """The model's own earlier decision reserved pumped Boo as a blocker.
+
+    Through-hook regression (review finding on 2317892): the reconciliation
+    must arrive WITH the validated outcome — a bare reversal is not a
+    justified revision.
+    """
+    memory_obj = decision_memory.DecisionMemory()
+    memory_obj.record(
+        state,
+        SimpleNamespace(request_type="ChooseAbility", source_label="model", options=[]),
+        ["Boo"],
+        reasoning=COMMITTED_REASONING,
+    )
+    plan, action = _recorded_plan()
+    context = {"type": "declare_attackers", "legal_attacker_ids": [978]}
+    planner = _planner(memory_obj)
+
+    planner._check_attack_premises(plan, state, context)
+
+    assert "Earlier this turn you committed Boo as a blocker" in action.reasoning
+    assert COMMITTED_REASONING in action.reasoning
+    # The reversal states its validated consequence on this board.
+    assert f"reverses that commitment - on this board, {VALIDATED_OUTCOME}." in action.reasoning

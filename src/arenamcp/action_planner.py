@@ -2549,7 +2549,11 @@ class ActionPlanner(_ActionLegalityMixin):
         original = _model_reasoning(plan, declared)
         if not original:
             return
-        from arenamcp.attack_premises import held_blocker_reconciliation, tapped_crackback_correction
+        from arenamcp.attack_premises import (
+            held_blocker_reconciliation,
+            tapped_crackback_correction,
+            validated_attack_outcome,
+        )
         from arenamcp.combat_identity import resolve_combatants
 
         identities = list(declared.attacker_instance_ids)
@@ -2573,7 +2577,11 @@ class ActionPlanner(_ActionLegalityMixin):
             "",
         )
         correction = tapped_crackback_correction(state, original, attackers=attackers, target=target)
-        reconciliation = held_blocker_reconciliation(self._memory().this_turn(state), declared.attacker_names)
+        reconciliation = held_blocker_reconciliation(
+            self._memory().this_turn(state),
+            declared.attacker_names,
+            outcome=validated_attack_outcome(state, attackers, target),
+        )
         if not correction.text and not reconciliation:
             return
         updated = str(declared.reasoning or "")
@@ -7882,14 +7890,26 @@ class ActionPlanner(_ActionLegalityMixin):
         reasoning = self._last_decision_reasoning
         if not reasoning:
             return
-        from arenamcp.attack_premises import held_blocker_reconciliation, tapped_crackback_correction
+        from arenamcp.attack_premises import (
+            held_blocker_reconciliation,
+            tapped_crackback_correction,
+            validated_attack_outcome,
+        )
 
         attacker_names = [str(label).split(" [id:")[0].strip() for label in chosen or []]
+        # Names collide across sides (their Boo vs our Boo): prefer our own
+        # permanent when resolving an attacker by name.
+        local_seat = game_state.get("local_seat_id")
         cards_by_name: dict[str, dict[str, Any]] = {}
         for card in game_state.get("battlefield") or []:
             name = str(card.get("name") or "")
-            if name:
-                cards_by_name.setdefault(name, card)
+            if not name:
+                continue
+            ours = card.get("controller_seat_id") == local_seat
+            if name not in cards_by_name or (
+                ours and cards_by_name[name].get("controller_seat_id") != local_seat
+            ):
+                cards_by_name[name] = card
         attacker_cards = [cards_by_name[name] for name in attacker_names if name in cards_by_name] or None
         target = next(
             (
@@ -7905,7 +7925,11 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         reconciliation = ""
         if attacker_names:
-            reconciliation = held_blocker_reconciliation(self._memory().this_turn(game_state), attacker_names)
+            reconciliation = held_blocker_reconciliation(
+                self._memory().this_turn(game_state),
+                attacker_names,
+                outcome=validated_attack_outcome(game_state, attacker_cards, target),
+            )
         if not correction.text and not reconciliation:
             return
         updated = str(reasoning)
