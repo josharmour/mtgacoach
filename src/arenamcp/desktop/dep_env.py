@@ -171,8 +171,9 @@ def resolve_interpreter(python_executable: str | None = None) -> str:
     the identity is the same whether computed by a preparer holding the base
     executable or by a process running inside the prepared environment
     itself. Every provenance claim is independently verified (runtime ground
-    truth for this process; real execution of the candidate binary for
-    foreign claims). Malformed, contradictory or unverifiable provenance
+    truth for this process; real execution of the candidate binary — whose
+    own runtime report must cohere with the claims — for foreign ones).
+    Malformed, contradictory or unverifiable provenance
     raises :class:`SnapshotError` (fail visibly and safely; never guess an
     identity).
     """
@@ -332,6 +333,73 @@ def _verify_interpreter_runtime(
     return verified
 
 
+#: Executed with ``-I -S`` against a foreign candidate sitting in venv layout;
+#: must print exactly ``major.minor.micro;<runtime prefix>;<runtime base
+#: executable>`` so the candidate's OWN account of its provenance can be
+#: cross-checked against the ``pyvenv.cfg`` claims instead of trusting
+#: marker-reconstructed paths.
+_PROVENANCE_REPORT_PROBE = (
+    "import sys; sys.stdout.write(';'.join(("
+    "'.'.join(str(p) for p in sys.version_info[:3]), "
+    "str(sys.prefix), "
+    "str(getattr(sys, '_base_executable', '') or sys.executable))))"
+)
+
+
+@dataclass(frozen=True)
+class _RuntimeReport:
+    """A candidate interpreter's own account of where it runs from."""
+
+    version_triple: tuple[int, int, int]
+    prefix: Path
+    base_executable: Path
+
+
+def _probe_runtime_report(exe: Path, context: str) -> _RuntimeReport:
+    """Execute ``exe`` and return ITS OWN runtime provenance report.
+
+    Complements :func:`_verify_interpreter_runtime`: that function proves the
+    binary is a working Python of the claimed version; this one asks the same
+    binary where IT believes it lives (runtime prefix and base executable) so
+    provenance markers can be checked against runtime facts rather than taken
+    on faith. A binary that cannot credibly report its own runtime is not a
+    verifiable candidate.
+    """
+    try:
+        proc = _SUBPROCESS_RUN(
+            [str(exe), "-I", "-S", "-c", _PROVENANCE_REPORT_PROBE],
+            capture_output=True,
+            timeout=_BASE_VERIFY_TIMEOUT_S,
+            cwd=tempfile.gettempdir(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SnapshotError(
+            f"{context}: interpreter {exe} could not be executed to report "
+            f"its runtime provenance ({exc}); provenance unverifiable"
+        ) from exc
+    out = (proc.stdout or b"").decode("utf-8", errors="replace").strip()
+    rc = getattr(proc, "returncode", 1)
+    fields = out.split(";")
+    if (
+        rc != 0
+        or len(fields) != 3
+        or not re.fullmatch(r"\d+\.\d+\.\d+", fields[0])
+        or not fields[1]
+        or not fields[2]
+    ):
+        raise SnapshotError(
+            f"{context}: interpreter {exe} did not report coherent runtime "
+            f"provenance when executed (exit={rc}, output={out[:80]!r}); "
+            "provenance unverifiable"
+        )
+    parts = [int(part) for part in fields[0].split(".")]
+    return _RuntimeReport(
+        version_triple=(parts[0], parts[1], parts[2]),
+        prefix=Path(fields[1]),
+        base_executable=Path(fields[2]),
+    )
+
+
 def _resolve_interpreter_verified(
     python_executable: str | os.PathLike[str] | None = None,
 ) -> tuple[Path, _VerifiedInterpreter]:
@@ -349,10 +417,14 @@ def _resolve_interpreter_verified(
       resolved base is ``sys._base_executable`` itself, never a path merely
       reconstructed from marker strings.
     - Foreign claims (any other interpreter) are only accepted when the
-      declared — or, absent a declaration, home-derived — base executable
-      really executes as a Python of the claimed version. A fake binary, an
-      invented version, or a declared executable contradicting ``home``
-      fails visibly instead of aliasing to whatever happens to exist.
+      candidate binary ITSELF executes as a Python of the claimed version
+      AND its own runtime report (``sys.prefix``, ``sys._base_executable``)
+      coheres with the ``pyvenv.cfg`` claims: the reported prefix must be
+      this environment root, the reported base executable must live in the
+      declared ``home`` and match any declared base ``executable``. A fake
+      binary, an invented version, an unrelated ``home``, or a declared
+      executable disagreeing with the candidate's actual runtime fails
+      visibly instead of aliasing to whatever happens to exist.
 
     The returned :class:`_VerifiedInterpreter` binds the VERIFIED runtime
     version and a SHA-256 of the canonical interpreter's bytes, so replacing
@@ -427,24 +499,60 @@ def _resolve_interpreter_verified(
             # the base itself sits inside another venv layer.
             current = real_base_exe
             continue
-        # Foreign claim: verify by executing the candidate interpreter.
+        # Foreign claim: verify by executing the ACTUAL interpreter being
+        # resolved first -- a marker naming some real base never stands in
+        # for proving that this very binary is that Python.
         declared_exe = cfg.get("executable")
         if declared_exe:
-            candidate = Path(declared_exe)
-            if not candidate.is_file():
-                raise SnapshotError(f"{context} declares base executable {candidate} which does not exist")
-        else:
-            candidate = next(
+            if not Path(declared_exe).is_file():
+                raise SnapshotError(f"{context} declares base executable {declared_exe} which does not exist")
+        elif (
+            next(
                 (cand for cand in _base_executable_candidates(cfg, home) if cand.is_file()),
                 None,
             )
-            if candidate is None:
-                raise SnapshotError(
-                    f"interpreter {current} claims base installation {home} "
-                    f"(via {cfg_path}) but no interpreter executable exists there"
-                )
-        hop_verified = _verify_interpreter_runtime(candidate.resolve(), claimed, context)
-        current = candidate.resolve()
+            is None
+        ):
+            raise SnapshotError(
+                f"interpreter {current} claims base installation {home} "
+                f"(via {cfg_path}) but no interpreter executable exists there"
+            )
+        actual = _verify_interpreter_runtime(current.resolve(), claimed, context)
+        report = _probe_runtime_report(current.resolve(), context)
+        if _normalize_triple(report.version_triple) != _normalize_triple(actual.version_triple):
+            raise SnapshotError(
+                f"{context}: interpreter {current} reported inconsistent runtime "
+                "facts between probes; provenance unverifiable"
+            )
+        # The candidate must genuinely believe it lives in THIS environment...
+        if report.prefix.resolve() != cfg_path.parent.resolve():
+            raise SnapshotError(
+                f"{context}: executing {current} reports runtime prefix "
+                f"{report.prefix}, not this environment root {cfg_path.parent}; "
+                "provenance is contradictory"
+            )
+        # ...and its actual base runtime must cohere with the marker claims.
+        reported_base = report.base_executable.resolve()
+        if not reported_base.is_file():
+            raise SnapshotError(
+                f"{context}: executing {current} reports base runtime "
+                f"{reported_base}, which does not exist; provenance unverifiable"
+            )
+        if reported_base.parent != home.resolve():
+            raise SnapshotError(
+                f"{context} declares base installation {home}, but executing "
+                f"{current} reports its actual base executable as "
+                f"{reported_base}; provenance is contradictory"
+            )
+        declared_exe = cfg.get("executable")
+        if declared_exe and Path(declared_exe).resolve() != reported_base:
+            raise SnapshotError(
+                f"{context} declares base executable {declared_exe}, but "
+                f"executing {current} reports {reported_base} as its actual "
+                "base runtime; provenance is contradictory"
+            )
+        hop_verified = _verify_interpreter_runtime(reported_base, claimed, context)
+        current = reported_base
     else:
         raise SnapshotError(
             f"interpreter {raw} exceeds virtual-environment provenance "

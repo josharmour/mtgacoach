@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -871,9 +872,34 @@ def _make_interpreter_shim(path: Path, version: str = "3.14.0") -> Path:
     Verification executes candidate interpreters, so provenance fixtures use
     working executables (a tiny POSIX shim standing in for a Python binary);
     non-Python bytes are reserved for the fake-candidate regressions.
+
+    The shim answers BOTH verification probes. Besides the bare version it
+    emulates CPython's getpath derivation for the runtime-provenance probe:
+    invoked from a ``Scripts`` directory it reports the enclosing environment
+    root as its prefix and ``<cfg home>/<argv0 basename>`` as its base
+    executable — exactly what a real Windows venv copy reports — so byte
+    copies of this shim behave like genuine copied interpreters whose
+    self-report tracks their own ``pyvenv.cfg``.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"#!/bin/sh\necho {version}\n", encoding="utf-8")
+    script = """#!/bin/sh
+case "$4" in
+*_base_executable*)
+self_dir=$(cd "$(dirname "$0")" && pwd)
+case "$self_dir" in
+*/Scripts)
+root=$(dirname "$self_dir")
+cfg="$root/pyvenv.cfg"
+cfg_home=$(sed -n 's/^home *= *//p' "$cfg")
+echo "@VERSION@;$root;$cfg_home/$(basename "$0")"
+;;
+*) echo "@VERSION@;$self_dir;$self_dir/$(basename "$0")" ;;
+esac
+;;
+*) echo "@VERSION@" ;;
+esac
+""".replace("@VERSION@", version)
+    path.write_text(script, encoding="utf-8")
     path.chmod(0o755)
     return path
 
@@ -901,6 +927,17 @@ def _windows_style_prepared_env(tmp_path: Path, version: str = "3.14.0"):
         encoding="utf-8",
     )
     return base_exe, copy_exe, venv_root
+
+
+def _rewrite_pyvenv_cfg(venv_root: Path, **overrides: str) -> None:
+    """Rewrite selected keys of a fixture ``pyvenv.cfg``, preserving others."""
+    cfg = venv_root / "pyvenv.cfg"
+    values: dict[str, str] = {}
+    for line in cfg.read_text(encoding="utf-8").splitlines():
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip()
+    values.update(overrides)
+    cfg.write_text("".join(f"{key} = {value}\n" for key, value in values.items()), encoding="utf-8")
 
 
 def _run_inside_venv(monkeypatch, copy_exe: Path, venv_root: Path, base_exe: Path, version: str = "3.14.0"):
@@ -1110,6 +1147,59 @@ def test_invented_candidate_version_fails_visible(tmp_path):
         encoding="utf-8",
     )
     with pytest.raises(SnapshotError, match="contradictory provenance"):
+        dep_env.resolve_interpreter(str(copy_exe))
+
+
+def test_foreign_garbage_candidate_never_aliases_named_real_base(tmp_path):
+    """A non-executable candidate whose markers name a REAL working base must
+    not alias that base: verification executes THE CANDIDATE itself.
+
+    Reproduces the reviewer's native finding: garbage ``Scripts/python.exe``
+    plus an unrelated empty ``home`` plus a ``pyvenv.cfg`` naming a genuine
+    matching-version interpreter used to be accepted and aliased the
+    legitimate base environment.
+    """
+    scripts = tmp_path / "evil" / "Scripts"
+    scripts.mkdir(parents=True)
+    evil = scripts / "python.exe"
+    evil.write_bytes(b"MZ-garbage-not-a-python-binary")
+    evil.chmod(0o644)
+    empty_home = tmp_path / "unrelated-empty-home"
+    empty_home.mkdir()
+    (tmp_path / "evil" / "pyvenv.cfg").write_text(
+        f"home = {empty_home}\n"
+        "include-system-site-packages = false\n"
+        f"version = {platform.python_version()}\n"
+        f"executable = {sys.executable}\n",
+        encoding="utf-8",
+    )
+    # The named base exists and really is a Python of the claimed version --
+    # but the candidate itself cannot run, so provenance is unverifiable.
+    with pytest.raises(SnapshotError, match="provenance unverifiable"):
+        dep_env.resolve_interpreter(str(evil))
+
+
+def test_foreign_declared_exec_disagreeing_with_actual_runtime_rejected(tmp_path):
+    """A declared base ``executable`` contradicting the candidate's actual
+    runtime report must fail instead of being accepted on faith."""
+    _base_exe, copy_exe, venv_root = _windows_style_prepared_env(tmp_path)
+    decoy = tmp_path / "decoy" / "python.exe"
+    decoy.parent.mkdir()
+    decoy.write_text("#!/bin/sh\necho never\n", encoding="utf-8")
+    decoy.chmod(0o755)
+    _rewrite_pyvenv_cfg(venv_root, executable=str(decoy))
+    with pytest.raises(SnapshotError, match="contradictory"):
+        dep_env.resolve_interpreter(str(copy_exe))
+
+
+def test_foreign_home_disagreeing_with_actual_runtime_rejected(tmp_path):
+    """A declared ``home`` contradicting the candidate's actual runtime base
+    must fail instead of aliasing whatever the markers name."""
+    _base_exe, copy_exe, venv_root = _windows_style_prepared_env(tmp_path)
+    empty_home = tmp_path / "unrelated-empty-home"
+    empty_home.mkdir()
+    _rewrite_pyvenv_cfg(venv_root, home=str(empty_home))
+    with pytest.raises(SnapshotError, match="provenance unverifiable"):
         dep_env.resolve_interpreter(str(copy_exe))
 
 
