@@ -33,8 +33,8 @@ from arenamcp.ability_synthesizer import (
     Exile,
     Filter,
     GainLife,
-    PutCounters,
     Pump,
+    PutCounters,
     ReturnFromGraveyard,
     TokenSpec,
     UnknownEffect,
@@ -306,11 +306,7 @@ def _decode_effect_entry(value: Any) -> EffectEntry:
     entry = EffectEntry(
         trigger=value.get("trigger", ""),
         effect=_decode_effect_payload(value.get("effect")),
-        conditions=(
-            tuple(str(c) for c in conditions_raw)
-            if isinstance(conditions_raw, list)
-            else ()
-        ),
+        conditions=(tuple(str(c) for c in conditions_raw) if isinstance(conditions_raw, list) else ()),
     )
     _merge_unknown(entry, value, _known_fields(EffectEntry))
     return entry
@@ -351,15 +347,9 @@ def card_facts_from_dict(data: dict[str, Any]) -> CardFacts:
         body=_decode_body(data.get("body")),
         modes=tuple(_decode_mode(m) for m in modes_raw) if isinstance(modes_raw, list) else (),
         effects=(
-            tuple(_decode_effect_entry(e) for e in effects_raw)
-            if isinstance(effects_raw, list)
-            else ()
+            tuple(_decode_effect_entry(e) for e in effects_raw) if isinstance(effects_raw, list) else ()
         ),
-        mana=(
-            tuple(_decode_mana_production(m) for m in mana_raw)
-            if isinstance(mana_raw, list)
-            else ()
-        ),
+        mana=(tuple(_decode_mana_production(m) for m in mana_raw) if isinstance(mana_raw, list) else ()),
         threat=data.get("threat") or {},
         relationships=data.get("relationships") or {},
         limited=data.get("limited") or {},
