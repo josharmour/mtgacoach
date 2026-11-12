@@ -335,13 +335,14 @@ def _verify_interpreter_runtime(
 
 #: Executed with ``-I -S`` against a foreign candidate sitting in venv layout;
 #: must print exactly ``major.minor.micro;<runtime prefix>;<runtime base
-#: executable>`` so the candidate's OWN account of its provenance can be
-#: cross-checked against the ``pyvenv.cfg`` claims instead of trusting
-#: marker-reconstructed paths.
+#: prefix>;<runtime base executable>`` so the candidate's OWN account of its
+#: provenance can be cross-checked against the ``pyvenv.cfg`` claims instead
+#: of trusting marker-reconstructed paths.
 _PROVENANCE_REPORT_PROBE = (
     "import sys; sys.stdout.write(';'.join(("
     "'.'.join(str(p) for p in sys.version_info[:3]), "
     "str(sys.prefix), "
+    "str(sys.base_prefix), "
     "str(getattr(sys, '_base_executable', '') or sys.executable))))"
 )
 
@@ -352,6 +353,7 @@ class _RuntimeReport:
 
     version_triple: tuple[int, int, int]
     prefix: Path
+    base_prefix: Path
     base_executable: Path
 
 
@@ -382,10 +384,11 @@ def _probe_runtime_report(exe: Path, context: str) -> _RuntimeReport:
     fields = out.split(";")
     if (
         rc != 0
-        or len(fields) != 3
+        or len(fields) != 4
         or not re.fullmatch(r"\d+\.\d+\.\d+", fields[0])
         or not fields[1]
         or not fields[2]
+        or not fields[3]
     ):
         raise SnapshotError(
             f"{context}: interpreter {exe} did not report coherent runtime "
@@ -396,7 +399,8 @@ def _probe_runtime_report(exe: Path, context: str) -> _RuntimeReport:
     return _RuntimeReport(
         version_triple=(parts[0], parts[1], parts[2]),
         prefix=Path(fields[1]),
-        base_executable=Path(fields[2]),
+        base_prefix=Path(fields[2]),
+        base_executable=Path(fields[3]),
     )
 
 
@@ -418,13 +422,19 @@ def _resolve_interpreter_verified(
       reconstructed from marker strings.
     - Foreign claims (any other interpreter) are only accepted when the
       candidate binary ITSELF executes as a Python of the claimed version
-      AND its own runtime report (``sys.prefix``, ``sys._base_executable``)
-      coheres with the ``pyvenv.cfg`` claims: the reported prefix must be
-      this environment root, the reported base executable must live in the
-      declared ``home`` and match any declared base ``executable``. A fake
-      binary, an invented version, an unrelated ``home``, or a declared
-      executable disagreeing with the candidate's actual runtime fails
-      visibly instead of aliasing to whatever happens to exist.
+      AND its own runtime report (``sys.prefix``, ``sys.base_prefix``,
+      ``sys._base_executable``) coheres with the ``pyvenv.cfg`` claims: the
+      reported runtime prefix must be this environment root or -- reflecting
+      CPython < 3.14 ``-S`` semantics, where site processing is skipped and
+      ``sys.prefix`` falls back to the installation prefix -- the reported
+      installation prefix itself; the reported installation prefix must
+      cohere with the declared ``home`` (the ``bin`` directory of a
+      POSIX-style layout or the installation root itself); and the reported
+      base executable must live in the declared ``home`` and match any
+      declared base ``executable``. A fake binary, an invented version, an
+      unrelated ``home``, or a declared executable disagreeing with the
+      candidate's actual runtime fails visibly instead of aliasing to
+      whatever happens to exist.
 
     The returned :class:`_VerifiedInterpreter` binds the VERIFIED runtime
     version and a SHA-256 of the canonical interpreter's bytes, so replacing
@@ -524,12 +534,31 @@ def _resolve_interpreter_verified(
                 f"{context}: interpreter {current} reported inconsistent runtime "
                 "facts between probes; provenance unverifiable"
             )
-        # The candidate must genuinely believe it lives in THIS environment...
-        if report.prefix.resolve() != cfg_path.parent.resolve():
+        # The candidate must genuinely believe it lives in THIS environment.
+        # Under ``-I -S`` CPython >= 3.14 still applies the venv prefix and
+        # reports this environment root; older versions skip site processing
+        # entirely, so ``sys.prefix`` falls back to the base installation
+        # prefix. Both accounts are legitimate -- anything else contradicts
+        # the marker.
+        allowed_prefixes = {cfg_path.parent.resolve(), report.base_prefix.resolve()}
+        if report.prefix.resolve() not in allowed_prefixes:
             raise SnapshotError(
                 f"{context}: executing {current} reports runtime prefix "
-                f"{report.prefix}, not this environment root {cfg_path.parent}; "
-                "provenance is contradictory"
+                f"{report.prefix}, neither this environment root "
+                f"{cfg_path.parent} nor its reported base installation "
+                f"{report.base_prefix}; provenance is contradictory"
+            )
+        # The reported base installation prefix must cohere with the declared
+        # ``home``: POSIX-style layouts declare the base ``bin`` directory
+        # (installation root = its parent), Windows-style layouts declare the
+        # installation root itself.
+        reported_install_root = report.base_prefix.resolve()
+        home_resolved = home.resolve()
+        if home_resolved != reported_install_root and home_resolved.parent != reported_install_root:
+            raise SnapshotError(
+                f"{context} declares base installation {home}, but executing "
+                f"{current} reports base installation prefix "
+                f"{report.base_prefix}; provenance is contradictory"
             )
         # ...and its actual base runtime must cohere with the marker claims.
         reported_base = report.base_executable.resolve()

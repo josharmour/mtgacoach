@@ -866,7 +866,12 @@ def test_windows_path_budget_matches_observed_qualification_envelope(tmp_path, m
 # ``prepared_dep_env`` returned None for the engine's own environment.
 
 
-def _make_interpreter_shim(path: Path, version: str = "3.14.0") -> Path:
+def _make_interpreter_shim(
+    path: Path,
+    version: str = "3.14.0",
+    prefix_reports: str = "venv",
+    base_prefix_override: Path | None = None,
+) -> Path:
     """A real executable that genuinely runs and reports ``version``.
 
     Verification executes candidate interpreters, so provenance fixtures use
@@ -880,9 +885,18 @@ def _make_interpreter_shim(path: Path, version: str = "3.14.0") -> Path:
     executable — exactly what a real Windows venv copy reports — so byte
     copies of this shim behave like genuine copied interpreters whose
     self-report tracks their own ``pyvenv.cfg``.
+
+    ``prefix_reports`` selects which legitimate ``-I -S`` account the shim
+    gives for ``sys.prefix``: ``"venv"`` mirrors CPython >= 3.14 (the venv
+    prefix is applied even without site processing), ``"base"`` mirrors
+    CPython < 3.14 (``sys.prefix`` falls back to the base installation
+    prefix). ``base_prefix_override`` forces a specific reported base
+    installation prefix, for contradictory-provenance regressions.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    script = """#!/bin/sh
+    override = f'"{base_prefix_override}"' if base_prefix_override is not None else '"$bp"'
+    script = (
+        """#!/bin/sh
 case "$4" in
 *_base_executable*)
 self_dir=$(cd "$(dirname "$0")" && pwd)
@@ -891,20 +905,30 @@ case "$self_dir" in
 root=$(dirname "$self_dir")
 cfg="$root/pyvenv.cfg"
 cfg_home=$(sed -n 's/^home *= *//p' "$cfg")
-echo "@VERSION@;$root;$cfg_home/$(basename "$0")"
+case "$(basename "$cfg_home")" in
+bin) bp=$(dirname "$cfg_home") ;;
+*) bp="$cfg_home" ;;
+esac
+case "@PREFIX@" in
+base) echo "@VERSION@;$bp;@BP@;$cfg_home/$(basename "$0")" ;;
+*) echo "@VERSION@;$root;@BP@;$cfg_home/$(basename "$0")" ;;
+esac
 ;;
-*) echo "@VERSION@;$self_dir;$self_dir/$(basename "$0")" ;;
+*) echo "@VERSION@;$self_dir;$self_dir;$self_dir/$(basename "$0")" ;;
 esac
 ;;
 *) echo "@VERSION@" ;;
 esac
-""".replace("@VERSION@", version)
+""".replace("@PREFIX@", prefix_reports)
+        .replace("@BP@", override)
+        .replace("@VERSION@", version)
+    )
     path.write_text(script, encoding="utf-8")
     path.chmod(0o755)
     return path
 
 
-def _windows_style_prepared_env(tmp_path: Path, version: str = "3.14.0"):
+def _windows_style_prepared_env(tmp_path: Path, version: str = "3.14.0", **shim_kwargs):
     """A Windows-shaped base install plus a prepared env with a COPY python.
 
     Mirrors the native layout: ``<base>/python.exe`` and a prepared
@@ -912,7 +936,7 @@ def _windows_style_prepared_env(tmp_path: Path, version: str = "3.14.0"):
     provenance points back at the base.
     """
     base_root = tmp_path / "base-python"
-    base_exe = _make_interpreter_shim(base_root / "python.exe", version)
+    base_exe = _make_interpreter_shim(base_root / "python.exe", version, **shim_kwargs)
     venv_root = tmp_path / "dep-envs" / "prepared6342"
     scripts = venv_root / "Scripts"
     scripts.mkdir(parents=True)
@@ -1068,6 +1092,106 @@ def test_venv_symlinked_python_still_resolves_through_symlink(tmp_path):
     link = venv_bin / "python"
     link.symlink_to(real_python)
     assert dep_env.resolve_interpreter(str(link)) == str(real_python.resolve())
+
+
+# ---------------------------------------------------------------------------
+# Pre-3.14 ``-I -S`` prefix semantics (review round 4)
+#
+# CPython < 3.14 skips site processing under ``-I -S``, so a legitimate
+# copied venv interpreter reports ``sys.prefix == sys.base_prefix`` (the
+# base installation prefix) instead of the environment root. The resolver
+# must accept that account -- while still rejecting contradictory ones.
+
+
+def test_foreign_copied_interpreter_pre_3_14_base_prefix_semantics_accepted(tmp_path):
+    """A copied interpreter giving the pre-3.14 ``-I -S`` account (runtime
+    prefix fallen back to the base installation prefix) resolves to its
+    verified base instead of being rejected as contradictory."""
+    base_exe, copy_exe, _venv_root = _windows_style_prepared_env(tmp_path, prefix_reports="base")
+    assert dep_env.resolve_interpreter(str(copy_exe)) == str(base_exe.resolve())
+
+
+def test_foreign_reported_base_prefix_contradicting_declared_home_rejected(tmp_path):
+    """A candidate whose runtime report places its base installation prefix
+    somewhere incompatible with the declared ``home`` fails visibly."""
+    _base_exe, copy_exe, _venv_root = _windows_style_prepared_env(tmp_path)
+    lying = _make_interpreter_shim(
+        tmp_path / "lying-copy" / "python.exe",
+        base_prefix_override=tmp_path / "decoy-install",
+    )
+    copy_exe.write_bytes(lying.read_bytes())
+    copy_exe.chmod(0o755)
+    with pytest.raises(SnapshotError, match="provenance is contradictory"):
+        dep_env.resolve_interpreter(str(copy_exe))
+
+
+def _real_copied_venv(tmp_path: Path):
+    """Create a REAL copied venv (``--copies --without-pip``, no dependency
+    install) from an available host interpreter.
+
+    Returns ``(base, copied_python)`` or ``None`` when no host interpreter
+    can produce a working copy -- the caller skips rather than pretending.
+    """
+    candidates = [
+        Path(found) for name in ("python3.12", "python3.11", "python3.13") if (found := shutil.which(name))
+    ]
+    uv_dir = Path.home() / ".local" / "share" / "uv" / "python"
+    if uv_dir.is_dir():
+        candidates.extend(sorted(uv_dir.glob("cpython-3.1[123]*/bin/python3.*")))
+    seen: set[Path] = set()
+    for base in candidates:
+        try:
+            resolved = base.resolve()
+        except OSError:
+            continue
+        if resolved in seen or not resolved.is_file():
+            continue
+        seen.add(resolved)
+        venv_root = tmp_path / f"copied-{resolved.name}"
+        try:
+            subprocess.run(
+                [str(resolved), "-m", "venv", "--copies", "--without-pip", str(venv_root)],
+                capture_output=True,
+                timeout=120,
+                check=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        copied = venv_root / ("Scripts/python.exe" if os.name == "nt" else "bin/python3")
+        if not copied.is_file():
+            continue
+        smoke = subprocess.run([str(copied), "-c", "pass"], capture_output=True, timeout=60)
+        if smoke.returncode == 0:
+            return resolved, copied
+    return None
+
+
+def test_real_copied_venv_resolves_to_verified_base(tmp_path):
+    """Regression for the exact reviewer repro: a genuine ``python -m venv
+    --copies`` interpreter on a supported Python version must resolve to its
+    verified base installation (pre-3.14 reports the base prefix under
+    ``-I -S``; 3.14+ reports the environment root -- both accepted)."""
+    fixture = _real_copied_venv(tmp_path)
+    if fixture is None:
+        pytest.skip("no host interpreter capable of producing a working copied venv")
+    base, copied = fixture
+    resolved, verified = dep_env._resolve_interpreter_verified(str(copied))
+    assert resolved == base
+    assert verified.path == base
+    assert dep_env.resolve_interpreter(str(copied)) == str(base)
+
+
+def test_real_copied_venv_identity_matches_direct_base_identity(snapshot_root, tmp_path):
+    """The prepared-UI case end to end on a REAL copied venv: identity computed
+    from inside the copy equals the identity computed from the base directly,
+    so the UI finds its own engine without any nested environment."""
+    fixture = _real_copied_venv(tmp_path)
+    if fixture is None:
+        pytest.skip("no host interpreter capable of producing a working copied venv")
+    base, copied = fixture
+    assert dep_env.env_identity(snapshot_root, python_executable=str(copied)) == (
+        dep_env.env_identity(snapshot_root, python_executable=str(base))
+    )
 
 
 # ---------------------------------------------------------------------------
