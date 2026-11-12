@@ -424,19 +424,101 @@ def test_footer_and_workspace_stay_put_across_updates_and_themes(qapp, monkeypat
         window.close()
 
 
-def test_resize_reveals_context_but_live_updates_do_not(qapp):
+@pytest.mark.parametrize(
+    ("palette", "font_family"),
+    [("dark", None), ("light", "DejaVu Sans"), ("high-contrast", "Arial")],
+)
+def test_resize_reveals_context_but_live_updates_do_not(qapp, palette, font_family):
+    """Only the viewport budget discloses overview context; live data never does.
+
+    Regression for CI run 43177283352: the old fixture assumed a 320x650
+    window hid overview labels, but under native 9pt fonts every label
+    legitimately fits there after the bounded spacing fix. Constrain the
+    viewport from measured native budgets instead of assuming a
+    font-dependent window height: shrink the window by exactly the
+    workspace surplus above one funded label plus half of the next label's
+    budget, so the production disclosure rule must withhold the rest, then
+    enlarge and require strict disclosure.
+    """
+    from PySide6.QtGui import QFont
+
+    theme.apply_theme(qapp, palette)
+    app_font = qapp.font()
+    if font_family:
+        qapp.setFont(QFont(font_family))
     panel = CompactCoachPanel()
-    panel.resize(320, 650)
-    panel.show()
-    panel._on_game_state_changed(make_snapshot())
-    qapp.processEvents()
-    small = [w.isVisible() for w in (panel.overview_board, panel.overview_reason, panel.overview_event)]
-    panel.resize(690, 900)
-    qapp.processEvents()
-    qapp.processEvents()
-    large = [w.isVisible() for w in (panel.overview_board, panel.overview_reason, panel.overview_event)]
-    assert sum(large) > sum(small)
-    panel.close()
+    try:
+        panel.resize(690, 900)
+        panel.show()
+        state = make_snapshot()
+        panel._on_game_state_changed(state)
+        qapp.processEvents()
+        qapp.processEvents()
+        labels = (panel.overview_board, panel.overview_reason, panel.overview_event)
+        # Native budgets of the production disclosure rule (_fit_overview):
+        # each laid-out label plus its fixed spacing slot, and the fixed
+        # reserve held back from the workspace.
+        budgets = [label.height() + 6 for label in labels]
+        reserve = 45
+        big_workspace = panel.workspace.height()
+        assert big_workspace - reserve >= sum(budgets)
+        assert all(label.isVisible() for label in labels)
+
+        # Fund exactly the first label plus half of the second: shrinking
+        # the window by the workspace surplus leaves too little for the
+        # next label while keeping a half-budget margin on both sides of
+        # the cutoff, whatever font rendered the labels.
+        target_remaining = budgets[0] + budgets[1] // 2
+        shrink_by = big_workspace - reserve - target_remaining
+        assert shrink_by > 0
+        panel.resize(690, 900 - shrink_by)
+        qapp.processEvents()
+        qapp.processEvents()
+        # Layout rounding can shift the achieved workspace by a pixel or
+        # two; require it to land inside the intended funding window,
+        # which keeps a half-budget margin on both sides of the cutoff.
+        remaining = panel.workspace.height() - reserve
+        assert budgets[0] <= remaining < budgets[0] + budgets[1]
+        small = [label.isVisible() for label in labels]
+        assert small == [True, False, False]
+
+        # Live data updates must neither reveal nor reshuffle the
+        # constrained overview; only the viewport decides disclosure.
+        before = [label.geometry() for label in labels]
+        for iteration in range(4):
+            changed = deepcopy(state)
+            changed["battlefield"][0]["power"] += iteration
+            panel._on_game_state_changed(changed)
+            plan = forecast(changed)
+            plan["facts"]["role_reason"] = "A long explanation " * 80
+            panel._on_game_plan_changed(plan)
+            qapp.processEvents()
+            assert [label.isVisible() for label in labels] == small
+            assert [label.geometry() for label in labels] == before
+            for label in labels:
+                rect = label.rect().translated(label.mapTo(panel, QPoint()))
+                assert panel.rect().contains(rect), label.objectName()
+
+        # Enlarging the viewport must disclose the withheld context.
+        panel.resize(690, 900)
+        qapp.processEvents()
+        qapp.processEvents()
+        large = [label.isVisible() for label in labels]
+        assert large == [True, True, True]
+        assert sum(large) > sum(small)
+        changed = deepcopy(state)
+        changed["battlefield"][0]["power"] += 99
+        panel._on_game_state_changed(changed)
+        qapp.processEvents()
+        assert [label.isVisible() for label in labels] == large
+        for label in labels:
+            rect = label.rect().translated(label.mapTo(panel, QPoint()))
+            assert panel.rect().contains(rect), label.objectName()
+    finally:
+        panel.close()
+        panel.deleteLater()
+        qapp.setFont(app_font)
+        theme.apply_theme(qapp, theme.THEME_DARK)
 
 
 def test_open_details_withdraw_stale_winning_claims(qapp):
