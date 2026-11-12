@@ -6,6 +6,7 @@ review from the authoritative loss-streak store, dismissal is durable per
 streak across restarts, and legacy/superseded pending data never pops up.
 """
 
+import hashlib
 import json
 from datetime import datetime, timezone
 
@@ -484,3 +485,178 @@ def test_desktop_offer_previous_filters_legacy_and_superseded_pending(qapp, monk
     finally:
         window2.close()
         window2.deleteLater()
+
+
+# --- Legacy acknowledgement migration (R1 rework) -------------------------
+# Pre-gating dismissals were saved as "<32-hex session uuid>:<id>:<result>,..."
+# (optionally ":<16-hex review digest>"). They must keep suppressing their
+# explicitly covered triplets after migration, without suppressing anything else.
+
+LEGACY_SESSION = "a" * 32
+
+
+def legacy_ack(matches, digest=None):
+    body = ",".join(f"{m}:loss" for m in matches)
+    return f"{LEGACY_SESSION}:{body}" + (f":{digest}" if digest else "")
+
+
+def modern_identity(review):
+    return "review:" + ",".join(review["matches"])
+
+
+def synthetic_world(digest=None, extra_legacy=None, acknowledged_extra=()):
+    """15 matches / 5 completed triplets in the exact saved legacy schema."""
+    matches = [f"old-match-{i:02d}" for i in range(15)]
+    reviews = [report(tuple(matches[i:i + 3])) for i in range(0, 15, 3)]
+    acknowledged = [legacy_ack(matches, digest=digest), *acknowledged_extra]
+    if extra_legacy is not None:
+        acknowledged.append(extra_legacy)
+    state = {
+        "active": {"id": "b" * 32, "started": "2026-11-12T03:06:00+00:00", "baseline": list(matches)},
+        "acknowledged": acknowledged,
+        "pending": [{
+            "id": modern_identity(reviews[1]),
+            "session_id": "b" * 32,
+            "text": "Already queued modern offer",
+        }],
+    }
+    return matches, reviews, state
+
+
+def seed_store(tmp_path, state):
+    path = tmp_path / "recaps.json"
+    path.write_text(json.dumps(state))
+    return path
+
+
+def world_rows(matches):
+    return [record(m) for m in matches]
+
+
+def test_legacy_covered_triplets_stay_silent_and_migrate_atomically(tmp_path):
+    """The coordinator's canonical scenario: one legacy ack, 15 matches, 5 triplets."""
+    digest = hashlib.sha256(b"x").hexdigest()[:16]
+    matches, reviews, state = synthetic_world(digest=digest)
+    path = seed_store(tmp_path, state)
+    store = SessionRecaps(path)
+    store.begin(world_rows(matches), reviews)
+    # Already-queued modern pending for a legacy-covered triplet is removed.
+    assert store.pending(reviews) is None
+    saved = json.loads(path.read_text())
+    # Original legacy entry preserved; modern identities adopted; pending cleaned.
+    assert legacy_ack(matches, digest=digest) in saved["acknowledged"]
+    assert all(modern_identity(r) in saved["acknowledged"] for r in reviews)
+    assert saved["pending"] == []
+    # Repeated start/close/relaunch stays silent.
+    for _ in range(3):
+        SessionRecaps(path).begin(world_rows(matches), reviews)
+        assert store.pending(reviews) is None
+
+
+def test_legacy_ack_without_digest_suffix_also_migrates(tmp_path):
+    matches, reviews, state = synthetic_world(digest=None)
+    path = seed_store(tmp_path, state)
+    store = SessionRecaps(path)
+    store.begin(world_rows(matches), reviews)
+    assert store.pending(reviews) is None
+    saved = json.loads(path.read_text())
+    assert legacy_ack(matches) in saved["acknowledged"]
+    assert all(modern_identity(r) in saved["acknowledged"] for r in reviews)
+
+
+def test_first_modern_ack_honoured_remaining_legacy_triplets_not_reoffered(tmp_path):
+    """First modern review ack saved correctly; the other four stay silent via legacy."""
+    matches, reviews, state = synthetic_world(digest=None)
+    path = seed_store(tmp_path, state)
+    store = SessionRecaps(path)
+    store.begin(world_rows(matches), reviews)
+    for review in reviews[1:]:
+        assert store.capture(world_rows(review["matches"]), reviews) is None
+        assert store.pending(reviews) is None
+
+
+def test_new_triplet_absent_from_legacy_ack_still_offers(tmp_path):
+    matches = [f"old-match-{i:02d}" for i in range(12)]
+    new_review = report(("fresh-a", "fresh-b", "fresh-c"))
+    reviews = [report(tuple(matches[i:i + 3])) for i in range(0, 12, 3)] + [new_review]
+    state = {
+        "active": {"id": "b" * 32, "started": "2026-11-12T03:06:00+00:00", "baseline": matches},
+        "acknowledged": [legacy_ack(matches)],
+        "pending": [],
+    }
+    path = seed_store(tmp_path, state)
+    store = SessionRecaps(path)
+    store.begin(world_rows(matches + ["fresh-a", "fresh-b", "fresh-c"]), reviews)
+    recap = store.pending(reviews)
+    assert recap is not None and recap["id"] == modern_identity(new_review)
+
+
+def test_malformed_unrelated_and_partial_legacy_entries_do_not_suppress(tmp_path):
+    triplet = ("m1", "m2", "m3")
+    review = report(triplet)
+    malformed = [
+        "not-a-legacy-string",
+        "abc:m1:loss,m2:loss,m3:loss",          # session uuid too short
+        LEGACY_SESSION + ":m1:loss,m2:loss",     # pair without result colon
+        LEGACY_SESSION + ":",                    # empty body
+        LEGACY_SESSION + ":m1:loss:m2:loss:m3:loss",  # stray inner colons
+        12345,                                   # non-string entry
+    ]
+    unrelated = legacy_ack(["other-1", "other-2", "other-3"])
+    partial = legacy_ack(["m1", "m2"])           # two of three covered only
+    for extra in [*malformed, unrelated, partial]:
+        state = {
+            "active": {"id": "b" * 32, "started": "2026-11-12T03:06:00+00:00", "baseline": list(triplet)},
+            "acknowledged": [extra],
+            "pending": [],
+        }
+        path = seed_store(tmp_path, state)
+        store = SessionRecaps(path)
+        store.begin(world_rows(triplet), [review])
+        recap = store.pending([review])
+        assert recap is not None and recap["id"] == modern_identity(review), extra
+
+
+def test_bo3_game_row_coverage_boundaries(tmp_path):
+    # Complete explicit game-row coverage suppresses; partial does not; three
+    # game rows of one match never stand in for three matches; a game row of a
+    # longer id never covers a shorter prefix match.
+    complete = legacy_ack(["ma-g1", "ma-g2", "ma-g3", "mb-g1", "mb-g2", "mb-g3", "mc-g1", "mc-g2", "mc-g3"])
+    partial_rows = legacy_ack(["ma-g1", "ma-g2", "ma-g3"])
+    prefix_trap = legacy_ack(["abc-g1"])         # must not cover match "ab"
+    for extra, expect_offer in [(complete, False), (partial_rows, True), (prefix_trap, True)]:
+        triplet = ("ma", "mb", "mc")
+        review = report(triplet)
+        state = {
+            "active": {"id": "b" * 32, "started": "2026-11-12T03:06:00+00:00", "baseline": list(triplet)},
+            "acknowledged": [extra],
+            "pending": [],
+        }
+        path = seed_store(tmp_path, state)
+        store = SessionRecaps(path)
+        store.begin(world_rows(triplet), [review])
+        recap = store.pending([review])
+        assert (recap is not None) == expect_offer, extra
+
+
+def test_modern_acks_remain_stable_across_migration_and_new_dismissals(tmp_path):
+    digest = hashlib.sha256(b"x").hexdigest()[:16]
+    matches, reviews, state = synthetic_world(digest=digest)
+    path = seed_store(tmp_path, state)
+    store = SessionRecaps(path)
+    store.begin(world_rows(matches), reviews)
+    assert store.pending(reviews) is None
+    # A genuinely new streak offers; dismissing it must not disturb migrated state.
+    new_review = report(("new-a", "new-b", "new-c"))
+    rows = world_rows(matches + ["new-a", "new-b", "new-c"])
+    recap = store.capture(rows + [], reviews + [new_review])
+    assert recap is not None and recap["id"] == modern_identity(new_review)
+    store.acknowledge(recap["id"])
+    saved = json.loads(path.read_text())
+    assert legacy_ack(matches, digest=digest) in saved["acknowledged"]
+    assert all(modern_identity(r) in saved["acknowledged"] for r in reviews)
+    assert modern_identity(new_review) in saved["acknowledged"]
+    # Relaunch: everything acknowledged stays silent.
+    fresh = SessionRecaps(path)
+    fresh.begin(rows, reviews + [new_review])
+    assert fresh.pending(reviews + [new_review]) is None

@@ -97,6 +97,57 @@ def _verifiable(identity: Any, reviews: list[dict] | None) -> bool:
     return False
 
 
+def _legacy_loss_ids(entry: Any) -> set[str] | None:
+    """Loss ids explicitly recorded in one well-formed legacy acknowledgement.
+
+    Legacy schema (preserved commits d1f6c75/5bab2ad): ``<32-hex session
+    uuid>:`` followed by comma-joined ``<match_or_game_id>:<result>`` pairs,
+    optionally ending ``:<16-hex sha256 review digest>``. Results are plain
+    words (win/loss/draw/unknown), so a trailing 16-hex segment can only be
+    the digest; anything else malformed contributes nothing — a malformed
+    entry never suppresses an offer.
+    """
+    if not isinstance(entry, str) or ":" not in entry:
+        return None
+    session, rest = entry.split(":", 1)
+    if len(session) != 32 or any(c not in "0123456789abcdef" for c in session) or not rest:
+        return None
+    head, _, tail = rest.rpartition(":")
+    if head and len(tail) == 16 and all(c in "0123456789abcdefABCDEF" for c in tail):
+        rest = head
+    ids: set[str] = set()
+    for pair in rest.split(","):
+        mid, sep, result = pair.partition(":")
+        if not sep or not mid or ":" in result:
+            return None
+        if result == "loss":
+            ids.add(mid)
+    return ids
+
+
+def _legacy_covers_match(loss_ids: set[str], match_id: str) -> bool:
+    """Explicit loss evidence for one match: its own id or one of its BO3 game rows.
+
+    Same safe ``-g`` delimiter semantics as _streak_record, so a bare prefix
+    never adopts unrelated matches. A game row covers only its own match, so
+    three game rows of one match can never stand in for three matches.
+    """
+    return match_id in loss_ids or any(i.startswith(match_id + "-g") for i in loss_ids)
+
+
+def _legacy_acknowledged(acknowledged: list[Any], matches: list[str]) -> bool:
+    """True only when some well-formed legacy acknowledgement lists every match as a loss.
+
+    Partial or unrelated coverage does not suppress; every one of the streak's
+    matches needs its own explicit loss evidence.
+    """
+    for entry in acknowledged:
+        loss_ids = _legacy_loss_ids(entry)
+        if loss_ids and all(_legacy_covers_match(loss_ids, m) for m in matches):
+            return True
+    return False
+
+
 class SessionRecaps:
     """A display is not acknowledgement. Only explicit review/dismiss consumes an offer."""
 
@@ -134,13 +185,37 @@ class SessionRecaps:
         if not isinstance(active, dict):
             return None
         known = {r.match_id for r in records if r.match_id}
+        acknowledged = self.data.get("acknowledged", [])
         # Oldest qualifying streak first, so every unseen review is eventually offered.
+        migrated: list[str] = []
+        selected = None
         for qualifying in _qualifying(reviews, known):
             identity = _identity(qualifying)
-            if identity not in self.data.get("acknowledged", []):
-                break
-        else:
+            if identity in acknowledged:
+                continue
+            if _legacy_acknowledged(acknowledged, qualifying["matches"]):
+                # A pre-gating legacy dismissal already covers this streak
+                # explicitly, loss by loss. Adopt it as the modern identity.
+                migrated.append(identity)
+                continue
+            selected = qualifying
+            break
+        if migrated:
+            # One atomic save persists the adopted modern acknowledgements and
+            # drops any matching queued offers. The original legacy entries,
+            # unrelated state, history and reviews are preserved untouched;
+            # no blanket acknowledgement and no time-only watermark.
+            self.data["acknowledged"] = acknowledged + [i for i in migrated if i not in acknowledged]
+            self.data["pending"] = [
+                p for p in self.data.get("pending", []) if p.get("id") not in set(migrated)
+            ]
+            if selected is None:
+                self._save()
+                return None
+        if selected is None:
             return None
+        qualifying = selected
+        identity = _identity(qualifying)
         baseline = set(active.get("baseline", []))
         streak_ids = set(qualifying["matches"])
         games = [
