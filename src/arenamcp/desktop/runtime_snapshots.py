@@ -220,11 +220,7 @@ def _export_commit_tree(checkout: Path, commit: str, destination: Path) -> list[
                 target.write_bytes(stream.read())
             elif member.issym():
                 link_target = member.linkname
-                candidate = (
-                    Path(link_target)
-                    if os.path.isabs(link_target)
-                    else (target.parent / link_target)
-                )
+                candidate = Path(link_target) if os.path.isabs(link_target) else (target.parent / link_target)
                 try:
                     contained = candidate.resolve().is_relative_to(destination.resolve())
                 except OSError:  # pragma: no cover - defensive
@@ -351,9 +347,7 @@ def stage_snapshot(
 
     parent = Path(staging_parent) if staging_parent is not None else snapshots_root()
     parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f"{STAGING_PREFIX}{resolved_commit[:12]}-", dir=parent)
-    )
+    staging = Path(tempfile.mkdtemp(prefix=f"{STAGING_PREFIX}{resolved_commit[:12]}-", dir=parent))
     try:
         excluded = _export_commit_tree(checkout, resolved_commit, staging)
         manifest = {
@@ -413,9 +407,7 @@ def promote_snapshot(staging_dir: Path, snapshots_dir: Path | None = None) -> Pa
             shutil.rmtree(staging_dir)
             return final
         if existing is not None:
-            raise SnapshotError(
-                f"snapshot identity {final.name} already exists with different content"
-            )
+            raise SnapshotError(f"snapshot identity {final.name} already exists with different content")
         # The published directory failed validation (tampered/truncated).
         # Quarantine it for forensics instead of deleting evidence, then take
         # its place atomically. Readers during the swap fall back safely.
@@ -423,9 +415,7 @@ def promote_snapshot(staging_dir: Path, snapshots_dir: Path | None = None) -> Pa
         try:
             os.replace(final, quarantine)
         except OSError as exc:
-            raise SnapshotError(
-                f"cannot replace corrupt snapshot {final.name}: {exc}"
-            ) from exc
+            raise SnapshotError(f"cannot replace corrupt snapshot {final.name}: {exc}") from exc
 
     os.replace(staging_dir, final)  # atomic rename on the same filesystem
     _mark_read_only(final)
@@ -475,7 +465,7 @@ def snapshots_root(runtime_root: Path | None = None) -> Path:
     try:
         from .runtime import get_runtime_root
 
-        return get_runtime_root() / "runtime-snapshots"
+        return Path(get_runtime_root()) / "runtime-snapshots"
     except Exception:  # pragma: no cover - bootstrap contexts without the package
         return Path.home() / ".local" / "share" / "mtgacoach" / "runtime-snapshots"
 
@@ -615,9 +605,7 @@ def plan_engine_reload(
 
     ui_protocol_value = pointer.get("ui_protocol")
     engine_protocol_value = pointer.get("engine_protocol")
-    effective_ui = (
-        running_ui_protocol if running_ui_protocol is not None else ui_protocol_value
-    )
+    effective_ui = running_ui_protocol if running_ui_protocol is not None else ui_protocol_value
     compatible = protocols_compatible(effective_ui, engine_protocol_value)
 
     if current_commit and current_commit == pointer["commit"]:
@@ -663,12 +651,19 @@ def plan_engine_reload(
 
     return EngineReloadPlan(
         "adopt",
-        f"Adopting published engine snapshot {pointer['commit'][:7]} via the declared "
-        "UI/engine protocol.",
+        f"Adopting published engine snapshot {pointer['commit'][:7]} via the declared UI/engine protocol.",
         target_root=target_root_str,
         target_commit=pointer["commit"],
         ui_protocol=ui_protocol_value,
         engine_protocol=engine_protocol_value,
+    )
+
+
+def snapshots_disabled() -> bool:
+    """Whether runtime snapshots are explicitly disabled for this process."""
+    return (
+        os.environ.get("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT") == "1"
+        or os.environ.get("MTGACOACH_SNAPSHOTS_DISABLE", "").strip() == "1"
     )
 
 
@@ -689,10 +684,7 @@ def resolve_launch_selection(
     3. The published next-launch pointer, fully validated.
     4. ``None`` — run from the mutable checkout.
     """
-    if (
-        os.environ.get("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT") == "1"
-        or os.environ.get("MTGACOACH_SNAPSHOTS_DISABLE", "").strip() == "1"
-    ):
+    if snapshots_disabled():
         return LaunchSelection(None, None, None)
 
     sha_env = os.environ.get("MTGACOACH_SNAPSHOT_SHA")
@@ -710,9 +702,7 @@ def resolve_launch_selection(
                 )
             else:
                 if manifest["commit"] == sha_env:
-                    return LaunchSelection(
-                        Path(root_env), sha_env, manifest.get("content_hash")
-                    )
+                    return LaunchSelection(Path(root_env), sha_env, manifest.get("content_hash"))
                 logger.warning(
                     "Outer-selected snapshot root %s does not match SHA %s; "
                     "falling back to the published pointer.",

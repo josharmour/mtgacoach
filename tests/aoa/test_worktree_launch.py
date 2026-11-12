@@ -14,7 +14,9 @@ def test_worktree_launch_pins_engine_source_and_keeps_shared_instance_location(q
     monkeypatch.setenv("PYTHONPATH", "/regular-coach/src")
     monkeypatch.setenv("ARENAMCP_ENGINE_RELOAD", "1")
     monkeypatch.setattr(runtime.sys, "frozen", False, raising=False)
-    monkeypatch.setattr(coach_process, "find_python_executable", lambda: ("/shared/venv/python", "fixture"))
+    monkeypatch.setattr(
+        coach_process, "find_python_executable", lambda _app_root=None: ("/shared/venv/python", "fixture")
+    )
     monkeypatch.setattr(coach_process, "get_runtime_root", lambda: "/shared/coach-runtime")
     process = Mock()
     process.waitForStarted.return_value = True

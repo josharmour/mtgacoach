@@ -50,7 +50,7 @@ def dep_env_root(runtime_root: Path | None = None) -> Path:
     try:
         from .runtime import get_runtime_root
 
-        return get_runtime_root() / "dep-envs"
+        return Path(get_runtime_root()) / "dep-envs"
     except Exception:  # pragma: no cover - bootstrap contexts without the package
         return Path.home() / ".local" / "share" / "mtgacoach" / "dep-envs"
 
@@ -380,6 +380,33 @@ def ensure_dep_env(
     finally:
         if not renamed_away and staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
+
+
+def prepared_dep_env(
+    snapshot_root: Path,
+    *,
+    runtime_root: Path | None = None,
+    python_executable: str | None = None,
+) -> Path | None:
+    """Return the PREPARED dependency environment for ``snapshot_root``.
+
+    Lookup only: never creates, installs, or mutates anything. Returns
+    ``None`` when no environment matching the full identity (dependency
+    fingerprint including uv.lock plus the resolved interpreter) exists.
+    Engine starts consume environments exclusively through this accessor so
+    an ordinary launch can never trigger dependency installation as a side
+    effect; creation happens only at explicit opt-in points (the launcher's
+    selected-snapshot launch and the adoption preparation checkpoint).
+    """
+    try:
+        return ensure_dep_env(
+            snapshot_root,
+            runtime_root=runtime_root,
+            python_executable=python_executable,
+            allow_create=False,
+        )
+    except SnapshotError:
+        return None
 
 
 def child_env_for(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -24,6 +25,30 @@ def _selection_identity() -> SelectionIdentity:
     sha = os.environ.get("MTGACOACH_SNAPSHOT_SHA", "").strip() or None
     snapshot_root = os.environ.get("MTGACOACH_SNAPSHOT_ROOT", "").strip() or None
     return root, sha, snapshot_root
+
+
+def _prepare_snapshot_dependency_env(target_root: str) -> str | None:
+    """Explicitly prepare the adopted snapshot's dependency environment.
+
+    This is THE opt-in point for dependency work outside the launcher: it
+    runs only at the adoption arming checkpoint (``plan.action == "adopt"``),
+    while the current engine is still running, and provisions for exactly the
+    interpreter a later engine start from ``target_root`` will select.
+    Ordinary launches and reloads never reach it.
+
+    Returns ``None`` on success, else a human-readable failure reason; the
+    caller keeps the current engine running and defers visibly on failure.
+    """
+    from .coach_process import engine_interpreter_for
+    from .dep_env import ensure_dep_env
+
+    try:
+        python_exe, _source = engine_interpreter_for(target_root)
+        ensure_dep_env(Path(target_root), python_executable=python_exe)
+    except Exception as exc:  # noqa: BLE001 - any failure must defer, not crash
+        logger.warning("Snapshot dependency preparation failed: %s", exc)
+        return str(exc)
+    return None
 
 
 def _apply_selection_identity(root: str | None, sha: str | None, snapshot_root: str | None) -> None:
@@ -250,6 +275,42 @@ class CoachSession(QObject):
             }
         )
 
+    def _gate_engine_reload_plan(self, plan: Any) -> bool:
+        """Single decision gate shared by both reload entry points.
+
+        Returns ``True`` when a reload may proceed (plain reload, or adoption
+        of a compatible snapshot whose dependency environment is now
+        prepared); otherwise defers visibly and returns ``False``.
+
+        Dependency preparation happens HERE — an explicit, idempotent
+        checkpoint taken while the current engine is still running. It is the
+        only place outside the launcher where dependency work is allowed, and
+        it runs solely for an explicitly planned adoption.
+        """
+        if plan.action == "require_full_restart":
+            self._defer_engine_reload_visibly(plan.reason)
+            return False
+        if plan.action == "adopt":
+            logger.info("Engine reload will adopt a newer snapshot: %s", plan.reason)
+            self.logEmitted.emit(plan.reason, "status")
+            # Explicit opt-in: prepare the target's dependency environment
+            # NOW, while the current engine is still running. If preparation
+            # fails, keep the current engine and defer visibly instead of
+            # arming a handoff that could only fail (or worse, silently
+            # install) at start time.
+            prep_failure = _prepare_snapshot_dependency_env(plan.target_root)
+            if prep_failure is not None:
+                self._defer_engine_reload_visibly(
+                    f"New engine snapshot could not be prepared; keeping the current engine. ({prep_failure})"
+                )
+                return False
+            self._pending_snapshot_target = (
+                plan.target_root,
+                plan.target_commit,
+                plan.target_root,
+            )
+        return True
+
     def restart(
         self,
         autopilot: bool | None = None,
@@ -268,17 +329,8 @@ class CoachSession(QObject):
         # come through here, so neither can bypass a newly published
         # compatible snapshot or silently reload into an incompatible one.
         plan = self._plan_snapshot_reload()
-        if plan.action == "require_full_restart":
-            self._defer_engine_reload_visibly(plan.reason)
+        if not self._gate_engine_reload_plan(plan):
             return
-        if plan.action == "adopt":
-            logger.info("Engine reload will adopt a newer snapshot: %s", plan.reason)
-            self.logEmitted.emit(plan.reason, "status")
-            self._pending_snapshot_target = (
-                plan.target_root,
-                plan.target_commit,
-                plan.target_root,
-            )
         options = dict(self._start_options)
         if "AUTOPILOT" in self._statuses:
             options["autopilot"] = self._autopilot_active
@@ -1043,8 +1095,7 @@ class CoachSession(QObject):
                 # an incompatible/unknown engine version must never fire the
                 # reload signal -- it defers visibly to a full Restart Coach.
                 plan = self._plan_snapshot_reload()
-                if plan.action == "require_full_restart":
-                    self._defer_engine_reload_visibly(plan.reason)
+                if not self._gate_engine_reload_plan(plan):
                     return
                 logger.info("Engine requested a reload: %s", reason)
                 self.logEmitted.emit(f"{reason}; reloading the engine between matches.", "status")

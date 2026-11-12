@@ -228,7 +228,9 @@ def test_source_checkout_coach_process_keeps_pythonpath(monkeypatch, tmp_path: P
     monkeypatch.setattr(runtime.sys, "frozen", False, raising=False)
     monkeypatch.setattr(coach_process, "get_app_root", lambda: str(app))
     monkeypatch.setattr(coach_process, "get_runtime_root", lambda: str(tmp_path / "local"))
-    monkeypatch.setattr(coach_process, "find_python_executable", lambda: (str(current), "current"))
+    monkeypatch.setattr(
+        coach_process, "find_python_executable", lambda _app_root=None: (str(current), "current")
+    )
 
     coach_process.CoachProcess().start()
 
@@ -255,7 +257,9 @@ def test_packaged_coach_process_removes_pythonpath(monkeypatch, tmp_path: Path) 
     monkeypatch.setattr(runtime.sys, "frozen", False, raising=False)
     monkeypatch.setattr(coach_process, "get_app_root", lambda: str(app))
     monkeypatch.setattr(coach_process, "get_runtime_root", lambda: str(tmp_path / "local"))
-    monkeypatch.setattr(coach_process, "find_python_executable", lambda: (str(exe), "app_runtime"))
+    monkeypatch.setattr(
+        coach_process, "find_python_executable", lambda _app_root=None: (str(exe), "app_runtime")
+    )
 
     coach_process.CoachProcess().start()
 

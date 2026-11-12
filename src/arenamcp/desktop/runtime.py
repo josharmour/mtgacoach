@@ -261,7 +261,14 @@ def _python_responds(path: Path) -> bool:
     return ok
 
 
-def find_python_executable() -> tuple[str | None, str]:
+def find_python_executable(app_root: str | Path | None = None) -> tuple[str | None, str]:
+    """Resolve the engine interpreter, optionally against an explicit root.
+
+    ``app_root`` overrides ``get_app_root()`` for the app-relative candidates
+    (``runtime/`` and ``.venv``). Dependency-environment preparation uses it
+    to resolve exactly the interpreter a later engine start from that root
+    would select, so both sides compute the same environment identity.
+    """
     if getattr(sys, "frozen", False):
         return (str(Path(sys.executable)), "frozen")
 
@@ -274,7 +281,7 @@ def find_python_executable() -> tuple[str | None, str]:
         return (None, "dev_python_unavailable")
 
     runtime_root = Path(get_runtime_root())
-    app_root = Path(get_app_root())
+    root = Path(app_root) if app_root is not None else Path(get_app_root())
     scripts_dir = "Scripts" if sys.platform == "win32" else "bin"
     py_exe = "python.exe" if sys.platform == "win32" else "python"
 
@@ -283,9 +290,9 @@ def find_python_executable() -> tuple[str | None, str]:
     # upgrade that failed to remove it must not silently select that
     # interpreter. Non-Windows keeps the existing runtime/bin layout.
     if sys.platform == "win32":
-        app_runtime = app_root / "runtime" / py_exe
+        app_runtime = root / "runtime" / py_exe
     else:
-        app_runtime = app_root / "runtime" / scripts_dir / py_exe
+        app_runtime = root / "runtime" / scripts_dir / py_exe
 
     candidates: list[tuple[Path, str]] = [
         (app_runtime, "app_runtime"),
@@ -296,7 +303,7 @@ def find_python_executable() -> tuple[str | None, str]:
     if current is not None:
         candidates.append((current, "current"))
 
-    candidates.append((app_root / ".venv" / scripts_dir / py_exe, "app_venv"))
+    candidates.append((root / ".venv" / scripts_dir / py_exe, "app_venv"))
 
     for candidate, source in candidates:
         if candidate.exists() and _python_responds(candidate):

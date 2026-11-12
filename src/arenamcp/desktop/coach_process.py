@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 
@@ -17,6 +18,56 @@ def _coach_launch_args(python_exe: str, app_root: Path) -> tuple[list[str], bool
     if packaged:
         return (["-I", "-X", "utf8", "-u", "-m", "arenamcp.standalone", "--pipe"], True)
     return (["-u", "-m", "arenamcp.standalone", "--pipe"], False)
+
+
+def engine_interpreter_for(app_root: str | Path | None = None) -> tuple[str, str]:
+    """The interpreter CoachProcess.start would select for ``app_root``.
+
+    Falls back to the running interpreter when no better candidate responds.
+    Dependency-environment preparation uses this so it provisions for exactly
+    the interpreter the engine will actually run on.
+    """
+    python_exe, python_source = find_python_executable(app_root)
+    if python_exe is None:
+        return sys.executable, "sys.executable"
+    return python_exe, python_source
+
+
+def resolve_engine_launch(app_root: Path) -> tuple[str, str, list[str], bool]:
+    """Resolve interpreter, source label, launch args and packaging for a
+    nonfrozen source launch.
+
+    Dependency environments participate ONLY when this launch is an
+    explicitly selected snapshot (``MTGACOACH_SNAPSHOT_SHA`` present and
+    snapshots not disabled), and only as a PREPARED environment: a missing
+    one raises instead of installing anything here. Ordinary launches and
+    reloads keep the resolved interpreter untouched — no dependency
+    preparation, installation or environment mutation.
+    """
+    python_exe, python_source = engine_interpreter_for(app_root)
+
+    selected_sha = os.environ.get("MTGACOACH_SNAPSHOT_SHA", "").strip()
+    if selected_sha:
+        from .runtime_snapshots import snapshots_disabled
+
+        if not snapshots_disabled():
+            from .dep_env import prepared_dep_env, venv_python
+
+            prepared = prepared_dep_env(app_root, python_executable=python_exe)
+            if prepared is None:
+                raise RuntimeError(
+                    f"Selected snapshot {selected_sha[:7]} has no prepared "
+                    "dependency environment for this interpreter; use Restart "
+                    "Coach from the launcher to prepare it. The current engine "
+                    "version stays in charge until then."
+                )
+            bound = venv_python(prepared)
+            if bound.exists():
+                python_exe = str(bound)
+                python_source = f"dep_env:{prepared.name}"
+
+    args, packaged_runtime = _coach_launch_args(python_exe, app_root)
+    return python_exe, python_source, args, packaged_runtime
 
 
 class CoachProcess(QObject):
@@ -62,22 +113,7 @@ class CoachProcess(QObject):
                 args = ["--pipe"]
                 packaged_runtime = False
             else:
-                python_exe, python_source = find_python_executable()
-                if python_exe is None:
-                    python_exe = sys.executable
-                    python_source = "sys.executable"
-                # Bind the engine to the dependency environment matching THIS
-                # snapshot's dependency identity (which includes the
-                # interpreter): a changed-dependency snapshot must run on its
-                # own freshly built env, never on the old UI interpreter.
-                from .dep_env import ensure_dep_env, venv_python
-
-                dep_env_dir = ensure_dep_env(app_root, python_executable=python_exe)
-                bound = venv_python(dep_env_dir)
-                if bound.exists():
-                    python_exe = str(bound)
-                    python_source = f"dep_env:{dep_env_dir.name}"
-                args, packaged_runtime = _coach_launch_args(python_exe, app_root)
+                python_exe, python_source, args, packaged_runtime = resolve_engine_launch(app_root)
 
             if autopilot:
                 args.append("--autopilot")

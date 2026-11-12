@@ -17,6 +17,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+import arenamcp.desktop.coach_session as coach_session_module
 from arenamcp.desktop.coach_session import CoachSession
 
 COMMIT_A = "a" * 40
@@ -41,9 +42,7 @@ def _emit_reload(session, reason="engine code changed"):
 
 
 def _plan(action, root=None, commit=COMMIT_B, reason=""):
-    return SimpleNamespace(
-        action=action, reason=reason, target_root=root, target_commit=commit
-    )
+    return SimpleNamespace(action=action, reason=reason, target_root=root, target_commit=commit)
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +50,7 @@ def _plan(action, root=None, commit=COMMIT_B, reason=""):
 
 
 def test_engine_reload_adopts_compatible_snapshot(session, monkeypatch, tmp_path):
-    """Compatible published snapshot: arm the handoff, then reload."""
+    """Compatible published snapshot: prepare deps, arm the handoff, reload."""
     target_root = tmp_path / "snapshots" / f"{COMMIT_B[:12]}-deadbeef"
     target_root.mkdir(parents=True)
     monkeypatch.setattr(
@@ -59,13 +58,110 @@ def test_engine_reload_adopts_compatible_snapshot(session, monkeypatch, tmp_path
         "_plan_snapshot_reload",
         lambda: _plan("adopt", root=str(target_root), reason="newer compatible engine"),
     )
+    prepared = []
+    monkeypatch.setattr(
+        coach_session_module,
+        "_prepare_snapshot_dependency_env",
+        lambda root: prepared.append(root) or None,
+    )
     reloads = []
     session.engineReloadRequested.connect(reloads.append)
 
     _emit_reload(session)
 
+    assert prepared and set(prepared) == {str(target_root)}, (
+        "adoption must prepare the TARGET env (idempotent re-check at the restart gate is fine)"
+    )
     assert session._pending_snapshot_target == (str(target_root), COMMIT_B, str(target_root))
     assert reloads == ["engine code changed"]
+
+
+def test_engine_reload_prep_failure_keeps_current_engine_visibly(session, monkeypatch, tmp_path):
+    """Preparation failed: no arming, current engine stays, UI sees the reason."""
+    target_root = tmp_path / "snapshots" / f"{COMMIT_B[:12]}-deadbeef"
+    target_root.mkdir(parents=True)
+    monkeypatch.setattr(
+        session,
+        "_plan_snapshot_reload",
+        lambda: _plan("adopt", root=str(target_root), reason="newer compatible engine"),
+    )
+    monkeypatch.setattr(
+        coach_session_module,
+        "_prepare_snapshot_dependency_env",
+        lambda root: "pip exploded",
+    )
+    statuses = []
+    session.startupStatusChanged.connect(statuses.append)
+    reloads = []
+    session.engineReloadRequested.connect(reloads.append)
+
+    _emit_reload(session)
+
+    assert session._pending_snapshot_target is None, "never arm an unprepared handoff"
+    assert reloads == [], "the current engine must keep running"
+    assert statuses[-1]["phase"] == "restart_required"
+    assert statuses[-1]["ready"] is True
+    assert "could not be prepared" in statuses[-1]["message"]
+    assert "pip exploded" in statuses[-1]["message"]
+
+
+def test_engine_reload_unmanaged_never_prepares_dependencies(session, monkeypatch):
+    """Plain reload path: zero dependency work, exactly like before this rework."""
+    monkeypatch.setattr(session, "_plan_snapshot_reload", lambda: _plan("reload_unmanaged"))
+    prepared = []
+    monkeypatch.setattr(
+        coach_session_module,
+        "_prepare_snapshot_dependency_env",
+        lambda root: prepared.append(root) or None,
+    )
+    reloads = []
+    session.engineReloadRequested.connect(reloads.append)
+
+    _emit_reload(session)
+
+    assert prepared == []
+    assert session._pending_snapshot_target is None
+    assert len(reloads) == 1
+
+
+def test_engine_reload_absent_pointer_never_prepares_dependencies(session, monkeypatch, tmp_path):
+    """Real planning path with no published pointer anywhere: plain reload."""
+    monkeypatch.setenv("MTGACOACH_RUNTIME_ROOT", str(tmp_path / "empty-runtime"))
+    monkeypatch.delenv("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT", raising=False)
+    prepared = []
+    monkeypatch.setattr(
+        coach_session_module,
+        "_prepare_snapshot_dependency_env",
+        lambda root: prepared.append(root) or None,
+    )
+    reloads = []
+    session.engineReloadRequested.connect(reloads.append)
+
+    _emit_reload(session)
+
+    assert prepared == [], "no pointer -> no adoption -> no dependency work"
+    assert session._pending_snapshot_target is None
+    assert len(reloads) == 1
+
+
+def test_engine_reload_disabled_flag_never_adopts_or_prepares(session, monkeypatch, tmp_path):
+    """Disable flag wins even if a pointer existed: plain reload, no dep work."""
+    monkeypatch.setenv("MTGACOACH_RUNTIME_ROOT", str(tmp_path / "empty-runtime"))
+    monkeypatch.setenv("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT", "1")
+    prepared = []
+    monkeypatch.setattr(
+        coach_session_module,
+        "_prepare_snapshot_dependency_env",
+        lambda root: prepared.append(root) or None,
+    )
+    reloads = []
+    session.engineReloadRequested.connect(reloads.append)
+
+    _emit_reload(session)
+
+    assert prepared == []
+    assert session._pending_snapshot_target is None
+    assert len(reloads) == 1
 
 
 def test_engine_reload_incompatible_requires_visible_restart(session, monkeypatch):
@@ -383,14 +479,11 @@ def test_phase_b_child_imports_only_from_its_snapshot(tmp_path):
     snap_new, commit_new = _publish_snapshot(tmp_path, "newgen", 2, snaps)
     assert commit_old != commit_new
 
-
     # The mutable checkout this test process is running from -- hostile env.
     checkout_src = str(tmp_path / "hostile-checkout-src")
     os.makedirs(checkout_src, exist_ok=True)
     (Path(checkout_src) / "arenamcp").mkdir()
-    (Path(checkout_src) / "arenamcp" / "__init__.py").write_text(
-        "APP_LABEL = 'LEAKED'\n", encoding="utf-8"
-    )
+    (Path(checkout_src) / "arenamcp" / "__init__.py").write_text("APP_LABEL = 'LEAKED'\n", encoding="utf-8")
 
     base_env = dict(os.environ)
     base_env["PYTHONPATH"] = checkout_src  # adversarial: must be ignored by phase B

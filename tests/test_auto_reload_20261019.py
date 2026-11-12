@@ -789,7 +789,8 @@ def child_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr("arenamcp.desktop.coach_process.get_app_root", lambda: tmp_path)
     monkeypatch.setattr("arenamcp.desktop.coach_process.get_runtime_root", lambda: str(tmp_path))
     monkeypatch.setattr(
-        "arenamcp.desktop.coach_process.find_python_executable", lambda: (sys.executable, "test")
+        "arenamcp.desktop.coach_process.find_python_executable",
+        lambda _app_root=None: (sys.executable, "test"),
     )
     return tmp_path
 
