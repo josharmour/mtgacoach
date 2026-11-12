@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
-  "built_at_utc": "2026-11-09T05:16:02.0949058Z",
+  "built_at_utc": "2026-11-12T11:02:54.5589619Z",
   "compiler": "dotnet 10.0.403",
   "source_sha256": {
     "bepinex-plugin/MtgaCoachBridge/BotBattleBridge.cs": "514ad3f8068ff4a456996e2806707781aa5181cefac5ea7adac299caa331f0c2",
     "bepinex-plugin/MtgaCoachBridge/MtgaCoachBridge.csproj": "d63721694dd8ffba8d42a5ad77eabdb7630333aec8323089fbf90978adffe387",
     "bepinex-plugin/MtgaCoachBridge/MtgaCoachHost.cs": "75c4e920dd298c6242cabcc5c9133a52d8f75200d9c659c69c1b625e599d3e0d",
-    "bepinex-plugin/MtgaCoachBridge/Plugin.Actions.cs": "5c82b198a3ae425afdb70cc45da1ace7ed57aba8ab7a6325897aac28935f7d9a",
+    "bepinex-plugin/MtgaCoachBridge/Plugin.Actions.cs": "475535f77c07cc9197f97cb7fad04bd6d45496759f0c06402cc58dd12057d924",
     "bepinex-plugin/MtgaCoachBridge/Plugin.Attackers.cs": "9a267349b9a5d2d8c6667fc96f5de7f1de59dd769804fc672ec2fa97b5b6ea0f",
     "bepinex-plugin/MtgaCoachBridge/Plugin.GameState.cs": "02ebe36717664c7fe847f2c8964822a284b4730a2563499d51221853ce1864f4",
     "bepinex-plugin/MtgaCoachBridge/Plugin.Payment.cs": "dc6b18b17008cddbfeb180cada98f6477700e1af0de8c4f384cc63b9210a9986",
     "bepinex-plugin/MtgaCoachBridge/Plugin.Pipe.cs": "82b14a4cb4a115cb5f02249a5ddcaaca15676958de8f4a97dde2c87b72ca958a",
     "bepinex-plugin/MtgaCoachBridge/Plugin.Reflect.cs": "59d3de3be2e57126cb90873f2b1e589fa528a8ec9fcca306c76cab40163f0ef3",
     "bepinex-plugin/MtgaCoachBridge/Plugin.ReplayGeometry.cs": "79df5e3c5d2d7c6070a90b5d4de254e2a55dcb8d2bab281541f916b7bd47b45c",
-    "bepinex-plugin/MtgaCoachBridge/Plugin.cs": "9963c7b0b9caf472e833f438805587a5581e5b37155600b7c45fa3dba1aad136",
+    "bepinex-plugin/MtgaCoachBridge/Plugin.cs": "fe01a0dffd1766ec699ae2751c9777c46b31b7b54ebfcdd370a3713d4e80c0c8",
     "bepinex-plugin/MtgaCoachBridge/PracticeMatchBridge.cs": "2b07c6535ca28dea9e047d87567d40b694f064f85994430b0b83fe72eff2609b",
     "bepinex-plugin/MtgaCoachBridge/ReflectBatch.cs": "2ce07dcad85e1487a8c73bdec555c98d8c8129bc672fc77aac1940fc4d1d762f"
   },
@@ -30,5 +30,5 @@
     "BepInEx.dll": "8255b28902886085c578b9e427d3073c97002db85176d2090cdeda90ef14ce70",
     "0Harmony.dll": "1a21cc03424fc82c3dd1346905d16494536b9595ae4162228d99fb7c285c1031"
   },
-  "dll_sha256": "78e65b213b36b44585538439101a6e60cc2b208fc098af23d64146cc033afe77"
+  "dll_sha256": "da374d08506ad5b7404113a1a86c740e47413fff727af07baac0d83669c52aea"
 }
