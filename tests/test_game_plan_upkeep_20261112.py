@@ -547,6 +547,63 @@ def test_recursion_evidence_must_be_positive_and_share_the_route_cards_clause():
     assert not win_route_lost(shared_sentence, zones)  # name + recursion in ONE sentence of a part
 
 
+def test_contrastive_recursion_must_bind_to_the_route_card_itself():
+    """b3e70c1 review gap: a recursion ACTION must take the route card as its
+    object (or the card must be the subject coming back). A contrastive tail
+    detaches the name from the action — 'Recur World Breaker instead of
+    Etali's Favor.' rejects the Favor, it does not promise its return — and an
+    ambiguous clause that binds neither way stays lost/unknown. No negation
+    blacklist growth: contrast splitting and positive binding do the work."""
+    zones = {
+        "players": [{"is_local": True, "seat_id": 1, "life_total": 20}],
+        "turn": {"turn_number": 9, "active_player": 1, "phase": "Main1"},
+        "battlefield": [],
+        "hand": [],
+        "graveyard": [{"instance_id": 5, "name": "Etali's Favor"}],
+        "exile": [],
+        "command": [],
+    }
+
+    def _routed(wins=None, **parts):
+        variant = GamePlan(
+            win_conditions=wins or ["win with Etali's Favor"], path="cast it and swing", **parts
+        )
+        variant.route_cards = ["etali's favor"]
+        return variant
+
+    rejected_tail = _routed(develop_next="Recur World Breaker instead of Etali's Favor.")
+    assert win_route_lost(rejected_tail, zones)  # the Favor is what was rejected
+
+    rather_than = _routed(develop_next="Cast World Breaker rather than recur Etali's Favor.")
+    assert win_route_lost(rather_than, zones)  # same detachment, other marker
+
+    ambiguous = _routed(develop_next="Etali's Favor came up while discussing recursion options.")
+    assert win_route_lost(ambiguous, zones)  # binds neither way: stays lost
+
+    # The mirror image proves this is binding, not a blanket contrast ban:
+    # when the ACTION targets the route card, a contrastive tail about another
+    # card must not kill the route.
+    positive_contrast = _routed(develop_next="Recur Etali's Favor instead of casting World Breaker.")
+    assert not win_route_lost(positive_contrast, zones)
+
+    subject_form = _routed(active_mechanisms=["Etali's Favor returns from the graveyard each end step."])
+    assert not win_route_lost(subject_form, zones)  # card-as-subject return binds
+
+
+def test_observe_records_a_contrastive_recursion_route_as_lost_without_a_model_call(monkeypatch):
+    """Real observation path for b3e70c1: when the plan redirects recursion to
+    another card ('Recur World Breaker instead of Synthesizer.'), observe()
+    must record the graveyard-only route as lost on the code-owned upkeep
+    refresh — zero model calls."""
+    be, mgr = _formed_manager(monkeypatch)
+    mgr.current.route_cards = ["synthesizer"]
+    mgr.current.active_mechanisms = ["Recur World Breaker instead of Synthesizer."]
+    mgr.observe(_state(turn=5, synth_on_board=False))
+    assert be.calls == 1  # upkeep stays code-owned
+    assert mgr.current.route_state["status"] == "lost"
+    assert mgr.current.route_state["pieces"]["synthesizer"] == "graveyard"
+
+
 def test_observe_records_a_negated_recursion_route_as_lost_without_a_model_call(monkeypatch):
     """Real observation path for the same gap: when the plan itself says the
     route card's recursion is not available, observe() must record the route
