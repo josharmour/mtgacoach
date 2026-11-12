@@ -108,7 +108,10 @@ def test_selected_ability_dialect_keeps_the_tapped_and_payment_guards():
     paying = {**meta, "autoTapActions": [{"instanceId": 548, "manaId": 0}]}
     assert "tapped" in pointless_self_animation(state, core, paying)
     # A non-animation selected ability stays a model decision, not a withheld one.
-    assert pointless_self_animation(state, core, {**meta, "ability_text": "{T}: Add one mana of any color."}) == ""
+    assert (
+        pointless_self_animation(state, core, {**meta, "ability_text": "{T}: Add one mana of any color."})
+        == ""
+    )
 
 
 def test_payment_that_taps_core_also_prevents_attacking():
