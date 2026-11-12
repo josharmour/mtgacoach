@@ -229,9 +229,12 @@ def parse_replay_cosmetics(replay_path: str) -> dict[str, Any] | None:
 # canonical decimal integer >= 2 (str(int): no sign, no leading zeros). The
 # alternation covers every magnitude — single digits 2-9 and multi-digit
 # numbers like 10, 11, 19 — while rejecting "g1" (game 1 keeps the bare id),
-# "g02", "+2" and any trailing junk. fullmatch validates the WHOLE id, so a
-# trailing newline or stray character cannot sneak through ($ would).
-_GAME_RECORD_ID_RE = re.compile(r"(?P<base>.+)-g(?P<number>[2-9]|[1-9]\d+)")
+# "g02", "+2" and any trailing junk. Digits are spelled [0-9], not \d: \d
+# also matches Unicode decimal digits (e.g. U+0662 ARABIC-INDIC DIGIT TWO,
+# U+FF10 FULLWIDTH DIGIT ZERO), which str(int) never emits. fullmatch
+# validates the WHOLE id, so a trailing newline or stray character cannot
+# sneak through ($ would).
+_GAME_RECORD_ID_RE = re.compile(r"(?P<base>.+)-g(?P<number>[2-9]|[1-9][0-9]+)")
 
 
 def _binding_key_for_game_record(record_id: str, snapshot_match_id: str) -> str | None:

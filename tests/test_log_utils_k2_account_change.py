@@ -685,3 +685,35 @@ def test_non_canonical_game_suffixes_fail_closed(monkeypatch, tmp_path):
             bad_record_id, "win", {"match_id": "match-A", "opponent_name": "ActualOpponent"}
         )
         assert rec.local_account_id == NEW_ACCOUNT_ID, repr(bad_record_id)
+
+
+def test_unicode_decimal_digits_are_not_canonical_game_suffixes(monkeypatch, tmp_path):
+    """Python's \\d matches Unicode decimal digits, but game_bundle_id builds
+    its suffix with str(int), which only ever emits ASCII digits. A record id
+    whose suffix contains a Unicode digit (U+0662 ARABIC-INDIC DIGIT TWO,
+    U+FF10 FULLWIDTH DIGIT ZERO) is therefore not a canonical -g<n> form and
+    must fail closed to the current login instead of adopting the base
+    binding."""
+    log_path = tmp_path / "Player.log"
+    log_path.write_text(
+        LOGIN_BLOCK_TEMPLATE.format(
+            ts="[11/9/2026 8:02:11 PM]",
+            client_id=OLD_ACCOUNT_ID,
+            screen_name="OldAccount",
+        ),
+        encoding="utf-8",
+    )
+    _start_server_flow(monkeypatch, str(log_path))
+
+    server._handle_match_created(_room_event("match-A", OLD_ACCOUNT_ID, "ActualOpponent"))
+    _switch_login(log_path, "[11/9/2026 11:15:07 PM]", NEW_ACCOUNT_ID, "NewAccount")
+
+    for unicode_record_id in (
+        "match-A-g2" + chr(0x0662),  # Arabic-Indic digit two after the ASCII 2
+        "match-A-g1" + chr(0xFF10),  # fullwidth digit zero after the ASCII 1
+        "match-A-g" + chr(0x0662),  # lone Unicode digit as the whole suffix
+    ):
+        rec = record_from_game_end(
+            unicode_record_id, "win", {"match_id": "match-A", "opponent_name": "ActualOpponent"}
+        )
+        assert rec.local_account_id == NEW_ACCOUNT_ID, repr(unicode_record_id)
