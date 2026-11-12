@@ -15,6 +15,48 @@ from .tts_manager import TtsManager
 logger = logging.getLogger(__name__)
 
 
+SelectionIdentity = tuple[str | None, str | None, str | None]
+
+
+def _selection_identity() -> SelectionIdentity:
+    """The full launch-selection identity of this process."""
+    root = os.environ.get("MTGACOACH_APP_ROOT", "").strip() or None
+    sha = os.environ.get("MTGACOACH_SNAPSHOT_SHA", "").strip() or None
+    snapshot_root = os.environ.get("MTGACOACH_SNAPSHOT_ROOT", "").strip() or None
+    return root, sha, snapshot_root
+
+
+def _apply_selection_identity(
+    root: str | None, sha: str | None, snapshot_root: str | None
+) -> None:
+    """Move the whole selection identity at once.
+
+    A new SHA paired with a stale SNAPSHOT_ROOT would let readers trust the
+    wrong tree; all three variables are updated (or cleared) together.
+    """
+    for key, value in (
+        ("MTGACOACH_APP_ROOT", root),
+        ("MTGACOACH_SNAPSHOT_SHA", sha),
+        ("MTGACOACH_SNAPSHOT_ROOT", snapshot_root),
+    ):
+        if value:
+            os.environ[key] = value
+        else:
+            os.environ.pop(key, None)
+
+
+def _warn_rollback(session: Any, attempted_sha: str, previous: SelectionIdentity) -> None:
+    logger.warning(
+        "Adopted snapshot %s failed; rolling back to %s",
+        attempted_sha[:7] or "?",
+        previous[0] or "(checkout)",
+    )
+    session.logEmitted.emit(
+        "New engine snapshot failed to start; rolling back to the previous version.",
+        "error",
+    )
+
+
 class CoachSession(QObject):
     """Coordinates the background standalone coach process and TTS engine."""
 
@@ -97,7 +139,10 @@ class CoachSession(QObject):
         # Snapshot handoff target for the NEXT engine start: (root, commit).
         # Consumed by _finish_restart; set only when a reload plan decided to
         # adopt a published snapshot at a safe checkpoint.
-        self._pending_snapshot_target: tuple[str, str] | None = None
+        self._pending_snapshot_target: tuple[str, str, str] | None = None
+        self._adoption_generation = 0
+        self._pending_rollback: tuple[tuple[str | None, str | None, str | None], dict[str, bool]] | None = None
+        self._last_start_options: dict[str, bool] = {}
         self._shutting_down = False
 
     @property
@@ -125,6 +170,9 @@ class CoachSession(QObject):
         self.autopilotBugStatusChanged.emit(dict(status))
 
     def _set_startup_status(self, status: dict[str, Any]) -> None:
+        if status.get("ready"):
+            # Handshake complete: any armed adoption watchdog is satisfied.
+            self._adoption_generation += 1
         self._last_startup_status = dict(status)
         self.startupStatusChanged.emit(dict(status))
 
@@ -145,6 +193,7 @@ class CoachSession(QObject):
         if self.is_running or self._shutting_down:
             return False
         self._start_options = {"autopilot": autopilot, "dry_run": dry_run, "afk": afk}
+        self._last_start_options = dict(self._start_options)
         self._set_startup_status(
             {
                 "phase": "starting",
@@ -172,9 +221,23 @@ class CoachSession(QObject):
     def stop(self) -> None:
         """Stop the background coaching subprocess."""
         self._pending_restart = None
+        self._adoption_generation += 1
         if not self.is_running:
             return
         self._process.stop()
+
+    def _defer_engine_reload_visibly(self, reason: str) -> None:
+        """Incompatible/unknown engine version: keep the current engine and
+        tell the user a full Restart Coach is required. Never reload silently."""
+        logger.warning("Engine reload deferred: %s", reason)
+        self.logEmitted.emit(reason, "error")
+        self._set_startup_status(
+            {
+                "phase": "restart_required",
+                "message": reason,
+                "ready": True,
+            }
+        )
 
     def restart(
         self,
@@ -189,6 +252,22 @@ class CoachSession(QObject):
         """
         if self._shutting_down or self._pending_restart is not None:
             return
+        # Consult the published selection exactly once, at this safe
+        # checkpoint. Manual Reload Engine and engine-requested reloads both
+        # come through here, so neither can bypass a newly published
+        # compatible snapshot or silently reload into an incompatible one.
+        plan = self._plan_snapshot_reload()
+        if plan.action == "require_full_restart":
+            self._defer_engine_reload_visibly(plan.reason)
+            return
+        if plan.action == "adopt":
+            logger.info("Engine reload will adopt a newer snapshot: %s", plan.reason)
+            self.logEmitted.emit(plan.reason, "status")
+            self._pending_snapshot_target = (
+                plan.target_root,
+                plan.target_commit,
+                plan.target_root,
+            )
         options = dict(self._start_options)
         if "AUTOPILOT" in self._statuses:
             options["autopilot"] = self._autopilot_active
@@ -221,44 +300,91 @@ class CoachSession(QObject):
         self._pending_restart = None
         target = self._pending_snapshot_target
         self._pending_snapshot_target = None
-        previous_root = os.environ.get("MTGACOACH_APP_ROOT", "")
-        previous_sha = os.environ.get("MTGACOACH_SNAPSHOT_SHA", "")
+        previous_identity = _selection_identity()
         switched = False
         if target is not None:
-            target_root, target_commit = target
+            target_root, target_commit, target_snapshot_root = target
             # Established launcher handoff: the new engine starts from the
-            # adopted absolute versioned root. The UI process env follows so
-            # anything spawned from here (engine, TTS) stays on consistent
-            # versions; the UI itself keeps its launch-time code (old UI /
-            # new engine through the declared protocol).
-            os.environ["MTGACOACH_APP_ROOT"] = target_root
-            os.environ["MTGACOACH_SNAPSHOT_SHA"] = target_commit
+            # adopted absolute versioned root. The whole selection identity
+            # (APP_ROOT + SNAPSHOT_SHA + SNAPSHOT_ROOT) moves together so no
+            # reader ever sees a new SHA paired with a stale root. The UI
+            # itself keeps its launch-time code (old UI / new engine through
+            # the declared protocol).
+            _apply_selection_identity(target_root, target_commit, target_snapshot_root)
             switched = True
         if self.start(**options, engine_reload=True):
+            if switched:
+                self._arm_ready_watchdog(previous_identity)
             return
         if not switched:
             return
-        # Adoption failed: roll back to the previous root so the current
-        # (previous) engine version stays usable. Never leave a half-switched
-        # environment behind.
+        # Adoption failed to spawn: roll back to the previous identity so the
+        # current (previous) engine version stays usable.
+        _warn_rollback(self, os.environ.get("MTGACOACH_SNAPSHOT_SHA", "?"), previous_identity)
+        _apply_selection_identity(*previous_identity)
+        if not self.start(**options, engine_reload=True):
+            logger.error("Rollback start also failed; the coach is stopped.")
+            self.logEmitted.emit(
+                "Previous engine version also failed to start; start Coach manually.",
+                "error",
+            )
+
+    def _arm_ready_watchdog(
+        self, previous_identity: tuple[str | None, str | None, str | None]
+    ) -> None:
+        """Require READY/handshake from an adopted engine, not just a spawn.
+
+        If the adopted snapshot never becomes ready within the timeout the
+        child is stopped and the previous identity is restarted; spawn-alone
+        success is never treated as a successful adoption.
+        """
+        try:
+            timeout_s = float(os.environ.get("MTGACOACH_READY_TIMEOUT_S", "90"))
+        except ValueError:
+            timeout_s = 90.0
+        timeout_s = max(timeout_s, 5.0)
+        self._adoption_generation += 1
+        generation = self._adoption_generation
+        adopted_sha = os.environ.get("MTGACOACH_SNAPSHOT_SHA", "")
+
+        def _fire() -> None:
+            self._ready_watchdog_fired(generation, adopted_sha, previous_identity)
+
+        QTimer.singleShot(int(timeout_s * 1000), _fire)
+
+    def _ready_watchdog_fired(
+        self,
+        generation: int,
+        adopted_sha: str,
+        previous_identity: tuple[str | None, str | None, str | None],
+    ) -> None:
+        if generation != self._adoption_generation or self._shutting_down:
+            return
+        status = self.last_startup_status or {}
+        if status.get("ready"):
+            return
         logger.warning(
-            "Adopted snapshot %s failed to start; rolling back to %s",
-            os.environ.get("MTGACOACH_SNAPSHOT_SHA", "?")[:7],
-            previous_root or "(checkout)",
+            "Adopted snapshot %s never became READY; rolling back", adopted_sha[:7] or "?"
         )
         self.logEmitted.emit(
-            "New engine snapshot failed to start; rolling back to the previous version.",
+            "New engine did not become ready in time; rolling back to the previous version.",
             "error",
         )
-        if previous_root:
-            os.environ["MTGACOACH_APP_ROOT"] = previous_root
-        else:
-            os.environ.pop("MTGACOACH_APP_ROOT", None)
-        if previous_sha:
-            os.environ["MTGACOACH_SNAPSHOT_SHA"] = previous_sha
-        else:
-            os.environ.pop("MTGACOACH_SNAPSHOT_SHA", None)
-        self.start(**options, engine_reload=True)
+        self._adoption_generation += 1
+        if not self.is_running:
+            _apply_selection_identity(*previous_identity)
+            options = dict(self._last_start_options)
+            if not self.start(**options, engine_reload=True):
+                logger.error("Rollback start also failed; the coach is stopped.")
+                self.logEmitted.emit(
+                    "Previous engine version also failed to start; start Coach manually.",
+                    "error",
+                )
+            return
+        # Graceful stop first; the exited handler performs the rollback start
+        # so two engines never control Arena at once.
+        self._pending_rollback = (previous_identity, dict(self._last_start_options))
+        self._process.stop_async()
 
     def _plan_snapshot_reload(self) -> Any:
         """Consult published snapshots once, at this safe checkpoint.
@@ -776,30 +902,20 @@ class CoachSession(QObject):
             # closing app, takes precedence: never a second engine.
             reason = str(event.get("reason") or "The engine asked to reload")
             if self._pending_restart is None and not self._shutting_down and self.is_running:
+                # Consult the published selection BEFORE announcing a reload:
+                # an incompatible/unknown engine version must never fire the
+                # reload signal -- it defers visibly to a full Restart Coach.
                 plan = self._plan_snapshot_reload()
                 if plan.action == "require_full_restart":
-                    # Visible, explicit: never silently reload into an
-                    # unknown/incompatible engine protocol. The current engine
-                    # keeps running; the user chooses Restart Coach.
-                    logger.warning("Engine reload deferred: %s", plan.reason)
-                    self.logEmitted.emit(plan.reason, "error")
-                    self._set_startup_status(
-                        {
-                            "phase": "restart_required",
-                            "message": plan.reason,
-                            "ready": True,
-                        }
-                    )
+                    self._defer_engine_reload_visibly(plan.reason)
                     return
-                if plan.action == "adopt":
-                    # Explicit latest-compatible-engine handoff: the new
-                    # engine starts from the published snapshot root.
-                    logger.info("Engine reload will adopt a newer snapshot: %s", plan.reason)
-                    self.logEmitted.emit(plan.reason, "status")
-                    self._pending_snapshot_target = (plan.target_root, plan.target_commit)
                 logger.info("Engine requested a reload: %s", reason)
                 self.logEmitted.emit(f"{reason}; reloading the engine between matches.", "status")
                 self.engineReloadRequested.emit(reason)
+                # Same selection path as a manual Reload Engine: restart()
+                # consults the published pointer once and adopts only a
+                # compatible newer snapshot (or defers visibly).
+                self.restart()
             else:
                 logger.info(
                     "Ignored an engine reload request (%s): a reload or shutdown is under way", reason
@@ -812,6 +928,20 @@ class CoachSession(QObject):
 
     def _handle_exited(self, code: int) -> None:
         logger.info(f"Coach process exited with code {code}")
+        rollback = self._pending_rollback
+        if rollback is not None and not self._shutting_down:
+            # A READY-watchdog rollback: previous identity back on before the
+            # replacement engine starts.
+            self._pending_rollback = None
+            previous_identity, options = rollback
+            _apply_selection_identity(*previous_identity)
+            if not self.start(**options, engine_reload=True):
+                logger.error("Rollback start also failed; the coach is stopped.")
+                self.logEmitted.emit(
+                    "Previous engine version also failed to start; start Coach manually.",
+                    "error",
+                )
+            return
         if self._last_concede.get("state") in ("offering", "armed", "conceding", "sent"):
             # The engine's countdown died with it; take the banner down.
             self._last_concede = {"state": "aborted", "reason": "the coach stopped"}

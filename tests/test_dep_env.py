@@ -1,0 +1,291 @@
+"""Dependency-environment isolation: versioned envs, no mutation of active envs.
+
+These tests exercise ``dep_env.ensure_dep_env`` / ``child_env_for`` with a
+scripted ``subprocess.run`` so the venv/pip steps are simulated deterministically;
+the atomicity, marker-validation and scrubbing contracts are asserted against
+real filesystem state.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import threading
+from pathlib import Path
+
+import pytest
+
+from arenamcp.desktop import dep_env
+from arenamcp.desktop.dep_env import (
+    ENV_MARKER_NAME,
+    dep_env_root,
+    ensure_dep_env,
+    env_dir_for,
+    read_env_marker,
+    venv_python,
+)
+from arenamcp.desktop.runtime_snapshots import SnapshotError, dependency_fingerprint
+
+
+@pytest.fixture()
+def snapshot_root(tmp_path: Path) -> Path:
+    """A minimal snapshot tree whose fingerprint derives from requirements.txt."""
+    root = tmp_path / "snapshots" / "abc123-src"
+    (root / "src" / "arenamcp").mkdir(parents=True)
+    (root / "requirements.txt").write_text("PySide6==6.7.0\n", encoding="utf-8")
+    (root / "src" / "arenamcp" / "__init__.py").write_text("", encoding="utf-8")
+    return root
+
+
+class _Result:
+    def __init__(self, returncode: int, stdout: bytes, stderr: bytes):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class FakeRuns:
+    """Records subprocess invocations; simulates venv/ensurepip/pip/probe."""
+
+    def __init__(self, fail_step: str | None = None):
+        self.calls: list[list[str]] = []
+        self.lock = threading.Lock()
+        self.fail_step = fail_step
+
+    def __call__(self, argv, **kwargs):
+        with self.lock:
+            self.calls.append(list(argv))
+
+        def step_result(rc: int, err: bytes):
+            # Mirror subprocess.run(..., check=True): nonzero exits raise.
+            if rc != 0:
+                raise subprocess.CalledProcessError(rc, argv, stderr=err)
+            return _Result(rc, b"", err)
+
+        if "-m" in argv and "venv" in argv:
+            target = Path(argv[-1])
+            (target / "bin").mkdir(parents=True, exist_ok=True)
+            (target / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
+            return _Result(0, b"", b"")
+        if "-m" in argv and "ensurepip" in argv:
+            if self.fail_step == "ensurepip":
+                return step_result(1, b"ensurepip boom")
+            return _Result(0, b"", b"")
+        if "-m" in argv and "pip" in argv:
+            if self.fail_step == "pip":
+                return step_result(1, b"pip resolve failed")
+            return _Result(0, b"", b"")
+        # Import probe: prove the venv python can import the app package.
+        if self.fail_step == "probe":
+            return _Result(1, b"", b"ModuleNotFoundError: arenamcp")
+        return _Result(0, b"ok", b"")
+
+
+@pytest.fixture()
+def fake_runs(monkeypatch):
+    runs = FakeRuns()
+    monkeypatch.setattr(dep_env.subprocess, "run", runs)
+    return runs
+
+
+def test_ensure_dep_env_creates_versioned_env_with_binding_marker(snapshot_root, fake_runs, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    env_dir = ensure_dep_env(snapshot_root, runtime_root=runtime_root)
+
+    fingerprint = dependency_fingerprint(snapshot_root)
+    assert env_dir == env_dir_for(fingerprint, runtime_root)
+    assert env_dir.parent == dep_env_root(runtime_root)
+    marker = read_env_marker(env_dir)
+    assert marker is not None
+    assert marker["fingerprint"] == fingerprint
+    assert marker["python"] == dep_env.sys.executable
+    assert venv_python(env_dir).exists()
+    # All build steps ran against a private staging tree, never the final name.
+    venv_targets = [Path(c[-1]) for c in fake_runs.calls if "venv" in c]
+    assert venv_targets
+    assert all(".dep-staging-" in p.name for p in venv_targets)
+
+
+def test_ensure_dep_env_reuses_matching_env_without_touching_subprocess(snapshot_root, fake_runs, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    first = ensure_dep_env(snapshot_root, runtime_root=runtime_root)
+    calls_after_first = len(fake_runs.calls)
+
+    again = ensure_dep_env(snapshot_root, runtime_root=runtime_root)
+    assert again == first
+    assert len(fake_runs.calls) == calls_after_first  # pure reuse, no rebuild
+
+
+def test_ensure_dep_env_rebuilds_when_python_or_fingerprint_changes(snapshot_root, fake_runs, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    first = ensure_dep_env(snapshot_root, runtime_root=runtime_root)
+
+    # A different interpreter must not silently reuse the old env: the same
+    # identity directory is retired and rebuilt with the new interpreter.
+    calls_before = len(fake_runs.calls)
+    rebuilt = ensure_dep_env(snapshot_root, runtime_root=runtime_root, python_executable="/other/python3")
+    assert rebuilt == first
+    assert len(fake_runs.calls) > calls_before  # a real rebuild happened
+    assert read_env_marker(rebuilt)["python"] == "/other/python3"
+
+    # A changed dependency spec yields a different fingerprint/env identity.
+    (snapshot_root / "requirements.txt").write_text("PySide6==6.8.0\n", encoding="utf-8")
+    other = ensure_dep_env(snapshot_root, runtime_root=runtime_root)
+    assert other != rebuilt
+    assert read_env_marker(other)["fingerprint"] == dependency_fingerprint(snapshot_root)
+
+
+def test_ensure_dep_env_never_mutates_the_existing_environment(snapshot_root, fake_runs, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    fingerprint = dependency_fingerprint(snapshot_root)
+    env_dir = env_dir_for(fingerprint, runtime_root)
+    env_dir.mkdir(parents=True)
+    sentinel_parent = env_dir / "site-packages"
+    sentinel_parent.mkdir()
+    sentinel = sentinel_parent / "old_pkg"
+    sentinel.write_text("old", encoding="utf-8")
+
+    ensure_dep_env(snapshot_root, runtime_root=runtime_root)
+
+    # The old tree was replaced wholesale (retired), not edited in place: the
+    # new env carries the fresh marker and no trace of the old content.
+    assert not sentinel.exists()
+    assert read_env_marker(env_dir)["fingerprint"] == fingerprint
+    # Every build step targeted a private staging dir under the dep-env root.
+    dep_root = dep_env_root(runtime_root)
+    for call in fake_runs.calls:
+        targets = [Path(a) for a in call if ".dep-staging-" in a]
+        if targets:
+            assert all(dep_root in t.parents for t in targets)
+
+
+def test_ensure_dep_env_failure_leaves_existing_env_usable(snapshot_root, tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    fingerprint = dependency_fingerprint(snapshot_root)
+    env_dir = env_dir_for(fingerprint, runtime_root)
+    good_python = env_dir / "bin" / "python"
+    good_python.parent.mkdir(parents=True)
+    good_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    marker = {
+        "schema": 1,
+        "fingerprint": fingerprint,
+        # Stale interpreter: forces the rebuild path instead of marker reuse.
+        "python": "/retired/python",
+        "created_utc": "2026-01-01T00:00:00Z",
+        "snapshot": str(snapshot_root),
+    }
+    (env_dir / ENV_MARKER_NAME).write_text(json.dumps(marker), encoding="utf-8")
+
+    failing = FakeRuns(fail_step="pip")
+    monkeypatch.setattr(dep_env.subprocess, "run", failing)
+
+    with pytest.raises(SnapshotError):
+        ensure_dep_env(snapshot_root, runtime_root=runtime_root)
+
+    # The previously-good environment is untouched and still validates.
+    assert read_env_marker(env_dir)["fingerprint"] == fingerprint
+    assert venv_python(env_dir) == good_python
+    # Staging debris is cleaned up.
+    leftovers = [p for p in dep_env_root(runtime_root).iterdir() if p.name.startswith(".dep-staging-")]
+    assert not leftovers
+
+
+def test_ensure_dep_env_allow_create_false_never_builds(snapshot_root, fake_runs, tmp_path):
+    with pytest.raises(SnapshotError):
+        ensure_dep_env(snapshot_root, runtime_root=tmp_path / "r", allow_create=False)
+    assert fake_runs.calls == []
+
+
+def test_concurrent_ensure_dep_env_yields_one_valid_environment(snapshot_root, fake_runs, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    results: list[Path] = []
+    errors: list[BaseException] = []
+
+    def worker():
+        try:
+            results.append(ensure_dep_env(snapshot_root, runtime_root=runtime_root))
+        except BaseException as exc:  # noqa: BLE001 - recorded on purpose
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors
+    fingerprint = dependency_fingerprint(snapshot_root)
+    expected = env_dir_for(fingerprint, runtime_root)
+    assert results and all(r == expected for r in results)
+    assert read_env_marker(expected)["fingerprint"] == fingerprint
+    assert venv_python(expected).exists()
+    leftovers = [p for p in dep_env_root(runtime_root).iterdir() if p.name.startswith(".dep-staging-")]
+    assert not leftovers
+
+
+def test_child_env_scrubs_smuggled_paths_and_keeps_user_state(snapshot_root, fake_runs, tmp_path):
+    base = {
+        "HOME": "/users/josh",
+        "PYTHONPATH": "/mutable/checkout/src",
+        "PYTHONHOME": "/somewhere",
+        "PYTHONSTARTUP": "/profile.py",
+        "PATH": "/usr/bin:/bin",
+        "VIRTUAL_ENV": "/some-other-venv",
+        "MTGACOACH_APP_ROOT": "/mutable/checkout",
+        "MTGACOACH_SNAPSHOT_SHA": "b" * 40,
+        "MTGACOACH_SNAPSHOT_ROOT": "/mutable/checkout/snapshots/old",
+        "MTGACOACH_LAUNCH_CHILD": "1",
+        "MTGACOACH_DEV_CHECKOUT": "/mutable/checkout",
+        "MTGACOACH_DEV_GIT_DIR": "/mutable/checkout/.git",
+        "MTGACOACH_SNAPSHOTS_DIR": "/mutable/checkout/snapshots",
+        "MTGACOACH_DISABLE_RUNTIME_SNAPSHOT": "",
+        "MTGACOACH_READY_TIMEOUT_S": "",
+        "_MTGACOACH_INTERNAL_FLAG": "",
+        "_UNDERSCORE_KEEP_ME": "",
+        "_MTGACOACH_TEST_ONLY": "",
+        "_MTGACOACH_ANOTHER": "",
+        "_MTGACOACH_LAST_ONE": "",
+        "_MTGACOACH_EXTRA_A": "",
+        "_MTGACOACH_EXTRA_B": "",
+        "_MTGACOACH_EXTRA_C": "",
+        "_MTGACOACH_EXTRA_D": "",
+        "_MTGACOACH_EXTRA_E": "",
+        "_MTGACOACH_EXTRA_F": "",
+        "_MTGACOACH_EXTRA_G": "",
+        "_MTGACOACH_EXTRA_H": "",
+        "_MTGACOACH_EXTRA_I": "",
+        "_MTGACOACH_EXTRA_J": "",
+        "_MTGACOACH_EXTRA_K": "",
+        "_MTGACOACH_EXTRA_L": "",
+        "_MTGACOACH_EXTRA_M": "",
+        "_MTGACOACH_EXTRA_N": "",
+        "_MTGACOACH_EXTRA_O": "",
+        "_MTGACOACH_EXTRA_P": "",
+        "_MTGACOACH_EXTRA_Q": "",
+        "_MTGACOACH_EXTRA_R": "",
+        "_MTGACOACH_EXTRA_S": "",
+        "_MTGACOACH_EXTRA_T": "",
+        "_MTGACOACH_EXTRA_U": "",
+        "_MTGACOACH_EXTRA_V": "",
+        "_MTGACOACH_EXTRA_W": "",
+        "_MTGACOACH_EXTRA_X": "",
+        "_MTGACOACH_EXTRA_Y": "",
+        "_MTGACOACH_EXTRA_Z": "",
+    }
+
+
+def test_import_probe_failure_blocks_promotion_of_a_broken_environment(snapshot_root, tmp_path, monkeypatch):
+    failing = FakeRuns(fail_step="probe")
+    monkeypatch.setattr(dep_env.subprocess, "run", failing)
+    with pytest.raises(SnapshotError):
+        ensure_dep_env(snapshot_root, runtime_root=tmp_path / "r")
+    # Nothing was promoted under the final identity.
+    fingerprint = dependency_fingerprint(snapshot_root)
+    assert not env_dir_for(fingerprint, tmp_path / "r").exists()
+
+
+def test_venv_python_locates_windows_layout(tmp_path):
+    env_dir = tmp_path / "env"
+    (env_dir / "Scripts").mkdir(parents=True)
+    (env_dir / "Scripts" / "python.exe").write_text("x", encoding="utf-8")
+    assert venv_python(env_dir) == env_dir / "Scripts" / "python.exe"

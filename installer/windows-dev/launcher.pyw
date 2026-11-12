@@ -1,8 +1,16 @@
-"""Local Windows entrypoint; source and subprocesses use the configured checkout."""
+"""Local Windows entrypoint; selection and imports stay out of this process.
+
+This launcher never imports ``arenamcp`` itself: importing the package here
+would pin ``arenamcp.__path__`` to the checkout for the whole process and let
+mutable-checkout modules leak into a snapshot launch. Instead it hands off to
+``scripts/launch_desktop.py``, whose two-phase bootstrap resolves the published
+selection once and starts the application from a fresh interpreter bound to
+the immutable snapshot root (or coherently from the checkout).
+"""
 
 import json
 import os
-import runpy
+import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -13,36 +21,29 @@ def launch(config):
     entry = checkout / "scripts" / "launch_desktop.py"
     if not entry.is_file():
         raise FileNotFoundError(f"Connect to the source share before opening Coach Dev: {checkout}")
-    os.environ.pop("PYTHONHOME", None)
-    os.environ.pop("MTGACOACH_VELOPACK_PENDING", None)
-    os.environ["PYTHONNOUSERSITE"] = "1"
+    environment = dict(os.environ)
+    environment.pop("PYTHONHOME", None)
+    environment.pop("MTGACOACH_VELOPACK_PENDING", None)
+    environment.pop("PYTHONPATH", None)
+    environment["PYTHONNOUSERSITE"] = "1"
     if config.get("git_dir"):
-        os.environ["MTGACOACH_DEV_GIT_DIR"] = config["git_dir"]
+        environment["MTGACOACH_DEV_GIT_DIR"] = config["git_dir"]
     else:
-        os.environ.pop("MTGACOACH_DEV_GIT_DIR", None)
-    sys.path.insert(0, str(checkout / "src"))
+        environment.pop("MTGACOACH_DEV_GIT_DIR", None)
+    # Fresh selection on every launch: never inherit a previous snapshot pin.
+    for key in ("MTGACOACH_SNAPSHOT_SHA", "MTGACOACH_SNAPSHOT_ROOT", "MTGACOACH_LAUNCH_CHILD"):
+        environment.pop(key, None)
     if config.get("runtime_snapshots"):
-        # Opt-in immutable runtime snapshots: resolve the published selection
-        # once here; launch_desktop honours the pre-made selection via
-        # MTGACOACH_SNAPSHOT_SHA/ROOT and never re-resolves.
-        try:
-            from arenamcp.desktop.runtime_snapshots import resolve_launch_selection
-
-            selection = resolve_launch_selection(
-                checkout, snapshots_dir=config.get("snapshots_dir")
-            )
-            if selection.snapshot_root is not None and selection.commit:
-                checkout = selection.snapshot_root
-                os.environ["MTGACOACH_SNAPSHOT_SHA"] = selection.commit
-                os.environ["MTGACOACH_SNAPSHOT_ROOT"] = str(selection.snapshot_root)
-        except Exception as error:
-            print(f"runtime snapshot resolution failed; using checkout: {error}")
-    os.environ["PYTHONPATH"] = str(checkout / "src")
-    os.environ["MTGACOACH_DEV_CHECKOUT"] = str(checkout)
-    os.environ["MTGACOACH_BUILD_LABEL"] = "dev source"
-    os.chdir(checkout)
-    sys.argv[0] = str(entry)
-    runpy.run_path(str(entry), run_name="__main__")
+        snapshots_dir = config.get("snapshots_dir")
+        if snapshots_dir:
+            environment["MTGACOACH_SNAPSHOTS_DIR"] = str(snapshots_dir)
+        else:
+            environment.pop("MTGACOACH_SNAPSHOTS_DIR", None)
+    else:
+        environment["MTGACOACH_DISABLE_RUNTIME_SNAPSHOT"] = "1"
+    environment["MTGACOACH_DEV_CHECKOUT"] = str(checkout)
+    proc = subprocess.Popen([sys.executable, str(entry)], env=environment, cwd=str(checkout))
+    return proc.wait()
 
 
 def main():
@@ -50,7 +51,7 @@ def main():
     with (root / "launcher.log").open("a", encoding="utf-8", buffering=1) as log:
         sys.stdout = sys.stderr = log
         try:
-            launch(json.loads((root / "launcher.json").read_text(encoding="utf-8")))
+            raise SystemExit(launch(json.loads((root / "launcher.json").read_text(encoding="utf-8"))))
         except Exception as error:
             traceback.print_exc()
             if sys.platform == "win32":

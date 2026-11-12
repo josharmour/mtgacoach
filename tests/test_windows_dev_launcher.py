@@ -16,35 +16,87 @@ def load(path):
     return module
 
 
-def test_local_launcher_keeps_shared_source_and_restart_environment(monkeypatch, tmp_path):
+def test_local_launcher_delegates_to_two_phase_bootstrap(monkeypatch, tmp_path):
+    """The .pyw launcher never imports arenamcp itself: it scrubs stale
+    interpreter/snapshot state and delegates to scripts/launch_desktop.py in a
+    fresh interpreter, whose two-phase bootstrap binds imports to the resolved
+    snapshot (or coherently to the checkout)."""
     module = load(Path(__file__).resolve().parents[1] / "installer/windows-dev/launcher.pyw")
     checkout = tmp_path / "Shared source"
     entry = checkout / "scripts/launch_desktop.py"
     entry.parent.mkdir(parents=True)
     entry.touch()
-    run = Mock()
-    monkeypatch.setattr(module.runpy, "run_path", run)
+    popen = Mock(return_value=Mock(wait=Mock(return_value=7)))
+    monkeypatch.setattr(module.subprocess, "Popen", popen)
     monkeypatch.setenv("PYTHONHOME", "old")
     monkeypatch.setenv("MTGACOACH_VELOPACK_PENDING", "old")
-    monkeypatch.setattr(sys, "path", list(sys.path))
-    monkeypatch.setattr(sys, "argv", ["launcher.pyw", "--version"])
-    monkeypatch.chdir(tmp_path)
-    # Environment changes are scoped to this test, including those made by launch().
+    monkeypatch.setenv("PYTHONPATH", "/stale/snapshots/old/src")
+    monkeypatch.setenv("MTGACOACH_SNAPSHOT_SHA", "a" * 40)
+    monkeypatch.setenv("MTGACOACH_SNAPSHOT_ROOT", "/stale/snapshots/old")
+    monkeypatch.setenv("MTGACOACH_LAUNCH_CHILD", "1")
+    monkeypatch.setenv("MTGACOACH_DEV_CHECKOUT", "old")
+    monkeypatch.setenv("MTGACOACH_BUILD_LABEL", "old")
+
+    exit_code = module.launch({"checkout": str(checkout), "git_dir": str(tmp_path / "git")})
+
+    assert exit_code == 7
+    args, kwargs = popen.call_args
+    assert args[0] == [sys.executable, str(entry)]
+    assert kwargs["cwd"] == str(checkout)
+    env = kwargs["env"]
+    assert env["MTGACOACH_DEV_CHECKOUT"] == str(checkout)
+    assert env["MTGACOACH_DEV_GIT_DIR"] == str(tmp_path / "git")
+    assert env["PYTHONNOUSERSITE"] == "1"
+    # Stale interpreter state and previous snapshot pins never survive.
     for key in (
+        "PYTHONHOME",
+        "MTGACOACH_VELOPACK_PENDING",
         "PYTHONPATH",
-        "PYTHONNOUSERSITE",
-        "MTGACOACH_DEV_CHECKOUT",
-        "MTGACOACH_BUILD_LABEL",
-        "MTGACOACH_DEV_GIT_DIR",
+        "MTGACOACH_SNAPSHOT_SHA",
+        "MTGACOACH_SNAPSHOT_ROOT",
+        "MTGACOACH_LAUNCH_CHILD",
+        "MTGACOACH_SNAPSHOTS_DIR",
     ):
-        monkeypatch.setenv(key, "old")
-    module.launch({"checkout": str(checkout), "git_dir": str(tmp_path / "git")})
-    assert module.os.environ["PYTHONPATH"] == str(checkout / "src")
-    assert module.os.environ["MTGACOACH_DEV_CHECKOUT"] == str(checkout)
-    assert "PYTHONHOME" not in module.os.environ
-    assert "MTGACOACH_VELOPACK_PENDING" not in module.os.environ
-    assert sys.argv == [str(entry), "--version"]
-    run.assert_called_once_with(str(entry), run_name="__main__")
+        assert key not in env
+
+
+def test_local_launcher_disables_snapshots_when_configured_off(monkeypatch, tmp_path):
+    module = load(Path(__file__).resolve().parents[1] / "installer/windows-dev/launcher.pyw")
+    checkout = tmp_path / "Shared source"
+    entry = checkout / "scripts/launch_desktop.py"
+    entry.parent.mkdir(parents=True)
+    entry.touch()
+    popen = Mock(return_value=Mock(wait=Mock(return_value=0)))
+    monkeypatch.setattr(module.subprocess, "Popen", popen)
+    monkeypatch.delenv("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT", raising=False)
+
+    module.launch({"checkout": str(checkout), "runtime_snapshots": False})
+
+    env = popen.call_args.kwargs["env"]
+    assert env["MTGACOACH_DISABLE_RUNTIME_SNAPSHOT"] == "1"
+
+
+def test_local_launcher_passes_configured_snapshots_dir(monkeypatch, tmp_path):
+    module = load(Path(__file__).resolve().parents[1] / "installer/windows-dev/launcher.pyw")
+    checkout = tmp_path / "Shared source"
+    entry = checkout / "scripts/launch_desktop.py"
+    entry.parent.mkdir(parents=True)
+    entry.touch()
+    popen = Mock(return_value=Mock(wait=Mock(return_value=0)))
+    monkeypatch.setattr(module.subprocess, "Popen", popen)
+    snapshots_dir = tmp_path / "snapshots"
+
+    module.launch(
+        {
+            "checkout": str(checkout),
+            "runtime_snapshots": True,
+            "snapshots_dir": str(snapshots_dir),
+        }
+    )
+
+    env = popen.call_args.kwargs["env"]
+    assert env["MTGACOACH_SNAPSHOTS_DIR"] == str(snapshots_dir)
+    assert env.get("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT") != "1"
 
 
 def test_installer_uses_local_python_and_never_targets_master_shortcut(monkeypatch, tmp_path):

@@ -388,21 +388,40 @@ def main() -> int:
 
 
 def relaunch_application() -> None:
-    """Relaunch the desktop application process cleanly."""
+    """Relaunch through the established launcher handoff with a clean slate.
+
+    The launcher re-resolves the launch selection once (newest published
+    snapshot or checkout); no snapshot pin, ``PYTHONPATH`` or child flag is
+    inherited, so a Full Restart Coach can never silently reuse the previous
+    selection or mix imports.
+    """
     _release_single_instance_lock()
-    python = sys.executable
+    environment = dict(os.environ)
     if getattr(sys, "frozen", False):
-        command = [python, *sys.argv[1:]]
+        command = [sys.executable, *sys.argv[1:]]
     else:
-        command = [python, "-m", "arenamcp.desktop", *sys.argv[1:]]
+        for key in (
+            "MTGACOACH_SNAPSHOT_SHA",
+            "MTGACOACH_SNAPSHOT_ROOT",
+            "MTGACOACH_LAUNCH_CHILD",
+            "PYTHONPATH",
+            "PYTHONSTARTUP",
+            "PYTHONHOME",
+        ):
+            environment.pop(key, None)
+        app_root = os.environ.get("MTGACOACH_APP_ROOT", "").strip()
+        launcher = Path(app_root) / "scripts" / "launch_desktop.py" if app_root else None
+        if launcher is None or not launcher.is_file():
+            launcher = Path(__file__).resolve().parents[3] / "scripts" / "launch_desktop.py"
+        command = [sys.executable, str(launcher), *sys.argv[1:]]
     _write_log(f"relaunching desktop process: {command}")
     if sys.platform == "win32":
         import subprocess
 
-        subprocess.Popen(command)
+        subprocess.Popen(command, env=environment)
         sys.exit(0)
     else:
-        os.execv(python, command)
+        os.execve(command[0], command, environment)
 
 
 if __name__ == "__main__":

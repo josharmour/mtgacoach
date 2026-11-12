@@ -1,171 +1,121 @@
-"""Immutable per-commit runtime snapshots with atomic publication.
+"""Immutable runtime snapshots for the Coach desktop app.
 
-Contract (see docs/RUNTIME_SNAPSHOTS.md):
+Publication pipeline (offline, operator driven):
 
-- A snapshot is a complete, immutable copy of one verified commit, exported to
-  ``<runtime_root>/snapshots/<commit12>-<content8>/`` with a manifest. The
-  running Coach never executes from a changing checkout.
-- Publication is atomic: content is staged in a sibling ``.staging-*``
-  directory, fully validated (every file present, every hash matching), and
-  only then renamed into place. The ``current-snapshot.json`` pointer is
-  replaced with ``os.replace``, so concurrent publishers and readers never
-  observe a partial or mixed state: a reader sees either the previous
-  pointer, or the complete new one.
-- Readers resolve the selection ONCE per launch (``resolve_launch_selection``)
-  and use absolute versioned roots afterwards.
-- Protocol compatibility is declared, not discovered: a snapshot carries
-  ``ui_protocol`` and ``engine_protocol`` versions. Old UI + newer engine is
-  allowed only through a declared compatible protocol (same major, engine
-  minor >= UI minor). Unknown or incompatible versions visibly require a full
-  Restart Coach; they are never adopted silently.
-- Snapshots are never destructively cleaned up while they may be in use; the
-  rollback path is simply re-pointing the pointer at an older complete
-  snapshot (or disabling snapshots entirely via MTGACOACH_SNAPSHOTS_DISABLE).
-- Secrets are never copied: secret-shaped files (.env*, *.pem, *.key,
-  credentials*) are excluded from staging and therefore from manifests.
+1. ``stage_snapshot`` exports a pinned commit with ``git archive`` into a
+   private staging directory. Nothing is read from the working tree, so dirty
+   tracked files, untracked files and ``.git`` internals can never leak into a
+   snapshot that claims an older SHA.
+2. A content-hash manifest is written and validated inside staging.
+3. ``promote_snapshot`` renames the validated staging directory to its final
+   per-commit identity with a single atomic ``os.replace`` and marks it
+   read-only. Identical content is reused only after full re-validation.
+4. ``publish_pointer`` atomically publishes the next-launch pointer, but only
+   for a fully validated snapshot directory.
 
-This module is importable from the checkout before the desktop app imports
-anything from the snapshot root: it is deliberately dependency-free (stdlib
-only) so it can act as the launch bootstrap resolver.
+Readers (``read_pointer_once``, ``resolve_launch_selection``) validate the
+complete snapshot content on every read: a tampered or truncated snapshot is
+never launched, and a pointer whose commit/hash disagree with the manifest it
+points at is rejected.
+
+Secrets (credential files, keys, ``.env``) are excluded at export time and the
+exclusions are declared in the manifest; user data, logs and caches stay
+external to snapshots by construction.
 """
 
 from __future__ import annotations
 
-import dataclasses
-import fnmatch
 import hashlib
+import io
 import json
+import logging
 import os
 import shutil
 import stat
+import subprocess
+import tarfile
 import tempfile
-import uuid
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+import time
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 
-SNAPSHOTS_DIRNAME = "snapshots"
-POINTER_NAME = "current-snapshot.json"
+logger = logging.getLogger(__name__)
+
+MANIFEST_SCHEMA = 2
 MANIFEST_NAME = "snapshot-manifest.json"
+POINTER_SCHEMA = 2
+POINTER_NAME = "next-launch.json"
 STAGING_PREFIX = ".staging-"
-MANIFEST_SCHEMA = "mtgacoach-runtime-snapshot/1"
-POINTER_SCHEMA = "mtgacoach-runtime-snapshot-pointer/1"
 
-#: Declared, tested UI-engine protocol versions. Bump the minor for additive,
-#: backward-compatible protocol changes; bump the major for breaking changes.
-UI_PROTOCOL_VERSION: tuple[int, int] = (1, 0)
-ENGINE_PROTOCOL_VERSION: tuple[int, int] = (1, 0)
+#: Files that must exist for a snapshot to be launchable.
+ENTRY_POINT_FILES = ("pyproject.toml", "src/arenamcp/__init__.py")
 
-#: Directories never copied into a snapshot (VCS metadata, caches, envs).
-EXCLUDED_DIRECTORIES = frozenset(
+#: Dependency specification files bound into the snapshot fingerprint.
+DEPENDENCY_SPEC_FILES = ("requirements.txt", "requirements-dev.txt", "pyproject.toml")
+
+EXCLUDED_DIRECTORY_NAMES = frozenset(
+    {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv", "node_modules"}
+)
+EXCLUDED_FILE_SUFFIXES = (".pyc", ".pyo")
+SECRET_BASENAMES = frozenset(
     {
-        ".git",
-        ".hg",
-        ".svn",
-        "__pycache__",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".mypy_cache",
-        ".venv",
-        "venv",
-        "node_modules",
-        ".worktrees",
-        ".tox",
-        ".eggs",
-        "dist",
-        "build",
-        "htmlcov",
+        ".env",
+        ".env.local",
+        ".env.production",
+        "credentials.json",
+        "aws_credentials",
+        "secrets.json",
+        "secrets_prod.json",
+        "service-account.json",
+        "id_rsa",
+        "id_ed25519",
     }
 )
+SECRET_SUFFIXES = (".pem", ".key", ".pfx", ".p12")
 
-#: File basenames/patterns excluded as potential secrets. Matching is
-#: case-insensitive against the file name only.
-SECRET_FILE_PATTERNS = (
-    ".env",
-    ".env.*",
-    "*.pem",
-    "*.key",
-    "credentials*",
-    "*credentials*",
-    "secrets*.json",
-    "*.keystore",
-    "*.p12",
-    "*.pfx",
-)
+#: Protocol versions this codebase declares and has tested end to end. A
+#: pointer claiming anything else is unknown territory: the UI must visibly
+#: require a full Restart Coach instead of adopting it silently.
+UI_PROTOCOL_VERSION: tuple[int, int] = (1, 0)
+ENGINE_PROTOCOL_VERSION: tuple[int, int] = (1, 0)
+DECLARED_UI_PROTOCOL_VERSIONS = frozenset({(1, 0), (1, 2)})
+DECLARED_ENGINE_PROTOCOL_VERSIONS = frozenset({(1, 0), (1, 2), (1, 3)})
 
 
 class SnapshotError(RuntimeError):
-    """Base class for snapshot publication/resolution failures."""
+    """Snapshot publication or resolution failed."""
 
 
 class SnapshotValidationError(SnapshotError):
-    """A staged snapshot failed completeness/integrity validation."""
+    """A snapshot's content does not match its manifest."""
 
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+@dataclass(frozen=True)
+class LaunchSelection:
+    """The single selection a launcher resolves once per launch."""
+
+    snapshot_root: Path | None
+    commit: str | None
+    content_hash: str | None
 
 
-def _is_secret_file(name: str) -> bool:
-    lowered = name.lower()
-    return any(fnmatch.fnmatch(lowered, pattern.lower()) for pattern in SECRET_FILE_PATTERNS)
+@dataclass(frozen=True)
+class EngineReloadPlan:
+    """What a Reload Engine press/request should do right now."""
+
+    action: str  # reload_unmanaged | reload_current | adopt | require_full_restart
+    reason: str
+    target_root: str | None = None
+    target_commit: str | None = None
+    ui_protocol: object = None
+    engine_protocol: object = None
 
 
-def snapshots_root(runtime_root: str | os.PathLike[str] | None = None) -> Path:
-    """Absolute snapshots directory under the runtime root."""
-    if runtime_root is None:
-        from .runtime import get_runtime_root
-
-        runtime_root = get_runtime_root()
-    return Path(runtime_root) / SNAPSHOTS_DIRNAME
+# ---------------------------------------------------------------------------
+# hashing / classification helpers
 
 
-def protocols_compatible(ui_protocol: Any, engine_protocol: Any) -> bool:
-    """True only for a declared, tested UI-engine protocol pairing.
-
-    Compatible means: both sides present as integer (major, minor) pairs with
-    equal majors and an engine minor >= UI minor (additive evolution).
-    Anything missing, malformed or unknown is incompatible by definition —
-    those require a visible full Restart Coach, never a silent reload.
-    """
-
-    def _parse(value: Any) -> tuple[int, int] | None:
-        if isinstance(value, (list, tuple)) and len(value) == 2:
-            try:
-                return (int(value[0]), int(value[1]))
-            except (TypeError, ValueError):
-                return None
-        return None
-
-    ui = _parse(ui_protocol)
-    engine = _parse(engine_protocol)
-    if ui is None or engine is None:
-        return False
-    return ui[0] == engine[0] and engine[1] >= ui[1]
-
-
-def _copy_tree_filtered(source: Path, destination: Path) -> list[str]:
-    """Copy the checkout tree minus caches/envs/secret-shaped files.
-
-    Returns the sorted list of relative paths copied (POSIX separators).
-    """
-    copied: list[str] = []
-    for root, dirs, files in os.walk(source):
-        root_path = Path(root)
-        dirs[:] = sorted(d for d in dirs if d not in EXCLUDED_DIRECTORIES)
-        for name in sorted(files):
-            if _is_secret_file(name):
-                continue
-            src = root_path / name
-            rel = src.relative_to(source).as_posix()
-            dst = destination / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(src, dst)
-            copied.append(rel)
-    return copied
-
-
-def _hash_file(path: Path) -> str:
+def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -173,346 +123,571 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _dependency_fingerprint(checkout: Path) -> str:
-    """Hash the dependency specification files so env changes are detectable."""
+def _is_secret_path(rel: PurePosixPath) -> bool:
+    name = rel.name.lower()
+    if name in SECRET_BASENAMES:
+        return True
+    if name.endswith(SECRET_SUFFIXES):
+        return True
+    return name.startswith(("credentials", "aws_credentials", "secrets"))
+
+
+def _is_excluded_rel(rel: PurePosixPath) -> bool:
+    if any(part in EXCLUDED_DIRECTORY_NAMES for part in rel.parts):
+        return True
+    if rel.suffix.lower() in EXCLUDED_FILE_SUFFIXES:
+        return True
+    return _is_secret_path(rel)
+
+
+def _iter_snapshot_files(root: Path) -> list[str]:
+    """Relative POSIX paths of every hashed file/symlink under ``root``.
+
+    Symlinks are hashed as their link string, never followed; directory
+    symlinks are skipped entirely so validation cannot escape the snapshot.
+    """
+    found: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        here = Path(dirpath)
+        dirnames[:] = [d for d in dirnames if not (here / d).is_symlink()]
+        for name in filenames:
+            path = here / name
+            if path.is_symlink() or path.is_file():
+                found.append(path.relative_to(root).as_posix())
+    return sorted(found)
+
+
+def _entry_hash(path: Path) -> str:
+    if path.is_symlink():
+        return hashlib.sha256(b"symlink:" + os.readlink(path).encode("utf-8")).hexdigest()
+    return _sha256_file(path)
+
+
+# ---------------------------------------------------------------------------
+# git-backed export
+
+
+def _git(checkout: Path, *args: str) -> bytes:
+    proc = subprocess.run(
+        ["git", "-C", str(checkout), *args],
+        capture_output=True,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise SnapshotError(f"git {' '.join(args)} failed: {detail}")
+    return proc.stdout
+
+
+def _resolve_commit(checkout: Path, commit: str) -> str:
+    out = _git(checkout, "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}")
+    resolved = out.decode("utf-8", errors="replace").strip()
+    if not resolved:
+        raise SnapshotError(f"commit {commit!r} does not exist in {checkout}")
+    return resolved
+
+
+def _export_commit_tree(checkout: Path, commit: str, destination: Path) -> list[str]:
+    """Materialise exactly the pinned commit's tree via ``git archive``.
+
+    Returns the sorted list of excluded archive members (build caches and
+    secret-classified files), which the manifest declares openly.
+    """
+    blob = _git(checkout, "archive", "--format=tar", commit)
+    excluded: list[str] = []
+    with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
+        for member in tar.getmembers():
+            rel = PurePosixPath(member.name)
+            if rel.is_absolute() or ".." in rel.parts:
+                raise SnapshotValidationError(f"unsafe archive member {member.name!r}")
+            if _is_excluded_rel(rel):
+                excluded.append(member.name)
+                continue
+            target = destination.joinpath(*rel.parts)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif member.isfile():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                stream = tar.extractfile(member)
+                if stream is None:  # pragma: no cover - defensive
+                    raise SnapshotValidationError(f"unreadable archive member {member.name!r}")
+                target.write_bytes(stream.read())
+            elif member.issym():
+                link_target = member.linkname
+                candidate = (
+                    Path(link_target)
+                    if os.path.isabs(link_target)
+                    else (target.parent / link_target)
+                )
+                try:
+                    contained = candidate.resolve().is_relative_to(destination.resolve())
+                except OSError:  # pragma: no cover - defensive
+                    contained = False
+                if contained:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.symlink_to(link_target)
+                else:
+                    # Part of the commit, but never followed during validation;
+                    # declared in the manifest instead of copied.
+                    excluded.append(f"{member.name} -> {link_target}")
+            else:
+                excluded.append(member.name)
+    return sorted(excluded)
+
+
+# ---------------------------------------------------------------------------
+# manifests and validation
+
+
+def load_manifest(snapshot_dir: Path) -> dict:
+    path = Path(snapshot_dir) / MANIFEST_NAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise SnapshotValidationError(f"missing manifest in {snapshot_dir}") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SnapshotValidationError(f"unreadable manifest in {snapshot_dir}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SnapshotValidationError(f"malformed manifest in {snapshot_dir}")
+    return data
+
+
+def validate_staged(staging_dir: Path) -> dict:
+    """Validate a staged/published snapshot against its own manifest.
+
+    Recomputes every file hash, rejects unexpected extra files, requires the
+    entry points and re-derives the dependency fingerprint. Returns the
+    manifest; raises :class:`SnapshotValidationError` on any mismatch.
+    """
+    root = Path(staging_dir)
+    manifest = load_manifest(root)
+    if manifest.get("schema") != MANIFEST_SCHEMA:
+        raise SnapshotValidationError(f"unsupported manifest schema in {root}")
+    commit = manifest.get("commit")
+    if not isinstance(commit, str) or len(commit) < 7:
+        raise SnapshotValidationError(f"manifest in {root} has no usable commit")
+    if manifest.get("source") != "git-archive":
+        raise SnapshotValidationError(f"manifest in {root} was not produced by a git export")
+    declared_files = manifest.get("files")
+    if not isinstance(declared_files, dict) or not declared_files:
+        raise SnapshotValidationError(f"manifest in {root} declares no files")
+
+    present = {rel for rel in _iter_snapshot_files(root) if rel != MANIFEST_NAME}
+    missing = sorted(set(declared_files) - present)
+    extra = sorted(present - set(declared_files))
+    if missing or extra:
+        raise SnapshotValidationError(
+            f"snapshot {root.name} content drift: missing={missing[:5]} extra={extra[:5]}"
+        )
+    for rel in sorted(declared_files):
+        actual = _entry_hash(root / rel)
+        if actual != declared_files[rel]:
+            raise SnapshotValidationError(f"snapshot {root.name}: {rel} does not match its hash")
+
+    for rel in ENTRY_POINT_FILES:
+        if not (root / rel).exists():
+            raise SnapshotValidationError(f"snapshot {root.name} is missing entry point {rel}")
+
+    fingerprint = dependency_fingerprint(root)
+    if manifest.get("dependency_fingerprint") != fingerprint:
+        raise SnapshotValidationError(f"snapshot {root.name} dependency fingerprint mismatch")
+    if manifest.get("content_hash") != _content_digest(declared_files):
+        raise SnapshotValidationError(f"snapshot {root.name} content hash mismatch")
+    return manifest
+
+
+def validate_snapshot_dir(snapshot_dir: Path) -> dict:
+    """Public alias: fully validate a published snapshot directory."""
+    return validate_staged(snapshot_dir)
+
+
+def dependency_fingerprint(spec_root: Path) -> str:
+    """Stable fingerprint binding a snapshot to its dependency environment."""
     digest = hashlib.sha256()
-    for name in sorted(
-        name
-        for name in ("pyproject.toml", "requirements.txt", "requirements-dev.txt", "uv.lock")
-        if (checkout / name).is_file()
-    ):
-        digest.update(name.encode("utf-8"))
+    for rel in DEPENDENCY_SPEC_FILES:
+        digest.update(rel.encode("utf-8"))
         digest.update(b"\0")
-        digest.update((checkout / name).read_bytes())
+        path = Path(spec_root) / rel
+        digest.update(_sha256_file(path).encode("ascii") if path.is_file() else b"-")
         digest.update(b"\0")
     return digest.hexdigest()
 
 
-def _fsync_dir(path: Path) -> None:
-    try:
-        fd = os.open(path, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    except OSError:
-        pass
-    finally:
-        os.close(fd)
+def _content_digest(files: dict[str, str]) -> str:
+    digest = hashlib.sha256()
+    for rel in sorted(files):
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(files[rel].encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
-def stage_snapshot(
-    checkout: str | os.PathLike[str],
-    commit: str,
-    *,
-    staging_parent: Path | None = None,
-) -> Path:
-    """Stage an immutable copy of ``checkout`` into a temp dir.
-
-    The staging directory lives under the snapshots root (same filesystem) so
-    promotion is an atomic rename. Validation happens before promotion; a
-    staging directory that fails validation never becomes visible.
-    """
-    checkout_path = Path(checkout).resolve()
-    if not (checkout_path / "pyproject.toml").is_file() or not (checkout_path / "src" / "arenamcp").is_dir():
-        raise SnapshotError(f"Not a Coach checkout: {checkout_path}")
-    commit = commit.strip()
-    if not commit or commit == "unknown commit":
-        raise SnapshotError("Refusing to stage a snapshot without a verified commit SHA")
-
-    parent = staging_parent if staging_parent is not None else snapshots_root()
-    parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=parent))
-    try:
-        copied = _copy_tree_filtered(checkout_path, staging)
-        content_hash = hashlib.sha256()
-        for rel in copied:
-            content_hash.update(rel.encode("utf-8"))
-            content_hash.update(b"\0")
-            content_hash.update(_hash_file(staging / rel).encode("utf-8"))
-            content_hash.update(b"\0")
-        manifest = {
-            "schema": MANIFEST_SCHEMA,
-            "commit": commit,
-            "content_hash": content_hash.hexdigest(),
-            "created_utc": _utc_now_iso(),
-            "ui_protocol": list(UI_PROTOCOL_VERSION),
-            "engine_protocol": list(ENGINE_PROTOCOL_VERSION),
-            "dependency_fingerprint": _dependency_fingerprint(checkout_path),
-            "file_count": len(copied),
-            "files": {rel: _hash_file(staging / rel) for rel in copied},
-        }
-        manifest_path = staging / MANIFEST_NAME
-        with manifest_path.open("w", encoding="utf-8") as handle:
-            json.dump(manifest, handle, sort_keys=True)
-            handle.flush()
-            os.fsync(handle.fileno())
-        _fsync_dir(staging)
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-    return staging
-
-
-def load_manifest(snapshot_dir: str | os.PathLike[str]) -> dict[str, Any]:
-    """Load and structurally validate a snapshot manifest."""
-    manifest_path = Path(snapshot_dir) / MANIFEST_NAME
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SnapshotValidationError(f"Unreadable snapshot manifest: {manifest_path}") from exc
-    for key in ("schema", "commit", "content_hash", "files"):
-        if key not in manifest:
-            raise SnapshotValidationError(f"Snapshot manifest missing '{key}': {manifest_path}")
-    if manifest["schema"] != MANIFEST_SCHEMA:
-        raise SnapshotValidationError(f"Unknown snapshot schema: {manifest['schema']!r}")
-    return manifest
-
-
-def validate_staged(staging: Path) -> dict[str, Any]:
-    """Verify a staged tree is complete and matches its manifest exactly.
-
-    Every file listed must exist with a matching hash; no extra files may
-    exist besides the manifest itself. This is what makes the later rename
-    atomic from the reader's perspective: once promoted, the directory is
-    already known-complete.
-    """
-    staging = Path(staging)
-    manifest = load_manifest(staging)
-    files: dict[str, str] = manifest["files"]
-    if not isinstance(files, dict) or not files:
-        raise SnapshotValidationError("Snapshot manifest lists no files")
-    for rel, expected in files.items():
-        path = staging / rel
-        if not path.is_file():
-            raise SnapshotValidationError(f"Staged file missing: {rel}")
-        if _hash_file(path) != expected:
-            raise SnapshotValidationError(f"Staged file hash mismatch: {rel}")
-    actual = {
-        p.relative_to(staging).as_posix()
-        for p in staging.rglob("*")
-        if p.is_file() and p.name != MANIFEST_NAME
-    }
-    unexpected = actual - set(files)
-    if unexpected:
-        raise SnapshotValidationError(f"Staged tree has unlisted files: {sorted(unexpected)[:5]}")
-    return manifest
-
-
-def _make_read_only(root: Path) -> None:
-    """Best-effort immutability marking; never fails publication."""
-    for path in root.rglob("*"):
-        try:
-            if path.is_dir():
-                path.chmod(
-                    stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH
-                )
-            else:
-                path.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
-        except OSError:
-            continue
+# ---------------------------------------------------------------------------
+# publication
 
 
 def snapshot_id_for(commit: str, content_hash: str) -> str:
     return f"{commit[:12]}-{content_hash[:8]}"
 
 
-def promote_snapshot(staging: Path, snapshots_dir: Path | None = None) -> Path:
-    """Validate a staged snapshot and atomically rename it into place.
+def stage_snapshot(
+    checkout: Path,
+    commit: str,
+    *,
+    staging_parent: Path | None = None,
+) -> Path:
+    """Export ``commit`` from ``checkout`` into a validated staging directory."""
+    checkout = Path(checkout)
+    if not isinstance(commit, str) or not commit.strip():
+        raise SnapshotError("a commit is required to stage a snapshot")
+    resolved_commit = _resolve_commit(checkout, commit.strip())
 
-    Idempotent: promoting identical content twice reuses the existing complete
-    snapshot and discards the redundant staging copy. Existing snapshots are
-    never modified or deleted — publication is purely additive.
+    parent = Path(staging_parent) if staging_parent is not None else snapshots_root()
+    parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(
+        tempfile.mkdtemp(prefix=f"{STAGING_PREFIX}{resolved_commit[:12]}-", dir=parent)
+    )
+    try:
+        excluded = _export_commit_tree(checkout, resolved_commit, staging)
+        manifest = {
+            "schema": MANIFEST_SCHEMA,
+            "commit": resolved_commit,
+            "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "source": "git-archive",
+            "excluded": excluded,
+            "dependency_fingerprint": dependency_fingerprint(staging),
+            "ui_protocol": list(UI_PROTOCOL_VERSION),
+            "engine_protocol": list(ENGINE_PROTOCOL_VERSION),
+            "files": {},
+        }
+        for rel in _iter_snapshot_files(staging):
+            manifest["files"][rel] = _sha256_file(staging / rel)
+        manifest["content_hash"] = _content_digest(manifest["files"])
+        (staging / MANIFEST_NAME).write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        validate_staged(staging)
+        return staging
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
+def _mark_read_only(root: Path) -> None:
+    for dirpath, dirnames, filenames in os.walk(root):
+        here = Path(dirpath)
+        for name in dirnames + filenames:
+            path = here / name
+            if path.is_symlink():
+                continue
+            mode = path.stat().st_mode
+            path.chmod(mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+
+
+def promote_snapshot(staging_dir: Path, snapshots_dir: Path | None = None) -> Path:
+    """Atomically publish a validated staging directory under its final identity.
+
+    An existing directory with identical content is reused only after full
+    independent re-validation; different content under the same identity is a
+    hard error (never silently overwritten).
     """
-    staging = Path(staging)
-    snapshots_dir = Path(snapshots_dir) if snapshots_dir is not None else staging.parent
-    manifest = validate_staged(staging)
+    snapshots_dir = Path(snapshots_dir) if snapshots_dir is not None else snapshots_root()
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    staging_dir = Path(staging_dir)
+    manifest = validate_staged(staging_dir)
     final = snapshots_dir / snapshot_id_for(manifest["commit"], manifest["content_hash"])
-    if final.is_dir():
+
+    if final.exists():
         try:
-            existing = load_manifest(final)
+            existing = validate_snapshot_dir(final)
         except SnapshotValidationError:
             existing = None
-        if existing is not None and existing.get("content_hash") == manifest["content_hash"]:
-            shutil.rmtree(staging, ignore_errors=True)
+        if existing is not None and existing["content_hash"] == manifest["content_hash"]:
+            shutil.rmtree(staging_dir)
             return final
-        raise SnapshotError(f"Snapshot id collision with different content: {final}")
-    # Same-directory rename: atomic. Readers either see nothing or the whole
-    # validated tree; no partially-visible state exists at any instant.
-    os.rename(staging, final)
-    _fsync_dir(snapshots_dir)
-    _make_read_only(final)
+        if existing is not None:
+            raise SnapshotError(
+                f"snapshot identity {final.name} already exists with different content"
+            )
+        # The published directory failed validation (tampered/truncated).
+        # Quarantine it for forensics instead of deleting evidence, then take
+        # its place atomically. Readers during the swap fall back safely.
+        quarantine = snapshots_dir / f".corrupt-{final.name}-{os.getpid()}"
+        try:
+            os.replace(final, quarantine)
+        except OSError as exc:
+            raise SnapshotError(
+                f"cannot replace corrupt snapshot {final.name}: {exc}"
+            ) from exc
+
+    os.replace(staging_dir, final)  # atomic rename on the same filesystem
+    _mark_read_only(final)
     return final
 
 
-def publish_pointer(snapshot_dir: str | os.PathLike[str], snapshots_dir: Path | None = None) -> Path:
-    """Atomically publish ``snapshot_dir`` as the next-launch selection.
-
-    The pointer file is written to a temp file in the same directory and moved
-    with ``os.replace`` — concurrent readers observe either the old pointer or
-    the new one, never a partial write.
-    """
+def publish_pointer(snapshot_dir: Path, snapshots_dir: Path | None = None) -> dict:
+    """Atomically publish the next-launch pointer for a validated snapshot."""
     snapshot_dir = Path(snapshot_dir)
-    manifest = load_manifest(snapshot_dir)
-    target_root = Path(snapshots_dir) if snapshots_dir is not None else snapshot_dir.parent
+    snapshots_dir = Path(snapshots_dir) if snapshots_dir is not None else snapshots_root()
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    manifest = validate_snapshot_dir(snapshot_dir)
     pointer = {
         "schema": POINTER_SCHEMA,
         "snapshot_id": snapshot_dir.name,
         "commit": manifest["commit"],
         "content_hash": manifest["content_hash"],
-        "ui_protocol": manifest.get("ui_protocol"),
-        "engine_protocol": manifest.get("engine_protocol"),
-        "dependency_fingerprint": manifest.get("dependency_fingerprint"),
-        "published_utc": _utc_now_iso(),
+        "ui_protocol": manifest["ui_protocol"],
+        "engine_protocol": manifest["engine_protocol"],
+        "published_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "path": str(snapshot_dir.resolve()),
     }
-    target_root.mkdir(parents=True, exist_ok=True)
-    tmp = target_root / f"{POINTER_NAME}.{uuid.uuid4().hex}.tmp"
+    fd, tmp_name = tempfile.mkstemp(prefix=".pointer-", dir=snapshots_dir)
     try:
-        with tmp.open("w", encoding="utf-8") as handle:
-            json.dump(pointer, handle, sort_keys=True)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(pointer, handle, indent=2, sort_keys=True)
+            handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, target_root / POINTER_NAME)
-    finally:
-        tmp.unlink(missing_ok=True)
-    _fsync_dir(target_root)
-    return target_root / POINTER_NAME
-
-
-def read_pointer_once(snapshots_dir: str | os.PathLike[str] | None = None) -> dict[str, Any] | None:
-    """Read the published selection exactly once; None when absent/corrupt.
-
-    A corrupt or half-written pointer degrades to None (launchers fall back to
-    the checkout); it never raises into the launch path.
-    """
-    root = Path(snapshots_dir) if snapshots_dir is not None else snapshots_root()
-    pointer_path = root / POINTER_NAME
-    try:
-        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(pointer, dict) or pointer.get("schema") != POINTER_SCHEMA:
-        return None
-    snapshot_id = pointer.get("snapshot_id")
-    if not isinstance(snapshot_id, str) or not snapshot_id:
-        return None
-    commit = pointer.get("commit")
-    if not isinstance(commit, str) or not commit.strip():
-        return None
-    candidate = root / snapshot_id
-    try:
-        manifest = load_manifest(candidate)
-    except SnapshotValidationError:
-        return None
-    pointer["path"] = str(candidate.resolve())
-    pointer["manifest"] = manifest
+        os.replace(tmp_name, snapshots_dir / POINTER_NAME)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
     return pointer
 
 
-@dataclasses.dataclass(frozen=True)
-class ReloadPlan:
-    """Outcome of consulting published snapshots at a safe checkpoint."""
-
-    action: str  # "reload_unmanaged" | "reload_current" | "adopt" | "require_full_restart"
-    target_root: str | None
-    target_commit: str | None
-    reason: str
+# ---------------------------------------------------------------------------
+# resolution
 
 
-def plan_engine_reload(
-    current_commit: str | None,
-    pointer: dict[str, Any] | None,
-    *,
-    ui_protocol: Any = UI_PROTOCOL_VERSION,
-) -> ReloadPlan:
-    """Decide what an engine reload should do about snapshots.
+def snapshots_root(runtime_root: Path | None = None) -> Path:
+    if runtime_root is not None:
+        return Path(runtime_root) / "runtime-snapshots"
+    try:
+        from .runtime import get_runtime_root
 
-    - No snapshot infrastructure in play -> behave exactly like today.
-    - Pointer equals the running snapshot -> reload the same immutable root.
-    - Newest published snapshot differs and declares a compatible protocol ->
-      explicitly adopt it for the new engine (old UI / new engine via tested
-      protocol).
-    - Newest published snapshot declares an unknown/incompatible protocol ->
-      do NOT reload into it; require a visible full Restart Coach and keep the
-      current engine usable.
+        return get_runtime_root() / "runtime-snapshots"
+    except Exception:  # pragma: no cover - bootstrap contexts without the package
+        return Path.home() / ".local" / "share" / "mtgacoach" / "runtime-snapshots"
+
+
+def read_pointer_once(snapshots_dir: Path | None = None) -> dict | None:
+    """Read and fully validate the next-launch pointer, or return ``None``.
+
+    Every read re-validates the pointed-at snapshot's complete content and
+    cross-checks commit/content-hash agreement; anything inconsistent degrades
+    to ``None`` so callers fall back to the checkout.
     """
-    if pointer is None:
-        return ReloadPlan(
-            "reload_unmanaged", None, None, "No published runtime snapshot; reloading from checkout"
+    if os.environ.get("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT") == "1":
+        return None
+    directory = Path(snapshots_dir) if snapshots_dir is not None else snapshots_root()
+    pointer_path = directory / POINTER_NAME
+    try:
+        data = json.loads(pointer_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Ignoring unreadable snapshot pointer %s: %s", pointer_path, exc)
+        return None
+
+    def _reject(reason: str) -> None:
+        logger.warning("Rejecting snapshot pointer %s: %s", pointer_path, reason)
+
+    if not isinstance(data, dict):
+        _reject("pointer is not an object")
+        return None
+    if data.get("schema") != POINTER_SCHEMA:
+        _reject("foreign pointer schema")
+        return None
+
+    snapshot_id = data.get("snapshot_id")
+    commit = data.get("commit")
+    content_hash = data.get("content_hash")
+    if (
+        not isinstance(snapshot_id, str)
+        or not snapshot_id
+        or "/" in snapshot_id
+        or "\\" in snapshot_id
+        or snapshot_id in {".", ".."}
+    ):
+        _reject("unsafe or missing snapshot_id")
+        return None
+    if not isinstance(commit, str) or len(commit) < 7:
+        _reject("unusable commit")
+        return None
+
+    candidate = directory / snapshot_id
+    try:
+        resolved = candidate.resolve()
+    except OSError as exc:
+        _reject(f"unresolvable snapshot path: {exc}")
+        return None
+    try:
+        contained = resolved.parent == directory.resolve()
+    except OSError:  # pragma: no cover - defensive
+        contained = False
+    if not contained:
+        _reject("snapshot escapes the snapshots directory")
+        return None
+
+    try:
+        manifest = validate_snapshot_dir(resolved)
+    except SnapshotValidationError as exc:
+        _reject(str(exc))
+        return None
+
+    if manifest["commit"] != commit:
+        _reject("pointer commit disagrees with the snapshot manifest")
+        return None
+    declared_hash = manifest.get("content_hash")
+    if not isinstance(content_hash, str) or content_hash != declared_hash:
+        _reject("pointer content hash disagrees with the snapshot manifest")
+        return None
+
+    enriched = dict(data)
+    enriched["path"] = str(resolved)
+    enriched["manifest"] = manifest
+    return enriched
+
+
+def protocols_compatible(ui_protocol: object, engine_protocol: object) -> bool:
+    """Strict versioned UI/engine compatibility over *declared* versions.
+
+    Both sides must be declared/tested ``(major, minor)`` pairs sharing a
+    major, with an engine minor greater than or equal to the UI's. Unknown
+    shapes and undeclared versions are incompatible by definition.
+    """
+
+    def parse(value: object) -> tuple[int, int] | None:
+        if (
+            isinstance(value, (list, tuple))
+            and len(value) == 2
+            and all(isinstance(item, int) and not isinstance(item, bool) for item in value)
+            and value[0] >= 0
+            and value[1] >= 0
+        ):
+            return (value[0], value[1])
+        return None
+
+    ui_pair = parse(ui_protocol)
+    engine_pair = parse(engine_protocol)
+    if ui_pair is None or engine_pair is None:
+        return False
+    if ui_pair not in DECLARED_UI_PROTOCOL_VERSIONS:
+        return False
+    if engine_pair not in DECLARED_ENGINE_PROTOCOL_VERSIONS:
+        return False
+    return ui_pair[0] == engine_pair[0] and engine_pair[1] >= ui_pair[1]
+
+
+def plan_engine_reload(current_commit: str | None, pointer: dict | None) -> EngineReloadPlan:
+    """Decide what a Reload Engine action must do given the published pointer."""
+    if not isinstance(pointer, dict) or not pointer.get("commit"):
+        return EngineReloadPlan(
+            "reload_unmanaged",
+            "No published engine snapshot; restarting from the current source.",
         )
-    target_commit = str(pointer.get("commit") or "")
-    target_root = pointer.get("path")
-    if current_commit and target_commit == current_commit:
-        return ReloadPlan(
-            "reload_current", target_root, target_commit, "Already running the published snapshot"
+
+    target_root_value = pointer.get("path")
+    target_root_str = str(target_root_value) if target_root_value else None
+
+    if current_commit and current_commit == pointer["commit"]:
+        return EngineReloadPlan(
+            "reload_current",
+            f"The published engine snapshot {pointer['commit'][:7]} is already current.",
+            target_root=target_root_str,
+            target_commit=pointer["commit"],
+            ui_protocol=pointer.get("ui_protocol"),
+            engine_protocol=pointer.get("engine_protocol"),
         )
-    engine_protocol = pointer.get("engine_protocol")
-    if not protocols_compatible(ui_protocol, engine_protocol):
-        return ReloadPlan(
+
+    ui_protocol_value = pointer.get("ui_protocol")
+    engine_protocol_value = pointer.get("engine_protocol")
+    if not protocols_compatible(ui_protocol_value, engine_protocol_value):
+        return EngineReloadPlan(
             "require_full_restart",
-            target_root,
-            target_commit,
-            f"Published engine snapshot {target_commit[:7] or '?'} declares protocol "
-            f"{engine_protocol!r}, incompatible with this UI ({list(ui_protocol)}); "
-            "a full Restart Coach is required",
+            (
+                "Published engine snapshot "
+                f"{pointer['commit'][:7]} declares protocol "
+                f"UI={ui_protocol_value!r} engine={engine_protocol_value!r}, which is not "
+                "compatible with this UI. A full Restart Coach is required."
+            ),
+            target_root=target_root_str,
+            target_commit=pointer["commit"],
+            ui_protocol=ui_protocol_value,
+            engine_protocol=engine_protocol_value,
         )
-    return ReloadPlan(
+
+    return EngineReloadPlan(
         "adopt",
-        target_root,
-        target_commit,
-        f"Adopting published engine snapshot {target_commit[:7]} "
-        f"(protocol {engine_protocol!r} compatible with UI {list(ui_protocol)})",
+        f"Adopting published engine snapshot {pointer['commit'][:7]} via the declared "
+        "UI/engine protocol.",
+        target_root=target_root_str,
+        target_commit=pointer["commit"],
+        ui_protocol=ui_protocol_value,
+        engine_protocol=engine_protocol_value,
     )
 
 
-@dataclasses.dataclass(frozen=True)
-class LaunchSelection:
-    """Resolved launch-time selection: one absolute versioned root."""
-
-    snapshot_root: Path | None
-    commit: str | None
-    content_hash: str | None
-
-
 def resolve_launch_selection(
-    checkout_root: str | os.PathLike[str],
+    checkout_root: Path | None = None,
     *,
-    snapshots_dir: str | os.PathLike[str] | None = None,
+    snapshots_dir: Path | None = None,
 ) -> LaunchSelection:
-    """Resolve the launch-time snapshot selection exactly once.
+    """Resolve the single launch selection, honouring an outer process's choice.
 
-    Resolution order:
+    Order of precedence:
 
-    1. ``MTGACOACH_SNAPSHOT_SHA`` already set -> an outer launcher already made
-       the selection; honour it and read nothing else.
-    2. ``MTGACOACH_SNAPSHOTS_DISABLE`` set -> snapshots off; run from checkout.
-       This is also the documented rollback switch.
-    3. Published pointer present and its snapshot validates -> run from that
-       absolute versioned root.
-    4. Otherwise (no pointer, corrupt pointer, invalid snapshot) -> fall back
-       to the checkout so Coach still starts; never block launch on snapshot
-       trouble.
+    1. ``MTGACOACH_DISABLE_RUNTIME_SNAPSHOT=1`` or
+       ``MTGACOACH_SNAPSHOTS_DISABLE=1`` disables snapshots entirely.
+    2. ``MTGACOACH_SNAPSHOT_SHA`` (with ``MTGACOACH_SNAPSHOT_ROOT``) selects the
+       exact snapshot an outer launcher process already resolved and validated;
+       the root is re-validated here and must agree with the SHA.
+    3. The published next-launch pointer, fully validated.
+    4. ``None`` — run from the mutable checkout.
     """
-    already_selected = os.environ.get("MTGACOACH_SNAPSHOT_SHA", "").strip()
-    if already_selected:
-        root_env = os.environ.get("MTGACOACH_SNAPSHOT_ROOT", "").strip()
+    if (
+        os.environ.get("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT") == "1"
+        or os.environ.get("MTGACOACH_SNAPSHOTS_DISABLE", "").strip() == "1"
+    ):
+        return LaunchSelection(None, None, None)
+
+    sha_env = os.environ.get("MTGACOACH_SNAPSHOT_SHA")
+    root_env = os.environ.get("MTGACOACH_SNAPSHOT_ROOT")
+    if sha_env:
         if root_env:
-            return LaunchSelection(Path(root_env), already_selected, None)
-        return LaunchSelection(None, already_selected, None)
+            try:
+                manifest = validate_snapshot_dir(Path(root_env))
+            except SnapshotValidationError as exc:
+                logger.warning(
+                    "Outer-selected snapshot %s failed validation (%s); "
+                    "falling back to the published pointer.",
+                    root_env,
+                    exc,
+                )
+            else:
+                if manifest["commit"] == sha_env:
+                    return LaunchSelection(
+                        Path(root_env), sha_env, manifest.get("content_hash")
+                    )
+                logger.warning(
+                    "Outer-selected snapshot root %s does not match SHA %s; "
+                    "falling back to the published pointer.",
+                    root_env,
+                    sha_env,
+                )
+        else:
+            # An outer process pinned the SHA but owns the root itself.
+            return LaunchSelection(None, sha_env, None)
 
-    if os.environ.get("MTGACOACH_SNAPSHOTS_DISABLE", "").strip():
-        return LaunchSelection(None, None, None)
-
-    try:
-        pointer = read_pointer_once(snapshots_dir)
-    except Exception:
-        return LaunchSelection(None, None, None)
-    if pointer is None:
-        return LaunchSelection(None, None, None)
-
-    snapshot_root = Path(pointer["path"])
-    # Belt and braces: the pointed-at tree must still be a complete Coach root
-    # before we commit the launch to it.
-    if not (snapshot_root / "pyproject.toml").is_file() or not (snapshot_root / "src" / "arenamcp").is_dir():
-        return LaunchSelection(None, None, None)
-    return LaunchSelection(snapshot_root, str(pointer.get("commit") or ""), pointer.get("content_hash"))
+    pointer = read_pointer_once(snapshots_dir)
+    if pointer is not None:
+        return LaunchSelection(
+            Path(pointer["path"]),
+            pointer["commit"],
+            pointer.get("content_hash"),
+        )
+    return LaunchSelection(None, None, None)
