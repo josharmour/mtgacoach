@@ -863,19 +863,13 @@ _GRAVEYARD_RECURSION_KEYWORDS = (
 # it. Both directions are covered: a negation cue before the recursion word,
 # and a recursion word followed by an availability/loss verdict — including
 # the "is not available" word order, which the plain adjective list misses.
-# Inflections are covered so "it never returns" is a negation too.
-# Any recursion mention (verbs and the noun "recursion"), for negation checks.
-_PLAN_RECURSION_WORD = r"(?:recur(?:s|red|ring)?|recursions?|retrace(?:s|d|ing)?|return(?:s|ed|ing)?)"
-# Action verbs only: a noun phrase like "recursion of Etali's Favor" states a
-# topic, not an action binding the card as its object.
-_PLAN_RECURSION_ACTION_VERB = r"(?:recur(?:s|red|ring)?|retrace(?:s|d|ing)?|return(?:s|ed|ing)?)"
 _PLAN_RECURSION_NEGATED = re.compile(
     r"\b(?:no|not|never|cannot|can't|can\u2019t|without|unavailable|unusable|impossible)\b"
-    r"[^.;]{0,30}\b" + _PLAN_RECURSION_WORD + r"\b"
-    r"|\b" + _PLAN_RECURSION_WORD + r"\b[^.;]{0,30}\b"
+    r"[^.;]{0,30}\b(?:recur|recursion|retrace|return)\b"
+    r"|\b(?:recur|recursion|retrace|return)\b[^.;]{0,30}\b"
     r"(?:unavailable|unusable|impossible|gone|lost)\b"
-    r"|\b" + _PLAN_RECURSION_WORD + r"\b[^.;]{0,40}\b(?:is|are)\s+not\b"
-    r"|\b" + _PLAN_RECURSION_WORD + r"\b[^.;]{0,40}\b(?:no|not)\s+"
+    r"|\b(?:recur|recursion|retrace|return)\b[^.;]{0,40}\b(?:is|are)\s+not\b"
+    r"|\b(?:recur|recursion|retrace|return)\b[^.;]{0,40}\b(?:no|not)\s+"
     r"(?:longer\s+)?(?:available|usable|possible)\b"
 )
 
@@ -884,53 +878,30 @@ _PLAN_RECURSION_NEGATED = re.compile(
 # NOT evidence ("Etali's Favor is lost. Recur World Breaker instead.").
 _PLAN_CLAUSE_SPLIT = re.compile(r"[.;!?]+|\n+")
 
-# A contrastive tail DETACHES a name from the action: in "Recur World Breaker
-# instead of Etali's Favor" the Favor is what was rejected, not the target of
-# "recur". Everything AFTER a contrast marker is the rejected alternative, so
-# only the text BEFORE the first marker can carry a positive commitment —
-# verb and card must bind inside that leading segment. Anything that binds
-# neither way stays lost/unknown — ambiguity is never resolved by growing a
-# negation blacklist.
-_PLAN_CONTRAST_SPLIT = re.compile(
-    r"\b(?:instead of|rather than|in place of|versus|vs\.)\b"
-    r"|,\s*(?:but\s+)?not\b"
-)
-
 
 def _plan_promises_this_recursion(plan: GamePlan, name: str) -> bool:
     """Card-specific plan evidence that ``name`` comes back from the graveyard.
 
-    Narrow positive action-to-card matching: one actual clause (sentence) of
-    the plan must bind a recursion action to THIS card — either a recursion
-    verb takes the card as its object ("recur Etali's Favor", "return Etali's
-    Favor from the graveyard") or the card is the subject coming back
-    ("Etali's Favor returns from the graveyard"). Co-occurrence alone is not
-    evidence: a recursion word elsewhere in the clause (even about another
-    card), a contrastive tail ("...instead of Etali's Favor"), or a negated
-    mention ("Recursion is unavailable") does not revive the route. When no
-    clause binds, the route stays lost/unknown rather than being revived by
-    loose text.
+    One actual clause (sentence) of the plan must BOTH name the route card
+    AND positively promise its return — a recursion word elsewhere in the
+    part (even the very next sentence, about another card), or a negated one
+    ("Recursion is unavailable", "its recursion is not available"), is not
+    evidence this card can come back. When no such clause exists the route
+    stays lost/unknown rather than being revived by loose text.
     """
     if not name:
         return False
     wanted = name.strip().lower().replace("\u2019", "'")
-    escaped = re.escape(wanted)
-    verb_takes_card = re.compile(r"\b" + _PLAN_RECURSION_ACTION_VERB + r"\b[^.;]{0,30}?" + escaped)
-    card_comes_back = re.compile(
-        escaped + r"[^.;]{0,40}?\b(?:returns?|(?:comes?|gets?|is)\s+back|is\s+recurred)\b"
-    )
     for part in [*plan.win_conditions, plan.path, plan.develop_next, *plan.active_mechanisms]:
         for raw in _PLAN_CLAUSE_SPLIT.split(str(part or "")):
             clause = raw.lower().replace("\u2019", "'")
             if wanted not in clause:
                 continue
-            for segment in _PLAN_CONTRAST_SPLIT.split(clause)[:1]:
-                if wanted not in segment:
-                    continue
-                if _PLAN_RECURSION_NEGATED.search(segment):
-                    continue
-                if verb_takes_card.search(segment) or card_comes_back.search(segment):
-                    return True
+            if not re.search(r"\b(?:recur|recursion|retrace)\b|\breturn\b[^.;]{0,50}\bgraveyard\b", clause):
+                continue
+            if _PLAN_RECURSION_NEGATED.search(clause):
+                continue
+            return True
     return False
 
 
