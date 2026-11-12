@@ -13,9 +13,10 @@ from collections import Counter
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import QPoint, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -293,7 +294,7 @@ def _card() -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
     frame.setProperty("card", True)
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(10, 8, 10, 8)
+    layout.setContentsMargins(10, 4, 10, 4)
     layout.setSpacing(4)
     return frame, layout
 
@@ -696,31 +697,31 @@ class CompactCoachPanel(QWidget):
         recovery_controls.setSpacing(6)
         self.bug_report_btn = QPushButton(_BUG_REPORT_LABEL)
         self.bug_report_btn.setObjectName("bugReportButton")
-        self.bug_report_btn.setStyleSheet("padding: 5px 6px;")
+        self.bug_report_btn.setStyleSheet("padding: 3px 6px;")
         self.bug_report_btn.setToolTip("Save a debug-report snapshot and copy its link (F12 or Ctrl+Shift+D)")
         self.bug_report_btn.clicked.connect(self._on_bug_report_clicked)
         recovery_controls.addWidget(self.bug_report_btn)
         self.support_btn = QPushButton("Contact support")
-        self.support_btn.setStyleSheet("padding: 5px 6px;")
+        self.support_btn.setStyleSheet("padding: 3px 6px;")
         self.support_btn.clicked.connect(lambda: contact_support(self))
         recovery_controls.addWidget(self.support_btn)
 
         self.reload_engine_btn = QPushButton("Reload engine")
         self.reload_engine_btn.setObjectName("reloadEngineButton")
-        self.reload_engine_btn.setStyleSheet("padding: 5px 6px;")
+        self.reload_engine_btn.setStyleSheet("padding: 3px 6px;")
         self.reload_engine_btn.setToolTip("Apply coaching-code fixes; keep Arena and this window open.")
         self.reload_engine_btn.clicked.connect(self.reload_engine_requested.emit)
         recovery_controls.addWidget(self.reload_engine_btn)
 
         self.restart_btn = QPushButton("Restart Coach")
         self.restart_btn.setObjectName("restartCoachButton")
-        self.restart_btn.setStyleSheet("padding: 5px 6px;")
+        self.restart_btn.setStyleSheet("padding: 3px 6px;")
         self.restart_btn.setToolTip("Reload the Coach app and coaching engine. MTGA stays open.")
         self.restart_btn.clicked.connect(self.restart_requested.emit)
         recovery_controls.addWidget(self.restart_btn)
 
         self.update_btn = SummaryButton("Update")
-        self.update_btn.setStyleSheet("padding: 5px 6px;")
+        self.update_btn.setStyleSheet("padding: 3px 6px;")
         self.update_btn.hide()  # The managed host enables the update controls.
         recovery_controls.addWidget(self.update_btn)
         self.help_details.content.addLayout(recovery_controls)
@@ -745,8 +746,11 @@ class CompactCoachPanel(QWidget):
         old_controls = self.primary_controls
         shell.removeWidget(old_controls)
         old_controls.hide()
-        shell.setContentsMargins(8, 6, 8, 6)
-        shell.setSpacing(5)
+        # Bounded chrome: the shell must fit inside the window height the user
+        # chose (e.g. 650px) after menu/status chrome, so spacing stays tight
+        # and content rows keep their own line budgets.
+        shell.setContentsMargins(8, 3, 8, 3)
+        shell.setSpacing(2)
         shell.addWidget(self.rank_strip)
         self.rank_strip.show()
         shell.addWidget(self.turn_strip)
@@ -804,6 +808,11 @@ class CompactCoachPanel(QWidget):
         self.detail_pager = DetailPager()
         self.detail_pager.closed.connect(self._close_detail)
         self.detail_pager.linkActivated.connect(self._detail_link)
+        # QSize(0, 0) is null, so Qt falls back to the document-driven
+        # minimumSizeHint and page switches inflate the workspace minimum. A
+        # real (non-null) minimum keeps the workspace reservation constant;
+        # long content is disclosed through the pager's Next/Previous pages.
+        self.detail_pager.browser.setMinimumSize(1, 1)
         self.workspace.addWidget(self.detail_pager)
         self.settings_page = QWidget()
         settings_layout = QVBoxLayout(self.settings_page)
@@ -822,7 +831,7 @@ class CompactCoachPanel(QWidget):
         self.primary_controls = QWidget()
         footer = QVBoxLayout(self.primary_controls)
         footer.setContentsMargins(0, 0, 0, 0)
-        footer.setSpacing(4)
+        footer.setSpacing(3)
         for buttons in (
             (self.ap_btn, self.more_btn),
             (self.stop_speech_btn, self.after_match_btn, self.autopilot_bug_btn),
@@ -831,7 +840,7 @@ class CompactCoachPanel(QWidget):
             controls = QHBoxLayout()
             controls.setSpacing(4)
             for button in buttons:
-                button.setStyleSheet("padding: 5px 3px;")
+                button.setStyleSheet("padding: 3px 3px;")
                 button.setMinimumWidth(0)
                 recovery = button in (self.bug_report_btn, self.reload_engine_btn, self.restart_btn)
                 if recovery:
@@ -856,6 +865,10 @@ class CompactCoachPanel(QWidget):
         policy.setRetainSizeWhenHidden(True)
         self.update_btn.setSizePolicy(policy)
         footer.addLayout(contact)
+        # Settle polished metrics before the first layout pass: late style
+        # polish must never reflow the footer after the window has been sized.
+        for button in self.findChildren(QPushButton):
+            button.ensurePolished()
         shell.addWidget(self.primary_controls)
         self._refresh_companion()
         self._fit_overview()
@@ -953,6 +966,76 @@ class CompactCoachPanel(QWidget):
             text = text or block(span(self.notice_button.text()))
         self.detail_pager.set_content(title, text, reset=reset)
 
+    def _sync_workspace_floor(self) -> None:
+        """Reserve one constant workspace height across stacked pages.
+
+        QStackedWidget reports only the current page's minimum, so switching
+        pages would otherwise change the shell's space split mid-session. The
+        overview page is excluded: it self-adjusts through _fit_overview
+        disclosure, while the detail and settings pages have fixed chrome. The
+        floor is derived from page geometry (fonts/styles), never from content,
+        and is re-derived only when those change.
+        """
+        if not hasattr(self, "workspace"):
+            return
+        floor = 0
+        for index in range(self.workspace.count()):
+            page = self.workspace.widget(index)
+            if page is not None and page is not getattr(self, "overview", None):
+                floor = max(floor, page.minimumSizeHint().height())
+        if floor and self.workspace.minimumHeight() != floor:
+            self.workspace.setMinimumHeight(floor)
+
+    def _settle_geometry(self) -> None:
+        """Converge layout synchronously after content or style updates.
+
+        Polish-time re-measures (font/style changes on summary labels and
+        styled buttons) invalidate the layout through posted events; draining
+        them here keeps section geometry identical within a single event-loop
+        turn instead of drifting one pass behind the content or the theme.
+        Re-polishing descendants first is what lets a theme switch converge
+        immediately: freshly styled buttons report their settled metrics on
+        the very next layout pass, so the footer never reflows afterwards.
+        """
+        if getattr(self, "_settling", False):
+            return
+        self._settling = True
+        try:
+            self._sync_workspace_floor()
+            for widget in self.findChildren(QWidget):
+                widget.ensurePolished()
+            layout = self.layout()
+            if layout is None:
+                return
+            for _ in range(3):
+                rows = [
+                    layout.itemAt(i).widget()
+                    for i in range(layout.count())
+                    if layout.itemAt(i).widget() is not None
+                ]
+                before = [row.geometry() for row in rows]
+                layout.activate()
+                QApplication.sendPostedEvents(self, QEvent.LayoutRequest)
+                if [row.geometry() for row in rows] == before:
+                    break
+        finally:
+            self._settling = False
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (
+            QEvent.FontChange,
+            QEvent.ApplicationFontChange,
+            QEvent.StyleChange,
+            QEvent.ThemeChange,
+        ):
+            # Font/style changes re-measure children asynchronously; converge
+            # now (descendants are re-polished inside _settle_geometry) and
+            # once more on the next event-loop turn for late-arriving events,
+            # so later page switches and content updates stay inert.
+            self._settle_geometry()
+            QTimer.singleShot(0, self._settle_geometry)
+
     def _refresh_companion(self, *_) -> None:
         if not hasattr(self, "workspace"):
             return
@@ -996,6 +1079,7 @@ class CompactCoachPanel(QWidget):
         )
         self.overview_event.setText(self.latest_event.text())
         self._refresh_detail()
+        self._settle_geometry()
 
     def _set_outlook_motion(self, enabled: bool) -> None:
         self._settings.set("desktop_animate_outlook", enabled)
@@ -1202,6 +1286,7 @@ class CompactCoachPanel(QWidget):
             self._startup_timer.start()
         self._render_startup_status()
         self._refresh_status_dots()
+        self._settle_geometry()
 
     def _on_backend_health(self, snapshot: dict[str, Any]) -> None:
         if not isinstance(snapshot, dict):
@@ -1445,6 +1530,7 @@ class CompactCoachPanel(QWidget):
             self._last_mcts = None
             self.mcts_pill_label.hide()
             self._sync_now_divider()
+        self._settle_geometry()
 
     def _render_board(self, state: dict[str, Any]) -> None:
         self.game_state_view.setText(self._format_game_state_html(state))
@@ -1562,6 +1648,7 @@ class CompactCoachPanel(QWidget):
             self.strategy_view.set_data(plan, self._last_state)
             self._render_game_plan()
             self._render_now()
+            self._settle_geometry()
 
     def _render_game_plan(self) -> None:
         """One assessment UI: details contain reasons, never a second outlook meter."""

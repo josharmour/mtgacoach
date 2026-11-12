@@ -361,6 +361,69 @@ def test_real_window_does_not_jump_when_assessments_or_status_change(qapp, monke
         window.deleteLater()
 
 
+def test_footer_and_workspace_stay_put_across_updates_and_themes(qapp, monkeypatch):
+    """Footer/workspace geometry is invariant across updates, detail pages, themes.
+
+    Regression for CI run 43164044652: stacked-page switches raised the
+    workspace minimum mid-session and the shell stole space from the now-card
+    and footer (footer y 124 -> 132). The workspace floor must stay constant
+    across page switches and content updates under every theme.
+    """
+    from types import SimpleNamespace
+
+    from arenamcp.desktop import main_window
+
+    monkeypatch.setattr(main_window.MainWindow, "_start_session", lambda self: None)
+    monkeypatch.setattr(main_window, "WatchdogPingBridge", None)
+    screen = SimpleNamespace(availableGeometry=lambda: QRect(0, 0, 1920, 1040))
+    monkeypatch.setattr(main_window.QGuiApplication, "screenAt", lambda point: screen)
+    monkeypatch.setenv("MTGACOACH_DEV_CHECKOUT", "/test/dev")
+    monkeypatch.setenv("MTGACOACH_DEV_COMMIT", "a" * 40)
+    window = main_window.MainWindow()
+    panel = window.coach_panel
+    window.resize(420, 650)
+    window.show()
+    state = make_snapshot()
+    panel._on_game_state_changed(state)
+    panel._on_game_plan_changed(forecast(state))
+    qapp.processEvents()
+    watched = (panel.workspace, panel.primary_controls)
+    try:
+        for theme_name in (theme.THEME_DARK, theme.THEME_LIGHT, theme.THEME_HIGH_CONTRAST):
+            theme.apply_theme(qapp, theme_name)
+            qapp.processEvents()
+            baseline = [w.geometry() for w in watched]
+            assert window.size().height() == 650
+            for iteration in range(4):
+                changed = deepcopy(state)
+                changed["battlefield"][0]["power"] += iteration
+                panel._on_game_state_changed(changed)
+                panel._on_commentary_status({"state": "speaking" if iteration % 2 else "idle"})
+                panel._on_startup_status(
+                    {
+                        "ready": iteration % 2 == 0,
+                        "phase": "starting",
+                        "message": "Long startup message " * 40,
+                    }
+                )
+                plan = forecast(changed)
+                plan["facts"]["role_reason"] = "A long explanation " * 80
+                panel._on_game_plan_changed(plan)
+                qapp.processEvents()
+                assert window.size().height() == 650
+                assert [w.geometry() for w in watched] == baseline
+            for name in ("paths", "board", "activity", "settings", "history:Constructed"):
+                panel._show_detail(name)
+                qapp.processEvents()
+                assert [w.geometry() for w in watched] == baseline
+            panel._close_detail()
+            qapp.processEvents()
+            assert [w.geometry() for w in watched] == baseline
+    finally:
+        theme.apply_theme(qapp, theme.THEME_DARK)
+        window.close()
+
+
 def test_resize_reveals_context_but_live_updates_do_not(qapp):
     panel = CompactCoachPanel()
     panel.resize(320, 650)
