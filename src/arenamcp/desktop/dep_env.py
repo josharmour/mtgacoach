@@ -37,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from .runtime_snapshots import SnapshotError, dependency_fingerprint
@@ -54,7 +55,13 @@ ENV_MARKER_NAME = "dep-env.json"
 #: identity directory at its ORIGINAL path — never reused, never relocated,
 #: never mutated — while a rebuild publishes additively under the new
 #: schema-3 identity.
-MARKER_SCHEMA = 3
+#:
+#: Schema 4: interpreter identity now binds the VERIFIED runtime version and
+#: content digest of the canonical base interpreter (see
+#: :func:`_resolve_interpreter_verified`), so a replaced or upgraded base
+#: binary invalidates prepared environments even when every path stays
+#: identical.
+MARKER_SCHEMA = 4
 
 #: How many times promotion retries when racing another creator of the same
 #: identity. Between attempts the existing tree is re-validated: if another
@@ -163,11 +170,13 @@ def resolve_interpreter(python_executable: str | None = None) -> str:
     verified ``pyvenv.cfg`` provenance to the base interpreter instead, so
     the identity is the same whether computed by a preparer holding the base
     executable or by a process running inside the prepared environment
-    itself. Malformed or unverifiable provenance raises :class:`SnapshotError`
-    (fail visibly and safely; never guess an identity).
+    itself. Every provenance claim is independently verified (runtime ground
+    truth for this process; real execution of the candidate binary for
+    foreign claims). Malformed, contradictory or unverifiable provenance
+    raises :class:`SnapshotError` (fail visibly and safely; never guess an
+    identity).
     """
-    raw = Path(python_executable or sys.executable)
-    return str(_canonical_interpreter(raw.resolve()))
+    return str(_resolve_interpreter_verified(python_executable)[0])
 
 
 _INTERPRETER_PROVENANCE_MAX_DEPTH = 4
@@ -220,33 +229,148 @@ def _version_tuple(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in re.findall(r"\d+", value)[:3])
 
 
-def _canonical_interpreter(resolved: Path) -> Path:
-    """Follow VERIFIED virtual-environment provenance to the base interpreter.
+@dataclass(frozen=True)
+class _VerifiedInterpreter:
+    """A canonical interpreter whose runtime was independently verified."""
 
-    A Windows venv's ``python.exe`` is a copy of the base interpreter, so a
-    UI process running inside a prepared environment would otherwise compute
-    a different identity than preparation did and fail to find its own
-    engine. When the resolved interpreter sits in venv layout, resolve
-    through its ``pyvenv.cfg`` provenance instead:
+    path: Path
+    version_triple: tuple[int, int, int]
+    content_sha256: str
 
-    - the marker must parse and carry a usable ``home`` and ``version``;
-    - a base interpreter executable must exist at the proven location;
-    - when the interpreter IS this running process, the claim is fully
-      verified against runtime ground truth (``sys.prefix`` must be that
-      venv root and the recorded version must match the running version —
-      a base upgraded underneath the environment is a real provenance
-      change and must not silently alias to the old identity).
 
-    Interpreters outside venv layout are returned unchanged. Malformed or
-    unverifiable provenance raises :class:`SnapshotError` so callers fail
-    visibly and safely: lookup returns nothing and creation is never
-    attempted on a guessed identity.
+# Captured at import time so interpreter verification always REALLY executes
+# the candidate binary, even where other code (or tests) swap ``subprocess.run``
+# to stage venv/pip behaviour.
+_SUBPROCESS_RUN = subprocess.run
+
+#: Executed with ``-I -S`` against a candidate interpreter; must print exactly
+#: ``major.minor.micro``.
+_VERSION_PROBE = "import sys; sys.stdout.write('.'.join(str(p) for p in sys.version_info[:3]))"
+_BASE_VERIFY_TIMEOUT_S = 60
+
+# str(path) -> ((st_mtime_ns, st_size), verified). Cache is invalidated when
+# the underlying file changes, so a replaced base binary re-verifies.
+_verified_cache: dict[str, tuple[tuple[int, int], _VerifiedInterpreter]] = {}
+
+
+def _normalize_triple(triple: tuple[int, ...]) -> tuple[int, int, int]:
+    padded = tuple(triple[:3]) + (0,) * (3 - len(triple[:3]))
+    return padded  # type: ignore[return-value]
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _runtime_base_executable() -> Path:
+    """The base interpreter this very process is known to be running on."""
+    return Path(getattr(sys, "_base_executable", None) or sys.executable).resolve()
+
+
+def _verify_interpreter_runtime(
+    exe: Path,
+    claimed_triple: tuple[int, int, int] | None,
+    context: str,
+) -> _VerifiedInterpreter:
+    """Independently verify ``exe`` IS a working Python of the claimed version.
+
+    Declared provenance alone is never trusted: the binary itself is executed
+    and must report a Python version (matching ``claimed_triple`` when given),
+    and its bytes are hashed so identity can bind actual interpreter content.
+    Results are cached per file identity (mtime_ns + size) so repeated lookups
+    stay cheap without going stale when the binary is replaced.
     """
-    current = resolved
+    try:
+        st = exe.stat()
+    except OSError as exc:
+        raise SnapshotError(
+            f"{context}: interpreter {exe} is unreadable ({exc}); provenance unverifiable"
+        ) from exc
+    key = str(exe)
+    stamp = (st.st_mtime_ns, st.st_size)
+    cached = _verified_cache.get(key)
+    verified = cached[1] if cached and cached[0] == stamp else None
+    if verified is None:
+        try:
+            proc = _SUBPROCESS_RUN(
+                [str(exe), "-I", "-S", "-c", _VERSION_PROBE],
+                capture_output=True,
+                timeout=_BASE_VERIFY_TIMEOUT_S,
+                cwd=tempfile.gettempdir(),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SnapshotError(
+                f"{context}: interpreter {exe} could not be executed to verify "
+                f"its runtime ({exc}); provenance unverifiable"
+            ) from exc
+        out = (proc.stdout or b"").decode("utf-8", errors="replace").strip()
+        rc = getattr(proc, "returncode", 1)
+        if rc != 0 or not re.fullmatch(r"\d+\.\d+\.\d+", out):
+            raise SnapshotError(
+                f"{context}: interpreter {exe} did not report a Python version "
+                f"when executed (exit={rc}, output={out[:60]!r}); "
+                "provenance unverifiable"
+            )
+        parts = [int(part) for part in out.split(".")]
+        verified = _VerifiedInterpreter(
+            path=exe,
+            version_triple=(parts[0], parts[1], parts[2]),
+            content_sha256=_sha256_file(exe),
+        )
+        _verified_cache[key] = (stamp, verified)
+    if claimed_triple is not None and _normalize_triple(verified.version_triple) != claimed_triple:
+        reported = ".".join(str(part) for part in verified.version_triple)
+        claimed = ".".join(str(part) for part in claimed_triple)
+        raise SnapshotError(
+            f"{context}: interpreter {exe} reports Python {reported!r} but its "
+            f"provenance claims {claimed!r}; contradictory provenance"
+        )
+    return verified
+
+
+def _resolve_interpreter_verified(
+    python_executable: str | os.PathLike[str] | None = None,
+) -> tuple[Path, _VerifiedInterpreter]:
+    """Resolve to the canonical base interpreter WITH verified provenance.
+
+    Follows ``pyvenv.cfg`` provenance from ``python_executable`` (default:
+    this process) to the canonical base interpreter, verifying every hop
+    against independently checkable facts:
+
+    - The running interpreter's own claim is checked against runtime ground
+      truth: ``sys.prefix`` must be the venv root, the recorded version must
+      match the running version, the declared ``home`` must be the directory
+      actually holding ``sys._base_executable``, and any declared base
+      ``executable`` must BE that executable. Ground truth governs: the
+      resolved base is ``sys._base_executable`` itself, never a path merely
+      reconstructed from marker strings.
+    - Foreign claims (any other interpreter) are only accepted when the
+      declared — or, absent a declaration, home-derived — base executable
+      really executes as a Python of the claimed version. A fake binary, an
+      invented version, or a declared executable contradicting ``home``
+      fails visibly instead of aliasing to whatever happens to exist.
+
+    The returned :class:`_VerifiedInterpreter` binds the VERIFIED runtime
+    version and a SHA-256 of the canonical interpreter's bytes, so replacing
+    or upgrading the base binary at the same path yields a different identity.
+
+    Interpreters outside venv layout are verified directly. Malformed,
+    contradictory or unverifiable provenance raises :class:`SnapshotError` so
+    callers fail visibly and safely: lookup returns nothing and creation is
+    never attempted on a guessed identity.
+    """
+    raw = Path(python_executable or sys.executable)
+    current = raw.resolve()
+    origin_is_current_process = current == Path(sys.executable).resolve()
+    hop_verified: _VerifiedInterpreter | None = None
     for _depth in range(_INTERPRETER_PROVENANCE_MAX_DEPTH):
         cfg_path = _pyvenv_cfg_for(current)
         if cfg_path is None:
-            return current
+            break
         cfg = _parse_pyvenv_cfg(cfg_path)
         home_raw = cfg.get("home")
         version_raw = cfg.get("version")
@@ -262,16 +386,9 @@ def _canonical_interpreter(resolved: Path) -> Path:
                 f"interpreter {current} claims base installation {home} "
                 f"(via {cfg_path}) but that directory does not exist"
             )
-        base = next(
-            (cand for cand in _base_executable_candidates(cfg, home) if cand.is_file()),
-            None,
-        )
-        if base is None:
-            raise SnapshotError(
-                f"interpreter {current} claims base installation {home} "
-                f"(via {cfg_path}) but no interpreter executable exists there"
-            )
-        if current == Path(sys.executable).resolve():
+        claimed = _normalize_triple(_version_tuple(version_raw))
+        context = f"interpreter {current} provenance (via {cfg_path})"
+        if origin_is_current_process and current == Path(sys.executable).resolve():
             # Full verification against runtime ground truth: this process
             # really runs inside the venv the marker describes.
             if Path(sys.prefix).resolve() != cfg_path.parent.resolve():
@@ -280,18 +397,69 @@ def _canonical_interpreter(resolved: Path) -> Path:
                     f"provenance via {cfg_path} but sys.prefix "
                     f"{Path(sys.prefix)} is not that venv root"
                 )
-            if _version_tuple(version_raw) != _version_tuple(platform.python_version()):
+            running_triple = _normalize_triple(_version_tuple(platform.python_version()))
+            if claimed != running_triple:
                 raise SnapshotError(
                     f"interpreter {current} claims provenance version "
                     f"{version_raw} (via {cfg_path}) but this process runs "
                     f"{platform.python_version()}: the base interpreter "
                     "changed under the environment"
                 )
-        current = base
-    raise SnapshotError(
-        f"interpreter {resolved} exceeds virtual-environment provenance "
-        f"depth {_INTERPRETER_PROVENANCE_MAX_DEPTH}"
-    )
+            real_base_exe = _runtime_base_executable()
+            if not real_base_exe.is_file():
+                raise SnapshotError(
+                    f"{context}: this process's actual base executable {real_base_exe} does not exist"
+                )
+            if home.resolve() != real_base_exe.parent.resolve():
+                raise SnapshotError(
+                    f"{context} declares base installation {home}, but this "
+                    f"process's actual base executable lives at "
+                    f"{real_base_exe}; provenance is contradictory"
+                )
+            declared_exe = cfg.get("executable")
+            if declared_exe and Path(declared_exe).resolve() != real_base_exe:
+                raise SnapshotError(
+                    f"{context} declares base executable {declared_exe}, but "
+                    f"this process's actual base executable is "
+                    f"{real_base_exe}; provenance is contradictory"
+                )
+            # Ground truth IS the verification for this hop; continue in case
+            # the base itself sits inside another venv layer.
+            current = real_base_exe
+            continue
+        # Foreign claim: verify by executing the candidate interpreter.
+        declared_exe = cfg.get("executable")
+        if declared_exe:
+            candidate = Path(declared_exe)
+            if not candidate.is_file():
+                raise SnapshotError(f"{context} declares base executable {candidate} which does not exist")
+        else:
+            candidate = next(
+                (cand for cand in _base_executable_candidates(cfg, home) if cand.is_file()),
+                None,
+            )
+            if candidate is None:
+                raise SnapshotError(
+                    f"interpreter {current} claims base installation {home} "
+                    f"(via {cfg_path}) but no interpreter executable exists there"
+                )
+        hop_verified = _verify_interpreter_runtime(candidate.resolve(), claimed, context)
+        current = candidate.resolve()
+    else:
+        raise SnapshotError(
+            f"interpreter {raw} exceeds virtual-environment provenance "
+            f"depth {_INTERPRETER_PROVENANCE_MAX_DEPTH}"
+        )
+    if origin_is_current_process and current == _runtime_base_executable():
+        # Ground truth about this very process; no execution needed.
+        return current, _VerifiedInterpreter(
+            path=current,
+            version_triple=_normalize_triple(_version_tuple(platform.python_version())),
+            content_sha256=_sha256_file(current),
+        )
+    if hop_verified is not None and hop_verified.path == current:
+        return current, hop_verified
+    return current, _verify_interpreter_runtime(current, None, f"interpreter {current}")
 
 
 def env_identity(
@@ -312,13 +480,24 @@ def env_identity(
     a prepared environment resolves to the same base-interpreter identity
     the preparer recorded — while a genuinely changed base interpreter or
     version still yields a distinct identity.
+
+    The identity binds the VERIFIED runtime facts of the canonical
+    interpreter (its executed version and a SHA-256 of the binary itself),
+    not just its path: replacing or upgrading the base interpreter at the
+    same path therefore invalidates prepared environments instead of being
+    silently aliased onto them.
     """
     if fingerprint is None:
         fingerprint = dependency_fingerprint(Path(snapshot_root))
+    _, verified = _resolve_interpreter_verified(python_executable)
     digest = hashlib.sha256()
     digest.update(fingerprint.encode("ascii"))
     digest.update(b"\0")
-    digest.update(resolve_interpreter(python_executable).encode("utf-8"))
+    digest.update(str(verified.path).encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(".".join(str(part) for part in verified.version_triple).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(verified.content_sha256.encode("ascii"))
     digest.update(b"\0")
     digest.update(str(MARKER_SCHEMA).encode("ascii"))
     return digest.hexdigest()
@@ -749,6 +928,10 @@ def prepared_dep_env(
     an ordinary launch can never trigger dependency installation as a side
     effect; creation happens only at explicit opt-in points (the launcher's
     selected-snapshot launch and the adoption preparation checkpoint).
+
+    Unverifiable or contradictory interpreter provenance also returns
+    ``None`` — after logging the reason — so a launch/reload fails visibly
+    and safely instead of installing into a guessed environment.
     """
     try:
         return ensure_dep_env(
@@ -757,7 +940,8 @@ def prepared_dep_env(
             python_executable=python_executable,
             allow_create=False,
         )
-    except SnapshotError:
+    except SnapshotError as exc:
+        logger.warning("prepared dependency-environment lookup refused: %s", exc)
         return None
 
 

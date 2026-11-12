@@ -299,10 +299,18 @@ def test_prepared_dep_env_finds_matching_environment(snapshot_root, isolated_run
     assert dep_env.prepared_dep_env(snapshot_root) == env_dir
 
 
-def test_prepared_dep_env_rejects_foreign_interpreter(snapshot_root, isolated_runtime):
+def _make_interpreter_shim(path: Path, version: str = "3.14.0") -> Path:
+    """A real executable reporting ``version`` (stands in for a Python binary)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\necho {version}\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def test_prepared_dep_env_rejects_foreign_interpreter(snapshot_root, isolated_runtime, tmp_path):
     """An env built for another interpreter must not be reused."""
-    other_python = "/nonexistent/other-python"
-    _prepare_env_for(snapshot_root, other_python)
+    other_python = _make_interpreter_shim(tmp_path / "other-base" / "other-python")
+    _prepare_env_for(snapshot_root, str(other_python))
 
     assert dep_env.prepared_dep_env(snapshot_root) is None
 
