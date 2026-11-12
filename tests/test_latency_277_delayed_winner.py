@@ -14,6 +14,7 @@ reproduction of the mechanism on current master, not a live latency sample.
 """
 
 import json
+import threading
 import time
 from types import SimpleNamespace as NS
 
@@ -53,11 +54,20 @@ def board():
 class LegClient:
     """A fake OpenAI client whose high leg is slow in one of three ways."""
 
+    #: How long the low leg waits for the high leg to speak before answering.
+    SYNC_WAIT_S = 5.0
+
     def __init__(self, high_mode):
         self.high_mode = high_mode
-        self.efforts = []
         self.finished = []
         self.first_call_at = None
+        # Deterministic leg ordering (#277 CI): without a gate the ready low
+        # answer could win before the high leg's thread reached its first
+        # attempt, cancelling it with attempts=0 and no TTFT to assert on.
+        # The low leg instead waits for proof that the high leg spoke.
+        self.high_spoke = threading.Event()
+        self.high_finished = threading.Event()
+        self.low_wait_succeeded = False
         self.chat = NS(completions=NS(create=self._create))
 
     def with_options(self, **options):
@@ -67,23 +77,42 @@ class LegClient:
         if self.first_call_at is None:
             self.first_call_at = time.monotonic()
         effort = params["extra_body"]["chat_template_kwargs"].get("reasoning_effort")
-        self.efforts.append(effort)
         if effort != "high":
-            return iter([chunk(DECLARATION, finish="stop")])
+            return self._low()
         if self.high_mode == "slow_valid":
             return self._slow_valid()
         if self.high_mode == "invalid":
-            return iter([chunk("not json", finish="stop")])
+            return self._invalid()
         return self._streaming()
+
+    def _low(self):
+        """Answer at once -- but only once the losing leg has spoken."""
+        gate = self.high_finished if self.high_mode == "invalid" else self.high_spoke
+        self.low_wait_succeeded = gate.wait(self.SYNC_WAIT_S)
+        return iter([chunk(DECLARATION, finish="stop")])
 
     def _slow_valid(self):
         """A valid declaration that would have been usable -- but only after 1.2 s."""
 
         def generate():
             yield chunk("thinking", reasoning="weighing the attack")
+            # Resuming past this yield proves the proxy consumed the reasoning
+            # chunk above and recorded its TTFT; only then may low answer.
+            self.high_spoke.set()
             time.sleep(1.2)
             yield chunk(DECLARATION)
             self.finished.append("high")
+
+        return generate()
+
+    def _invalid(self):
+        """A complete-but-unusable declaration."""
+
+        def generate():
+            yield chunk("not json", finish="stop")
+            # Resuming past this yield proves the proxy consumed the whole
+            # response; releasing low here keeps both legs tracing as ok.
+            self.high_finished.set()
 
         return generate()
 
@@ -92,12 +121,18 @@ class LegClient:
 
         def generate():
             yield chunk("thinking", reasoning="weighing the attack")
+            # Same proof as _slow_valid: TTFT is recorded before low answers.
+            self.high_spoke.set()
             for _ in range(60):
                 time.sleep(0.05)
                 yield chunk(" more")
             self.finished.append("high")
 
         return generate()
+
+
+#: Every scenario races exactly one high leg against one low leg.
+TRACED_LEGS = 2
 
 
 def plan(high_mode, timeout=2.0):
@@ -111,11 +146,17 @@ def plan(high_mode, timeout=2.0):
         result = planner.plan_actions(board(), "decision_required", list(MENU), {"type": "declare_attackers"})
         elapsed = time.monotonic() - started
         deadline = time.monotonic() + 2.0
-        while len(trace.summary()["requests"]) < len(be._client.efforts) and time.monotonic() < deadline:
+        # One entry per completed leg -- not per create() call seen so far,
+        # which raced a loser's cancellation bookkeeping.
+        while len(trace.summary()["requests"]) < TRACED_LEGS and time.monotonic() < deadline:
             time.sleep(0.02)
         summary = trace.summary()
     finally:
         llm_trace.finish(trace)
+    assert len(summary["requests"]) == TRACED_LEGS, (
+        f"expected {TRACED_LEGS} traced legs within budget: {summary['requests']}"
+    )
+    assert be._client.low_wait_succeeded, f"the low leg answered without observing the losing {high_mode} leg"
     setup = (be._client.first_call_at or started) - started
     return result, elapsed - setup, summary
 
