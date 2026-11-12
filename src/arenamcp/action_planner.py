@@ -2534,10 +2534,12 @@ class ActionPlanner(_ActionLegalityMixin):
         the correction rides this plan guard, which runs on every plan.
 
         Narration-only: the pick stands, the DECLARE_ATTACKERS action's
-        reasoning — what ``_record_combat_decision`` records first — gains
-        the board facts. Also asks what changed when the attack spends a
-        creature committed as a blocker earlier this turn. See
-        :mod:`arenamcp.attack_premises` for the bounded arithmetic.
+        reasoning — what ``_record_combat_decision`` records first — is
+        corrected: a kill claim the validated verdict contradicts is
+        REPLACED by its attack intent plus the verdict, otherwise the board
+        facts are appended. Also states the reversal when the attack spends
+        a creature committed as a blocker earlier this turn. See
+        :mod:`arenamcp.attack_premises` for the solver-backed evaluation.
         """
         if str(context.get("type") or "").lower() != "declare_attackers":
             return
@@ -2572,15 +2574,31 @@ class ActionPlanner(_ActionLegalityMixin):
         )
         correction = tapped_crackback_correction(state, original, attackers=attackers, target=target)
         reconciliation = held_blocker_reconciliation(self._memory().this_turn(state), declared.attacker_names)
-        additions = " ".join(part for part in (correction, reconciliation) if part)
-        if not additions:
+        if not correction.text and not reconciliation:
             return
-        if additions.strip() in str(declared.reasoning or ""):
-            return  # already corrected (e.g. by the typed-decision hook) — never duplicate
-        declared.reasoning = f"{str(declared.reasoning or '').rstrip()} {additions}".strip()
+        updated = str(declared.reasoning or "")
+        if correction.mode == "replace" and correction.sentence in updated:
+            updated = updated.replace(correction.sentence, correction.text)
+            if reconciliation and reconciliation.strip() not in updated:
+                updated = f"{updated.rstrip()} {reconciliation}".strip()
+        else:
+            additions = " ".join(part for part in (correction.text, reconciliation) if part)
+            if not additions or additions.strip() in updated:
+                return  # already corrected (e.g. by the typed-decision hook) — never duplicate
+            updated = f"{updated.rstrip()} {additions}".strip()
+        declared.reasoning = updated
         logger.warning(
-            "attack reasoning rested on a tapped-enemy premise; board facts appended (%s)",
-            "; ".join(filter(None, (correction[:60], reconciliation[:60]))),
+            "attack reasoning rested on a tapped-enemy premise; reasoning corrected (%s)",
+            "; ".join(
+                filter(
+                    None,
+                    (
+                        correction.mode and f"mode={correction.mode}",
+                        correction.text[:60],
+                        reconciliation[:60],
+                    ),
+                )
+            ),
         )
 
     def _check_attack_line(self, plan: ActionPlan, state: dict, context: dict) -> None:
@@ -7853,9 +7871,11 @@ class ActionPlanner(_ActionLegalityMixin):
         their 3-loyalty Minsc saying "their big Boo is tapped so crackback is
         limited" while their untapped Curator 3/3 and Halfling 2/3 could
         double block and their Boo untaps normally next turn. Narration-only:
-        the pick stands, the reasoning gains the facts, the trace records the
-        premise. Also asks for a rationale when the attack spends a creature
-        a guard held back earlier this turn.
+        the pick stands, the reasoning is corrected — a kill
+        claim the validated verdict contradicts is REPLACED by its attack
+        intent plus the verdict, otherwise the board facts are appended —
+        and the trace records the premise. Also states the reversal when
+        the attack spends a creature a guard held back earlier this turn.
         """
         if getattr(decision, "request_type", "") != "DeclareAttackers":
             return
@@ -7864,23 +7884,58 @@ class ActionPlanner(_ActionLegalityMixin):
             return
         from arenamcp.attack_premises import held_blocker_reconciliation, tapped_crackback_correction
 
-        correction = tapped_crackback_correction(game_state, reasoning)
         attacker_names = [str(label).split(" [id:")[0].strip() for label in chosen or []]
+        cards_by_name: dict[str, dict[str, Any]] = {}
+        for card in game_state.get("battlefield") or []:
+            name = str(card.get("name") or "")
+            if name:
+                cards_by_name.setdefault(name, card)
+        attacker_cards = [cards_by_name[name] for name in attacker_names if name in cards_by_name] or None
+        target = next(
+            (
+                str(value)
+                for attr in ("target_name", "target", "defender_name")
+                for value in [getattr(decision, attr, "") or ""]
+                if value
+            ),
+            "",
+        )
+        correction = tapped_crackback_correction(
+            game_state, reasoning, attackers=attacker_cards, target=target
+        )
         reconciliation = ""
         if attacker_names:
             reconciliation = held_blocker_reconciliation(self._memory().this_turn(game_state), attacker_names)
-        additions = " ".join(part for part in (correction, reconciliation) if part)
-        if not additions:
+        if not correction.text and not reconciliation:
             return
-        self._last_decision_reasoning = f"{str(reasoning).rstrip()} {additions}".strip()
+        updated = str(reasoning)
+        if correction.mode == "replace" and correction.sentence in updated:
+            updated = updated.replace(correction.sentence, correction.text)
+            if reconciliation and reconciliation.strip() not in updated:
+                updated = f"{updated.rstrip()} {reconciliation}".strip()
+        else:
+            additions = " ".join(part for part in (correction.text, reconciliation) if part)
+            updated = f"{updated.rstrip()} {additions}".strip()
+        self._last_decision_reasoning = updated
         if isinstance(self._last_decision_trace, dict):
             self._last_decision_trace["tapped_crackback_claim"] = {
-                "correction": correction,
+                "mode": correction.mode,
+                "premise": correction.sentence,
+                "correction": correction.text,
                 "reconciliation": reconciliation,
             }
         logger.warning(
-            "attack reasoning rested on a tapped-enemy premise; board facts appended (%s)",
-            "; ".join(filter(None, (correction[:60], reconciliation[:60]))),
+            "attack reasoning rested on a tapped-enemy premise; reasoning corrected (%s)",
+            "; ".join(
+                filter(
+                    None,
+                    (
+                        correction.mode and f"mode={correction.mode}",
+                        correction.text[:60],
+                        reconciliation[:60],
+                    ),
+                )
+            ),
         )
 
     def _correct_false_lethal_claim(self, game_state: dict[str, Any], decision: Any = None) -> None:
