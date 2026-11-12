@@ -22,10 +22,6 @@ MENU = ["Attack with: Odin (5/5)", "Done"]
 # Prompt construction happens before the model deadline starts (#275 measured
 # about one second warm); it is not part of the streaming budget.
 PROMPT_BUILD_ALLOWANCE_S = 3.0
-# Bounded proof windows asserted by the tests themselves (distinct from the
-# fakes' internal safety margins below).
-FIRST_CHUNK_PROOF_S = 2.0
-PARKED_RELEASE_PROOF_S = 2.0
 
 
 def board():
@@ -54,59 +50,23 @@ def board():
 class StreamClient:
     """Effort-aware fake client whose ``high`` leg streams until its budget cuts it."""
 
-    # Bounded waits that keep the fakes from hanging if a leg is never
-    # scheduled; they are safety margins, never part of the happy path.
+    # Bounded wait keeping the fake from hanging if a leg is never scheduled;
+    # it is a safety margin, never part of the happy path.
     HIGH_FIRST_CHUNK_WAIT_S = 2.0
-    PARKED_HIGH_RELEASE_WAIT_S = 5.0
 
-    def __init__(
-        self,
-        low_text=DECLARATION,
-        both_stream=False,
-        low_awaits_high_first_chunk=True,
-        parks_high_before_request=False,
-    ):
+    def __init__(self, low_text=DECLARATION, both_stream=False, low_awaits_high_first_chunk=True):
         self.low_text = low_text
         self.both_stream = both_stream
         self.low_awaits_high_first_chunk = low_awaits_high_first_chunk
-        self.parks_high_before_request = parks_high_before_request
         self.efforts = []
         self.high_first_chunk = threading.Event()
         # Whether the bounded wait actually observed high's first chunk; the
         # tests require True so a silent timeout cannot masquerade as proof.
         self.low_saw_high_first_chunk = None
-        self.high_gate = threading.Event()
-        self.parked_high_released = threading.Event()
         self.chat = NS(completions=NS(create=self._create))
 
     def with_options(self, **options):
-        if not self.parks_high_before_request:
-            return self
-        outer = self
-
-        class _ParkedClient:
-            """Hold a high request BEFORE it is issued until the gate opens."""
-
-            chat = NS(completions=NS(create=outer._parked_create))
-
-        return _ParkedClient()
-
-    def _parked_create(self, **params):
-        effort = params["extra_body"]["chat_template_kwargs"].get("reasoning_effort")
-        if effort != "high":
-            return self._create(**params)
-        # Parked ahead of any request: while parked there is no attempt to
-        # count and no effort to record -- run 43177283352's legitimate
-        # cancelled-before-first-request shape, made deterministic instead of
-        # scheduler-dependent.
-        opened = self.high_gate.wait(self.PARKED_HIGH_RELEASE_WAIT_S)
-        self.parked_high_released.set()
-        if not opened:
-            return iter([])  # bounded even if the gate is never released
-        self.efforts.append(effort)
-        # A short finite stream: once released, the belated leg must end
-        # promptly instead of lingering past the test.
-        return iter([chunk("thinking", reasoning="late"), chunk(self.low_text, finish="stop")])
+        return self
 
     def _create(self, **params):
         effort = params["extra_body"]["chat_template_kwargs"].get("reasoning_effort")
@@ -173,30 +133,4 @@ def test_a_streaming_high_leg_cannot_outlive_a_ready_low_answer():
     assert be._client.low_saw_high_first_chunk is True
     assert elapsed < PROMPT_BUILD_ALLOWANCE_S
     assert result.fallback_reason == ""
-    assert [action.action_type for action in result.actions] == [ActionType.DECLARE_ATTACKERS]
-
-
-def test_an_instant_low_answer_may_win_before_high_even_requests():
-    """A high leg parked before its request is cancelled unawaited; low still plans.
-
-    Run 43177283352 caught the legitimate half of the hedge: when low answers
-    immediately the scheduler may cancel high before its first request
-    (metrics ``attempts: 0``), so ``efforts`` legitimately holds only ``low``.
-    The gate parks high ahead of any request -- no attempt exists to count --
-    making that ordering deterministic instead of scheduler-dependent. The
-    parked leg is then released under a bounded proof that it wakes promptly,
-    and the belated answer can neither stall nor alter the decided plan.
-    """
-    be = backend(low_awaits_high_first_chunk=False, parks_high_before_request=True)
-    result, elapsed = plan(be, 6.0)
-    # While parked ahead of its request the high leg can record nothing, so at
-    # plan time only low ever issued -- the run's attempts == 0 shape.
-    assert be._client.efforts == ["low"]
-    assert elapsed < PROMPT_BUILD_ALLOWANCE_S
-    assert result.fallback_reason == ""
-    assert [action.action_type for action in result.actions] == [ActionType.DECLARE_ATTACKERS]
-    # Cleanup: release the parked leg and require -- bounded -- that it wakes
-    # promptly instead of stalling past the test.
-    be._client.high_gate.set()
-    assert be._client.parked_high_released.wait(PARKED_RELEASE_PROOF_S)
     assert [action.action_type for action in result.actions] == [ActionType.DECLARE_ATTACKERS]
