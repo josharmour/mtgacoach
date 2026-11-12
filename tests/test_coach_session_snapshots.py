@@ -61,7 +61,7 @@ def test_engine_reload_adopts_compatible_snapshot(session, monkeypatch, tmp_path
     prepared = []
     monkeypatch.setattr(
         coach_session_module,
-        "_prepare_snapshot_dependency_env",
+        "_require_prepared_snapshot_dep_env",
         lambda root: prepared.append(root) or None,
     )
     reloads = []
@@ -87,7 +87,7 @@ def test_engine_reload_prep_failure_keeps_current_engine_visibly(session, monkey
     )
     monkeypatch.setattr(
         coach_session_module,
-        "_prepare_snapshot_dependency_env",
+        "_require_prepared_snapshot_dep_env",
         lambda root: "pip exploded",
     )
     statuses = []
@@ -101,7 +101,7 @@ def test_engine_reload_prep_failure_keeps_current_engine_visibly(session, monkey
     assert reloads == [], "the current engine must keep running"
     assert statuses[-1]["phase"] == "restart_required"
     assert statuses[-1]["ready"] is True
-    assert "could not be prepared" in statuses[-1]["message"]
+    assert "is not prepared" in statuses[-1]["message"]
     assert "pip exploded" in statuses[-1]["message"]
 
 
@@ -111,7 +111,7 @@ def test_engine_reload_unmanaged_never_prepares_dependencies(session, monkeypatc
     prepared = []
     monkeypatch.setattr(
         coach_session_module,
-        "_prepare_snapshot_dependency_env",
+        "_require_prepared_snapshot_dep_env",
         lambda root: prepared.append(root) or None,
     )
     reloads = []
@@ -131,7 +131,7 @@ def test_engine_reload_absent_pointer_never_prepares_dependencies(session, monke
     prepared = []
     monkeypatch.setattr(
         coach_session_module,
-        "_prepare_snapshot_dependency_env",
+        "_require_prepared_snapshot_dep_env",
         lambda root: prepared.append(root) or None,
     )
     reloads = []
@@ -151,7 +151,7 @@ def test_engine_reload_disabled_flag_never_adopts_or_prepares(session, monkeypat
     prepared = []
     monkeypatch.setattr(
         coach_session_module,
-        "_prepare_snapshot_dependency_env",
+        "_require_prepared_snapshot_dep_env",
         lambda root: prepared.append(root) or None,
     )
     reloads = []
@@ -161,6 +161,80 @@ def test_engine_reload_disabled_flag_never_adopts_or_prepares(session, monkeypat
 
     assert prepared == []
     assert session._pending_snapshot_target is None
+    assert len(reloads) == 1
+
+
+def test_engine_reload_disabled_flag_with_real_pointer_never_adopts(session, monkeypatch, tmp_path):
+    """REAL published pointer + SNAPSHOTS_DISABLE=1: plain reload, no dep work.
+
+    Regression for the unified disable check: ``read_pointer_once`` must
+    honor BOTH disable flags, so a disabled process can never adopt a
+    pointer that is physically present on disk.
+    """
+
+    from arenamcp.desktop import runtime_snapshots as rs
+
+    runtime_root = tmp_path / "runtime-root"
+    snaps = runtime_root / "runtime-snapshots"
+    _publish_snapshot(tmp_path, "disabledgen", 1, snaps)
+    monkeypatch.setenv("MTGACOACH_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("MTGACOACH_SNAPSHOTS_DISABLE", "1")
+    monkeypatch.delenv("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT", raising=False)
+
+    real_read = rs.read_pointer_once
+    looked_up = []
+
+    def recording_read(snapshots_dir=None):
+        looked_up.append(True)
+        return real_read(snapshots_dir)
+
+    monkeypatch.setattr(rs, "read_pointer_once", recording_read)
+    prepared = []
+    monkeypatch.setattr(
+        coach_session_module,
+        "_require_prepared_snapshot_dep_env",
+        lambda root: prepared.append(root) or None,
+    )
+    reloads = []
+    session.engineReloadRequested.connect(reloads.append)
+
+    _emit_reload(session)
+
+    assert looked_up and all(looked_up), "the real pointer read must actually run"
+    assert prepared == [], "disabled snapshots must never adopt or prepare"
+    assert session._pending_snapshot_target is None
+    assert len(reloads) == 1
+
+
+def test_engine_reload_real_pointer_adopts_when_enabled(session, monkeypatch, tmp_path):
+    """Control for the disable regression: the SAME real pointer adopts when
+    snapshots are enabled — proving the plainness above came from the flag."""
+
+    runtime_root = tmp_path / "runtime-root"
+    snaps = runtime_root / "runtime-snapshots"
+    snap_final, commit = _publish_snapshot(tmp_path, "enabledgen", 1, snaps)
+    monkeypatch.setenv("MTGACOACH_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.delenv("MTGACOACH_SNAPSHOTS_DISABLE", raising=False)
+    monkeypatch.delenv("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT", raising=False)
+    prepared = []
+    monkeypatch.setattr(
+        coach_session_module,
+        "_require_prepared_snapshot_dep_env",
+        lambda root: prepared.append(root) or None,
+    )
+    reloads = []
+    session.engineReloadRequested.connect(reloads.append)
+
+    _emit_reload(session)
+
+    assert prepared and set(prepared) == {str(snap_final.resolve())}, (
+        "enabled snapshots adopt the real pointer"
+    )
+    assert session._pending_snapshot_target == (
+        str(snap_final.resolve()),
+        commit,
+        str(snap_final.resolve()),
+    )
     assert len(reloads) == 1
 
 

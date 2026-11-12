@@ -30,9 +30,7 @@ def _git(root: Path, *args: str) -> str:
     return proc.stdout.strip()
 
 
-def make_repo(
-    tmp_path: Path, *, engine_value: int = 1, extra_files: dict[str, str] | None = None
-) -> Path:
+def make_repo(tmp_path: Path, *, engine_value: int = 1, extra_files: dict[str, str] | None = None) -> Path:
     """A minimal but real Coach-shaped git repository with one commit."""
     root = tmp_path / f"repo-{next(_REPO_COUNTER)}"
     (root / "src" / "arenamcp" / "desktop").mkdir(parents=True)
@@ -112,9 +110,7 @@ def test_stage_exports_the_pinned_commit_not_the_dirty_worktree(tmp_path):
     commit_a = head_of(root)
 
     # Dirty the tracked file and add untracked noise AFTER the commit.
-    (root / "src" / "arenamcp" / "desktop" / "engine.py").write_text(
-        "VALUE = DIRTY\n", encoding="utf-8"
-    )
+    (root / "src" / "arenamcp" / "desktop" / "engine.py").write_text("VALUE = DIRTY\n", encoding="utf-8")
     (root / "untracked.txt").write_text("noise\n", encoding="utf-8")
     external = tmp_path / "outside-secret.txt"
     external.write_text("[REDACTED]", encoding="utf-8")
@@ -146,9 +142,9 @@ def test_stage_two_different_commits_produce_distinct_snapshots(tmp_path):
     assert snap_a != snap_b
     assert rs.load_manifest(snap_a)["commit"] == commit_a
     assert rs.load_manifest(snap_b)["commit"] == commit_b
-    assert (
-        snap_b / "src" / "arenamcp" / "desktop" / "engine.py"
-    ).read_text(encoding="utf-8") == "VALUE = 2\n"
+    assert (snap_b / "src" / "arenamcp" / "desktop" / "engine.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 2\n"
 
 
 def test_stage_manifest_hashes_every_file_and_excludes_secrets(tmp_path):
@@ -270,9 +266,10 @@ def test_promote_quarantines_corrupt_published_snapshot(tmp_path):
 
     again = rs.promote_snapshot(rs.stage_snapshot(root, head_of(root), staging_parent=snaps), snaps)
     assert again == final
-    assert rs.validate_snapshot_dir(final)["content_hash"] == rs.load_manifest(
-        rs.stage_snapshot(root, head_of(root), staging_parent=snaps)
-    )["content_hash"]
+    assert (
+        rs.validate_snapshot_dir(final)["content_hash"]
+        == rs.load_manifest(rs.stage_snapshot(root, head_of(root), staging_parent=snaps))["content_hash"]
+    )
     quarantined = [p for p in snaps.iterdir() if p.name.startswith(".corrupt-")]
     assert len(quarantined) == 1, "corrupt snapshot must be quarantined, not deleted"
 
@@ -609,3 +606,29 @@ def test_plan_engine_reload_actions(tmp_path):
     unknown_shape["engine_protocol"] = None
     plan = rs.plan_engine_reload(commit_old, unknown_shape)
     assert plan.action == "require_full_restart"
+
+
+def test_read_pointer_once_honors_both_disable_flags(tmp_path, monkeypatch):
+    """A REAL published pointer is unreadable while EITHER disable flag is set.
+
+    Regression for the unified disable check: disabling snapshots must gate
+    the pointer read itself, not just launch selection, so a disabled process
+    can never adopt a pointer that is physically present on disk.
+    """
+    root = make_repo(tmp_path)
+    commit = head_of(root)
+    snaps = tmp_path / "snaps"
+    staging = rs.stage_snapshot(root, commit, staging_parent=snaps)
+    final = rs.promote_snapshot(staging, snaps)
+    rs.publish_pointer(final, snaps)
+
+    monkeypatch.delenv("MTGACOACH_SNAPSHOTS_DISABLE", raising=False)
+    monkeypatch.delenv("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT", raising=False)
+    assert rs.read_pointer_once(snaps) is not None
+
+    monkeypatch.setenv("MTGACOACH_SNAPSHOTS_DISABLE", "1")
+    assert rs.read_pointer_once(snaps) is None
+
+    monkeypatch.delenv("MTGACOACH_SNAPSHOTS_DISABLE", raising=False)
+    monkeypatch.setenv("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT", "1")
+    assert rs.read_pointer_once(snaps) is None

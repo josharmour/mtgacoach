@@ -477,7 +477,9 @@ def read_pointer_once(snapshots_dir: Path | None = None) -> dict | None:
     cross-checks commit/content-hash agreement; anything inconsistent degrades
     to ``None`` so callers fall back to the checkout.
     """
-    if os.environ.get("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT") == "1":
+    # Unified disable check: BOTH disable flags suppress pointer reads so a
+    # disabled process can never adopt a real published pointer.
+    if snapshots_disabled():
         return None
     directory = Path(snapshots_dir) if snapshots_dir is not None else snapshots_root()
     pointer_path = directory / POINTER_NAME

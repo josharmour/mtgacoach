@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import sys
 import threading
@@ -33,16 +34,47 @@ def engine_interpreter_for(app_root: str | Path | None = None) -> tuple[str, str
     return python_exe, python_source
 
 
+logger = logging.getLogger(__name__)
+
+
+def _selected_snapshot_disagreement(app_root: Path, selected_sha: str) -> str | None:
+    """Explain why the selected snapshot must NOT bind a prepared env, or None.
+
+    Binding a prepared dependency environment requires agreement between the
+    selected SHA, the selected root (``MTGACOACH_SNAPSHOT_ROOT`` or the launch
+    root itself) and the manifest published inside that root. A merely
+    nonempty ``MTGACOACH_SNAPSHOT_SHA`` never unlocks dependency participation.
+    """
+    from .runtime_snapshots import SnapshotValidationError, validate_snapshot_dir
+
+    root_env = os.environ.get("MTGACOACH_SNAPSHOT_ROOT", "").strip()
+    selected_root = Path(root_env) if root_env else app_root
+    try:
+        manifest = validate_snapshot_dir(selected_root)
+    except SnapshotValidationError as exc:
+        return f"selected snapshot {selected_sha[:7]} failed validation at {selected_root}: {exc}"
+    manifest_commit = str(manifest.get("commit") or "")
+    if manifest_commit != selected_sha:
+        return (
+            f"selected SHA {selected_sha[:7]} does not match manifest commit "
+            f"{manifest_commit[:7] or '?'} in {selected_root}"
+        )
+    if root_env and Path(root_env).resolve() != app_root.resolve():
+        return f"selected root {root_env} does not match launch root {app_root}"
+    return None
+
+
 def resolve_engine_launch(app_root: Path) -> tuple[str, str, list[str], bool]:
     """Resolve interpreter, source label, launch args and packaging for a
     nonfrozen source launch.
 
     Dependency environments participate ONLY when this launch is an
     explicitly selected snapshot (``MTGACOACH_SNAPSHOT_SHA`` present and
-    snapshots not disabled), and only as a PREPARED environment: a missing
-    one raises instead of installing anything here. Ordinary launches and
-    reloads keep the resolved interpreter untouched — no dependency
-    preparation, installation or environment mutation.
+    snapshots not disabled) whose SHA/root/manifest all AGREE, and only as a
+    PREPARED environment: a missing one raises instead of installing anything
+    here. Ordinary launches and reloads — and disagreeing selections — keep
+    the resolved interpreter untouched: no dependency preparation,
+    installation or environment mutation.
     """
     python_exe, python_source = engine_interpreter_for(app_root)
 
@@ -53,6 +85,17 @@ def resolve_engine_launch(app_root: Path) -> tuple[str, str, list[str], bool]:
         if not snapshots_disabled():
             from .dep_env import prepared_dep_env, venv_python
 
+            disagreement = _selected_snapshot_disagreement(app_root, selected_sha)
+            if disagreement is not None:
+                logger.warning(
+                    "Ignoring snapshot selection %s for this launch: %s. "
+                    "Launching %s with its own interpreter.",
+                    selected_sha[:7],
+                    disagreement,
+                    app_root,
+                )
+                args, packaged_runtime = _coach_launch_args(python_exe, app_root)
+                return python_exe, python_source, args, packaged_runtime
             prepared = prepared_dep_env(app_root, python_executable=python_exe)
             if prepared is None:
                 raise RuntimeError(

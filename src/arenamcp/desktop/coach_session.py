@@ -27,27 +27,34 @@ def _selection_identity() -> SelectionIdentity:
     return root, sha, snapshot_root
 
 
-def _prepare_snapshot_dependency_env(target_root: str) -> str | None:
-    """Explicitly prepare the adopted snapshot's dependency environment.
+def _require_prepared_snapshot_dep_env(target_root: str) -> str | None:
+    """Verify the PREPARED dependency environment for an adopted snapshot.
 
-    This is THE opt-in point for dependency work outside the launcher: it
-    runs only at the adoption arming checkpoint (``plan.action == "adopt"``),
-    while the current engine is still running, and provisions for exactly the
-    interpreter a later engine start from ``target_root`` will select.
-    Ordinary launches and reloads never reach it.
+    Reload NEVER installs anything: this is a read-only lookup of the
+    environment an explicit preparation step (launcher-selected launch or a
+    full Restart Coach) already built for exactly the interpreter a later
+    engine start from ``target_root`` will select. Ordinary launches and
+    reloads never reach it, and a missing environment is a visible deferral,
+    never a silent installation.
 
-    Returns ``None`` on success, else a human-readable failure reason; the
-    caller keeps the current engine running and defers visibly on failure.
+    Returns ``None`` when the prepared environment exists, else a
+    human-readable reason; the caller keeps the current engine running and
+    defers visibly on failure.
     """
     from .coach_process import engine_interpreter_for
-    from .dep_env import ensure_dep_env
+    from .dep_env import prepared_dep_env
 
     try:
         python_exe, _source = engine_interpreter_for(target_root)
-        ensure_dep_env(Path(target_root), python_executable=python_exe)
+        prepared = prepared_dep_env(Path(target_root), python_executable=python_exe)
     except Exception as exc:  # noqa: BLE001 - any failure must defer, not crash
-        logger.warning("Snapshot dependency preparation failed: %s", exc)
+        logger.warning("Snapshot dependency lookup failed: %s", exc)
         return str(exc)
+    if prepared is None:
+        return (
+            "no prepared dependency environment for this snapshot; prepare it "
+            "from the launcher or use Restart Coach"
+        )
     return None
 
 
@@ -279,13 +286,14 @@ class CoachSession(QObject):
         """Single decision gate shared by both reload entry points.
 
         Returns ``True`` when a reload may proceed (plain reload, or adoption
-        of a compatible snapshot whose dependency environment is now
+        of a compatible snapshot whose dependency environment is ALREADY
         prepared); otherwise defers visibly and returns ``False``.
 
-        Dependency preparation happens HERE — an explicit, idempotent
-        checkpoint taken while the current engine is still running. It is the
-        only place outside the launcher where dependency work is allowed, and
-        it runs solely for an explicitly planned adoption.
+        Reload performs NO dependency work: adoption only verifies — read-only
+        — that a prepared environment exists. Preparation happens exclusively
+        at explicit opt-in points outside the reload path (the launcher's
+        selected-snapshot launch or a full Restart Coach). A missing
+        environment defers visibly and keeps the current engine running.
         """
         if plan.action == "require_full_restart":
             self._defer_engine_reload_visibly(plan.reason)
@@ -293,15 +301,14 @@ class CoachSession(QObject):
         if plan.action == "adopt":
             logger.info("Engine reload will adopt a newer snapshot: %s", plan.reason)
             self.logEmitted.emit(plan.reason, "status")
-            # Explicit opt-in: prepare the target's dependency environment
-            # NOW, while the current engine is still running. If preparation
-            # fails, keep the current engine and defer visibly instead of
-            # arming a handoff that could only fail (or worse, silently
-            # install) at start time.
-            prep_failure = _prepare_snapshot_dependency_env(plan.target_root)
+            # Prepared-environment-only: verify (read-only) that the target's
+            # dependency environment already exists. If it does not, keep the
+            # current engine and defer visibly — never install from a reload;
+            # preparation requires the launcher or a full Restart Coach.
+            prep_failure = _require_prepared_snapshot_dep_env(plan.target_root)
             if prep_failure is not None:
                 self._defer_engine_reload_visibly(
-                    f"New engine snapshot could not be prepared; keeping the current engine. ({prep_failure})"
+                    f"New engine snapshot is not prepared; keeping the current engine. ({prep_failure})"
                 )
                 return False
             self._pending_snapshot_target = (
