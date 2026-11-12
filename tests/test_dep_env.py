@@ -106,9 +106,9 @@ def _fake_uv_which(fake_uv: str):
     The dependency environment is hermetic: the locked-install path must be
     driven by an explicitly supplied ``uv`` resolver, never by whatever
     happens to sit on the ambient CI runner's PATH. Any other lookup is
-    delegated to the real ``shutil.which`` — captured BEFORE the shared
-    module attribute is patched, so delegating never re-enters the stand-in
-    itself (that would recurse for every non-uv name).
+    delegated to whichever resolver was current when the factory ran —
+    captured before the stand-in itself is installed, so delegating never
+    re-enters the stand-in (that would recurse for every non-uv name).
     """
     real_which = shutil.which
 
@@ -122,17 +122,30 @@ def _fake_uv_which(fake_uv: str):
 
 def test_fake_uv_which_delegates_non_uv_lookups_to_the_original_resolver(monkeypatch):
     """The stand-in must not recurse when asked about anything besides uv."""
+    # Deterministic original resolver: a stub installed BEFORE the factory
+    # captures it, so delegation never depends on the host PATH (a CI runner
+    # may have no python3 at all; Windows ships python.exe instead).
+    delegated = []
+
+    def original_stub(name, *args, **kwargs):
+        delegated.append((name, args, kwargs))
+        if name == "python3":
+            return "/stub/bin/python3"
+        return None
+
+    monkeypatch.setattr(shutil, "which", original_stub)
     stand_in = _fake_uv_which("/fake/bin/uv")
-    # Expected resolutions are captured from the REAL resolver before the
-    # shared module attribute is patched (the fixtures patch exactly this).
-    expected_python = shutil.which("python3")
-    assert expected_python is not None  # sanity: the host resolves python3
     monkeypatch.setattr(shutil, "which", stand_in)
 
     assert shutil.which("uv") == "/fake/bin/uv"
-    # Non-uv lookups go through the captured original — no RecursionError.
-    assert shutil.which("python3") == expected_python
+    # Non-uv lookups go through the captured original — no RecursionError,
+    # and the exact arguments are forwarded with the exact result returned.
+    assert shutil.which("python3") == "/stub/bin/python3"
     assert shutil.which("definitely-not-a-real-binary-xyz") is None
+    assert delegated == [
+        ("python3", (), {}),
+        ("definitely-not-a-real-binary-xyz", (), {}),
+    ]
 
 
 def test_ensure_dep_env_creates_versioned_env_with_binding_marker(snapshot_root, fake_runs, tmp_path):
