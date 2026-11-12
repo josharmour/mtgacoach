@@ -506,6 +506,53 @@ def test_deck_keep_guide_separates_draw_expectation_from_goal_bug_20261109_23171
     assert dict(sixty.criteria.lands_by_turn)[3] == 3
 
 
+def test_lands_in_play_counts_legal_drops_not_ramp_bug_20261109_212434():
+    """Cheap ramp creatures are mana capacity, not extra land drops.
+
+    Round-3 rejection probe, built from real logged cards in
+    bug_20261109_212434 (Llanowar Elves, fixture text verbatim): a
+    56-Forest + 4-Llanowar-Elves list has no extra-land effect anywhere, so
+    its achievable lands in play stay at the ordinary one-drop-per-turn
+    baseline (3 by turn 3, 4 by turn 4) even though four cheap ramp copies
+    exist. The earlier formula predicted 5 by turn 3 and 7 by turn 4 by
+    counting every cheap ramp copy as an extra land drop it never made.
+    """
+    forest = _fixture_card("minsc", "Forest")
+    elves = _fixture_card("minsc", "Llanowar Elves")
+    profile = build_profile([dict(forest, count=56), dict(elves, count=4)])
+    in_play = dict(profile.criteria.lands_in_play_by_turn)
+    drawn = dict(profile.criteria.lands_by_turn)
+    assert in_play[3] == 3
+    assert in_play[4] == 4
+    # Every turn: the ordinary baseline, capped by expected draws.
+    assert all(in_play[turn] == min(drawn[turn], turn) for turn in range(1, 6))
+
+
+def test_extra_land_drop_needs_own_rules_text_bug_20261109_212434():
+    """The +1 land drop comes from the list's own rules text, nothing else.
+
+    Real logged cards from bug_20261109_212434: Exploration and Icetill
+    Explorer literally grant an additional land drop each turn; Llanowar
+    Elves (mana dork), Elvish Mystic (mana dork) and Crop Rotation
+    (sacrifice-a-land tutor) do not. The same 56-Forest shell therefore
+    achieves one extra drop per turn from turn 2 onward with Exploration,
+    and none at all with Llanowar Elves.
+    """
+    assert deck_profile._grants_extra_land_drop(_fixture_card("minsc", "Exploration")["oracle_text"])
+    assert deck_profile._grants_extra_land_drop(_fixture_card("minsc", "Icetill Explorer")["oracle_text"])
+    for name in ("Llanowar Elves", "Elvish Mystic", "Crop Rotation"):
+        assert not deck_profile._grants_extra_land_drop(_fixture_card("minsc", name)["oracle_text"])
+
+    forest = _fixture_card("minsc", "Forest")
+    exploration = _fixture_card("minsc", "Exploration")
+    profile = build_profile([dict(forest, count=56), dict(exploration, count=4)])
+    in_play = dict(profile.criteria.lands_in_play_by_turn)
+    drawn = dict(profile.criteria.lands_by_turn)
+    assert in_play[1] == min(drawn[1], 1)  # no extra drop before one is in play
+    assert in_play[2] == min(drawn[2], 3)
+    assert in_play[3] == min(drawn[3], 4)
+
+
 def test_deck_keep_guide_yields_to_cached_playbook_bug_20261109_212434(monkeypatch, tmp_path):
     """When a playbook is cached for this deck, it wins over the profile."""
     mapping = {card["grp_id"]: card for card in LISTS["minsc"]}

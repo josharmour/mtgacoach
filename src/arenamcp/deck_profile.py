@@ -149,8 +149,9 @@ class DeckProfile:
 
         Two distinct numbers, never conflated: how many lands the deck is
         expected to draw by a turn (availability) and how many it can
-        realistically put in play by then (the achievable keep goal — one
-        land drop per turn plus cheap ramp).
+        legally put in play by then (the achievable keep goal — one land
+        drop per turn, plus one more only when the list's own rules text
+        grants additional land drops).
         """
         drawn = dict(self.criteria.lands_by_turn)
         in_play = dict(self.criteria.lands_in_play_by_turn)
@@ -338,6 +339,25 @@ def _engines_from_facts(
     return tuple(engines)
 
 
+def _grants_extra_land_drop(text: str) -> bool:
+    """True when a card's own rules text grants additional land drops.
+
+    Matches a sentence that both names extra/additional lands and uses a play
+    verb ("you may play an additional land on each of your turns"). Mana
+    producers, land tutors and sacrifice costs never match: making mana or
+    finding a land is not playing one, so ramp role counts never stand in for
+    a real extra-drop effect.
+    """
+    for sentence in re.split(r"[.;]", (text or "").lower()):
+        if (
+            re.search(r"\b(?:additional|extra|one more)\b", sentence)
+            and re.search(r"\blands?\b", sentence)
+            and re.search(r"\bplay\b", sentence)
+        ):
+            return True
+    return False
+
+
 def build_profile(
     cards: list[dict],
     *,
@@ -488,20 +508,19 @@ def build_profile(
     # Keep criteria: opening-hand arithmetic from the deck's own numbers.
     ratio = (land_count / card_count) if card_count else 0.0
     lands_by_turn = tuple((turn, min(land_count, round((7 + turn) * ratio))) for turn in range(1, 6))
-    # Achievable on-board lands: one land drop per turn plus cheap ramp
-    # spells (MV<=2) actually castable by then. Expected draws are
-    # availability, not a keep goal — a 92-land Commander deck draws ~9
-    # lands by turn 3 but can only put ~3 in play.
-    cheap_ramp = sum(
-        row["count"] for row in spell_rows if row["role"] == "ramp" and _mana_value(row["mana_cost"]) <= 2
-    )
+    # Achievable on-board lands: the ordinary legal land development of one
+    # drop per turn, raised by at most one extra drop per turn from turn 2
+    # onward and only when the list's OWN rules text grants additional land
+    # drops (e.g. "you may play an additional land on each of your turns").
+    # Cheap ramp creatures are mana capacity, not land drops, and a deck
+    # count never stands in for a drawn, cast extra-drop effect. Expected
+    # draws are availability, not a keep goal — a 92-land Commander deck
+    # draws ~9 lands by turn 3 but can only put ~3 in play.
+    extra_drop_effects = any(_grants_extra_land_drop(row["text"]) for row in spell_rows)
     lands_in_play_by_turn = tuple(
         (
             turn,
-            min(
-                drawn,
-                turn + min(cheap_ramp, max(turn - 1, 0)),
-            ),
+            min(drawn, turn + (1 if extra_drop_effects and turn >= 2 else 0)),
         )
         for turn, drawn in lands_by_turn
     )
