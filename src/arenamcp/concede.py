@@ -1559,6 +1559,14 @@ def _concede_reason(evasive: list[dict], through: int, our_life: int, when: str)
     6/6 flying Exemplar of Light get through this attack vs your 11 life" — 8
     named, the 13 through also counted an unnamed 5/5 Lyra Dawnbringer. The
     two strongest are named; the rest is "N more damage".
+
+    ``through`` is an optimistic lower bound, never an exact minimum: the
+    block-solver max flow relaxes one-blocker-blocks-one-attacker (a blocker's
+    damage absorption may be split across attackers) and ignores menace
+    pairing, so real blocks can never stop less than this. Match
+    6deb0e48 2026-11-12 02:12:49 (DarkWarrior): the flow said 13 through vs 8
+    life while the legal minimum was 17 — the spoken number is therefore
+    labelled "at least".
     """
     if evasive:
         named = sorted(evasive, key=lambda b: -b["power"])[:2]
@@ -1569,11 +1577,11 @@ def _concede_reason(evasive: list[dict], through: int, our_life: int, when: str)
         )
         more = through - sum(b["power"] for b in named)
         if more > 0:
-            head = f"their {names} and {more} more damage get through"
+            head = f"their {names} and at least {more} more damage get through"
         else:
             head = f"their {names} {'gets' if len(named) == 1 else 'get'} through"
     else:
-        head = f"{through} damage gets through your best blocks"
+        head = f"at least {through} damage gets through your best blocks"
     return f"Concede: {head} {when} vs your {our_life} life, and nothing you can cast stops it."
 
 

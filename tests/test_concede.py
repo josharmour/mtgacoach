@@ -45,7 +45,7 @@ def test_the_bug_board_on_their_turn_is_a_concede(phase, step):
     assert estimate.confidence >= 0.95, estimate.blockers
     assert estimate.facts["through"] == 17 and estimate.facts["evasive_power"] == 3
     assert estimate.facts["outs"] == []  # Proft's "Discard this card" works only from hand
-    assert estimate.reason.startswith("Concede: their 3/3 flying Thopter and 14 more damage")
+    assert estimate.reason.startswith("Concede: their 3/3 flying Thopter and at least 14 more damage")
     assert "your 3 life" in estimate.reason
 
 

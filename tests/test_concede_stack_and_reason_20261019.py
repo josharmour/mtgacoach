@@ -102,7 +102,7 @@ def test_the_named_fliers_and_the_rest_add_up_to_the_damage_through():
     ]
     reason = _concede_reason(fliers, 13, 11, "this attack")
     assert reason.startswith(
-        "Concede: their 6/6 flying Exemplar of Light, 5/5 flying Lyra Dawnbringer and 2 more damage get through"
+        "Concede: their 6/6 flying Exemplar of Light, 5/5 flying Lyra Dawnbringer and at least 2 more damage get through"
     )
     # Two fliers carrying all the damage need no remainder.
     assert "more damage" not in _concede_reason(fliers[1:], 11, 11, "this attack")
