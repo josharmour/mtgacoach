@@ -97,15 +97,18 @@ def _verifiable(identity: Any, reviews: list[dict] | None) -> bool:
     return False
 
 
+_LEGACY_RESULTS = frozenset({"win", "loss", "draw", "unknown"})
+
+
 def _legacy_loss_ids(entry: Any) -> set[str] | None:
     """Loss ids explicitly recorded in one well-formed legacy acknowledgement.
 
     Legacy schema (preserved commits d1f6c75/5bab2ad): ``<32-hex session
     uuid>:`` followed by comma-joined ``<match_or_game_id>:<result>`` pairs,
-    optionally ending ``:<16-hex sha256 review digest>``. Results are plain
-    words (win/loss/draw/unknown), so a trailing 16-hex segment can only be
-    the digest; anything else malformed contributes nothing — a malformed
-    entry never suppresses an offer.
+    optionally ending ``:<16-hex sha256 review digest>``. Every result token
+    must be exactly one of win/loss/draw/unknown, and no id may appear with
+    conflicting results. Any malformed token or conflicting duplicate voids
+    the entire entry, so a damaged acknowledgement never suppresses an offer.
     """
     if not isinstance(entry, str) or ":" not in entry:
         return None
@@ -115,14 +118,16 @@ def _legacy_loss_ids(entry: Any) -> set[str] | None:
     head, _, tail = rest.rpartition(":")
     if head and len(tail) == 16 and all(c in "0123456789abcdefABCDEF" for c in tail):
         rest = head
-    ids: set[str] = set()
+    results: dict[str, str] = {}
     for pair in rest.split(","):
         mid, sep, result = pair.partition(":")
-        if not sep or not mid or ":" in result:
+        if not sep or not mid or ":" in result or result not in _LEGACY_RESULTS:
             return None
-        if result == "loss":
-            ids.add(mid)
-    return ids
+        previous = results.get(mid)
+        if previous is not None and previous != result:
+            return None
+        results[mid] = result
+    return {mid for mid, result in results.items() if result == "loss"}
 
 
 def _legacy_covers_match(loss_ids: set[str], match_id: str) -> bool:

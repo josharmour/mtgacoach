@@ -507,18 +507,20 @@ def modern_identity(review):
 def synthetic_world(digest=None, extra_legacy=None, acknowledged_extra=()):
     """15 matches / 5 completed triplets in the exact saved legacy schema."""
     matches = [f"old-match-{i:02d}" for i in range(15)]
-    reviews = [report(tuple(matches[i:i + 3])) for i in range(0, 15, 3)]
+    reviews = [report(tuple(matches[i : i + 3])) for i in range(0, 15, 3)]
     acknowledged = [legacy_ack(matches, digest=digest), *acknowledged_extra]
     if extra_legacy is not None:
         acknowledged.append(extra_legacy)
     state = {
         "active": {"id": "b" * 32, "started": "2026-11-12T03:06:00+00:00", "baseline": list(matches)},
         "acknowledged": acknowledged,
-        "pending": [{
-            "id": modern_identity(reviews[1]),
-            "session_id": "b" * 32,
-            "text": "Already queued modern offer",
-        }],
+        "pending": [
+            {
+                "id": modern_identity(reviews[1]),
+                "session_id": "b" * 32,
+                "text": "Already queued modern offer",
+            }
+        ],
     }
     return matches, reviews, state
 
@@ -578,7 +580,7 @@ def test_first_modern_ack_honoured_remaining_legacy_triplets_not_reoffered(tmp_p
 def test_new_triplet_absent_from_legacy_ack_still_offers(tmp_path):
     matches = [f"old-match-{i:02d}" for i in range(12)]
     new_review = report(("fresh-a", "fresh-b", "fresh-c"))
-    reviews = [report(tuple(matches[i:i + 3])) for i in range(0, 12, 3)] + [new_review]
+    reviews = [report(tuple(matches[i : i + 3])) for i in range(0, 12, 3)] + [new_review]
     state = {
         "active": {"id": "b" * 32, "started": "2026-11-12T03:06:00+00:00", "baseline": matches},
         "acknowledged": [legacy_ack(matches)],
@@ -596,14 +598,14 @@ def test_malformed_unrelated_and_partial_legacy_entries_do_not_suppress(tmp_path
     review = report(triplet)
     malformed = [
         "not-a-legacy-string",
-        "abc:m1:loss,m2:loss,m3:loss",          # session uuid too short
-        LEGACY_SESSION + ":m1:loss,m2:loss",     # pair without result colon
-        LEGACY_SESSION + ":",                    # empty body
+        "abc:m1:loss,m2:loss,m3:loss",  # session uuid too short
+        LEGACY_SESSION + ":m1:loss,m2:loss",  # pair without result colon
+        LEGACY_SESSION + ":",  # empty body
         LEGACY_SESSION + ":m1:loss:m2:loss:m3:loss",  # stray inner colons
-        12345,                                   # non-string entry
+        12345,  # non-string entry
     ]
     unrelated = legacy_ack(["other-1", "other-2", "other-3"])
-    partial = legacy_ack(["m1", "m2"])           # two of three covered only
+    partial = legacy_ack(["m1", "m2"])  # two of three covered only
     for extra in [*malformed, unrelated, partial]:
         state = {
             "active": {"id": "b" * 32, "started": "2026-11-12T03:06:00+00:00", "baseline": list(triplet)},
@@ -623,7 +625,7 @@ def test_bo3_game_row_coverage_boundaries(tmp_path):
     # longer id never covers a shorter prefix match.
     complete = legacy_ack(["ma-g1", "ma-g2", "ma-g3", "mb-g1", "mb-g2", "mb-g3", "mc-g1", "mc-g2", "mc-g3"])
     partial_rows = legacy_ack(["ma-g1", "ma-g2", "ma-g3"])
-    prefix_trap = legacy_ack(["abc-g1"])         # must not cover match "ab"
+    prefix_trap = legacy_ack(["abc-g1"])  # must not cover match "ab"
     for extra, expect_offer in [(complete, False), (partial_rows, True), (prefix_trap, True)]:
         triplet = ("ma", "mb", "mc")
         review = report(triplet)
@@ -637,6 +639,69 @@ def test_bo3_game_row_coverage_boundaries(tmp_path):
         store.begin(world_rows(triplet), [review])
         recap = store.pending([review])
         assert (recap is not None) == expect_offer, extra
+
+
+def test_invalid_result_tokens_and_conflicting_duplicates_void_entry(tmp_path):
+    """Any malformed result token or conflicting duplicate voids the entire entry.
+
+    A damaged legacy acknowledgement must never suppress an offer — not even
+    the ids inside it that happen to look well-formed.
+    """
+    triplet = ("m1", "m2", "m3")
+    review = report(triplet)
+    digest = hashlib.sha256(b"x").hexdigest()[:16]
+    bad_entries = [
+        LEGACY_SESSION + ":m1:,m2:loss,m3:loss",  # empty result token
+        LEGACY_SESSION + ":m1:loss,m2:,m3:loss",  # empty result mid-list
+        LEGACY_SESSION + ":m1:loss,m2:loss,m3:loss,z:",  # trailing empty result
+        LEGACY_SESSION + ":m1:loss,m2:loss,m3:loss,z:garbage",  # unknown result word
+        LEGACY_SESSION + ":m1:,m2:,m3:,z:",  # nothing but empties
+        LEGACY_SESSION + ":m1:sweep,m2:sweep,m3:sweep",  # every word unknown
+        LEGACY_SESSION + ":m1:Lose,m2:l0ss,m3:wins",  # near-miss words
+        LEGACY_SESSION + ":m1:Lose,m2:l0ss,m3:wins:" + digest,  # near-miss with digest
+        LEGACY_SESSION + ":m1:loss,m2:loss,m3:loss,m1:win",  # conflicting duplicate
+        LEGACY_SESSION + ":m1:loss,m2:draw,m2:loss,m3:loss",  # conflicting mid-list
+        LEGACY_SESSION + ":m1:unknown,m1:loss,m2:loss,m3:loss",  # conflict on covered id
+        LEGACY_SESSION + ":wins:m3,m1:loss,m2:loss",  # swapped pair shape
+        LEGACY_SESSION,  # bare session uuid
+    ]
+    for extra in bad_entries:
+        state = {
+            "active": {"id": "b" * 32, "started": "2026-11-12T03:06:00+00:00", "baseline": list(triplet)},
+            "acknowledged": [extra],
+            "pending": [],
+        }
+        path = seed_store(tmp_path, state)
+        store = SessionRecaps(path)
+        store.begin(world_rows(triplet), [review])
+        recap = store.pending([review])
+        assert recap is not None and recap["id"] == modern_identity(review), extra
+
+
+def test_valid_mixed_results_identical_repeats_and_digest_still_parse(tmp_path):
+    """Well-formed entries keep working: all four result words, identical
+    repeat evidence, and the optional digest suffix."""
+    triplet = ("m1", "m2", "m3")
+    review = report(triplet)
+    digest = hashlib.sha256(b"x").hexdigest()[:16]
+    valid_entries = [
+        LEGACY_SESSION + ":x:win,y:draw,zz:unknown,m1:loss,m2:loss,m3:loss",
+        LEGACY_SESSION + ":m1:loss,m1:loss,m2:loss,m3:loss",  # identical repeat ok
+        LEGACY_SESSION + ":x:win,y:draw,m1:loss,m2:loss,m3:loss:" + digest,
+        LEGACY_SESSION + ":x:unknown,y:win,z2:draw,m1:loss,m2:loss,m3:loss",
+    ]
+    for extra in valid_entries:
+        state = {
+            "active": {"id": "b" * 32, "started": "2026-11-12T03:06:00+00:00", "baseline": list(triplet)},
+            "acknowledged": [extra],
+            "pending": [],
+        }
+        path = seed_store(tmp_path, state)
+        store = SessionRecaps(path)
+        store.begin(world_rows(triplet), [review])
+        assert store.pending([review]) is None, extra
+        saved = json.loads(path.read_text())
+        assert extra in saved["acknowledged"]  # original entry preserved untouched
 
 
 def test_modern_acks_remain_stable_across_migration_and_new_dismissals(tmp_path):
