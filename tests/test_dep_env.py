@@ -106,15 +106,33 @@ def _fake_uv_which(fake_uv: str):
     The dependency environment is hermetic: the locked-install path must be
     driven by an explicitly supplied ``uv`` resolver, never by whatever
     happens to sit on the ambient CI runner's PATH. Any other lookup is
-    delegated to the real ``shutil.which`` so unrelated behavior is intact.
+    delegated to the real ``shutil.which`` — captured BEFORE the shared
+    module attribute is patched, so delegating never re-enters the stand-in
+    itself (that would recurse for every non-uv name).
     """
+    real_which = shutil.which
 
     def _which(name, *args, **kwargs):
         if name == "uv":
             return fake_uv
-        return shutil.which(name, *args, **kwargs)
+        return real_which(name, *args, **kwargs)
 
     return _which
+
+
+def test_fake_uv_which_delegates_non_uv_lookups_to_the_original_resolver(monkeypatch):
+    """The stand-in must not recurse when asked about anything besides uv."""
+    stand_in = _fake_uv_which("/fake/bin/uv")
+    # Expected resolutions are captured from the REAL resolver before the
+    # shared module attribute is patched (the fixtures patch exactly this).
+    expected_python = shutil.which("python3")
+    assert expected_python is not None  # sanity: the host resolves python3
+    monkeypatch.setattr(shutil, "which", stand_in)
+
+    assert shutil.which("uv") == "/fake/bin/uv"
+    # Non-uv lookups go through the captured original — no RecursionError.
+    assert shutil.which("python3") == expected_python
+    assert shutil.which("definitely-not-a-real-binary-xyz") is None
 
 
 def test_ensure_dep_env_creates_versioned_env_with_binding_marker(snapshot_root, fake_runs, tmp_path):
@@ -387,8 +405,10 @@ def test_failed_uv_export_refuses_locked_snapshot_without_installing(snapshot_ro
     monkeypatch.setattr(dep_env.shutil, "which", _fake_uv_which("/fake/bin/uv"))
     with pytest.raises(SnapshotError, match="uv.lock export failed"):
         ensure_dep_env(snapshot_root, runtime_root=tmp_path / "r")
-    # No pip install ever ran against a half-exported lock.
+    # No pip install ever ran against a half-exported lock...
     assert not any("install" in c for c in runs.calls)
+    # ...and nothing was promoted under the final identity.
+    assert not env_dir_for(env_identity(snapshot_root), tmp_path / "r").exists()
 
 
 def test_import_probe_failure_blocks_promotion_of_a_broken_environment(snapshot_root, tmp_path, monkeypatch):
