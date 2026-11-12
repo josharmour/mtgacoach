@@ -623,3 +623,65 @@ def test_arbitrary_suffix_is_not_stripped_to_find_a_binding(monkeypatch, tmp_pat
             odd_record_id, "win", {"match_id": "match-A", "opponent_name": "ActualOpponent"}
         )
         assert rec.local_account_id == NEW_ACCOUNT_ID, odd_record_id
+
+
+def test_multi_digit_game_numbers_resolve_the_binding(monkeypatch, tmp_path):
+    """Numeric boundary: game_bundle_id's suffix is a generic integer, so a
+    Bo3/BoN series that reaches game 10+ records under "<match>-g10" etc.
+    Those multi-digit game forms must resolve the base binding exactly like
+    -g2/-g3 do (delayed record after the switch to B)."""
+    log_path = tmp_path / "Player.log"
+    log_path.write_text(
+        LOGIN_BLOCK_TEMPLATE.format(
+            ts="[11/9/2026 8:02:11 PM]",
+            client_id=OLD_ACCOUNT_ID,
+            screen_name="OldAccount",
+        ),
+        encoding="utf-8",
+    )
+    _start_server_flow(monkeypatch, str(log_path))
+
+    server._handle_match_created(_room_event("match-A", OLD_ACCOUNT_ID, "ActualOpponent"))
+    _switch_login(log_path, "[11/9/2026 11:15:07 PM]", NEW_ACCOUNT_ID, "NewAccount")
+    server._handle_match_created(_room_event("match-B", NEW_ACCOUNT_ID, "SecondOpponent"))
+
+    snapshot = {"match_id": "match-A", "opponent_name": "ActualOpponent"}
+    for game_number in (9, 10, 11, 19, 123):
+        record_id = _bo3_game_id("match-A", game_number)
+        rec = record_from_game_end(record_id, "win", dict(snapshot))
+        assert rec.local_account_id == OLD_ACCOUNT_ID, record_id
+        # The game-specific history id is preserved on the record.
+        assert rec.match_id == record_id
+
+
+def test_non_canonical_game_suffixes_fail_closed(monkeypatch, tmp_path):
+    """Malformed near-misses of the -g<n> form must not be adopted as game
+    records: a trailing newline ($-vs-\\Z trap), a leading zero, a sign, a
+    space, and game 1 (which game_bundle_id keeps bare) all fall through to
+    the current login instead of the base binding."""
+    log_path = tmp_path / "Player.log"
+    log_path.write_text(
+        LOGIN_BLOCK_TEMPLATE.format(
+            ts="[11/9/2026 8:02:11 PM]",
+            client_id=OLD_ACCOUNT_ID,
+            screen_name="OldAccount",
+        ),
+        encoding="utf-8",
+    )
+    _start_server_flow(monkeypatch, str(log_path))
+
+    server._handle_match_created(_room_event("match-A", OLD_ACCOUNT_ID, "ActualOpponent"))
+    _switch_login(log_path, "[11/9/2026 11:15:07 PM]", NEW_ACCOUNT_ID, "NewAccount")
+
+    for bad_record_id in (
+        "match-A-g2\n",  # trailing newline: full-string validation rejects it
+        "match-A-g02",  # leading zero: not the producer's canonical form
+        "match-A-g+2",  # sign: never produced
+        "match-A-g2 ",  # trailing space
+        "match-A-g1",  # game 1 keeps the bare match id
+        "match-A-g2\nmatch-A-g3",  # embedded newline
+    ):
+        rec = record_from_game_end(
+            bad_record_id, "win", {"match_id": "match-A", "opponent_name": "ActualOpponent"}
+        )
+        assert rec.local_account_id == NEW_ACCOUNT_ID, repr(bad_record_id)

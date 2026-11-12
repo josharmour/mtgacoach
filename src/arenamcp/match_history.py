@@ -225,7 +225,13 @@ def parse_replay_cosmetics(replay_path: str) -> dict[str, Any] | None:
     return None
 
 
-_GAME_RECORD_ID_RE = re.compile(r"^(?P<base>.+)-g(?P<number>[2-9]\d*)$")
+# The only game-record suffix game_bundle_id produces: "-g" followed by a
+# canonical decimal integer >= 2 (str(int): no sign, no leading zeros). The
+# alternation covers every magnitude — single digits 2-9 and multi-digit
+# numbers like 10, 11, 19 — while rejecting "g1" (game 1 keeps the bare id),
+# "g02", "+2" and any trailing junk. fullmatch validates the WHOLE id, so a
+# trailing newline or stray character cannot sneak through ($ would).
+_GAME_RECORD_ID_RE = re.compile(r"(?P<base>.+)-g(?P<number>[2-9]|[1-9]\d+)")
 
 
 def _binding_key_for_game_record(record_id: str, snapshot_match_id: str) -> str | None:
@@ -243,7 +249,7 @@ def _binding_key_for_game_record(record_id: str, snapshot_match_id: str) -> str 
     """
     if record_id == snapshot_match_id:
         return record_id
-    match = _GAME_RECORD_ID_RE.match(record_id)
+    match = _GAME_RECORD_ID_RE.fullmatch(record_id)
     if match and match.group("base") == snapshot_match_id:
         return snapshot_match_id
     return None
