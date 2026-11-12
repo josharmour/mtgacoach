@@ -787,27 +787,145 @@ def test_the_kill_switch_covers_the_modal_path(monkeypatch, setting):
     assert lg.mode_comparison(source, decision) is not None
 
 
-def test_concurrent_mode_comparisons_share_one_run():
+def _cold_mode_cache():
+    """Empty the module's comparison caches so a concurrency test starts cold."""
+    with lg._MODE_CACHE_LOCK:
+        lg._MODE_CACHE.clear()
+        lg._MODE_INFLIGHT.clear()
+
+
+def _recording_threading(waits):
+    """A ``threading`` stand-in whose ``Event.wait`` entries are recorded.
+
+    Lets a test observe waiters entering ``mode_comparison``'s shared-wait path
+    without changing what the production code does (CI 43196474893).
+    """
     import threading
 
-    decision, calls, results = _mode_decision(), [], []
-    entered = threading.Event()
+    class RecordingEvent(threading.Event):
+        def wait(self, timeout=None):
+            waits.append(self)
+            return super().wait(timeout)
 
-    def slow(state, decision):
+    class LGThreading:
+        Event: type[threading.Event]
+
+        def __getattr__(self, name):
+            return getattr(threading, name)
+
+    LGThreading.Event = RecordingEvent
+    return LGThreading()
+
+
+def test_concurrent_mode_comparisons_share_one_run(monkeypatch):
+    """CI 43196474893: three concurrent comparisons of one menu share a single
+    run. The comparison is computed once up front; the gated fake hands that
+    result to whichever thread owns the run, and the owner is released only
+    after both waiters have been observed inside the shared-wait path -- so no
+    waiter can fall back to its own computation, whatever the machine's speed.
+    """
+    import threading
+
+    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "1")
+    state, decision = deepcopy(G1_T14_MODE_STATE), _mode_decision()
+    expected = lg.compare_modes(deepcopy(state), decision)  # a valid comparison up front
+    assert expected is not None
+
+    _cold_mode_cache()
+    calls, waits = [], []
+    owner_entered, release = threading.Event(), threading.Event()
+
+    def gated(state, decision):
         calls.append(1)
-        entered.set()
-        time.sleep(0.05)
-        return compare_modes(state, decision)
+        owner_entered.set()
+        assert release.wait(30), "the test never released the owner's comparison"
+        return expected
 
-    with mock.patch.object(lg, "compare_modes", side_effect=slow):
-        threads = [
-            threading.Thread(
-                target=lambda: results.append(lg.mode_comparison(deepcopy(G1_T14_MODE_STATE), decision))
-            )
-            for _ in range(3)
-        ]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(5)
+    results = []
+    try:
+        with (
+            mock.patch.object(lg, "compare_modes", side_effect=gated),
+            mock.patch.object(lg, "_MODE_WAIT_S", 30),  # local window: this test is not about latency
+            mock.patch.object(lg, "threading", _recording_threading(waits)),
+        ):
+            threads = [
+                threading.Thread(target=lambda: results.append(lg.mode_comparison(deepcopy(state), decision)))
+                for _ in range(3)
+            ]
+            for thread in threads:
+                thread.start()
+            assert owner_entered.wait(30), "the owner never began its comparison"
+            deadline = time.monotonic() + 30
+            while len(waits) < 2 and time.monotonic() < deadline:
+                time.sleep(0.001)
+            assert len(waits) >= 2, "the waiters never entered the shared-wait path"
+            release.set()  # only now may the owner finish and publish the result
+            for thread in threads:
+                thread.join(30)
+            assert not any(thread.is_alive() for thread in threads), "a comparison hung"
+    finally:
+        _cold_mode_cache()
+
     assert len(calls) == 1 and len({id(r) for r in results}) == 1 and results[0] is not None
+    assert results[0] is expected
+
+
+def test_mode_comparison_waiter_times_out_and_answers_without_the_stalled_run(monkeypatch):
+    """The shared-wait window's expiry fallback: when the owning comparison
+    stalls past ``_MODE_WAIT_S``, a waiter stops waiting instead of hanging on
+    the stalled run and still answers -- from its own computation or a finished
+    peer's cached result. Both non-owner threads must finish while the owner is
+    still stalled; only then is the owner released.
+    """
+    import threading
+
+    monkeypatch.setenv("ARENAMCP_LINE_SEARCH", "1")
+    state, decision = deepcopy(G1_T14_MODE_STATE), _mode_decision()
+    expected = lg.compare_modes(deepcopy(state), decision)
+    assert expected is not None
+
+    _cold_mode_cache()
+    calls, waits = [], []
+    release = threading.Event()
+
+    def stalled_owner_others_return(state, decision):
+        calls.append(1)
+        if len(calls) == 1:  # only the run's owner stalls; later calls answer at once
+            assert release.wait(30), "the test never released the stalled owner"
+        return expected
+
+    slots: list = [None, None, None]
+    done = [threading.Event() for _ in range(3)]
+
+    def worker(index):
+        slots[index] = lg.mode_comparison(deepcopy(state), decision)
+        done[index].set()
+
+    try:
+        with (
+            mock.patch.object(lg, "compare_modes", side_effect=stalled_owner_others_return),
+            mock.patch.object(lg, "_MODE_WAIT_S", 0.0),  # expiry is immediate and local
+            mock.patch.object(lg, "threading", _recording_threading(waits)),
+        ):
+            threads = [threading.Thread(target=worker, args=(index,)) for index in range(3)]
+            for thread in threads:
+                thread.start()
+            deadline = time.monotonic() + 30
+            while sum(event.is_set() for event in done) < 2 and time.monotonic() < deadline:
+                time.sleep(0.001)
+            finished = [slots[i] for i in range(3) if done[i].is_set()]
+            assert sum(event.is_set() for event in done) == 2, (
+                "both waiters must finish while the owner's run is still stalled"
+            )
+            assert len(waits) >= 1, "no waiter ever entered the shared-wait path"
+            assert len(calls) >= 2, "expiry never led to an independent computation"
+            assert all(result is not None and result is expected for result in finished)
+            release.set()  # let the stalled owner finish too
+            for thread in threads:
+                thread.join(30)
+            assert not any(thread.is_alive() for thread in threads), "a comparison hung"
+    finally:
+        _cold_mode_cache()
+
+    assert all(slot is not None for slot in slots)
+    assert {id(slot) for slot in slots} == {id(expected)}
