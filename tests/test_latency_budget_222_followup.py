@@ -184,10 +184,13 @@ def test_long_failed_reform_cools_down_from_completion(monkeypatch, plan_threads
 
 @pytest.mark.parametrize("model", ["current", "deepseek-v4.1-flash-local", "dsv4-local"])
 @pytest.mark.parametrize("separate", [False, True])
-def test_hosted_opening_and_routine_next_turn_plans_both_use_fast_calls(model, separate):
+def test_hosted_opening_plan_is_fast_and_a_forced_reform_stays_bounded(model, separate):
     # 650ae555: low effort still generated 12,439 reasoning characters and
     # no content in 45.3s, then the first plan was cancelled. Fast initial
     # requests must actually disable that hidden think, not just say "low".
+    # E5 removed the routine next-turn refresh: any later plan is a real
+    # reform at normal effort, but it must still run in the background on a
+    # bounded clock.
     backend = FakeBackend([_plan_json(), _plan_json("updated line")])
     backend.model = model
     manager = GamePlanManager(backend, separate_strategy_planning=separate)
@@ -200,9 +203,9 @@ def test_hosted_opening_and_routine_next_turn_plans_both_use_fast_calls(model, s
     next_state = _state(turn=4)
     next_state["turn"]["active_player"] = 2
     assert manager.maybe_reform(next_state, force=True) is not None
-    refresh = backend.requests[1][2]
-    assert refresh["reasoning_effort"] == "none"
-    assert 0 < refresh["request_timeout_s"] <= 20
+    reform = backend.requests[1][2]
+    assert reform["background"] is True
+    assert 0 < reform["request_timeout_s"] <= 90
 
 
 def test_first_hosted_plan_repair_keeps_fast_mode_and_shared_budget(monkeypatch):

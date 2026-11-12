@@ -322,31 +322,36 @@ def test_a_threat_on_their_turn_supersedes_the_inflight_reform(monkeypatch, plan
     earlier = deepcopy(before)
     earlier["turn"].update(turn_number=8, active_player=US, priority_player=US)
     _with_prior_plan(mgr, earlier, 8)
+    # E5 has no per-turn refresh reform: the in-flight request is started by a
+    # real change (Lyra resolved flips the strategic role aggressor->race), then
+    # superseded when the opponent's board moves again mid-flight.
     try:
-        assert mgr.request_reform(deepcopy(before))  # their T9 starts: plan our T10
+        assert mgr.request_reform(deepcopy(after))  # Lyra resolved: "new opposing threat"
         assert backend.entered[0].wait(timeout=2)
-        now[0] += 7.0  # a51dea64: requested 10:23:44, Lyra resolved 10:23:51
+        now[0] += 2.0  # a51dea64: plays landed seconds apart (Valkyrie 10:22:39, Ajani 10:22:42)
+        more = deepcopy(after)
+        more["battlefield"].append(card(391, "Inspiring Overseer", THEM, turn_entered_battlefield=9))
         with caplog.at_level(logging.INFO, logger="arenamcp.game_plan"):
-            assert mgr.request_reform(deepcopy(after))  # superseded and re-requested now
+            assert mgr.request_reform(deepcopy(more))  # Overseer entered mid-flight: superseded
         assert backend.calls[0][1]["cancel_event"].is_set()
         assert (
             "Superseding the in-flight game plan for turn 10: the opponent's board changed after its "
-            "snapshot (Lyra Dawnbringer 5/5 flying, first strike, lifelink entered)" in caplog.text
+            "snapshot (Inspiring Overseer" in caplog.text
         )
         assert backend.entered[1].wait(timeout=2)
-        assert "Lyra Dawnbringer" in backend.calls[1][0]
+        assert "Inspiring Overseer" in backend.calls[1][0]
         # A burst (a51dea64: Valkyrie 10:22:39, Ajani 10:22:42): a reform that has
         # only just started is re-aimed at the newest board.
         now[0] += 3.0
-        more = deepcopy(after)
-        more["battlefield"].append(card(391, "Inspiring Overseer", THEM, turn_entered_battlefield=9))
-        assert mgr.request_reform(deepcopy(more))
+        burst = deepcopy(more)
+        burst["battlefield"].append(card(392, "Inspiring Overseer", THEM, turn_entered_battlefield=9))
+        assert mgr.request_reform(deepcopy(burst))
         assert backend.calls[1][1]["cancel_event"].is_set()
         assert backend.entered[2].wait(timeout=2)
         # Once it has run a while, a later threat the same turn leaves it to land.
         now[0] += mgr._YIELD_GRACE_S + 1.0
-        last = deepcopy(more)
-        last["battlefield"].append(card(392, "Inspiring Overseer", THEM, turn_entered_battlefield=9))
+        last = deepcopy(burst)
+        last["battlefield"].append(card(393, "Inspiring Overseer", THEM, turn_entered_battlefield=9))
         assert not mgr.request_reform(last)
         assert not backend.calls[2][1]["cancel_event"].is_set()
     finally:
@@ -356,38 +361,44 @@ def test_a_threat_on_their_turn_supersedes_the_inflight_reform(monkeypatch, plan
         thread.join(timeout=3)
     assert len(backend.calls) == 3
     assert mgr.current.turn_formed == 9
-    assert [c["id"] for c in mgr.current.basis["creatures"]] == ["374", "390", "391"]
+    assert [c["id"] for c in mgr.current.basis["creatures"]] == ["374", "390", "391", "392"]
     assert mgr.plan_status(after)["last_outcome"] == "ok"
 
 
-def test_no_supersede_on_our_turn_but_the_prompt_flags_the_late_plan(plan_threads, caplog):
-    before, _after, ours_now = _lyra_boards()
+def test_no_supersede_on_our_turn_but_the_prompt_flags_the_late_plan(monkeypatch, plan_threads, caplog):
+    before, after, ours_now = _lyra_boards()
     gate = threading.Event()
     backend = ScriptedBackend([T10_PLAN], gates=[gate])
     mgr = GamePlanManager(backend)
     earlier = deepcopy(before)
     earlier["turn"].update(turn_number=8, active_player=US, priority_player=US)
     _with_prior_plan(mgr, earlier, 8)
+    # E5 has no per-turn refresh reform: the in-flight request is started by the
+    # Lyra threat on their T9; an Overseer lands before it can re-aim.
+    monkeypatch.setattr(mgr, "_strategic_key", lambda state, sig=None: mgr._last_key)
+    late = deepcopy(ours_now)
+    late["battlefield"].append(card(391, "Inspiring Overseer", THEM, turn_entered_battlefield=10))
     try:
-        assert mgr.request_reform(deepcopy(before))
+        assert mgr.request_reform(deepcopy(after))  # Lyra resolved: "new opposing threat"
         assert backend.entered[0].wait(timeout=2)
-        # Our T10 started with Lyra on the board: the call is left to land.
-        assert not mgr.request_reform(deepcopy(ours_now))
+        # Our T10 started with Lyra on the board and Overseer since: the call is
+        # left to land (never superseded on our turn).
+        assert not mgr.request_reform(deepcopy(late))
         assert not backend.calls[0][1]["cancel_event"].is_set()
-        mgr.observe(deepcopy(ours_now))
+        mgr.observe(deepcopy(late))
         with caplog.at_level(logging.INFO, logger="arenamcp.game_plan"):
             gate.set()
             plan_threads[0].join(timeout=3)
     finally:
         gate.set()
     assert (
-        "GamePlan for turn 10 predates changes on the opponent's board (Lyra Dawnbringer 5/5 flying, "
-        "first strike, lifelink entered" in caplog.text
+        "GamePlan for turn 10 predates changes on the opponent's board (Inspiring Overseer"
+        in caplog.text
     )
-    block = mgr.strategy_block(deepcopy(ours_now))
+    block = mgr.strategy_block(deepcopy(late))
     assert "attack: Emberheart Challenger, Hired Claw" in block
     assert "written before the opponent's board changed" in block
-    assert "PLAN PREDATES THE OPPONENT'S BOARD (game plan turn 9): Lyra Dawnbringer 5/5 flying" in block
+    assert "PLAN PREDATES THE OPPONENT'S BOARD (game plan turn 9): Inspiring Overseer" in block
     assert len(backend.calls) == 1
 
 
@@ -402,13 +413,15 @@ def test_a_threat_after_the_plan_landed_replans_once_on_their_turn(monkeypatch, 
     _with_prior_plan(mgr, earlier, 8)
     # The role and lethal flags hold still: only the board-threat reason can fire.
     monkeypatch.setattr(mgr, "_strategic_key", lambda state, sig=None: mgr._last_key)
-    assert mgr.request_reform(deepcopy(before))  # plan our next turn
-    plan_threads[-1].join(timeout=3)
-    assert len(backend.calls) == 1
+    # E5: the T8 plan still governs their T9 — nothing it named has changed, so
+    # there is no per-turn refresh reform (M1: 26 of 746 reforms were pure
+    # refreshes with nothing changed).
+    assert not mgr.request_reform(deepcopy(before))
+    assert len(backend.calls) == 0
     now[0] += mgr._REFRESH_INTERVAL_S
     assert mgr.request_reform(deepcopy(after))  # Lyra: "new opposing threat"
     plan_threads[-1].join(timeout=3)
-    assert len(backend.calls) == 2 and "Lyra Dawnbringer" in backend.calls[1][0]
+    assert len(backend.calls) == 1 and "Lyra Dawnbringer" in backend.calls[0][0]
     now[0] += mgr._REFRESH_INTERVAL_S
     more = deepcopy(after)
     more["battlefield"].append(card(391, "Inspiring Overseer", THEM, turn_entered_battlefield=9))
@@ -423,7 +436,7 @@ def test_a_threat_after_the_plan_landed_replans_once_on_their_turn(monkeypatch, 
     assert mgr2._should_reform(mgr2._signature(ours_now), our_turn=True, key=mgr2._last_key,
                                board=board_basis(ours_now)) == "new opposing threat"  # fmt: skip
     assert not mgr2.request_reform(deepcopy(ours_now))
-    assert len(backend.calls) == 2
+    assert len(backend.calls) == 1
 
 
 def test_the_reform_prompt_says_what_the_prior_plan_predates():
