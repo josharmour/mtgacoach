@@ -59,6 +59,8 @@ class FakeRuns:
             self.calls.append(list(argv))
         # Simulate `uv export -o <file>`: materialize the pinned reqs file.
         if "-o" in argv:
+            if self.fail_step == "export":
+                raise subprocess.CalledProcessError(1, argv, stderr=b"uv export boom")
             out = Path(argv[argv.index("-o") + 1])
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text("pinned-from-lock==1\n", encoding="utf-8")

@@ -100,10 +100,69 @@ class _StartupMixin:
             )
 
     def prepare_engine_reload(self) -> None:
-        """Abort old inputs, checkpoint observations and strategy, then exit."""
-        if getattr(self, "_engine_reload_preparing", False):
+        """Arm an engine reload; it completes at the next safe boundary.
+
+        Arming never aborts an active decision: the main loop checkpoints and
+        exits only between matches with nothing in flight (see
+        ``_engine_reload_checkpoint_due``). ``cancel_engine_reload`` disarms
+        the request and leaves the current engine running.
+        """
+        if getattr(self, "_engine_reload_armed", False):
             return
+        self._engine_reload_armed = True
+        self._engine_reload_cancelled = False
+        # Holds auto-queue/auto-reload navigation while a swap is pending.
         self._engine_reload_preparing = True
+        self._startup_status(
+            "resuming_match",
+            "Engine reload armed — it will apply at the next safe break between matches…",
+        )
+
+    def cancel_engine_reload(self) -> None:
+        """Disarm a pending engine reload; the current engine keeps running."""
+        if not getattr(self, "_engine_reload_armed", False):
+            return
+        self._engine_reload_armed = False
+        self._engine_reload_cancelled = True
+        self._engine_reload_preparing = False
+        self._last_engine_reload_wait = None
+        self._startup_status(
+            "ready", "Engine reload cancelled — the current engine keeps running.", ready=True
+        )
+
+    def _engine_reload_checkpoint_due(self, state: dict) -> bool:
+        """True when an armed reload may checkpoint and exit right now."""
+        if not getattr(self, "_engine_reload_armed", False):
+            return False
+        if getattr(self, "_engine_reload_cancelled", False):
+            self._engine_reload_armed = False
+            self._engine_reload_preparing = False
+            return False
+        # A manual reload is not rate limited; every other piece of in-flight
+        # work and the between-matches requirement gate it exactly like an
+        # automatic one (standalone_auto_reload.py).
+        blocker_fn = getattr(self, "_auto_reload_blocker", None)
+        between_fn = getattr(self, "_auto_reload_between_matches", None)
+        blocker = blocker_fn(respect_rate_limit=False) if callable(blocker_fn) else ""
+        if not blocker and callable(between_fn):
+            blocker = between_fn(state)
+        if blocker:
+            message = f"Engine reload waiting for a safe boundary: {blocker}."
+            if message != getattr(self, "_last_engine_reload_wait", None):
+                self._last_engine_reload_wait = message
+                logger.info("%s", message)
+                self._startup_status("resuming_match", message)
+            return False
+        self._last_engine_reload_wait = None
+        return True
+
+    def _complete_engine_reload(self) -> None:
+        """Checkpoint observations and strategy at a safe boundary, then exit."""
+        # Late-response safety: the desktop may have cancelled while we were
+        # waiting; honour it even at the last moment and keep this engine up.
+        if getattr(self, "_engine_reload_cancelled", False):
+            self.cancel_engine_reload()
+            return
         # Stop a running countdown without declining the game; the record of
         # what was recommended, declined or conceded rides along below.
         abort_concede = getattr(self, "abort_concede", None)

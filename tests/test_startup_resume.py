@@ -71,6 +71,9 @@ def test_reload_checkpoints_then_exits_and_restores_strategy_without_model_call(
     runtime._concede_export = Mock(return_value=concede_record)
     runtime._oops_export = Mock(return_value=oops_record)
     runtime.prepare_engine_reload()
+    assert runtime._running  # arming defers; nothing has been torn down yet
+    assert not resume_path.exists()  # and no checkpoint is written by arming alone
+    runtime._complete_engine_reload()  # the loop reaches the safe boundary
     assert not runtime._running and not runtime._autopilot_enabled
     assert resume_path.exists()
     runtime.ui._emit.assert_called_with({"type": "reload_ready"})
@@ -190,6 +193,8 @@ def test_active_autoplay_reload_adopts_updated_saved_strategy(resume_path, monke
     monkeypatch.setattr(server, "watcher", None)
     monkeypatch.setattr("arenamcp.gamestate_persistence.save_match_state", Mock())
     old.prepare_engine_reload()
+    assert old._running  # arming defers the exit to the safe boundary
+    old._complete_engine_reload()
     assert not old._running
     old._autopilot.on_abort.assert_called_once()
 

@@ -8,7 +8,8 @@ interpreter that will run the engine. Environments live under
 ``<runtime_root>/dep-envs/<identity[:16]>`` and are created with
 ``python -m venv`` plus an install driven by the snapshot's own lockfile
 (``uv export --frozen`` from ``uv.lock``) falling back to
-``requirements.txt`` only when no usable lock exists.
+``requirements.txt`` only when the snapshot ships no lock at all; a lock
+that cannot be exported fails visibly instead of degrading silently.
 
 An active environment is never mutated and never deleted: creation happens
 in a private staging venv that is atomically renamed into place only after a
@@ -140,15 +141,23 @@ def _locked_requirements(snapshot_root: Path, work_dir: Path) -> Path | None:
     """Export pinned requirements from the snapshot's ``uv.lock``.
 
     Returns the path to a temporary fully-pinned requirements file, or
-    ``None`` when no usable lock/tool exists (the caller then falls back to
-    the loose ``requirements.txt``, which is recorded in the marker).
+    ``None`` when the snapshot ships no ``uv.lock`` (the caller then installs
+    the loose ``requirements.txt``, recorded honestly in the marker).
+
+    A snapshot that DOES ship a lock must never silently degrade to loose
+    requirements: a missing ``uv`` binary or a failed export raises so the
+    caller fails visibly instead of promoting an environment that merely
+    looks like it satisfies the lock.
     """
     if not (snapshot_root / "uv.lock").is_file():
         return None
     uv_exe = shutil.which("uv")
     if not uv_exe:
-        logger.info("uv.lock present but uv is not installed; falling back to requirements.txt")
-        return None
+        raise SnapshotError(
+            "snapshot ships uv.lock but uv is not installed; refusing an "
+            "unpinned requirements.txt fallback (install uv to build this "
+            "dependency environment)"
+        )
     export_path = work_dir / f".locked-reqs-{os.getpid()}-{time.time_ns()}.txt"
     try:
         subprocess.run(
@@ -168,11 +177,44 @@ def _locked_requirements(snapshot_root: Path, work_dir: Path) -> Path | None:
             timeout=300,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
-        logger.warning("uv.lock export failed (%s); falling back to requirements.txt", exc)
-        return None
+        raise SnapshotError(
+            f"uv.lock export failed; refusing an unpinned requirements.txt fallback: {exc}"
+        ) from exc
     if not export_path.is_file():
-        return None
+        raise SnapshotError("uv.lock export produced no requirements file; refusing an unpinned fallback")
     return export_path
+
+
+def _repoint_entrypoint_shebangs(staging: Path, env_dir: Path) -> None:
+    """Aim console-script shebangs at the *promoted* environment path.
+
+    The venv is staged in a temporary directory and atomically renamed into
+    place; console scripts baked during staging keep the staging path in
+    their shebang, which stops existing after promotion. Rewrite each such
+    script's interpreter line to the final location so relocated entrypoints
+    (``pip3`` and friends) stay runnable.
+    """
+    staging_python_path = venv_python(staging)
+    staging_python = str(staging_python_path)
+    # The promoted environment does not exist yet (staging is renamed into
+    # place afterwards), so derive its interpreter path from the staging
+    # layout instead of probing it.
+    promoted_python = env_dir / staging_python_path.parent.name / staging_python_path.name
+    target = f"#!{promoted_python}"
+    bin_dir = venv_python(staging).parent
+    for script in sorted(bin_dir.iterdir()):
+        if not script.is_file() or script.name.endswith(".exe"):
+            continue
+        try:
+            text = script.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue  # binaries and odd encodings are left untouched
+        if not text.startswith("#!"):
+            continue
+        first_line, _, rest = text.partition("\n")
+        if first_line != f"#!{staging_python}":
+            continue  # only scripts pointing at the doomed staging path
+        script.write_text(target + "\n" + rest, encoding="utf-8")
 
 
 def _install_dependencies(staging_python: Path, snapshot_root: Path, work_dir: Path) -> str:
@@ -309,6 +351,7 @@ def ensure_dep_env(
         )
         install_mode = _install_dependencies(venv_python(staging), snapshot_root, staging)
         _probe_import(venv_python(staging), snapshot_root)
+        _repoint_entrypoint_shebangs(staging, env_dir)
 
         marker_data = {
             "schema": 2,

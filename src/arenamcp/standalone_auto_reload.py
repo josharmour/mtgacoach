@@ -284,7 +284,7 @@ class _AutoReloadMixin:
             return f"match {current} is under way"
         return ""
 
-    def _auto_reload_blocker(self) -> str:
+    def _auto_reload_blocker(self, *, respect_rate_limit: bool = True) -> str:
         """Work in flight that a reload would cut short; '' when the engine may go."""
         control = getattr(self, "_autopilot_control_status", None)
         if callable(control) and control() == "AP:PAUSED":
@@ -315,7 +315,7 @@ class _AutoReloadMixin:
             if navigator.step_running:
                 return "an auto-queue navigation step is running"
         last = getattr(self, "_auto_reload_last_wall", 0.0)
-        if last and time.time() - last < RATE_LIMIT_S:
+        if respect_rate_limit and last and time.time() - last < RATE_LIMIT_S:
             return f"the last automatic reload was {time.time() - last:.0f}s ago (at most one per 3 min)"
         return ""
 

@@ -2392,6 +2392,13 @@ class StandaloneCoach(
                 # End-state staging above runs first; navigation never delays
                 # those records or overlaps with the in-match autopilot.
                 match_finished = self._completed_match_wait(curr_state)
+                # An armed engine reload completes only at a safe boundary;
+                # cancellation keeps the current engine running.
+                if self._engine_reload_checkpoint_due(curr_state):
+                    self._complete_engine_reload()
+                    prev_state = curr_state
+                    time.sleep(0.3)
+                    continue
                 # A reload requested between matches holds navigation until the
                 # desktop swaps the engine (standalone_auto_reload.py).
                 if self._auto_reload_holds(curr_state):

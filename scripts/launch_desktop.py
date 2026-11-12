@@ -101,7 +101,12 @@ def main() -> int:
         os.chdir(snapshot_root)
         os.environ["MTGACOACH_APP_ROOT"] = str(snapshot_root)
         os.environ.setdefault("MTGACOACH_RUNTIME_ROOT", str(_runtime_root()))
-        sys.path[:] = [str(src_dir)]
+        # Prepend the snapshot's src tree WITHOUT dropping the interpreter's
+        # stdlib/site-packages: the child keeps its own runtime modules while
+        # arenamcp.* resolves only to the immutable snapshot.
+        src_text = str(src_dir)
+        if src_text not in sys.path:
+            sys.path.insert(0, src_text)
         _write_log(
             "launch start (snapshot child)"
             f" python={sys.executable}"
@@ -166,11 +171,7 @@ def main() -> int:
         sys.path.insert(0, src_text)
 
     _write_log(
-        "launch start"
-        f" python={sys.executable}"
-        f" repo_root={repo_root}"
-        f" src_dir={src_dir}"
-        f"{selection_note}"
+        f"launch start python={sys.executable} repo_root={repo_root} src_dir={src_dir}{selection_note}"
     )
 
     try:

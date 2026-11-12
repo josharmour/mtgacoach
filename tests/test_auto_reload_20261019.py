@@ -557,6 +557,8 @@ def _armed_old_engine(monkeypatch, published=None):
 def test_navigation_continues_in_the_new_engine_as_if_no_reload_happened(checkpoint, monkeypatch):
     old, old_navigator = _armed_old_engine(monkeypatch)
     old.prepare_engine_reload()
+    assert old._running  # arming defers; the safe boundary completes it
+    old._complete_engine_reload()
     assert not old._running and not old_navigator.enabled  # the old engine lets go of Arena
     old.ui._emit.assert_called_with({"type": "reload_ready"})
     saved = json.loads(checkpoint.path.read_text())
@@ -609,6 +611,7 @@ def test_a_paused_navigation_stays_paused(checkpoint, monkeypatch):
     old, navigator = _armed_old_engine(monkeypatch)
     navigator._pause("Could not verify the next Arena navigation step")
     old.prepare_engine_reload()
+    old._complete_engine_reload()
     new = Runtime()
     new._load_engine_resume()
     new._poll_auto_queue({"match_id": None})
@@ -621,6 +624,7 @@ def test_a_paused_navigation_stays_paused(checkpoint, monkeypatch):
 def test_a_match_that_started_during_the_reload_is_played(checkpoint, monkeypatch, caplog):
     old, _ = _armed_old_engine(monkeypatch)
     old.prepare_engine_reload()
+    old._complete_engine_reload()
     new = Runtime()
     new._load_engine_resume()
     with caplog.at_level(logging.INFO, logger="arenamcp.standalone_auto_queue"):
@@ -634,6 +638,7 @@ def test_a_match_that_started_during_the_reload_is_played(checkpoint, monkeypatc
 def test_an_expired_navigation_record_falls_back_to_the_restart_path(checkpoint, monkeypatch):
     old, _ = _armed_old_engine(monkeypatch)
     old.prepare_engine_reload()
+    old._complete_engine_reload()
     new = Runtime()
     new._load_engine_resume()
     new._auto_queue_resume["saved_at"] = time.time() - 601
@@ -651,6 +656,7 @@ def test_nothing_armed_saves_no_navigation(checkpoint, monkeypatch):
     navigator.set_enabled(True)  # waiting for this match to finish
     old._auto_queue_navigator = navigator
     old.prepare_engine_reload()
+    old._complete_engine_reload()
     saved = json.loads(checkpoint.path.read_text())
     assert saved["auto_queue"] is None and saved["match_id"] == MATCH
 

@@ -758,6 +758,10 @@ class PipeAdapter:
                 )
             elif action == "prepare_engine_reload":
                 coach.prepare_engine_reload()
+            elif action == "cancel_engine_reload":
+                cancel = getattr(coach, "cancel_engine_reload", None)
+                if callable(cancel):
+                    cancel()
             elif action == "restart":
                 self._abort_concede(coach, "the engine is restarting")
                 coach._restart_requested = True

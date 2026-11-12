@@ -26,9 +26,7 @@ def _selection_identity() -> SelectionIdentity:
     return root, sha, snapshot_root
 
 
-def _apply_selection_identity(
-    root: str | None, sha: str | None, snapshot_root: str | None
-) -> None:
+def _apply_selection_identity(root: str | None, sha: str | None, snapshot_root: str | None) -> None:
     """Move the whole selection identity at once.
 
     A new SHA paired with a stale SNAPSHOT_ROOT would let readers trust the
@@ -145,7 +143,9 @@ class CoachSession(QObject):
         # adopt a published snapshot at a safe checkpoint.
         self._pending_snapshot_target: tuple[str, str, str] | None = None
         self._adoption_generation = 0
-        self._pending_rollback: tuple[tuple[str | None, str | None, str | None], dict[str, bool]] | None = None
+        self._pending_rollback: tuple[tuple[str | None, str | None, str | None], dict[str, bool]] | None = (
+            None
+        )
         self._last_start_options: dict[str, bool] = {}
         self._shutting_down = False
 
@@ -327,6 +327,12 @@ class CoachSession(QObject):
             return
         if self._pending_restart is None or not self.is_running:
             return
+        # Tell the engine to disarm: a late checkpoint/exit after the UI gave
+        # up must never stop an engine the user believes is running.
+        try:
+            self.send_command("cancel_engine_reload")
+        except Exception:  # pragma: no cover - best-effort signalling
+            logger.warning("Could not send cancel_engine_reload to the engine")
         reason = (
             "Engine did not reach its safe checkpoint in time; Reload Engine "
             "was cancelled and the current engine keeps running. Try again "
@@ -375,9 +381,7 @@ class CoachSession(QObject):
                 "error",
             )
 
-    def _arm_ready_watchdog(
-        self, previous_identity: tuple[str | None, str | None, str | None]
-    ) -> None:
+    def _arm_ready_watchdog(self, previous_identity: tuple[str | None, str | None, str | None]) -> None:
         """Require READY/handshake from an adopted engine, not just a spawn.
 
         If the adopted snapshot never becomes ready within the timeout the
@@ -409,9 +413,7 @@ class CoachSession(QObject):
         status = self.last_startup_status or {}
         if status.get("ready"):
             return
-        logger.warning(
-            "Adopted snapshot %s never became READY; rolling back", adopted_sha[:7] or "?"
-        )
+        logger.warning("Adopted snapshot %s never became READY; rolling back", adopted_sha[:7] or "?")
         self.logEmitted.emit(
             "New engine did not become ready in time; rolling back to the previous version.",
             "error",
