@@ -92,8 +92,12 @@ def test_windows_restart_relaunches_once_without_duplicating_executable(monkeypa
         assert Path(command[1]).name == "launch_desktop.py"
         assert command[2:] == ["--custom-option"]
         env = kwargs["env"]
-        for key in ("MTGACOACH_SNAPSHOT_SHA", "MTGACOACH_SNAPSHOT_ROOT",
-                    "MTGACOACH_LAUNCH_CHILD", "PYTHONPATH"):
+        for key in (
+            "MTGACOACH_SNAPSHOT_SHA",
+            "MTGACOACH_SNAPSHOT_ROOT",
+            "MTGACOACH_LAUNCH_CHILD",
+            "PYTHONPATH",
+        ):
             assert key not in env
 
 
