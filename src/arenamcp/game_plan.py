@@ -859,49 +859,34 @@ _GRAVEYARD_RECURSION_KEYWORDS = (
 )
 
 # A plan line that NEGATES recursion ("Recursion is unavailable", "no way to
-# recur it", "its recursion is not available") must not be read as promising
-# it. Both directions are covered: a negation cue before the recursion word,
-# and a recursion word followed by an availability/loss verdict — including
-# the "is not available" word order, which the plain adjective list misses.
+# recur it") must not be read as promising it.
 _PLAN_RECURSION_NEGATED = re.compile(
     r"\b(?:no|not|never|cannot|can't|can\u2019t|without|unavailable|unusable|impossible)\b"
     r"[^.;]{0,30}\b(?:recur|recursion|retrace|return)\b"
     r"|\b(?:recur|recursion|retrace|return)\b[^.;]{0,30}\b"
     r"(?:unavailable|unusable|impossible|gone|lost)\b"
-    r"|\b(?:recur|recursion|retrace|return)\b[^.;]{0,40}\b(?:is|are)\s+not\b"
-    r"|\b(?:recur|recursion|retrace|return)\b[^.;]{0,40}\b(?:no|not)\s+"
-    r"(?:longer\s+)?(?:available|usable|possible)\b"
 )
-
-# Evidence is judged per actual clause: a plan part may hold several
-# sentences, and a name in one sentence plus a recursion word in the next is
-# NOT evidence ("Etali's Favor is lost. Recur World Breaker instead.").
-_PLAN_CLAUSE_SPLIT = re.compile(r"[.;!?]+|\n+")
 
 
 def _plan_promises_this_recursion(plan: GamePlan, name: str) -> bool:
     """Card-specific plan evidence that ``name`` comes back from the graveyard.
 
-    One actual clause (sentence) of the plan must BOTH name the route card
-    AND positively promise its return — a recursion word elsewhere in the
-    part (even the very next sentence, about another card), or a negated one
-    ("Recursion is unavailable", "its recursion is not available"), is not
-    evidence this card can come back. When no such clause exists the route
-    stays lost/unknown rather than being revived by loose text.
+    Some clause of the plan must BOTH name the route card AND promise its
+    return — a recursion word in an unrelated clause, or a negated one
+    ("Recursion is unavailable"), is not evidence this card can come back.
     """
     if not name:
         return False
     wanted = name.strip().lower().replace("\u2019", "'")
     for part in [*plan.win_conditions, plan.path, plan.develop_next, *plan.active_mechanisms]:
-        for raw in _PLAN_CLAUSE_SPLIT.split(str(part or "")):
-            clause = raw.lower().replace("\u2019", "'")
-            if wanted not in clause:
-                continue
-            if not re.search(r"\b(?:recur|recursion|retrace)\b|\breturn\b[^.;]{0,50}\bgraveyard\b", clause):
-                continue
-            if _PLAN_RECURSION_NEGATED.search(clause):
-                continue
-            return True
+        clause = str(part or "").lower().replace("\u2019", "'")
+        if wanted not in clause:
+            continue
+        if not re.search(r"\b(?:recur|recursion|retrace)\b|\breturn\b[^.;]{0,50}\bgraveyard\b", clause):
+            continue
+        if _PLAN_RECURSION_NEGATED.search(clause):
+            continue
+        return True
     return False
 
 
