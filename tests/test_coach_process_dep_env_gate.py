@@ -101,6 +101,7 @@ def _prepare_env_for(root: Path, python_executable: str) -> Path:
     (env_dir / "bin").mkdir(parents=True)
     (env_dir / "bin" / "python").write_text("", encoding="utf-8")
     marker = {
+        "schema": dep_env.MARKER_SCHEMA,
         "identity": identity,
         "fingerprint": dependency_fingerprint(root),
         "python": str(Path(python_executable).resolve()),

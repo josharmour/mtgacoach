@@ -397,10 +397,10 @@ def test_promoted_entrypoints_work_at_space_containing_paths(tmp_path):
 # --- Windows qualification regressions ------------------------------------------
 
 
-def _launcher_exe(interpreter: str, payload: bytes, post: str = "") -> bytes:
+def _launcher_exe(interpreter: str, payload: bytes, post: str = "", terminator: bytes = b"\n") -> bytes:
     """Stand-in for a pip/distlib Windows launcher: PE prefix + shebang + ZIP."""
     pe_prefix = b"MZ" + bytes(30)
-    return pe_prefix + f"#!{interpreter}{post}\n".encode() + payload
+    return pe_prefix + f"#!{interpreter}{post}".encode() + terminator + payload
 
 
 def _embedded_launcher_interpreter(exe_bytes: bytes) -> tuple[str, str]:
@@ -497,6 +497,193 @@ def test_windows_spaced_profile_launcher_preserves_quoting_and_options(tmp_path,
     assert interp == f'"{promoted_python}"'
     assert post == " -E -s"
     assert data[data.rfind(b"PK\x03\x04") :] == payload
+
+
+def test_windows_native_distlib_lf_crlf_terminator_is_accepted_and_preserved(tmp_path, monkeypatch):
+    r"""Native pip launchers ending LF+CRLF are retargeted, terminator kept.
+
+    Native Windows qualification (C:\rq7) found real ``pip3.exe`` /
+    ``pip3.11.exe`` / ``normalizer.exe`` launchers whose shebang region ends
+    with the quoted interpreter followed by bytes ``0A 0D 0A`` (LF then CRLF)
+    immediately before the ZIP local header — not distlib's bare LF. The
+    previous retarget pass rejected any second newline and returned ``None``,
+    leaving the deleted staging interpreter embedded (exit 1, empty output).
+    The exact native shape must be accepted, rewritten in place, and the
+    terminator preserved byte-for-byte with the PE prefix and ZIP payload.
+    """
+    monkeypatch.setattr(dep_env, "_is_windows", lambda: True)
+    staging = tmp_path / "A User" / ".dep-staging-ed12e9db3c3c-n88ui3ei"
+    promoted = tmp_path / "A User" / "ed12e9db3c3cf2ac"
+    bin_dir = staging / "Scripts"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "python.exe").write_bytes(b"")
+
+    staging_python = str(bin_dir / "python.exe")
+    promoted_python = str(promoted / "Scripts" / "python.exe")
+    assert " " in staging_python  # the native fixture path is long and spaced
+    payload = b"PK\x03\x04entry-point-zip-pip3"
+    pe_prefix = b"MZ" + bytes(30)
+
+    native_before = (
+        pe_prefix
+        + f'#!"{staging_python}" -E'.encode()
+        + b"\n\r\n"  # the exact observed native delimiter: LF + CRLF
+        + payload
+    )
+    (bin_dir / "pip3.exe").write_bytes(native_before)
+
+    dep_env._repoint_entrypoint_shebangs(staging, promoted)
+
+    data = (bin_dir / "pip3.exe").read_bytes()
+    zip_idx = data.rfind(b"PK\x03\x04")
+    shebang_idx = data.rfind(b"#!", 0, zip_idx)
+    # Terminator preserved exactly; interpreter quoted at the promoted path.
+    assert data[zip_idx:] == payload
+    assert data[:shebang_idx] == pe_prefix
+    assert data[shebang_idx:zip_idx] == f'#!"{promoted_python}" -E'.encode() + b"\n\r\n"
+
+
+@pytest.mark.parametrize("terminator", [b"\n", b"\r\n", b"\n\r\n"])
+def test_retarget_launcher_shebang_accepts_and_preserves_each_terminator(terminator):
+    """Each supported shebang terminator round-trips byte-identically."""
+    old = r"C:\staging\Scripts\python.exe"
+    new = r"C:\A User\promoted\Scripts\python.exe"
+    payload = b"PK\x03\x04zip"
+    data = b"MZ-pe-prefix" + f'#!"{old}" -Es'.encode() + terminator + payload
+
+    rewritten = dep_env._retarget_launcher_shebang(data, old, new)
+
+    assert rewritten is not None
+    assert rewritten == (b"MZ-pe-prefix" + f'#!"{new}" -Es'.encode() + terminator + payload)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        # Two-line shebang region: not a single line before the payload.
+        b"MZ" + b'#!"C:\\staging\\Scripts\\python.exe"\nextra\n' + b"PK\x03\x04zip",
+        # No recognized terminator directly before the payload.
+        b'MZ#!"C:\\staging\\Scripts\\python.exe"' + b"PK\x03\x04zip",
+        # Unterminated quote.
+        b'MZ#!"C:\\staging\\Scripts\\python.exe\n' + b"PK\x03\x04zip",
+        # Embedded interpreter is not the staging python.
+        b'MZ#!"C:\\elsewhere\\python.exe"\n' + b"PK\x03\x04zip",
+        # No ZIP payload at all.
+        b'MZ#!"C:\\staging\\Scripts\\python.exe"\n',
+        # Shebang region is not decodable UTF-8.
+        b"MZ#!\xff\xfe\n" + b"PK\x03\x04zip",
+        # Empty shebang body.
+        b"MZ#!\n" + b"PK\x03\x04zip",
+    ],
+)
+def test_retarget_launcher_shebang_rejects_unrelated_or_malformed_shapes(data):
+    """Malformed or foreign launchers are left untouched (returns None)."""
+    assert (
+        dep_env._retarget_launcher_shebang(data, r"C:\staging\Scripts\python.exe", r"C:\new\python.exe")
+        is None
+    )
+
+
+def test_prepared_env_with_previous_marker_schema_is_not_treated_qualified(
+    snapshot_root, tmp_path, monkeypatch
+):
+    r"""Environments prepared by the schema-2 code are never reused as-is.
+
+    Native qualification showed that code leaving stale staging interpreters
+    inside promoted ``Scripts/*.exe`` launchers while still writing a fully
+    valid-looking marker. Such an environment must fail validation (so
+    prepared-only lookups report nothing and explicit preparation rebuilds),
+    even though its fingerprint and interpreter all still match. The fixture
+    reproduces the schema-2 world honestly: the legacy identity is computed
+    with ``MARKER_SCHEMA`` temporarily set to 2, and the stale env is placed
+    at THAT path — exactly where the old code published it.
+    """
+    runtime_root = tmp_path / "runtime"
+    fingerprint = dependency_fingerprint(snapshot_root)
+    with monkeypatch.context() as legacy:
+        legacy.setattr(dep_env, "MARKER_SCHEMA", dep_env.MARKER_SCHEMA - 1)
+        legacy_identity = env_identity(snapshot_root, python_executable=None, fingerprint=fingerprint)
+        legacy_env_dir = env_dir_for(legacy_identity, runtime_root)
+    (legacy_env_dir / "bin").mkdir(parents=True)
+    (legacy_env_dir / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
+    marker = {
+        "schema": dep_env.MARKER_SCHEMA - 1,
+        "identity": legacy_identity,
+        "fingerprint": fingerprint,
+        "python": str(Path(sys.executable).resolve()),
+        "install_mode": "requirements.txt",
+        "created_utc": "2026-01-01T00:00:00Z",
+        "snapshot": str(snapshot_root),
+        "dep_envs_root": str(legacy_env_dir.parent),
+    }
+    (legacy_env_dir / ENV_MARKER_NAME).write_text(json.dumps(marker), encoding="utf-8")
+
+    # Wrong-schema markers never validate, wherever they sit.
+    assert (
+        dep_env._valid_existing_env(legacy_env_dir, legacy_identity, fingerprint, marker["python"]) is False
+    )
+    # Prepared-only lookups address the CURRENT schema identity: nothing there.
+    assert dep_env.prepared_dep_env(snapshot_root, runtime_root=runtime_root) is None
+    with pytest.raises(SnapshotError):
+        ensure_dep_env(snapshot_root, runtime_root=runtime_root, allow_create=False)
+
+
+def test_stale_schema_environment_publishes_additively_and_old_env_stays_put(
+    snapshot_root, fake_runs, tmp_path, monkeypatch
+):
+    """A schema bump rebuilds under a NEW identity; the old env is untouched.
+
+    Review-requested immutability contract: rebuilding after a marker-schema
+    bump must publish additively — the previously prepared environment stays
+    at its ORIGINAL path with byte-identical contents so active processes,
+    absolute launcher shebangs and rollback references keep working. It is
+    never relocated to ``.superseded-*`` and never deleted.
+    """
+    runtime_root = tmp_path / "runtime"
+    fingerprint = dependency_fingerprint(snapshot_root)
+    with monkeypatch.context() as legacy:
+        legacy.setattr(dep_env, "MARKER_SCHEMA", dep_env.MARKER_SCHEMA - 1)
+        legacy_identity = env_identity(snapshot_root, python_executable=None, fingerprint=fingerprint)
+        legacy_env_dir = env_dir_for(legacy_identity, runtime_root)
+    (legacy_env_dir / "bin").mkdir(parents=True)
+    (legacy_env_dir / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
+    stale_sentinel = legacy_env_dir / "bin" / "stale-wrapper-marker"
+    stale_sentinel.write_text("prepared-by-schema-2", encoding="utf-8")
+    legacy_marker_text = json.dumps(
+        {
+            "schema": dep_env.MARKER_SCHEMA - 1,
+            "identity": legacy_identity,
+            "fingerprint": fingerprint,
+            "python": str(Path(sys.executable).resolve()),
+            "created_utc": "2026-01-01T00:00:00Z",
+            "snapshot": str(snapshot_root),
+        }
+    )
+    (legacy_env_dir / ENV_MARKER_NAME).write_text(legacy_marker_text, encoding="utf-8")
+
+    rebuilt = ensure_dep_env(snapshot_root, runtime_root=runtime_root)
+
+    # The rebuild landed at the CURRENT schema identity — a different path.
+    current_identity = env_identity(snapshot_root, python_executable=None, fingerprint=fingerprint)
+    assert current_identity != legacy_identity
+    assert rebuilt == env_dir_for(current_identity, runtime_root)
+    assert rebuilt != legacy_env_dir
+    fresh_marker = read_env_marker(rebuilt)
+    assert fresh_marker is not None
+    assert fresh_marker["schema"] == dep_env.MARKER_SCHEMA
+    assert fresh_marker["identity"] == current_identity
+    # The old environment survived INTACT at its original path: same marker
+    # bytes, same sentinel — never moved aside, never deleted.
+    assert (legacy_env_dir / ENV_MARKER_NAME).read_text(encoding="utf-8") == legacy_marker_text
+    assert (legacy_env_dir / "bin" / "stale-wrapper-marker").read_text(encoding="utf-8") == (
+        "prepared-by-schema-2"
+    )
+    superseded = [p for p in dep_env_root(runtime_root).iterdir() if p.name.startswith(".superseded-")]
+    assert not superseded
+    # And the freshly built env is reusable without touching subprocess again.
+    calls_after_build = len(fake_runs.calls)
+    assert ensure_dep_env(snapshot_root, runtime_root=runtime_root) == rebuilt
+    assert len(fake_runs.calls) == calls_after_build
 
 
 def test_windows_long_runtime_root_redirects_dep_envs_to_short_user_storage(

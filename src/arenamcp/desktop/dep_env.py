@@ -13,8 +13,13 @@ that cannot be exported fails visibly instead of degrading silently.
 
 An active environment is never mutated and never deleted: creation happens
 in a private staging venv that is atomically renamed into place only after a
-successful import probe of the snapshot's entry package. A pre-existing tree
-under the target identity is moved aside to a retained ``.superseded-*``
+successful import probe of the snapshot's entry package. The build/repair
+marker schema is part of the environment identity, so a schema bump publishes
+the rebuilt environment ADDITIVELY under a new identity directory while the
+previously prepared environment stays untouched at its original path (active
+processes, absolute launcher shebangs and rollback references keep working).
+Only an invalid tree sitting exactly at the target identity path (crash
+debris, a lost promotion race) is moved aside to a retained ``.superseded-*``
 name (kept for rollback; operators clean these up deliberately, never the
 code path in this module).
 """
@@ -37,6 +42,17 @@ from .runtime_snapshots import SnapshotError, dependency_fingerprint
 logger = logging.getLogger(__name__)
 
 ENV_MARKER_NAME = "dep-env.json"
+
+#: Marker schema for prepared dependency environments. Bumped to 3 when native
+#: Windows qualification showed the previous ``Scripts/*.exe`` retarget pass
+#: rejecting distlib's native LF+CRLF shebang terminator and silently leaving
+#: stale staging interpreters inside promoted launchers (``pip3.exe`` and
+#: friends exited 1 with empty output). The schema participates in
+#: :func:`env_identity`, so environments prepared by older code keep their own
+#: identity directory at its ORIGINAL path — never reused, never relocated,
+#: never mutated — while a rebuild publishes additively under the new
+#: schema-3 identity.
+MARKER_SCHEMA = 3
 
 #: How many times promotion retries when racing another creator of the same
 #: identity. Between attempts the existing tree is re-validated: if another
@@ -148,10 +164,14 @@ def env_identity(
     *,
     fingerprint: str | None = None,
 ) -> str:
-    """Full dependency/interpreter identity of an environment.
+    """Full dependency/interpreter/schema identity of an environment.
 
     Includes the interpreter so an interpreter change can never silently
-    reuse (or destroy) an environment built for a different one.
+    reuse (or destroy) an environment built for a different one, and the
+    marker schema so environments prepared by older build/repair code are
+    addressed under their own identity: a schema bump therefore publishes a
+    rebuilt environment additively under a NEW directory instead of replacing
+    the old one at its original path.
     """
     if fingerprint is None:
         fingerprint = dependency_fingerprint(Path(snapshot_root))
@@ -159,6 +179,8 @@ def env_identity(
     digest.update(fingerprint.encode("ascii"))
     digest.update(b"\0")
     digest.update(resolve_interpreter(python_executable).encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(str(MARKER_SCHEMA).encode("ascii"))
     return digest.hexdigest()
 
 
@@ -286,8 +308,10 @@ def _repoint_entrypoint_shebangs(staging: Path, env_dir: Path) -> None:
 
     On Windows the same problem takes a third shape: pip's console/windowed
     launchers are ``.exe`` binaries laid out as ``<PE launcher> +
-    b'#!' + interpreter + post_interp + b'\\n' + <ZIP payload>`` (distlib
-    ``ScriptMaker._write_script``). The entry-point payload travels inside the
+    b'#!' + interpreter + post_interp + <terminator> + <ZIP payload>``
+    (distlib ``ScriptMaker._write_script``; native Windows launchers terminate
+    the shebang with LF+CRLF rather than distlib's bare LF). The entry-point
+    payload travels inside the
     appended ZIP and the interpreter reference is a plain byte shebang between
     the PE image and the ZIP. Once staging is deleted these launchers exit 1
     with empty output (observed for ``pip3.exe``, ``pip3.11.exe`` and
@@ -342,10 +366,16 @@ def _retarget_launcher_shebang(data: bytes, old_norm: str, promoted_python: str)
     """Splice ``promoted_python`` into a launcher's shebang line.
 
     The launcher layout is ``<PE prefix> + b'#!' + interpreter + post_interp +
-    b'\\n' + <ZIP payload>``. The ZIP payload starts at the last local-file
-    header signature (``PK\\x03\\x04``); the shebang is the single line ending
-    immediately before it. Returns ``None`` (leave untouched) when the shape
-    does not match or the embedded interpreter is not the staging python.
+    <terminator> + <ZIP payload>``. The ZIP payload starts at the last
+    local-file header signature (``PK\\x03\\x04``); the shebang is the single
+    line ending immediately before it. Native Windows qualification observed
+    real pip-authored launchers terminating that line with LF followed by CRLF
+    (``...python.exe" 0A 0D 0A PK..``) rather than the bare LF of distlib's own
+    ``_build_shebang``; both shapes (plus a plain CRLF variant) are accepted
+    and the terminator is re-emitted verbatim so the rewritten launcher stays
+    byte-faithful apart from the interpreter reference. Returns ``None``
+    (leave untouched) when the shape does not match or the embedded
+    interpreter is not the staging python.
     """
     zip_idx = data.rfind(b"PK\x03\x04")
     if zip_idx == -1:
@@ -354,10 +384,19 @@ def _retarget_launcher_shebang(data: bytes, old_norm: str, promoted_python: str)
     if shebang_idx == -1:
         return None
     line = data[shebang_idx:zip_idx]
-    if not line.endswith(b"\n") or b"\n" in line[:-1]:
+    # Longest terminator first so the LF+CRLF native shape is not mistaken
+    # for a bare-LF line followed by stray bytes.
+    terminator = next(
+        (candidate for candidate in (b"\n\r\n", b"\r\n", b"\n") if line.endswith(candidate)),
+        None,
+    )
+    if terminator is None:
         return None  # not a single-line shebang sitting directly before the payload
+    body_bytes = line[: len(line) - len(terminator)]
+    if not body_bytes.startswith(b"#!") or b"\n" in body_bytes:
+        return None
     try:
-        body = line[:-1].decode("utf-8")[2:]
+        body = body_bytes.decode("utf-8")[2:]
     except UnicodeDecodeError:
         return None
     quoted = body.startswith('"')
@@ -378,7 +417,7 @@ def _retarget_launcher_shebang(data: bytes, old_norm: str, promoted_python: str)
     new_interp = promoted_python
     if quoted or " " in promoted_python:
         new_interp = f'"{promoted_python}"'
-    new_line = f"#!{new_interp}{post_interp}\n".encode()
+    new_line = f"#!{new_interp}{post_interp}".encode() + terminator
     return data[:shebang_idx] + new_line + data[zip_idx:]
 
 
@@ -423,6 +462,11 @@ def _valid_existing_env(env_dir: Path, identity: str, fingerprint: str, python_r
     marker = read_env_marker(env_dir)
     if marker is None:
         return False
+    # A marker from an older schema was written by code whose guarantees no
+    # longer hold (schema 2 launchers could keep stale staging interpreters);
+    # such an environment must be rebuilt, never silently reused.
+    if marker.get("schema") != MARKER_SCHEMA:
+        return False
     if marker.get("identity") != identity or marker.get("fingerprint") != fingerprint:
         return False
     if marker.get("python") != python_resolved:
@@ -447,7 +491,12 @@ def _promote(staging: Path, env_dir: Path, identity: str) -> bool:
         # Another creator may have promoted a valid environment between our
         # existence check and the rename; adopt theirs instead of clobbering.
         marker = read_env_marker(env_dir)
-        if marker is not None and marker.get("identity") == identity and venv_python(env_dir).exists():
+        if (
+            marker is not None
+            and marker.get("schema") == MARKER_SCHEMA
+            and marker.get("identity") == identity
+            and venv_python(env_dir).exists()
+        ):
             return False
         try:
             if env_dir.exists():
@@ -519,7 +568,7 @@ def ensure_dep_env(
         _repoint_entrypoint_shebangs(staging, env_dir)
 
         marker_data = {
-            "schema": 2,
+            "schema": MARKER_SCHEMA,
             "identity": identity,
             "fingerprint": fingerprint,
             "python": python_resolved,
