@@ -853,3 +853,169 @@ def test_windows_path_budget_matches_observed_qualification_envelope(tmp_path, m
     monkeypatch.setenv("LOCALAPPDATA", "C:\\Users\\joshu\\AppData\\Local\\" + "\\".join(["s"] * 40))
     with pytest.raises(SnapshotError, match="MTGACOACH_RUNTIME_ROOT"):
         dep_env._windows_safe_base(deep)
+
+
+# ---------------------------------------------------------------------------
+# Prepared-interpreter provenance (Windows copy-style venvs)
+#
+# Native qualification failure being regressed: the UI process runs INSIDE a
+# prepared environment whose ``python.exe`` is a COPY of the base interpreter
+# (Windows venv semantics). Plain path resolution then computed a different
+# identity than preparation did (cf62e0a3078ab46c vs 6342) and
+# ``prepared_dep_env`` returned None for the engine's own environment.
+
+
+def _windows_style_prepared_env(tmp_path: Path, version: str = "3.14.0"):
+    """A Windows-shaped base install plus a prepared env with a COPY python.
+
+    Mirrors the native layout: ``<base>/python.exe`` and a prepared
+    environment at ``<venv>/Scripts/python.exe`` whose ``pyvenv.cfg``
+    provenance points back at the base.
+    """
+    base_root = tmp_path / "base-python"
+    base_root.mkdir(parents=True)
+    base_exe = base_root / "python.exe"
+    base_exe.write_bytes(b"MZ-fake-base-interpreter")
+    venv_root = tmp_path / "dep-envs" / "prepared6342"
+    scripts = venv_root / "Scripts"
+    scripts.mkdir(parents=True)
+    copy_exe = scripts / "python.exe"
+    copy_exe.write_bytes(base_exe.read_bytes())  # copy semantics, not a symlink
+    (venv_root / "pyvenv.cfg").write_text(
+        f"home = {base_root}\n"
+        "include-system-site-packages = false\n"
+        f"version = {version}\n"
+        f"executable = {base_exe}\n",
+        encoding="utf-8",
+    )
+    return base_exe, copy_exe, venv_root
+
+
+def _run_inside_venv(monkeypatch, copy_exe: Path, venv_root: Path, version: str = "3.14.0"):
+    """Make THIS process look like the UI running inside the prepared env."""
+    monkeypatch.setattr(sys, "executable", str(copy_exe))
+    monkeypatch.setattr(sys, "prefix", str(venv_root))
+    monkeypatch.setattr(dep_env.platform, "python_version", lambda: version)
+
+
+def test_resolve_interpreter_follows_windows_copy_provenance(tmp_path):
+    base_exe, copy_exe, _venv = _windows_style_prepared_env(tmp_path)
+    # The copy resolves to its verified base, not to its own venv path.
+    assert dep_env.resolve_interpreter(str(copy_exe)) == str(base_exe.resolve())
+
+
+def test_prepared_ui_inside_env_finds_same_engine_without_nesting(
+    snapshot_root, fake_runs, tmp_path, monkeypatch
+):
+    base_exe, copy_exe, venv_root = _windows_style_prepared_env(tmp_path)
+    runtime_root = tmp_path / "runtime"
+
+    # Explicit preparer creates the isolated env keyed by the BASE interpreter.
+    prepared = ensure_dep_env(snapshot_root, runtime_root=runtime_root, python_executable=str(base_exe))
+    assert read_env_marker(prepared)["python"] == str(base_exe.resolve())
+
+    # The actual native failure scenario: the UI runs inside that prepared
+    # environment and looks up its own engine with no explicit interpreter.
+    _run_inside_venv(monkeypatch, copy_exe, venv_root)
+
+    calls_before = len(fake_runs.calls)
+    found = dep_env.prepared_dep_env(snapshot_root, runtime_root=runtime_root)
+    assert found == prepared  # the correct prepared same-version engine...
+    assert len(fake_runs.calls) == calls_before  # ...found without ANY nested env creation
+
+    # ensure_dep_env from the same in-env context reuses, never rebuilds.
+    assert ensure_dep_env(snapshot_root, runtime_root=runtime_root) == prepared
+    assert len(fake_runs.calls) == calls_before
+
+
+def test_compatible_target_env_keys_off_base_identity_not_venv_copy(
+    snapshot_root, fake_runs, tmp_path, monkeypatch
+):
+    base_exe, copy_exe, venv_root = _windows_style_prepared_env(tmp_path)
+
+    # Identity computed from inside the env equals the preparer's identity.
+    preparer_identity = env_identity(snapshot_root, python_executable=str(base_exe))
+    _run_inside_venv(monkeypatch, copy_exe, venv_root)
+    assert env_identity(snapshot_root) == preparer_identity
+
+    # A compatible-target launch resolves to the same env directory either way.
+    runtime_root = tmp_path / "runtime"
+    assert env_dir_for(preparer_identity, runtime_root) == env_dir_for(
+        env_identity(snapshot_root), runtime_root
+    )
+
+
+def test_changed_base_interpreter_keeps_distinct_identity(snapshot_root, tmp_path):
+    old_base, old_copy, _ = _windows_style_prepared_env(tmp_path / "old", version="3.14.0")
+    new_base, new_copy, _ = _windows_style_prepared_env(tmp_path / "new", version="3.15.0")
+
+    old_identity = env_identity(snapshot_root, python_executable=str(old_base))
+    new_identity = env_identity(snapshot_root, python_executable=str(new_base))
+    assert old_identity != new_identity
+
+    # Each env's copy still resolves to ITS OWN base — no cross-aliasing.
+    assert dep_env.resolve_interpreter(str(old_copy)) == str(old_base.resolve())
+    assert dep_env.resolve_interpreter(str(new_copy)) == str(new_base.resolve())
+
+
+def test_self_provenance_version_mismatch_fails_visible(tmp_path, monkeypatch):
+    """A base upgraded underneath a prepared env is a real provenance change."""
+    _base, copy_exe, venv_root = _windows_style_prepared_env(tmp_path, version="3.14.0")
+    _run_inside_venv(monkeypatch, copy_exe, venv_root, version="3.15.0")
+    with pytest.raises(SnapshotError, match="changed under the environment"):
+        dep_env.resolve_interpreter()
+
+
+def test_self_provenance_prefix_mismatch_fails_visible(tmp_path, monkeypatch):
+    """An interpreter claiming venv provenance it does not hold must refuse."""
+    _base, copy_exe, venv_root = _windows_style_prepared_env(tmp_path)
+    monkeypatch.setattr(sys, "executable", str(copy_exe))
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "somewhere-else"))
+    monkeypatch.setattr(dep_env.platform, "python_version", lambda: "3.14.0")
+    with pytest.raises(SnapshotError, match="sys.prefix"):
+        dep_env.resolve_interpreter()
+
+
+def test_malformed_or_unverifiable_provenance_fails_visible(tmp_path):
+    base_exe = tmp_path / "base-python" / "python.exe"
+    base_exe.parent.mkdir(parents=True)
+    base_exe.write_bytes(b"MZ-fake-base-interpreter")
+    venv_root = tmp_path / "dep-envs" / "broken"
+    scripts = venv_root / "Scripts"
+    scripts.mkdir(parents=True)
+    copy_exe = scripts / "python.exe"
+    copy_exe.write_bytes(base_exe.read_bytes())
+
+    # Missing home/version: malformed marker.
+    (venv_root / "pyvenv.cfg").write_text("include-system-site-packages = false\n", encoding="utf-8")
+    with pytest.raises(SnapshotError, match="malformed"):
+        dep_env.resolve_interpreter(str(copy_exe))
+
+    # Home points nowhere: unverifiable provenance.
+    (venv_root / "pyvenv.cfg").write_text(
+        f"home = {tmp_path / 'vanished'}\nversion = 3.14.0\nexecutable = {base_exe}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SnapshotError, match="does not exist"):
+        dep_env.resolve_interpreter(str(copy_exe))
+
+    # Home exists but holds no interpreter executable.
+    (tmp_path / "empty-home").mkdir()
+    (venv_root / "pyvenv.cfg").write_text(
+        f"home = {tmp_path / 'empty-home'}\nversion = 3.14.0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SnapshotError, match="no interpreter executable"):
+        dep_env.resolve_interpreter(str(copy_exe))
+
+
+def test_venv_symlinked_python_still_resolves_through_symlink(tmp_path):
+    """POSIX symlink-style venvs keep resolving to the real target (unchanged)."""
+    real_python = tmp_path / "usr" / "bin" / "python3.14"
+    real_python.parent.mkdir(parents=True)
+    real_python.write_bytes(b"#!/bin/sh\n")
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    link = venv_bin / "python"
+    link.symlink_to(real_python)
+    assert dep_env.resolve_interpreter(str(link)) == str(real_python.resolve())

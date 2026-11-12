@@ -632,3 +632,86 @@ def test_read_pointer_once_honors_both_disable_flags(tmp_path, monkeypatch):
     monkeypatch.delenv("MTGACOACH_SNAPSHOTS_DISABLE", raising=False)
     monkeypatch.setenv("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT", "1")
     assert rs.read_pointer_once(snaps) is None
+
+
+def test_export_commit_tree_is_byte_exact_under_platform_autocrlf(tmp_path):
+    """Pinned export bytes are the committed blobs, whatever platform EOL
+    configuration says.
+
+    Coordinator proof being regressed: Windows MinGit system
+    ``core.autocrlf=true`` converted ``uv.lock`` during ``git archive``
+    (1039405 -> 1045627 bytes), so the pinned export stopped certifying the
+    commit it was cut from. Scoped command-local overrides restore exact
+    blob bytes; repository/global/system settings are never touched.
+    """
+    import io
+    import tarfile
+    from pathlib import PurePosixPath
+
+    from arenamcp.desktop.dep_env import dependency_fingerprint
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    # Repo-local stand-in for the Windows MinGit *system* config: conversion
+    # is inherited by plain `git archive` unless overridden per-command.
+    _git(root, "config", "core.autocrlf", "true")
+
+    (root / "uv.lock").write_text("".join(f"pin-{i}==1.{i}\n" for i in range(1000)), encoding="utf-8")
+    (root / "requirements.txt").write_text("PySide6==6.7.0\n", encoding="utf-8")
+    (root / "notes.txt").write_bytes(b"alpha\r\nbeta\r\n")  # genuine CRLF blob
+    (root / "asset.bin").write_bytes(bytes(range(256)) * 64 + b"\r\n\x00\r\n")
+    _git(root, "add", "-A")
+    _git(root, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "lock")
+
+    names = ("uv.lock", "requirements.txt", "notes.txt", "asset.bin")
+    committed = {
+        name: subprocess.run(
+            ["git", "-C", str(root), "cat-file", "blob", f"HEAD:{name}"],
+            capture_output=True,
+            check=True,
+        ).stdout
+        for name in names
+    }
+
+    def extract(destination: Path, *overrides: str) -> None:
+        blob = subprocess.run(
+            ["git", "-C", str(root), *overrides, "archive", "--format=tar", "HEAD"],
+            capture_output=True,
+            check=True,
+        ).stdout
+        destination.mkdir()
+        with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
+            for member in tar.getmembers():
+                if member.isfile():
+                    target = destination.joinpath(*PurePosixPath(member.name).parts)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(tar.extractfile(member).read())
+
+    # Canary: with inherited autocrlf=true a PLAIN archive really does convert
+    # the LF lockfile on this fixture -- so this test detects a regression
+    # that drops the scoped overrides.
+    plain_dest = tmp_path / "plain"
+    extract(plain_dest)
+    assert plain_dest.joinpath("uv.lock").read_bytes() != committed["uv.lock"]
+    # The genuine CRLF blob is normalized at commit (autocrlf clean) and
+    # re-expanded by a plain archive -- more conversion the fix must undo --
+    # while the binary payload survives plain archiving untouched (NULs mark
+    # it binary; no attributes request conversion here).
+    assert plain_dest.joinpath("notes.txt").read_bytes() != committed["notes.txt"]
+    assert plain_dest.joinpath("asset.bin").read_bytes() == committed["asset.bin"]
+
+    # The fixed export is byte-exact under inherited true...
+    dest_true = tmp_path / "export-true"
+    assert rs._export_commit_tree(root, "HEAD", dest_true) == []
+    for name in names:
+        assert dest_true.joinpath(name).read_bytes() == committed[name]
+
+    # ...and under inherited false, with identical manifests/fingerprints.
+    _git(root, "config", "core.autocrlf", "false")
+    dest_false = tmp_path / "export-false"
+    rs._export_commit_tree(root, "HEAD", dest_false)
+    for name in names:
+        assert dest_false.joinpath(name).read_bytes() == committed[name]
+        assert dest_false.joinpath(name).read_bytes() == dest_true.joinpath(name).read_bytes()
+    assert dependency_fingerprint(dest_true) == dependency_fingerprint(dest_false)

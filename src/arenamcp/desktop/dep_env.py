@@ -30,6 +30,8 @@ import hashlib
 import json
 import logging
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -153,9 +155,143 @@ def _default_runtime_base() -> Path:
 
 
 def resolve_interpreter(python_executable: str | None = None) -> str:
-    """Absolute, symlink-resolved interpreter path binding an environment."""
-    raw = python_executable or sys.executable
-    return str(Path(raw).resolve())
+    """Canonical interpreter path binding an environment identity.
+
+    Absolute and symlink-resolved. When the interpreter sits inside a
+    virtualenv — a Windows venv ``python.exe`` is a *copy* of its base, so
+    plain path resolution cannot recover the base — resolves through
+    verified ``pyvenv.cfg`` provenance to the base interpreter instead, so
+    the identity is the same whether computed by a preparer holding the base
+    executable or by a process running inside the prepared environment
+    itself. Malformed or unverifiable provenance raises :class:`SnapshotError`
+    (fail visibly and safely; never guess an identity).
+    """
+    raw = Path(python_executable or sys.executable)
+    return str(_canonical_interpreter(raw.resolve()))
+
+
+_INTERPRETER_PROVENANCE_MAX_DEPTH = 4
+
+
+def _pyvenv_cfg_for(python_path: Path) -> Path | None:
+    """``pyvenv.cfg`` governing a venv-layout interpreter, or ``None``.
+
+    A CPython venv places its marker at ``<venv>/pyvenv.cfg`` while the
+    interpreter lives at ``<venv>/bin/python*`` (POSIX) or
+    ``<venv>/Scripts/python.exe`` (Windows).
+    """
+    cfg = python_path.parent.parent / "pyvenv.cfg"
+    return cfg if cfg.is_file() else None
+
+
+def _parse_pyvenv_cfg(cfg_path: Path) -> dict[str, str]:
+    try:
+        text = cfg_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise SnapshotError(f"virtual-environment provenance marker {cfg_path} is unreadable: {exc}") from exc
+    data: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        data[key.strip().lower()] = value.strip()
+    return data
+
+
+def _base_executable_candidates(cfg: dict[str, str], home: Path) -> list[Path]:
+    """Provenance-declared base interpreter paths, most specific first."""
+    candidates: list[Path] = []
+    declared = cfg.get("executable")
+    if declared:
+        candidates.append(Path(declared))
+    if sys.platform == "win32":
+        candidates.append(home / "python.exe")
+    else:
+        match = re.match(r"(\d+\.\d+)", cfg.get("version", ""))
+        if match:
+            candidates.append(home / f"python{match.group(1)}")
+        candidates.append(home / "python3")
+        candidates.append(home / "python")
+    return candidates
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", value)[:3])
+
+
+def _canonical_interpreter(resolved: Path) -> Path:
+    """Follow VERIFIED virtual-environment provenance to the base interpreter.
+
+    A Windows venv's ``python.exe`` is a copy of the base interpreter, so a
+    UI process running inside a prepared environment would otherwise compute
+    a different identity than preparation did and fail to find its own
+    engine. When the resolved interpreter sits in venv layout, resolve
+    through its ``pyvenv.cfg`` provenance instead:
+
+    - the marker must parse and carry a usable ``home`` and ``version``;
+    - a base interpreter executable must exist at the proven location;
+    - when the interpreter IS this running process, the claim is fully
+      verified against runtime ground truth (``sys.prefix`` must be that
+      venv root and the recorded version must match the running version —
+      a base upgraded underneath the environment is a real provenance
+      change and must not silently alias to the old identity).
+
+    Interpreters outside venv layout are returned unchanged. Malformed or
+    unverifiable provenance raises :class:`SnapshotError` so callers fail
+    visibly and safely: lookup returns nothing and creation is never
+    attempted on a guessed identity.
+    """
+    current = resolved
+    for _depth in range(_INTERPRETER_PROVENANCE_MAX_DEPTH):
+        cfg_path = _pyvenv_cfg_for(current)
+        if cfg_path is None:
+            return current
+        cfg = _parse_pyvenv_cfg(cfg_path)
+        home_raw = cfg.get("home")
+        version_raw = cfg.get("version")
+        if not home_raw or not version_raw or not re.match(r"\d+\.\d+", version_raw):
+            raise SnapshotError(
+                f"interpreter {current} claims virtual-environment provenance "
+                f"via {cfg_path} but the marker is malformed (missing or "
+                "invalid 'home'/'version')"
+            )
+        home = Path(home_raw)
+        if not home.is_dir():
+            raise SnapshotError(
+                f"interpreter {current} claims base installation {home} "
+                f"(via {cfg_path}) but that directory does not exist"
+            )
+        base = next(
+            (cand for cand in _base_executable_candidates(cfg, home) if cand.is_file()),
+            None,
+        )
+        if base is None:
+            raise SnapshotError(
+                f"interpreter {current} claims base installation {home} "
+                f"(via {cfg_path}) but no interpreter executable exists there"
+            )
+        if current == Path(sys.executable).resolve():
+            # Full verification against runtime ground truth: this process
+            # really runs inside the venv the marker describes.
+            if Path(sys.prefix).resolve() != cfg_path.parent.resolve():
+                raise SnapshotError(
+                    f"interpreter {current} claims virtual-environment "
+                    f"provenance via {cfg_path} but sys.prefix "
+                    f"{Path(sys.prefix)} is not that venv root"
+                )
+            if _version_tuple(version_raw) != _version_tuple(platform.python_version()):
+                raise SnapshotError(
+                    f"interpreter {current} claims provenance version "
+                    f"{version_raw} (via {cfg_path}) but this process runs "
+                    f"{platform.python_version()}: the base interpreter "
+                    "changed under the environment"
+                )
+        current = base
+    raise SnapshotError(
+        f"interpreter {resolved} exceeds virtual-environment provenance "
+        f"depth {_INTERPRETER_PROVENANCE_MAX_DEPTH}"
+    )
 
 
 def env_identity(
@@ -171,7 +307,11 @@ def env_identity(
     marker schema so environments prepared by older build/repair code are
     addressed under their own identity: a schema bump therefore publishes a
     rebuilt environment additively under a NEW directory instead of replacing
-    the old one at its original path.
+    the old one at its original path. The interpreter is canonicalised
+    through verified ``pyvenv.cfg`` provenance, so a process running inside
+    a prepared environment resolves to the same base-interpreter identity
+    the preparer recorded — while a genuinely changed base interpreter or
+    version still yields a distinct identity.
     """
     if fingerprint is None:
         fingerprint = dependency_fingerprint(Path(snapshot_root))

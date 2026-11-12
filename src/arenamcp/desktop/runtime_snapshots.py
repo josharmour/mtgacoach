@@ -196,10 +196,33 @@ def _resolve_commit(checkout: Path, commit: str) -> str:
 def _export_commit_tree(checkout: Path, commit: str, destination: Path) -> list[str]:
     """Materialise exactly the pinned commit's tree via ``git archive``.
 
+    The archive subprocess runs with command-local ``core.autocrlf=false``
+    and ``core.eol=lf`` overrides so exported bytes are the committed blobs
+    themselves, never a platform-EOL conversion of them: a Windows host with
+    system ``core.autocrlf=true`` otherwise converts LF blobs (such as
+    ``uv.lock``) during archiving and the pinned export stops certifying the
+    commit it was cut from. Repository, global and system git configuration
+    is never read for this decision nor written by it.
+
+    Boundary: tracked attributes (``.gitattributes`` ``eol``/``text``/
+    ``export-*``) can still independently request conversion — this repo
+    currently ships none, so here the overrides make archive output
+    byte-identical to the committed blobs. The guarantee is "no platform
+    configuration surprise", not "attributes never convert".
+
     Returns the sorted list of excluded archive members (build caches and
     secret-classified files), which the manifest declares openly.
     """
-    blob = _git(checkout, "archive", "--format=tar", commit)
+    blob = _git(
+        checkout,
+        "-c",
+        "core.autocrlf=false",
+        "-c",
+        "core.eol=lf",
+        "archive",
+        "--format=tar",
+        commit,
+    )
     excluded: list[str] = []
     with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
         for member in tar.getmembers():
