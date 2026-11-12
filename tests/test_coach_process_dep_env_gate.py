@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -196,6 +197,67 @@ def test_selected_snapshot_foreign_root_launches_plain(
     """A SNAPSHOT_ROOT that is not the launch root binds NOTHING."""
     monkeypatch.setenv("MTGACOACH_SNAPSHOT_SHA", COMMIT)
     monkeypatch.setenv("MTGACOACH_SNAPSHOT_ROOT", str(tmp_path / "elsewhere"))
+    monkeypatch.delenv("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT", raising=False)
+
+    _python_exe, python_source, _args, _packaged = resolve_engine_launch(snapshot_root)
+
+    assert dep_env_guard == []
+    assert python_source == "current"
+
+
+# ---------------------------------------------------------------------------
+# tampered selected source: never execute the rejected root
+
+
+def test_tampered_launch_root_refuses_launch(snapshot_root, isolated_runtime, dep_env_guard, monkeypatch):
+    """Hash-tampered source AT the launch root must never be executed.
+
+    The disagreement is detected AND the launch root is the rejected tree, so
+    resolve_engine_launch refuses outright instead of returning ordinary
+    launch args for the very source that failed validation.
+    """
+    monkeypatch.setenv("MTGACOACH_SNAPSHOT_SHA", COMMIT)
+    monkeypatch.delenv("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT", raising=False)
+    (snapshot_root / "src" / "arenamcp" / "__init__.py").write_text(
+        "# tampered after publication\n", encoding="utf-8"
+    )
+
+    with pytest.raises(RuntimeError, match="Refusing to launch"):
+        resolve_engine_launch(snapshot_root)
+
+    assert dep_env_guard == [], "rejected source must never reach dep_env"
+
+
+def test_tampered_manifest_at_launch_root_refuses_launch(
+    snapshot_root, isolated_runtime, dep_env_guard, monkeypatch
+):
+    """An unreadable/tampered manifest at the launch root also refuses."""
+    monkeypatch.setenv("MTGACOACH_SNAPSHOT_SHA", COMMIT)
+    monkeypatch.delenv("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT", raising=False)
+    (snapshot_root / MANIFEST_NAME).write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Refusing to launch"):
+        resolve_engine_launch(snapshot_root)
+
+    assert dep_env_guard == []
+
+
+def test_tampered_external_root_does_not_block_the_checkout(
+    snapshot_root, isolated_runtime, dep_env_guard, monkeypatch, tmp_path
+):
+    """Control: a rejected EXTERNAL selection root only downgrades to plain.
+
+    The checkout being launched was never rejected, so the ordinary launch of
+    it proceeds — refusal is reserved for when the rejected source IS the
+    launch root.
+    """
+    external = tmp_path / "external-snap"
+    shutil.copytree(snapshot_root, external)
+    (external / "src" / "arenamcp" / "__init__.py").write_text(
+        "# tampered after publication\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("MTGACOACH_SNAPSHOT_SHA", COMMIT)
+    monkeypatch.setenv("MTGACOACH_SNAPSHOT_ROOT", str(external))
     monkeypatch.delenv("MTGACOACH_DISABLE_RUNTIME_SNAPSHOT", raising=False)
 
     _python_exe, python_source, _args, _packaged = resolve_engine_launch(snapshot_root)

@@ -37,13 +37,26 @@ def engine_interpreter_for(app_root: str | Path | None = None) -> tuple[str, str
 logger = logging.getLogger(__name__)
 
 
-def _selected_snapshot_disagreement(app_root: Path, selected_sha: str) -> str | None:
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left == right
+
+
+def _selected_snapshot_disagreement(app_root: Path, selected_sha: str) -> tuple[str | None, bool]:
     """Explain why the selected snapshot must NOT bind a prepared env, or None.
 
-    Binding a prepared dependency environment requires agreement between the
-    selected SHA, the selected root (``MTGACOACH_SNAPSHOT_ROOT`` or the launch
-    root itself) and the manifest published inside that root. A merely
-    nonempty ``MTGACOACH_SNAPSHOT_SHA`` never unlocks dependency participation.
+    Returns ``(reason, launch_root_rejected)``. Binding a prepared dependency
+    environment requires agreement between the selected SHA, the selected root
+    (``MTGACOACH_SNAPSHOT_ROOT`` or the launch root itself) and the manifest
+    published inside that root. A merely nonempty ``MTGACOACH_SNAPSHOT_SHA``
+    never unlocks dependency participation.
+
+    ``launch_root_rejected`` is True only when the REJECTED source IS the
+    launch root: that source's code must then never be executed, so the caller
+    must refuse the launch outright instead of falling back to a plain launch
+    of the very tree that failed validation.
     """
     from .runtime_snapshots import SnapshotValidationError, validate_snapshot_dir
 
@@ -52,16 +65,18 @@ def _selected_snapshot_disagreement(app_root: Path, selected_sha: str) -> str | 
     try:
         manifest = validate_snapshot_dir(selected_root)
     except SnapshotValidationError as exc:
-        return f"selected snapshot {selected_sha[:7]} failed validation at {selected_root}: {exc}"
+        reason = f"selected snapshot {selected_sha[:7]} failed validation at {selected_root}: {exc}"
+        return reason, _same_path(selected_root, app_root)
     manifest_commit = str(manifest.get("commit") or "")
     if manifest_commit != selected_sha:
         return (
             f"selected SHA {selected_sha[:7]} does not match manifest commit "
-            f"{manifest_commit[:7] or '?'} in {selected_root}"
+            f"{manifest_commit[:7] or '?'} in {selected_root}",
+            False,
         )
-    if root_env and Path(root_env).resolve() != app_root.resolve():
-        return f"selected root {root_env} does not match launch root {app_root}"
-    return None
+    if root_env and not _same_path(Path(root_env), app_root):
+        return f"selected root {root_env} does not match launch root {app_root}", False
+    return None, False
 
 
 def resolve_engine_launch(app_root: Path) -> tuple[str, str, list[str], bool]:
@@ -75,6 +90,12 @@ def resolve_engine_launch(app_root: Path) -> tuple[str, str, list[str], bool]:
     here. Ordinary launches and reloads — and disagreeing selections — keep
     the resolved interpreter untouched: no dependency preparation,
     installation or environment mutation.
+
+    When the selected snapshot source ITSELF fails validation and that source
+    is the launch root, the launch is REFUSED with a visible error: the engine
+    never executes source that failed snapshot validation. A rejected EXTERNAL
+    selection root (distinct from the launch root) only downgrades the launch
+    to plain, because the checkout being launched was never rejected.
     """
     python_exe, python_source = engine_interpreter_for(app_root)
 
@@ -85,8 +106,18 @@ def resolve_engine_launch(app_root: Path) -> tuple[str, str, list[str], bool]:
         if not snapshots_disabled():
             from .dep_env import prepared_dep_env, venv_python
 
-            disagreement = _selected_snapshot_disagreement(app_root, selected_sha)
+            disagreement, launch_root_rejected = _selected_snapshot_disagreement(app_root, selected_sha)
             if disagreement is not None:
+                if launch_root_rejected:
+                    # The rejected source IS the launch root: never execute it.
+                    # CoachSession.start surfaces this visibly and keeps the
+                    # current engine in charge.
+                    raise RuntimeError(
+                        f"Refusing to launch: {disagreement}. The engine will "
+                        f"not execute source that failed snapshot validation "
+                        f"at its launch root ({app_root}); re-validate or "
+                        "re-publish the snapshot, then restart Coach."
+                    )
                 logger.warning(
                     "Ignoring snapshot selection %s for this launch: %s. "
                     "Launching %s with its own interpreter.",
